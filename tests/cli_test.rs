@@ -67,3 +67,21 @@ fn test_cli_invalid_flag() {
         "Invalid flag should exit with error"
     );
 }
+
+#[test]
+fn test_cli_help_mentions_headless() {
+    let output = Command::new(koda_bin())
+        .arg("--help")
+        .output()
+        .expect("Failed to run koda --help");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--prompt") || stdout.contains("-p"),
+        "Help should mention -p/--prompt for headless mode: {stdout}"
+    );
+    assert!(
+        stdout.contains("--output-format"),
+        "Help should mention --output-format: {stdout}"
+    );
+}

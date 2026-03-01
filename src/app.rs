@@ -1,4 +1,4 @@
-//! The main REPL event loop.
+//! The main application entry points: interactive REPL and headless mode.
 //!
 //! Handles user input, command dispatch, and delegates to the inference engine.
 
@@ -387,6 +387,92 @@ pub async fn run(
     let _ = rl.save_history(&history_path);
 
     Ok(())
+}
+
+// ── Headless mode ──────────────────────────────────────────────
+
+/// Run a single prompt and exit. Returns process exit code (0 = success).
+pub async fn run_headless(
+    project_root: PathBuf,
+    config: KodaConfig,
+    db: Database,
+    session_id: String,
+    prompt: String,
+    output_format: &str,
+) -> Result<i32> {
+    let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
+        Arc::new(RwLock::new(create_provider(&config)));
+
+    let tools = crate::tools::ToolRegistry::new(project_root.clone());
+    let tool_defs = tools.get_definitions(&config.allowed_tools);
+
+    let semantic_memory = memory::load(&project_root)?;
+    let system_prompt =
+        inference::build_system_prompt(&config.system_prompt, &semantic_memory, &config.agents_dir);
+
+    // Process @file references and images (same as interactive mode)
+    let processed = input::process_input(&prompt, &project_root);
+    let user_message =
+        if let Some(context) = input::format_context_files(&processed.context_files) {
+            format!("{}\n\n{context}", processed.prompt)
+        } else {
+            processed.prompt.clone()
+        };
+
+    let pending_images = if processed.images.is_empty() {
+        None
+    } else {
+        Some(processed.images)
+    };
+
+    db.insert_message(
+        &session_id,
+        &Role::User,
+        Some(&user_message),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await?;
+
+    // Run inference (tools work, streaming prints to stdout)
+    let prov = provider.read().await;
+    let result = inference::inference_loop(
+        &project_root,
+        &config,
+        &db,
+        &session_id,
+        &system_prompt,
+        prov.as_ref(),
+        &tools,
+        &tool_defs,
+        pending_images,
+    )
+    .await;
+
+    // For JSON output, wrap the last assistant response
+    if output_format == "json" {
+        let last_response = db
+            .last_assistant_message(&session_id)
+            .await
+            .unwrap_or_default();
+        let json = serde_json::json!({
+            "success": result.is_ok(),
+            "response": last_response,
+            "session_id": session_id,
+            "model": config.model,
+        });
+        println!("{}", serde_json::to_string_pretty(&json)?);
+    }
+
+    match result {
+        Ok(()) => Ok(0),
+        Err(e) => {
+            eprintln!("Error: {e}");
+            Ok(1)
+        }
+    }
 }
 
 // ── Compact handler ───────────────────────────────────────────

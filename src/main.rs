@@ -24,7 +24,7 @@ mod tools;
 mod tui;
 mod version;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -32,6 +32,20 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(name = "koda", version, about)]
 struct Cli {
+    /// Run a single prompt and exit (headless mode).
+    /// Use "-" to read from stdin.
+    #[arg(short, long, value_name = "PROMPT")]
+    prompt: Option<String>,
+
+    /// Positional prompt (alternative to -p).
+    /// `koda "fix the bug"` is equivalent to `koda -p "fix the bug"`.
+    #[arg(value_name = "PROMPT", conflicts_with = "prompt")]
+    positional_prompt: Option<String>,
+
+    /// Output format for headless mode.
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    output_format: String,
+
     /// Agent to use (matches a JSON file in agents/)
     #[arg(short, long, default_value = "default")]
     agent: String,
@@ -41,7 +55,7 @@ struct Cli {
     session: Option<String>,
 
     /// Project root directory (defaults to current directory)
-    #[arg(short, long)]
+    #[arg(long)]
     project_root: Option<PathBuf>,
 
     /// LLM provider base URL override
@@ -64,6 +78,9 @@ async fn main() -> Result<()> {
     // Install Ctrl+C handler for graceful interrupts
     interrupt::install_handler();
 
+    // Resolve headless prompt: -p flag, positional arg, or stdin
+    let headless_prompt = resolve_headless_prompt(&cli)?;
+
     // Resolve project root
     let project_root = cli
         .project_root
@@ -82,14 +99,35 @@ async fn main() -> Result<()> {
 
     tracing::info!("Koda starting. Project root: {:?}", project_root);
 
-    // Start version check in the background (non-blocking)
-    let version_check = version::spawn_version_check();
-
     // Load and inject stored API keys (env vars take precedence)
     match keystore::KeyStore::load() {
         Ok(store) => store.inject_into_env(),
         Err(e) => tracing::warn!("Failed to load keystore: {e}"),
     }
+
+    // Headless mode: skip onboarding, banner, version check
+    if let Some(prompt) = headless_prompt {
+        let config = config::KodaConfig::load(&project_root, &cli.agent)?;
+        let config = config.with_overrides(cli.base_url, cli.model, cli.provider);
+        let db = db::Database::init(&project_root).await?;
+        let session_id = match cli.session {
+            Some(id) => id,
+            None => db.create_session(&config.agent_name).await?,
+        };
+        let exit_code = app::run_headless(
+            project_root,
+            config,
+            db,
+            session_id,
+            prompt,
+            &cli.output_format,
+        )
+        .await?;
+        std::process::exit(exit_code);
+    }
+
+    // Interactive mode: full REPL experience
+    let version_check = version::spawn_version_check();
 
     // First-run onboarding
     let onboarding_provider = if onboarding::is_first_run() {
@@ -118,4 +156,47 @@ async fn main() -> Result<()> {
 
     // Run the main event loop (pass version check handle for post-banner hint)
     app::run(project_root, config, db, session_id, version_check).await
+}
+
+/// Resolve the headless prompt from -p flag, positional arg, or stdin pipe.
+fn resolve_headless_prompt(cli: &Cli) -> Result<Option<String>> {
+    // Explicit -p flag
+    if let Some(ref p) = cli.prompt {
+        if p == "-" {
+            // Read from stdin
+            use std::io::Read;
+            let mut input = String::new();
+            std::io::stdin()
+                .read_to_string(&mut input)
+                .context("Failed to read from stdin")?;
+            return Ok(Some(input.trim().to_string()));
+        }
+        return Ok(Some(p.clone()));
+    }
+
+    // Positional prompt
+    if let Some(ref p) = cli.positional_prompt {
+        return Ok(Some(p.clone()));
+    }
+
+    // Check if stdin is piped (not a TTY) — auto-headless
+    if !atty_is_terminal() {
+        use std::io::Read;
+        let mut input = String::new();
+        std::io::stdin()
+            .read_to_string(&mut input)
+            .context("Failed to read from stdin")?;
+        let trimmed = input.trim().to_string();
+        if !trimmed.is_empty() {
+            return Ok(Some(trimmed));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Check if stdin is a terminal (not piped).
+fn atty_is_terminal() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }

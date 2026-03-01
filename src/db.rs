@@ -269,6 +269,19 @@ impl Database {
         Ok(rows.into_iter().map(|r| r.into()).collect())
     }
 
+    /// Get the last assistant text response for a session (for headless JSON output).
+    pub async fn last_assistant_message(&self, session_id: &str) -> Result<String> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT content FROM messages
+             WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.0).unwrap_or_default())
+    }
+
     /// Delete a session and all its messages atomically.
     pub async fn delete_session(&self, session_id: &str) -> Result<bool> {
         let mut tx = self.pool.begin().await?;

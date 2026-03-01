@@ -121,7 +121,17 @@ structure to show cell contents, and allow editing individual cells.
 
 ---
 
-### 2.5. Headless / Non-Interactive Mode
+### 2.5. Headless / Non-Interactive Mode ✅
+
+**Status:** Implemented. Multiple invocation styles:
+- `koda -p "prompt"` — flag-based
+- `koda "prompt"` — positional argument
+- `echo "prompt" | koda` — auto-detects piped stdin
+- `koda -p -` — explicit stdin read
+- `--output-format json` — structured output for CI/CD
+
+Skips banner, onboarding, version check. Tools still work. Returns exit
+code 0/1 for scripting.
 
 **Effort:** Medium.
 
