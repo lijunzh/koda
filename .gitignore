@@ -1,0 +1,23 @@
+# Koda local state
+.koda.db
+.koda.db-wal
+.koda.db-shm
+.koda-todo.md
+
+# Build artifacts
+target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+.koda_logs/

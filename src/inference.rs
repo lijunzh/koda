@@ -1,0 +1,730 @@
+//! LLM inference loop with streaming, tool execution, and sub-agent delegation.
+//!
+//! Runs the streaming inference → tool execution → re-inference loop
+//! until the LLM produces a final text response.
+
+use crate::config::KodaConfig;
+use crate::confirm::{self, Confirmation};
+use crate::db::{Database, Role};
+use crate::display;
+use crate::interrupt;
+use crate::memory;
+use crate::providers::{ChatMessage, LlmProvider, StreamChunk, ToolCall};
+use crate::tools::ToolRegistry;
+
+use anyhow::{Context, Result};
+use std::path::Path;
+use std::time::Instant;
+
+/// Run inference, executing tool calls until the LLM produces a text response.
+#[allow(clippy::too_many_arguments)]
+pub async fn inference_loop(
+    project_root: &Path,
+    config: &KodaConfig,
+    db: &Database,
+    session_id: &str,
+    system_prompt: &str,
+    provider: &dyn LlmProvider,
+    tools: &ToolRegistry,
+    tool_defs: &[crate::providers::ToolDefinition],
+) -> Result<()> {
+    let system_tokens = system_prompt.len() / 4 + 100;
+    let available = config.max_context_tokens.saturating_sub(system_tokens);
+    const MAX_ITERATIONS: u32 = 50;
+    let mut iteration = 0u32;
+    // TODO(metrics): Wire prompt token tracking into /stats display
+    let mut _total_prompt_tokens: i64 = 0;
+    let mut total_completion_tokens: i64 = 0;
+    let mut total_char_count: usize = 0;
+    let loop_start = Instant::now();
+
+    // Pre-build the system message once (avoids re-cloning 4-8KB per iteration)
+    let system_message = ChatMessage {
+        role: "system".to_string(),
+        content: Some(system_prompt.to_string()),
+        tool_calls: None,
+        tool_call_id: None,
+    };
+
+    loop {
+        if iteration >= MAX_ITERATIONS {
+            println!(
+                "\n  \x1b[33m\u{26a0} Reached maximum iterations ({MAX_ITERATIONS}). Breaking loop.\x1b[0m"
+            );
+            break Ok(());
+        }
+
+        // Assemble context with sliding window
+        let history = db.load_context(session_id, available).await?;
+        let mut messages = vec![system_message.clone()];
+
+        for msg in &history {
+            let tool_calls: Option<Vec<ToolCall>> = msg
+                .tool_calls
+                .as_deref()
+                .and_then(|tc| serde_json::from_str(tc).ok());
+
+            messages.push(ChatMessage {
+                role: msg.role.clone(),
+                content: msg.content.clone(),
+                tool_calls,
+                tool_call_id: msg.tool_call_id.clone(),
+            });
+        }
+
+        // Track context window usage
+        let context_used: usize = messages
+            .iter()
+            .map(|m| {
+                let content_len = m.content.as_deref().map_or(0, |c| c.len());
+                let tc_len = m
+                    .tool_calls
+                    .as_ref()
+                    .map_or(0, |tc| serde_json::to_string(tc).map_or(0, |s| s.len()));
+                (content_len + tc_len) / 4 + 10
+            })
+            .sum();
+        crate::context::update(context_used, config.max_context_tokens);
+
+        // Stream the response
+        let mut spinner = SimpleSpinner::new("\u{1f36f} Thinking...");
+
+        let mut rx = provider
+            .chat_stream(&messages, tool_defs, &config.model)
+            .await
+            .context("LLM inference failed")?;
+
+        // Collect the streamed response with markdown rendering
+        let mut md = crate::markdown::MarkdownStreamer::new();
+        let mut full_text = String::new();
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+        let mut usage = crate::providers::TokenUsage::default();
+        let mut first_token = true;
+        let mut char_count: usize = 0;
+        let mut in_think_block = false;
+        let mut think_buffer = String::new();
+        let mut response_banner_shown = false;
+        let mut interrupted = false;
+
+        loop {
+            let chunk = tokio::select! {
+                c = rx.recv() => c,
+                _ = async {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        if interrupt::is_interrupted() { break; }
+                    }
+                } => {
+                    // Ctrl+C during receive
+                    interrupted = true;
+                    None
+                }
+            };
+
+            if interrupted || interrupt::is_interrupted() {
+                spinner.finish_and_clear();
+                if !full_text.is_empty() {
+                    md.flush();
+                }
+                println!("\n\x1b[33m\u{26a0} Interrupted\x1b[0m");
+                interrupt::clear();
+                if !full_text.is_empty() {
+                    db.insert_message(
+                        session_id,
+                        &Role::Assistant,
+                        Some(&full_text),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await?;
+                }
+                // Store last response for /copy
+                crate::clipboard::set_last_response(&full_text);
+
+                return Ok(());
+            }
+
+            let Some(chunk) = chunk else { break };
+
+            match chunk {
+                StreamChunk::TextDelta(delta) => {
+                    if first_token {
+                        spinner.finish_and_clear();
+                        first_token = false;
+                    }
+
+                    // Detect <think>...</think> tags for reasoning models
+                    // (DeepSeek-R1, Qwen QwQ, etc.)
+                    full_text.push_str(&delta);
+                    char_count += delta.len();
+                    think_buffer.push_str(&delta);
+
+                    // Process the buffer for think tags
+                    loop {
+                        if in_think_block {
+                            // Looking for </think>
+                            if let Some(end_pos) = think_buffer.find("</think>") {
+                                // Render thinking content dim
+                                let thinking = &think_buffer[..end_pos];
+                                if !thinking.is_empty() {
+                                    print!("\x1b[90m{thinking}\x1b[0m");
+                                    use std::io::Write;
+                                    let _ = std::io::stdout().flush();
+                                }
+                                think_buffer = think_buffer[end_pos + 8..].to_string();
+                                in_think_block = false;
+                                // Show AGENT RESPONSE banner after thinking ends
+                                display::print_response_banner();
+                                response_banner_shown = true;
+                                continue; // process remaining buffer
+                            } else {
+                                // Still in think block, render what we have dim
+                                if !think_buffer.is_empty() {
+                                    print!("\x1b[90m{think_buffer}\x1b[0m");
+                                    use std::io::Write;
+                                    let _ = std::io::stdout().flush();
+                                    think_buffer.clear();
+                                }
+                                break;
+                            }
+                        } else {
+                            // Looking for <think>
+                            if let Some(start_pos) = think_buffer.find("<think>") {
+                                // Render text before <think> tag with markdown
+                                let before = &think_buffer[..start_pos];
+                                if !before.is_empty() {
+                                    if !response_banner_shown {
+                                        display::print_response_banner();
+                                        response_banner_shown = true;
+                                    }
+                                    md.push(before);
+                                }
+                                // Show THINKING banner
+                                display::print_thinking_banner();
+                                think_buffer = think_buffer[start_pos + 7..].to_string();
+                                in_think_block = true;
+                                continue; // process remaining buffer
+                            } else {
+                                // No think tag — check if buffer might contain
+                                // a partial "<think" at the end
+                                let safe_len =
+                                    think_buffer.rfind('<').unwrap_or(think_buffer.len());
+                                if safe_len > 0 {
+                                    if !response_banner_shown {
+                                        display::print_response_banner();
+                                        response_banner_shown = true;
+                                    }
+                                    let safe = &think_buffer[..safe_len];
+                                    md.push(safe);
+                                    think_buffer = think_buffer[safe_len..].to_string();
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                StreamChunk::ToolCalls(tcs) => {
+                    spinner.finish_and_clear();
+                    tool_calls = tcs;
+                }
+                StreamChunk::Done(u) => {
+                    usage = u;
+                    break;
+                }
+            }
+        }
+
+        // Flush remaining buffer
+        if !think_buffer.is_empty() && !in_think_block {
+            md.push(&think_buffer);
+        }
+        md.flush();
+
+        // If we never showed the AGENT RESPONSE banner (no text or only thinking),
+        // and there's non-thinking text, show it now
+        // (This is handled inline during streaming above)
+
+        if first_token {
+            spinner.finish_and_clear();
+        }
+
+        // Log the assistant response
+        let content = if full_text.is_empty() {
+            None
+        } else {
+            Some(full_text.as_str())
+        };
+        let tool_calls_json = if tool_calls.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&tool_calls)?)
+        };
+
+        db.insert_message(
+            session_id,
+            &Role::Assistant,
+            content,
+            tool_calls_json.as_deref(),
+            None,
+            Some(usage.prompt_tokens),
+            Some(usage.completion_tokens),
+        )
+        .await?;
+
+        // If no tool calls, we already streamed the response — done
+        if tool_calls.is_empty() {
+            _total_prompt_tokens += usage.prompt_tokens;
+            total_completion_tokens += usage.completion_tokens;
+            total_char_count += char_count;
+
+            // Use provider token count, or estimate from char count
+            let display_tokens = if total_completion_tokens > 0 {
+                total_completion_tokens
+            } else {
+                (total_char_count / 4) as i64
+            };
+
+            let total_elapsed = loop_start.elapsed();
+            let total_secs = total_elapsed.as_secs_f64();
+            let time_str = format_duration(total_elapsed);
+            let rate = if total_secs > 0.0 && display_tokens > 0 {
+                display_tokens as f64 / total_secs
+            } else {
+                0.0
+            };
+
+            if display_tokens > 0 {
+                let ctx = crate::context::format_footer();
+                let ctx_part = if ctx.is_empty() {
+                    String::new()
+                } else {
+                    format!(" \u{00b7} {ctx}")
+                };
+                println!(
+                    "\n\n\x1b[90m{display_tokens} tokens \u{00b7} {time_str} \u{00b7} {rate:.0} t/s{ctx_part}\x1b[0m\n"
+                );
+            } else {
+                let ctx = crate::context::format_footer();
+                let ctx_part = if ctx.is_empty() {
+                    String::new()
+                } else {
+                    format!(" \u{00b7} {ctx}")
+                };
+                println!("\n\n\x1b[90m{time_str}{ctx_part}\x1b[0m\n");
+            }
+
+            return Ok(());
+        }
+
+        // Accumulate token usage across iterations
+        _total_prompt_tokens += usage.prompt_tokens;
+        total_completion_tokens += usage.completion_tokens;
+        total_char_count += char_count;
+
+        // Execute tool calls
+        for tc in &tool_calls {
+            // Check for interrupt before each tool
+            if interrupt::is_interrupted() {
+                println!("\n  \x1b[33m\u{26a0} Interrupted\x1b[0m");
+                interrupt::clear();
+                return Ok(());
+            }
+
+            // Parse args once for display, confirmation, and execution
+            let parsed_args: serde_json::Value =
+                serde_json::from_str(&tc.arguments).unwrap_or_default();
+
+            display::print_tool_call(tc, false);
+
+            // Check if this tool needs user confirmation
+            // (includes custom tools which execute shell commands)
+            if confirm::needs_confirmation_with_project(&tc.function_name, project_root) {
+                let detail = confirm::describe_action(&tc.function_name, &parsed_args);
+
+                match confirm::confirm_tool_action(&tc.function_name, &detail) {
+                    Confirmation::Approved => {}
+                    Confirmation::Rejected => {
+                        db.insert_message(
+                            session_id,
+                            &Role::Tool,
+                            Some("User rejected this action."),
+                            None,
+                            Some(&tc.id),
+                            None,
+                            None,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    Confirmation::RejectedWithFeedback(feedback) => {
+                        let result = format!("User rejected this action with feedback: {feedback}");
+                        db.insert_message(
+                            session_id,
+                            &Role::Tool,
+                            Some(&result),
+                            None,
+                            Some(&tc.id),
+                            None,
+                            None,
+                        )
+                        .await?;
+                        continue;
+                    }
+                }
+            }
+
+            let result = if tc.function_name == "InvokeAgent" {
+                match execute_sub_agent(project_root, config, db, &tc.arguments).await {
+                    Ok(output) => output,
+                    Err(e) => format!("Error invoking sub-agent: {e}"),
+                }
+            } else {
+                let r = tools.execute(&tc.function_name, &tc.arguments).await;
+                r.output
+            };
+            display::print_tool_output(&tc.function_name, &result);
+
+            db.insert_message(
+                session_id,
+                &Role::Tool,
+                Some(&result),
+                None,
+                Some(&tc.id),
+                None,
+                None,
+            )
+            .await?;
+        }
+
+        iteration += 1;
+    }
+}
+
+// ── Sub-agent execution ───────────────────────────────────────
+
+/// Execute a sub-agent in its own isolated event loop.
+async fn execute_sub_agent(
+    project_root: &Path,
+    parent_config: &KodaConfig,
+    db: &Database,
+    arguments: &str,
+) -> Result<String> {
+    let args: serde_json::Value = serde_json::from_str(arguments)?;
+    let agent_name = args["agent_name"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing 'agent_name'"))?;
+    let prompt = args["prompt"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing 'prompt'"))?;
+    let session_id = args["session_id"].as_str().map(|s| s.to_string());
+
+    display::print_sub_agent_start(agent_name);
+
+    let sub_config = crate::config::KodaConfig::load(project_root, agent_name)
+        .with_context(|| format!("Failed to load sub-agent: {agent_name}"))?;
+    let sub_config = sub_config.with_overrides(Some(parent_config.base_url.clone()), None, None);
+
+    let sub_session = match session_id {
+        Some(id) => id,
+        None => db.create_session(&sub_config.agent_name).await?,
+    };
+
+    db.insert_message(
+        &sub_session,
+        &Role::User,
+        Some(prompt),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await?;
+
+    let provider = crate::app::create_provider(&sub_config);
+    let tools = ToolRegistry::new(project_root.to_path_buf());
+    let tool_defs = tools.get_definitions(&sub_config.allowed_tools);
+    let semantic_memory = memory::load(project_root)?;
+    let system_prompt = build_system_prompt(
+        &sub_config.system_prompt,
+        &semantic_memory,
+        &sub_config.agents_dir,
+    );
+
+    let system_tokens = system_prompt.len() / 4 + 100;
+    let available = sub_config.max_context_tokens.saturating_sub(system_tokens);
+
+    for _ in 0..10 {
+        let history = db.load_context(&sub_session, available).await?;
+        let mut messages = vec![ChatMessage {
+            role: "system".to_string(),
+            content: Some(system_prompt.clone()),
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+        for msg in &history {
+            let tool_calls: Option<Vec<ToolCall>> = msg
+                .tool_calls
+                .as_deref()
+                .and_then(|tc| serde_json::from_str(tc).ok());
+            messages.push(ChatMessage {
+                role: msg.role.clone(),
+                content: msg.content.clone(),
+                tool_calls,
+                tool_call_id: msg.tool_call_id.clone(),
+            });
+        }
+
+        let mut spinner = SimpleSpinner::new(&format!("  🦥 {agent_name} thinking..."));
+        let response = provider
+            .chat(&messages, &tool_defs, &sub_config.model)
+            .await?;
+        spinner.finish_and_clear();
+
+        let tool_calls_json = if response.tool_calls.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&response.tool_calls)?)
+        };
+
+        db.insert_message(
+            &sub_session,
+            &Role::Assistant,
+            response.content.as_deref(),
+            tool_calls_json.as_deref(),
+            None,
+            Some(response.usage.prompt_tokens),
+            Some(response.usage.completion_tokens),
+        )
+        .await?;
+
+        if response.tool_calls.is_empty() {
+            return Ok(response
+                .content
+                .unwrap_or_else(|| "(no output)".to_string()));
+        }
+
+        for tc in &response.tool_calls {
+            display::print_tool_call(tc, true);
+            let result = tools.execute(&tc.function_name, &tc.arguments).await;
+            db.insert_message(
+                &sub_session,
+                &Role::Tool,
+                Some(&result.output),
+                None,
+                Some(&tc.id),
+                None,
+                None,
+            )
+            .await?;
+        }
+    }
+
+    Ok("(sub-agent reached maximum iterations)".to_string())
+}
+
+// ── System prompt builder ─────────────────────────────────────
+
+/// Build the full system prompt with semantic memory and available agents.
+pub fn build_system_prompt(base_prompt: &str, semantic_memory: &str, agents_dir: &Path) -> String {
+    let mut prompt = base_prompt.to_string();
+
+    let available_agents = list_available_agents(agents_dir);
+    if !available_agents.is_empty() {
+        prompt.push_str("\n\n## Available Sub-Agents\n");
+        prompt.push_str(
+            "You can delegate tasks to these agents using the InvokeAgent tool. \
+             Do NOT invent agent names that are not listed here.\n",
+        );
+        for name in &available_agents {
+            prompt.push_str(&format!("- {name}\n"));
+        }
+    } else {
+        prompt.push_str(
+            "\n\nNote: No sub-agents are configured. \
+             Do not use the InvokeAgent tool.\n",
+        );
+    }
+
+    if !semantic_memory.is_empty() {
+        prompt.push_str(&format!(
+            "\n## Project Memory\n\
+             The following are learned facts about this project:\n\
+             {semantic_memory}"
+        ));
+    }
+
+    prompt
+}
+
+/// Scan the agents/ directory and return available agent names.
+fn list_available_agents(agents_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(agents_dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            name.strip_suffix(".json").map(|s| s.to_string())
+        })
+        .collect()
+}
+
+// ── Utilities ─────────────────────────────────────────────────
+
+/// Format a duration as human-readable: "5.2s", "1m 23s".
+pub fn format_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{:.1}s", d.as_secs_f64())
+    } else {
+        let mins = secs / 60;
+        let remaining = secs % 60;
+        format!("{mins}m {remaining}s")
+    }
+}
+
+/// Create a terminal spinner.
+/// A minimal spinner that uses `\r` to update in place.
+/// Immune to terminal resize events (no SIGWINCH handler).
+struct SimpleSpinner {
+    /// Shared message updated by the spinner updater task.
+    /// Accessed via Arc clone, not direct field read.
+    #[allow(dead_code)]
+    message: std::sync::Arc<std::sync::Mutex<String>>,
+    /// Handle to the background tick task.
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl SimpleSpinner {
+    fn new(message: &str) -> Self {
+        let msg = std::sync::Arc::new(std::sync::Mutex::new(message.to_string()));
+        let msg_clone = msg.clone();
+        let start = Instant::now();
+
+        // Single task handles both animation and elapsed time updates
+        let handle = tokio::spawn(async move {
+            let frames = ["⠋", "⠙", "⠸", "⠰", "⠠", "⠆", "⠎", "⠇"];
+            let mut i = 0usize;
+            loop {
+                let frame = frames[i % frames.len()];
+                let base = msg_clone.lock().unwrap().clone();
+                let elapsed = start.elapsed().as_secs();
+                let display = if elapsed > 0 {
+                    format!("{base} ({elapsed}s)")
+                } else {
+                    base
+                };
+                eprint!("\r\x1b[36m{frame}\x1b[0m {display}\x1b[K");
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                i += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            }
+        });
+
+        Self {
+            message: msg,
+            handle: Some(handle),
+        }
+    }
+
+    fn finish_and_clear(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+        eprint!("\r\x1b[K");
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_format_duration_seconds() {
+        assert_eq!(format_duration(Duration::from_secs_f64(0.5)), "0.5s");
+        assert_eq!(format_duration(Duration::from_secs_f64(5.23)), "5.2s");
+        assert_eq!(format_duration(Duration::from_secs_f64(59.9)), "59.9s");
+    }
+
+    #[test]
+    fn test_format_duration_minutes() {
+        assert_eq!(format_duration(Duration::from_secs(60)), "1m 0s");
+        assert_eq!(format_duration(Duration::from_secs(83)), "1m 23s");
+        assert_eq!(format_duration(Duration::from_secs(125)), "2m 5s");
+        assert_eq!(format_duration(Duration::from_secs(600)), "10m 0s");
+    }
+
+    #[test]
+    fn test_build_system_prompt_no_agents_no_memory() {
+        let dir = TempDir::new().unwrap();
+        let result = build_system_prompt("You are helpful.", "", dir.path());
+        assert!(result.contains("You are helpful."));
+        assert!(result.contains("No sub-agents are configured"));
+        assert!(!result.contains("Project Memory"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_with_memory() {
+        let dir = TempDir::new().unwrap();
+        let result = build_system_prompt("Base prompt.", "Uses Rust. Prefers tokio.", dir.path());
+        assert!(result.contains("Base prompt."));
+        assert!(result.contains("Project Memory"));
+        assert!(result.contains("Uses Rust"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_with_agents() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("reviewer.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("planner.json"), "{}").unwrap();
+
+        let result = build_system_prompt("Base.", "", dir.path());
+        assert!(result.contains("Available Sub-Agents"));
+        assert!(result.contains("reviewer"));
+        assert!(result.contains("planner"));
+        assert!(!result.contains("No sub-agents"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_ignores_non_json() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("README.md"), "docs").unwrap();
+        std::fs::write(dir.path().join("agent.json"), "{}").unwrap();
+
+        let result = build_system_prompt("Base.", "", dir.path());
+        assert!(result.contains("agent"));
+        // README.md should not appear as an agent
+        assert!(!result.contains("README"));
+    }
+
+    #[test]
+    fn test_list_available_agents_empty() {
+        let dir = TempDir::new().unwrap();
+        assert!(list_available_agents(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn test_list_available_agents_finds_json() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("default.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("reviewer.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "ignore").unwrap();
+
+        let agents = list_available_agents(dir.path());
+        assert_eq!(agents.len(), 2);
+        assert!(agents.contains(&"default".to_string()));
+        assert!(agents.contains(&"reviewer".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_agents_nonexistent_dir() {
+        let agents = list_available_agents(Path::new("/nonexistent/path"));
+        assert!(agents.is_empty());
+    }
+}

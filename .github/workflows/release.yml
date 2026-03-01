@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  # Gate: run the full CI suite before building release artifacts.
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  # Verify that the git tag matches the Cargo.toml version.
+  verify-version:
+    name: Verify Version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag matches Cargo.toml
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          CARGO_VER=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          if [ "$TAG" != "$CARGO_VER" ]; then
+            echo "::error::Tag v$TAG does not match Cargo.toml version $CARGO_VER"
+            exit 1
+          fi
+          echo "✅ Tag v$TAG matches Cargo.toml version $CARGO_VER"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [ci, verify-version]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir koda-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/koda koda-${{ matrix.target }}/
+          cp README.md LICENSE koda-${{ matrix.target }}/
+          tar czf koda-${{ matrix.target }}.tar.gz koda-${{ matrix.target }}
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir koda-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/koda.exe koda-${{ matrix.target }}/
+          cp README.md LICENSE koda-${{ matrix.target }}/
+          7z a koda-${{ matrix.target }}.zip koda-${{ matrix.target }}/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koda-${{ matrix.target }}
+          path: |
+            koda-${{ matrix.target }}.tar.gz
+            koda-${{ matrix.target }}.zip
+          if-no-files-found: ignore
+
+  publish:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  github-release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
