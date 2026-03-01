@@ -53,35 +53,74 @@ pub fn list_agents(project_root: &Path) -> String {
         return "No agents/ directory found.".to_string();
     };
 
-    let agents: Vec<String> = entries
+    let mut agents: Vec<(String, String)> = entries
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
-            let agent_name = name.strip_suffix(".json")?;
+            let agent_name = name.strip_suffix(".json")?.to_string();
 
-            // Try to read the system_prompt for a brief description
+            // Skip the default agent — it's the main agent, not a sub-agent
+            if agent_name == "default" {
+                return None;
+            }
+
             let content = std::fs::read_to_string(entry.path()).ok()?;
             let config: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+            // Extract a clean description from the first sentence of system_prompt
             let desc = config["system_prompt"]
                 .as_str()
-                .map(|s| {
-                    let trimmed: String = s.chars().take(80).collect();
-                    if s.len() > 80 {
-                        format!("{trimmed}...")
-                    } else {
-                        trimmed
-                    }
-                })
+                .map(|s| extract_description(s))
                 .unwrap_or_default();
 
-            Some(format!("- {agent_name}: {desc}"))
+            Some((agent_name, desc))
         })
         .collect();
 
+    agents.sort_by(|a, b| a.0.cmp(&b.0));
+
     if agents.is_empty() {
-        "No agents configured.".to_string()
+        "No sub-agents configured.".to_string()
     } else {
-        format!("Available agents:\n{}", agents.join("\n"))
+        let lines: Vec<String> = agents
+            .iter()
+            .map(|(name, desc)| format!("  \x1b[36m{name}\x1b[0m \u{2014} {desc}"))
+            .collect();
+        lines.join("\n")
+    }
+}
+
+/// Extract a clean one-line description from a system prompt.
+/// Looks for "Your job is to ..." or falls back to the first sentence.
+fn extract_description(prompt: &str) -> String {
+    // Try to find "Your job is to ..." pattern
+    if let Some(idx) = prompt.find("Your job is to ") {
+        let rest = &prompt[idx + "Your job is to ".len()..];
+        let end = rest.find('.').unwrap_or(rest.len().min(80));
+        let desc: String = rest[..end].chars().take(80).collect();
+        return capitalize_first(&desc);
+    }
+
+    // Try "You are a ..." pattern — extract the role
+    if let Some(idx) = prompt.find("You are a ") {
+        let rest = &prompt[idx + "You are a ".len()..];
+        let end = rest.find('.').unwrap_or(rest.len().min(60));
+        let role: String = rest[..end].chars().take(60).collect();
+        return capitalize_first(&role);
+    }
+
+    // Fallback: first line, capped
+    let first_line = prompt.lines().next().unwrap_or("");
+    let capped: String = first_line.chars().take(60).collect();
+    capped
+}
+
+/// Capitalize the first character of a string.
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
     }
 }
 
@@ -103,7 +142,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::create_dir(dir.path().join("agents")).unwrap();
         let result = list_agents(dir.path());
-        assert_eq!(result, "No agents configured.");
+        assert_eq!(result, "No sub-agents configured.");
     }
 
     #[test]
@@ -120,10 +159,59 @@ mod tests {
         std::fs::create_dir(&agents_dir).unwrap();
         std::fs::write(
             agents_dir.join("reviewer.json"),
-            r#"{"name":"reviewer","system_prompt":"You review code."}"#,
+            r#"{"name":"reviewer","system_prompt":"You are a senior code reviewer. Your job is to find bugs."}"#,
         ).unwrap();
         let result = list_agents(dir.path());
         assert!(result.contains("reviewer"));
-        assert!(result.contains("You review code."));
+        assert!(result.contains("Find bugs"));
+    }
+
+    #[test]
+    fn test_list_agents_excludes_default() {
+        let dir = TempDir::new().unwrap();
+        let agents_dir = dir.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("default.json"),
+            r#"{"name":"default","system_prompt":"You are the default agent."}"#,
+        ).unwrap();
+        std::fs::write(
+            agents_dir.join("reviewer.json"),
+            r#"{"name":"reviewer","system_prompt":"You are a code reviewer. Your job is to review code."}"#,
+        ).unwrap();
+        let result = list_agents(dir.path());
+        assert!(!result.contains("default"), "Should exclude default agent");
+        assert!(result.contains("reviewer"));
+    }
+
+    #[test]
+    fn test_list_agents_only_default_shows_empty() {
+        let dir = TempDir::new().unwrap();
+        let agents_dir = dir.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("default.json"),
+            r#"{"name":"default","system_prompt":"Main agent."}"#,
+        ).unwrap();
+        let result = list_agents(dir.path());
+        assert_eq!(result, "No sub-agents configured.");
+    }
+
+    #[test]
+    fn test_extract_description_job_pattern() {
+        let desc = extract_description("You are a reviewer. Your job is to find bugs and improvements.");
+        assert_eq!(desc, "Find bugs and improvements");
+    }
+
+    #[test]
+    fn test_extract_description_role_pattern() {
+        let desc = extract_description("You are a paranoid security auditor.");
+        assert_eq!(desc, "Paranoid security auditor");
+    }
+
+    #[test]
+    fn test_extract_description_fallback() {
+        let desc = extract_description("Review all the code carefully.");
+        assert_eq!(desc, "Review all the code carefully.");
     }
 }

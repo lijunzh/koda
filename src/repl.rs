@@ -275,14 +275,16 @@ pub async fn handle_command(
             let project_root = std::env::current_dir().unwrap_or_default();
             let listing = crate::tools::agent::list_agents(&project_root);
             println!();
-            println!("  \x1b[1m\u{1f43b} Agents\x1b[0m");
+            println!("  \x1b[1m\u{1f43b} Sub-Agents\x1b[0m");
             println!();
-            for line in listing.lines() {
-                println!("  {line}");
+            if listing.contains("No ") {
+                println!("  \x1b[90m{listing}\x1b[0m");
+            } else {
+                println!("{listing}");
             }
             println!();
-            println!("  \x1b[90mCreate agents by adding JSON files to agents/\x1b[0m");
-            println!("  \x1b[90mThe LLM can invoke them via InvokeAgent tool.\x1b[0m");
+            println!("  \x1b[90mAsk Koda to invoke them, or use koda --agent <name>\x1b[0m");
+            println!("  \x1b[90mCreate new agents by adding JSON files to agents/\x1b[0m");
             ReplAction::Handled
         }
 
