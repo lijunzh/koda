@@ -54,7 +54,11 @@ All quick wins were implemented before the v0.1.0 release:
 
 Moderate effort, significant capability improvements.
 
-### 2.1. `/compact` — Context Window Compression
+### 2.1. `/compact` — Context Window Compression ✅
+
+**Status:** Implemented. Summarizes conversation history via LLM and replaces
+all messages with a single compact summary. Guards against compacting
+too-short conversations (<4 messages).
 
 **Effort:** Medium.
 
@@ -86,7 +90,11 @@ UI debugging, diagram understanding, and error screenshots.
 
 ---
 
-### 2.3. `/diff` — Uncommitted Changes Review
+### 2.3. `/diff` — Uncommitted Changes Review ✅
+
+**Status:** Implemented. `/diff` shows stat summary, `/diff review` sends
+full diff for LLM code review, `/diff commit` generates conventional
+commit messages.
 
 **Effort:** Medium.
 

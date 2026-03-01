@@ -287,6 +287,40 @@ impl Database {
 
         Ok(result.rows_affected() > 0)
     }
+
+    /// Replace all messages in a session with a single summary message.
+    /// Used by `/compact` to reclaim context window space.
+    pub async fn compact_session(&self, session_id: &str, summary: &str) -> Result<usize> {
+        let mut tx = self.pool.begin().await?;
+
+        // Count existing messages for reporting
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // Delete all existing messages
+        sqlx::query("DELETE FROM messages WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+
+        // Insert the summary as a user message so the LLM has context
+        sqlx::query(
+            "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, prompt_tokens, completion_tokens)
+             VALUES (?, 'user', ?, NULL, NULL, NULL, NULL)",
+        )
+        .bind(session_id)
+        .bind(summary)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(count as usize)
+    }
 }
 
 /// Internal row type for sqlx deserialization.
@@ -517,6 +551,29 @@ mod tests {
 
         // Deleting again returns false
         assert!(!db.delete_session(&s1).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_compact_session() {
+        let (db, _tmp) = setup().await;
+        let session = db.create_session("default").await.unwrap();
+
+        // Insert several messages
+        for i in 0..10 {
+            let role = if i % 2 == 0 { &Role::User } else { &Role::Assistant };
+            db.insert_message(&session, role, Some(&format!("msg {i}")), None, None, None, None)
+                .await
+                .unwrap();
+        }
+
+        let deleted = db.compact_session(&session, "Summary of conversation").await.unwrap();
+        assert_eq!(deleted, 10);
+
+        // Should have exactly 1 message now
+        let msgs = db.load_context(&session, 100_000).await.unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, "user");
+        assert!(msgs[0].content.as_ref().unwrap().contains("Summary of conversation"));
     }
 
     #[tokio::test]

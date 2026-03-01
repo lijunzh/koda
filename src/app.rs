@@ -190,6 +190,7 @@ pub async fn run(
                 }
                 ReplAction::ShowHelp => {
                     let commands = [
+                        ("/compact", "Summarize conversation to reclaim context"),
                         ("/copy", "Copy last response or code block"),
                         ("/cost", "Show token usage for this session"),
                         ("/diff", "Show git diff / review / commit message"),
@@ -305,6 +306,10 @@ pub async fn run(
                     pending_command = Some(prompt);
                     continue;
                 }
+                ReplAction::Compact => {
+                    handle_compact(&db, &session_id, &config, &provider).await;
+                    continue;
+                }
                 ReplAction::Handled => continue,
                 ReplAction::NotACommand => {}
             }
@@ -356,6 +361,112 @@ pub async fn run(
     let _ = rl.save_history(&history_path);
 
     Ok(())
+}
+
+// ── Compact handler ───────────────────────────────────────────
+
+async fn handle_compact(
+    db: &Database,
+    session_id: &str,
+    config: &KodaConfig,
+    provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
+) {
+    use crate::providers::ChatMessage;
+
+    // Load current conversation
+    let history = match db.load_context(session_id, config.max_context_tokens).await {
+        Ok(msgs) => msgs,
+        Err(e) => {
+            println!("  \x1b[31mError loading conversation: {e}\x1b[0m");
+            return;
+        }
+    };
+
+    if history.len() < 4 {
+        println!("  \x1b[90mConversation is too short to compact ({} messages).\x1b[0m", history.len());
+        return;
+    }
+
+    // Format the conversation for summarization
+    let mut conversation_text = String::new();
+    for msg in &history {
+        let role = msg.role.as_str();
+        if let Some(ref content) = msg.content {
+            // Cap individual messages to avoid blowing the summary prompt
+            let truncated: String = content.chars().take(2000).collect();
+            conversation_text.push_str(&format!("[{role}]: {truncated}\n\n"));
+        }
+        if let Some(ref tool_calls) = msg.tool_calls {
+            let truncated: String = tool_calls.chars().take(500).collect();
+            conversation_text.push_str(&format!("[{role} tool_calls]: {truncated}\n\n"));
+        }
+    }
+
+    // Cap total conversation text
+    if conversation_text.len() > 20_000 {
+        let mut end = 20_000;
+        while end > 0 && !conversation_text.is_char_boundary(end) {
+            end -= 1;
+        }
+        conversation_text.truncate(end);
+        conversation_text.push_str("\n\n[...truncated for summarization...]");
+    }
+
+    println!();
+    println!("  \x1b[36m\u{1f43b} Compacting {} messages...\x1b[0m", history.len());
+
+    let summary_prompt = format!(
+        "Summarize this conversation concisely. Preserve:\n\
+         - Key decisions made and rationale\n\
+         - Files created, modified, or deleted\n\
+         - Current state of the task / project\n\
+         - Any unresolved issues or next steps\n\n\
+         Be concise but don't lose critical context. Use bullet points.\n\n\
+         ---\n\n{conversation_text}"
+    );
+
+    let messages = vec![ChatMessage {
+        role: "user".to_string(),
+        content: Some(summary_prompt),
+        tool_calls: None,
+        tool_call_id: None,
+    }];
+
+    // Call the LLM for the summary (no tools, no streaming)
+    let prov = provider.read().await;
+    let response = match prov.chat(&messages, &[], &config.model).await {
+        Ok(r) => r,
+        Err(e) => {
+            println!("  \x1b[31mFailed to generate summary: {e}\x1b[0m");
+            return;
+        }
+    };
+
+    let summary = match response.content {
+        Some(text) if !text.trim().is_empty() => text,
+        _ => {
+            println!("  \x1b[31mLLM returned an empty summary. Aborting compact.\x1b[0m");
+            return;
+        }
+    };
+
+    // Wrap the summary so the LLM knows it's a compacted history
+    let compact_message = format!(
+        "[This is a compacted summary of our previous conversation]\n\n{summary}"
+    );
+
+    // Replace all messages with the summary
+    match db.compact_session(session_id, &compact_message).await {
+        Ok(deleted) => {
+            let summary_tokens = summary.len() / 4;
+            println!("  \x1b[32m\u{2713}\x1b[0m Compacted {deleted} messages → ~{summary_tokens} tokens");
+            println!("  \x1b[90mConversation context has been summarized. Continue as normal!\x1b[0m");
+        }
+        Err(e) => {
+            println!("  \x1b[31mFailed to compact session: {e}\x1b[0m");
+        }
+    }
+    println!();
 }
 
 // ── Provider setup handlers ───────────────────────────────────

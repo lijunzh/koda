@@ -22,6 +22,8 @@ pub enum ReplAction {
     DeleteSession(String),
     /// Inject text as if the user typed it (used by /diff review, /diff commit)
     InjectPrompt(String),
+    /// Compact the conversation by summarizing history
+    Compact,
     Handled,
     NotACommand,
 }
@@ -266,6 +268,8 @@ pub async fn handle_command(
                 }
             }
         }
+
+        "/compact" => ReplAction::Compact,
 
         "/sessions" => match arg {
             Some(sub) if sub.starts_with("delete ") => {
