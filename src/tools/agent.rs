@@ -84,3 +84,46 @@ pub fn list_agents(project_root: &Path) -> String {
         format!("Available agents:\n{}", agents.join("\n"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_definitions_count() {
+        let defs = definitions();
+        assert_eq!(defs.len(), 2);
+        assert_eq!(defs[0].name, "InvokeAgent");
+        assert_eq!(defs[1].name, "ListAgents");
+    }
+
+    #[test]
+    fn test_list_agents_empty_dir() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("agents")).unwrap();
+        let result = list_agents(dir.path());
+        assert_eq!(result, "No agents configured.");
+    }
+
+    #[test]
+    fn test_list_agents_no_dir() {
+        let dir = TempDir::new().unwrap();
+        let result = list_agents(dir.path());
+        assert!(result.contains("No agents/ directory"));
+    }
+
+    #[test]
+    fn test_list_agents_with_agents() {
+        let dir = TempDir::new().unwrap();
+        let agents_dir = dir.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("reviewer.json"),
+            r#"{"name":"reviewer","system_prompt":"You review code."}"#,
+        ).unwrap();
+        let result = list_agents(dir.path());
+        assert!(result.contains("reviewer"));
+        assert!(result.contains("You review code."));
+    }
+}

@@ -383,11 +383,11 @@ tools for specific domains (e.g., "AWS deployment", "React development",
 | IDE integration | ❌ | ✅ | ❌ |
 | Browser automation | ❌ | ❌ | ✅ |
 | Desktop automation | ❌ | ❌ | ✅ |
-| Agent teams (parallel) | ❌ | ✅ | ✅ |
-| Image analysis | ❌ | ✅ | ✅ |
-| Session management | Partial | ✅ | ✅ |
-| Auto-memory | Partial | ✅ | ❌ |
-| Context compression | ❌ | ✅ | ❌ |
-| Headless/CI mode | ❌ | ✅ | ✅ |
-| Prompt caching | ❌ | ✅ | ✅ |
+| Agent teams (parallel) | ✅ (Phase 1) | ✅ | ✅ |
+| Image analysis | ✅ | ✅ | ✅ |
+| Session management | ✅ | ✅ | ✅ |
+| Auto-memory | ✅ | ✅ | ❌ |
+| Context compression | ✅ (auto) | ✅ | ❌ |
+| Headless/CI mode | ✅ | ✅ | ✅ |
+| Prompt caching | ✅ | ✅ | ✅ |
 | Skills/marketplace | ❌ | ❌ | ✅ |

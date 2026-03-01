@@ -298,13 +298,13 @@ Tokens are rendered with full markdown formatting as they stream:
 
 ## 10. Test Coverage
 
-239 tests across 6 suites:
+277 tests across 6 suites:
 
 | Suite | Tests | Coverage |
 |-------|-------|---------|
-| Unit tests (`src/`) | 172 | display, input, markdown, highlighting, tools, DB, confirm, inference, keystore, memory, clipboard, context, version, onboarding, tui |
-| CLI binary integration | 3 | `--version`, `--help`, invalid flags |
-| File tools integration | 17 | Path safety, CRUD, directory deletion, List filtering (target, node_modules, hidden, .git) |
+| Unit tests (`src/`) | 207 | display, input, markdown, highlighting, tools, DB, confirm, inference, keystore, memory, clipboard, context, version, onboarding, tui, providers, agents |
+| CLI binary integration | 6 | `--version`, `--help`, invalid flags, headless flags, output-format validation, stdin handling |
+| File tools integration | 17 | Path safety, CRUD, directory deletion, List filtering |
 | New tools integration | 22 | Glob, WebFetch, Todo sections, Constructor, naming conventions |
-| Regression: commands | 7 | All slash commands dispatched, removed commands blocked, completions |
-| Regression: display & flow | 18 | Tool banners (18 tools), provider key flow |
+| Performance benchmarks | 7 | DB insert/load, grep, markdown render, path resolution, SSE parsing, shell escape |
+| Regression | 18 | Command dispatch, completions, tool banners, provider key flow |

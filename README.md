@@ -26,12 +26,23 @@ guides you through provider and API key setup.
 ## Quick Start
 
 ```bash
-# Start with LM Studio (auto-detects the currently serving model)
+# Start interactive REPL (auto-detects LM Studio if running)
 koda
 
-# Or with a cloud provider
+# With a cloud provider
 koda --provider openai
 koda --provider anthropic
+
+# Headless mode — run a single prompt and exit
+koda -p "fix the login bug in src/auth.rs"
+koda "explain this codebase"
+
+# Pipe from stdin
+echo "explain this error" | koda
+cat error.log | koda
+
+# JSON output for CI/CD
+koda -p "list all TODOs" --output-format json
 ```
 
 ## Features
@@ -40,65 +51,70 @@ koda --provider anthropic
 - **Markdown rendering** — headers, bold, code blocks rendered inline during streaming
 - **Syntax highlighting** — code blocks highlighted with `syntect` (same engine as `bat`)
 - **Smart input** — tab completions, ghost hints, `@file` context injection
+- **Image analysis** — `@image.png` or drag-and-drop images for multi-modal analysis
 - **Arrow-key menus** — interactive model/provider pickers with ↑↓ navigation
 - **Colored tool banners** — 🍯 Thinking, Response, and tool calls each with distinct colors
-- **Compact tool output** — directory trees, grep summaries, file stats (not raw dumps)
 - **18 built-in tools** — file ops, search, shell, web fetch, memory, task tracking, and more
 - **Dynamic tool creation** — teach Koda new tools at runtime via `CreateTool`
 - **Multi-provider LLM** — LM Studio, OpenAI, Anthropic, Gemini, Groq, Grok
+- **Prompt caching** — Anthropic prompt caching for 90% cheaper input tokens
 - **Durable execution** — SQLite-backed session history survives crashes
 - **Session management** — list, resume, and delete past sessions
 - **Persistent memory** — project & global memory injected into every conversation
 - **Claude Code compatible** — reads `CLAUDE.md` and `AGENTS.md` for memory
-- **Context window tracking** — usage shown in footer, warning in prompt at ≥75%
+- **Context window management** — auto-compact at 80%, manual `/compact`, sliding window
 - **Token cost tracking** — `/cost` shows cumulative usage per session
 - **Clipboard integration** — `/copy` code blocks, `/paste` from clipboard
-- **Sub-agent orchestration** — delegate tasks via `InvokeAgent`
+- **Sub-agent orchestration** — delegate tasks via `InvokeAgent` with parallel execution
+- **4 pre-built agents** — code reviewer, security auditor, test writer, release engineer
+- **Headless mode** — `koda -p "prompt"` for CI/CD, scripting, and piped input
+- **Git integration** — `/diff` review, commit message generation
 - **Safe path validation** — prevents directory traversal attacks
 - **Onboarding wizard** — guided first-run setup
-- **Version checker** — non-blocking update hints on startup
 
 ## Built-in Tools
 
 Tools use PascalCase naming:
 
-| Tool | Color | Description |
-|------|-------|-------------|
-| `Read` | Steel blue | Read file contents (with line-range support) |
-| `Write` | Amber | Create/overwrite files |
-| `Edit` | Amber | Targeted replacements (supports multi-edit) |
-| `Delete` | Crimson | Delete files or directories (recursive) |
-| `List` | Sky blue | List directory tree (respects .gitignore) |
-| `Grep` | Silver | Recursive text search |
-| `Glob` | Silver | Find files by pattern (`**/*.rs`) |
-| `Bash` | Orange | Execute shell commands |
-| `WebFetch` | Sky blue | Fetch & strip HTML from URLs |
-| `TodoRead` | Silver | Read task list |
-| `TodoWrite` | Amber | Create/update tasks |
-| `MemoryRead` | Silver | Read project & global memory |
-| `MemoryWrite` | Amber | Save insights to memory |
-| `InvokeAgent` | Ruby | Delegate to a sub-agent |
-| `ListAgents` | — | List available sub-agents |
-| `CreateTool` | Violet | Define a new custom tool |
-| `ListTools` | Silver | List custom tools |
-| `DeleteTool` | Crimson | Remove a custom tool |
+| Tool | Description |
+|------|-------------|
+| `Read` | Read file contents (with line-range support) |
+| `Write` | Create/overwrite files |
+| `Edit` | Targeted replacements (supports multi-edit) |
+| `Delete` | Delete files or directories (recursive) |
+| `List` | List directory tree (respects .gitignore) |
+| `Grep` | Recursive text search |
+| `Glob` | Find files by pattern (`**/*.rs`) |
+| `Bash` | Execute shell commands |
+| `WebFetch` | Fetch & strip HTML from URLs |
+| `TodoRead` | Read task list |
+| `TodoWrite` | Create/update tasks |
+| `MemoryRead` | Read project & global memory |
+| `MemoryWrite` | Save insights to memory |
+| `InvokeAgent` | Delegate to a sub-agent |
+| `ListAgents` | List available sub-agents |
+| `CreateTool` | Define a new custom tool |
+| `ListTools` | List custom tools |
+| `DeleteTool` | Remove a custom tool |
 
 ## REPL Commands
 
 | Command | Description |
 |---------|-------------|
+| `/agent` | List available sub-agents |
+| `/compact` | Summarize conversation to reclaim context |
 | `/copy` | Copy last response or code block to clipboard |
 | `/cost` | Show token usage for this session |
+| `/diff` | Show uncommitted git changes |
+| `/diff review` | Ask Koda to review uncommitted changes |
+| `/diff commit` | Generate a commit message |
 | `/help` | Command palette (select & execute) |
 | `/memory` | View/save project & global memory |
-| `/memory add <text>` | Save to project `MEMORY.md` |
-| `/memory global <text>` | Save to global `~/.config/koda/memory.md` |
 | `/model` | Pick a model (↑↓ arrow keys) |
 | `/paste` | Show clipboard contents |
 | `/provider` | Pick a provider |
 | `/proxy <url>` | Set HTTP proxy (persisted) |
 | `/sessions` | List recent sessions |
-| `/sessions delete <id>` | Delete a session |
 | `/quit` | Exit |
 
 ## Smart Input
@@ -107,48 +123,79 @@ Tools use PascalCase naming:
 🐻 [gpt-4o] ~/repo ❯ /mod         ← tab-completes to /model
 🐻 [gpt-4o] ~/repo ❯ /model gpt   ← ghost hint: -4o-mini
 🐻 [gpt-4o] ~/repo ❯ @src/main.rs ← injects file into context
+🐻 [gpt-4o] ~/repo ❯ @screenshot.png ← sends image to multi-modal LLM
 ```
 
-## Visual Output
+Drag-and-drop images from your file manager — Koda auto-detects
+absolute paths to image files (png, jpg, gif, webp, bmp).
+
+## Pre-built Sub-Agents
+
+Koda ships with 4 specialized agents in `agents/`:
+
+| Agent | Purpose | Tools |
+|-------|---------|-------|
+| `reviewer` | Critical code review | Read-only |
+| `security` | Security audit (OWASP, CWEs) | Read + Bash |
+| `testgen` | Find test gaps, write tests | Full access |
+| `releaser` | GitHub release workflow | Full access |
+
+Invoke them directly or let Koda delegate automatically:
 
 ```
-🐻 [gpt-4o] ~/repo ❯ what does this repo do?
+🐻 Do a pre-release check
 
-  🍯 Thinking... (3s)
+  🐻 Running 3 tools in parallel...
 
-  ● List . (recursive)                          ← compact directory tree
-  │ Cargo.toml
-  │ README.md
-  │ 📁 src/ (20 files, 2 subdirs)
-  │ 📁 tests/ (5 files)
-  │ (45 files, 5 dirs total)
-
-  ● Read src/main.rs                             ← summary only
-  │ 95 lines (4200 chars)
-
-  ● Search src/ for 'TODO'                       ← grouped by file
-  │ 📄 src/inference.rs (2 matches)
-  │ 📄 src/app.rs (1 match)
-  │ Found 3 matches across 2 files
-
-  ● Response                                     ← vivid green
-  Here's the architecture...
-
-  1234 tokens · 5.2s · 237 t/s · context: 4.1k/128k (3%)
-
-🐻 [gpt-4o] ~/repo ❯                              ← clean prompt
-
-  ... many turns later ...
-
-🐻 [gpt-4o] ~/repo (⚠ 82% context) ❯               ← context warning
+  ● InvokeAgent reviewer → 🔴 2 bugs, 🟡 3 warnings, 🟢 code quality good
+  ● InvokeAgent security → 🟢 no critical issues, 🟡 1 medium
+  ● InvokeAgent testgen  → wrote 8 new tests, all passing
 ```
+
+Create your own agents by adding JSON files to `agents/`.
+Use `/agent` to see what's available.
+
+## Context Window Management
+
+Koda manages context automatically:
+
+- **Auto-compact** — when context reaches 80%, Koda summarizes the
+  conversation via the LLM and replaces history with the summary
+- **Manual compact** — `/compact` to summarize on demand
+- **Sliding window** — old messages are dropped as a safety net
+- **Context indicator** — prompt shows `(⚠ 82% context)` when usage is high
+
+## Headless Mode
+
+Run Koda as a one-shot CLI tool for CI/CD and scripting:
+
+```bash
+# Flag-based
+koda -p "fix the login bug in src/auth.rs"
+
+# Positional
+koda "run tests and fix failures"
+
+# Piped stdin (auto-detected)
+echo "explain this error" | koda
+
+# Explicit stdin
+koda -p -
+
+# JSON output for CI/CD
+koda -p "list all TODOs" --output-format json
+```
+
+Headless mode skips the banner, onboarding, and version check.
+Tools still work. Exit code 0 for success, 1 for errors.
 
 ## Memory System
 
 Koda maintains persistent memory across sessions:
 
-- **Project memory** — `MEMORY.md` in the project root (also reads `CLAUDE.md`, `AGENTS.md` for compatibility)
-- **Global memory** — `~/.config/koda/memory.md` for user-wide preferences
+- **Project memory** — `MEMORY.md` in the project root
+  (also reads `CLAUDE.md`, `AGENTS.md` for compatibility)
+- **Global memory** — `~/.config/koda/memory.md`
 - Both are injected into the system prompt automatically
 - The LLM can save insights via `MemoryWrite`, or use `/memory add`
 
@@ -203,7 +250,7 @@ Project-local state:
 |------|---------|
 | `.koda.db` | SQLite session/conversation DB |
 | `.koda_logs/` | Debug log files |
-| `MEMORY.md` | Project memory (also reads `CLAUDE.md`, `AGENTS.md`) |
+| `MEMORY.md` | Project memory |
 | `agents/` | Project-specific agents |
 | `agents/tools/` | Custom tools (via CreateTool) |
 
@@ -224,14 +271,22 @@ Project-local state:
 ## CLI Options
 
 ```
-koda [OPTIONS]
+koda [OPTIONS] [PROMPT]
 
+Arguments:
+  [PROMPT]                     Run a single prompt and exit
+
+Options:
+  -p, --prompt <PROMPT>        Run a single prompt and exit (use "-" for stdin)
+      --output-format <FMT>    Output format: text or json [default: text]
   -a, --agent <AGENT>          Agent to use [default: default]
   -s, --session <SESSION>      Session ID to resume
-  -p, --project-root <PATH>    Project root [default: .]
+      --project-root <PATH>    Project root [default: .]
       --base-url <URL>         LLM provider base URL
       --model <MODEL>          Model name
       --provider <PROVIDER>    Provider name
+  -h, --help                   Print help
+  -V, --version                Print version
 ```
 
 ## Architecture
@@ -242,7 +297,7 @@ See [FUTURE.md](FUTURE.md) for the roadmap and competitive analysis.
 ## Development
 
 ```bash
-cargo test          # 239 tests across 6 suites
+cargo test          # 277 tests across 6 suites
 cargo build         # Debug build
 cargo run           # Run locally
 ```
