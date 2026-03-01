@@ -13,7 +13,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "Read".to_string(),
-            description: "Read the contents of a file. Returns the text content.".to_string(),
+            description: "Read the contents of a file. For large files, use start_line and \
+                num_lines to read specific portions instead of the whole file.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -57,7 +58,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
             name: "Edit".to_string(),
             description: "Targeted find-and-replace in an existing file. \
                 Each replacement matches exact 'old_str' and replaces with 'new_str'. \
-                Read the file first to get exact text."
+                ALWAYS Read the file first to get exact text. \
+                Keep each diff small — target only the minimal snippet you want changed. \
+                Apply multiple sequential Edit calls for large refactors. \
+                Never paste an entire file inside old_str."
                 .to_string(),
             parameters: json!({
                 "type": "object",

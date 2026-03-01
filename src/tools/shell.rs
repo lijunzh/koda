@@ -16,7 +16,11 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         name: "Bash".to_string(),
-        description: "Execute a shell command and return stdout/stderr.".to_string(),
+        description: "Execute a shell command and return stdout/stderr. \
+            Prefer dedicated tools (Read, Grep, List, Edit) over shell equivalents. \
+            Use Bash ONLY for: builds, tests, git operations, and commands without a dedicated tool. \
+            For test suites, suppress verbose output: `npm test -- --silent` or `| tail -20`. \
+            Use `| head` or `| tail` to limit output from noisy commands.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
