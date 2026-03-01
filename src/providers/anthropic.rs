@@ -84,6 +84,18 @@ enum ContentBlock {
         tool_use_id: String,
         content: String,
     },
+    #[serde(rename = "image")]
+    Image {
+        source: ImageSource,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct ImageSource {
+    #[serde(rename = "type")]
+    source_type: String,
+    media_type: String,
+    data: String,
 }
 
 #[derive(Serialize)]
@@ -491,6 +503,34 @@ impl AnthropicProvider {
             }
 
             // Regular user or assistant text message
+            // If images are attached (user messages with @image refs), use blocks
+            if let Some(images) = &msg.images {
+                if !images.is_empty() {
+                    let mut blocks = Vec::new();
+                    // Images first (Anthropic recommends images before text)
+                    for img in images {
+                        blocks.push(ContentBlock::Image {
+                            source: ImageSource {
+                                source_type: "base64".to_string(),
+                                media_type: img.media_type.clone(),
+                                data: img.base64.clone(),
+                            },
+                        });
+                    }
+                    // Then text
+                    if let Some(text) = &msg.content {
+                        if !text.is_empty() {
+                            blocks.push(ContentBlock::Text { text: text.clone() });
+                        }
+                    }
+                    result.push(AnthropicMessage {
+                        role: msg.role.clone(),
+                        content: AnthropicContent::Blocks(blocks),
+                    });
+                    continue;
+                }
+            }
+
             result.push(AnthropicMessage {
                 role: msg.role.clone(),
                 content: AnthropicContent::Text(msg.content.clone().unwrap_or_default()),
@@ -513,18 +553,8 @@ mod tests {
     fn test_convert_skips_system_messages() {
         let p = make_provider();
         let messages = vec![
-            ChatMessage {
-                role: "system".into(),
-                content: Some("system prompt".into()),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ChatMessage {
-                role: "user".into(),
-                content: Some("hello".into()),
-                tool_calls: None,
-                tool_call_id: None,
-            },
+            ChatMessage::text("system", "system prompt"),
+            ChatMessage::text("user", "hello"),
         ];
         let converted = p.convert_messages(&messages);
         assert_eq!(converted.len(), 1);
@@ -539,6 +569,7 @@ mod tests {
             content: Some("file contents here".into()),
             tool_calls: None,
             tool_call_id: Some("tc_123".into()),
+            images: None,
         }];
         let converted = p.convert_messages(&messages);
         assert_eq!(converted.len(), 1);
@@ -574,6 +605,7 @@ mod tests {
                 arguments: r#"{"path":"main.rs"}"#.into(),
             }]),
             tool_call_id: None,
+            images: None,
         }];
         let converted = p.convert_messages(&messages);
         assert_eq!(converted.len(), 1);
@@ -589,12 +621,7 @@ mod tests {
     #[test]
     fn test_convert_plain_user_message() {
         let p = make_provider();
-        let messages = vec![ChatMessage {
-            role: "user".into(),
-            content: Some("explain this code".into()),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let messages = vec![ChatMessage::text("user", "explain this code")];
         let converted = p.convert_messages(&messages);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "user");
@@ -612,6 +639,7 @@ mod tests {
             content: None,
             tool_calls: None,
             tool_call_id: None,
+            images: None,
         }];
         let converted = p.convert_messages(&messages);
         assert_eq!(converted.len(), 1);
@@ -633,6 +661,7 @@ mod tests {
                 arguments: r#"{"command":"cargo test"}"#.into(),
             }]),
             tool_call_id: None,
+            images: None,
         }];
         let converted = p.convert_messages(&messages);
         assert_eq!(converted.len(), 1);
@@ -653,30 +682,10 @@ mod tests {
     fn test_convert_full_conversation_ordering() {
         let p = make_provider();
         let messages = vec![
-            ChatMessage {
-                role: "system".into(),
-                content: Some("sys".into()),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ChatMessage {
-                role: "user".into(),
-                content: Some("hi".into()),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ChatMessage {
-                role: "assistant".into(),
-                content: Some("hello!".into()),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ChatMessage {
-                role: "user".into(),
-                content: Some("bye".into()),
-                tool_calls: None,
-                tool_call_id: None,
-            },
+            ChatMessage::text("system", "sys"),
+            ChatMessage::text("user", "hi"),
+            ChatMessage::text("assistant", "hello!"),
+            ChatMessage::text("user", "bye"),
         ];
         let converted = p.convert_messages(&messages);
         // System is skipped, so 3 messages
@@ -684,5 +693,43 @@ mod tests {
         assert_eq!(converted[0].role, "user");
         assert_eq!(converted[1].role, "assistant");
         assert_eq!(converted[2].role, "user");
+    }
+
+    #[test]
+    fn test_convert_user_message_with_images() {
+        let p = make_provider();
+        let messages = vec![ChatMessage {
+            role: "user".into(),
+            content: Some("What is in this image?".into()),
+            tool_calls: None,
+            tool_call_id: None,
+            images: Some(vec![super::super::ImageData {
+                media_type: "image/png".into(),
+                base64: "iVBORw0KGgo=".into(),
+            }]),
+        }];
+        let converted = p.convert_messages(&messages);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].role, "user");
+        match &converted[0].content {
+            AnthropicContent::Blocks(blocks) => {
+                // Image block + text block
+                assert_eq!(blocks.len(), 2);
+                match &blocks[0] {
+                    ContentBlock::Image { source } => {
+                        assert_eq!(source.source_type, "base64");
+                        assert_eq!(source.media_type, "image/png");
+                    }
+                    _ => panic!("Expected Image block first"),
+                }
+                match &blocks[1] {
+                    ContentBlock::Text { text } => {
+                        assert_eq!(text, "What is in this image?");
+                    }
+                    _ => panic!("Expected Text block second"),
+                }
+            }
+            _ => panic!("Expected Blocks content for message with images"),
+        }
     }
 }

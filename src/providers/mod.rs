@@ -32,6 +32,15 @@ pub struct LlmResponse {
     pub usage: TokenUsage,
 }
 
+/// Base64-encoded image data for multi-modal messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageData {
+    /// MIME type (e.g. "image/png", "image/jpeg").
+    pub media_type: String,
+    /// Base64-encoded image bytes.
+    pub base64: String,
+}
+
 /// A single message in the conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -41,6 +50,22 @@ pub struct ChatMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Attached images (only used in-flight, not persisted to DB).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub images: Option<Vec<ImageData>>,
+}
+
+impl ChatMessage {
+    /// Create a simple text message (convenience for the common case).
+    pub fn text(role: &str, content: &str) -> Self {
+        Self {
+            role: role.to_string(),
+            content: Some(content.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            images: None,
+        }
+    }
 }
 
 /// Tool definition sent to the LLM.

@@ -73,7 +73,12 @@ conversation concisely" prompt, replace history with the summary.
 
 ---
 
-### 2.2. Image / Screenshot Analysis
+### 2.2. Image / Screenshot Analysis ✅
+
+**Status:** Implemented. `@image.png` references detect image files by
+extension (png, jpg, jpeg, gif, webp, bmp), base64-encode them, and send
+them to the LLM using multi-modal content formats. Works with OpenAI
+(image_url data URIs) and Anthropic (image content blocks).
 
 **Effort:** Medium.
 

@@ -58,6 +58,9 @@ url = "2"
 # Unique IDs
 uuid = { version = "1", features = ["v4"] }
 
+# Base64 encoding (for image support)
+base64 = "0.22"
+
 # HTTP client (for LLM API)
 reqwest = { version = "0.12", features = ["json", "stream"] }
 

@@ -317,6 +317,13 @@ pub async fn run(
 
         // Process @file references
         let processed = input::process_input(&input, &project_root);
+        // Show attached images
+        if !processed.images.is_empty() {
+            for (i, _img) in processed.images.iter().enumerate() {
+                println!("  \x1b[35m\u{1f5bc} Image {}\x1b[0m", i + 1);
+            }
+        }
+
         let user_message =
             if let Some(context) = input::format_context_files(&processed.context_files) {
                 if !processed.context_files.is_empty() {
@@ -340,6 +347,13 @@ pub async fn run(
         )
         .await?;
 
+        // Pass images to inference (they're not stored in DB, only used in-flight)
+        let pending_images = if processed.images.is_empty() {
+            None
+        } else {
+            Some(processed.images)
+        };
+
         // Run the inference loop
         let prov = provider.read().await;
         inference::inference_loop(
@@ -351,6 +365,7 @@ pub async fn run(
             prov.as_ref(),
             &tools,
             &tool_defs,
+            pending_images,
         )
         .await?;
     }
@@ -425,12 +440,7 @@ async fn handle_compact(
          ---\n\n{conversation_text}"
     );
 
-    let messages = vec![ChatMessage {
-        role: "user".to_string(),
-        content: Some(summary_prompt),
-        tool_calls: None,
-        tool_call_id: None,
-    }];
+    let messages = vec![ChatMessage::text("user", &summary_prompt)];
 
     // Call the LLM for the summary (no tools, no streaming)
     let prov = provider.read().await;

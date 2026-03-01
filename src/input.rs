@@ -3,6 +3,7 @@
 //! Implements `rustyline::Helper` with context-aware completions
 //! for slash commands (`/model`, `/help`…) and file references (`@path`).
 
+use crate::providers::ImageData;
 use rustyline::completion::{Completer, Pair};
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
@@ -287,6 +288,8 @@ pub struct ProcessedInput {
     pub prompt: String,
     /// File contents to inject as additional context.
     pub context_files: Vec<FileContext>,
+    /// Base64-encoded images from @image references.
+    pub images: Vec<ImageData>,
 }
 
 /// A file's contents loaded from an `@path` reference.
@@ -296,11 +299,39 @@ pub struct FileContext {
     pub content: String,
 }
 
+/// Image file extensions we recognize for multi-modal input.
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+
+/// Detect if a file path refers to an image by extension.
+fn is_image_file(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    IMAGE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+}
+
+/// Determine MIME type from file extension.
+fn mime_type_for(path: &str) -> &'static str {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".bmp") {
+        "image/bmp"
+    } else {
+        "application/octet-stream"
+    }
+}
+
 /// Scan input for `@path` tokens, read the files, and return cleaned prompt
 /// plus file contents for context injection.
 pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
     let mut prompt_parts = Vec::new();
     let mut context_files = Vec::new();
+    let mut images = Vec::new();
 
     for token in input.split_whitespace() {
         if let Some(raw_path) = token.strip_prefix('@') {
@@ -310,16 +341,36 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
             }
 
             let full_path = project_root.join(raw_path);
+
+            // Image files → base64 encode for multi-modal
+            if is_image_file(raw_path) {
+                match std::fs::read(&full_path) {
+                    Ok(bytes) => {
+                        use base64::Engine;
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                        let media_type = mime_type_for(raw_path).to_string();
+                        images.push(ImageData {
+                            media_type,
+                            base64: b64,
+                        });
+                    }
+                    Err(_) => {
+                        eprintln!("  \x1b[33m⚠ Could not read image: {raw_path}\x1b[0m");
+                        prompt_parts.push(token.to_string());
+                    }
+                }
+                continue;
+            }
+
+            // Text files → read as string context
             match std::fs::read_to_string(&full_path) {
                 Ok(content) => {
                     context_files.push(FileContext {
                         path: raw_path.to_string(),
                         content,
                     });
-                    // Don't add the @token to prompt — it's been consumed
                 }
                 Err(_) => {
-                    // File doesn't exist or unreadable — leave as-is in prompt
                     eprintln!("  \x1b[33m⚠ Could not read: {raw_path}\x1b[0m");
                     prompt_parts.push(token.to_string());
                 }
@@ -332,8 +383,12 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
     let prompt = prompt_parts.join(" ");
 
     // If only @refs were provided with no other text, add a default prompt
-    let prompt = if prompt.trim().is_empty() && !context_files.is_empty() {
-        "Describe and explain the attached files.".to_string()
+    let prompt = if prompt.trim().is_empty() && (!context_files.is_empty() || !images.is_empty()) {
+        if !images.is_empty() && context_files.is_empty() {
+            "Describe and analyze this image.".to_string()
+        } else {
+            "Describe and explain the attached files.".to_string()
+        }
     } else {
         prompt
     };
@@ -341,6 +396,7 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
     ProcessedInput {
         prompt,
         context_files,
+        images,
     }
 }
 
@@ -517,5 +573,68 @@ mod tests {
         // @ in middle of word (like email) should not be highlighted
         let result = highlight_at_refs("user@email.com");
         assert!(!result.contains("\x1b[36m"));
+    }
+
+    #[test]
+    fn test_is_image_file() {
+        assert!(is_image_file("photo.png"));
+        assert!(is_image_file("photo.PNG"));
+        assert!(is_image_file("photo.jpg"));
+        assert!(is_image_file("photo.jpeg"));
+        assert!(is_image_file("photo.gif"));
+        assert!(is_image_file("photo.webp"));
+        assert!(is_image_file("photo.bmp"));
+        assert!(!is_image_file("code.rs"));
+        assert!(!is_image_file("data.json"));
+        assert!(!is_image_file("readme.md"));
+    }
+
+    #[test]
+    fn test_mime_type_for() {
+        assert_eq!(mime_type_for("x.png"), "image/png");
+        assert_eq!(mime_type_for("x.jpg"), "image/jpeg");
+        assert_eq!(mime_type_for("x.jpeg"), "image/jpeg");
+        assert_eq!(mime_type_for("x.gif"), "image/gif");
+        assert_eq!(mime_type_for("x.webp"), "image/webp");
+        assert_eq!(mime_type_for("x.bmp"), "image/bmp");
+    }
+
+    #[test]
+    fn test_process_input_image_ref() {
+        let dir = TempDir::new().unwrap();
+        // Create a tiny 1x1 PNG (valid minimal)
+        let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        fs::write(dir.path().join("screenshot.png"), &png_bytes).unwrap();
+
+        let result = process_input("what is this @screenshot.png", dir.path());
+        assert_eq!(result.prompt, "what is this");
+        assert!(result.context_files.is_empty());
+        assert_eq!(result.images.len(), 1);
+        assert_eq!(result.images[0].media_type, "image/png");
+        assert!(!result.images[0].base64.is_empty());
+    }
+
+    #[test]
+    fn test_process_input_image_only_default_prompt() {
+        let dir = TempDir::new().unwrap();
+        let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        fs::write(dir.path().join("ui.png"), &png_bytes).unwrap();
+
+        let result = process_input("@ui.png", dir.path());
+        assert_eq!(result.prompt, "Describe and analyze this image.");
+        assert_eq!(result.images.len(), 1);
+    }
+
+    #[test]
+    fn test_process_input_mixed_image_and_file() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("code.rs"), "fn main() {}").unwrap();
+        let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        fs::write(dir.path().join("error.png"), &png_bytes).unwrap();
+
+        let result = process_input("fix this @code.rs @error.png", dir.path());
+        assert_eq!(result.prompt, "fix this");
+        assert_eq!(result.context_files.len(), 1);
+        assert_eq!(result.images.len(), 1);
     }
 }

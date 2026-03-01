@@ -9,7 +9,7 @@ use crate::db::{Database, Role};
 use crate::display;
 use crate::interrupt;
 use crate::memory;
-use crate::providers::{ChatMessage, LlmProvider, StreamChunk, ToolCall};
+use crate::providers::{ChatMessage, ImageData, LlmProvider, StreamChunk, ToolCall};
 use crate::tools::ToolRegistry;
 
 use anyhow::{Context, Result};
@@ -27,6 +27,7 @@ pub async fn inference_loop(
     provider: &dyn LlmProvider,
     tools: &ToolRegistry,
     tool_defs: &[crate::providers::ToolDefinition],
+    pending_images: Option<Vec<ImageData>>,
 ) -> Result<()> {
     let system_tokens = system_prompt.len() / 4 + 100;
     let available = config.max_context_tokens.saturating_sub(system_tokens);
@@ -39,12 +40,7 @@ pub async fn inference_loop(
     let loop_start = Instant::now();
 
     // Pre-build the system message once (avoids re-cloning 4-8KB per iteration)
-    let system_message = ChatMessage {
-        role: "system".to_string(),
-        content: Some(system_prompt.to_string()),
-        tool_calls: None,
-        tool_call_id: None,
-    };
+    let system_message = ChatMessage::text("system", system_prompt);
 
     loop {
         if iteration >= MAX_ITERATIONS {
@@ -69,7 +65,20 @@ pub async fn inference_loop(
                 content: msg.content.clone(),
                 tool_calls,
                 tool_call_id: msg.tool_call_id.clone(),
+                images: None,
             });
+        }
+
+        // Attach pending images to the last user message (first iteration only)
+        if iteration == 0 {
+            if let Some(ref imgs) = pending_images {
+                if !imgs.is_empty() {
+                    // Find the last user message and attach images
+                    if let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user") {
+                        last_user.images = Some(imgs.clone());
+                    }
+                }
+            }
         }
 
         // Track context window usage
@@ -457,12 +466,7 @@ async fn execute_sub_agent(
 
     for _ in 0..10 {
         let history = db.load_context(&sub_session, available).await?;
-        let mut messages = vec![ChatMessage {
-            role: "system".to_string(),
-            content: Some(system_prompt.clone()),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let mut messages = vec![ChatMessage::text("system", &system_prompt)];
         for msg in &history {
             let tool_calls: Option<Vec<ToolCall>> = msg
                 .tool_calls
@@ -473,6 +477,7 @@ async fn execute_sub_agent(
                 content: msg.content.clone(),
                 tool_calls,
                 tool_call_id: msg.tool_call_id.clone(),
+                images: None,
             });
         }
 

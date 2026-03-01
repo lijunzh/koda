@@ -52,7 +52,7 @@ struct StreamOptions {
 struct ApiMessage {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    content: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<ApiToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,22 +156,52 @@ impl OpenAiCompatProvider {
     ) -> ChatRequest {
         let api_messages: Vec<ApiMessage> = messages
             .iter()
-            .map(|m| ApiMessage {
-                role: m.role.clone(),
-                content: m.content.clone(),
-                tool_calls: m.tool_calls.as_ref().map(|tcs| {
-                    tcs.iter()
-                        .map(|tc| ApiToolCall {
-                            id: tc.id.clone(),
-                            r#type: "function".to_string(),
-                            function: ApiToolCallFunction {
-                                name: tc.function_name.clone(),
-                                arguments: tc.arguments.clone(),
-                            },
-                        })
-                        .collect()
-                }),
-                tool_call_id: m.tool_call_id.clone(),
+            .map(|m| {
+                // Build content: if images are attached, use multi-part array format
+                let content = if let Some(images) = &m.images {
+                    if !images.is_empty() {
+                        let mut parts = Vec::new();
+                        // Text part
+                        if let Some(text) = &m.content {
+                            parts.push(serde_json::json!({
+                                "type": "text",
+                                "text": text
+                            }));
+                        }
+                        // Image parts
+                        for img in images {
+                            parts.push(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": format!("data:{};base64,{}", img.media_type, img.base64)
+                                }
+                            }));
+                        }
+                        Some(serde_json::Value::Array(parts))
+                    } else {
+                        m.content.as_ref().map(|c| serde_json::Value::String(c.clone()))
+                    }
+                } else {
+                    m.content.as_ref().map(|c| serde_json::Value::String(c.clone()))
+                };
+
+                ApiMessage {
+                    role: m.role.clone(),
+                    content,
+                    tool_calls: m.tool_calls.as_ref().map(|tcs| {
+                        tcs.iter()
+                            .map(|tc| ApiToolCall {
+                                id: tc.id.clone(),
+                                r#type: "function".to_string(),
+                                function: ApiToolCallFunction {
+                                    name: tc.function_name.clone(),
+                                    arguments: tc.arguments.clone(),
+                                },
+                            })
+                            .collect()
+                    }),
+                    tool_call_id: m.tool_call_id.clone(),
+                }
             })
             .collect();
 
