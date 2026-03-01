@@ -326,14 +326,71 @@ fn mime_type_for(path: &str) -> &'static str {
     }
 }
 
-/// Scan input for `@path` tokens, read the files, and return cleaned prompt
-/// plus file contents for context injection.
+/// Strip surrounding quotes from a token (terminals often quote dragged paths).
+fn strip_quotes(s: &str) -> &str {
+    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+/// Check if a token looks like a bare file path (absolute, ~/, or ./ prefixed).
+fn looks_like_file_path(token: &str) -> bool {
+    let cleaned = strip_quotes(token);
+    cleaned.starts_with('/')
+        || cleaned.starts_with("~/")
+        || cleaned.starts_with("./")
+        || cleaned.starts_with("..")
+}
+
+/// Try to load an image file, returning the ImageData if successful.
+fn try_load_image(path: &Path, display_path: &str) -> Option<ImageData> {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            let media_type = mime_type_for(display_path).to_string();
+            Some(ImageData {
+                media_type,
+                base64: b64,
+            })
+        }
+        Err(_) => {
+            eprintln!("  \x1b[33m\u{26a0} Could not read image: {display_path}\x1b[0m");
+            None
+        }
+    }
+}
+
+/// Resolve a bare path token to an absolute path, expanding ~ if needed.
+fn resolve_bare_path(token: &str) -> Option<PathBuf> {
+    let cleaned = strip_quotes(token);
+    if cleaned.starts_with("~/") {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .ok()?;
+        Some(PathBuf::from(home).join(&cleaned[2..]))
+    } else {
+        let p = PathBuf::from(cleaned);
+        if p.is_absolute() {
+            Some(p)
+        } else {
+            // Relative paths like ./foo or ../foo — resolve from cwd
+            std::env::current_dir().ok().map(|cwd| cwd.join(cleaned))
+        }
+    }
+}
+
+/// Scan input for `@path` tokens and bare image paths (drag-and-drop),
+/// read the files, and return cleaned prompt plus file contents and images.
 pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
     let mut prompt_parts = Vec::new();
     let mut context_files = Vec::new();
     let mut images = Vec::new();
 
     for token in input.split_whitespace() {
+        // ── @path references (explicit) ───────────────────────
         if let Some(raw_path) = token.strip_prefix('@') {
             if raw_path.is_empty() {
                 prompt_parts.push(token.to_string());
@@ -344,20 +401,10 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
 
             // Image files → base64 encode for multi-modal
             if is_image_file(raw_path) {
-                match std::fs::read(&full_path) {
-                    Ok(bytes) => {
-                        use base64::Engine;
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                        let media_type = mime_type_for(raw_path).to_string();
-                        images.push(ImageData {
-                            media_type,
-                            base64: b64,
-                        });
-                    }
-                    Err(_) => {
-                        eprintln!("  \x1b[33m⚠ Could not read image: {raw_path}\x1b[0m");
-                        prompt_parts.push(token.to_string());
-                    }
+                if let Some(img) = try_load_image(&full_path, raw_path) {
+                    images.push(img);
+                } else {
+                    prompt_parts.push(token.to_string());
                 }
                 continue;
             }
@@ -371,13 +418,29 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
                     });
                 }
                 Err(_) => {
-                    eprintln!("  \x1b[33m⚠ Could not read: {raw_path}\x1b[0m");
+                    eprintln!("  \x1b[33m\u{26a0} Could not read: {raw_path}\x1b[0m");
                     prompt_parts.push(token.to_string());
                 }
             }
-        } else {
-            prompt_parts.push(token.to_string());
+            continue;
         }
+
+        // ── Bare image paths (drag-and-drop) ──────────────────
+        // Detect absolute/relative paths to image files pasted directly
+        let unquoted = strip_quotes(token);
+        if looks_like_file_path(token) && is_image_file(unquoted) {
+            if let Some(resolved) = resolve_bare_path(token) {
+                if resolved.exists() {
+                    let display = resolved.display().to_string();
+                    if let Some(img) = try_load_image(&resolved, &display) {
+                        images.push(img);
+                        continue;
+                    }
+                }
+            }
+        }
+
+        prompt_parts.push(token.to_string());
     }
 
     let prompt = prompt_parts.join(" ");
@@ -636,5 +699,73 @@ mod tests {
         assert_eq!(result.prompt, "fix this");
         assert_eq!(result.context_files.len(), 1);
         assert_eq!(result.images.len(), 1);
+    }
+
+    #[test]
+    fn test_strip_quotes() {
+        assert_eq!(strip_quotes("'/path/to/file.png'"), "/path/to/file.png");
+        assert_eq!(strip_quotes("\"/path/to/file.png\""), "/path/to/file.png");
+        assert_eq!(strip_quotes("/no/quotes.png"), "/no/quotes.png");
+        assert_eq!(strip_quotes("'mismatched"), "'mismatched");
+    }
+
+    #[test]
+    fn test_looks_like_file_path() {
+        assert!(looks_like_file_path("/absolute/path.png"));
+        assert!(looks_like_file_path("~/Desktop/img.jpg"));
+        assert!(looks_like_file_path("./relative/img.png"));
+        assert!(looks_like_file_path("../parent/img.png"));
+        assert!(looks_like_file_path("'/quoted/path.png'"));
+        assert!(!looks_like_file_path("just-a-word"));
+        assert!(!looks_like_file_path("relative.png"));
+    }
+
+    #[test]
+    fn test_drag_and_drop_absolute_path() {
+        let dir = TempDir::new().unwrap();
+        let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        let img_path = dir.path().join("screenshot.png");
+        fs::write(&img_path, &png_bytes).unwrap();
+
+        let input = format!("what is this {}", img_path.display());
+        let result = process_input(&input, dir.path());
+        assert_eq!(result.prompt, "what is this");
+        assert_eq!(result.images.len(), 1);
+        assert_eq!(result.images[0].media_type, "image/png");
+    }
+
+    #[test]
+    fn test_drag_and_drop_quoted_path() {
+        let dir = TempDir::new().unwrap();
+        let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        let img_path = dir.path().join("screenshot.png");
+        fs::write(&img_path, &png_bytes).unwrap();
+
+        // Single-quoted (some terminals do this)
+        let input = format!("explain '{}'", img_path.display());
+        let result = process_input(&input, dir.path());
+        assert_eq!(result.prompt, "explain");
+        assert_eq!(result.images.len(), 1);
+    }
+
+    #[test]
+    fn test_drag_and_drop_nonexistent_stays_in_prompt() {
+        let dir = TempDir::new().unwrap();
+        let input = "/tmp/nonexistent_image_12345.png what is this";
+        let result = process_input(input, dir.path());
+        // Non-existent file stays as text in prompt
+        assert!(result.prompt.contains("/tmp/nonexistent_image_12345.png"));
+        assert!(result.images.is_empty());
+    }
+
+    #[test]
+    fn test_non_image_absolute_path_stays_in_prompt() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("data.json"), "{}").unwrap();
+        let input = format!("read {}", dir.path().join("data.json").display());
+        let result = process_input(&input, dir.path());
+        // Non-image absolute paths are NOT auto-consumed (only images)
+        assert!(result.prompt.contains("data.json"));
+        assert!(result.images.is_empty());
     }
 }
