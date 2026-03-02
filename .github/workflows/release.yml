@@ -111,10 +111,25 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Extract release notes from CHANGELOG
+        run: |
+          # Extract the section for this version from CHANGELOG.md
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          # Get content between this version's header and the next ## header (or EOF)
+          awk "/^## \\[${VERSION}\\]/{found=1; next} /^## \\[/{if(found) exit} found" CHANGELOG.md > release_body.md
+          # If extraction failed, use a fallback
+          if [ ! -s release_body.md ]; then
+            echo "Release v${VERSION}" > release_body.md
+            echo "" >> release_body.md
+            echo "See [CHANGELOG.md](https://github.com/lijunzh/koda/blob/main/CHANGELOG.md) for details." >> release_body.md
+          fi
+          echo "--- Extracted release notes ---"
+          cat release_body.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          body_path: RELEASE_NOTES.md
+          body_path: release_body.md
           files: |
             artifacts/*.tar.gz
             artifacts/*.zip
