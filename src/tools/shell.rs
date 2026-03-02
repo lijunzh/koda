@@ -17,8 +17,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         name: "Bash".to_string(),
         description: "Execute a shell command and return stdout/stderr. \
-            Prefer dedicated tools (Read, Grep, List, Edit) over shell equivalents. \
-            Use Bash ONLY for: builds, tests, git operations, and commands without a dedicated tool. \
+            NEVER use Bash for file operations, searching, or finding files. \
+            ALWAYS use the dedicated tools (Read, Write, Edit, Grep, Glob, List) instead of shell commands like `cat`, `grep`, `find`, or `ls`. \
+            Use Bash ONLY for: builds, tests, git operations, and executing scripts/programs. \
             OUTPUT MANAGEMENT (critical): Only the first and last few lines of output \
             are displayed to the user (middle collapsed), \
             and only the last 256 lines are kept in context. YOU are responsible for \
@@ -26,9 +27,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             1) NEVER use --verbose, -v, or --debug unless specifically debugging. \
             2) ALWAYS pipe to show only what matters: \
                Tests: `cargo test 2>&1 | tail -5`, `pytest -q`, `npm test -- --silent`. \
-               Searches: `| head -20` to cap results. \
                Logs: `| tail -50` for recent entries. \
-               Filtering: `| grep 'error\\|warning\\|failed'` for key lines. \
             3) Suppress noise: `2>/dev/null`, `--quiet`, `-q`. \
             If output is unhelpful, re-run with better piping.".to_string(),
         parameters: json!({
