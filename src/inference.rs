@@ -46,6 +46,7 @@ pub async fn inference_loop(
     let available = config.max_context_tokens.saturating_sub(system_tokens);
     const MAX_ITERATIONS: u32 = 50;
     let mut iteration = 0u32;
+    let mut made_tool_calls = false;
     // TODO(metrics): Wire prompt token tracking into /stats display
     let mut _total_prompt_tokens: i64 = 0;
     let mut total_completion_tokens: i64 = 0;
@@ -317,6 +318,11 @@ pub async fn inference_loop(
 
         // If no tool calls, we already streamed the response — done
         if tool_calls.is_empty() {
+            if made_tool_calls && full_text.trim().is_empty() {
+                println!(
+                    "\n  \x1b[33m\u{26a0} Model produced an empty response after tool use — it may have given up mid-task. Try rephrasing or switching to a more capable model.\x1b[0m"
+                );
+            }
             _total_prompt_tokens += usage.prompt_tokens;
             total_completion_tokens += usage.completion_tokens;
             total_cache_read_tokens += usage.cache_read_tokens;
@@ -376,6 +382,8 @@ pub async fn inference_loop(
         total_cache_read_tokens += usage.cache_read_tokens;
         total_thinking_tokens += usage.thinking_tokens;
         total_char_count += char_count;
+
+        made_tool_calls = true;
 
         // Execute tool calls — parallelize when possible
         if tool_calls.len() > 1 && can_parallelize(&tool_calls, project_root) {
