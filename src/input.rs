@@ -210,16 +210,16 @@ impl Hinter for KodaHelper {
         }
 
         // Hint @file references
-        if let Some(at_pos) = line.rfind('@') {
-            if at_pos == 0 || line.as_bytes()[at_pos - 1] == b' ' {
-                let partial = &line[at_pos + 1..];
-                if !partial.is_empty() {
-                    let matches = complete_file_path(partial, &self.project_root);
-                    if let Some(first_match) = matches.first() {
-                        let replacement = &first_match.replacement;
-                        if replacement.starts_with(partial) && replacement != partial {
-                            return Some(replacement[partial.len()..].to_string());
-                        }
+        if let Some(at_pos) = line.rfind('@')
+            && (at_pos == 0 || line.as_bytes()[at_pos - 1] == b' ')
+        {
+            let partial = &line[at_pos + 1..];
+            if !partial.is_empty() {
+                let matches = complete_file_path(partial, &self.project_root);
+                if let Some(first_match) = matches.first() {
+                    let replacement = &first_match.replacement;
+                    if replacement.starts_with(partial) && replacement != partial {
+                        return Some(replacement[partial.len()..].to_string());
                     }
                 }
             }
