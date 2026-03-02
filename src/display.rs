@@ -45,7 +45,24 @@ const EMERALD: &str = "\x1b[38;2;42;160;60m"; // response (your answer!)
 pub fn print_tool_call(tc: &ToolCall, is_sub_agent: bool) {
     let indent = if is_sub_agent { "  " } else { "" };
     let (color, label, detail) = tool_info(&tc.function_name, &tc.arguments);
-    println!("\n{indent}{color}\u{25cf}{RESET} {BOLD}{label}{RESET} {DIM}{detail}{RESET}");
+
+    // ShareReasoning gets special rendering: thinking banner + dim content
+    if tc.function_name == "ShareReasoning" {
+        print_thinking_banner();
+        let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+        if let Some(reasoning) = args.get("reasoning").and_then(|v| v.as_str()) {
+            for line in reasoning.lines() {
+                println!("{indent}{DIM}{line}{RESET}");
+            }
+        }
+        return;
+    }
+
+    if tc.function_name == "Bash" {
+        println!("\n{indent}{color}\u{25cf}{RESET} {BOLD}{label}{RESET} {detail}");
+    } else {
+        println!("\n{indent}{color}\u{25cf}{RESET} {BOLD}{label}{RESET} {DIM}{detail}{RESET}");
+    }
 
     // Show extra metadata for shell commands
     if tc.function_name == "Bash" {
@@ -152,6 +169,13 @@ pub fn tool_info(name: &str, args_json: &str) -> (&'static str, &'static str, St
             let short = truncate(&content, 40);
             (AMBER, "Memory", format!("{scope}: {short}"))
         }
+        "ShareReasoning" => {
+            let title = args
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("reasoning");
+            (VIOLET, "Thinking", title.to_string())
+        }
         _ => (DIM, "Tool", name.to_string()),
     }
 }
@@ -200,7 +224,7 @@ const CONTENT_INDENT: &str = "  ";
 
 /// Print tool output with a colored left border (indented under banner).
 pub fn print_tool_output(tool_name: &str, output: &str) {
-    if output.is_empty() {
+    if output.is_empty() || tool_name == "ShareReasoning" {
         return;
     }
 
@@ -217,11 +241,12 @@ pub fn print_tool_output(tool_name: &str, output: &str) {
     match tool_name {
         // ── Mutation tools: show diffs/output ─────────────────
         "Bash" => {
-            let lines: Vec<&str> = output.lines().collect();
+            // Parse exit code and collect output lines (skip markers)
+            let mut exit_code: Option<i32> = None;
             let mut output_lines: Vec<&str> = Vec::new();
-            for line in &lines {
-                if line.starts_with("Exit code:") {
-                    println!("{CONTENT_INDENT}{border_color}│{RESET} {DIM}{line}{RESET}");
+            for line in output.lines() {
+                if let Some(code_str) = line.strip_prefix("Exit code: ") {
+                    exit_code = code_str.trim().parse().ok();
                 } else if line.starts_with("--- stdout ---") || line.starts_with("--- stderr ---") {
                     continue;
                 } else {
@@ -229,23 +254,45 @@ pub fn print_tool_output(tool_name: &str, output: &str) {
                 }
             }
 
-            // Simple last-N display. The LLM should pipe commands
-            // to surface relevant output — not our job to guess.
-            let max_tail = 20;
-            if output_lines.len() > max_tail {
-                let hidden = output_lines.len() - max_tail;
-                println!(
-                    "{CONTENT_INDENT}{border_color}│{RESET} {DIM}[... {hidden} lines hidden ...]{RESET}"
-                );
-                for line in &output_lines[output_lines.len() - max_tail..] {
-                    let dl = truncate_display_line(line);
-                    println!("{CONTENT_INDENT}{border_color}│{RESET} {DIM}{dl}{RESET}");
-                }
-            } else {
+            // Strip leading/trailing blank lines
+            while output_lines.first().is_some_and(|l| l.trim().is_empty()) {
+                output_lines.remove(0);
+            }
+            while output_lines.last().is_some_and(|l| l.trim().is_empty()) {
+                output_lines.pop();
+            }
+
+            // Head + tail display with collapsed middle
+            const HEAD: usize = 2;
+            const TAIL: usize = 2;
+            let total = output_lines.len();
+            if total <= HEAD + TAIL {
                 for line in &output_lines {
                     let dl = truncate_display_line(line);
-                    println!("{CONTENT_INDENT}{border_color}│{RESET} {DIM}{dl}{RESET}");
+                    println!("{CONTENT_INDENT}{border_color}│{RESET} {dl}");
                 }
+            } else {
+                for line in &output_lines[..HEAD] {
+                    let dl = truncate_display_line(line);
+                    println!("{CONTENT_INDENT}{border_color}│{RESET} {dl}");
+                }
+                let collapsed = total - HEAD - TAIL;
+                println!(
+                    "{CONTENT_INDENT}{border_color}│{RESET} {DIM}\u{2026} +{collapsed} lines{RESET}"
+                );
+                for line in &output_lines[total - TAIL..] {
+                    let dl = truncate_display_line(line);
+                    println!("{CONTENT_INDENT}{border_color}│{RESET} {dl}");
+                }
+            }
+
+            // Only show exit code if non-zero
+            if let Some(code) = exit_code
+                && code != 0
+            {
+                println!(
+                    "{CONTENT_INDENT}{border_color}│{RESET} {CRIMSON}Exit code: {code}{RESET}"
+                );
             }
         }
         "Write" | "Edit" | "MemoryWrite" => {

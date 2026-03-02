@@ -37,9 +37,11 @@ pub fn needs_confirmation_with_project(tool_name: &str, _project_root: &std::pat
 ///
 /// Displays the tool banner, action details, and an arrow-key
 /// selector with Approve / Reject / Reject with feedback.
-pub fn confirm_tool_action(_tool_name: &str, detail: &str) -> Confirmation {
-    // Show the action details
-    println!("  \x1b[90m{detail}\x1b[0m");
+pub fn confirm_tool_action(tool_name: &str, detail: &str) -> Confirmation {
+    // Show the action details (skip for Bash — header already shows the command)
+    if tool_name != "Bash" {
+        println!("  \x1b[90m{detail}\x1b[0m");
+    }
     println!();
 
     let options = vec![
@@ -80,7 +82,7 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
                 .or(args.get("cmd"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            format!("Run: \x1b[1m{cmd}\x1b[0m")
+            format!("\x1b[1m{cmd}\x1b[0m")
         }
         "Delete" => {
             let path = args

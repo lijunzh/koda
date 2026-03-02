@@ -1,3 +1,6 @@
+# Claude Code local config
+.claude/
+
 # Koda local state
 .koda.db
 .koda.db-wal

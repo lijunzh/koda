@@ -19,7 +19,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
         description: "Execute a shell command and return stdout/stderr. \
             Prefer dedicated tools (Read, Grep, List, Edit) over shell equivalents. \
             Use Bash ONLY for: builds, tests, git operations, and commands without a dedicated tool. \
-            OUTPUT MANAGEMENT (critical): Only the last 20 lines are displayed to the user, \
+            OUTPUT MANAGEMENT (critical): Only the first and last few lines of output \
+            are displayed to the user (middle collapsed), \
             and only the last 256 lines are kept in context. YOU are responsible for \
             surfacing the relevant output. Rules: \
             1) NEVER use --verbose, -v, or --debug unless specifically debugging. \
