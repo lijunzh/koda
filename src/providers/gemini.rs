@@ -163,12 +163,18 @@ impl LlmProvider for GeminiProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        model: &str,
+        settings: &crate::config::ModelSettings,
     ) -> Result<LlmResponse> {
+        let model = &settings.model;
         let (contents, system_instruction) = self.convert_messages(messages);
         let api_tools = Self::build_tools(tools);
 
-        let body = self.build_request_body(&contents, system_instruction.as_ref(), &api_tools);
+        let body = self.build_request_body(
+            &contents,
+            system_instruction.as_ref(),
+            &api_tools,
+            Some(settings),
+        );
 
         let resp = self
             .client
@@ -246,12 +252,18 @@ impl LlmProvider for GeminiProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        model: &str,
+        settings: &crate::config::ModelSettings,
     ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
+        let model = &settings.model;
         let (contents, system_instruction) = self.convert_messages(messages);
         let api_tools = Self::build_tools(tools);
 
-        let body = self.build_request_body(&contents, system_instruction.as_ref(), &api_tools);
+        let body = self.build_request_body(
+            &contents,
+            system_instruction.as_ref(),
+            &api_tools,
+            Some(settings),
+        );
 
         let resp = self
             .client
@@ -301,6 +313,7 @@ impl LlmProvider for GeminiProvider {
                     if let Some(usage) = &event.usage_metadata {
                         final_usage.prompt_tokens = usage.prompt_token_count;
                         final_usage.completion_tokens = usage.candidates_token_count;
+                        final_usage.cache_read_tokens = usage.cached_content_token_count;
                         usage.log_cache_stats();
                     }
 
@@ -463,10 +476,16 @@ impl GeminiProvider {
         contents: &[serde_json::Value],
         system_instruction: Option<&serde_json::Value>,
         tools: &[GeminiToolConfig],
+        settings: Option<&crate::config::ModelSettings>,
     ) -> serde_json::Value {
+        let max_output = settings.and_then(|s| s.max_tokens).unwrap_or(8192);
+        let mut gen_config = serde_json::json!({ "maxOutputTokens": max_output });
+        if let Some(temp) = settings.and_then(|s| s.temperature) {
+            gen_config["temperature"] = serde_json::json!(temp);
+        }
         let mut body = serde_json::json!({
             "contents": contents,
-            "generationConfig": { "maxOutputTokens": 8192 },
+            "generationConfig": gen_config,
         });
         if let Some(sys) = system_instruction {
             body["systemInstruction"] = sys.clone();
@@ -522,6 +541,8 @@ impl GeminiProvider {
             usage: TokenUsage {
                 prompt_tokens: usage.prompt_token_count,
                 completion_tokens: usage.candidates_token_count,
+                cache_read_tokens: usage.cached_content_token_count,
+                ..Default::default()
             },
         })
     }

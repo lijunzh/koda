@@ -8,6 +8,7 @@ pub mod file_tools;
 pub mod glob_tool;
 pub mod grep;
 pub mod memory;
+pub mod reasoning;
 pub mod shell;
 pub mod web_fetch;
 
@@ -56,6 +57,9 @@ impl ToolRegistry {
             definitions.insert(def.name.clone(), def);
         }
         for def in memory::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
+        for def in reasoning::definitions() {
             definitions.insert(def.name.clone(), def);
         }
 
@@ -113,6 +117,9 @@ impl ToolRegistry {
             // Memory
             "MemoryRead" => memory::memory_read(&self.project_root).await,
             "MemoryWrite" => memory::memory_write(&self.project_root, &args).await,
+
+            // Reasoning
+            "ShareReasoning" => reasoning::share_reasoning(&args).await,
 
             // Agent tools
             "ListAgents" => {

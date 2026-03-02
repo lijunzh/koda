@@ -59,7 +59,7 @@ impl ProviderType {
     pub fn default_model(&self) -> &str {
         match self {
             Self::OpenAI => "gpt-4o",
-            Self::Anthropic => "claude-sonnet-4-20250514",
+            Self::Anthropic => "claude-sonnet-4-6",
             Self::LMStudio => "auto-detect",
             Self::Gemini => "gemini-2.0-flash",
             Self::Groq => "llama-3.3-70b-versatile",
@@ -92,6 +92,41 @@ impl std::fmt::Display for ProviderType {
     }
 }
 
+/// Model-specific settings that control LLM behavior.
+#[derive(Debug, Clone)]
+pub struct ModelSettings {
+    /// Model name / ID.
+    pub model: String,
+    /// Maximum output tokens (provider-specific default if None).
+    pub max_tokens: Option<u32>,
+    /// Sampling temperature.
+    pub temperature: Option<f64>,
+    /// Anthropic extended thinking budget (tokens).
+    pub thinking_budget: Option<u32>,
+    /// OpenAI reasoning effort: "low", "medium", or "high".
+    pub reasoning_effort: Option<String>,
+    /// Maximum context window size in tokens.
+    pub max_context_tokens: usize,
+}
+
+impl ModelSettings {
+    /// Build settings with provider-appropriate defaults.
+    pub fn defaults_for(model: &str, provider: &ProviderType) -> Self {
+        let max_tokens = match provider {
+            ProviderType::Anthropic => Some(16384),
+            _ => None,
+        };
+        Self {
+            model: model.to_string(),
+            max_tokens,
+            temperature: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            max_context_tokens: 32_000,
+        }
+    }
+}
+
 /// Top-level agent configuration loaded from JSON.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
@@ -105,6 +140,16 @@ pub struct AgentConfig {
     pub base_url: Option<String>,
     #[serde(default)]
     pub provider: Option<String>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub temperature: Option<f64>,
+    #[serde(default)]
+    pub thinking_budget: Option<u32>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub max_context_tokens: Option<usize>,
 }
 
 /// Runtime configuration assembled from CLI args, env vars, and agent JSON.
@@ -118,6 +163,7 @@ pub struct KodaConfig {
     pub model: String,
     pub max_context_tokens: usize,
     pub agents_dir: PathBuf,
+    pub model_settings: ModelSettings,
 }
 
 impl KodaConfig {
@@ -153,15 +199,32 @@ impl KodaConfig {
             .model
             .unwrap_or_else(|| provider_type.default_model().to_string());
 
+        let max_context_tokens = agent.max_context_tokens.unwrap_or(32_000);
+        let mut settings = ModelSettings::defaults_for(&model, &provider_type);
+        settings.max_context_tokens = max_context_tokens;
+        if let Some(mt) = agent.max_tokens {
+            settings.max_tokens = Some(mt);
+        }
+        if let Some(t) = agent.temperature {
+            settings.temperature = Some(t);
+        }
+        if let Some(tb) = agent.thinking_budget {
+            settings.thinking_budget = Some(tb);
+        }
+        if let Some(ref re) = agent.reasoning_effort {
+            settings.reasoning_effort = Some(re.clone());
+        }
+
         Ok(Self {
             agent_name: agent.name,
             system_prompt: agent.system_prompt,
             allowed_tools: agent.allowed_tools,
             provider_type,
             base_url,
-            model,
-            max_context_tokens: 32_000,
+            model: model.clone(),
+            max_context_tokens,
             agents_dir,
+            model_settings: settings,
         })
     }
 
@@ -183,7 +246,31 @@ impl KodaConfig {
             self.provider_type = ProviderType::from_url_or_name(&self.base_url, None);
         }
         if let Some(m) = model {
-            self.model = m;
+            self.model = m.clone();
+            self.model_settings.model = m;
+        }
+        self
+    }
+
+    /// Apply model-specific setting overrides from CLI.
+    pub fn with_model_overrides(
+        mut self,
+        max_tokens: Option<u32>,
+        temperature: Option<f64>,
+        thinking_budget: Option<u32>,
+        reasoning_effort: Option<String>,
+    ) -> Self {
+        if let Some(mt) = max_tokens {
+            self.model_settings.max_tokens = Some(mt);
+        }
+        if let Some(t) = temperature {
+            self.model_settings.temperature = Some(t);
+        }
+        if let Some(tb) = thinking_budget {
+            self.model_settings.thinking_budget = Some(tb);
+        }
+        if let Some(re) = reasoning_effort {
+            self.model_settings.reasoning_effort = Some(re);
         }
         self
     }
@@ -220,15 +307,18 @@ impl KodaConfig {
     /// Create a minimal config for testing.
     #[cfg(test)]
     pub fn default_for_testing(provider_type: ProviderType) -> Self {
+        let model = provider_type.default_model().to_string();
+        let model_settings = ModelSettings::defaults_for(&model, &provider_type);
         Self {
             agent_name: "test".to_string(),
             system_prompt: "You are a test agent.".to_string(),
             allowed_tools: Vec::new(),
             base_url: provider_type.default_base_url().to_string(),
-            model: provider_type.default_model().to_string(),
+            model,
             provider_type,
             max_context_tokens: 32_000,
             agents_dir: PathBuf::from("agents"),
+            model_settings,
         }
     }
 

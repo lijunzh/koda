@@ -46,6 +46,20 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     pub prompt_tokens: Option<i64>,
     pub completion_tokens: Option<i64>,
+    pub cache_read_tokens: Option<i64>,
+    pub cache_creation_tokens: Option<i64>,
+    pub thinking_tokens: Option<i64>,
+}
+
+/// Token usage totals for a session.
+#[derive(Debug, Clone, Default)]
+pub struct SessionUsage {
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub thinking_tokens: i64,
+    pub api_calls: i64,
 }
 
 /// Wrapper around the SQLite connection pool.
@@ -110,6 +124,22 @@ impl Database {
             .execute(pool)
             .await?;
 
+        // Additive migrations for new token tracking columns (idempotent).
+        for col in &[
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "thinking_tokens",
+        ] {
+            let sql = format!("ALTER TABLE messages ADD COLUMN {col} INTEGER");
+            // Ignore "duplicate column name" errors — column already exists.
+            if let Err(e) = sqlx::query(&sql).execute(pool).await {
+                let msg = e.to_string();
+                if !msg.contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -126,7 +156,6 @@ impl Database {
     }
 
     /// Insert a message into the conversation log.
-    #[allow(clippy::too_many_arguments)]
     pub async fn insert_message(
         &self,
         session_id: &str,
@@ -134,20 +163,23 @@ impl Database {
         content: Option<&str>,
         tool_calls: Option<&str>,
         tool_call_id: Option<&str>,
-        prompt_tokens: Option<i64>,
-        completion_tokens: Option<i64>,
+        usage: Option<&crate::providers::TokenUsage>,
     ) -> Result<i64> {
         let result = sqlx::query(
-            "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, prompt_tokens, completion_tokens)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, \
+             prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session_id)
         .bind(role.as_str())
         .bind(content)
         .bind(tool_calls)
         .bind(tool_call_id)
-        .bind(prompt_tokens)
-        .bind(completion_tokens)
+        .bind(usage.map(|u| u.prompt_tokens))
+        .bind(usage.map(|u| u.completion_tokens))
+        .bind(usage.map(|u| u.cache_read_tokens))
+        .bind(usage.map(|u| u.cache_creation_tokens))
+        .bind(usage.map(|u| u.thinking_tokens))
         .execute(&self.pool)
         .await?;
 
@@ -159,7 +191,8 @@ impl Database {
     pub async fn load_context(&self, session_id: &str, max_tokens: usize) -> Result<Vec<Message>> {
         let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, tool_calls, tool_call_id,
-                    prompt_tokens, completion_tokens
+                    prompt_tokens, completion_tokens,
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens
              FROM messages
              WHERE session_id = ?
              ORDER BY id DESC
@@ -235,11 +268,14 @@ impl Database {
     }
 
     /// Get token usage totals for a session.
-    pub async fn session_token_usage(&self, session_id: &str) -> Result<(i64, i64, i64)> {
-        let row: (i64, i64, i64) = sqlx::query_as(
+    pub async fn session_token_usage(&self, session_id: &str) -> Result<SessionUsage> {
+        let row: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
             "SELECT
                 COALESCE(SUM(prompt_tokens), 0),
                 COALESCE(SUM(completion_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(cache_creation_tokens), 0),
+                COALESCE(SUM(thinking_tokens), 0),
                 COUNT(*)
              FROM messages
              WHERE session_id = ?
@@ -248,7 +284,14 @@ impl Database {
         .bind(session_id)
         .fetch_one(&self.pool)
         .await?;
-        Ok(row)
+        Ok(SessionUsage {
+            prompt_tokens: row.0,
+            completion_tokens: row.1,
+            cache_read_tokens: row.2,
+            cache_creation_tokens: row.3,
+            thinking_tokens: row.4,
+            api_calls: row.5,
+        })
     }
 
     /// List recent sessions with metadata.
@@ -345,6 +388,9 @@ struct MessageRow {
     tool_call_id: Option<String>,
     prompt_tokens: Option<i64>,
     completion_tokens: Option<i64>,
+    cache_read_tokens: Option<i64>,
+    cache_creation_tokens: Option<i64>,
+    thinking_tokens: Option<i64>,
 }
 
 /// Session metadata for listing.
@@ -389,6 +435,9 @@ impl From<MessageRow> for Message {
             tool_call_id: r.tool_call_id,
             prompt_tokens: r.prompt_tokens,
             completion_tokens: r.completion_tokens,
+            cache_read_tokens: r.cache_read_tokens,
+            cache_creation_tokens: r.cache_creation_tokens,
+            thinking_tokens: r.thinking_tokens,
         }
     }
 }
@@ -416,14 +465,13 @@ mod tests {
         let (db, _tmp) = setup().await;
         let session = db.create_session("default").await.unwrap();
 
-        db.insert_message(&session, &Role::User, Some("hello"), None, None, None, None)
+        db.insert_message(&session, &Role::User, Some("hello"), None, None, None)
             .await
             .unwrap();
         db.insert_message(
             &session,
             &Role::Assistant,
             Some("hi there!"),
-            None,
             None,
             None,
             None,
@@ -445,17 +493,9 @@ mod tests {
         // Insert many messages
         for i in 0..20 {
             let content = format!("Message number {i} with some padding text to take up tokens");
-            db.insert_message(
-                &session,
-                &Role::User,
-                Some(&content),
-                None,
-                None,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
+            db.insert_message(&session, &Role::User, Some(&content), None, None, None)
+                .await
+                .unwrap();
         }
 
         // Load with a tiny token budget - should only get the most recent messages
@@ -478,10 +518,10 @@ mod tests {
         let s1 = db.create_session("agent-a").await.unwrap();
         let s2 = db.create_session("agent-b").await.unwrap();
 
-        db.insert_message(&s1, &Role::User, Some("session 1"), None, None, None, None)
+        db.insert_message(&s1, &Role::User, Some("session 1"), None, None, None)
             .await
             .unwrap();
-        db.insert_message(&s2, &Role::User, Some("session 2"), None, None, None, None)
+        db.insert_message(&s2, &Role::User, Some("session 2"), None, None, None)
             .await
             .unwrap();
 
@@ -499,39 +539,47 @@ mod tests {
         let (db, _tmp) = setup().await;
         let session = db.create_session("default").await.unwrap();
 
-        db.insert_message(&session, &Role::User, Some("q1"), None, None, None, None)
+        db.insert_message(&session, &Role::User, Some("q1"), None, None, None)
             .await
             .unwrap();
+        let usage1 = crate::providers::TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            ..Default::default()
+        };
         db.insert_message(
             &session,
             &Role::Assistant,
             Some("a1"),
             None,
             None,
-            Some(100),
-            Some(50),
+            Some(&usage1),
         )
         .await
         .unwrap();
-        db.insert_message(&session, &Role::User, Some("q2"), None, None, None, None)
+        db.insert_message(&session, &Role::User, Some("q2"), None, None, None)
             .await
             .unwrap();
+        let usage2 = crate::providers::TokenUsage {
+            prompt_tokens: 200,
+            completion_tokens: 80,
+            ..Default::default()
+        };
         db.insert_message(
             &session,
             &Role::Assistant,
             Some("a2"),
             None,
             None,
-            Some(200),
-            Some(80),
+            Some(&usage2),
         )
         .await
         .unwrap();
 
-        let (prompt, completion, turns) = db.session_token_usage(&session).await.unwrap();
-        assert_eq!(prompt, 300);
-        assert_eq!(completion, 130);
-        assert_eq!(turns, 2);
+        let u = db.session_token_usage(&session).await.unwrap();
+        assert_eq!(u.prompt_tokens, 300);
+        assert_eq!(u.completion_tokens, 130);
+        assert_eq!(u.api_calls, 2);
     }
 
     #[tokio::test]
@@ -551,7 +599,7 @@ mod tests {
     async fn test_delete_session() {
         let (db, _tmp) = setup().await;
         let s1 = db.create_session("default").await.unwrap();
-        db.insert_message(&s1, &Role::User, Some("hello"), None, None, None, None)
+        db.insert_message(&s1, &Role::User, Some("hello"), None, None, None)
             .await
             .unwrap();
 
@@ -576,17 +624,9 @@ mod tests {
             } else {
                 &Role::Assistant
             };
-            db.insert_message(
-                &session,
-                role,
-                Some(&format!("msg {i}")),
-                None,
-                None,
-                None,
-                None,
-            )
-            .await
-            .unwrap();
+            db.insert_message(&session, role, Some(&format!("msg {i}")), None, None, None)
+                .await
+                .unwrap();
         }
 
         let deleted = db
@@ -613,10 +653,10 @@ mod tests {
         let (db, _tmp) = setup().await;
         let session = db.create_session("default").await.unwrap();
 
-        let (prompt, completion, turns) = db.session_token_usage(&session).await.unwrap();
-        assert_eq!(prompt, 0);
-        assert_eq!(completion, 0);
-        assert_eq!(turns, 0);
+        let u = db.session_token_usage(&session).await.unwrap();
+        assert_eq!(u.prompt_tokens, 0);
+        assert_eq!(u.completion_tokens, 0);
+        assert_eq!(u.api_calls, 0);
     }
 
     #[tokio::test]
@@ -629,17 +669,9 @@ mod tests {
         assert_eq!(msg, "");
 
         // Insert some messages
-        db.insert_message(
-            &session,
-            &Role::User,
-            Some("question 1"),
-            None,
-            None,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        db.insert_message(&session, &Role::User, Some("question 1"), None, None, None)
+            .await
+            .unwrap();
         db.insert_message(
             &session,
             &Role::Assistant,
@@ -647,26 +679,16 @@ mod tests {
             None,
             None,
             None,
-            None,
         )
         .await
         .unwrap();
-        db.insert_message(
-            &session,
-            &Role::User,
-            Some("question 2"),
-            None,
-            None,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        db.insert_message(&session, &Role::User, Some("question 2"), None, None, None)
+            .await
+            .unwrap();
         db.insert_message(
             &session,
             &Role::Assistant,
             Some("answer 2"),
-            None,
             None,
             None,
             None,
@@ -691,7 +713,6 @@ mod tests {
             None,
             None,
             None,
-            None,
         )
         .await
         .unwrap();
@@ -701,7 +722,6 @@ mod tests {
             &Role::Assistant,
             None,
             Some("[{\"id\":\"1\"}]"),
-            None,
             None,
             None,
         )
@@ -714,22 +734,13 @@ mod tests {
             None,
             Some("1"),
             None,
-            None,
         )
         .await
         .unwrap();
         // Final text response
-        db.insert_message(
-            &session,
-            &Role::Assistant,
-            Some("Done!"),
-            None,
-            None,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        db.insert_message(&session, &Role::Assistant, Some("Done!"), None, None, None)
+            .await
+            .unwrap();
 
         let msg = db.last_assistant_message(&session).await.unwrap();
         assert_eq!(msg, "Done!");

@@ -41,6 +41,12 @@ struct ChatRequest {
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -108,6 +114,14 @@ struct ResponseMessage {
 struct UsageResponse {
     prompt_tokens: Option<i64>,
     completion_tokens: Option<i64>,
+    #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
+}
+
+#[derive(Deserialize, Default)]
+struct CompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<i64>,
 }
 
 // ── SSE Streaming response types ─────────────────────────────
@@ -128,6 +142,9 @@ struct StreamChoice {
 #[derive(Deserialize)]
 struct StreamDelta {
     content: Option<String>,
+    /// Reasoning content from o1/o3/o4-mini models.
+    #[serde(default)]
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<StreamToolCall>>,
 }
 
@@ -153,6 +170,7 @@ impl OpenAiCompatProvider {
         tools: &[ToolDefinition],
         model: &str,
         stream: Option<bool>,
+        settings: &crate::config::ModelSettings,
     ) -> ChatRequest {
         let api_messages: Vec<ApiMessage> = messages
             .iter()
@@ -229,6 +247,9 @@ impl OpenAiCompatProvider {
                 include_usage: true,
             }),
             stream,
+            max_tokens: settings.max_tokens,
+            temperature: settings.temperature,
+            reasoning_effort: settings.reasoning_effort.clone(),
         }
     }
 }
@@ -239,9 +260,9 @@ impl LlmProvider for OpenAiCompatProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        model: &str,
+        settings: &crate::config::ModelSettings,
     ) -> Result<LlmResponse> {
-        let request = Self::build_request(messages, tools, model, None);
+        let request = Self::build_request(messages, tools, &settings.model, None, settings);
 
         let mut req = self
             .client
@@ -287,10 +308,7 @@ impl LlmProvider for OpenAiCompatProvider {
         let content = choice.message.content.filter(|c| !c.is_empty());
         let usage = chat_resp
             .usage
-            .map_or(TokenUsage::default(), |u| TokenUsage {
-                prompt_tokens: u.prompt_tokens.unwrap_or(0),
-                completion_tokens: u.completion_tokens.unwrap_or(0),
-            });
+            .map_or(TokenUsage::default(), |u| usage_from_response(&u));
 
         Ok(LlmResponse {
             content,
@@ -303,9 +321,9 @@ impl LlmProvider for OpenAiCompatProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        model: &str,
+        settings: &crate::config::ModelSettings,
     ) -> Result<mpsc::Receiver<StreamChunk>> {
-        let request = Self::build_request(messages, tools, model, Some(true));
+        let request = Self::build_request(messages, tools, &settings.model, Some(true), settings);
 
         let mut req = self
             .client
@@ -374,13 +392,17 @@ impl LlmProvider for OpenAiCompatProvider {
 
                     // Capture usage if present
                     if let Some(u) = &chunk.usage {
-                        final_usage = TokenUsage {
-                            prompt_tokens: u.prompt_tokens.unwrap_or(0),
-                            completion_tokens: u.completion_tokens.unwrap_or(0),
-                        };
+                        final_usage = usage_from_response(u);
                     }
 
                     for choice in &chunk.choices {
+                        // Reasoning content (o1/o3/o4-mini)
+                        if let Some(reasoning) = &choice.delta.reasoning_content
+                            && !reasoning.is_empty()
+                        {
+                            let _ = tx.send(StreamChunk::ThinkingDelta(reasoning.clone())).await;
+                        }
+
                         // Text delta
                         if let Some(content) = &choice.delta.content
                             && !content.is_empty()
@@ -461,6 +483,20 @@ impl LlmProvider for OpenAiCompatProvider {
     }
 }
 
+/// Convert OpenAI usage response to our TokenUsage, extracting reasoning_tokens.
+fn usage_from_response(u: &UsageResponse) -> TokenUsage {
+    TokenUsage {
+        prompt_tokens: u.prompt_tokens.unwrap_or(0),
+        completion_tokens: u.completion_tokens.unwrap_or(0),
+        thinking_tokens: u
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|d| d.reasoning_tokens)
+            .unwrap_or(0),
+        ..Default::default()
+    }
+}
+
 #[derive(Deserialize)]
 struct ModelsResponse {
     data: Vec<ModelEntry>,
@@ -475,12 +511,19 @@ struct ModelEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ModelSettings;
     use crate::providers::{ChatMessage, ImageData};
+
+    fn default_settings() -> ModelSettings {
+        ModelSettings::defaults_for("gpt-4o", &crate::config::ProviderType::OpenAI)
+    }
 
     #[test]
     fn test_build_request_plain_text() {
+        let settings = default_settings();
         let messages = vec![ChatMessage::text("user", "hello")];
-        let request = OpenAiCompatProvider::build_request(&messages, &[], "gpt-4o", None);
+        let request =
+            OpenAiCompatProvider::build_request(&messages, &[], "gpt-4o", None, &settings);
         assert_eq!(request.messages.len(), 1);
         // Plain text should be a JSON string, not an array
         let content = request.messages[0].content.as_ref().unwrap();
@@ -503,7 +546,9 @@ mod tests {
                 base64: "iVBORw0KGgo=".into(),
             }]),
         }];
-        let request = OpenAiCompatProvider::build_request(&messages, &[], "gpt-4o", None);
+        let settings = default_settings();
+        let request =
+            OpenAiCompatProvider::build_request(&messages, &[], "gpt-4o", None, &settings);
         let content = request.messages[0].content.as_ref().unwrap();
 
         // Should be an array with text + image_url parts
@@ -534,7 +579,9 @@ mod tests {
             tool_call_id: None,
             images: Some(vec![]), // Empty images vec
         }];
-        let request = OpenAiCompatProvider::build_request(&messages, &[], "gpt-4o", None);
+        let settings = default_settings();
+        let request =
+            OpenAiCompatProvider::build_request(&messages, &[], "gpt-4o", None, &settings);
         let content = request.messages[0].content.as_ref().unwrap();
         // Empty images should NOT produce an array, just a string
         assert!(
@@ -556,7 +603,9 @@ mod tests {
             tool_call_id: None,
             images: None,
         }];
-        let request = OpenAiCompatProvider::build_request(&messages, &[], "gpt-4o", None);
+        let settings = default_settings();
+        let request =
+            OpenAiCompatProvider::build_request(&messages, &[], "gpt-4o", None, &settings);
         assert!(request.messages[0].tool_calls.is_some());
         let tcs = request.messages[0].tool_calls.as_ref().unwrap();
         assert_eq!(tcs.len(), 1);

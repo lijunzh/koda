@@ -23,6 +23,12 @@ pub struct ToolCall {
 pub struct TokenUsage {
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
+    /// Tokens read from provider cache (e.g. Anthropic prompt caching, Gemini cached content).
+    pub cache_read_tokens: i64,
+    /// Tokens written to provider cache on this request.
+    pub cache_creation_tokens: i64,
+    /// Tokens used for reasoning/thinking (e.g. OpenAI reasoning_tokens, Anthropic thinking).
+    pub thinking_tokens: i64,
 }
 
 /// The LLM's response: either text, tool calls, or both.
@@ -147,6 +153,8 @@ pub fn build_http_client() -> reqwest::Client {
 pub enum StreamChunk {
     /// A text delta (partial content).
     TextDelta(String),
+    /// A thinking/reasoning delta from native API (Anthropic extended thinking, OpenAI reasoning).
+    ThinkingDelta(String),
     /// A tool call was returned (streaming ends, need full response).
     ToolCalls(Vec<ToolCall>),
     /// Stream finished with usage info.
@@ -161,7 +169,7 @@ pub trait LlmProvider: Send + Sync {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        model: &str,
+        settings: &crate::config::ModelSettings,
     ) -> Result<LlmResponse>;
 
     /// Send a streaming chat completion request.
@@ -170,7 +178,7 @@ pub trait LlmProvider: Send + Sync {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        model: &str,
+        settings: &crate::config::ModelSettings,
     ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>>;
 
     /// List available models from the provider.

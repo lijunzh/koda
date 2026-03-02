@@ -68,6 +68,22 @@ struct Cli {
     /// LLM provider (openai, anthropic, lmstudio, gemini, groq, grok)
     #[arg(long, env = "KODA_PROVIDER")]
     provider: Option<String>,
+
+    /// Maximum output tokens
+    #[arg(long)]
+    max_tokens: Option<u32>,
+
+    /// Sampling temperature (0.0 - 2.0)
+    #[arg(long)]
+    temperature: Option<f64>,
+
+    /// Anthropic extended thinking budget (tokens)
+    #[arg(long)]
+    thinking_budget: Option<u32>,
+
+    /// OpenAI reasoning effort (low, medium, high)
+    #[arg(long)]
+    reasoning_effort: Option<String>,
 }
 
 #[tokio::main]
@@ -107,7 +123,14 @@ async fn main() -> Result<()> {
     // Headless mode: skip onboarding, banner, version check
     if let Some(prompt) = headless_prompt {
         let config = config::KodaConfig::load(&project_root, &cli.agent)?;
-        let config = config.with_overrides(cli.base_url, cli.model, cli.provider);
+        let config = config
+            .with_overrides(cli.base_url, cli.model, cli.provider)
+            .with_model_overrides(
+                cli.max_tokens,
+                cli.temperature,
+                cli.thinking_budget,
+                cli.reasoning_effort,
+            );
         let db = db::Database::init(&project_root).await?;
         let session_id = match cli.session {
             Some(id) => id,
@@ -137,12 +160,19 @@ async fn main() -> Result<()> {
 
     // Load configuration
     let config = config::KodaConfig::load(&project_root, &cli.agent)?;
-    let config = config.with_overrides(
-        cli.base_url,
-        cli.model,
-        cli.provider
-            .or_else(|| onboarding_provider.map(|p| p.to_string())),
-    );
+    let config = config
+        .with_overrides(
+            cli.base_url,
+            cli.model,
+            cli.provider
+                .or_else(|| onboarding_provider.map(|p| p.to_string())),
+        )
+        .with_model_overrides(
+            cli.max_tokens,
+            cli.temperature,
+            cli.thinking_budget,
+            cli.reasoning_effort,
+        );
 
     // Initialize database
     let db = db::Database::init(&project_root).await?;

@@ -29,6 +29,19 @@ pub async fn inference_loop(
     tool_defs: &[crate::providers::ToolDefinition],
     pending_images: Option<Vec<ImageData>>,
 ) -> Result<()> {
+    // When native thinking is active, drop ShareReasoning from tool list
+    let has_native_thinking = config.model_settings.thinking_budget.is_some()
+        || config.model_settings.reasoning_effort.is_some();
+    let tool_defs: Vec<crate::providers::ToolDefinition> = if has_native_thinking {
+        tool_defs
+            .iter()
+            .filter(|t| t.name != "ShareReasoning")
+            .cloned()
+            .collect()
+    } else {
+        tool_defs.to_vec()
+    };
+    let tool_defs = &tool_defs;
     let system_tokens = system_prompt.len() / 4 + 100;
     let available = config.max_context_tokens.saturating_sub(system_tokens);
     const MAX_ITERATIONS: u32 = 50;
@@ -36,6 +49,8 @@ pub async fn inference_loop(
     // TODO(metrics): Wire prompt token tracking into /stats display
     let mut _total_prompt_tokens: i64 = 0;
     let mut total_completion_tokens: i64 = 0;
+    let mut total_cache_read_tokens: i64 = 0;
+    let mut total_thinking_tokens: i64 = 0;
     let mut total_char_count: usize = 0;
     let loop_start = Instant::now();
 
@@ -96,7 +111,7 @@ pub async fn inference_loop(
         let mut spinner = SimpleSpinner::new("\u{1f36f} Thinking...");
 
         let mut rx = provider
-            .chat_stream(&messages, tool_defs, &config.model)
+            .chat_stream(&messages, tool_defs, &config.model_settings)
             .await
             .context("LLM inference failed")?;
 
@@ -110,6 +125,7 @@ pub async fn inference_loop(
         let mut in_think_block = false;
         let mut think_buffer = String::new();
         let mut response_banner_shown = false;
+        let mut thinking_banner_shown = false;
         let mut interrupted = false;
 
         loop {
@@ -142,7 +158,6 @@ pub async fn inference_loop(
                         None,
                         None,
                         None,
-                        None,
                     )
                     .await?;
                 }
@@ -158,6 +173,12 @@ pub async fn inference_loop(
                     if first_token {
                         spinner.finish_and_clear();
                         first_token = false;
+                    }
+
+                    // If we just finished native thinking, show response banner
+                    if thinking_banner_shown && !response_banner_shown && !delta.trim().is_empty() {
+                        display::print_response_banner();
+                        response_banner_shown = true;
                     }
 
                     // Detect <think>...</think> tags for reasoning models
@@ -230,6 +251,20 @@ pub async fn inference_loop(
                         }
                     }
                 }
+                StreamChunk::ThinkingDelta(delta) => {
+                    if first_token {
+                        spinner.finish_and_clear();
+                        first_token = false;
+                    }
+                    if !thinking_banner_shown {
+                        display::print_thinking_banner();
+                        thinking_banner_shown = true;
+                    }
+                    // Render thinking content dim (native API thinking is ephemeral)
+                    print!("\x1b[90m{delta}\x1b[0m");
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                }
                 StreamChunk::ToolCalls(tcs) => {
                     spinner.finish_and_clear();
                     tool_calls = tcs;
@@ -276,8 +311,7 @@ pub async fn inference_loop(
             content,
             tool_calls_json.as_deref(),
             None,
-            Some(usage.prompt_tokens),
-            Some(usage.completion_tokens),
+            Some(&usage),
         )
         .await?;
 
@@ -285,6 +319,8 @@ pub async fn inference_loop(
         if tool_calls.is_empty() {
             _total_prompt_tokens += usage.prompt_tokens;
             total_completion_tokens += usage.completion_tokens;
+            total_cache_read_tokens += usage.cache_read_tokens;
+            total_thinking_tokens += usage.thinking_tokens;
             total_char_count += char_count;
 
             // Use provider token count, or estimate from char count
@@ -303,25 +339,33 @@ pub async fn inference_loop(
                 0.0
             };
 
-            if display_tokens > 0 {
-                let ctx = crate::context::format_footer();
-                let ctx_part = if ctx.is_empty() {
-                    String::new()
-                } else {
-                    format!(" \u{00b7} {ctx}")
-                };
-                println!(
-                    "\n\n\x1b[90m{display_tokens} tokens \u{00b7} {time_str} \u{00b7} {rate:.0} t/s{ctx_part}\x1b[0m\n"
-                );
+            let ctx = crate::context::format_footer();
+            let ctx_part = if ctx.is_empty() {
+                String::new()
             } else {
-                let ctx = crate::context::format_footer();
-                let ctx_part = if ctx.is_empty() {
-                    String::new()
-                } else {
-                    format!(" \u{00b7} {ctx}")
-                };
-                println!("\n\n\x1b[90m{time_str}{ctx_part}\x1b[0m\n");
+                format!(" \u{00b7} {ctx}")
+            };
+
+            // Build enriched footer parts
+            let mut parts = Vec::new();
+            if display_tokens > 0 {
+                parts.push(format!("{display_tokens} tokens"));
             }
+            parts.push(time_str);
+            if display_tokens > 0 {
+                parts.push(format!("{rate:.0} t/s"));
+            }
+            if total_cache_read_tokens > 0 {
+                let cache_k = format_token_count(total_cache_read_tokens);
+                parts.push(format!("cache: {cache_k} read"));
+            }
+            if total_thinking_tokens > 0 {
+                let think_k = format_token_count(total_thinking_tokens);
+                parts.push(format!("thinking: {think_k}"));
+            }
+
+            let footer = parts.join(" \u{00b7} ");
+            println!("\n\n\x1b[90m{footer}{ctx_part}\x1b[0m\n");
 
             return Ok(());
         }
@@ -329,6 +373,8 @@ pub async fn inference_loop(
         // Accumulate token usage across iterations
         _total_prompt_tokens += usage.prompt_tokens;
         total_completion_tokens += usage.completion_tokens;
+        total_cache_read_tokens += usage.cache_read_tokens;
+        total_thinking_tokens += usage.thinking_tokens;
         total_char_count += char_count;
 
         // Execute tool calls — parallelize when possible
@@ -408,7 +454,6 @@ async fn execute_tools_parallel(
             None,
             Some(&tc_id),
             None,
-            None,
         )
         .await?;
     }
@@ -451,7 +496,6 @@ async fn execute_tools_sequential(
                         None,
                         Some(&tc.id),
                         None,
-                        None,
                     )
                     .await?;
                     continue;
@@ -464,7 +508,6 @@ async fn execute_tools_sequential(
                         Some(&result),
                         None,
                         Some(&tc.id),
-                        None,
                         None,
                     )
                     .await?;
@@ -482,7 +525,6 @@ async fn execute_tools_sequential(
             Some(&result),
             None,
             Some(&tc.id),
-            None,
             None,
         )
         .await?;
@@ -519,16 +561,8 @@ async fn execute_sub_agent(
         None => db.create_session(&sub_config.agent_name).await?,
     };
 
-    db.insert_message(
-        &sub_session,
-        &Role::User,
-        Some(prompt),
-        None,
-        None,
-        None,
-        None,
-    )
-    .await?;
+    db.insert_message(&sub_session, &Role::User, Some(prompt), None, None, None)
+        .await?;
 
     let provider = crate::app::create_provider(&sub_config);
     let tools = ToolRegistry::new(project_root.to_path_buf());
@@ -562,7 +596,7 @@ async fn execute_sub_agent(
 
         let mut spinner = SimpleSpinner::new(&format!("  🦥 {agent_name} thinking..."));
         let response = provider
-            .chat(&messages, &tool_defs, &sub_config.model)
+            .chat(&messages, &tool_defs, &sub_config.model_settings)
             .await?;
         spinner.finish_and_clear();
 
@@ -578,8 +612,7 @@ async fn execute_sub_agent(
             response.content.as_deref(),
             tool_calls_json.as_deref(),
             None,
-            Some(response.usage.prompt_tokens),
-            Some(response.usage.completion_tokens),
+            Some(&response.usage),
         )
         .await?;
 
@@ -598,7 +631,6 @@ async fn execute_sub_agent(
                 Some(&result.output),
                 None,
                 Some(&tc.id),
-                None,
                 None,
             )
             .await?;
@@ -657,6 +689,15 @@ fn list_available_agents(agents_dir: &Path) -> Vec<String> {
 }
 
 // ── Utilities ─────────────────────────────────────────────────
+
+/// Format a token count as human-readable: "1.2k", "432".
+fn format_token_count(tokens: i64) -> String {
+    if tokens >= 1000 {
+        format!("{:.1}k", tokens as f64 / 1000.0)
+    } else {
+        format!("{tokens}")
+    }
+}
 
 /// Format a duration as human-readable: "5.2s", "1m 23s".
 pub fn format_duration(d: std::time::Duration) -> String {

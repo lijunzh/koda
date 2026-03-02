@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const ANTHROPIC_BETA_FEATURES: &str = "prompt-caching-2024-07-31";
 
-
 pub struct AnthropicProvider {
     client: reqwest::Client,
     base_url: String,
@@ -195,6 +194,8 @@ struct StreamDelta {
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
+    thinking: Option<String>,
+    #[serde(default)]
     partial_json: Option<String>,
 }
 
@@ -212,8 +213,9 @@ impl LlmProvider for AnthropicProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        model: &str,
+        settings: &crate::config::ModelSettings,
     ) -> Result<LlmResponse> {
+        let model = &settings.model;
         // Extract system prompt (Anthropic puts it at the top level)
         let system = messages
             .iter()
@@ -227,7 +229,7 @@ impl LlmProvider for AnthropicProvider {
 
         let request = MessagesRequest {
             model: model.to_string(),
-            max_tokens: 8192,
+            max_tokens: settings.max_tokens.unwrap_or(16384),
             system,
             messages: api_messages,
             tools: api_tools,
@@ -285,10 +287,11 @@ impl LlmProvider for AnthropicProvider {
             content,
             tool_calls,
             usage: TokenUsage {
-                prompt_tokens: msg_resp.usage.input_tokens
-                    + msg_resp.usage.cache_read_input_tokens
-                    + msg_resp.usage.cache_creation_input_tokens,
+                prompt_tokens: msg_resp.usage.input_tokens,
                 completion_tokens: msg_resp.usage.output_tokens,
+                cache_read_tokens: msg_resp.usage.cache_read_input_tokens,
+                cache_creation_tokens: msg_resp.usage.cache_creation_input_tokens,
+                ..Default::default()
             },
         })
     }
@@ -337,8 +340,9 @@ impl LlmProvider for AnthropicProvider {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-        model: &str,
+        settings: &crate::config::ModelSettings,
     ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
+        let model = &settings.model;
         let system = messages
             .iter()
             .find(|m| m.role == "system")
@@ -348,13 +352,34 @@ impl LlmProvider for AnthropicProvider {
         let api_messages = self.convert_messages(messages);
         let api_tools = Self::build_cached_tools(tools);
 
+        let mut max_tokens = settings.max_tokens.unwrap_or(16384);
+
         // Build request body with stream: true
         let mut body = serde_json::json!({
             "model": model,
-            "max_tokens": 8192,
+            "max_tokens": max_tokens,
             "stream": true,
             "messages": serde_json::to_value(&api_messages)?,
         });
+
+        if let Some(temp) = settings.temperature {
+            body["temperature"] = serde_json::json!(temp);
+        }
+
+        // Extended thinking support
+        if let Some(budget) = settings.thinking_budget {
+            // max_tokens must be >= budget
+            if max_tokens < budget {
+                max_tokens = budget + 4096;
+                body["max_tokens"] = serde_json::json!(max_tokens);
+            }
+            body["thinking"] = serde_json::json!({
+                "type": "enabled",
+                "budget_tokens": budget
+            });
+            // Temperature must not be set when thinking is enabled
+            body.as_object_mut().unwrap().remove("temperature");
+        }
         if let Some(sys) = system {
             body["system"] = sys;
         }
@@ -388,6 +413,8 @@ impl LlmProvider for AnthropicProvider {
             let mut buffer = String::new();
             let mut tool_calls: Vec<(String, String, String)> = Vec::new(); // (id, name, args_json)
             let mut final_usage = TokenUsage::default();
+            let mut thinking_indices: std::collections::HashSet<usize> =
+                std::collections::HashSet::new();
 
             while let Some(chunk_result) = byte_stream.next().await {
                 let Ok(bytes) = chunk_result else { break };
@@ -413,6 +440,14 @@ impl LlmProvider for AnthropicProvider {
 
                     match event.event_type.as_str() {
                         "content_block_start" => {
+                            // Detect thinking blocks by checking the raw JSON
+                            if let Some(idx) = event.index
+                                && let Ok(raw) = serde_json::from_str::<serde_json::Value>(json_str)
+                                && let Some(cb) = raw.get("content_block")
+                                && cb.get("type").and_then(|t| t.as_str()) == Some("thinking")
+                            {
+                                thinking_indices.insert(idx);
+                            }
                             // A new content block is starting — could be text or tool_use
                             if let Some(ContentBlock::ToolUse { id, name, .. }) =
                                 event.content_block
@@ -427,18 +462,29 @@ impl LlmProvider for AnthropicProvider {
                         }
                         "content_block_delta" => {
                             if let Some(delta) = event.delta {
-                                // Text delta
-                                if let Some(text) = delta.text
-                                    && !text.is_empty()
-                                {
-                                    let _ = tx.send(StreamChunk::TextDelta(text)).await;
+                                let idx = event.index.unwrap_or(0);
+                                let is_thinking = thinking_indices.contains(&idx);
+
+                                // Thinking delta (Anthropic sends "thinking" field)
+                                if is_thinking {
+                                    if let Some(text) = delta.thinking.or(delta.text)
+                                        && !text.is_empty()
+                                    {
+                                        let _ = tx.send(StreamChunk::ThinkingDelta(text)).await;
+                                    }
+                                } else {
+                                    // Text delta
+                                    if let Some(text) = delta.text
+                                        && !text.is_empty()
+                                    {
+                                        let _ = tx.send(StreamChunk::TextDelta(text)).await;
+                                    }
                                 }
                                 // Tool use input JSON delta
-                                if let Some(partial) = delta.partial_json {
-                                    let idx = event.index.unwrap_or(0);
-                                    if idx < tool_calls.len() {
-                                        tool_calls[idx].2.push_str(&partial);
-                                    }
+                                if let Some(partial) = delta.partial_json
+                                    && idx < tool_calls.len()
+                                {
+                                    tool_calls[idx].2.push_str(&partial);
                                 }
                             }
                         }
@@ -454,6 +500,8 @@ impl LlmProvider for AnthropicProvider {
                                 && let Some(u) = msg.usage
                             {
                                 final_usage.prompt_tokens = u.input_tokens;
+                                final_usage.cache_read_tokens = u.cache_read_input_tokens;
+                                final_usage.cache_creation_tokens = u.cache_creation_input_tokens;
                             }
                         }
                         "message_stop" => {

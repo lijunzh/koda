@@ -40,10 +40,12 @@ pub async fn run(
         match prov.list_models().await {
             Ok(models) if !models.is_empty() => {
                 config.model = models[0].id.clone();
+                config.model_settings.model = config.model.clone();
                 tracing::info!("Auto-detected LM Studio model: {}", config.model);
             }
             Ok(_) => {
                 config.model = "(no model loaded)".to_string();
+                config.model_settings.model = config.model.clone();
                 eprintln!("  \x1b[33m\u{26a0} No model loaded in LM Studio.\x1b[0m");
                 eprintln!(
                     "    Load a model in LM Studio, then use \x1b[36m/model\x1b[0m to select it."
@@ -51,6 +53,7 @@ pub async fn run(
             }
             Err(e) => {
                 config.model = "(connection failed)".to_string();
+                config.model_settings.model = config.model.clone();
                 eprintln!(
                     "  \x1b[31m\u{2717} Could not connect to LM Studio at {}\x1b[0m",
                     config.base_url
@@ -132,6 +135,7 @@ pub async fn run(
                 }
                 ReplAction::SwitchModel(model) => {
                     config.model = model.clone();
+                    config.model_settings.model = model.clone();
                     println!("  \x1b[32m\u{2713}\x1b[0m Model set to: \x1b[36m{model}\x1b[0m");
                     continue;
                 }
@@ -167,6 +171,7 @@ pub async fn run(
                             match tui::select("\u{1f43b} Select a model", &options, current_idx) {
                                 Ok(Some(idx)) => {
                                     config.model = models[idx].id.clone();
+                                    config.model_settings.model = config.model.clone();
                                     println!(
                                         "  \x1b[32m\u{2713}\x1b[0m Model set to: \x1b[36m{}\x1b[0m",
                                         config.model
@@ -216,15 +221,39 @@ pub async fn run(
                 }
                 ReplAction::ShowCost => {
                     match db.session_token_usage(&session_id).await {
-                        Ok((prompt, completion, turns)) => {
-                            let total = prompt + completion;
+                        Ok(u) => {
+                            let total = u.prompt_tokens
+                                + u.completion_tokens
+                                + u.cache_read_tokens
+                                + u.cache_creation_tokens;
                             println!();
                             println!("  \x1b[1m\u{1f43b} Session Cost\x1b[0m");
                             println!();
-                            println!("  Prompt tokens:     \x1b[36m{prompt:>8}\x1b[0m");
-                            println!("  Completion tokens: \x1b[36m{completion:>8}\x1b[0m");
+                            println!("  Prompt tokens:     \x1b[36m{:>8}\x1b[0m", u.prompt_tokens);
+                            println!(
+                                "  Completion tokens: \x1b[36m{:>8}\x1b[0m",
+                                u.completion_tokens
+                            );
+                            if u.cache_read_tokens > 0 {
+                                println!(
+                                    "  Cache read tokens: \x1b[32m{:>8}\x1b[0m",
+                                    u.cache_read_tokens
+                                );
+                            }
+                            if u.cache_creation_tokens > 0 {
+                                println!(
+                                    "  Cache write tokens:\x1b[33m{:>8}\x1b[0m",
+                                    u.cache_creation_tokens
+                                );
+                            }
+                            if u.thinking_tokens > 0 {
+                                println!(
+                                    "  Thinking tokens:   \x1b[35m{:>8}\x1b[0m",
+                                    u.thinking_tokens
+                                );
+                            }
                             println!("  Total tokens:      \x1b[1m{total:>8}\x1b[0m");
-                            println!("  API calls:         \x1b[90m{turns:>8}\x1b[0m");
+                            println!("  API calls:         \x1b[90m{:>8}\x1b[0m", u.api_calls);
                             println!();
                             println!("  \x1b[90mModel: {}\x1b[0m", config.model);
                             println!("  \x1b[90mProvider: {}\x1b[0m", config.provider_type);
@@ -345,7 +374,6 @@ pub async fn run(
             None,
             None,
             None,
-            None,
         )
         .await?;
 
@@ -428,7 +456,6 @@ pub async fn run_headless(
         &session_id,
         &Role::User,
         Some(&user_message),
-        None,
         None,
         None,
         None,
@@ -553,7 +580,7 @@ async fn handle_compact(
 
     // Call the LLM for the summary (no tools, no streaming)
     let prov = provider.read().await;
-    let response = match prov.chat(&messages, &[], &config.model).await {
+    let response = match prov.chat(&messages, &[], &config.model_settings).await {
         Ok(r) => r,
         Err(e) => {
             println!("  \x1b[31mFailed to generate summary: {e}\x1b[0m");
@@ -607,6 +634,7 @@ async fn handle_setup_provider(
     config.provider_type = ptype.clone();
     config.base_url = base_url;
     config.model = ptype.default_model().to_string();
+    config.model_settings.model = config.model.clone();
 
     if key_missing || (is_same_provider && ptype != ProviderType::LMStudio) {
         let prompt_msg = if is_same_provider {
@@ -662,6 +690,11 @@ async fn handle_setup_provider(
     let prov = provider.read().await;
     match prov.list_models().await {
         Ok(models) => {
+            // Auto-select first model from API instead of using hardcoded default
+            if let Some(first) = models.first() {
+                config.model = first.id.clone();
+                config.model_settings.model = config.model.clone();
+            }
             println!("  \x1b[32m\u{2713}\x1b[0m Connection verified! Available models:");
             for m in &models {
                 let current = if m.id == config.model {
