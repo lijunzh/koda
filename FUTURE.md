@@ -199,29 +199,77 @@ and reduce costs/latency for repeated interactions.
 
 Significant architectural work, differentiating capabilities.
 
-### 3.1. Ratatui-based TUI
+### 3.1. Concurrent TUI with Non-Blocking Input
 
-**Effort:** Large.
+**Effort:** Large. This is the next major architectural evolution.
 
-**Motivation:** Several features need a proper TUI framework:
-- Transcript fold/unfold (replace in-place, not append)
-- Scrollable tool output panels
-- Split-pane views (code + conversation)
+**Vision:** Separate the input loop from the execution loop so the user
+can type new prompts, run commands, and queue tasks while Koda is
+thinking or executing tools. Inspired by Claude Code's footer-based UX.
+
+**Why Rust makes this possible:** Python agents (Code Puppy) are limited
+by the GIL — they can't truly separate input handling from inference.
+Rust's async (tokio) + crossterm gives us real concurrent I/O: streaming
+LLM responses on one task while reading user input on another.
+
+**Architecture:**
+```
+┌──────────────────────────────────────────────────────┐
+│  Scrollable output area                              │
+│  (streaming LLM response, tool output, agent results) │
+│                                                       │
+│  ● Read src/main.rs                                   │
+│  │ 95 lines (4200 chars)                              │
+│                                                       │
+│  ● Response                                           │
+│  Here's the architecture...                           │
+│                                                       │
+├──────────────────────────────────────────────────────┤
+│ > type your next prompt here...                       │
+├──────────────────────────────────────────────────────┤
+│ /help · claude-sonnet-4 · ctx: 12% · ⚡ 2 tasks running │
+└──────────────────────────────────────────────────────┘
+```
+
+**Three regions:**
+1. **Output area** (scrollable) — streaming responses, tool banners, agent results
+2. **Input line** (always active) — user can type while output is streaming
+3. **Footer bar** (persistent) — shortcuts, model name, context %, active task count
+
+**Key capabilities this unlocks:**
+- **Type while thinking** — queue next prompt while LLM is responding
+- **Interrupt and redirect** — Ctrl+C stops current task, immediately accept new input
+- **Parallel task visibility** — footer shows "⚡ 3 tasks running" during parallel agents
+- **Scroll back** — review earlier output without losing the input line
+- **Slash commands during execution** — `/cost` or `/compact` while a task runs
+
+**Implementation approach:**
+- Use `ratatui` with `crossterm` backend (crossterm already a dependency)
+- Two tokio tasks: input handler + inference/tool executor
+- Communication via `tokio::sync::mpsc` channels
+- Input task sends: UserPrompt, SlashCommand, Interrupt
+- Executor task sends: StreamChunk, ToolBanner, ToolOutput, Done
+- Render loop consumes events from both channels and updates the TUI
+
+**Migration path (incremental, not big-bang):**
+1. First: add a persistent footer bar (model, context %, shortcuts)
+   — minimal ratatui, keep current streaming output
+2. Then: separate input into its own tokio task with channel
+   — user can type during inference
+3. Then: scrollable output area
+   — full ratatui alternate screen
+4. Finally: parallel task queue with visibility
+   — multiple prompts in flight
+
+**Subsumes:**
+- Transcript fold/unfold (removed in v0.1.0)
+- The current streaming-print approach (replaced by render loop)
 - Progress bars for long-running tool calls
-- Inline diff rendering for file edits
-- Resizable/responsive layouts
 
-**Candidate:** [`ratatui`](https://github.com/ratatui/ratatui) —
-most actively maintained Rust TUI framework.
+**Dependencies:** `ratatui` crate (~zero new deps since crossterm is already included)
 
-**Considerations:**
-- `ratatui` takes over the terminal (alternate screen), conflicting
-  with the current streaming-print approach
-- May need hybrid mode: normal streaming during inference, ratatui
-  for interactive panels
-- `crossterm` (already a dependency) is a supported ratatui backend
-
-**Subsumes:** Transcript fold/unfold (removed in v0.1.0).
+**Reference:** Claude Code has a footer bar with shortcuts and model info.
+Code Puppy cannot do this due to Python GIL limitations.
 
 ---
 
