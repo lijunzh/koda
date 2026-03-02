@@ -16,13 +16,6 @@ use serde::{Deserialize, Serialize};
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const ANTHROPIC_BETA_FEATURES: &str = "prompt-caching-2024-07-31";
 
-/// Known Claude models (Anthropic doesn't have a /models endpoint).
-const CLAUDE_MODELS: &[&str] = &[
-    "claude-sonnet-4-20250514",
-    "claude-3-5-haiku-20241022",
-    "claude-3-5-sonnet-20241022",
-    "claude-3-opus-20240229",
-];
 
 pub struct AnthropicProvider {
     client: reqwest::Client,
@@ -163,6 +156,18 @@ struct AnthropicUsage {
     cache_read_input_tokens: i64,
 }
 
+// ── Models list types ───────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ModelsListResponse {
+    data: Vec<ModelsListEntry>,
+}
+
+#[derive(Deserialize)]
+struct ModelsListEntry {
+    id: String,
+}
+
 // ── SSE Streaming types ──────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -289,25 +294,12 @@ impl LlmProvider for AnthropicProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
-        // Verify the API key by making a minimal request.
-        // Use a 1-token chat to confirm auth works.
-        let verify_req = MessagesRequest {
-            model: "claude-3-5-haiku-20241022".to_string(),
-            max_tokens: 1,
-            system: None,
-            messages: vec![AnthropicMessage {
-                role: "user".to_string(),
-                content: AnthropicContent::Text("hi".to_string()),
-            }],
-            tools: Vec::new(),
-        };
-
+        // Use the /v1/models endpoint to discover available models and verify the API key.
         let resp = self
             .client
-            .post(format!("{}/v1/messages", self.base_url))
+            .get(format!("{}/v1/models?limit=100", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_API_VERSION)
-            .json(&verify_req)
             .send()
             .await
             .context("Failed to connect to Anthropic API")?;
@@ -321,11 +313,16 @@ impl LlmProvider for AnthropicProvider {
             anyhow::bail!("Anthropic API returned {status}: {body}");
         }
 
-        // Key is valid, return known models
-        Ok(CLAUDE_MODELS
-            .iter()
-            .map(|id| ModelInfo {
-                id: id.to_string(),
+        let list_resp: ModelsListResponse = resp
+            .json()
+            .await
+            .context("Failed to parse Anthropic models response")?;
+
+        Ok(list_resp
+            .data
+            .into_iter()
+            .map(|m| ModelInfo {
+                id: m.id,
                 owned_by: Some("anthropic".to_string()),
             })
             .collect())
