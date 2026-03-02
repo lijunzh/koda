@@ -50,9 +50,9 @@ All quick wins were implemented before the v0.1.0 release:
 
 ---
 
-## Medium Features (v0.2.0)
+## Medium Features (v0.2.0) — ALL COMPLETE ✅
 
-Moderate effort, significant capability improvements.
+All medium features were completed before the v0.1.0 release:
 
 ### 2.1. `/compact` — Context Window Compression ✅
 
@@ -195,7 +195,7 @@ and reduce costs/latency for repeated interactions.
 
 ---
 
-## Large Features (v0.3.0+)
+## Next Up (v0.2.0)
 
 Significant architectural work, differentiating capabilities.
 
