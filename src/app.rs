@@ -209,6 +209,10 @@ pub async fn run(
                         let (cmd, _) = commands[idx];
                         pending_command = Some(cmd.to_string());
                     }
+                    println!();
+                    println!(
+                        "  \x1b[90mTips: @file to attach context \u{00b7} Ctrl+C to interrupt \u{00b7} Ctrl+D to exit\x1b[0m"
+                    );
                     continue;
                 }
                 ReplAction::ShowCost => {
