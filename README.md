@@ -295,6 +295,14 @@ cargo build         # Debug build
 cargo run           # Run locally
 ```
 
+## Development Philosophy
+
+**v0.1.0: The Essential Agent**
+The goal of v0.1.x is to deliver a rock-solid, usable AI coding agent with all the essential features (file ops, shell, memory, context management, multi-modal, and parallel sub-agents) in a single zero-dependency binary.
+
+**v0.2.0: Dogfooding**
+We are now using Koda v0.1.0 as our primary editor to build Koda v0.2.0. The next phase will focus on architectural enhancements: MCP protocol support, a concurrent TUI (type while it thinks), and browser automation.
+
 ## License
 
 MIT

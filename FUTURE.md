@@ -290,13 +290,15 @@ Code Puppy cannot do this due to Python GIL limitations.
 for extensible tool servers. MCP allows third-party tools to be exposed
 to the LLM via a standardized JSON-RPC protocol.
 
-**Why it matters:** MCP is becoming the industry standard for AI tool
-extensibility. Both Claude Code and Code Puppy have full MCP support.
+**Why it matters:** This is currently Koda's largest feature gap compared
+to Claude Code and Code Puppy. MCP is becoming the industry standard for
+AI tool extensibility (Linear, GitHub, Postgres, etc.). Without it, Koda
+is limited to its 14 built-in tools.
 
 **Approach:**
-- Implement MCP client (connect to external MCP servers)
+- Implement MCP client (stdio and SSE transports)
 - Auto-discover tools from connected servers
-- Merge MCP tools into the existing tool registry
+- Merge MCP tools into Koda's existing tool registry
 
 ---
 
@@ -378,6 +380,11 @@ Code Puppy has a "pack" system (bloodhound, husky, retriever, etc.).
 **What:** Playwright-based browser control for web testing, scraping,
 and UI interaction. 30+ tools for navigation, clicks, form filling,
 screenshots, and workflow recording.
+
+**Why it matters:** Koda currently relies purely on static code analysis
+and shell commands. Browser automation allows agents to visually inspect
+and interact with the web UIs they build, closing a major capability gap
+with Code Puppy.
 
 **Reference:** Code Puppy has full browser automation.
 
