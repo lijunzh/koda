@@ -3,6 +3,7 @@
 //! Defines a common trait for all providers and re-exports the default.
 
 pub mod anthropic;
+pub mod gemini;
 pub mod openai_compat;
 
 use anyhow::Result;

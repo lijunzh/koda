@@ -12,6 +12,7 @@ use crate::providers::LlmProvider;
 /// Auto-compact threshold: when context usage exceeds this %, compact automatically.
 const AUTO_COMPACT_THRESHOLD: usize = 80;
 use crate::providers::anthropic::AnthropicProvider;
+use crate::providers::gemini::GeminiProvider;
 use crate::providers::openai_compat::OpenAiCompatProvider;
 use crate::repl::{self, ReplAction};
 use crate::tools::ToolRegistry;
@@ -739,6 +740,13 @@ pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider> {
             });
             Box::new(AnthropicProvider::new(key, Some(&config.base_url)))
         }
+        ProviderType::Gemini => {
+            let key = api_key.unwrap_or_else(|| {
+                tracing::warn!("No GEMINI_API_KEY set");
+                String::new()
+            });
+            Box::new(GeminiProvider::new(key, Some(&config.base_url)))
+        }
         _ => Box::new(OpenAiCompatProvider::new(&config.base_url, api_key)),
     }
 }
@@ -766,6 +774,13 @@ mod tests {
         let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
         let provider = create_provider(&config);
         assert_eq!(provider.provider_name(), "openai-compat");
+    }
+
+    #[test]
+    fn test_create_provider_gemini() {
+        let config = KodaConfig::default_for_testing(ProviderType::Gemini);
+        let provider = create_provider(&config);
+        assert_eq!(provider.provider_name(), "gemini");
     }
 
     #[test]

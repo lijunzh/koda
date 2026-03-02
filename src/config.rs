@@ -50,7 +50,7 @@ impl ProviderType {
             Self::OpenAI => "https://api.openai.com/v1",
             Self::Anthropic => "https://api.anthropic.com",
             Self::LMStudio => "http://localhost:1234/v1",
-            Self::Gemini => "https://generativelanguage.googleapis.com/v1beta/openai",
+            Self::Gemini => "https://generativelanguage.googleapis.com",
             Self::Groq => "https://api.groq.com/openai/v1",
             Self::Grok => "https://api.x.ai/v1",
         }
