@@ -8,6 +8,7 @@ use crate::confirm::{self, Confirmation};
 use crate::db::{Database, Role};
 use crate::display;
 use crate::interrupt;
+use crate::loop_guard::{self, LoopDetector};
 use crate::memory;
 use crate::providers::{ChatMessage, ImageData, LlmProvider, StreamChunk, ToolCall};
 use crate::tools::ToolRegistry;
@@ -44,9 +45,11 @@ pub async fn inference_loop(
     let tool_defs = &tool_defs;
     let system_tokens = system_prompt.len() / 4 + 100;
     let available = config.max_context_tokens.saturating_sub(system_tokens);
-    const MAX_ITERATIONS: u32 = 50;
+    // Hard cap is configurable per-agent; user can extend it interactively.
+    let mut hard_cap = config.max_iterations;
     let mut iteration = 0u32;
     let mut made_tool_calls = false;
+    let mut loop_detector = LoopDetector::new();
     // TODO(metrics): Wire prompt token tracking into /stats display
     let mut _total_prompt_tokens: i64 = 0;
     let mut total_completion_tokens: i64 = 0;
@@ -59,11 +62,15 @@ pub async fn inference_loop(
     let system_message = ChatMessage::text("system", system_prompt);
 
     loop {
-        if iteration >= MAX_ITERATIONS {
-            println!(
-                "\n  \x1b[33m\u{26a0} Reached maximum iterations ({MAX_ITERATIONS}). Breaking loop.\x1b[0m"
+        if iteration >= hard_cap {
+            let extra = loop_guard::ask_continue_or_stop(
+                hard_cap,
+                &loop_detector.recent_names(),
             );
-            break Ok(());
+            if extra == 0 {
+                break Ok(());
+            }
+            hard_cap += extra;
         }
 
         // Assemble context with sliding window
@@ -399,6 +406,16 @@ pub async fn inference_loop(
                 .await?;
         }
 
+        // Loop detection: same tool+args repeated REPEAT_THRESHOLD times → stop immediately.
+        if let Some(fp) = loop_detector.record(&tool_calls) {
+            let culprit = fp.split(':').next().unwrap_or("unknown");
+            println!(
+                "\n  \x1b[31m\u{26a0}  Loop detected: '{culprit}' is repeating with identical arguments.\
+                \n  Stopping to avoid wasted work. Rephrase the task or check for ambiguity.\x1b[0m"
+            );
+            break Ok(());
+        }
+
         iteration += 1;
     }
 }
@@ -590,7 +607,7 @@ async fn execute_sub_agent(
     let system_tokens = system_prompt.len() / 4 + 100;
     let available = sub_config.max_context_tokens.saturating_sub(system_tokens);
 
-    for _ in 0..10 {
+    for _ in 0..loop_guard::MAX_SUB_AGENT_ITERATIONS {
         let history = db.load_context(&sub_session, available).await?;
         let mut messages = vec![ChatMessage::text("system", &system_prompt)];
         for msg in &history {
@@ -650,6 +667,10 @@ async fn execute_sub_agent(
         }
     }
 
+    println!(
+        "  \x1b[33m\u{26a0}  Sub-agent '{agent_name}' hit its iteration limit ({MAX_SUB_AGENT_LIMIT}). Returning partial result.\x1b[0m",
+        MAX_SUB_AGENT_LIMIT = loop_guard::MAX_SUB_AGENT_ITERATIONS
+    );
     Ok("(sub-agent reached maximum iterations)".to_string())
 }
 

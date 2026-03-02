@@ -12,6 +12,7 @@ mod highlight;
 mod inference;
 mod input;
 mod interrupt;
+mod loop_guard;
 mod keystore;
 mod markdown;
 mod memory;

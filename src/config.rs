@@ -150,6 +150,8 @@ pub struct AgentConfig {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub max_context_tokens: Option<usize>,
+    #[serde(default)]
+    pub max_iterations: Option<u32>,
 }
 
 /// Runtime configuration assembled from CLI args, env vars, and agent JSON.
@@ -164,6 +166,7 @@ pub struct KodaConfig {
     pub max_context_tokens: usize,
     pub agents_dir: PathBuf,
     pub model_settings: ModelSettings,
+    pub max_iterations: u32,
 }
 
 impl KodaConfig {
@@ -215,6 +218,10 @@ impl KodaConfig {
             settings.reasoning_effort = Some(re.clone());
         }
 
+        let max_iterations = agent
+            .max_iterations
+            .unwrap_or(crate::loop_guard::MAX_ITERATIONS_DEFAULT);
+
         Ok(Self {
             agent_name: agent.name,
             system_prompt: agent.system_prompt,
@@ -225,6 +232,7 @@ impl KodaConfig {
             max_context_tokens,
             agents_dir,
             model_settings: settings,
+            max_iterations,
         })
     }
 
@@ -319,6 +327,7 @@ impl KodaConfig {
             max_context_tokens: 32_000,
             agents_dir: PathBuf::from("agents"),
             model_settings,
+            max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,
         }
     }
 
