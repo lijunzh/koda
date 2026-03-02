@@ -680,7 +680,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         // Create a tiny 1x1 PNG (valid minimal)
         let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        fs::write(dir.path().join("screenshot.png"), &png_bytes).unwrap();
+        fs::write(dir.path().join("screenshot.png"), png_bytes).unwrap();
 
         let result = process_input("what is this @screenshot.png", dir.path());
         assert_eq!(result.prompt, "what is this");
@@ -694,7 +694,7 @@ mod tests {
     fn test_process_input_image_only_default_prompt() {
         let dir = TempDir::new().unwrap();
         let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        fs::write(dir.path().join("ui.png"), &png_bytes).unwrap();
+        fs::write(dir.path().join("ui.png"), png_bytes).unwrap();
 
         let result = process_input("@ui.png", dir.path());
         assert_eq!(result.prompt, "Describe and analyze this image.");
@@ -706,7 +706,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("code.rs"), "fn main() {}").unwrap();
         let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        fs::write(dir.path().join("error.png"), &png_bytes).unwrap();
+        fs::write(dir.path().join("error.png"), png_bytes).unwrap();
 
         let result = process_input("fix this @code.rs @error.png", dir.path());
         assert_eq!(result.prompt, "fix this");
@@ -738,7 +738,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
         let img_path = dir.path().join("screenshot.png");
-        fs::write(&img_path, &png_bytes).unwrap();
+        fs::write(&img_path, png_bytes).unwrap();
 
         let input = format!("what is this {}", img_path.display());
         let result = process_input(&input, dir.path());
@@ -752,7 +752,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
         let img_path = dir.path().join("screenshot.png");
-        fs::write(&img_path, &png_bytes).unwrap();
+        fs::write(&img_path, png_bytes).unwrap();
 
         // Single-quoted (some terminals do this)
         let input = format!("explain '{}'", img_path.display());

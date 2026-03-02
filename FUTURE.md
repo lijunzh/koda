@@ -50,7 +50,7 @@ All quick wins were implemented before the v0.1.0 release:
 
 ---
 
-## Medium Features (v0.2.0) — ALL COMPLETE ✅
+## Medium Features (v0.1.x) — ALL COMPLETE ✅
 
 All medium features were completed before the v0.1.0 release:
 
@@ -195,9 +195,9 @@ and reduce costs/latency for repeated interactions.
 
 ---
 
-## Next Up (v0.2.0)
+## 3. Road to v0.2.0 (Large Features)
 
-Significant architectural work, differentiating capabilities.
+Significant architectural work and differentiating capabilities that form the roadmap for `v0.2.0`.
 
 ### 3.1. Concurrent TUI with Non-Blocking Input
 

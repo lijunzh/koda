@@ -449,10 +449,10 @@ mod tests {
             "Got: {result}"
         );
         // Clean up if created
-        if result.contains("Created agent") {
-            if let Ok(user_dir) = user_agents_dir() {
-                let _ = std::fs::remove_file(user_dir.join("test_temp_agent_xyz.json"));
-            }
+        if result.contains("Created agent")
+            && let Ok(user_dir) = user_agents_dir()
+        {
+            let _ = std::fs::remove_file(user_dir.join("test_temp_agent_xyz.json"));
         }
     }
 
