@@ -92,6 +92,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment: crates-io
+    continue-on-error: true  # Don't block GitHub release if crates.io fails
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -101,7 +102,7 @@ jobs:
 
   github-release:
     name: GitHub Release
-    needs: build
+    needs: build  # Only depends on build, not publish
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

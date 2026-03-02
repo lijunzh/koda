@@ -21,3 +21,6 @@ Thumbs.db
 logs/
 *.log
 .koda_logs/
+
+# CI artifacts
+release_body.md
