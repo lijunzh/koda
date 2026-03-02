@@ -26,7 +26,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             `--silent` or `--quiet` flags when available. \
             For test suites: `cargo test 2>&1 | tail -20`, `npm test -- --silent`, `pytest -q`. \
             For searches: prefer Grep tool, or pipe through `| head` if using shell grep. \
-            Output is capped at 100 lines — pipe to limit before that.".to_string(),
+            Output is capped at 256 lines — pipe to limit before that.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
