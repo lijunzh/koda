@@ -114,7 +114,6 @@ Tools use PascalCase naming:
 | `/model` | Pick a model (↑↓ arrow keys) |
 | `/paste` | Show clipboard contents |
 | `/provider` | Pick a provider |
-| `/proxy <url>` | Set HTTP proxy (persisted) |
 | `/sessions` | List recent sessions |
 | `/quit` | Exit |
 

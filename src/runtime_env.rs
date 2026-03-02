@@ -23,6 +23,7 @@ pub fn set(key: impl Into<String>, value: impl Into<String>) {
 }
 
 /// Remove a runtime environment variable.
+#[allow(dead_code)]
 pub fn remove(key: &str) {
     env_map()
         .write()

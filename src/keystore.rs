@@ -68,6 +68,7 @@ impl KeyStore {
     }
 
     /// Remove a key.
+    #[allow(dead_code)]
     pub fn remove(&mut self, env_name: &str) -> bool {
         self.keys.remove(env_name).is_some()
     }

@@ -27,7 +27,6 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/model", "Pick a model interactively"),
     ("/paste", "Show clipboard contents"),
     ("/provider", "Switch LLM provider"),
-    ("/proxy", "Set HTTP proxy"),
     ("/sessions", "List/resume/delete sessions"),
     ("/quit", "Exit Koda"),
 ];

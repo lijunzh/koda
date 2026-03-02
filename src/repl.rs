@@ -15,7 +15,6 @@ pub enum ReplAction {
     PickModel,
     SetupProvider(ProviderType, String), // (provider_type, base_url)
     PickProvider,
-    RecreateProvider,
     ShowHelp,
     ShowCost,
     ListSessions,
@@ -144,52 +143,6 @@ pub async fn handle_command(
                 ReplAction::SetupProvider(ptype, base_url)
             }
             None => ReplAction::PickProvider,
-        },
-
-        "/proxy" => match arg {
-            Some(url) => {
-                let url = url.trim().to_string();
-                if url == "off" || url == "none" || url == "clear" {
-                    crate::runtime_env::remove("HTTPS_PROXY");
-                    crate::runtime_env::remove("HTTP_PROXY");
-                    if let Ok(mut store) = crate::keystore::KeyStore::load() {
-                        store.remove("HTTPS_PROXY");
-                        store.remove("HTTP_PROXY");
-                        let _ = store.save();
-                    }
-                    println!("  \x1b[32m\u{2713}\x1b[0m Proxy cleared");
-                } else {
-                    crate::runtime_env::set("HTTPS_PROXY", &url);
-                    crate::runtime_env::set("HTTP_PROXY", &url);
-                    if let Ok(mut store) = crate::keystore::KeyStore::load() {
-                        store.set("HTTPS_PROXY", &url);
-                        store.set("HTTP_PROXY", &url);
-                        let _ = store.save();
-                    }
-                    println!(
-                        "  \x1b[32m\u{2713}\x1b[0m Proxy set to \x1b[36m{url}\x1b[0m (persisted)"
-                    );
-                }
-                // Provider needs to be recreated to pick up the new proxy
-                ReplAction::RecreateProvider
-            }
-            None => {
-                let proxy = crate::runtime_env::get("HTTPS_PROXY")
-                    .or_else(|| crate::runtime_env::get("HTTP_PROXY"))
-                    .unwrap_or_else(|| "(not set)".to_string());
-                let has_auth = crate::runtime_env::is_set("PROXY_USER") || proxy.contains('@');
-                let auth_status = if has_auth { " (authenticated)" } else { "" };
-                println!("  Proxy: \x1b[36m{proxy}\x1b[0m{auth_status}");
-                println!();
-                println!("  Usage:");
-                println!("    /proxy <url>                      Set proxy");
-                println!("    /proxy http://user:pass@host:port  Set proxy with auth");
-                println!("    /proxy off                        Disable proxy");
-                println!();
-                println!("  \x1b[90mProxy with auth:\x1b[0m");
-                println!("  \x1b[90m  /proxy http://myuser:mypass@proxy.example.com:8080\x1b[0m");
-                ReplAction::Handled
-            }
         },
 
         "/help" => ReplAction::ShowHelp,

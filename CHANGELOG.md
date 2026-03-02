@@ -90,7 +90,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - `/model` — switch models interactively
 - `/paste` — show clipboard contents
 - `/provider` — switch LLM providers
-- `/proxy` — set HTTP proxy (persisted)
 - `/sessions` — list, resume, or delete sessions
 
 ### CI/CD

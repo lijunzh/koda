@@ -187,10 +187,7 @@ pub async fn run(
                     handle_pick_provider(&mut config, &provider, &mut rl).await;
                     continue;
                 }
-                ReplAction::RecreateProvider => {
-                    *provider.write().await = create_provider(&config);
-                    continue;
-                }
+
                 ReplAction::ShowHelp => {
                     let commands = [
                         ("/agent", "List available sub-agents"),
@@ -202,7 +199,6 @@ pub async fn run(
                         ("/model", "Pick a model interactively"),
                         ("/paste", "Show clipboard contents"),
                         ("/provider", "Switch LLM provider"),
-                        ("/proxy", "Set HTTP proxy"),
                         ("/sessions", "List/resume/delete sessions"),
                         ("/quit", "Exit Koda"),
                     ];

@@ -16,7 +16,6 @@ mod repl_commands {
             "/model" => "PickModel",
             "/provider" if parts.len() > 1 => "SetupProvider",
             "/provider" => "PickProvider",
-            "/proxy" => "Handled_or_RecreateProvider",
             "/help" => "ShowHelp",
             "/cost" => "ShowCost",
             "/diff" if parts.len() > 1 => "InjectPrompt_or_Handled",
@@ -175,7 +174,6 @@ mod completions {
         "/model",
         "/paste",
         "/provider",
-        "/proxy",
         "/sessions",
         "/quit",
     ];
@@ -185,7 +183,7 @@ mod completions {
 
     #[test]
     fn test_expected_commands_present() {
-        assert_eq!(EXPECTED_COMMANDS.len(), 13, "Expected 13 slash commands");
+        assert_eq!(EXPECTED_COMMANDS.len(), 12, "Expected 12 slash commands");
         for cmd in EXPECTED_COMMANDS {
             assert!(
                 EXPECTED_COMMANDS.contains(cmd),
