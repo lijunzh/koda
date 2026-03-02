@@ -222,6 +222,7 @@ mod display_regression {
         ("MemoryRead", "Memory"),
         ("MemoryWrite", "Memory"),
         ("InvokeAgent", "Agent"),
+        ("CreateAgent", "Create"),
         ("CreateTool", "Create"),
         ("ListTools", "Tools"),
         ("DeleteTool", "Delete"),
@@ -241,6 +242,7 @@ mod display_regression {
             "TodoRead" | "TodoWrite" => "Todo",
             "MemoryRead" | "MemoryWrite" => "Memory",
             "InvokeAgent" => "Agent",
+            "CreateAgent" => "Create",
             "CreateTool" => "Create",
             "ListTools" => "Tools",
             "DeleteTool" => "Delete",
@@ -268,8 +270,8 @@ mod display_regression {
     fn test_tool_count() {
         assert_eq!(
             KNOWN_TOOLS.len(),
-            17,
-            "Expected 17 known tools (update this test when adding tools)"
+            18,
+            "Expected 18 known tools (update this test when adding tools)"
         );
     }
 }

@@ -136,6 +136,7 @@ impl ToolRegistry {
 
             // Agent tools
             "ListAgents" => Ok(agent::list_agents(&self.project_root)),
+            "CreateAgent" => Ok(agent::create_agent(&self.project_root, &args)),
             "InvokeAgent" => {
                 // Handled externally by the event loop (needs access to config/db).
                 return ToolResult {

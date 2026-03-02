@@ -465,6 +465,7 @@ mod naming_convention {
         "MemoryWrite",
         "InvokeAgent",
         "ListAgents",
+        "CreateAgent",
         "CreateTool",
         "ListTools",
         "DeleteTool",
@@ -501,6 +502,6 @@ mod naming_convention {
     #[test]
     fn test_expected_tool_count() {
         // 16 built-in tools as of this version
-        assert_eq!(BUILTIN_TOOLS.len(), 18);
+        assert_eq!(BUILTIN_TOOLS.len(), 19);
     }
 }

@@ -147,6 +147,10 @@ pub fn tool_info(name: &str, args_json: &str) -> (&'static str, &'static str, St
             let agent = json_str_multi(&args, &["agent_name", "name"]);
             (RUBY, "Agent", agent)
         }
+        "CreateAgent" => {
+            let name = json_str_multi(&args, &["name"]);
+            (VIOLET, "Create", format!("agent: {name}"))
+        }
         "CreateTool" => {
             let name = json_str_multi(&args, &["name"]);
             (VIOLET, "Create", format!("tool: {name}"))
