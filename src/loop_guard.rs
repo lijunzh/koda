@@ -143,10 +143,10 @@ mod tests {
     fn detects_repeated_identical_call() {
         let mut d = LoopDetector::new();
         let tc = call("Read", "{\"path\":\"src/main.rs\"}");
-        assert!(d.record(&[tc.clone()]).is_none());
-        assert!(d.record(&[tc.clone()]).is_none());
+        assert!(d.record(std::slice::from_ref(&tc)).is_none());
+        assert!(d.record(std::slice::from_ref(&tc)).is_none());
         // Third repetition should trigger
-        assert!(d.record(&[tc]).is_some());
+        assert!(d.record(std::slice::from_ref(&tc)).is_some());
     }
 
     #[test]
