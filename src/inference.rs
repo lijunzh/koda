@@ -200,7 +200,7 @@ pub async fn inference_loop(
                                 // Render text before <think> tag with markdown
                                 let before = &think_buffer[..start_pos];
                                 if !before.is_empty() {
-                                    if !response_banner_shown {
+                                    if !response_banner_shown && !before.trim().is_empty() {
                                         display::print_response_banner();
                                         response_banner_shown = true;
                                     }
@@ -217,11 +217,11 @@ pub async fn inference_loop(
                                 let safe_len =
                                     think_buffer.rfind('<').unwrap_or(think_buffer.len());
                                 if safe_len > 0 {
-                                    if !response_banner_shown {
+                                    let safe = &think_buffer[..safe_len];
+                                    if !response_banner_shown && !safe.trim().is_empty() {
                                         display::print_response_banner();
                                         response_banner_shown = true;
                                     }
-                                    let safe = &think_buffer[..safe_len];
                                     md.push(safe);
                                     think_buffer = think_buffer[safe_len..].to_string();
                                 }
@@ -243,6 +243,9 @@ pub async fn inference_loop(
 
         // Flush remaining buffer
         if !think_buffer.is_empty() && !in_think_block {
+            if !response_banner_shown && !think_buffer.trim().is_empty() {
+                display::print_response_banner();
+            }
             md.push(&think_buffer);
         }
         md.flush();
