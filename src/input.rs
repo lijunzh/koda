@@ -8,7 +8,9 @@ use rustyline::completion::{Completer, Pair};
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
-use rustyline::{Context, Helper};
+use rustyline::{
+    Cmd, ConditionalEventHandler, Context, Event, EventContext, Helper, Movement, RepeatCount,
+};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
@@ -291,6 +293,46 @@ fn highlight_at_refs(line: &str) -> String {
 
 impl Validator for KodaHelper {}
 impl Helper for KodaHelper {}
+
+/// Clears the input line on Esc. Does nothing when the buffer is already empty.
+pub struct EscClearHandler;
+
+impl ConditionalEventHandler for EscClearHandler {
+    fn handle(
+        &self,
+        _evt: &Event,
+        _n: RepeatCount,
+        _positive: bool,
+        ctx: &EventContext,
+    ) -> Option<Cmd> {
+        if ctx.line().is_empty() {
+            None // default behaviour (no-op in emacs mode)
+        } else {
+            Some(Cmd::Kill(Movement::WholeBuffer))
+        }
+    }
+}
+
+/// Clears the input line on Ctrl-C.
+///
+/// When Koda is idle (readline active), Ctrl-C should never exit — that is
+/// handled by the ctrlc signal handler only while Koda is actually working
+/// (inference, tool execution, etc.). An empty-buffer Ctrl-C is a silent no-op;
+/// a non-empty buffer is cleared.
+pub struct CtrlCClearHandler;
+
+impl ConditionalEventHandler for CtrlCClearHandler {
+    fn handle(
+        &self,
+        _evt: &Event,
+        _n: RepeatCount,
+        _positive: bool,
+        _ctx: &EventContext,
+    ) -> Option<Cmd> {
+        // Kill(WholeBuffer) is a no-op on an empty buffer, so no branch needed.
+        Some(Cmd::Kill(Movement::WholeBuffer))
+    }
+}
 
 // ── @file pre-processor ────────────────────────────────────────
 

@@ -97,6 +97,17 @@ pub async fn run(
     )?;
     rl.set_helper(Some(helper));
 
+    // Esc clears the current line (no-op when already empty).
+    // Ctrl-C clears the line when non-empty, or exits when the buffer is empty.
+    rl.bind_sequence(
+        rustyline::KeyEvent(rustyline::KeyCode::Esc, rustyline::Modifiers::NONE),
+        rustyline::EventHandler::Conditional(Box::new(input::EscClearHandler)),
+    );
+    rl.bind_sequence(
+        rustyline::KeyEvent::ctrl('c'),
+        rustyline::EventHandler::Conditional(Box::new(input::CtrlCClearHandler)),
+    );
+
     let history_path = history_file_path();
     if history_path.exists() {
         let _ = rl.load_history(&history_path);
@@ -215,7 +226,7 @@ pub async fn run(
                     }
                     println!();
                     println!(
-                        "  \x1b[90mTips: @file to attach context \u{00b7} Ctrl+C to interrupt \u{00b7} Ctrl+D to exit\x1b[0m"
+                        "  \x1b[90mTips: @file to attach context \u{00b7} Ctrl+C to clear input \u{00b7} Ctrl+D to exit\x1b[0m"
                     );
                     continue;
                 }
