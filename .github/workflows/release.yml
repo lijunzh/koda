@@ -134,3 +134,85 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/*.zip
+
+  update-homebrew:
+    name: Update Homebrew Tap
+    needs: github-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute SHA256 checksums
+        id: sha
+        run: |
+          echo "aarch64_mac=$(sha256sum artifacts/koda-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "x86_64_mac=$(sha256sum artifacts/koda-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "aarch64_linux=$(sha256sum artifacts/koda-aarch64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "x86_64_linux=$(sha256sum artifacts/koda-x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      - name: Update formula
+        uses: actions/checkout@v4
+        with:
+          repository: lijunzh/homebrew-koda
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-koda
+
+      - name: Write updated formula
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          cat > homebrew-koda/Formula/koda.rb << 'FORMULA'
+          class Koda < Formula
+            desc "High-performance AI coding agent built in Rust"
+            homepage "https://github.com/lijunzh/koda"
+            version "VERSION_PLACEHOLDER"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-aarch64-apple-darwin.tar.gz"
+                sha256 "SHA_AARCH64_MAC"
+              else
+                url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-x86_64-apple-darwin.tar.gz"
+                sha256 "SHA_X86_64_MAC"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "SHA_AARCH64_LINUX"
+              else
+                url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "SHA_X86_64_LINUX"
+              end
+            end
+
+            def install
+              bin.install "koda"
+            end
+
+            test do
+              assert_match "koda-agent", shell_output("#{bin}/koda --version")
+            end
+          end
+          FORMULA
+          # Replace placeholders
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-koda/Formula/koda.rb
+          sed -i "s/SHA_AARCH64_MAC/${{ steps.sha.outputs.aarch64_mac }}/g" homebrew-koda/Formula/koda.rb
+          sed -i "s/SHA_X86_64_MAC/${{ steps.sha.outputs.x86_64_mac }}/g" homebrew-koda/Formula/koda.rb
+          sed -i "s/SHA_AARCH64_LINUX/${{ steps.sha.outputs.aarch64_linux }}/g" homebrew-koda/Formula/koda.rb
+          sed -i "s/SHA_X86_64_LINUX/${{ steps.sha.outputs.x86_64_linux }}/g" homebrew-koda/Formula/koda.rb
+          # Fix indentation (heredoc adds leading spaces)
+          sed -i 's/^          //' homebrew-koda/Formula/koda.rb
+
+      - name: Push formula update
+        run: |
+          cd homebrew-koda
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/koda.rb
+          git commit -m "Update koda to ${GITHUB_REF#refs/tags/}"
+          git push
