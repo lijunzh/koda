@@ -40,66 +40,6 @@ pub async fn handle_command(
     match cmd {
         "/exit" => ReplAction::Quit,
 
-        "/copy" => {
-            let response = crate::clipboard::get_last_response();
-            if response.is_empty() {
-                println!("  \x1b[90mNo response to copy yet.\x1b[0m");
-                return ReplAction::Handled;
-            }
-
-            let blocks = crate::clipboard::extract_code_blocks(&response);
-
-            let text_to_copy = match arg {
-                // /copy all — copy full response
-                Some("all") | None if blocks.is_empty() => response.clone(),
-                // /copy <n> — copy specific code block
-                Some(n) if n.parse::<usize>().is_ok() => {
-                    let idx = n.parse::<usize>().unwrap();
-                    if idx == 0 || idx > blocks.len() {
-                        println!(
-                            "  \x1b[31mBlock {idx} not found. {} code block(s) available.\x1b[0m",
-                            blocks.len()
-                        );
-                        return ReplAction::Handled;
-                    }
-                    blocks[idx - 1].1.clone()
-                }
-                // /copy with code blocks — show picker
-                _ => {
-                    println!();
-                    println!("  \x1b[1m\u{1f4cb} Code Blocks\x1b[0m");
-                    println!();
-                    for (i, (lang, code)) in blocks.iter().enumerate() {
-                        let lang_str = lang.as_deref().unwrap_or("text");
-                        let preview: String =
-                            code.lines().next().unwrap_or("").chars().take(50).collect();
-                        println!(
-                            "  \x1b[36m{}\x1b[0m. \x1b[90m[{lang_str}]\x1b[0m {preview}",
-                            i + 1
-                        );
-                    }
-                    println!(
-                        "  \x1b[36m{}\x1b[0m. \x1b[90m[full response]\x1b[0m",
-                        blocks.len() + 1
-                    );
-                    println!();
-                    println!(
-                        "  \x1b[90m/copy <number> to copy a block, /copy all for full response\x1b[0m"
-                    );
-                    return ReplAction::Handled;
-                }
-            };
-
-            match crate::clipboard::copy_to_clipboard(&text_to_copy) {
-                Ok(()) => {
-                    let chars = text_to_copy.len();
-                    println!("  \x1b[32m\u{2713}\x1b[0m Copied to clipboard ({chars} chars)");
-                }
-                Err(e) => println!("  \x1b[31m{e}\x1b[0m"),
-            }
-            ReplAction::Handled
-        }
-
         "/model" => match arg {
             Some(model) => ReplAction::SwitchModel(model.to_string()),
             None => ReplAction::PickModel,

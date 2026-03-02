@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 
 /// All known slash commands with short descriptions.
 const SLASH_COMMANDS: &[(&str, &str)] = &[
-    ("/copy", "Copy last response or code block"),
     ("/cost", "Show token usage for this session"),
     (
         "/diff",

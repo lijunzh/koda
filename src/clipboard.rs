@@ -17,6 +17,7 @@ pub fn set_last_response(text: &str) {
 }
 
 /// Get the most recent LLM response.
+#[allow(dead_code)]
 pub fn get_last_response() -> String {
     LAST_RESPONSE.lock().unwrap().clone()
 }
@@ -24,6 +25,7 @@ pub fn get_last_response() -> String {
 // ── Clipboard operations ──────────────────────────────────────
 
 /// Copy text to the system clipboard.
+#[allow(dead_code)]
 pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let (cmd, args) = clipboard_copy_cmd();
 
@@ -67,6 +69,7 @@ pub fn paste_from_clipboard() -> Result<String, String> {
 }
 
 /// Extract code blocks from markdown text.
+#[allow(dead_code)]
 pub fn extract_code_blocks(text: &str) -> Vec<(Option<String>, String)> {
     let mut blocks = Vec::new();
     let mut in_block = false;
@@ -101,6 +104,7 @@ pub fn extract_code_blocks(text: &str) -> Vec<(Option<String>, String)> {
 
 // ── Platform detection ────────────────────────────────────────
 
+#[allow(dead_code)]
 fn clipboard_copy_cmd() -> (&'static str, Vec<&'static str>) {
     if cfg!(target_os = "macos") {
         ("pbcopy", vec![])

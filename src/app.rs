@@ -192,7 +192,6 @@ pub async fn run(
                     let commands = [
                         ("/agent", "List available sub-agents"),
                         ("/compact", "Summarize conversation to reclaim context"),
-                        ("/copy", "Copy last response or code block"),
                         ("/cost", "Show token usage for this session"),
                         ("/diff", "Show git diff / review / commit message"),
                         ("/memory", "View/save project & global memory"),

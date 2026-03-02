@@ -64,7 +64,6 @@ koda -p "list all TODOs" --output-format json
 - **Claude Code compatible** — reads `CLAUDE.md` and `AGENTS.md` for memory
 - **Context window management** — auto-compact at 80%, manual `/compact`, sliding window
 - **Token cost tracking** — `/cost` shows cumulative usage per session
-- **Clipboard integration** — `/copy` code blocks, `/paste` from clipboard
 - **Sub-agent orchestration** — delegate tasks via `InvokeAgent` with parallel execution
 - **4 pre-built agents** — code reviewer, security auditor, test writer, release engineer
 - **Headless mode** — `koda -p "prompt"` for CI/CD, scripting, and piped input
@@ -101,7 +100,6 @@ Tools use PascalCase naming:
 |---------|-------------|
 | `/agent` | List available sub-agents |
 | `/compact` | Summarize conversation to reclaim context |
-| `/copy` | Copy last response or code block to clipboard |
 | `/cost` | Show token usage for this session |
 | `/diff` | Show uncommitted git changes |
 | `/diff review` | Ask Koda to review uncommitted changes |

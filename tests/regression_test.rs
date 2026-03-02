@@ -23,7 +23,7 @@ mod repl_commands {
             "/sessions" if parts.len() > 1 && parts[1].starts_with("delete ") => "DeleteSession",
             "/sessions" => "ListSessions",
             "/memory" => "Handled",
-            "/copy" => "Handled",
+
             "/paste" => "Handled",
             "/compact" => "Compact",
             "/agent" => "Handled",
@@ -54,9 +54,7 @@ mod repl_commands {
         assert_eq!(dispatch("/memory"), "Handled");
         assert_eq!(dispatch("/memory add test"), "Handled");
         assert_eq!(dispatch("/memory global test"), "Handled");
-        assert_eq!(dispatch("/copy"), "Handled");
-        assert_eq!(dispatch("/copy 1"), "Handled");
-        assert_eq!(dispatch("/copy all"), "Handled");
+
         assert_eq!(dispatch("/paste"), "Handled");
         assert_eq!(dispatch("/compact"), "Compact");
         assert_eq!(dispatch("/agent"), "Handled");
@@ -164,7 +162,6 @@ mod completions {
     const EXPECTED_COMMANDS: &[&str] = &[
         "/agent",
         "/compact",
-        "/copy",
         "/cost",
         "/diff",
         "/help",
@@ -179,7 +176,7 @@ mod completions {
 
     #[test]
     fn test_expected_commands_present() {
-        assert_eq!(EXPECTED_COMMANDS.len(), 10, "Expected 10 slash commands");
+        assert_eq!(EXPECTED_COMMANDS.len(), 9, "Expected 9 slash commands");
         for cmd in EXPECTED_COMMANDS {
             assert!(
                 EXPECTED_COMMANDS.contains(cmd),

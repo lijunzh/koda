@@ -77,12 +77,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Global memory: ~/.config/koda/memory.md
 - Persistent API keys: ~/.config/koda/keys.toml
 - REPL history: ~/.config/koda/history
-- Clipboard integration: /copy and /paste
 
 ### REPL Commands
 - `/agent` — list available sub-agents
 - `/compact` — summarize conversation to reclaim context
-- `/copy` — copy response or code blocks to clipboard
 - `/cost` — show token usage for the session
 - `/diff` — show/review uncommitted changes, generate commit messages
 - `/help` — command palette
