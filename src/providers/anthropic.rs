@@ -269,6 +269,7 @@ impl LlmProvider for AnthropicProvider {
                         id,
                         function_name: name,
                         arguments: serde_json::to_string(&input)?,
+                        thought_signature: None,
                     });
                 }
                 _ => {}
@@ -521,6 +522,7 @@ impl LlmProvider for AnthropicProvider {
                         id,
                         function_name: name,
                         arguments: args,
+                        thought_signature: None,
                     })
                     .collect();
                 let _ = tx.send(StreamChunk::ToolCalls(tcs)).await;
@@ -684,6 +686,7 @@ mod tests {
                 id: "tc_1".into(),
                 function_name: "Read".into(),
                 arguments: r#"{"path":"main.rs"}"#.into(),
+                thought_signature: None,
             }]),
             tool_call_id: None,
             images: None,
@@ -740,6 +743,7 @@ mod tests {
                 id: "tc_2".into(),
                 function_name: "Bash".into(),
                 arguments: r#"{"command":"cargo test"}"#.into(),
+                thought_signature: None,
             }]),
             tool_call_id: None,
             images: None,

@@ -140,6 +140,7 @@ mod tests {
             id: "x".into(),
             function_name: name.into(),
             arguments: args.into(),
+            thought_signature: None,
         }
     }
 

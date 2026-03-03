@@ -109,6 +109,9 @@ struct ResponsePart {
     text: Option<String>,
     #[serde(default)]
     function_call: Option<FunctionCallResponse>,
+    /// Thought signature that must be echoed back when replaying this part.
+    #[serde(default)]
+    thought_signature: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -336,6 +339,7 @@ impl LlmProvider for GeminiProvider {
                                             function_name: fc.name.clone(),
                                             arguments: serde_json::to_string(&fc.args)
                                                 .unwrap_or_default(),
+                                            thought_signature: part.thought_signature.clone(),
                                         });
                                     }
                                 }
@@ -409,13 +413,16 @@ impl GeminiProvider {
                 for tc in tcs {
                     let args: serde_json::Value =
                         serde_json::from_str(&tc.arguments).unwrap_or_default();
-                    parts.push(
-                        Part::FunctionCall {
-                            name: tc.function_name.clone(),
-                            args,
-                        }
-                        .to_json(),
-                    );
+                    let mut fc_part = Part::FunctionCall {
+                        name: tc.function_name.clone(),
+                        args,
+                    }
+                    .to_json();
+                    // Echo back thought_signature if present (required by Gemini API)
+                    if let Some(ref sig) = tc.thought_signature {
+                        fc_part["thoughtSignature"] = serde_json::json!(sig);
+                    }
+                    parts.push(fc_part);
                 }
                 contents.push(serde_json::json!({ "role": "model", "parts": parts }));
                 continue;
@@ -517,6 +524,7 @@ impl GeminiProvider {
                                 id: format!("gemini_tc_{tc_counter}"),
                                 function_name: fc.name,
                                 arguments: serde_json::to_string(&fc.args)?,
+                                thought_signature: part.thought_signature,
                             });
                         }
                     }
@@ -612,6 +620,7 @@ mod tests {
                 id: "tc_1".into(),
                 function_name: "Read".into(),
                 arguments: r#"{"path":"main.rs"}"#.into(),
+                thought_signature: None,
             }]),
             tool_call_id: None,
             images: None,
@@ -678,6 +687,7 @@ mod tests {
                     parts: Some(vec![ResponsePart {
                         text: Some("Hello!".into()),
                         function_call: None,
+                        thought_signature: None,
                     }]),
                 }),
             }]),
@@ -706,6 +716,7 @@ mod tests {
                             name: "Read".into(),
                             args: serde_json::json!({"path": "main.rs"}),
                         }),
+                        thought_signature: None,
                     }]),
                 }),
             }]),
