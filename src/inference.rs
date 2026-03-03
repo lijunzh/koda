@@ -51,8 +51,7 @@ pub async fn inference_loop(
     let mut iteration = 0u32;
     let mut made_tool_calls = false;
     let mut loop_detector = LoopDetector::new();
-    // TODO(metrics): Wire prompt token tracking into /stats display
-    let mut _total_prompt_tokens: i64 = 0;
+    let mut total_prompt_tokens: i64 = 0;
     let mut total_completion_tokens: i64 = 0;
     let mut total_cache_read_tokens: i64 = 0;
     let mut total_thinking_tokens: i64 = 0;
@@ -333,7 +332,7 @@ pub async fn inference_loop(
                     "\n  \x1b[33m\u{26a0} Model produced an empty response after tool use — it may have given up mid-task. Try rephrasing or switching to a more capable model.\x1b[0m"
                 );
             }
-            _total_prompt_tokens += usage.prompt_tokens;
+            total_prompt_tokens += usage.prompt_tokens;
             total_completion_tokens += usage.completion_tokens;
             total_cache_read_tokens += usage.cache_read_tokens;
             total_thinking_tokens += usage.thinking_tokens;
@@ -364,8 +363,12 @@ pub async fn inference_loop(
 
             // Build enriched footer parts
             let mut parts = Vec::new();
+            if total_prompt_tokens > 0 {
+                let prompt_k = format_token_count(total_prompt_tokens);
+                parts.push(format!("in: {prompt_k}"));
+            }
             if display_tokens > 0 {
-                parts.push(format!("{display_tokens} tokens"));
+                parts.push(format!("out: {display_tokens}"));
             }
             parts.push(time_str);
             if display_tokens > 0 {
@@ -387,7 +390,7 @@ pub async fn inference_loop(
         }
 
         // Accumulate token usage across iterations
-        _total_prompt_tokens += usage.prompt_tokens;
+        total_prompt_tokens += usage.prompt_tokens;
         total_completion_tokens += usage.completion_tokens;
         total_cache_read_tokens += usage.cache_read_tokens;
         total_thinking_tokens += usage.thinking_tokens;
