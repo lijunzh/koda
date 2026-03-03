@@ -405,8 +405,17 @@ pub async fn inference_loop(
         if tool_calls.len() > 1
             && can_parallelize(&tool_calls, mode, &settings.approval.allowed_commands)
         {
-            execute_tools_parallel(&tool_calls, project_root, config, db, session_id, tools, mode, &settings.approval.allowed_commands)
-                .await?;
+            execute_tools_parallel(
+                &tool_calls,
+                project_root,
+                config,
+                db,
+                session_id,
+                tools,
+                mode,
+                &settings.approval.allowed_commands,
+            )
+            .await?;
         } else {
             execute_tools_sequential(
                 &tool_calls,
@@ -465,7 +474,16 @@ async fn execute_one_tool(
         // can't mutate the shared settings.
         let mut sub_settings = Settings::default();
         sub_settings.approval.allowed_commands = allowed_commands.to_vec();
-        match execute_sub_agent(project_root, config, db, &tc.arguments, mode, &mut sub_settings).await {
+        match execute_sub_agent(
+            project_root,
+            config,
+            db,
+            &tc.arguments,
+            mode,
+            &mut sub_settings,
+        )
+        .await
+        {
             Ok(output) => output,
             Err(e) => format!("Error invoking sub-agent: {e}"),
         }
@@ -649,7 +667,16 @@ async fn execute_tools_sequential(
             }
         }
 
-        let (_, result) = execute_one_tool(tc, project_root, config, db, tools, mode, &settings.approval.allowed_commands).await;
+        let (_, result) = execute_one_tool(
+            tc,
+            project_root,
+            config,
+            db,
+            tools,
+            mode,
+            &settings.approval.allowed_commands,
+        )
+        .await;
         display::print_tool_output(&tc.function_name, &result);
 
         db.insert_message(
@@ -784,12 +811,17 @@ async fn execute_sub_agent(
                     let diff_preview =
                         preview::compute(&tc.function_name, &parsed_args, project_root).await;
                     let whitelist_hint = if tc.function_name == "Bash" {
-                        let cmd = parsed_args.get("command")
+                        let cmd = parsed_args
+                            .get("command")
                             .or(parsed_args.get("cmd"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
                         let pattern = approval::extract_whitelist_pattern(cmd);
-                        if pattern.is_empty() { None } else { Some(pattern) }
+                        if pattern.is_empty() {
+                            None
+                        } else {
+                            Some(pattern)
+                        }
                     } else {
                         None
                     };
@@ -808,9 +840,7 @@ async fn execute_sub_agent(
                             }
                             tools.execute(&tc.function_name, &tc.arguments).await.output
                         }
-                        confirm::Confirmation::Rejected => {
-                            "[rejected by user]".to_string()
-                        }
+                        confirm::Confirmation::Rejected => "[rejected by user]".to_string(),
                         confirm::Confirmation::RejectedWithFeedback(fb) => {
                             format!("[rejected: {fb}]")
                         }
