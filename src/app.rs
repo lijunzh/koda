@@ -89,7 +89,7 @@ pub async fn run(
 
     let semantic_memory = memory::load(&project_root)?;
     let system_prompt =
-        inference::build_system_prompt(&config.system_prompt, &semantic_memory, &config.agents_dir);
+        inference::build_system_prompt(&config.system_prompt, &semantic_memory, &config.agents_dir, &project_root);
 
     // REPL with smart completions
     // Initialize approval mode and user settings
@@ -522,7 +522,7 @@ pub async fn run_headless(
 
     let semantic_memory = memory::load(&project_root)?;
     let system_prompt =
-        inference::build_system_prompt(&config.system_prompt, &semantic_memory, &config.agents_dir);
+        inference::build_system_prompt(&config.system_prompt, &semantic_memory, &config.agents_dir, &project_root);
 
     // Process @file references and images (same as interactive mode)
     let processed = input::process_input(&prompt, &project_root);
