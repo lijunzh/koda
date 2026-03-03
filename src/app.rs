@@ -114,8 +114,9 @@ pub async fn run(
     );
 
     // Shift+Tab cycles approval mode: Plan → Normal → Yolo
+    // Note: rustyline normalizes Shift+Tab to BackTab with NONE modifiers
     rl.bind_sequence(
-        rustyline::KeyEvent(rustyline::KeyCode::BackTab, rustyline::Modifiers::SHIFT),
+        rustyline::KeyEvent(rustyline::KeyCode::BackTab, rustyline::Modifiers::NONE),
         rustyline::EventHandler::Conditional(Box::new(
             input::ShiftTabModeHandler::new(shared_mode.clone()),
         )),
