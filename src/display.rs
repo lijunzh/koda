@@ -35,6 +35,7 @@ const RUBY: &str = "\x1b[38;2;175;50;120m"; // agent (delegation)
 
 // Neutral
 const SILVER: &str = "\x1b[38;2;140;140;140m"; // search (neutral)
+const CYAN: &str = "\x1b[38;2;0;180;200m"; // MCP (external, distinct)
 
 // Success — the most important
 const EMERALD: &str = "\x1b[38;2;42;160;60m"; // response (your answer!)
@@ -173,6 +174,14 @@ pub fn tool_info(name: &str, args_json: &str) -> (&'static str, &'static str, St
                 .and_then(|v| v.as_str())
                 .unwrap_or("reasoning");
             (VIOLET, "Thinking", title.to_string())
+        }
+        // MCP tools: server_name.tool_name
+        other if other.contains('.') => {
+            let parts: Vec<&str> = other.splitn(2, '.').collect();
+            let server = parts[0];
+            let tool = parts.get(1).copied().unwrap_or(other);
+            let summary = format!("{server}::{tool}");
+            (CYAN, "MCP", summary)
         }
         _ => (DIM, "Tool", name.to_string()),
     }

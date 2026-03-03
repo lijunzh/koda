@@ -32,6 +32,8 @@ pub struct ToolRegistry {
     project_root: PathBuf,
     definitions: HashMap<String, ToolDefinition>,
     read_cache: std::sync::Mutex<HashMap<String, (u64, SystemTime)>>,
+    /// Connected MCP servers providing additional tools.
+    mcp_registry: Option<std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpRegistry>>>,
 }
 
 impl ToolRegistry {
@@ -69,22 +71,60 @@ impl ToolRegistry {
             project_root,
             definitions,
             read_cache: std::sync::Mutex::new(HashMap::new()),
+            mcp_registry: None,
         }
     }
 
+    /// Attach an MCP registry for external tool support.
+    pub fn with_mcp_registry(
+        mut self,
+        registry: std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpRegistry>>,
+    ) -> Self {
+        self.mcp_registry = Some(registry);
+        self
+    }
+
     /// Get tool definitions, optionally filtered by an allow-list.
+    /// Includes MCP tools merged with built-in tools.
     pub fn get_definitions(&self, allowed: &[String]) -> Vec<ToolDefinition> {
-        if allowed.is_empty() {
-            return self.definitions.values().cloned().collect();
+        let mut defs: Vec<ToolDefinition> = if allowed.is_empty() {
+            self.definitions.values().cloned().collect()
+        } else {
+            allowed
+                .iter()
+                .filter_map(|name| self.definitions.get(name).cloned())
+                .collect()
+        };
+
+        // Merge MCP tool definitions (always included, not filtered by allow-list)
+        if let Some(ref mcp) = self.mcp_registry {
+            if let Ok(registry) = mcp.try_read() {
+                defs.extend(registry.all_tool_definitions());
+            }
         }
-        allowed
-            .iter()
-            .filter_map(|name| self.definitions.get(name).cloned())
-            .collect()
+
+        defs
     }
 
     /// Execute a tool by name with the given JSON arguments.
     pub async fn execute(&self, name: &str, arguments: &str) -> ToolResult {
+        // Check if this is an MCP tool (contains '.' separator and belongs to an MCP server)
+        if let Some(ref mcp) = self.mcp_registry {
+            let is_mcp = {
+                let registry = mcp.read().await;
+                registry.is_mcp_tool(name)
+            };
+            if is_mcp {
+                let registry = mcp.read().await;
+                return match registry.call_tool(name, arguments).await {
+                    Ok(output) => ToolResult { output },
+                    Err(e) => ToolResult {
+                        output: format!("MCP Error: {e}"),
+                    },
+                };
+            }
+        }
+
         let args: Value = match serde_json::from_str(arguments) {
             Ok(v) => v,
             Err(e) => {

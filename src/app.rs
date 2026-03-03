@@ -76,7 +76,15 @@ pub async fn run(
         crate::version::print_update_hint(&latest);
     }
 
-    let tools = ToolRegistry::new(project_root.clone());
+    // Initialize MCP servers from .mcp.json configs
+    let mcp_registry = Arc::new(tokio::sync::RwLock::new(crate::mcp::McpRegistry::new()));
+    {
+        let mut mcp = mcp_registry.write().await;
+        mcp.start_from_config(&project_root).await;
+    }
+
+    let tools = ToolRegistry::new(project_root.clone())
+        .with_mcp_registry(mcp_registry.clone());
     let tool_defs = tools.get_definitions(&config.allowed_tools);
 
     let semantic_memory = memory::load(&project_root)?;
@@ -227,6 +235,7 @@ pub async fn run(
                         ("/compact", "Summarize conversation to reclaim context"),
                         ("/cost", "Show token usage for this session"),
                         ("/diff", "Show git diff / review / commit message"),
+                        ("/mcp", "MCP servers: status / add / remove / restart"),
                         ("/memory", "View/save project & global memory"),
                         ("/model", "Pick a model interactively"),
                         ("/provider", "Switch LLM provider"),
@@ -370,6 +379,10 @@ pub async fn run(
                     handle_compact(&db, &session_id, &config, &provider, false).await;
                     continue;
                 }
+                ReplAction::McpCommand(ref args) => {
+                    handle_mcp_command(args, &mcp_registry, &project_root).await;
+                    continue;
+                }
                 ReplAction::SetTrust(mode_name) => {
                     let new_mode = if let Some(ref name) = mode_name {
                         // Explicit: /trust yolo
@@ -480,6 +493,12 @@ pub async fn run(
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = rl.save_history(&history_path);
+
+    // Shut down MCP servers
+    {
+        let mut mcp = mcp_registry.write().await;
+        mcp.shutdown();
+    }
 
     Ok(())
 }
@@ -720,6 +739,135 @@ async fn handle_compact(
         }
     }
     println!();
+}
+
+// ── MCP command handler ──────────────────────────────────────
+
+/// Handle `/mcp` subcommands: status, add, remove, restart.
+async fn handle_mcp_command(
+    args: &str,
+    mcp_registry: &Arc<tokio::sync::RwLock<crate::mcp::McpRegistry>>,
+    project_root: &std::path::Path,
+) {
+    let parts: Vec<&str> = args.splitn(3, ' ').collect();
+    let subcommand = parts.first().map(|s| s.trim()).unwrap_or("");
+
+    match subcommand {
+        "" | "status" => {
+            // Show MCP server status
+            let registry = mcp_registry.read().await;
+            let servers = registry.server_info();
+            println!();
+            if servers.is_empty() {
+                println!("  \x1b[90mNo MCP servers connected.\x1b[0m");
+                println!("  \x1b[90mAdd servers via .mcp.json or /mcp add <name> <command> [args...]\x1b[0m");
+            } else {
+                println!("  \x1b[1m\u{1f50c} MCP Servers\x1b[0m");
+                println!();
+                for server in &servers {
+                    let cmd = if server.args.is_empty() {
+                        server.command.clone()
+                    } else {
+                        format!("{} {}", server.command, server.args.join(" "))
+                    };
+                    println!(
+                        "  \x1b[32m\u{25cf}\x1b[0m \x1b[1m{}\x1b[0m \u{2014} {} tool(s)",
+                        server.name, server.tool_count
+                    );
+                    println!("    \x1b[90m{cmd}\x1b[0m");
+                    for tool_name in &server.tool_names {
+                        println!("    \x1b[36m\u{2022}\x1b[0m {tool_name}");
+                    }
+                }
+            }
+            println!();
+        }
+
+        "add" => {
+            // /mcp add <name> <command> [args...]
+            let rest = args.strip_prefix("add").unwrap_or("").trim();
+            let add_parts: Vec<&str> = rest.splitn(2, ' ').collect();
+            if add_parts.len() < 2 {
+                println!("  \x1b[33mUsage: /mcp add <name> <command> [args...]\x1b[0m");
+                println!("  \x1b[90mExample: /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem /tmp\x1b[0m");
+                return;
+            }
+            let name = add_parts[0].to_string();
+            let cmd_parts: Vec<&str> = add_parts[1].split_whitespace().collect();
+            let command = cmd_parts[0].to_string();
+            let cmd_args: Vec<String> = cmd_parts[1..].iter().map(|s| s.to_string()).collect();
+
+            let config = crate::mcp::config::McpServerConfig {
+                command: command.clone(),
+                args: cmd_args,
+                env: std::collections::HashMap::new(),
+                timeout: None,
+            };
+
+            // Save to .mcp.json
+            if let Err(e) = crate::mcp::config::save_server_to_project(project_root, &name, &config) {
+                println!("  \x1b[31mFailed to save config: {e}\x1b[0m");
+                return;
+            }
+
+            // Connect
+            println!("  \x1b[36m\u{1f50c} Connecting to '{name}'...\x1b[0m");
+            let mut registry = mcp_registry.write().await;
+            match registry.add_server(name.clone(), config).await {
+                Ok(()) => {
+                    let tool_count = registry.server_info()
+                        .iter()
+                        .find(|s| s.name == name)
+                        .map(|s| s.tool_count)
+                        .unwrap_or(0);
+                    println!(
+                        "  \x1b[32m\u{2713}\x1b[0m Added '{}' ({} tools). Saved to .mcp.json",
+                        name, tool_count
+                    );
+                }
+                Err(e) => {
+                    println!("  \x1b[31m\u{2717}\x1b[0m Failed to connect: {e}");
+                }
+            }
+        }
+
+        "remove" => {
+            let name = args.strip_prefix("remove").unwrap_or("").trim();
+            if name.is_empty() {
+                println!("  \x1b[33mUsage: /mcp remove <name>\x1b[0m");
+                return;
+            }
+            let mut registry = mcp_registry.write().await;
+            if registry.remove_server(name) {
+                // Also remove from .mcp.json
+                let _ = crate::mcp::config::remove_server_from_project(project_root, name);
+                println!("  \x1b[32m\u{2713}\x1b[0m Removed MCP server '{name}'");
+            } else {
+                println!("  \x1b[31mMCP server '{name}' not found\x1b[0m");
+            }
+        }
+
+        "restart" => {
+            let name = args.strip_prefix("restart").unwrap_or("").trim();
+            let mut registry = mcp_registry.write().await;
+            if name.is_empty() {
+                println!("  \x1b[36m\u{1f50c} Restarting all MCP servers...\x1b[0m");
+                registry.restart_all(project_root).await;
+                println!("  \x1b[32m\u{2713}\x1b[0m Done");
+            } else {
+                println!("  \x1b[36m\u{1f50c} Restarting '{name}'...\x1b[0m");
+                match registry.restart_server(name, project_root).await {
+                    Ok(()) => println!("  \x1b[32m\u{2713}\x1b[0m Restarted '{name}'"),
+                    Err(e) => println!("  \x1b[31m\u{2717}\x1b[0m Failed: {e}"),
+                }
+            }
+        }
+
+        other => {
+            println!("  \x1b[33mUnknown MCP command: {other}\x1b[0m");
+            println!("  \x1b[90mUsage: /mcp [status|add|remove|restart]\x1b[0m");
+        }
+    }
 }
 
 // ── Provider setup handlers ───────────────────────────────────

@@ -24,6 +24,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/agent", "List available sub-agents"),
     ("/compact", "Summarize conversation to reclaim context"),
     ("/help", "Command palette"),
+    ("/mcp", "MCP servers: status / add / remove / restart"),
     ("/memory", "View/save project & global memory"),
     ("/trust", "Set trust level (plan/normal/yolo)"),
     ("/model", "Pick a model interactively"),

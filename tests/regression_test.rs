@@ -27,6 +27,7 @@ mod repl_commands {
             "/memory" => "Handled",
 
             "/compact" => "Compact",
+            "/mcp" => "McpCommand",
             "/agent" => "Handled",
             _ => "NotACommand",
         }
@@ -59,6 +60,8 @@ mod repl_commands {
         assert_eq!(dispatch("/memory global test"), "Handled");
 
         assert_eq!(dispatch("/compact"), "Compact");
+        assert_eq!(dispatch("/mcp"), "McpCommand");
+        assert_eq!(dispatch("/mcp status"), "McpCommand");
         assert_eq!(dispatch("/agent"), "Handled");
     }
 
@@ -167,6 +170,7 @@ mod completions {
         "/cost",
         "/diff",
         "/help",
+        "/mcp",
         "/memory",
         "/trust",
         "/model",
@@ -179,7 +183,7 @@ mod completions {
 
     #[test]
     fn test_expected_commands_present() {
-        assert_eq!(EXPECTED_COMMANDS.len(), 10, "Expected 10 slash commands");
+        assert_eq!(EXPECTED_COMMANDS.len(), 11, "Expected 11 slash commands");
         for cmd in EXPECTED_COMMANDS {
             assert!(
                 EXPECTED_COMMANDS.contains(cmd),

@@ -25,6 +25,7 @@ mod runtime_env;
 mod tools;
 mod tui;
 mod version;
+mod mcp;
 
 use anyhow::{Context, Result};
 use clap::Parser;

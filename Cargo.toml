@@ -83,6 +83,10 @@ async-trait = "0.1"
 # For reading user input
 rustyline = "15"
 
+# MCP (Model Context Protocol) client
+rmcp = { version = "0.16", features = ["client", "transport-child-process"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
 [dev-dependencies]
 tempfile = "3"
 path-clean = "1"

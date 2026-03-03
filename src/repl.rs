@@ -25,6 +25,8 @@ pub enum ReplAction {
     Compact,
     /// Switch approval mode (with optional name, or interactive picker)
     SetTrust(Option<String>),
+    /// MCP server management command
+    McpCommand(String),
     Handled,
     NotACommand,
 }
@@ -139,6 +141,8 @@ pub async fn handle_command(
         }
 
         "/compact" => ReplAction::Compact,
+
+        "/mcp" => ReplAction::McpCommand(arg.unwrap_or("").to_string()),
 
         "/agent" => {
             let project_root = std::env::current_dir().unwrap_or_default();
