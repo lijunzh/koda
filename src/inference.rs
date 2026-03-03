@@ -751,7 +751,7 @@ async fn execute_sub_agent(
 
     let sub_session = match session_id {
         Some(id) => id,
-        None => db.create_session(&sub_config.agent_name).await?,
+        None => db.create_session(&sub_config.agent_name, project_root).await?,
     };
 
     db.insert_message(&sub_session, &Role::User, Some(prompt), None, None, None)

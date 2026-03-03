@@ -138,7 +138,7 @@ async fn main() -> Result<()> {
         let db = db::Database::init(&project_root).await?;
         let session_id = match cli.session {
             Some(id) => id,
-            None => db.create_session(&config.agent_name).await?,
+            None => db.create_session(&config.agent_name, &project_root).await?,
         };
         let exit_code = app::run_headless(
             project_root,
@@ -184,7 +184,7 @@ async fn main() -> Result<()> {
     // Load or create session
     let session_id = match cli.session {
         Some(id) => id,
-        None => db.create_session(&config.agent_name).await?,
+        None => db.create_session(&config.agent_name, &project_root).await?,
     };
 
     // Run the main event loop (pass version check handle for post-banner hint)

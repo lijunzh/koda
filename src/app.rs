@@ -301,7 +301,7 @@ pub async fn run(
                     continue;
                 }
                 ReplAction::ListSessions => {
-                    match db.list_sessions(10).await {
+                    match db.list_sessions(10, &project_root).await {
                         Ok(sessions) => {
                             println!();
                             println!("  \x1b[1m\u{1f43b} Recent Sessions\x1b[0m");
@@ -339,7 +339,7 @@ pub async fn run(
                         println!("  \x1b[31mCannot delete the current session.\x1b[0m");
                     } else {
                         // Match by prefix
-                        match db.list_sessions(100).await {
+                        match db.list_sessions(100, &project_root).await {
                             Ok(sessions) => {
                                 let matches: Vec<_> =
                                     sessions.iter().filter(|s| s.id.starts_with(id)).collect();

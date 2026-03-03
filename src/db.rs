@@ -68,10 +68,34 @@ pub struct Database {
     pool: SqlitePool,
 }
 
+/// Get the koda config directory (~/.config/koda/).
+fn config_dir() -> Result<std::path::PathBuf> {
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join(".config"))
+        })
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine config directory (set HOME or XDG_CONFIG_HOME)"))?;
+    Ok(base.join("koda"))
+}
+
 impl Database {
     /// Initialize the database, run migrations, and enable WAL mode.
+    /// The database lives in `~/.config/koda/koda.db` (centralized, not per-project).
     pub async fn init(project_root: &Path) -> Result<Self> {
-        let db_path = project_root.join(".koda.db");
+        let db_dir = config_dir()?;
+        std::fs::create_dir_all(&db_dir)
+            .with_context(|| format!("Failed to create config dir: {}", db_dir.display()))?;
+
+        let db_path = db_dir.join("koda.db");
+        Self::open(&db_path, project_root).await
+    }
+
+    /// Open a database at a specific path (used by tests and init).
+    pub async fn open(db_path: &Path, project_root: &Path) -> Result<Self> {
         let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
         let options = SqliteConnectOptions::from_str(&db_url)?
@@ -86,6 +110,14 @@ impl Database {
 
         // Run schema migrations
         Self::migrate(&pool).await?;
+
+        // Migrate legacy per-project DB if it exists
+        let legacy_db = project_root.join(".koda.db");
+        if legacy_db.exists() {
+            if let Err(e) = Self::migrate_legacy(&pool, &legacy_db, project_root).await {
+                tracing::warn!("Failed to migrate legacy DB {}: {e}", legacy_db.display());
+            }
+        }
 
         tracing::info!("Database initialized at {:?}", db_path);
         Ok(Self { pool })
@@ -154,18 +186,29 @@ impl Database {
         .execute(pool)
         .await?;
 
+        // Additive migration: add project_root to sessions
+        let sql = "ALTER TABLE sessions ADD COLUMN project_root TEXT";
+        if let Err(e) = sqlx::query(sql).execute(pool).await {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column name") {
+                return Err(e.into());
+            }
+        }
+
         Ok(())
     }
 
     /// Create a new session, returning the generated session ID.
-    pub async fn create_session(&self, agent_name: &str) -> Result<String> {
+    pub async fn create_session(&self, agent_name: &str, project_root: &Path) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
-        sqlx::query("INSERT INTO sessions (id, agent_name) VALUES (?, ?)")
+        let root = project_root.to_string_lossy().to_string();
+        sqlx::query("INSERT INTO sessions (id, agent_name, project_root) VALUES (?, ?, ?)")
             .bind(&id)
             .bind(agent_name)
+            .bind(&root)
             .execute(&self.pool)
             .await?;
-        tracing::info!("Created session: {id}");
+        tracing::info!("Created session: {id} (project: {root})");
         Ok(id)
     }
 
@@ -308,18 +351,21 @@ impl Database {
         })
     }
 
-    /// List recent sessions with metadata.
-    pub async fn list_sessions(&self, limit: i64) -> Result<Vec<SessionInfo>> {
+    /// List recent sessions for a specific project.
+    pub async fn list_sessions(&self, limit: i64, project_root: &Path) -> Result<Vec<SessionInfo>> {
+        let root = project_root.to_string_lossy().to_string();
         let rows: Vec<SessionInfoRow> = sqlx::query_as(
             "SELECT s.id, s.agent_name, s.created_at,
                     COUNT(m.id) as message_count,
                     COALESCE(SUM(m.prompt_tokens), 0) + COALESCE(SUM(m.completion_tokens), 0) as total_tokens
              FROM sessions s
              LEFT JOIN messages m ON m.session_id = s.id
+             WHERE s.project_root = ? OR s.project_root IS NULL
              GROUP BY s.id
              ORDER BY s.created_at DESC, s.rowid DESC
              LIMIT ?",
         )
+        .bind(&root)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
@@ -456,6 +502,97 @@ impl Database {
         Ok(matches!(last_msg, Some((role, Some(_))) if role == "assistant"))
     }
 
+    /// Migrate data from a legacy per-project `.koda.db` into the centralized DB.
+    /// After successful migration, removes the legacy files.
+    async fn migrate_legacy(pool: &SqlitePool, legacy_path: &Path, project_root: &Path) -> Result<()> {
+        let legacy_url = format!("sqlite:{}?mode=ro", legacy_path.display());
+        let legacy_opts = SqliteConnectOptions::from_str(&legacy_url)?;
+        let legacy_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(legacy_opts)
+            .await?;
+
+        let root = project_root.to_string_lossy().to_string();
+
+        // Migrate sessions
+        let sessions: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT id, agent_name, created_at FROM sessions",
+        )
+        .fetch_all(&legacy_pool)
+        .await?;
+
+        for (id, agent_name, created_at) in &sessions {
+            let _ = sqlx::query(
+                "INSERT OR IGNORE INTO sessions (id, agent_name, created_at, project_root) VALUES (?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(agent_name)
+            .bind(created_at)
+            .bind(&root)
+            .execute(pool)
+            .await;
+        }
+
+        // Migrate messages
+        let msg_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages")
+            .fetch_one(&legacy_pool)
+            .await?;
+
+        if msg_count.0 > 0 {
+            // Attach and copy in bulk
+            let attach_sql = format!("ATTACH DATABASE '{}' AS legacy", legacy_path.display());
+            sqlx::query(&attach_sql).execute(pool).await?;
+
+            sqlx::query(
+                "INSERT OR IGNORE INTO messages
+                 (id, session_id, role, content, tool_calls, tool_call_id,
+                  prompt_tokens, completion_tokens, created_at)
+                 SELECT id, session_id, role, content, tool_calls, tool_call_id,
+                        prompt_tokens, completion_tokens, created_at
+                 FROM legacy.messages",
+            )
+            .execute(pool)
+            .await?;
+
+            sqlx::query("DETACH DATABASE legacy").execute(pool).await?;
+        }
+
+        // Migrate session metadata if table exists
+        let has_metadata: Option<(String,)> = sqlx::query_as(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='session_metadata'",
+        )
+        .fetch_optional(&legacy_pool)
+        .await?;
+
+        if has_metadata.is_some() {
+            let attach_sql = format!("ATTACH DATABASE '{}' AS legacy", legacy_path.display());
+            sqlx::query(&attach_sql).execute(pool).await?;
+
+            let _ = sqlx::query(
+                "INSERT OR IGNORE INTO session_metadata (session_id, key, value, updated_at)
+                 SELECT session_id, key, value, updated_at FROM legacy.session_metadata",
+            )
+            .execute(pool)
+            .await;
+
+            sqlx::query("DETACH DATABASE legacy").execute(pool).await?;
+        }
+
+        legacy_pool.close().await;
+
+        // Remove legacy files
+        let _ = std::fs::remove_file(legacy_path);
+        let _ = std::fs::remove_file(format!("{}-wal", legacy_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", legacy_path.display()));
+
+        tracing::info!(
+            "Migrated {} sessions from legacy DB {}",
+            sessions.len(),
+            legacy_path.display()
+        );
+        Ok(())
+    }
+
     /// Get a session metadata value by key.
     pub async fn get_metadata(&self, session_id: &str, key: &str) -> Result<Option<String>> {
         let row: Option<(String,)> = sqlx::query_as(
@@ -566,21 +703,22 @@ mod tests {
 
     async fn setup() -> (Database, TempDir) {
         let tmp = TempDir::new().unwrap();
-        let db = Database::init(tmp.path()).await.unwrap();
+        let db_path = tmp.path().join("test.db");
+        let db = Database::open(&db_path, tmp.path()).await.unwrap();
         (db, tmp)
     }
 
     #[tokio::test]
     async fn test_create_session() {
         let (db, _tmp) = setup().await;
-        let id = db.create_session("default").await.unwrap();
+        let id = db.create_session("default", _tmp.path()).await.unwrap();
         assert!(!id.is_empty());
     }
 
     #[tokio::test]
     async fn test_insert_and_load_messages() {
         let (db, _tmp) = setup().await;
-        let session = db.create_session("default").await.unwrap();
+        let session = db.create_session("default", _tmp.path()).await.unwrap();
 
         db.insert_message(&session, &Role::User, Some("hello"), None, None, None)
             .await
@@ -605,7 +743,7 @@ mod tests {
     #[tokio::test]
     async fn test_sliding_window_truncates_old_messages() {
         let (db, _tmp) = setup().await;
-        let session = db.create_session("default").await.unwrap();
+        let session = db.create_session("default", _tmp.path()).await.unwrap();
 
         // Insert many messages
         for i in 0..20 {
@@ -632,8 +770,8 @@ mod tests {
     #[tokio::test]
     async fn test_sessions_are_isolated() {
         let (db, _tmp) = setup().await;
-        let s1 = db.create_session("agent-a").await.unwrap();
-        let s2 = db.create_session("agent-b").await.unwrap();
+        let s1 = db.create_session("agent-a", _tmp.path()).await.unwrap();
+        let s2 = db.create_session("agent-b", _tmp.path()).await.unwrap();
 
         db.insert_message(&s1, &Role::User, Some("session 1"), None, None, None)
             .await
@@ -654,7 +792,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_token_usage() {
         let (db, _tmp) = setup().await;
-        let session = db.create_session("default").await.unwrap();
+        let session = db.create_session("default", _tmp.path()).await.unwrap();
 
         db.insert_message(&session, &Role::User, Some("q1"), None, None, None)
             .await
@@ -702,11 +840,11 @@ mod tests {
     #[tokio::test]
     async fn test_list_sessions() {
         let (db, _tmp) = setup().await;
-        db.create_session("agent-a").await.unwrap();
-        db.create_session("agent-b").await.unwrap();
-        db.create_session("agent-c").await.unwrap();
+        db.create_session("agent-a", _tmp.path()).await.unwrap();
+        db.create_session("agent-b", _tmp.path()).await.unwrap();
+        db.create_session("agent-c", _tmp.path()).await.unwrap();
 
-        let sessions = db.list_sessions(10).await.unwrap();
+        let sessions = db.list_sessions(10, _tmp.path()).await.unwrap();
         assert_eq!(sessions.len(), 3);
         // Most recent first
         assert_eq!(sessions[0].agent_name, "agent-c");
@@ -715,14 +853,14 @@ mod tests {
     #[tokio::test]
     async fn test_delete_session() {
         let (db, _tmp) = setup().await;
-        let s1 = db.create_session("default").await.unwrap();
+        let s1 = db.create_session("default", _tmp.path()).await.unwrap();
         db.insert_message(&s1, &Role::User, Some("hello"), None, None, None)
             .await
             .unwrap();
 
         assert!(db.delete_session(&s1).await.unwrap());
 
-        let sessions = db.list_sessions(10).await.unwrap();
+        let sessions = db.list_sessions(10, _tmp.path()).await.unwrap();
         assert!(sessions.is_empty());
 
         // Deleting again returns false
@@ -732,7 +870,7 @@ mod tests {
     #[tokio::test]
     async fn test_compact_session() {
         let (db, _tmp) = setup().await;
-        let session = db.create_session("default").await.unwrap();
+        let session = db.create_session("default", _tmp.path()).await.unwrap();
 
         // Insert several messages
         for i in 0..10 {
@@ -792,7 +930,7 @@ mod tests {
     #[tokio::test]
     async fn test_compact_preserves_zero() {
         let (db, _tmp) = setup().await;
-        let session = db.create_session("default").await.unwrap();
+        let session = db.create_session("default", _tmp.path()).await.unwrap();
 
         for i in 0..6 {
             let role = if i % 2 == 0 { &Role::User } else { &Role::Assistant };
@@ -817,7 +955,7 @@ mod tests {
     #[tokio::test]
     async fn test_has_pending_tool_calls() {
         let (db, _tmp) = setup().await;
-        let session = db.create_session("default").await.unwrap();
+        let session = db.create_session("default", _tmp.path()).await.unwrap();
 
         // No messages → no pending
         assert!(!db.has_pending_tool_calls(&session).await.unwrap());
@@ -858,7 +996,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_metadata_and_todo() {
         let (db, _tmp) = setup().await;
-        let session = db.create_session("default").await.unwrap();
+        let session = db.create_session("default", _tmp.path()).await.unwrap();
 
         // No metadata initially
         assert!(db.get_todo(&session).await.unwrap().is_none());
@@ -883,7 +1021,7 @@ mod tests {
     #[tokio::test]
     async fn test_token_usage_empty_session() {
         let (db, _tmp) = setup().await;
-        let session = db.create_session("default").await.unwrap();
+        let session = db.create_session("default", _tmp.path()).await.unwrap();
 
         let u = db.session_token_usage(&session).await.unwrap();
         assert_eq!(u.prompt_tokens, 0);
@@ -894,7 +1032,7 @@ mod tests {
     #[tokio::test]
     async fn test_last_assistant_message() {
         let (db, _tmp) = setup().await;
-        let session = db.create_session("default").await.unwrap();
+        let session = db.create_session("default", _tmp.path()).await.unwrap();
 
         // Empty session returns empty string
         let msg = db.last_assistant_message(&session).await.unwrap();
@@ -936,7 +1074,7 @@ mod tests {
     #[tokio::test]
     async fn test_last_assistant_message_skips_tool_calls() {
         let (db, _tmp) = setup().await;
-        let session = db.create_session("default").await.unwrap();
+        let session = db.create_session("default", _tmp.path()).await.unwrap();
 
         db.insert_message(
             &session,
