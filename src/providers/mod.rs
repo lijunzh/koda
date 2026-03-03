@@ -16,6 +16,9 @@ pub struct ToolCall {
     pub id: String,
     pub function_name: String,
     pub arguments: String, // Raw JSON string
+    /// Gemini-specific: thought signature that must be echoed back in history.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub thought_signature: Option<String>,
 }
 
 /// Token usage from an LLM response.

@@ -1087,16 +1087,19 @@ mod tests {
                 id: "1".into(),
                 function_name: "Read".into(),
                 arguments: "{}".into(),
+                thought_signature: None,
             },
             ToolCall {
                 id: "2".into(),
                 function_name: "Grep".into(),
                 arguments: "{}".into(),
+                thought_signature: None,
             },
             ToolCall {
                 id: "3".into(),
                 function_name: "List".into(),
                 arguments: "{}".into(),
+                thought_signature: None,
             },
         ];
         assert!(can_parallelize(&calls, ApprovalMode::Normal, &[]));
@@ -1109,11 +1112,13 @@ mod tests {
                 id: "1".into(),
                 function_name: "Read".into(),
                 arguments: "{}".into(),
+                thought_signature: None,
             },
             ToolCall {
                 id: "2".into(),
                 function_name: "Write".into(),
                 arguments: "{}".into(),
+                thought_signature: None,
             },
         ];
         assert!(!can_parallelize(&calls, ApprovalMode::Normal, &[]));
@@ -1126,11 +1131,13 @@ mod tests {
                 id: "1".into(),
                 function_name: "Read".into(),
                 arguments: "{}".into(),
+                thought_signature: None,
             },
             ToolCall {
                 id: "2".into(),
                 function_name: "Bash".into(),
                 arguments: r#"{"command": "./deploy.sh"}"#.into(),
+                thought_signature: None,
             },
         ];
         assert!(!can_parallelize(&calls, ApprovalMode::Normal, &[]));
@@ -1143,11 +1150,13 @@ mod tests {
                 id: "1".into(),
                 function_name: "Read".into(),
                 arguments: "{}".into(),
+                thought_signature: None,
             },
             ToolCall {
                 id: "2".into(),
                 function_name: "Bash".into(),
                 arguments: r#"{"command": "cargo test"}"#.into(),
+                thought_signature: None,
             },
         ];
         assert!(can_parallelize(&calls, ApprovalMode::Normal, &[]));
@@ -1160,11 +1169,13 @@ mod tests {
                 id: "1".into(),
                 function_name: "Write".into(),
                 arguments: "{}".into(),
+                thought_signature: None,
             },
             ToolCall {
                 id: "2".into(),
                 function_name: "Delete".into(),
                 arguments: "{}".into(),
+                thought_signature: None,
             },
         ];
         assert!(can_parallelize(&calls, ApprovalMode::Yolo, &[]));
@@ -1177,11 +1188,13 @@ mod tests {
                 id: "1".into(),
                 function_name: "InvokeAgent".into(),
                 arguments: "{}".into(),
+                thought_signature: None,
             },
             ToolCall {
                 id: "2".into(),
                 function_name: "InvokeAgent".into(),
                 arguments: "{}".into(),
+                thought_signature: None,
             },
         ];
         // InvokeAgent auto-approves in all modes (sub-agents inherit

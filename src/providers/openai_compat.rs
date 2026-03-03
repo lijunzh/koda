@@ -301,6 +301,7 @@ impl LlmProvider for OpenAiCompatProvider {
                 id: tc.id,
                 function_name: tc.function.name,
                 arguments: tc.function.arguments,
+                thought_signature: None,
             })
             .collect();
 
@@ -374,6 +375,7 @@ impl LlmProvider for OpenAiCompatProvider {
                                     id,
                                     function_name: name,
                                     arguments: args,
+                                    thought_signature: None,
                                 })
                                 .collect();
                             let _ = tx.send(StreamChunk::ToolCalls(tcs)).await;
@@ -443,6 +445,7 @@ impl LlmProvider for OpenAiCompatProvider {
                         id,
                         function_name: name,
                         arguments: args,
+                        thought_signature: None,
                     })
                     .collect();
                 let _ = tx.send(StreamChunk::ToolCalls(tcs)).await;
@@ -599,6 +602,7 @@ mod tests {
                 id: "tc_1".into(),
                 function_name: "Read".into(),
                 arguments: r#"{"path":"main.rs"}"#.into(),
+                thought_signature: None,
             }]),
             tool_call_id: None,
             images: None,
