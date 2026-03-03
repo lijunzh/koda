@@ -23,6 +23,8 @@ pub enum ReplAction {
     InjectPrompt(String),
     /// Compact the conversation by summarizing history
     Compact,
+    /// Switch approval mode
+    SetMode(String),
     Handled,
     NotACommand,
 }
@@ -57,6 +59,23 @@ pub async fn handle_command(
         "/help" => ReplAction::ShowHelp,
 
         "/cost" => ReplAction::ShowCost,
+
+        "/mode" => match arg {
+            Some(mode_name) => ReplAction::SetMode(mode_name.to_string()),
+            None => {
+                // Show current modes with descriptions
+                use crate::approval::ApprovalMode;
+                println!();
+                println!("  \x1b[1mApproval Modes\x1b[0m (cycle with Shift+Tab):");
+                for m in [ApprovalMode::Plan, ApprovalMode::Normal, ApprovalMode::Yolo] {
+                    println!("    \x1b[36m{:<8}\x1b[0m {}", m.label(), m.description());
+                }
+                println!();
+                println!("  Usage: \x1b[36m/mode plan\x1b[0m, \x1b[36m/mode normal\x1b[0m, \x1b[36m/mode yolo\x1b[0m");
+                println!();
+                ReplAction::Handled
+            }
+        },
 
         "/diff" => {
             // Run git diff
@@ -344,7 +363,7 @@ fn truncate_visible(s: &str, max: usize) -> String {
 
 /// Format the REPL prompt: `[Koda 🐻] [model] (~/repo) ❯`
 /// Shows a context warning when usage exceeds 75%.
-pub fn format_prompt(model: &str) -> String {
+pub fn format_prompt(model: &str, mode: crate::approval::ApprovalMode) -> String {
     let cwd = pretty_cwd();
     let pct = crate::context::percentage();
     let ctx_warn = if pct >= 90 {
@@ -354,8 +373,13 @@ pub fn format_prompt(model: &str) -> String {
     } else {
         String::new()
     };
+    let mode_tag = match mode {
+        crate::approval::ApprovalMode::Plan => " \x1b[33m[plan]\x1b[0m",
+        crate::approval::ApprovalMode::Normal => "",
+        crate::approval::ApprovalMode::Yolo => " \x1b[31m[yolo]\x1b[0m",
+    };
     format!(
-        "\x1b[36m[Koda \u{1f43b}]\x1b[0m \x1b[90m[{model}]\x1b[0m \x1b[34m({cwd})\x1b[0m{ctx_warn} \x1b[32m\u{276f}\x1b[0m "
+        "\x1b[36m[Koda \u{1f43b}]\x1b[0m \x1b[90m[{model}]\x1b[0m \x1b[34m({cwd})\x1b[0m{ctx_warn}{mode_tag} \x1b[32m\u{276f}\x1b[0m "
     )
 }
 

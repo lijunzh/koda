@@ -2,6 +2,7 @@
 //!
 //! Handles user input, command dispatch, and delegates to the inference engine.
 
+use crate::approval::{self, ApprovalMode, Settings};
 use crate::config::{KodaConfig, ProviderType};
 use crate::db::{Database, Role};
 use crate::inference;
@@ -82,7 +83,11 @@ pub async fn run(
         inference::build_system_prompt(&config.system_prompt, &semantic_memory, &config.agents_dir);
 
     // REPL with smart completions
-    let mut helper = KodaHelper::new(project_root.clone());
+    // Initialize approval mode and user settings
+    let shared_mode = approval::new_shared_mode(ApprovalMode::Normal);
+    let mut settings = Settings::load();
+
+    let mut helper = KodaHelper::new(project_root.clone(), shared_mode.clone());
     {
         let prov = provider.read().await;
         if let Ok(models) = prov.list_models().await {
@@ -108,6 +113,14 @@ pub async fn run(
         rustyline::EventHandler::Conditional(Box::new(input::CtrlCClearHandler)),
     );
 
+    // Shift+Tab cycles approval mode: Plan → Normal → Yolo
+    rl.bind_sequence(
+        rustyline::KeyEvent(rustyline::KeyCode::BackTab, rustyline::Modifiers::SHIFT),
+        rustyline::EventHandler::Conditional(Box::new(
+            input::ShiftTabModeHandler::new(shared_mode.clone()),
+        )),
+    );
+
     let history_path = history_file_path();
     if history_path.exists() {
         let _ = rl.load_history(&history_path);
@@ -119,7 +132,7 @@ pub async fn run(
         let input = if let Some(cmd) = pending_command.take() {
             cmd
         } else {
-            let prompt = repl::format_prompt(&config.model);
+            let prompt = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
             match rl.readline(&prompt) {
                 Ok(line) => line,
                 Err(
@@ -352,6 +365,22 @@ pub async fn run(
                     handle_compact(&db, &session_id, &config, &provider, false).await;
                     continue;
                 }
+                ReplAction::SetMode(mode_name) => {
+                    if let Some(new_mode) = ApprovalMode::from_str(&mode_name) {
+                        approval::set_mode(&shared_mode, new_mode);
+                        println!(
+                            "  \x1b[32m\u{2713}\x1b[0m Mode: \x1b[1m{}\x1b[0m — {}",
+                            new_mode.label(),
+                            new_mode.description()
+                        );
+                    } else {
+                        println!(
+                            "  \x1b[31m\u{2717}\x1b[0m Unknown mode '{}'. Use: plan, normal, yolo",
+                            mode_name
+                        );
+                    }
+                    continue;
+                }
                 ReplAction::Handled => continue,
                 ReplAction::NotACommand => {}
             }
@@ -397,6 +426,7 @@ pub async fn run(
 
         // Run the inference loop
         let prov = provider.read().await;
+        let current_mode = approval::read_mode(&shared_mode);
         inference::inference_loop(
             &project_root,
             &config,
@@ -407,6 +437,8 @@ pub async fn run(
             &tools,
             &tool_defs,
             pending_images,
+            current_mode,
+            &mut settings,
         )
         .await?;
 
@@ -473,6 +505,9 @@ pub async fn run_headless(
     )
     .await?;
 
+    // Headless mode: use Yolo (no confirmation prompts)
+    let mut settings = Settings::load();
+
     // Run inference (tools work, streaming prints to stdout)
     let prov = provider.read().await;
     let result = inference::inference_loop(
@@ -485,6 +520,8 @@ pub async fn run_headless(
         &tools,
         &tool_defs,
         pending_images,
+        ApprovalMode::Yolo,
+        &mut settings,
     )
     .await;
 

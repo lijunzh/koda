@@ -3,6 +3,7 @@
 //! Runs the streaming inference → tool execution → re-inference loop
 //! until the LLM produces a final text response.
 
+use crate::approval::{self, ApprovalMode, Settings, ToolApproval};
 use crate::config::KodaConfig;
 use crate::confirm::{self, Confirmation};
 use crate::db::{Database, Role};
@@ -30,6 +31,8 @@ pub async fn inference_loop(
     tools: &ToolRegistry,
     tool_defs: &[crate::providers::ToolDefinition],
     pending_images: Option<Vec<ImageData>>,
+    mode: ApprovalMode,
+    settings: &mut Settings,
 ) -> Result<()> {
     // When native thinking is active, drop ShareReasoning from tool list
     let has_native_thinking = config.model_settings.thinking_budget.is_some()
@@ -399,12 +402,23 @@ pub async fn inference_loop(
         made_tool_calls = true;
 
         // Execute tool calls — parallelize when possible
-        if tool_calls.len() > 1 && can_parallelize(&tool_calls, project_root) {
+        if tool_calls.len() > 1
+            && can_parallelize(&tool_calls, mode, &settings.approval.allowed_commands)
+        {
             execute_tools_parallel(&tool_calls, project_root, config, db, session_id, tools)
                 .await?;
         } else {
-            execute_tools_sequential(&tool_calls, project_root, config, db, session_id, tools)
-                .await?;
+            execute_tools_sequential(
+                &tool_calls,
+                project_root,
+                config,
+                db,
+                session_id,
+                tools,
+                mode,
+                settings,
+            )
+            .await?;
         }
 
         // Loop detection: same tool+args repeated REPEAT_THRESHOLD times → stop immediately.
@@ -425,10 +439,19 @@ pub async fn inference_loop(
 
 /// Check if all tool calls in a batch can safely run in parallel.
 /// Returns true when NONE of them need user confirmation.
-fn can_parallelize(tool_calls: &[ToolCall], project_root: &Path) -> bool {
-    !tool_calls
-        .iter()
-        .any(|tc| confirm::needs_confirmation_with_project(&tc.function_name, project_root))
+fn can_parallelize(
+    tool_calls: &[ToolCall],
+    mode: ApprovalMode,
+    user_whitelist: &[String],
+) -> bool {
+    !tool_calls.iter().any(|tc| {
+        let args: serde_json::Value =
+            serde_json::from_str(&tc.arguments).unwrap_or_default();
+        matches!(
+            approval::check_tool(&tc.function_name, &args, mode, user_whitelist),
+            ToolApproval::NeedsConfirmation | ToolApproval::Blocked
+        )
+    })
 }
 
 /// Execute a single tool call, returning (tool_call_id, result).
@@ -452,6 +475,7 @@ async fn execute_one_tool(
 }
 
 /// Run multiple tool calls concurrently and store results.
+#[allow(clippy::too_many_arguments)]
 async fn execute_tools_parallel(
     tool_calls: &[ToolCall],
     project_root: &Path,
@@ -492,6 +516,7 @@ async fn execute_tools_parallel(
 }
 
 /// Run tool calls one at a time (when confirmation is needed, or single call).
+#[allow(clippy::too_many_arguments)]
 async fn execute_tools_sequential(
     tool_calls: &[ToolCall],
     project_root: &Path,
@@ -499,6 +524,8 @@ async fn execute_tools_sequential(
     db: &Database,
     session_id: &str,
     tools: &crate::tools::ToolRegistry,
+    mode: ApprovalMode,
+    settings: &mut Settings,
 ) -> Result<()> {
     for tc in tool_calls {
         // Check for interrupt before each tool
@@ -513,37 +540,106 @@ async fn execute_tools_sequential(
 
         display::print_tool_call(tc, false);
 
-        // Check if this tool needs user confirmation
-        if confirm::needs_confirmation_with_project(&tc.function_name, project_root) {
-            let detail = confirm::describe_action(&tc.function_name, &parsed_args);
-            let diff_preview = preview::compute(&tc.function_name, &parsed_args, project_root).await;
+        // Check approval for this tool call
+        let approval = approval::check_tool(
+            &tc.function_name,
+            &parsed_args,
+            mode,
+            &settings.approval.allowed_commands,
+        );
 
-            match confirm::confirm_tool_action(&tc.function_name, &detail, diff_preview.as_deref()) {
-                Confirmation::Approved => {}
-                Confirmation::Rejected => {
-                    db.insert_message(
-                        session_id,
-                        &Role::Tool,
-                        Some("User rejected this action."),
-                        None,
-                        Some(&tc.id),
-                        None,
-                    )
-                    .await?;
-                    continue;
+        match approval {
+            ToolApproval::AutoApprove => {
+                // Execute without asking
+            }
+            ToolApproval::Blocked => {
+                // Plan mode: show what would happen, don't execute
+                let detail = confirm::describe_action(&tc.function_name, &parsed_args);
+                let diff_preview =
+                    preview::compute(&tc.function_name, &parsed_args, project_root).await;
+                println!(
+                    "  \x1b[36m\u{1f4cb} [plan] Would execute: {detail}\x1b[0m"
+                );
+                if let Some(ref preview_text) = diff_preview {
+                    for line in preview_text.lines() {
+                        println!("  {line}");
+                    }
                 }
-                Confirmation::RejectedWithFeedback(feedback) => {
-                    let result = format!("User rejected this action with feedback: {feedback}");
-                    db.insert_message(
-                        session_id,
-                        &Role::Tool,
-                        Some(&result),
-                        None,
-                        Some(&tc.id),
-                        None,
-                    )
-                    .await?;
-                    continue;
+                db.insert_message(
+                    session_id,
+                    &Role::Tool,
+                    Some("[plan mode] Action described but not executed. Switch to normal or yolo mode to execute."),
+                    None,
+                    Some(&tc.id),
+                    None,
+                )
+                .await?;
+                continue;
+            }
+            ToolApproval::NeedsConfirmation => {
+                let detail = confirm::describe_action(&tc.function_name, &parsed_args);
+                let diff_preview =
+                    preview::compute(&tc.function_name, &parsed_args, project_root).await;
+
+                // For Bash: offer "Always allow" with extracted pattern
+                let whitelist_hint = if tc.function_name == "Bash" {
+                    let cmd = parsed_args
+                        .get("command")
+                        .or(parsed_args.get("cmd"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let pattern = approval::extract_whitelist_pattern(cmd);
+                    if pattern.is_empty() { None } else { Some(pattern) }
+                } else {
+                    None
+                };
+
+                match confirm::confirm_tool_action(
+                    &tc.function_name,
+                    &detail,
+                    diff_preview.as_deref(),
+                    whitelist_hint.as_deref(),
+                ) {
+                    Confirmation::Approved => {}
+                    Confirmation::AlwaysAllow => {
+                        // Add to whitelist and persist
+                        if let Some(ref pattern) = whitelist_hint {
+                            if let Err(e) = settings.add_allowed_command(pattern) {
+                                tracing::warn!("Failed to save whitelist: {e}");
+                            } else {
+                                println!(
+                                    "  \x1b[32m\u{2713}\x1b[0m Added '\x1b[1m{pattern}\x1b[0m' to always-allowed commands"
+                                );
+                            }
+                        }
+                        // Fall through to execute
+                    }
+                    Confirmation::Rejected => {
+                        db.insert_message(
+                            session_id,
+                            &Role::Tool,
+                            Some("User rejected this action."),
+                            None,
+                            Some(&tc.id),
+                            None,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    Confirmation::RejectedWithFeedback(feedback) => {
+                        let result =
+                            format!("User rejected this action with feedback: {feedback}");
+                        db.insert_message(
+                            session_id,
+                            &Role::Tool,
+                            Some(&result),
+                            None,
+                            Some(&tc.id),
+                            None,
+                        )
+                        .await?;
+                        continue;
+                    }
                 }
             }
         }
@@ -891,83 +987,64 @@ mod tests {
 
     #[test]
     fn test_can_parallelize_read_only() {
-        let dir = TempDir::new().unwrap();
         let calls = vec![
-            ToolCall {
-                id: "1".into(),
-                function_name: "Read".into(),
-                arguments: "{}".into(),
-            },
-            ToolCall {
-                id: "2".into(),
-                function_name: "Grep".into(),
-                arguments: "{}".into(),
-            },
-            ToolCall {
-                id: "3".into(),
-                function_name: "List".into(),
-                arguments: "{}".into(),
-            },
+            ToolCall { id: "1".into(), function_name: "Read".into(), arguments: "{}".into() },
+            ToolCall { id: "2".into(), function_name: "Grep".into(), arguments: "{}".into() },
+            ToolCall { id: "3".into(), function_name: "List".into(), arguments: "{}".into() },
         ];
-        assert!(can_parallelize(&calls, dir.path()));
+        assert!(can_parallelize(&calls, ApprovalMode::Normal, &[]));
     }
 
     #[test]
     fn test_can_parallelize_with_write_is_false() {
-        let dir = TempDir::new().unwrap();
         let calls = vec![
-            ToolCall {
-                id: "1".into(),
-                function_name: "Read".into(),
-                arguments: "{}".into(),
-            },
-            ToolCall {
-                id: "2".into(),
-                function_name: "Write".into(),
-                arguments: "{}".into(),
-            },
+            ToolCall { id: "1".into(), function_name: "Read".into(), arguments: "{}".into() },
+            ToolCall { id: "2".into(), function_name: "Write".into(), arguments: "{}".into() },
         ];
-        assert!(!can_parallelize(&calls, dir.path()));
+        assert!(!can_parallelize(&calls, ApprovalMode::Normal, &[]));
     }
 
     #[test]
-    fn test_can_parallelize_with_bash_is_false() {
-        let dir = TempDir::new().unwrap();
+    fn test_can_parallelize_with_unsafe_bash_is_false() {
         let calls = vec![
-            ToolCall {
-                id: "1".into(),
-                function_name: "Read".into(),
-                arguments: "{}".into(),
-            },
+            ToolCall { id: "1".into(), function_name: "Read".into(), arguments: "{}".into() },
             ToolCall {
                 id: "2".into(),
                 function_name: "Bash".into(),
-                arguments: "{}".into(),
+                arguments: r#"{"command": "./deploy.sh"}"#.into(),
             },
         ];
-        assert!(!can_parallelize(&calls, dir.path()));
+        assert!(!can_parallelize(&calls, ApprovalMode::Normal, &[]));
+    }
+
+    #[test]
+    fn test_can_parallelize_with_safe_bash() {
+        let calls = vec![
+            ToolCall { id: "1".into(), function_name: "Read".into(), arguments: "{}".into() },
+            ToolCall {
+                id: "2".into(),
+                function_name: "Bash".into(),
+                arguments: r#"{"command": "cargo test"}"#.into(),
+            },
+        ];
+        assert!(can_parallelize(&calls, ApprovalMode::Normal, &[]));
+    }
+
+    #[test]
+    fn test_can_parallelize_yolo_always_true() {
+        let calls = vec![
+            ToolCall { id: "1".into(), function_name: "Write".into(), arguments: "{}".into() },
+            ToolCall { id: "2".into(), function_name: "Delete".into(), arguments: "{}".into() },
+        ];
+        assert!(can_parallelize(&calls, ApprovalMode::Yolo, &[]));
     }
 
     #[test]
     fn test_can_parallelize_agents_only() {
-        let dir = TempDir::new().unwrap();
         let calls = vec![
-            ToolCall {
-                id: "1".into(),
-                function_name: "InvokeAgent".into(),
-                arguments: "{}".into(),
-            },
-            ToolCall {
-                id: "2".into(),
-                function_name: "InvokeAgent".into(),
-                arguments: "{}".into(),
-            },
-            ToolCall {
-                id: "3".into(),
-                function_name: "InvokeAgent".into(),
-                arguments: "{}".into(),
-            },
+            ToolCall { id: "1".into(), function_name: "InvokeAgent".into(), arguments: "{}".into() },
+            ToolCall { id: "2".into(), function_name: "InvokeAgent".into(), arguments: "{}".into() },
         ];
-        assert!(can_parallelize(&calls, dir.path()));
+        assert!(!can_parallelize(&calls, ApprovalMode::Normal, &[]));
     }
 }

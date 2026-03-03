@@ -3,6 +3,7 @@
 //! CLI entry point. The binary is named `koda` for ergonomics.
 
 mod app;
+mod approval;
 mod config;
 mod confirm;
 mod context;

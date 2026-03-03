@@ -17,7 +17,11 @@ const MAX_PREVIEW_LINES: usize = 40;
 /// Compute a diff preview for a tool action, if applicable.
 ///
 /// Returns `None` for tools that don't need a preview (Read, List, Grep, etc.).
-pub async fn compute(tool_name: &str, args: &serde_json::Value, project_root: &Path) -> Option<String> {
+pub async fn compute(
+    tool_name: &str,
+    args: &serde_json::Value,
+    project_root: &Path,
+) -> Option<String> {
     match tool_name {
         "Edit" => preview_edit(args, project_root).await,
         "Write" => preview_write(args, project_root).await,
@@ -28,7 +32,8 @@ pub async fn compute(tool_name: &str, args: &serde_json::Value, project_root: &P
 
 /// Preview for Edit tool: show each replacement as old (red) → new (green).
 async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<String> {
-    let path_str = args.get("path")
+    let path_str = args
+        .get("path")
         .or(args.get("file_path"))
         .and_then(|v| v.as_str())?;
     let replacements = args.get("replacements")?.as_array()?;
@@ -44,10 +49,17 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<S
 
     for (i, replacement) in replacements.iter().enumerate() {
         let old_str = replacement.get("old_str")?.as_str()?;
-        let new_str = replacement.get("new_str").and_then(|v| v.as_str()).unwrap_or("");
+        let new_str = replacement
+            .get("new_str")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
         if replacements.len() > 1 {
-            lines.push(format!("{DIM}── replacement {}/{} ──{RESET}", i + 1, replacements.len()));
+            lines.push(format!(
+                "{DIM}── replacement {}/{} ──{RESET}",
+                i + 1,
+                replacements.len()
+            ));
         }
 
         for line in old_str.lines() {
@@ -62,7 +74,9 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<S
         if total_lines > MAX_PREVIEW_LINES {
             let remaining = replacements.len() - i - 1;
             if remaining > 0 {
-                lines.push(format!("{DIM}... and {remaining} more replacement(s){RESET}"));
+                lines.push(format!(
+                    "{DIM}... and {remaining} more replacement(s){RESET}"
+                ));
             }
             break;
         }
@@ -80,7 +94,8 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<S
 
 /// Preview for Write tool: show new-file summary or overwrite diff.
 async fn preview_write(args: &serde_json::Value, project_root: &Path) -> Option<String> {
-    let path_str = args.get("path")
+    let path_str = args
+        .get("path")
         .or(args.get("file_path"))
         .and_then(|v| v.as_str())?;
     let content = args.get("content").and_then(|v| v.as_str())?;
@@ -95,9 +110,10 @@ async fn preview_write(args: &serde_json::Value, project_root: &Path) -> Option<
         let existing_lines = existing.lines().count();
         let existing_bytes = existing.len();
 
-        let mut lines = vec![
-            format!("{DIM}Overwriting {existing_lines} lines ({existing_bytes} bytes) → {line_count} lines ({} bytes){RESET}", content.len()),
-        ];
+        let mut lines = vec![format!(
+            "{DIM}Overwriting {existing_lines} lines ({existing_bytes} bytes) → {line_count} lines ({} bytes){RESET}",
+            content.len()
+        )];
 
         // Show first few lines of new content as preview
         let preview_count = line_count.min(8);
@@ -111,9 +127,10 @@ async fn preview_write(args: &serde_json::Value, project_root: &Path) -> Option<
         Some(lines.join("\n"))
     } else {
         // New file: show first few lines
-        let mut lines = vec![
-            format!("{DIM}New file: {line_count} lines ({} bytes){RESET}", content.len()),
-        ];
+        let mut lines = vec![format!(
+            "{DIM}New file: {line_count} lines ({} bytes){RESET}",
+            content.len()
+        )];
 
         let preview_count = line_count.min(8);
         for line in &content_lines[..preview_count] {
@@ -129,7 +146,8 @@ async fn preview_write(args: &serde_json::Value, project_root: &Path) -> Option<
 
 /// Preview for Delete tool: show file/dir size info.
 async fn preview_delete(args: &serde_json::Value, project_root: &Path) -> Option<String> {
-    let path_str = args.get("path")
+    let path_str = args
+        .get("path")
         .or(args.get("file_path"))
         .and_then(|v| v.as_str())?;
     let resolved = safe_resolve_path(project_root, path_str).ok()?;
@@ -141,12 +159,16 @@ async fn preview_delete(args: &serde_json::Value, project_root: &Path) -> Option
     let meta = tokio::fs::metadata(&resolved).await.ok()?;
     if meta.is_file() {
         let size = meta.len();
-        let line_count = tokio::fs::read_to_string(&resolved).await
+        let line_count = tokio::fs::read_to_string(&resolved)
+            .await
             .map(|c| c.lines().count())
             .unwrap_or(0);
-        Some(format!("{RED}Removing {line_count} lines ({size} bytes){RESET}"))
+        Some(format!(
+            "{RED}Removing {line_count} lines ({size} bytes){RESET}"
+        ))
     } else if meta.is_dir() {
-        let recursive = args.get("recursive")
+        let recursive = args
+            .get("recursive")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         if recursive {

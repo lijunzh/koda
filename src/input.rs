@@ -25,6 +25,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/compact", "Summarize conversation to reclaim context"),
     ("/help", "Command palette"),
     ("/memory", "View/save project & global memory"),
+    ("/mode", "Switch approval mode (plan/normal/yolo)"),
     ("/model", "Pick a model interactively"),
     ("/provider", "Switch LLM provider"),
     ("/sessions", "List/resume/delete sessions"),
@@ -39,7 +40,7 @@ pub struct KodaHelper {
 }
 
 impl KodaHelper {
-    pub fn new(project_root: PathBuf) -> Self {
+    pub fn new(project_root: PathBuf, _shared_mode: crate::approval::SharedMode) -> Self {
         Self {
             project_root,
             model_names: Vec::new(),
@@ -334,6 +335,46 @@ impl ConditionalEventHandler for CtrlCClearHandler {
     }
 }
 
+// ── Shift+Tab mode cycling handler ────────────────────────────
+
+/// Cycles approval mode on Shift+Tab: Plan → Normal → Yolo.
+/// Prints a one-line notification and re-renders the prompt.
+pub struct ShiftTabModeHandler {
+    shared_mode: crate::approval::SharedMode,
+}
+
+impl ShiftTabModeHandler {
+    pub fn new(shared_mode: crate::approval::SharedMode) -> Self {
+        Self { shared_mode }
+    }
+}
+
+impl ConditionalEventHandler for ShiftTabModeHandler {
+    fn handle(
+        &self,
+        _evt: &Event,
+        _n: RepeatCount,
+        _positive: bool,
+        _ctx: &EventContext,
+    ) -> Option<Cmd> {
+        let new_mode = crate::approval::cycle_mode(&self.shared_mode);
+        // Print mode change notification above the prompt
+        let mode_color = match new_mode {
+            crate::approval::ApprovalMode::Plan => "\x1b[33m",   // yellow
+            crate::approval::ApprovalMode::Normal => "\x1b[32m", // green
+            crate::approval::ApprovalMode::Yolo => "\x1b[31m",   // red
+        };
+        eprint!(
+            "\r\x1b[K  {mode_color}\u{1f43b} Mode: {}\x1b[0m — {}\n",
+            new_mode.label(),
+            new_mode.description()
+        );
+        // Force prompt re-render by returning AcceptLine with empty input
+        // Actually, just refresh the line
+        Some(Cmd::Repaint)
+    }
+}
+
 // ── @file pre-processor ────────────────────────────────────────
 
 /// Result of processing user input for `@path` references.
@@ -566,8 +607,8 @@ mod tests {
     fn test_slash_command_completion() {
         let (start, matches) = complete_slash_command("/mo", 3);
         assert_eq!(start, 0);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].replacement, "/model");
+        // Matches both /mode and /model
+        assert_eq!(matches.len(), 2);
     }
 
     #[test]
