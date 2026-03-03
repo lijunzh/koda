@@ -35,12 +35,20 @@ pub fn needs_confirmation_with_project(tool_name: &str, project_root: &std::path
 
 /// Show a confirmation prompt for a tool action.
 ///
-/// Displays the tool banner, action details, and an arrow-key
-/// selector with Approve / Reject / Reject with feedback.
-pub fn confirm_tool_action(tool_name: &str, detail: &str) -> Confirmation {
+/// Displays the tool banner, action details, an optional diff preview,
+/// and an arrow-key selector with Approve / Reject / Reject with feedback.
+pub fn confirm_tool_action(tool_name: &str, detail: &str, preview: Option<&str>) -> Confirmation {
     // Show the action details (skip for Bash — header already shows the command)
     if tool_name != "Bash" {
         println!("  \x1b[90m{detail}\x1b[0m");
+    }
+
+    // Show diff preview if available
+    if let Some(preview_text) = preview {
+        println!();
+        for line in preview_text.lines() {
+            println!("  {line}");
+        }
     }
     println!();
 

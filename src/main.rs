@@ -17,6 +17,7 @@ mod loop_guard;
 mod markdown;
 mod memory;
 mod onboarding;
+mod preview;
 mod providers;
 mod repl;
 mod runtime_env;

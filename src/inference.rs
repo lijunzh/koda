@@ -10,6 +10,7 @@ use crate::display;
 use crate::interrupt;
 use crate::loop_guard::{self, LoopDetector};
 use crate::memory;
+use crate::preview;
 use crate::providers::{ChatMessage, ImageData, LlmProvider, StreamChunk, ToolCall};
 use crate::tools::ToolRegistry;
 
@@ -512,8 +513,9 @@ async fn execute_tools_sequential(
         // Check if this tool needs user confirmation
         if confirm::needs_confirmation_with_project(&tc.function_name, project_root) {
             let detail = confirm::describe_action(&tc.function_name, &parsed_args);
+            let diff_preview = preview::compute(&tc.function_name, &parsed_args, project_root).await;
 
-            match confirm::confirm_tool_action(&tc.function_name, &detail) {
+            match confirm::confirm_tool_action(&tc.function_name, &detail, diff_preview.as_deref()) {
                 Confirmation::Approved => {}
                 Confirmation::Rejected => {
                     db.insert_message(
