@@ -246,9 +246,9 @@ mod capabilities_freshness {
             "MCP",
             "Memory",
             "Agents",
-            "@file",       // input feature
-            ".mcp.json",   // config format
-            "MEMORY.md",   // memory file
+            "@file",     // input feature
+            ".mcp.json", // config format
+            "MEMORY.md", // memory file
         ];
         for feature in must_mention {
             assert!(

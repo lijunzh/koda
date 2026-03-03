@@ -101,10 +101,10 @@ impl ToolRegistry {
         };
 
         // Merge MCP tool definitions (always included, not filtered by allow-list)
-        if let Some(ref mcp) = self.mcp_registry {
-            if let Ok(registry) = mcp.try_read() {
-                defs.extend(registry.all_tool_definitions());
-            }
+        if let Some(ref mcp) = self.mcp_registry
+            && let Ok(registry) = mcp.try_read()
+        {
+            defs.extend(registry.all_tool_definitions());
         }
 
         defs

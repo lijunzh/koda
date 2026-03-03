@@ -107,15 +107,17 @@ impl McpRegistry {
     /// Execute an MCP tool call. The `namespaced_name` should be `server.tool_name`.
     /// Returns the tool output as a string.
     pub async fn call_tool(&self, namespaced_name: &str, arguments: &str) -> Result<String> {
-        let (server_name, tool_name) = namespaced_name
-            .split_once(TOOL_NAME_SEP)
-            .ok_or_else(|| anyhow::anyhow!(
-                "Invalid MCP tool name '{namespaced_name}' — expected 'server.tool_name'"
-            ))?;
+        let (server_name, tool_name) =
+            namespaced_name.split_once(TOOL_NAME_SEP).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Invalid MCP tool name '{namespaced_name}' — expected 'server.tool_name'"
+                )
+            })?;
 
-        let client = self.servers.get(server_name).ok_or_else(|| {
-            anyhow::anyhow!("MCP server '{server_name}' is not connected")
-        })?;
+        let client = self
+            .servers
+            .get(server_name)
+            .ok_or_else(|| anyhow::anyhow!("MCP server '{server_name}' is not connected"))?;
 
         client.call_tool(tool_name, arguments).await
     }
@@ -153,16 +155,6 @@ impl McpRegistry {
             tracing::info!("Shutting down {count} MCP server(s)");
         }
         self.servers.clear(); // Drop all RunningService handles
-    }
-
-    /// Number of connected servers.
-    pub fn server_count(&self) -> usize {
-        self.servers.len()
-    }
-
-    /// Whether any MCP servers are configured and connected.
-    pub fn is_empty(&self) -> bool {
-        self.servers.is_empty()
     }
 }
 

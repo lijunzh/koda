@@ -339,9 +339,12 @@ impl LlmProvider for GeminiProvider {
                                     {
                                         // Thinking parts go to ThinkingDelta, regular text to TextDelta
                                         if part.thought == Some(true) {
-                                            let _ = tx.send(StreamChunk::ThinkingDelta(text.clone())).await;
+                                            let _ = tx
+                                                .send(StreamChunk::ThinkingDelta(text.clone()))
+                                                .await;
                                         } else {
-                                            let _ = tx.send(StreamChunk::TextDelta(text.clone())).await;
+                                            let _ =
+                                                tx.send(StreamChunk::TextDelta(text.clone())).await;
                                         }
                                     }
                                     if let Some(fc) = &part.function_call {

@@ -5,13 +5,13 @@
 
 use anyhow::{Context, Result};
 use rmcp::{
+    ClientHandler, RoleClient, ServiceExt,
     model::{
         CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation,
         PaginatedRequestParams, ProtocolVersion, Tool as McpTool,
     },
     service::RunningService,
     transport::TokioChildProcess,
-    ClientHandler, RoleClient, ServiceExt,
 };
 use std::process::Stdio;
 use std::time::Duration;
@@ -137,11 +137,9 @@ impl McpClient {
             if arguments.is_empty() || arguments == "{}" {
                 None
             } else {
-                Some(
-                    serde_json::from_str(arguments).with_context(|| {
-                        format!("Invalid JSON arguments for MCP tool '{tool_name}'")
-                    })?,
-                )
+                Some(serde_json::from_str(arguments).with_context(|| {
+                    format!("Invalid JSON arguments for MCP tool '{tool_name}'")
+                })?)
             };
 
         let params = CallToolRequestParams {
@@ -158,11 +156,6 @@ impl McpClient {
             .map_err(|e| anyhow::anyhow!("MCP tool '{}' call failed: {e}", tool_name))?;
 
         Ok(format_call_result(&result))
-    }
-
-    /// Get the server's display name.
-    pub fn display_name(&self) -> &str {
-        &self.name
     }
 }
 

@@ -16,6 +16,7 @@ mod interrupt;
 mod keystore;
 mod loop_guard;
 mod markdown;
+mod mcp;
 mod memory;
 mod onboarding;
 mod preview;
@@ -25,7 +26,6 @@ mod runtime_env;
 mod tools;
 mod tui;
 mod version;
-mod mcp;
 
 use anyhow::{Context, Result};
 use clap::Parser;

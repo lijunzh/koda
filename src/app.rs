@@ -83,8 +83,7 @@ pub async fn run(
         mcp.start_from_config(&project_root).await;
     }
 
-    let tools = ToolRegistry::new(project_root.clone())
-        .with_mcp_registry(mcp_registry.clone());
+    let tools = ToolRegistry::new(project_root.clone()).with_mcp_registry(mcp_registry.clone());
     let tool_defs = tools.get_definitions(&config.allowed_tools);
 
     let semantic_memory = memory::load(&project_root)?;
@@ -472,17 +471,24 @@ pub async fn run(
             let ctx_pct = crate::context::percentage();
             if ctx_pct >= config.auto_compact_threshold {
                 // Fix 5: Defer compaction if tool calls are still pending
-                let pending = db.has_pending_tool_calls(&session_id).await.unwrap_or(false);
+                let pending = db
+                    .has_pending_tool_calls(&session_id)
+                    .await
+                    .unwrap_or(false);
                 if pending {
                     if !silent_compact_deferred {
                         println!();
-                        println!("  \x1b[33m\u{1f43b} Context at {ctx_pct}% — deferring compact (tool calls pending)\x1b[0m");
+                        println!(
+                            "  \x1b[33m\u{1f43b} Context at {ctx_pct}% — deferring compact (tool calls pending)\x1b[0m"
+                        );
                         silent_compact_deferred = true;
                     }
                 } else {
                     silent_compact_deferred = false;
                     println!();
-                    println!("  \x1b[36m\u{1f43b} Context at {ctx_pct}% — auto-compacting...\x1b[0m");
+                    println!(
+                        "  \x1b[36m\u{1f43b} Context at {ctx_pct}% — auto-compacting...\x1b[0m"
+                    );
                     handle_compact(&db, &session_id, &config, &provider, true).await;
                 }
             }
@@ -717,8 +723,7 @@ async fn handle_compact(
     };
 
     // Fix 3: Summary is wrapped clearly for the LLM context (inserted as system role in DB)
-    let compact_message =
-        format!("[Compacted conversation summary]\n\n{summary}");
+    let compact_message = format!("[Compacted conversation summary]\n\n{summary}");
 
     // Fix 1: Preserve recent messages; Fix 2 & 3: DB inserts system + assistant continuation
     match db
@@ -760,7 +765,9 @@ async fn handle_mcp_command(
             println!();
             if servers.is_empty() {
                 println!("  \x1b[90mNo MCP servers connected.\x1b[0m");
-                println!("  \x1b[90mAdd servers via .mcp.json or /mcp add <name> <command> [args...]\x1b[0m");
+                println!(
+                    "  \x1b[90mAdd servers via .mcp.json or /mcp add <name> <command> [args...]\x1b[0m"
+                );
             } else {
                 println!("  \x1b[1m\u{1f50c} MCP Servers\x1b[0m");
                 println!();
@@ -789,7 +796,9 @@ async fn handle_mcp_command(
             let add_parts: Vec<&str> = rest.splitn(2, ' ').collect();
             if add_parts.len() < 2 {
                 println!("  \x1b[33mUsage: /mcp add <name> <command> [args...]\x1b[0m");
-                println!("  \x1b[90mExample: /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem /tmp\x1b[0m");
+                println!(
+                    "  \x1b[90mExample: /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem /tmp\x1b[0m"
+                );
                 return;
             }
             let name = add_parts[0].to_string();
@@ -805,7 +814,8 @@ async fn handle_mcp_command(
             };
 
             // Save to .mcp.json
-            if let Err(e) = crate::mcp::config::save_server_to_project(project_root, &name, &config) {
+            if let Err(e) = crate::mcp::config::save_server_to_project(project_root, &name, &config)
+            {
                 println!("  \x1b[31mFailed to save config: {e}\x1b[0m");
                 return;
             }
@@ -815,7 +825,8 @@ async fn handle_mcp_command(
             let mut registry = mcp_registry.write().await;
             match registry.add_server(name.clone(), config).await {
                 Ok(()) => {
-                    let tool_count = registry.server_info()
+                    let tool_count = registry
+                        .server_info()
                         .iter()
                         .find(|s| s.name == name)
                         .map(|s| s.tool_count)

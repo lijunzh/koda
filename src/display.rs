@@ -176,15 +176,18 @@ pub fn tool_info(name: &str, args_json: &str) -> (&'static str, &'static str, St
             (VIOLET, "Thinking", title.to_string())
         }
         "TodoWrite" => {
-            let content = args
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let total = content.lines().filter(|l| l.trim().starts_with("- [")).count();
-            let done = content.lines().filter(|l| {
-                let t = l.trim();
-                t.starts_with("- [x]") || t.starts_with("- [X]")
-            }).count();
+            let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let total = content
+                .lines()
+                .filter(|l| l.trim().starts_with("- ["))
+                .count();
+            let done = content
+                .lines()
+                .filter(|l| {
+                    let t = l.trim();
+                    t.starts_with("- [x]") || t.starts_with("- [X]")
+                })
+                .count();
             (EMERALD, "Todo", format!("{done}/{total} complete"))
         }
         // MCP tools: server_name.tool_name

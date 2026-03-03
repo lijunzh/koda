@@ -94,7 +94,11 @@ fn load_config_file(path: &Path) -> Result<McpConfigFile> {
         .with_context(|| format!("Failed to read MCP config: {}", path.display()))?;
     let config: McpConfigFile = serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse MCP config: {}", path.display()))?;
-    tracing::debug!("Loaded {} MCP servers from {}", config.mcp_servers.len(), path.display());
+    tracing::debug!(
+        "Loaded {} MCP servers from {}",
+        config.mcp_servers.len(),
+        path.display()
+    );
     Ok(config)
 }
 
@@ -114,7 +118,11 @@ fn expand_env_string(input: &str) -> String {
         if let Some(end) = result[start..].find('}') {
             let var_name = &result[start + 2..start + end];
             let replacement = std::env::var(var_name).unwrap_or_default();
-            result = format!("{}{replacement}{}", &result[..start], &result[start + end + 1..]);
+            result = format!(
+                "{}{replacement}{}",
+                &result[..start],
+                &result[start + end + 1..]
+            );
         } else {
             break;
         }
@@ -124,9 +132,16 @@ fn expand_env_string(input: &str) -> String {
     let mut out = String::with_capacity(result.len());
     let mut chars = result.chars().peekable();
     while let Some(ch) = chars.next() {
-        if ch == '$' && chars.peek().is_some_and(|c| c.is_ascii_alphabetic() || *c == '_') {
+        if ch == '$'
+            && chars
+                .peek()
+                .is_some_and(|c| c.is_ascii_alphabetic() || *c == '_')
+        {
             let mut var_name = String::new();
-            while chars.peek().is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_') {
+            while chars
+                .peek()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+            {
                 var_name.push(chars.next().unwrap());
             }
             out.push_str(&std::env::var(&var_name).unwrap_or_default());
@@ -153,14 +168,19 @@ fn dirs_path() -> Option<std::path::PathBuf> {
 }
 
 /// Save an MCP server config to the project-level `.mcp.json`.
-pub fn save_server_to_project(project_root: &Path, name: &str, config: &McpServerConfig) -> Result<()> {
+pub fn save_server_to_project(
+    project_root: &Path,
+    name: &str,
+    config: &McpServerConfig,
+) -> Result<()> {
     let path = project_root.join(".mcp.json");
     let mut file_config = load_config_file(&path).unwrap_or_default();
-    file_config.mcp_servers.insert(name.to_string(), config.clone());
-    let json = serde_json::to_string_pretty(&file_config)
-        .context("Failed to serialize MCP config")?;
-    std::fs::write(&path, json)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
+    file_config
+        .mcp_servers
+        .insert(name.to_string(), config.clone());
+    let json =
+        serde_json::to_string_pretty(&file_config).context("Failed to serialize MCP config")?;
+    std::fs::write(&path, json).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -170,8 +190,8 @@ pub fn remove_server_from_project(project_root: &Path, name: &str) -> Result<boo
     let mut file_config = load_config_file(&path)?;
     let removed = file_config.mcp_servers.remove(name).is_some();
     if removed {
-        let json = serde_json::to_string_pretty(&file_config)
-            .context("Failed to serialize MCP config")?;
+        let json =
+            serde_json::to_string_pretty(&file_config).context("Failed to serialize MCP config")?;
         std::fs::write(&path, json)
             .with_context(|| format!("Failed to write {}", path.display()))?;
     }
@@ -252,7 +272,10 @@ mod tests {
         unsafe { std::env::set_var("KODA_TEST_VAR", "hello") };
         assert_eq!(expand_env_string("$KODA_TEST_VAR"), "hello");
         assert_eq!(expand_env_string("${KODA_TEST_VAR}"), "hello");
-        assert_eq!(expand_env_string("prefix_${KODA_TEST_VAR}_suffix"), "prefix_hello_suffix");
+        assert_eq!(
+            expand_env_string("prefix_${KODA_TEST_VAR}_suffix"),
+            "prefix_hello_suffix"
+        );
         assert_eq!(expand_env_string("no_vars_here"), "no_vars_here");
         unsafe { std::env::remove_var("KODA_TEST_VAR") };
     }
@@ -260,12 +283,15 @@ mod tests {
     #[test]
     fn test_roundtrip_serialize() {
         let mut config = McpConfigFile::default();
-        config.mcp_servers.insert("test".to_string(), McpServerConfig {
-            command: "echo".to_string(),
-            args: vec!["hello".to_string()],
-            env: HashMap::new(),
-            timeout: Some(60),
-        });
+        config.mcp_servers.insert(
+            "test".to_string(),
+            McpServerConfig {
+                command: "echo".to_string(),
+                args: vec!["hello".to_string()],
+                env: HashMap::new(),
+                timeout: Some(60),
+            },
+        );
         let json = serde_json::to_string_pretty(&config).unwrap();
         let parsed: McpConfigFile = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.mcp_servers.len(), 1);

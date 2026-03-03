@@ -470,6 +470,7 @@ fn can_parallelize(tool_calls: &[ToolCall], mode: ApprovalMode, user_whitelist: 
 }
 
 /// Execute a single tool call, returning (tool_call_id, result).
+#[allow(clippy::too_many_arguments)]
 async fn execute_one_tool(
     tc: &ToolCall,
     project_root: &Path,
@@ -501,8 +502,7 @@ async fn execute_one_tool(
         }
     } else if tc.function_name == "TodoWrite" {
         // Handle todo updates: save to DB and render for the user
-        let args: serde_json::Value =
-            serde_json::from_str(&tc.arguments).unwrap_or_default();
+        let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         match crate::tools::todo::extract_content(&args) {
             Some(content) => {
                 if let Err(e) = db.set_todo(session_id, &content).await {
@@ -547,7 +547,18 @@ async fn execute_tools_parallel(
     // Launch all tool calls concurrently
     let futures: Vec<_> = tool_calls
         .iter()
-        .map(|tc| execute_one_tool(tc, project_root, config, db, session_id, tools, mode, allowed_commands))
+        .map(|tc| {
+            execute_one_tool(
+                tc,
+                project_root,
+                config,
+                db,
+                session_id,
+                tools,
+                mode,
+                allowed_commands,
+            )
+        })
         .collect();
     let results = futures_util::future::join_all(futures).await;
 
@@ -751,7 +762,10 @@ async fn execute_sub_agent(
 
     let sub_session = match session_id {
         Some(id) => id,
-        None => db.create_session(&sub_config.agent_name, project_root).await?,
+        None => {
+            db.create_session(&sub_config.agent_name, project_root)
+                .await?
+        }
     };
 
     db.insert_message(&sub_session, &Role::User, Some(prompt), None, None, None)
@@ -901,11 +915,7 @@ async fn execute_sub_agent(
 // ── System prompt builder ─────────────────────────────────────
 
 /// Build the full system prompt with semantic memory and available agents.
-pub fn build_system_prompt(
-    base_prompt: &str,
-    semantic_memory: &str,
-    agents_dir: &Path,
-) -> String {
+pub fn build_system_prompt(base_prompt: &str, semantic_memory: &str, agents_dir: &Path) -> String {
     let mut prompt = base_prompt.to_string();
 
     // Embed the capabilities reference so the LLM can describe itself accurately

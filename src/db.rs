@@ -78,7 +78,9 @@ fn config_dir() -> Result<std::path::PathBuf> {
                 .ok()
                 .map(|h| std::path::PathBuf::from(h).join(".config"))
         })
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine config directory (set HOME or XDG_CONFIG_HOME)"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("Cannot determine config directory (set HOME or XDG_CONFIG_HOME)")
+        })?;
     Ok(base.join("koda"))
 }
 
@@ -113,10 +115,10 @@ impl Database {
 
         // Migrate legacy per-project DB if it exists
         let legacy_db = project_root.join(".koda.db");
-        if legacy_db.exists() {
-            if let Err(e) = Self::migrate_legacy(&pool, &legacy_db, project_root).await {
-                tracing::warn!("Failed to migrate legacy DB {}: {e}", legacy_db.display());
-            }
+        if legacy_db.exists()
+            && let Err(e) = Self::migrate_legacy(&pool, &legacy_db, project_root).await
+        {
+            tracing::warn!("Failed to migrate legacy DB {}: {e}", legacy_db.display());
         }
 
         tracing::info!("Database initialized at {:?}", db_path);
@@ -420,12 +422,11 @@ impl Database {
         let mut tx = self.pool.begin().await?;
 
         // Get all message IDs ordered oldest→newest
-        let all_ids: Vec<(i64,)> = sqlx::query_as(
-            "SELECT id FROM messages WHERE session_id = ? ORDER BY id ASC",
-        )
-        .bind(session_id)
-        .fetch_all(&mut *tx)
-        .await?;
+        let all_ids: Vec<(i64,)> =
+            sqlx::query_as("SELECT id FROM messages WHERE session_id = ? ORDER BY id ASC")
+                .bind(session_id)
+                .fetch_all(&mut *tx)
+                .await?;
 
         let total = all_ids.len();
         if total == 0 {
@@ -446,9 +447,8 @@ impl Database {
         // Delete old messages in batches (SQLite has a variable limit)
         for chunk in ids_to_delete.chunks(500) {
             let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!(
-                "DELETE FROM messages WHERE session_id = ? AND id IN ({placeholders})"
-            );
+            let sql =
+                format!("DELETE FROM messages WHERE session_id = ? AND id IN ({placeholders})");
             let mut query = sqlx::query(&sql).bind(session_id);
             for id in chunk {
                 query = query.bind(id);
@@ -504,7 +504,11 @@ impl Database {
 
     /// Migrate data from a legacy per-project `.koda.db` into the centralized DB.
     /// After successful migration, removes the legacy files.
-    async fn migrate_legacy(pool: &SqlitePool, legacy_path: &Path, project_root: &Path) -> Result<()> {
+    async fn migrate_legacy(
+        pool: &SqlitePool,
+        legacy_path: &Path,
+        project_root: &Path,
+    ) -> Result<()> {
         let legacy_url = format!("sqlite:{}?mode=ro", legacy_path.display());
         let legacy_opts = SqliteConnectOptions::from_str(&legacy_url)?;
         let legacy_pool = SqlitePoolOptions::new()
@@ -515,11 +519,10 @@ impl Database {
         let root = project_root.to_string_lossy().to_string();
 
         // Migrate sessions
-        let sessions: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT id, agent_name, created_at FROM sessions",
-        )
-        .fetch_all(&legacy_pool)
-        .await?;
+        let sessions: Vec<(String, String, String)> =
+            sqlx::query_as("SELECT id, agent_name, created_at FROM sessions")
+                .fetch_all(&legacy_pool)
+                .await?;
 
         for (id, agent_name, created_at) in &sessions {
             let _ = sqlx::query(
@@ -595,13 +598,12 @@ impl Database {
 
     /// Get a session metadata value by key.
     pub async fn get_metadata(&self, session_id: &str, key: &str) -> Result<Option<String>> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT value FROM session_metadata WHERE session_id = ? AND key = ?",
-        )
-        .bind(session_id)
-        .bind(key)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM session_metadata WHERE session_id = ? AND key = ?")
+                .bind(session_id)
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row.map(|r| r.0))
     }
 
@@ -918,11 +920,7 @@ mod tests {
         // The 2 preserved messages should still be there
         let preserved: Vec<_> = msgs
             .iter()
-            .filter(|m| {
-                m.content
-                    .as_deref()
-                    .map_or(false, |c| c.starts_with("msg "))
-            })
+            .filter(|m| m.content.as_deref().is_some_and(|c| c.starts_with("msg ")))
             .collect();
         assert_eq!(preserved.len(), 2);
     }
@@ -933,7 +931,11 @@ mod tests {
         let session = db.create_session("default", _tmp.path()).await.unwrap();
 
         for i in 0..6 {
-            let role = if i % 2 == 0 { &Role::User } else { &Role::Assistant };
+            let role = if i % 2 == 0 {
+                &Role::User
+            } else {
+                &Role::Assistant
+            };
             db.insert_message(&session, role, Some(&format!("msg {i}")), None, None, None)
                 .await
                 .unwrap();
@@ -1000,22 +1002,39 @@ mod tests {
 
         // No metadata initially
         assert!(db.get_todo(&session).await.unwrap().is_none());
-        assert!(db.get_metadata(&session, "anything").await.unwrap().is_none());
+        assert!(
+            db.get_metadata(&session, "anything")
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         // Set and get todo
-        db.set_todo(&session, "- [ ] Task 1\n- [x] Task 2").await.unwrap();
+        db.set_todo(&session, "- [ ] Task 1\n- [x] Task 2")
+            .await
+            .unwrap();
         let todo = db.get_todo(&session).await.unwrap().unwrap();
         assert!(todo.contains("Task 1"));
         assert!(todo.contains("Task 2"));
 
         // Update (upsert) replaces the value
-        db.set_todo(&session, "- [x] Task 1\n- [x] Task 2").await.unwrap();
+        db.set_todo(&session, "- [x] Task 1\n- [x] Task 2")
+            .await
+            .unwrap();
         let todo = db.get_todo(&session).await.unwrap().unwrap();
         assert!(todo.starts_with("- [x] Task 1"));
 
         // Generic metadata works too
-        db.set_metadata(&session, "custom_key", "custom_value").await.unwrap();
-        assert_eq!(db.get_metadata(&session, "custom_key").await.unwrap().unwrap(), "custom_value");
+        db.set_metadata(&session, "custom_key", "custom_value")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.get_metadata(&session, "custom_key")
+                .await
+                .unwrap()
+                .unwrap(),
+            "custom_value"
+        );
     }
 
     #[tokio::test]

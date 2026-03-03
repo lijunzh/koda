@@ -38,17 +38,23 @@ pub fn format_todo_display(content: &str) -> String {
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("- [x]") || trimmed.starts_with("- [X]") {
-            let task = trimmed[5..].trim();
-            output.push_str(&format!("  \x1b[32m\u{2705}\x1b[0m \x1b[9m\x1b[90m{task}\x1b[0m\n"));
-        } else if trimmed.starts_with("- [ ]") {
-            let task = trimmed[5..].trim();
+        if let Some(task) = trimmed
+            .strip_prefix("- [x] ")
+            .or_else(|| trimmed.strip_prefix("- [X] "))
+        {
+            output.push_str(&format!(
+                "  \x1b[32m\u{2705}\x1b[0m \x1b[9m\x1b[90m{task}\x1b[0m\n"
+            ));
+        } else if let Some(task) = trimmed.strip_prefix("- [ ] ") {
             output.push_str(&format!("  \x1b[90m\u{2b1c}\x1b[0m {task}\n"));
-        } else if trimmed.starts_with("  - [x]") || trimmed.starts_with("  - [X]") {
-            let task = trimmed[7..].trim();
-            output.push_str(&format!("    \x1b[32m\u{2705}\x1b[0m \x1b[9m\x1b[90m{task}\x1b[0m\n"));
-        } else if trimmed.starts_with("  - [ ]") {
-            let task = trimmed[7..].trim();
+        } else if let Some(task) = trimmed
+            .strip_prefix("  - [x] ")
+            .or_else(|| trimmed.strip_prefix("  - [X] "))
+        {
+            output.push_str(&format!(
+                "    \x1b[32m\u{2705}\x1b[0m \x1b[9m\x1b[90m{task}\x1b[0m\n"
+            ));
+        } else if let Some(task) = trimmed.strip_prefix("  - [ ] ") {
             output.push_str(&format!("    \x1b[90m\u{2b1c}\x1b[0m {task}\n"));
         } else if !trimmed.is_empty() {
             output.push_str(&format!("  {trimmed}\n"));
@@ -79,7 +85,8 @@ mod tests {
 
     #[test]
     fn test_format_todo_display() {
-        let content = "- [x] Setup project\n- [ ] Write tests\n  - [ ] Unit tests\n  - [x] Integration tests";
+        let content =
+            "- [x] Setup project\n- [ ] Write tests\n  - [ ] Unit tests\n  - [x] Integration tests";
         let output = format_todo_display(content);
         // Should contain visual checkmarks
         assert!(output.contains("Todo"));
