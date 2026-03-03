@@ -84,15 +84,39 @@ fn config_dir() -> Result<std::path::PathBuf> {
     Ok(base.join("koda"))
 }
 
+/// Get the central database directory (`~/.config/koda/db`).
+pub fn db_dir() -> Result<std::path::PathBuf> {
+    Ok(config_dir()?.join("db"))
+}
+
 impl Database {
     /// Initialize the database, run migrations, and enable WAL mode.
-    /// The database lives in `~/.config/koda/koda.db` (centralized, not per-project).
+    /// The database lives in `~/.config/koda/db/koda.db`.
     pub async fn init(project_root: &Path) -> Result<Self> {
-        let db_dir = config_dir()?;
+        let db_dir = db_dir()?;
         std::fs::create_dir_all(&db_dir)
-            .with_context(|| format!("Failed to create config dir: {}", db_dir.display()))?;
+            .with_context(|| format!("Failed to create DB dir: {}", db_dir.display()))?;
 
         let db_path = db_dir.join("koda.db");
+
+        // Migrate old `~/.config/koda/koda.db` to the new `db/` folder if needed
+        let old_db_path = config_dir()?.join("koda.db");
+        if old_db_path.exists() && !db_path.exists() {
+            tracing::info!("Migrating koda.db to new db/ directory");
+            if let Err(e) = std::fs::rename(&old_db_path, &db_path) {
+                tracing::warn!("Failed to move old koda.db to db/ folder: {}", e);
+            }
+            // Also try to move WAL files if they exist
+            let old_wal = config_dir()?.join("koda.db-wal");
+            let old_shm = config_dir()?.join("koda.db-shm");
+            if old_wal.exists() {
+                let _ = std::fs::rename(old_wal, db_dir.join("koda.db-wal"));
+            }
+            if old_shm.exists() {
+                let _ = std::fs::rename(old_shm, db_dir.join("koda.db-shm"));
+            }
+        }
+
         Self::open(&db_path, project_root).await
     }
 
