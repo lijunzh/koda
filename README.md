@@ -44,10 +44,15 @@ echo "explain this" | koda        # Piped input
 
 ## What's Inside
 
-- **16 built-in tools** — file ops, search, shell, web fetch, memory, agents, task tracking
+- **17 built-in tools** — file ops, search, shell, web fetch, memory, agents, task tracking, and AST analysis
 - **MCP support** — connect to any [MCP server](https://modelcontextprotocol.io) via `.mcp.json` (same format as Claude Code / Cursor)
 - **6 LLM providers** — LM Studio, OpenAI, Anthropic, Gemini, Groq, Grok
 - **5 embedded agents** — default, code reviewer, security auditor, test writer, release engineer
+
+### 🌳 AST Code Analysis
+Koda natively understands the structure of your codebase using embedded `tree-sitter` parsers.
+- **Built-in Languages:** Rust, Python, JavaScript, and TypeScript. Koda can instantly extract functions, classes, and generate call graphs (who calls what) without guessing.
+- **Extending with MCP:** To keep Koda's binary blazingly fast and lightweight, we restrict built-in parsers to the "Big 4" languages. Need AST support for Go, C++, or Java? Simply connect a community Tree-sitter MCP server via your `.mcp.json`!
 - **Approval modes** — plan (read-only) / normal (smart confirm) / yolo (auto-approve) via `/trust`
 - **Diff preview** — see exactly what changes before approving Edit, Write, Delete
 - **Loop detection** — catches repeated tool calls with configurable iteration caps
