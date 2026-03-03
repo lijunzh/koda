@@ -10,8 +10,9 @@ use crate::input::{self, KodaHelper};
 use crate::memory;
 use crate::providers::LlmProvider;
 
-/// Auto-compact threshold: when context usage exceeds this %, compact automatically.
-const AUTO_COMPACT_THRESHOLD: usize = 80;
+/// Number of recent messages to preserve during compaction.
+/// Keeps the user's last question + the assistant's last answer intact.
+const COMPACT_PRESERVE_COUNT: usize = 4;
 use crate::providers::anthropic::AnthropicProvider;
 use crate::providers::gemini::GeminiProvider;
 use crate::providers::openai_compat::OpenAiCompatProvider;
@@ -128,6 +129,7 @@ pub async fn run(
     }
 
     let mut pending_command: Option<String> = None;
+    let mut silent_compact_deferred = false;
 
     loop {
         let input = if let Some(cmd) = pending_command.take() {
@@ -453,11 +455,24 @@ pub async fn run(
         .await?;
 
         // Auto-compact when context window gets crowded
-        let ctx_pct = crate::context::percentage();
-        if ctx_pct >= AUTO_COMPACT_THRESHOLD {
-            println!();
-            println!("  \x1b[36m\u{1f43b} Context at {ctx_pct}% — auto-compacting...\x1b[0m");
-            handle_compact(&db, &session_id, &config, &provider, true).await;
+        if config.auto_compact_threshold > 0 {
+            let ctx_pct = crate::context::percentage();
+            if ctx_pct >= config.auto_compact_threshold {
+                // Fix 5: Defer compaction if tool calls are still pending
+                let pending = db.has_pending_tool_calls(&session_id).await.unwrap_or(false);
+                if pending {
+                    if !silent_compact_deferred {
+                        println!();
+                        println!("  \x1b[33m\u{1f43b} Context at {ctx_pct}% — deferring compact (tool calls pending)\x1b[0m");
+                        silent_compact_deferred = true;
+                    }
+                } else {
+                    silent_compact_deferred = false;
+                    println!();
+                    println!("  \x1b[36m\u{1f43b} Context at {ctx_pct}% — auto-compacting...\x1b[0m");
+                    handle_compact(&db, &session_id, &config, &provider, true).await;
+                }
+            }
         }
     }
 
@@ -563,6 +578,13 @@ pub async fn run_headless(
 
 /// Compact the conversation by summarizing history via the LLM.
 /// When `silent` is true (auto-compact), suppresses the "too short" message.
+///
+/// Improvements over v1:
+/// - Preserves the most recent messages (Fix 1)
+/// - Inserts summary as `system` role, not `user` (Fix 3)
+/// - Adds a continuation instruction for the LLM (Fix 2)
+/// - Checks for pending tool calls before proceeding (Fix 5)
+/// - Uses a structured summarization prompt (Fix 6)
 async fn handle_compact(
     db: &Database,
     session_id: &str,
@@ -571,6 +593,14 @@ async fn handle_compact(
     silent: bool,
 ) {
     use crate::providers::ChatMessage;
+
+    // Fix 5: Defer compaction if tool calls are pending
+    if let Ok(true) = db.has_pending_tool_calls(session_id).await {
+        if !silent {
+            println!("  \x1b[33mTool calls are still pending — deferring compact.\x1b[0m");
+        }
+        return;
+    }
 
     // Load current conversation
     let history = match db.load_context(session_id, config.max_context_tokens).await {
@@ -620,17 +650,30 @@ async fn handle_compact(
 
     println!();
     println!(
-        "  \x1b[36m\u{1f43b} Compacting {} messages...\x1b[0m",
-        history.len()
+        "  \x1b[36m\u{1f43b} Compacting {} messages (preserving last {})...\x1b[0m",
+        history.len(),
+        COMPACT_PRESERVE_COUNT,
     );
 
+    // Fix 6: Structured summarization prompt preserving code-relevant context
     let summary_prompt = format!(
-        "Summarize this conversation concisely. Preserve:\n\
-         - Key decisions made and rationale\n\
-         - Files created, modified, or deleted\n\
-         - Current state of the task / project\n\
-         - Any unresolved issues or next steps\n\n\
-         Be concise but don't lose critical context. Use bullet points.\n\n\
+        "Summarize the conversation below. This summary will replace the older messages \
+         so an AI assistant can continue the session seamlessly.\n\
+         \n\
+         Preserve ALL of the following — do NOT omit any section:\n\
+         \n\
+         1. **User Intent** — Every goal, request, and requirement the user stated.\n\
+         2. **Key Decisions** — Decisions made and their rationale.\n\
+         3. **Files & Code** — Every file created, modified, or deleted. Include file paths, \n\
+            key function/struct names, and the purpose of each change.\n\
+         4. **Errors & Fixes** — Bugs encountered, error messages, and how they were resolved.\n\
+         5. **Current State** — What is working, what has been tested, what the project \n\
+            looks like right now.\n\
+         6. **Pending Tasks** — Anything unfinished or explicitly deferred.\n\
+         7. **Next Step** — Only if one was clearly stated or implied.\n\
+         \n\
+         Use concise bullet points. Do not add new ideas or suggestions.\n\
+         \n\
          ---\n\n{conversation_text}"
     );
 
@@ -654,12 +697,15 @@ async fn handle_compact(
         }
     };
 
-    // Wrap the summary so the LLM knows it's a compacted history
+    // Fix 3: Summary is wrapped clearly for the LLM context (inserted as system role in DB)
     let compact_message =
-        format!("[This is a compacted summary of our previous conversation]\n\n{summary}");
+        format!("[Compacted conversation summary]\n\n{summary}");
 
-    // Replace all messages with the summary
-    match db.compact_session(session_id, &compact_message).await {
+    // Fix 1: Preserve recent messages; Fix 2 & 3: DB inserts system + assistant continuation
+    match db
+        .compact_session(session_id, &compact_message, COMPACT_PRESERVE_COUNT)
+        .await
+    {
         Ok(deleted) => {
             let summary_tokens = summary.len() / 4;
             println!(

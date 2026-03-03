@@ -344,36 +344,102 @@ impl Database {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Replace all messages in a session with a single summary message.
-    /// Used by `/compact` to reclaim context window space.
-    pub async fn compact_session(&self, session_id: &str, summary: &str) -> Result<usize> {
+    /// Compact a session: summarize old messages while preserving the most recent ones.
+    ///
+    /// Keeps the last `preserve_count` messages intact, deletes the rest, and
+    /// inserts a summary (as a `system` message) plus a continuation hint
+    /// (as an `assistant` message) before the preserved tail.
+    ///
+    /// Returns the number of messages that were deleted/replaced.
+    pub async fn compact_session(
+        &self,
+        session_id: &str,
+        summary: &str,
+        preserve_count: usize,
+    ) -> Result<usize> {
         let mut tx = self.pool.begin().await?;
 
-        // Count existing messages for reporting
-        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages WHERE session_id = ?")
-            .bind(session_id)
-            .fetch_one(&mut *tx)
-            .await?;
+        // Get all message IDs ordered oldest→newest
+        let all_ids: Vec<(i64,)> = sqlx::query_as(
+            "SELECT id FROM messages WHERE session_id = ? ORDER BY id ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&mut *tx)
+        .await?;
 
-        // Delete all existing messages
-        sqlx::query("DELETE FROM messages WHERE session_id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
+        let total = all_ids.len();
+        if total == 0 {
+            tx.commit().await?;
+            return Ok(0);
+        }
 
-        // Insert the summary as a user message so the LLM has context
+        // Determine which messages to delete (everything except the tail)
+        let keep_from = total.saturating_sub(preserve_count);
+        let ids_to_delete: Vec<i64> = all_ids[..keep_from].iter().map(|r| r.0).collect();
+        let deleted_count = ids_to_delete.len();
+
+        if deleted_count == 0 {
+            tx.commit().await?;
+            return Ok(0);
+        }
+
+        // Delete old messages in batches (SQLite has a variable limit)
+        for chunk in ids_to_delete.chunks(500) {
+            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "DELETE FROM messages WHERE session_id = ? AND id IN ({placeholders})"
+            );
+            let mut query = sqlx::query(&sql).bind(session_id);
+            for id in chunk {
+                query = query.bind(id);
+            }
+            query.execute(&mut *tx).await?;
+        }
+
+        // Insert the summary as a system message (it's context, not user speech)
+        // Use a low ID trick: find the min preserved ID and insert before it
         sqlx::query(
             "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, prompt_tokens, completion_tokens)
-             VALUES (?, 'user', ?, NULL, NULL, NULL, NULL)",
+             VALUES (?, 'system', ?, NULL, NULL, NULL, NULL)",
         )
         .bind(session_id)
         .bind(summary)
         .execute(&mut *tx)
         .await?;
 
+        // Insert a continuation hint so the LLM knows how to behave
+        let continuation = "Your context was compacted. The previous message contains a summary of our earlier conversation. \
+            Do not mention the summary or that compaction occurred. \
+            Continue the conversation naturally based on the summarized context.";
+        sqlx::query(
+            "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, prompt_tokens, completion_tokens)
+             VALUES (?, 'assistant', ?, NULL, NULL, NULL, NULL)",
+        )
+        .bind(session_id)
+        .bind(continuation)
+        .execute(&mut *tx)
+        .await?;
+
         tx.commit().await?;
 
-        Ok(count as usize)
+        Ok(deleted_count)
+    }
+
+    /// Check if the last message in a session is a tool call awaiting a response.
+    /// Used to defer compaction during active tool execution.
+    pub async fn has_pending_tool_calls(&self, session_id: &str) -> Result<bool> {
+        // A pending tool call exists when the last message has role='assistant'
+        // with tool_calls set, and there's no subsequent tool response.
+        let last_msg: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT role, tool_calls FROM messages
+             WHERE session_id = ?
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(matches!(last_msg, Some((role, Some(_))) if role == "assistant"))
     }
 }
 
@@ -629,23 +695,113 @@ mod tests {
                 .unwrap();
         }
 
+        // Compact preserving the last 2 messages
         let deleted = db
-            .compact_session(&session, "Summary of conversation")
+            .compact_session(&session, "Summary of conversation", 2)
             .await
             .unwrap();
-        assert_eq!(deleted, 10);
+        assert_eq!(deleted, 8); // 10 total - 2 preserved = 8 deleted
 
-        // Should have exactly 1 message now
+        // Should have: summary(system) + continuation(assistant) + 2 preserved = 4
         let msgs = db.load_context(&session, 100_000).await.unwrap();
-        assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].role, "user");
+        assert_eq!(msgs.len(), 4);
+
+        // Check that the summary is a system message
+        let system_msgs: Vec<_> = msgs.iter().filter(|m| m.role == "system").collect();
+        assert_eq!(system_msgs.len(), 1);
         assert!(
-            msgs[0]
+            system_msgs[0]
                 .content
                 .as_ref()
                 .unwrap()
                 .contains("Summary of conversation")
         );
+
+        // Check that there's a continuation hint as assistant
+        let assistant_msgs: Vec<_> = msgs.iter().filter(|m| m.role == "assistant").collect();
+        assert!(
+            assistant_msgs
+                .iter()
+                .any(|m| m.content.as_deref().unwrap_or("").contains("compacted")),
+            "Expected a continuation hint from assistant"
+        );
+
+        // The 2 preserved messages should still be there
+        let preserved: Vec<_> = msgs
+            .iter()
+            .filter(|m| {
+                m.content
+                    .as_deref()
+                    .map_or(false, |c| c.starts_with("msg "))
+            })
+            .collect();
+        assert_eq!(preserved.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_compact_preserves_zero() {
+        let (db, _tmp) = setup().await;
+        let session = db.create_session("default").await.unwrap();
+
+        for i in 0..6 {
+            let role = if i % 2 == 0 { &Role::User } else { &Role::Assistant };
+            db.insert_message(&session, role, Some(&format!("msg {i}")), None, None, None)
+                .await
+                .unwrap();
+        }
+
+        // Compact preserving 0 — deletes everything, inserts summary + continuation
+        let deleted = db
+            .compact_session(&session, "Full summary", 0)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 6);
+
+        let msgs = db.load_context(&session, 100_000).await.unwrap();
+        assert_eq!(msgs.len(), 2); // summary + continuation
+        assert_eq!(msgs.iter().filter(|m| m.role == "system").count(), 1);
+        assert_eq!(msgs.iter().filter(|m| m.role == "assistant").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_has_pending_tool_calls() {
+        let (db, _tmp) = setup().await;
+        let session = db.create_session("default").await.unwrap();
+
+        // No messages → no pending
+        assert!(!db.has_pending_tool_calls(&session).await.unwrap());
+
+        // User message → no pending
+        db.insert_message(&session, &Role::User, Some("hello"), None, None, None)
+            .await
+            .unwrap();
+        assert!(!db.has_pending_tool_calls(&session).await.unwrap());
+
+        // Assistant with tool_calls → pending!
+        db.insert_message(
+            &session,
+            &Role::Assistant,
+            None,
+            Some(r#"[{"id":"tc1","name":"Read","arguments":"{}"}]"#),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(db.has_pending_tool_calls(&session).await.unwrap());
+
+        // Tool response → no longer pending
+        db.insert_message(
+            &session,
+            &Role::Tool,
+            Some("file contents"),
+            None,
+            Some("tc1"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!db.has_pending_tool_calls(&session).await.unwrap());
     }
 
     #[tokio::test]

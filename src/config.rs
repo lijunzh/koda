@@ -152,6 +152,8 @@ pub struct AgentConfig {
     pub max_context_tokens: Option<usize>,
     #[serde(default)]
     pub max_iterations: Option<u32>,
+    #[serde(default)]
+    pub auto_compact_threshold: Option<usize>,
 }
 
 /// Runtime configuration assembled from CLI args, env vars, and agent JSON.
@@ -167,6 +169,8 @@ pub struct KodaConfig {
     pub agents_dir: PathBuf,
     pub model_settings: ModelSettings,
     pub max_iterations: u32,
+    /// Context usage percentage (0-100) that triggers auto-compact. 0 = disabled.
+    pub auto_compact_threshold: usize,
 }
 
 impl KodaConfig {
@@ -222,6 +226,8 @@ impl KodaConfig {
             .max_iterations
             .unwrap_or(crate::loop_guard::MAX_ITERATIONS_DEFAULT);
 
+        let auto_compact_threshold = agent.auto_compact_threshold.unwrap_or(80);
+
         Ok(Self {
             agent_name: agent.name,
             system_prompt: agent.system_prompt,
@@ -233,6 +239,7 @@ impl KodaConfig {
             agents_dir,
             model_settings: settings,
             max_iterations,
+            auto_compact_threshold,
         })
     }
 
@@ -328,6 +335,7 @@ impl KodaConfig {
             agents_dir: PathBuf::from("agents"),
             model_settings,
             max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,
+            auto_compact_threshold: 80,
         }
     }
 
