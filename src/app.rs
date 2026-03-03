@@ -366,18 +366,25 @@ pub async fn run(
                     handle_compact(&db, &session_id, &config, &provider, false).await;
                     continue;
                 }
-                ReplAction::SetMode(mode_name) => {
-                    if let Some(new_mode) = ApprovalMode::from_str(&mode_name) {
-                        approval::set_mode(&shared_mode, new_mode);
-                        println!(
-                            "  \x1b[32m\u{2713}\x1b[0m Mode: \x1b[1m{}\x1b[0m — {}",
-                            new_mode.label(),
-                            new_mode.description()
-                        );
+                ReplAction::SetTrust(mode_name) => {
+                    let new_mode = if let Some(ref name) = mode_name {
+                        // Explicit: /trust yolo
+                        ApprovalMode::from_str(name)
                     } else {
+                        // Interactive picker
+                        pick_trust_mode(approval::read_mode(&shared_mode))
+                    };
+                    if let Some(m) = new_mode {
+                        approval::set_mode(&shared_mode, m);
                         println!(
-                            "  \x1b[31m\u{2717}\x1b[0m Unknown mode '{}'. Use: plan, normal, yolo",
-                            mode_name
+                            "  \x1b[32m\u{2713}\x1b[0m Trust: \x1b[1m{}\x1b[0m \u{2014} {}",
+                            m.label(),
+                            m.description()
+                        );
+                    } else if let Some(ref name) = mode_name {
+                        println!(
+                            "  \x1b[31m\u{2717}\x1b[0m Unknown trust level '{}'. Use: plan, normal, yolo",
+                            name
                         );
                     }
                     continue;
@@ -802,6 +809,29 @@ async fn handle_pick_provider(
 }
 
 // ── Utilities ─────────────────────────────────────────────────
+
+/// Interactive trust mode picker (arrow-key menu).
+fn pick_trust_mode(current: ApprovalMode) -> Option<ApprovalMode> {
+    use ApprovalMode::*;
+    let modes = [Plan, Normal, Yolo];
+    let options: Vec<SelectOption> = modes
+        .iter()
+        .map(|m| {
+            let label = match m {
+                Plan => "\u{1f4cb} plan",
+                Normal => "\u{1f43b} normal",
+                Yolo => "\u{26a1} yolo",
+            };
+            SelectOption::new(label, m.description())
+        })
+        .collect();
+
+    let initial = modes.iter().position(|m| *m == current).unwrap_or(1);
+    match tui::select("\u{1f43b} Trust level", &options, initial) {
+        Ok(Some(idx)) => Some(modes[idx]),
+        _ => None,
+    }
+}
 
 fn history_file_path() -> PathBuf {
     let config_dir = std::env::var("XDG_CONFIG_HOME")

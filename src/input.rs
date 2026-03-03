@@ -25,7 +25,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/compact", "Summarize conversation to reclaim context"),
     ("/help", "Command palette"),
     ("/memory", "View/save project & global memory"),
-    ("/mode", "Switch approval mode (plan/normal/yolo)"),
+    ("/trust", "Set trust level (plan/normal/yolo)"),
     ("/model", "Pick a model interactively"),
     ("/provider", "Switch LLM provider"),
     ("/sessions", "List/resume/delete sessions"),
@@ -604,8 +604,8 @@ mod tests {
     fn test_slash_command_completion() {
         let (start, matches) = complete_slash_command("/mo", 3);
         assert_eq!(start, 0);
-        // Matches both /mode and /model
-        assert_eq!(matches.len(), 2);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].replacement, "/model");
     }
 
     #[test]

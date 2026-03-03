@@ -18,8 +18,8 @@ mod repl_commands {
             "/provider" => "PickProvider",
             "/help" => "ShowHelp",
             "/cost" => "ShowCost",
-            "/mode" if parts.len() > 1 => "SetMode",
-            "/mode" => "Handled",
+            "/trust" if parts.len() > 1 => "SetTrust",
+            "/trust" => "PickTrust",
             "/diff" if parts.len() > 1 => "InjectPrompt_or_Handled",
             "/diff" => "Handled",
             "/sessions" if parts.len() > 1 && parts[1].starts_with("delete ") => "DeleteSession",
@@ -47,8 +47,8 @@ mod repl_commands {
         assert_eq!(dispatch("/provider openai"), "SetupProvider");
         assert_eq!(dispatch("/help"), "ShowHelp");
         assert_eq!(dispatch("/cost"), "ShowCost");
-        assert_eq!(dispatch("/mode"), "Handled");
-        assert_eq!(dispatch("/mode yolo"), "SetMode");
+        assert_eq!(dispatch("/trust"), "PickTrust");
+        assert_eq!(dispatch("/trust yolo"), "SetTrust");
         assert_eq!(dispatch("/diff"), "Handled");
         assert_eq!(dispatch("/diff review"), "InjectPrompt_or_Handled");
         assert_eq!(dispatch("/diff commit"), "InjectPrompt_or_Handled");
@@ -168,7 +168,7 @@ mod completions {
         "/diff",
         "/help",
         "/memory",
-        "/mode",
+        "/trust",
         "/model",
         "/provider",
         "/sessions",

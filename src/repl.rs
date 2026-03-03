@@ -23,8 +23,8 @@ pub enum ReplAction {
     InjectPrompt(String),
     /// Compact the conversation by summarizing history
     Compact,
-    /// Switch approval mode
-    SetMode(String),
+    /// Switch approval mode (with optional name, or interactive picker)
+    SetTrust(Option<String>),
     Handled,
     NotACommand,
 }
@@ -60,18 +60,9 @@ pub async fn handle_command(
 
         "/cost" => ReplAction::ShowCost,
 
-        "/mode" => match arg {
-            Some(mode_name) => ReplAction::SetMode(mode_name.to_string()),
-            None => {
-                use crate::approval::ApprovalMode;
-                println!();
-                println!("  \x1b[1mApproval Modes\x1b[0m  (cycle with \x1b[36mShift+Tab\x1b[0m)");
-                println!("    \x1b[33m\u{1f4cb} plan\x1b[0m     {}", ApprovalMode::Plan.description());
-                println!("    \x1b[32m\u{1f6e1}\u{fe0f} normal\x1b[0m   {}", ApprovalMode::Normal.description());
-                println!("    \x1b[31m\u{26a1} yolo\x1b[0m     {}", ApprovalMode::Yolo.description());
-                println!();
-                ReplAction::Handled
-            }
+        "/trust" => match arg {
+            Some(mode_name) => ReplAction::SetTrust(Some(mode_name.to_string())),
+            None => ReplAction::SetTrust(None),
         },
 
         "/diff" => {
@@ -284,7 +275,7 @@ pub fn print_banner(config: &KodaConfig, _session_id: &str, recent_activity: &[S
         "  \x1b[90m/model\x1b[0m      pick a model".to_string(),
         "  \x1b[90m/provider\x1b[0m   switch provider".to_string(),
         "  \x1b[90m/help\x1b[0m       all commands".to_string(),
-        "  \x1b[90mShift+Tab\x1b[0m   plan \x1b[90m\u{2192}\x1b[0m normal \x1b[90m\u{2192}\x1b[0m yolo".to_string(),
+        "  \x1b[90m/trust\x1b[0m      plan \x1b[90m\u{2192}\x1b[0m normal \x1b[90m\u{2192}\x1b[0m yolo".to_string(),
         sep_line,
     ];
 
@@ -373,12 +364,13 @@ pub fn format_prompt(model: &str, mode: crate::approval::ApprovalMode) -> String
     };
     // Mode embedded in logo: [Koda 🐻] / [Koda 📋] / [Koda ⚡]
     let (logo_icon, logo_color) = match mode {
-        crate::approval::ApprovalMode::Plan => ("\u{1f4cb}", "\x1b[33m"),   // 📋 yellow
-        crate::approval::ApprovalMode::Normal => ("\u{1f43b}", "\x1b[36m"), // 🐻 cyan (default)
-        crate::approval::ApprovalMode::Yolo => ("\u{26a1}", "\x1b[31m"),    // ⚡ red
+        crate::approval::ApprovalMode::Plan => ("\u{1f4cb}", "\x1b[33m"),
+        crate::approval::ApprovalMode::Normal => ("\u{1f43b}", "\x1b[36m"),
+        crate::approval::ApprovalMode::Yolo => ("\u{26a1}", "\x1b[31m"),
     };
+    let mode_label = mode.label();
     format!(
-        "{logo_color}[Koda {logo_icon}]\x1b[0m \x1b[90m[{model}]\x1b[0m \x1b[34m({cwd})\x1b[0m{ctx_warn} \x1b[32m\u{276f}\x1b[0m "
+        "{logo_color}[Koda {logo_icon} {mode_label}]\x1b[0m \x1b[90m[{model}]\x1b[0m \x1b[34m({cwd})\x1b[0m{ctx_warn} \x1b[32m\u{276f}\x1b[0m "
     )
 }
 
