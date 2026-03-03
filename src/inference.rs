@@ -558,7 +558,7 @@ async fn execute_tools_sequential(
                 let diff_preview =
                     preview::compute(&tc.function_name, &parsed_args, project_root).await;
                 println!(
-                    "  \x1b[36m\u{1f4cb} [plan] Would execute: {detail}\x1b[0m"
+                    "  \x1b[33m\u{1f4cb} Would execute: {detail}\x1b[0m"
                 );
                 if let Some(ref preview_text) = diff_preview {
                     for line in preview_text.lines() {
