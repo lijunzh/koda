@@ -58,13 +58,18 @@ pub fn load(project_root: &Path) -> Result<String> {
 /// currently uses `CLAUDE.md` or `AGENTS.md` for reading.
 pub fn append(project_root: &Path, entry: &str) -> Result<()> {
     use std::io::Write;
-    let path = project_root.join(KODA_MEMORY_FILE);
+    
+    // Determine the active file, or default to MEMORY.md
+    let target_filename = active_project_file(project_root)
+        .unwrap_or_else(|| KODA_MEMORY_FILE.to_string());
+        
+    let path = project_root.join(&target_filename);
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)?;
     writeln!(file, "\n- {entry}")?;
-    tracing::info!("Appended to MEMORY.md: {entry}");
+    tracing::info!("Appended to {target_filename}: {entry}");
     Ok(())
 }
 
@@ -208,14 +213,17 @@ mod tests {
     }
 
     #[test]
-    fn test_append_always_writes_to_memory_md() {
+    fn test_append_writes_to_active_file() {
         let tmp = TempDir::new().unwrap();
-        // Even if CLAUDE.md exists, append writes to MEMORY.md
+        // If CLAUDE.md exists, append writes directly to CLAUDE.md
         std::fs::write(tmp.path().join("CLAUDE.md"), "existing claude rules").unwrap();
         append(tmp.path(), "new koda insight").unwrap();
 
-        assert!(tmp.path().join("MEMORY.md").exists());
-        let memory = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
+        // It should NOT create MEMORY.md
+        assert!(!tmp.path().join("MEMORY.md").exists());
+        
+        // It SHOULD append to CLAUDE.md
+        let memory = std::fs::read_to_string(tmp.path().join("CLAUDE.md")).unwrap();
         assert!(memory.contains("new koda insight"));
     }
 
