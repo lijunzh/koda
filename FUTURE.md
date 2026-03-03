@@ -8,36 +8,24 @@ support, zero runtime dependencies. No other agent matches that deployment story
 **What shipped in v0.1.x:** Core file/shell/search tools (15), 6 LLM providers,
 5 embedded agents, parallel tool execution, streaming markdown, image analysis,
 session management, auto-memory, context compression, headless/CI mode, prompt
-caching, `/diff` review, clipboard integration, onboarding wizard.
+caching, `/diff` review, clipboard integration, onboarding wizard, MCP protocol
+support (`.mcp.json`), capabilities self-discovery, improved `/compact`.
 See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ---
 
-## v0.1.x — Extensibility & Security
+## v0.1.x — Remaining Extensibility & Security
 
-### MCP Protocol (Top Priority)
+### MCP Protocol ✅ Shipped
 
-**Priority:** Critical. This is Koda's single largest feature gap.
+MCP support shipped with stdio transport, `.mcp.json` config (compatible with
+Claude Code / Cursor), auto-connect on startup, tool namespacing, and `/mcp`
+command (status, add, remove, restart).
 
-**What:** Support the [Model Context Protocol](https://modelcontextprotocol.io/)
-for extensible tool servers. MCP allows third-party tools to be exposed
-to the LLM via a standardized JSON-RPC protocol.
-
-**Why it matters:** Every major competitor supports MCP (Goose has 70+
-servers, Claude Code and Code Puppy both support it). Without MCP, Koda
-is limited to its 15 built-in tools. With MCP, it becomes infinitely
-extensible while keeping the single-binary advantage.
-
-**Scope:**
-- MCP client (stdio and SSE transports)
-- Auto-discover tools from connected servers
-- Merge MCP tools into Koda's existing tool registry
-- Configuration via `koda.toml` or project-level config
-- `/mcp` slash command to list connected servers and tools
+**Remaining for later:**
+- Streamable HTTP transport (for remote MCP servers)
 - MCP resources and prompts support
-
-**Non-goals for v0.1.x:** MCP server mode (expose Koda's tools to
-other agents), sampling.
+- MCP server mode (expose Koda's tools to other agents)
 
 ### Per-Tool Permission System
 
@@ -62,6 +50,27 @@ lifecycle points:
 ---
 
 ## v0.2.0 — TUI & Multi-Model
+
+### Type-Ahead Prompting (Top Priority for v0.2.0)
+
+**What:** Let the user type their next prompt while Koda is still executing
+the previous one. Queued prompts are fed to the LLM after the current
+inference cycle completes.
+
+**Why:** Currently, Koda blocks the input line during execution. If you
+think of a follow-up while watching tool output stream, you have to wait.
+This breaks flow, especially on long multi-tool tasks.
+
+**Requirements:**
+- Input line must be active at all times (non-blocking)
+- Typed text must not interleave with streaming output
+- Queued prompts execute in order after current inference finishes
+- `Ctrl+C` during typing should clear the input, not kill the running task
+- `Ctrl+C` twice (or `Esc`) should interrupt the running task
+
+**Architecture:** Requires separating the input loop from the execution
+loop into two concurrent tokio tasks communicating via `mpsc` channels.
+This is the same foundation needed for the full TUI.
 
 ### Concurrent TUI with Non-Blocking Input
 
@@ -207,7 +216,7 @@ once MCP and permissions are solid.
 
 | Capability | Koda v0.1.1 | Goose | Claude Code | Code Puppy |
 |------------|:-----------:|:-----:|:-----------:|:----------:|
-| MCP protocol | ❌ | ✅ (70+ servers) | ✅ | ✅ |
+| MCP protocol | ✅ | ✅ (70+ servers) | ✅ | ✅ |
 | Plugin/hook system | ❌ | ✅ (extensions) | ✅ | ✅ |
 | Recipe/workflow system | ❌ | ✅ (YAML + sub-recipes) | ❌ | ❌ |
 | Skills/marketplace | ❌ | ✅ (recipe catalog) | ❌ | ✅ |
