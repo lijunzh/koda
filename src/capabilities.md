@@ -1,69 +1,30 @@
-## Koda Capabilities Reference
+## Koda Quick Reference
 
-When the user asks "what can you do?", "what tools do you have?", or similar,
-use this reference to give an accurate, complete answer.
+Refer to this when the user asks "what can you do?" or about features.
 
-### Built-in Tools
+### Commands (user types these in the REPL)
 
-| Tool | What it does |
-|------|-------------|
-| Read | Read file contents (with optional line range) |
-| Write | Create or overwrite files |
-| Edit | Targeted text replacements, snippet deletion, or full rewrite |
-| Delete | Delete files |
-| List | List directory contents (recursive, respects .gitignore) |
-| Grep | Search for text patterns across files (regex-capable) |
-| Glob | Find files matching glob patterns (e.g. `**/*.rs`) |
-| Bash | Run shell commands (builds, tests, git, installs) |
-| WebFetch | Fetch web page content (strips HTML, returns text) |
-| MemoryRead | Read project and global persistent memory |
-| MemoryWrite | Save insights or rules to MEMORY.md |
-| ShareReasoning | Show structured thinking to the user |
-| TodoWrite | Write/update a task checklist (tracked across turns) |
-| ListAgents | List available sub-agents |
-| CreateAgent | Create a new specialized sub-agent |
-| InvokeAgent | Delegate a task to a sub-agent |
+/help — command palette | /agent — list sub-agents | /compact — reclaim context
+/cost — token usage | /diff — git diff/review/commit | /mcp — MCP server management
+/memory — persistent memory | /model — switch model | /provider — switch provider
+/sessions — manage sessions | /trust — plan/normal/yolo | /exit — quit
 
-### REPL Commands (user types these)
+### Input
 
-| Command | What it does |
-|---------|-------------|
-| /help | Interactive command palette |
-| /agent | List available sub-agents |
-| /compact | Summarize conversation to reclaim context window |
-| /cost | Show token usage for this session |
-| /diff | Show git diff, review changes, or generate commit message |
-| /mcp | MCP server management (status, add, remove, restart) |
-| /memory | View or save project and global memory |
-| /model | Switch LLM model interactively |
-| /provider | Switch LLM provider (OpenAI, Anthropic, Gemini, etc.) |
-| /sessions | List, resume, or delete past sessions |
-| /trust | Set approval mode: plan (read-only), normal, yolo (auto-approve) |
-| /exit | Quit Koda |
+- `@file.rs` attaches file context, `@image.png` for multi-modal analysis
+- Piped input: `echo "explain" | koda` or `koda -p "prompt"` for headless/CI
 
-### Input Features
+### Memory
 
-- `@file.rs` — attach a file as context
-- `@image.png` — attach an image for multi-modal analysis
-- `Shift+Tab` — cycle through trust modes
-- `Ctrl+C` — interrupt current operation
-- Piped input: `echo "explain this" | koda`
-
-### MCP (Model Context Protocol)
-
-Koda can connect to external MCP servers for additional tools.
-Servers are configured in `.mcp.json` (project root) or `~/.config/koda/mcp.json` (global).
-MCP tools appear alongside built-in tools with namespaced names (e.g. `github.create_issue`).
-
-### Persistent Memory
-
-- Project memory: `MEMORY.md` in project root (also reads `CLAUDE.md` and `AGENTS.md` for compatibility)
-- Global memory: `~/.config/koda/memory.md`
+- Project: `MEMORY.md` (also reads `CLAUDE.md`, `AGENTS.md`) | Global: `~/.config/koda/memory.md`
 - Use `MemoryWrite` to save rules, conventions, or learned facts
-- Memory is injected into the system prompt automatically every turn
-- Users can edit MEMORY.md directly for project-specific rules and preferences
 
-### Sub-Agents
+### MCP
 
-Koda ships with 5 embedded agents: default, reviewer, security, testgen, releaser.
-Users can create custom agents as JSON files in the `agents/` directory.
+External tool servers configured in `.mcp.json` (project) or `~/.config/koda/mcp.json` (global).
+MCP tools appear with namespaced names like `github.create_issue`.
+
+### Agents
+
+5 built-in: default, reviewer, security, testgen, releaser.
+Custom agents go in `agents/` as JSON files.

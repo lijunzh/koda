@@ -1059,7 +1059,7 @@ mod tests {
         assert!(result.contains("No sub-agents are configured"));
         assert!(!result.contains("Project Memory"));
         // Capabilities reference is always embedded
-        assert!(result.contains("Koda Capabilities Reference"));
+        assert!(result.contains("Koda Quick Reference"));
     }
 
     #[test]

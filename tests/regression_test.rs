@@ -204,33 +204,16 @@ mod completions {
 }
 
 mod capabilities_freshness {
-    //! Verify that src/capabilities.md stays in sync with actual tools and commands.
+    //! Verify that src/capabilities.md stays in sync with actual commands.
     //! If these tests fail, update src/capabilities.md to match the source of truth.
+    //!
+    //! Note: We do NOT check tool names here — the LLM already receives tool
+    //! definitions via the API. capabilities.md only documents things the LLM
+    //! can't see from tool definitions: commands, input features, MCP, memory.
 
     const CAPABILITIES_MD: &str = include_str!("../src/capabilities.md");
 
-    /// Every built-in tool name from the ToolRegistry must appear in capabilities.md.
-    /// Source of truth: the match arms in tools/mod.rs execute().
-    const EXPECTED_TOOLS: &[&str] = &[
-        "Read",
-        "Write",
-        "Edit",
-        "Delete",
-        "List",
-        "Grep",
-        "Glob",
-        "Bash",
-        "WebFetch",
-        "MemoryRead",
-        "MemoryWrite",
-        "ShareReasoning",
-        "TodoWrite",
-        "ListAgents",
-        "CreateAgent",
-        "InvokeAgent",
-    ];
-
-    /// Every slash command from input.rs SLASH_COMMANDS must appear in capabilities.md.
+    /// Every slash command must appear in capabilities.md.
     const EXPECTED_COMMANDS: &[&str] = &[
         "/help",
         "/agent",
@@ -247,73 +230,31 @@ mod capabilities_freshness {
     ];
 
     #[test]
-    fn test_all_tools_documented_in_capabilities() {
-        for tool in EXPECTED_TOOLS {
-            assert!(
-                CAPABILITIES_MD.contains(&format!("| {tool} |")),
-                "Tool '{tool}' is missing from src/capabilities.md — add it to the Built-in Tools table"
-            );
-        }
-    }
-
-    #[test]
     fn test_all_commands_documented_in_capabilities() {
         for cmd in EXPECTED_COMMANDS {
             assert!(
-                CAPABILITIES_MD.contains(&format!("| {cmd} |")),
-                "Command '{cmd}' is missing from src/capabilities.md — add it to the REPL Commands table"
+                CAPABILITIES_MD.contains(cmd),
+                "Command '{cmd}' is missing from src/capabilities.md"
             );
         }
     }
 
     #[test]
-    fn test_no_phantom_tools_in_capabilities() {
-        // Extract tool names from the "| ToolName |" pattern in capabilities.md
-        // to catch tools documented but no longer implemented.
-        let tools_section = CAPABILITIES_MD
-            .split("### Built-in Tools")
-            .nth(1)
-            .and_then(|s| s.split("### REPL Commands").next())
-            .unwrap_or("");
-
-        for line in tools_section.lines() {
-            let line = line.trim();
-            if line.starts_with('|') && !line.starts_with("| Tool") && !line.starts_with("|---") {
-                // Extract tool name: "| Read | description |" -> "Read"
-                if let Some(name) = line.split('|').nth(1).map(|s| s.trim()) {
-                    if !name.is_empty() {
-                        assert!(
-                            EXPECTED_TOOLS.contains(&name),
-                            "Tool '{name}' is documented in capabilities.md but not in EXPECTED_TOOLS — \
-                             either add it to the test or remove it from the doc"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_no_phantom_commands_in_capabilities() {
-        let commands_section = CAPABILITIES_MD
-            .split("### REPL Commands")
-            .nth(1)
-            .and_then(|s| s.split("### Input Features").next())
-            .unwrap_or("");
-
-        for line in commands_section.lines() {
-            let line = line.trim();
-            if line.starts_with("| /") {
-                if let Some(cmd) = line.split('|').nth(1).map(|s| s.trim()) {
-                    if !cmd.is_empty() {
-                        assert!(
-                            EXPECTED_COMMANDS.contains(&cmd),
-                            "Command '{cmd}' is documented in capabilities.md but not in EXPECTED_COMMANDS — \
-                             either add it to the test or remove it from the doc"
-                        );
-                    }
-                }
-            }
+    fn test_capabilities_mentions_key_features() {
+        // These are things the LLM can't learn from tool definitions alone
+        let must_mention = [
+            "MCP",
+            "Memory",
+            "Agents",
+            "@file",       // input feature
+            ".mcp.json",   // config format
+            "MEMORY.md",   // memory file
+        ];
+        for feature in must_mention {
+            assert!(
+                CAPABILITIES_MD.contains(feature),
+                "Key feature '{feature}' is missing from src/capabilities.md"
+            );
         }
     }
 }
