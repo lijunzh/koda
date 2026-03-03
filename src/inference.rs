@@ -439,14 +439,9 @@ pub async fn inference_loop(
 
 /// Check if all tool calls in a batch can safely run in parallel.
 /// Returns true when NONE of them need user confirmation.
-fn can_parallelize(
-    tool_calls: &[ToolCall],
-    mode: ApprovalMode,
-    user_whitelist: &[String],
-) -> bool {
+fn can_parallelize(tool_calls: &[ToolCall], mode: ApprovalMode, user_whitelist: &[String]) -> bool {
     !tool_calls.iter().any(|tc| {
-        let args: serde_json::Value =
-            serde_json::from_str(&tc.arguments).unwrap_or_default();
+        let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
             approval::check_tool(&tc.function_name, &args, mode, user_whitelist),
             ToolApproval::NeedsConfirmation | ToolApproval::Blocked
@@ -557,9 +552,7 @@ async fn execute_tools_sequential(
                 let detail = confirm::describe_action(&tc.function_name, &parsed_args);
                 let diff_preview =
                     preview::compute(&tc.function_name, &parsed_args, project_root).await;
-                println!(
-                    "  \x1b[33m\u{1f4cb} Would execute: {detail}\x1b[0m"
-                );
+                println!("  \x1b[33m\u{1f4cb} Would execute: {detail}\x1b[0m");
                 if let Some(ref preview_text) = diff_preview {
                     for line in preview_text.lines() {
                         println!("  {line}");
@@ -589,7 +582,11 @@ async fn execute_tools_sequential(
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     let pattern = approval::extract_whitelist_pattern(cmd);
-                    if pattern.is_empty() { None } else { Some(pattern) }
+                    if pattern.is_empty() {
+                        None
+                    } else {
+                        Some(pattern)
+                    }
                 } else {
                     None
                 };
@@ -627,8 +624,7 @@ async fn execute_tools_sequential(
                         continue;
                     }
                     Confirmation::RejectedWithFeedback(feedback) => {
-                        let result =
-                            format!("User rejected this action with feedback: {feedback}");
+                        let result = format!("User rejected this action with feedback: {feedback}");
                         db.insert_message(
                             session_id,
                             &Role::Tool,
@@ -988,9 +984,21 @@ mod tests {
     #[test]
     fn test_can_parallelize_read_only() {
         let calls = vec![
-            ToolCall { id: "1".into(), function_name: "Read".into(), arguments: "{}".into() },
-            ToolCall { id: "2".into(), function_name: "Grep".into(), arguments: "{}".into() },
-            ToolCall { id: "3".into(), function_name: "List".into(), arguments: "{}".into() },
+            ToolCall {
+                id: "1".into(),
+                function_name: "Read".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: "2".into(),
+                function_name: "Grep".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: "3".into(),
+                function_name: "List".into(),
+                arguments: "{}".into(),
+            },
         ];
         assert!(can_parallelize(&calls, ApprovalMode::Normal, &[]));
     }
@@ -998,8 +1006,16 @@ mod tests {
     #[test]
     fn test_can_parallelize_with_write_is_false() {
         let calls = vec![
-            ToolCall { id: "1".into(), function_name: "Read".into(), arguments: "{}".into() },
-            ToolCall { id: "2".into(), function_name: "Write".into(), arguments: "{}".into() },
+            ToolCall {
+                id: "1".into(),
+                function_name: "Read".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: "2".into(),
+                function_name: "Write".into(),
+                arguments: "{}".into(),
+            },
         ];
         assert!(!can_parallelize(&calls, ApprovalMode::Normal, &[]));
     }
@@ -1007,7 +1023,11 @@ mod tests {
     #[test]
     fn test_can_parallelize_with_unsafe_bash_is_false() {
         let calls = vec![
-            ToolCall { id: "1".into(), function_name: "Read".into(), arguments: "{}".into() },
+            ToolCall {
+                id: "1".into(),
+                function_name: "Read".into(),
+                arguments: "{}".into(),
+            },
             ToolCall {
                 id: "2".into(),
                 function_name: "Bash".into(),
@@ -1020,7 +1040,11 @@ mod tests {
     #[test]
     fn test_can_parallelize_with_safe_bash() {
         let calls = vec![
-            ToolCall { id: "1".into(), function_name: "Read".into(), arguments: "{}".into() },
+            ToolCall {
+                id: "1".into(),
+                function_name: "Read".into(),
+                arguments: "{}".into(),
+            },
             ToolCall {
                 id: "2".into(),
                 function_name: "Bash".into(),
@@ -1033,8 +1057,16 @@ mod tests {
     #[test]
     fn test_can_parallelize_yolo_always_true() {
         let calls = vec![
-            ToolCall { id: "1".into(), function_name: "Write".into(), arguments: "{}".into() },
-            ToolCall { id: "2".into(), function_name: "Delete".into(), arguments: "{}".into() },
+            ToolCall {
+                id: "1".into(),
+                function_name: "Write".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: "2".into(),
+                function_name: "Delete".into(),
+                arguments: "{}".into(),
+            },
         ];
         assert!(can_parallelize(&calls, ApprovalMode::Yolo, &[]));
     }
@@ -1042,8 +1074,16 @@ mod tests {
     #[test]
     fn test_can_parallelize_agents_only() {
         let calls = vec![
-            ToolCall { id: "1".into(), function_name: "InvokeAgent".into(), arguments: "{}".into() },
-            ToolCall { id: "2".into(), function_name: "InvokeAgent".into(), arguments: "{}".into() },
+            ToolCall {
+                id: "1".into(),
+                function_name: "InvokeAgent".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: "2".into(),
+                function_name: "InvokeAgent".into(),
+                arguments: "{}".into(),
+            },
         ];
         assert!(!can_parallelize(&calls, ApprovalMode::Normal, &[]));
     }

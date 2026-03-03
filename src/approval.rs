@@ -9,8 +9,8 @@
 //! against a built-in safe list + user-configurable whitelist.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 // ── Approval Mode ─────────────────────────────────────────────
 
@@ -261,7 +261,7 @@ const SAFE_PREFIXES: &[&str] = &[
     "git fetch",
     "git pull",
     "git merge",
-    "git push",   // but NOT git push --force (checked separately)
+    "git push", // but NOT git push --force (checked separately)
     // ── Docker read-only ──
     "docker ps",
     "docker images",
@@ -344,7 +344,9 @@ pub fn is_command_safe(command: &str, user_whitelist: &[String]) -> bool {
 
     // Split into pipeline/chain segments and check each
     let segments = split_command_segments(trimmed);
-    segments.iter().all(|seg| is_segment_safe(seg, user_whitelist))
+    segments
+        .iter()
+        .all(|seg| is_segment_safe(seg, user_whitelist))
 }
 
 /// Check if a single command segment (no pipes/chains) is safe.

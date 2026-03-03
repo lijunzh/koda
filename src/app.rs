@@ -117,9 +117,9 @@ pub async fn run(
     // Note: rustyline normalizes Shift+Tab to BackTab with NONE modifiers
     rl.bind_sequence(
         rustyline::KeyEvent(rustyline::KeyCode::BackTab, rustyline::Modifiers::NONE),
-        rustyline::EventHandler::Conditional(Box::new(
-            input::ShiftTabModeHandler::new(shared_mode.clone()),
-        )),
+        rustyline::EventHandler::Conditional(Box::new(input::ShiftTabModeHandler::new(
+            shared_mode.clone(),
+        ))),
     );
 
     let history_path = history_file_path();
