@@ -1154,6 +1154,9 @@ mod tests {
                 arguments: "{}".into(),
             },
         ];
-        assert!(!can_parallelize(&calls, ApprovalMode::Normal, &[]));
+        // InvokeAgent auto-approves in all modes (sub-agents inherit
+        // the parent's approval mode for their own tool calls).
+        assert!(can_parallelize(&calls, ApprovalMode::Normal, &[]));
+        assert!(can_parallelize(&calls, ApprovalMode::Plan, &[]));
     }
 }

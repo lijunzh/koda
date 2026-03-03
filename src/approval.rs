@@ -107,7 +107,8 @@ pub enum ToolApproval {
     Blocked,
 }
 
-/// Read-only tools that execute in all modes (including Plan).
+/// Read-only tools that auto-approve in all modes (including Plan).
+/// These never modify the filesystem or have destructive side effects.
 const READ_ONLY_TOOLS: &[&str] = &[
     "Read",
     "List",
@@ -116,16 +117,22 @@ const READ_ONLY_TOOLS: &[&str] = &[
     "MemoryRead",
     "ListAgents",
     "ShareReasoning",
+    "InvokeAgent", // sub-agents inherit parent's approval mode
+    "WebFetch",    // GET-only URL fetch
 ];
 
 /// Decide whether a tool call should be auto-approved, confirmed, or blocked.
+///
+/// Plan mode is read-only: all analysis tools work (read, grep, sub-agents,
+/// safe bash) but write tools are blocked. This lets the agent build a
+/// comprehensive plan by actually reading code and running checks.
 pub fn check_tool(
     tool_name: &str,
     args: &serde_json::Value,
     mode: ApprovalMode,
     user_whitelist: &[String],
 ) -> ToolApproval {
-    // Read-only tools always execute
+    // Read-only tools always execute in every mode
     if READ_ONLY_TOOLS.contains(&tool_name) {
         return ToolApproval::AutoApprove;
     }
@@ -133,7 +140,24 @@ pub fn check_tool(
     match mode {
         ApprovalMode::Yolo => ToolApproval::AutoApprove,
 
-        ApprovalMode::Plan => ToolApproval::Blocked,
+        ApprovalMode::Plan => {
+            // Plan mode: write tools are blocked, bash uses safety classification
+            if tool_name == "Bash" {
+                let command = args
+                    .get("command")
+                    .or(args.get("cmd"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if is_command_safe(command, user_whitelist) {
+                    ToolApproval::AutoApprove
+                } else {
+                    ToolApproval::Blocked
+                }
+            } else {
+                // Write, Edit, Delete, CreateAgent, MemoryWrite, unknown
+                ToolApproval::Blocked
+            }
+        }
 
         ApprovalMode::Normal => {
             if tool_name == "Bash" {
@@ -148,7 +172,7 @@ pub fn check_tool(
                     ToolApproval::NeedsConfirmation
                 }
             } else {
-                // Write, Edit, Delete, WebFetch, InvokeAgent, etc.
+                // Write, Edit, Delete, CreateAgent, MemoryWrite, unknown
                 ToolApproval::NeedsConfirmation
             }
         }
@@ -679,10 +703,11 @@ mod tests {
 
     #[test]
     fn test_write_tools_blocked_in_plan() {
-        for tool in ["Write", "Edit", "Delete", "Bash"] {
+        for tool in ["Write", "Edit", "Delete", "CreateAgent", "MemoryWrite"] {
             assert_eq!(
                 check_tool(tool, &serde_json::json!({}), ApprovalMode::Plan, &[]),
                 ToolApproval::Blocked,
+                "{tool} should be blocked in Plan mode"
             );
         }
     }
@@ -720,6 +745,78 @@ mod tests {
         assert_eq!(
             check_tool("Write", &serde_json::json!({}), ApprovalMode::Normal, &[]),
             ToolApproval::NeedsConfirmation,
+        );
+    }
+
+    #[test]
+    fn test_invoke_agent_auto_approved_in_normal() {
+        let args = serde_json::json!({"agent_name": "reviewer", "prompt": "review this"});
+        assert_eq!(
+            check_tool("InvokeAgent", &args, ApprovalMode::Normal, &[]),
+            ToolApproval::AutoApprove,
+        );
+    }
+
+    #[test]
+    fn test_invoke_agent_auto_approved_in_yolo() {
+        let args = serde_json::json!({"agent_name": "reviewer", "prompt": "review this"});
+        assert_eq!(
+            check_tool("InvokeAgent", &args, ApprovalMode::Yolo, &[]),
+            ToolApproval::AutoApprove,
+        );
+    }
+
+    #[test]
+    fn test_invoke_agent_blocked_in_plan() {
+        // InvokeAgent is read-only — sub-agents inherit Plan mode
+        // so they can read but not write. No need to block invocation.
+        let args = serde_json::json!({"agent_name": "reviewer", "prompt": "review this"});
+        assert_eq!(
+            check_tool("InvokeAgent", &args, ApprovalMode::Plan, &[]),
+            ToolApproval::AutoApprove,
+        );
+    }
+
+    #[test]
+    fn test_plan_mode_allows_safe_bash() {
+        let args = serde_json::json!({"command": "cargo test --release"});
+        assert_eq!(
+            check_tool("Bash", &args, ApprovalMode::Plan, &[]),
+            ToolApproval::AutoApprove,
+        );
+    }
+
+    #[test]
+    fn test_plan_mode_blocks_dangerous_bash() {
+        let args = serde_json::json!({"command": "rm -rf target/"});
+        assert_eq!(
+            check_tool("Bash", &args, ApprovalMode::Plan, &[]),
+            ToolApproval::Blocked,
+        );
+    }
+
+    #[test]
+    fn test_plan_mode_blocks_write_tools() {
+        assert_eq!(
+            check_tool("Write", &serde_json::json!({}), ApprovalMode::Plan, &[]),
+            ToolApproval::Blocked,
+        );
+        assert_eq!(
+            check_tool("Edit", &serde_json::json!({}), ApprovalMode::Plan, &[]),
+            ToolApproval::Blocked,
+        );
+        assert_eq!(
+            check_tool("Delete", &serde_json::json!({}), ApprovalMode::Plan, &[]),
+            ToolApproval::Blocked,
+        );
+    }
+
+    #[test]
+    fn test_plan_mode_allows_web_fetch() {
+        let args = serde_json::json!({"url": "https://example.com"});
+        assert_eq!(
+            check_tool("WebFetch", &args, ApprovalMode::Plan, &[]),
+            ToolApproval::AutoApprove,
         );
     }
 
