@@ -140,6 +140,20 @@ impl Database {
             }
         }
 
+        // Session-scoped key-value metadata (e.g. todo list).
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS session_metadata (
+                session_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(session_id, key),
+                FOREIGN KEY(session_id) REFERENCES sessions(id)
+            );",
+        )
+        .execute(pool)
+        .await?;
+
         Ok(())
     }
 
@@ -440,6 +454,43 @@ impl Database {
         .await?;
 
         Ok(matches!(last_msg, Some((role, Some(_))) if role == "assistant"))
+    }
+
+    /// Get a session metadata value by key.
+    pub async fn get_metadata(&self, session_id: &str, key: &str) -> Result<Option<String>> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT value FROM session_metadata WHERE session_id = ? AND key = ?",
+        )
+        .bind(session_id)
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.0))
+    }
+
+    /// Set a session metadata value (upsert).
+    pub async fn set_metadata(&self, session_id: &str, key: &str, value: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO session_metadata (session_id, key, value, updated_at)
+             VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        )
+        .bind(session_id)
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Get the todo list for a session (convenience wrapper).
+    pub async fn get_todo(&self, session_id: &str) -> Result<Option<String>> {
+        self.get_metadata(session_id, "todo").await
+    }
+
+    /// Set the todo list for a session (convenience wrapper).
+    pub async fn set_todo(&self, session_id: &str, content: &str) -> Result<()> {
+        self.set_metadata(session_id, "todo", content).await
     }
 }
 
@@ -802,6 +853,31 @@ mod tests {
         .await
         .unwrap();
         assert!(!db.has_pending_tool_calls(&session).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_session_metadata_and_todo() {
+        let (db, _tmp) = setup().await;
+        let session = db.create_session("default").await.unwrap();
+
+        // No metadata initially
+        assert!(db.get_todo(&session).await.unwrap().is_none());
+        assert!(db.get_metadata(&session, "anything").await.unwrap().is_none());
+
+        // Set and get todo
+        db.set_todo(&session, "- [ ] Task 1\n- [x] Task 2").await.unwrap();
+        let todo = db.get_todo(&session).await.unwrap().unwrap();
+        assert!(todo.contains("Task 1"));
+        assert!(todo.contains("Task 2"));
+
+        // Update (upsert) replaces the value
+        db.set_todo(&session, "- [x] Task 1\n- [x] Task 2").await.unwrap();
+        let todo = db.get_todo(&session).await.unwrap().unwrap();
+        assert!(todo.starts_with("- [x] Task 1"));
+
+        // Generic metadata works too
+        db.set_metadata(&session, "custom_key", "custom_value").await.unwrap();
+        assert_eq!(db.get_metadata(&session, "custom_key").await.unwrap().unwrap(), "custom_value");
     }
 
     #[tokio::test]

@@ -10,6 +10,7 @@ pub mod grep;
 pub mod memory;
 pub mod reasoning;
 pub mod shell;
+pub mod todo;
 pub mod web_fetch;
 
 use anyhow::Result;
@@ -64,6 +65,9 @@ impl ToolRegistry {
             definitions.insert(def.name.clone(), def);
         }
         for def in reasoning::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
+        for def in todo::definitions() {
             definitions.insert(def.name.clone(), def);
         }
 
@@ -178,6 +182,12 @@ impl ToolRegistry {
                 // Handled externally by the event loop (needs access to config/db).
                 return ToolResult {
                     output: "__INVOKE_AGENT__".to_string(),
+                };
+            }
+            "TodoWrite" => {
+                // Handled externally by the event loop (needs access to db/session_id).
+                return ToolResult {
+                    output: "__TODO_WRITE__".to_string(),
                 };
             }
 

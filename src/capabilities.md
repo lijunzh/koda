@@ -19,6 +19,7 @@ use this reference to give an accurate, complete answer.
 | MemoryRead | Read project and global persistent memory |
 | MemoryWrite | Save insights or rules to MEMORY.md |
 | ShareReasoning | Show structured thinking to the user |
+| TodoWrite | Write/update a task checklist (tracked across turns) |
 | ListAgents | List available sub-agents |
 | CreateAgent | Create a new specialized sub-agent |
 | InvokeAgent | Delegate a task to a sub-agent |

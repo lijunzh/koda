@@ -61,8 +61,8 @@ pub async fn inference_loop(
     let mut total_char_count: usize = 0;
     let loop_start = Instant::now();
 
-    // Pre-build the system message once (avoids re-cloning 4-8KB per iteration)
-    let system_message = ChatMessage::text("system", system_prompt);
+    // Pre-build the base system message (avoids re-cloning 4-8KB per iteration)
+    let base_system_prompt = system_prompt.to_string();
 
     loop {
         if iteration >= hard_cap {
@@ -72,6 +72,17 @@ pub async fn inference_loop(
             }
             hard_cap += extra;
         }
+
+        // Build system message with current todo (if any)
+        let system_with_todo = match db.get_todo(session_id).await.unwrap_or(None) {
+            Some(todo) => format!(
+                "{base_system_prompt}\n\n## Current Task List\n\
+                 You are tracking these tasks. Update with TodoWrite as you make progress.\n\
+                 {todo}"
+            ),
+            None => base_system_prompt.clone(),
+        };
+        let system_message = ChatMessage::text("system", &system_with_todo);
 
         // Assemble context with sliding window
         let history = db.load_context(session_id, available).await?;
@@ -464,6 +475,7 @@ async fn execute_one_tool(
     project_root: &Path,
     config: &KodaConfig,
     db: &Database,
+    session_id: &str,
     tools: &crate::tools::ToolRegistry,
     mode: ApprovalMode,
     allowed_commands: &[String],
@@ -486,6 +498,24 @@ async fn execute_one_tool(
         {
             Ok(output) => output,
             Err(e) => format!("Error invoking sub-agent: {e}"),
+        }
+    } else if tc.function_name == "TodoWrite" {
+        // Handle todo updates: save to DB and render for the user
+        let args: serde_json::Value =
+            serde_json::from_str(&tc.arguments).unwrap_or_default();
+        match crate::tools::todo::extract_content(&args) {
+            Some(content) => {
+                if let Err(e) = db.set_todo(session_id, &content).await {
+                    format!("Failed to save todo: {e}")
+                } else {
+                    // Render the todo visually for the user
+                    let display = crate::tools::todo::format_todo_display(&content);
+                    println!();
+                    println!("{display}");
+                    "Todo list updated.".to_string()
+                }
+            }
+            None => "Error: 'content' parameter is required.".to_string(),
         }
     } else {
         let r = tools.execute(&tc.function_name, &tc.arguments).await;
@@ -517,7 +547,7 @@ async fn execute_tools_parallel(
     // Launch all tool calls concurrently
     let futures: Vec<_> = tool_calls
         .iter()
-        .map(|tc| execute_one_tool(tc, project_root, config, db, tools, mode, allowed_commands))
+        .map(|tc| execute_one_tool(tc, project_root, config, db, session_id, tools, mode, allowed_commands))
         .collect();
     let results = futures_util::future::join_all(futures).await;
 
@@ -672,6 +702,7 @@ async fn execute_tools_sequential(
             project_root,
             config,
             db,
+            session_id,
             tools,
             mode,
             &settings.approval.allowed_commands,

@@ -224,6 +224,7 @@ mod capabilities_freshness {
         "MemoryRead",
         "MemoryWrite",
         "ShareReasoning",
+        "TodoWrite",
         "ListAgents",
         "CreateAgent",
         "InvokeAgent",
@@ -335,6 +336,7 @@ mod display_regression {
         ("InvokeAgent", "Agent"),
         ("ListAgents", "Tool"),
         ("CreateAgent", "Create"),
+        ("TodoWrite", "Todo"),
     ];
 
     fn tool_label(name: &str) -> &'static str {
@@ -351,6 +353,7 @@ mod display_regression {
             "MemoryRead" | "MemoryWrite" => "Memory",
             "InvokeAgent" => "Agent",
             "CreateAgent" => "Create",
+            "TodoWrite" => "Todo",
             _ => "Tool",
         }
     }
@@ -375,8 +378,8 @@ mod display_regression {
     fn test_tool_count() {
         assert_eq!(
             KNOWN_TOOLS.len(),
-            15,
-            "Expected 15 known tools (update this test when adding tools)"
+            16,
+            "Expected 16 known tools (update this test when adding tools)"
         );
     }
 }

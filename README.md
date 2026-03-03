@@ -44,7 +44,7 @@ echo "explain this" | koda        # Piped input
 
 ## What's Inside
 
-- **15 built-in tools** — file ops, search, shell, web fetch, memory, agents
+- **16 built-in tools** — file ops, search, shell, web fetch, memory, agents, task tracking
 - **MCP support** — connect to any [MCP server](https://modelcontextprotocol.io) via `.mcp.json` (same format as Claude Code / Cursor)
 - **6 LLM providers** — LM Studio, OpenAI, Anthropic, Gemini, Groq, Grok
 - **5 embedded agents** — default, code reviewer, security auditor, test writer, release engineer

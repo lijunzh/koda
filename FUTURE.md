@@ -72,6 +72,16 @@ This breaks flow, especially on long multi-tool tasks.
 loop into two concurrent tokio tasks communicating via `mpsc` channels.
 This is the same foundation needed for the full TUI.
 
+### `/todo` Command
+
+**What:** A `/todo` slash command that displays the current session's todo
+list on demand, without requiring the LLM to re-print it.
+
+**Why:** The built-in `TodoWrite` tool displays the todo list whenever the
+LLM updates it, but between updates the user has no way to check it.
+Once the TUI ships, the todo could live in a persistent panel. Until then,
+`/todo` is the lightweight stopgap.
+
 ### Concurrent TUI with Non-Blocking Input
 
 **Vision:** Separate the input loop from the execution loop so the user
