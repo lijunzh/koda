@@ -85,7 +85,8 @@ impl ThinkTagFilter {
                     // Still accumulating thinking content.
                     // Emit what we have so far as thinking (for progressive display)
                     // but keep the last 8 chars in case "</think>" spans chunks.
-                    let safe_len = floor_char_boundary(&self.buffer, self.buffer.len().saturating_sub(8));
+                    let safe_len =
+                        floor_char_boundary(&self.buffer, self.buffer.len().saturating_sub(8));
                     if safe_len > 0 {
                         let safe = self.buffer[..safe_len].to_string();
                         self.buffer = self.buffer[safe_len..].to_string();
@@ -106,7 +107,8 @@ impl ThinkTagFilter {
                 } else {
                     // No <think> tag found. Emit safe content, keeping
                     // the last 7 chars in case "<think>" spans chunks.
-                    let safe_len = floor_char_boundary(&self.buffer, self.buffer.len().saturating_sub(7));
+                    let safe_len =
+                        floor_char_boundary(&self.buffer, self.buffer.len().saturating_sub(7));
                     if safe_len > 0 {
                         let safe = self.buffer[..safe_len].to_string();
                         self.buffer = self.buffer[safe_len..].to_string();
