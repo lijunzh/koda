@@ -9,6 +9,7 @@ mod confirm;
 mod context;
 mod db;
 mod display;
+mod engine;
 mod highlight;
 mod inference;
 mod input;
