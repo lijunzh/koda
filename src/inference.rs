@@ -967,7 +967,7 @@ fn list_available_agents(agents_dir: &Path) -> Vec<String> {
 // ── Utilities ─────────────────────────────────────────────────
 
 /// Format a token count as human-readable: "1.2k", "432".
-fn format_token_count(tokens: i64) -> String {
+pub fn format_token_count(tokens: i64) -> String {
     if tokens >= 1000 {
         format!("{:.1}k", tokens as f64 / 1000.0)
     } else {
