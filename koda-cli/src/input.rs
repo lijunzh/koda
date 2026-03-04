@@ -3,7 +3,7 @@
 //! Implements `rustyline::Helper` with context-aware completions
 //! for slash commands (`/model`, `/help`…) and file references (`@path`).
 
-use crate::providers::ImageData;
+use koda_core::providers::ImageData;
 use rustyline::completion::{Completer, Pair};
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
@@ -41,7 +41,7 @@ pub struct KodaHelper {
 }
 
 impl KodaHelper {
-    pub fn new(project_root: PathBuf, _shared_mode: crate::approval::SharedMode) -> Self {
+    pub fn new(project_root: PathBuf, _shared_mode: koda_core::approval::SharedMode) -> Self {
         Self {
             project_root,
             model_names: Vec::new(),
@@ -343,11 +343,11 @@ impl ConditionalEventHandler for CtrlCClearHandler {
 /// (the main loop skips empty input). When text is present, just cycles
 /// the mode silently — the prompt updates on next submit.
 pub struct ShiftTabModeHandler {
-    shared_mode: crate::approval::SharedMode,
+    shared_mode: koda_core::approval::SharedMode,
 }
 
 impl ShiftTabModeHandler {
-    pub fn new(shared_mode: crate::approval::SharedMode) -> Self {
+    pub fn new(shared_mode: koda_core::approval::SharedMode) -> Self {
         Self { shared_mode }
     }
 }
@@ -360,7 +360,7 @@ impl ConditionalEventHandler for ShiftTabModeHandler {
         _positive: bool,
         ctx: &EventContext,
     ) -> Option<Cmd> {
-        crate::approval::cycle_mode(&self.shared_mode);
+        koda_core::approval::cycle_mode(&self.shared_mode);
 
         if ctx.line().is_empty() {
             // Submit empty line → main loop skips it → readline re-renders

@@ -4,7 +4,7 @@
 //! with visual hierarchy: important content stays bright, verbose narration
 //! is dimmed, and metadata is shown in a footer.
 
-use crate::providers::ToolCall;
+use koda_core::providers::ToolCall;
 
 // ── ANSI helpers ──────────────────────────────────────────────────
 

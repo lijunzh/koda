@@ -3,30 +3,16 @@
 //! CLI entry point. The binary is named `koda` for ergonomics.
 
 mod app;
-mod approval;
-mod config;
 mod confirm;
-mod context;
-mod db;
 mod display;
-mod engine;
 mod highlight;
-mod inference;
 mod input;
 mod interrupt;
-mod keystore;
-mod loop_guard;
 mod markdown;
-mod mcp;
-mod memory;
 mod onboarding;
-mod preview;
-mod providers;
 mod repl;
-mod runtime_env;
-mod tools;
+mod sink;
 mod tui;
-mod version;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -120,14 +106,14 @@ async fn main() -> Result<()> {
     tracing::info!("Koda starting. Project root: {:?}", project_root);
 
     // Load and inject stored API keys (env vars take precedence)
-    match keystore::KeyStore::load() {
+    match koda_core::keystore::KeyStore::load() {
         Ok(store) => store.inject_into_env(),
         Err(e) => tracing::warn!("Failed to load keystore: {e}"),
     }
 
     // Headless mode: skip onboarding, banner, version check
     if let Some(prompt) = headless_prompt {
-        let config = config::KodaConfig::load(&project_root, &cli.agent)?;
+        let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
         let config = config
             .with_overrides(cli.base_url, cli.model, cli.provider)
             .with_model_overrides(
@@ -136,7 +122,7 @@ async fn main() -> Result<()> {
                 cli.thinking_budget,
                 cli.reasoning_effort,
             );
-        let db = db::Database::init(&project_root).await?;
+        let db = koda_core::db::Database::init(&project_root).await?;
         let session_id = match cli.session {
             Some(id) => id,
             None => db.create_session(&config.agent_name, &project_root).await?,
@@ -154,7 +140,7 @@ async fn main() -> Result<()> {
     }
 
     // Interactive mode: full REPL experience
-    let version_check = version::spawn_version_check();
+    let version_check = koda_core::version::spawn_version_check();
 
     // First-run onboarding
     let onboarding_provider = if onboarding::is_first_run() {
@@ -164,7 +150,7 @@ async fn main() -> Result<()> {
     };
 
     // Load configuration
-    let config = config::KodaConfig::load(&project_root, &cli.agent)?;
+    let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
     let config = config
         .with_overrides(
             cli.base_url,
@@ -180,7 +166,7 @@ async fn main() -> Result<()> {
         );
 
     // Initialize database
-    let db = db::Database::init(&project_root).await?;
+    let db = koda_core::db::Database::init(&project_root).await?;
 
     // Load or create session
     let session_id = match cli.session {

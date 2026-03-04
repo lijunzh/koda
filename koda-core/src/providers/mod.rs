@@ -191,3 +191,35 @@ pub trait LlmProvider: Send + Sync {
     /// Provider display name (for UI).
     fn provider_name(&self) -> &str;
 }
+
+// ── Provider factory ──────────────────────────────────────────
+
+use crate::config::{KodaConfig, ProviderType};
+
+/// Create an LLM provider from the given configuration.
+pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider> {
+    let api_key = crate::runtime_env::get(config.provider_type.env_key_name());
+    match config.provider_type {
+        ProviderType::Anthropic => {
+            let key = api_key.unwrap_or_else(|| {
+                tracing::warn!("No ANTHROPIC_API_KEY set");
+                String::new()
+            });
+            Box::new(anthropic::AnthropicProvider::new(
+                key,
+                Some(&config.base_url),
+            ))
+        }
+        ProviderType::Gemini => {
+            let key = api_key.unwrap_or_else(|| {
+                tracing::warn!("No GEMINI_API_KEY set");
+                String::new()
+            });
+            Box::new(gemini::GeminiProvider::new(key, Some(&config.base_url)))
+        }
+        _ => Box::new(openai_compat::OpenAiCompatProvider::new(
+            &config.base_url,
+            api_key,
+        )),
+    }
+}

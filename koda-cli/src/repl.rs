@@ -3,8 +3,8 @@
 //! Handles slash commands (/model, /provider, /help, /quit)
 //! and the interactive provider/model pickers.
 
-use crate::config::{KodaConfig, ProviderType};
-use crate::providers::LlmProvider;
+use koda_core::config::{KodaConfig, ProviderType};
+use koda_core::providers::LlmProvider;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -146,7 +146,7 @@ pub async fn handle_command(
 
         "/agent" => {
             let project_root = std::env::current_dir().unwrap_or_default();
-            let listing = crate::tools::agent::list_agents(&project_root);
+            let listing = koda_core::tools::agent::list_agents(&project_root);
             println!();
             println!("  \x1b[1m\u{1f43b} Sub-Agents\x1b[0m");
             println!();
@@ -179,7 +179,7 @@ pub async fn handle_command(
                     if entry.is_empty() {
                         println!("  Usage: /memory global <text>");
                     } else {
-                        match crate::memory::append_global(entry) {
+                        match koda_core::memory::append_global(entry) {
                             Ok(()) => println!("  \x1b[32m\u{2713}\x1b[0m Saved to global memory"),
                             Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
                         }
@@ -190,7 +190,7 @@ pub async fn handle_command(
                     if entry.is_empty() {
                         println!("  Usage: /memory add <text>");
                     } else {
-                        match crate::memory::append(&project_root, entry) {
+                        match koda_core::memory::append(&project_root, entry) {
                             Ok(()) => println!(
                                 "  \x1b[32m\u{2713}\x1b[0m Saved to project memory (MEMORY.md)"
                             ),
@@ -200,7 +200,7 @@ pub async fn handle_command(
                 }
                 _ => {
                     // Show current memory status
-                    let active = crate::memory::active_project_file(&project_root);
+                    let active = koda_core::memory::active_project_file(&project_root);
                     println!();
                     println!("  \x1b[1m\u{1f43b} Memory\x1b[0m");
                     println!();
@@ -364,9 +364,9 @@ fn truncate_visible(s: &str, max: usize) -> String {
 
 /// Format the REPL prompt: `[Koda 🐻] [model] (~/repo) ❯`
 /// Shows a context warning when usage exceeds 75%.
-pub fn format_prompt(model: &str, mode: crate::approval::ApprovalMode) -> String {
+pub fn format_prompt(model: &str, mode: koda_core::approval::ApprovalMode) -> String {
     let cwd = pretty_cwd();
-    let pct = crate::context::percentage();
+    let pct = koda_core::context::percentage();
     let ctx_warn = if pct >= 90 {
         format!(" \x1b[31m(\u{26a0} {pct}% context)\x1b[0m")
     } else if pct >= 75 {
@@ -376,9 +376,9 @@ pub fn format_prompt(model: &str, mode: crate::approval::ApprovalMode) -> String
     };
     // Mode embedded in logo: [Koda 🐻] / [Koda 📋] / [Koda ⚡]
     let (logo_icon, logo_color) = match mode {
-        crate::approval::ApprovalMode::Plan => ("\u{1f4cb}", "\x1b[33m"),
-        crate::approval::ApprovalMode::Normal => ("\u{1f43b}", "\x1b[36m"),
-        crate::approval::ApprovalMode::Yolo => ("\u{26a1}", "\x1b[31m"),
+        koda_core::approval::ApprovalMode::Plan => ("\u{1f4cb}", "\x1b[33m"),
+        koda_core::approval::ApprovalMode::Normal => ("\u{1f43b}", "\x1b[36m"),
+        koda_core::approval::ApprovalMode::Yolo => ("\u{26a1}", "\x1b[31m"),
     };
     let mode_label = mode.label();
     format!(

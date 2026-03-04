@@ -52,7 +52,7 @@ impl ApprovalMode {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "plan" => Some(Self::Plan),
             "normal" => Some(Self::Normal),
@@ -664,11 +664,11 @@ mod tests {
 
     #[test]
     fn test_mode_from_str() {
-        assert_eq!(ApprovalMode::from_str("plan"), Some(ApprovalMode::Plan));
-        assert_eq!(ApprovalMode::from_str("YOLO"), Some(ApprovalMode::Yolo));
-        assert_eq!(ApprovalMode::from_str("auto"), Some(ApprovalMode::Yolo));
-        assert_eq!(ApprovalMode::from_str("accept"), Some(ApprovalMode::Yolo));
-        assert_eq!(ApprovalMode::from_str("nope"), None);
+        assert_eq!(ApprovalMode::parse("plan"), Some(ApprovalMode::Plan));
+        assert_eq!(ApprovalMode::parse("YOLO"), Some(ApprovalMode::Yolo));
+        assert_eq!(ApprovalMode::parse("auto"), Some(ApprovalMode::Yolo));
+        assert_eq!(ApprovalMode::parse("accept"), Some(ApprovalMode::Yolo));
+        assert_eq!(ApprovalMode::parse("nope"), None);
     }
 
     #[test]

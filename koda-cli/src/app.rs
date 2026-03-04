@@ -2,23 +2,20 @@
 //!
 //! Handles user input, command dispatch, and delegates to the inference engine.
 
-use crate::approval::{self, ApprovalMode, Settings};
-use crate::config::{KodaConfig, ProviderType};
-use crate::db::{Database, Role};
-use crate::inference;
 use crate::input::{self, KodaHelper};
-use crate::memory;
-use crate::providers::LlmProvider;
+use koda_core::approval::{self, ApprovalMode, Settings};
+use koda_core::config::{KodaConfig, ProviderType};
+use koda_core::db::{Database, Role};
+use koda_core::inference;
+use koda_core::memory;
+use koda_core::providers::LlmProvider;
 
 /// Number of recent messages to preserve during compaction.
 /// Keeps the user's last question + the assistant's last answer intact.
 const COMPACT_PRESERVE_COUNT: usize = 4;
-use crate::providers::anthropic::AnthropicProvider;
-use crate::providers::gemini::GeminiProvider;
-use crate::providers::openai_compat::OpenAiCompatProvider;
 use crate::repl::{self, ReplAction};
-use crate::tools::ToolRegistry;
 use crate::tui::{self, SelectOption};
+use koda_core::tools::ToolRegistry;
 
 use anyhow::Result;
 use std::path::PathBuf;
@@ -71,11 +68,11 @@ pub async fn run(
 
     // Show update hint if version check completed
     if let Ok(Some(latest)) = version_check.await {
-        crate::version::print_update_hint(&latest);
+        koda_core::version::print_update_hint(&latest);
     }
 
     // Initialize MCP servers from .mcp.json configs
-    let mcp_registry = Arc::new(tokio::sync::RwLock::new(crate::mcp::McpRegistry::new()));
+    let mcp_registry = Arc::new(tokio::sync::RwLock::new(koda_core::mcp::McpRegistry::new()));
     {
         let mut mcp = mcp_registry.write().await;
         mcp.start_from_config(&project_root).await;
@@ -135,6 +132,11 @@ pub async fn run(
 
     let mut pending_command: Option<String> = None;
     let mut silent_compact_deferred = false;
+
+    // Channel for approval responses from CLI → engine
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<koda_core::engine::EngineCommand>(32);
+    let cli_sink = crate::sink::CliSink::new(cmd_tx);
+    let cancel_token = tokio_util::sync::CancellationToken::new();
 
     loop {
         let input = if let Some(cmd) = pending_command.take() {
@@ -383,7 +385,7 @@ pub async fn run(
                 ReplAction::SetTrust(mode_name) => {
                     let new_mode = if let Some(ref name) = mode_name {
                         // Explicit: /trust yolo
-                        ApprovalMode::from_str(name)
+                        ApprovalMode::parse(name)
                     } else {
                         // Interactive picker
                         pick_trust_mode(approval::read_mode(&shared_mode))
@@ -461,13 +463,16 @@ pub async fn run(
             pending_images,
             current_mode,
             &mut settings,
-            &crate::engine::CliSink::new(),
+            &cli_sink,
+            cancel_token.clone(),
+            &mut cmd_rx,
+            &crate::app::cli_loop_continue_prompt,
         )
         .await?;
 
         // Auto-compact when context window gets crowded
         if config.auto_compact_threshold > 0 {
-            let ctx_pct = crate::context::percentage();
+            let ctx_pct = koda_core::context::percentage();
             if ctx_pct >= config.auto_compact_threshold {
                 // Fix 5: Defer compaction if tool calls are still pending
                 let pending = db
@@ -522,7 +527,7 @@ pub async fn run_headless(
     let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
         Arc::new(RwLock::new(create_provider(&config)));
 
-    let tools = crate::tools::ToolRegistry::new(project_root.clone());
+    let tools = koda_core::tools::ToolRegistry::new(project_root.clone());
     let tool_defs = tools.get_definitions(&config.allowed_tools);
 
     let semantic_memory = memory::load(&project_root)?;
@@ -571,7 +576,10 @@ pub async fn run_headless(
         pending_images,
         ApprovalMode::Yolo,
         &mut settings,
-        &crate::engine::CliSink::new(),
+        &crate::sink::CliSink::new(tokio::sync::mpsc::channel(32).0),
+        tokio_util::sync::CancellationToken::new(),
+        &mut tokio::sync::mpsc::channel(1).1,
+        &crate::app::cli_loop_continue_prompt,
     )
     .await;
 
@@ -617,7 +625,7 @@ async fn handle_compact(
     provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
     silent: bool,
 ) {
-    use crate::providers::ChatMessage;
+    use koda_core::providers::ChatMessage;
 
     // Fix 5: Defer compaction if tool calls are pending
     if let Ok(true) = db.has_pending_tool_calls(session_id).await {
@@ -751,7 +759,7 @@ async fn handle_compact(
 /// Handle `/mcp` subcommands: status, add, remove, restart.
 async fn handle_mcp_command(
     args: &str,
-    mcp_registry: &Arc<tokio::sync::RwLock<crate::mcp::McpRegistry>>,
+    mcp_registry: &Arc<tokio::sync::RwLock<koda_core::mcp::McpRegistry>>,
     project_root: &std::path::Path,
 ) {
     let parts: Vec<&str> = args.splitn(3, ' ').collect();
@@ -806,7 +814,7 @@ async fn handle_mcp_command(
             let command = cmd_parts[0].to_string();
             let cmd_args: Vec<String> = cmd_parts[1..].iter().map(|s| s.to_string()).collect();
 
-            let config = crate::mcp::config::McpServerConfig {
+            let config = koda_core::mcp::config::McpServerConfig {
                 command: command.clone(),
                 args: cmd_args,
                 env: std::collections::HashMap::new(),
@@ -814,7 +822,8 @@ async fn handle_mcp_command(
             };
 
             // Save to .mcp.json
-            if let Err(e) = crate::mcp::config::save_server_to_project(project_root, &name, &config)
+            if let Err(e) =
+                koda_core::mcp::config::save_server_to_project(project_root, &name, &config)
             {
                 println!("  \x1b[31mFailed to save config: {e}\x1b[0m");
                 return;
@@ -851,7 +860,7 @@ async fn handle_mcp_command(
             let mut registry = mcp_registry.write().await;
             if registry.remove_server(name) {
                 // Also remove from .mcp.json
-                let _ = crate::mcp::config::remove_server_from_project(project_root, name);
+                let _ = koda_core::mcp::config::remove_server_from_project(project_root, name);
                 println!("  \x1b[32m\u{2713}\x1b[0m Removed MCP server '{name}'");
             } else {
                 println!("  \x1b[31mMCP server '{name}' not found\x1b[0m");
@@ -891,7 +900,7 @@ async fn handle_setup_provider(
     base_url: String,
 ) {
     let env_name = ptype.env_key_name();
-    let key_missing = ptype.requires_api_key() && !crate::runtime_env::is_set(env_name);
+    let key_missing = ptype.requires_api_key() && !koda_core::runtime_env::is_set(env_name);
     let is_same_provider = ptype == config.provider_type;
 
     config.provider_type = ptype.clone();
@@ -918,17 +927,17 @@ async fn handle_setup_provider(
                         return;
                     }
                 } else {
-                    crate::runtime_env::set(env_name, &key);
-                    let masked = crate::keystore::mask_key(&key);
+                    koda_core::runtime_env::set(env_name, &key);
+                    let masked = koda_core::keystore::mask_key(&key);
                     println!(
                         "  \x1b[32m\u{2713}\x1b[0m {} set to \x1b[90m{masked}\x1b[0m",
                         env_name
                     );
-                    if let Ok(mut store) = crate::keystore::KeyStore::load() {
+                    if let Ok(mut store) = koda_core::keystore::KeyStore::load() {
                         store.set(env_name, &key);
                         if let Err(e) = store.save() {
                             println!("  \x1b[33m\u{26a0} Could not persist key: {e}\x1b[0m");
-                        } else if let Ok(path) = crate::keystore::KeyStore::keys_path() {
+                        } else if let Ok(path) = koda_core::keystore::KeyStore::keys_path() {
                             println!(
                                 "  \x1b[32m\u{2713}\x1b[0m Saved to \x1b[90m{}\x1b[0m",
                                 path.display()
@@ -1071,23 +1080,38 @@ fn history_file_path() -> PathBuf {
 
 /// Create an LLM provider from the config.
 pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider> {
-    let api_key = crate::runtime_env::get(config.provider_type.env_key_name());
-    match config.provider_type {
-        ProviderType::Anthropic => {
-            let key = api_key.unwrap_or_else(|| {
-                tracing::warn!("No ANTHROPIC_API_KEY set");
-                String::new()
-            });
-            Box::new(AnthropicProvider::new(key, Some(&config.base_url)))
+    koda_core::providers::create_provider(config)
+}
+
+/// CLI implementation of the loop-continue prompt.
+/// Shows a terminal select widget when the hard cap is hit.
+pub fn cli_loop_continue_prompt(
+    cap: u32,
+    recent_names: &[String],
+) -> koda_core::loop_guard::LoopContinuation {
+    use crate::tui::SelectOption;
+    use koda_core::loop_guard::LoopContinuation;
+
+    println!("\n  \x1b[33m\u{26a0}  Hard cap reached ({cap} iterations).\x1b[0m");
+
+    if !recent_names.is_empty() {
+        println!("  Last tool calls:");
+        for name in recent_names {
+            println!("    \x1b[90m\u{25cf}\x1b[0m {name}");
         }
-        ProviderType::Gemini => {
-            let key = api_key.unwrap_or_else(|| {
-                tracing::warn!("No GEMINI_API_KEY set");
-                String::new()
-            });
-            Box::new(GeminiProvider::new(key, Some(&config.base_url)))
-        }
-        _ => Box::new(OpenAiCompatProvider::new(&config.base_url, api_key)),
+    }
+    println!();
+
+    let options = vec![
+        SelectOption::new("Stop", "End the task here"),
+        SelectOption::new("+50 more", "Continue for 50 more iterations"),
+        SelectOption::new("+200 more", "Continue for 200 more iterations"),
+    ];
+
+    match crate::tui::select("Continue?", &options, 0) {
+        Ok(Some(1)) => LoopContinuation::Continue50,
+        Ok(Some(2)) => LoopContinuation::Continue200,
+        _ => LoopContinuation::Stop,
     }
 }
 

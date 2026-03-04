@@ -6,7 +6,6 @@
 //! to continue or stop — falling back to stop in headless environments.
 
 use crate::providers::ToolCall;
-use crate::tui::SelectOption;
 use std::collections::{HashMap, VecDeque};
 
 /// Default hard cap for the main inference loop.
@@ -27,6 +26,7 @@ const DISPLAY_RECENT: usize = 5;
 // ── Loop detection ────────────────────────────────────────────────
 
 /// Tracks repeated tool call patterns.
+#[derive(Default)]
 pub struct LoopDetector {
     /// Sliding window of recent tool fingerprints.
     window: VecDeque<String>,
@@ -103,30 +103,36 @@ fn is_mutating_tool(name: &str) -> bool {
 
 /// Prompt the user when the hard iteration cap is hit.
 ///
-/// Returns the number of additional iterations granted (0 = stop).
-/// Defaults to stopping if the terminal is not interactive (headless mode).
-pub fn ask_continue_or_stop(cap: u32, recent_names: &[String]) -> u32 {
-    println!("\n  \x1b[33m\u{26a0}  Hard cap reached ({cap} iterations).\x1b[0m");
+/// Options for continuing after hitting the hard cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopContinuation {
+    Stop,
+    Continue50,
+    Continue200,
+}
 
-    if !recent_names.is_empty() {
-        println!("  Last tool calls:");
-        for name in recent_names {
-            println!("    \x1b[90m\u{25cf}\x1b[0m {name}");
+impl LoopContinuation {
+    /// Number of additional iterations granted.
+    pub fn extra_iterations(self) -> u32 {
+        match self {
+            Self::Stop => 0,
+            Self::Continue50 => 50,
+            Self::Continue200 => 200,
         }
     }
-    println!();
+}
 
-    let options = vec![
-        SelectOption::new("Stop", "End the task here"),
-        SelectOption::new("+50 more", "Continue for 50 more iterations"),
-        SelectOption::new("+200 more", "Continue for 200 more iterations"),
-    ];
-
-    match crate::tui::select("Continue?", &options, 0) {
-        Ok(Some(1)) => 50,
-        Ok(Some(2)) => 200,
-        _ => 0, // Stop — includes headless / non-TTY / Esc
-    }
+/// Returns the number of additional iterations granted (0 = stop).
+///
+/// The `prompt_fn` callback is responsible for asking the user (terminal,
+/// server, or headless). It receives `(cap, recent_tool_names)` and returns
+/// the user's choice.
+pub fn ask_continue_or_stop(
+    cap: u32,
+    recent_names: &[String],
+    prompt_fn: &dyn Fn(u32, &[String]) -> LoopContinuation,
+) -> u32 {
+    prompt_fn(cap, recent_names).extra_iterations()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────

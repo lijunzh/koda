@@ -398,7 +398,7 @@ impl KodaConfig {
     }
 
     /// Create a minimal config for testing.
-    #[cfg(test)]
+    /// Available in both koda-core and downstream crate tests.
     pub fn default_for_testing(provider_type: ProviderType) -> Self {
         let model = provider_type.default_model().to_string();
         let model_settings = ModelSettings::defaults_for(&model, &provider_type);

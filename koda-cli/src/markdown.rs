@@ -375,7 +375,7 @@ fn find_double_closing(chars: &[char], from: usize, delim: char) -> Option<usize
     (from..chars.len().saturating_sub(1)).find(|&j| chars[j] == delim && chars[j + 1] == delim)
 }
 
-/// Parse a markdown link [text](url) starting at position `from`.
+/// Parse a markdown link `[text](url)` starting at position `from`.
 /// Returns (text, url, end_position) or None.
 fn parse_link(chars: &[char], from: usize) -> Option<(String, String, usize)> {
     if chars[from] != '[' {

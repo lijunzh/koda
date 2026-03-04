@@ -3,9 +3,9 @@
 //! Detects if this is the first run (no `~/.config/koda/` exists) and guides
 //! the user through provider selection and API key setup.
 
-use crate::config::ProviderType;
-use crate::keystore::KeyStore;
 use crate::tui::SelectOption;
+use koda_core::config::ProviderType;
+use koda_core::keystore::KeyStore;
 
 /// Check if this is the first run (no config directory exists).
 pub fn is_first_run() -> bool {
@@ -86,7 +86,7 @@ pub fn run_wizard() -> Option<ProviderType> {
     let env_key = provider_type.env_key_name();
     if provider_type.requires_api_key() {
         // Cloud provider — needs an API key
-        if crate::runtime_env::is_set(env_key) {
+        if koda_core::runtime_env::is_set(env_key) {
             println!();
             println!("  \x1b[32m\u{2713}\x1b[0m Found \x1b[36m{env_key}\x1b[0m in environment");
         } else {
@@ -109,7 +109,7 @@ pub fn run_wizard() -> Option<ProviderType> {
                                 println!("  \x1b[31mFailed to save key: {e}\x1b[0m");
                             } else {
                                 // Also inject into current process
-                                crate::runtime_env::set(env_key, key);
+                                koda_core::runtime_env::set(env_key, key);
                                 println!(
                                     "  \x1b[32m\u{2713}\x1b[0m Saved to \x1b[36m~/.config/koda/keys.toml\x1b[0m"
                                 );
@@ -151,7 +151,7 @@ pub fn run_wizard() -> Option<ProviderType> {
                 println!("  \x1b[32m\u{2713}\x1b[0m Will connect to {}", url);
                 // Note: to fully support this in onboarding without changing its return signature,
                 // we can export it to the environment as a fallback.
-                crate::runtime_env::set("KODA_LOCAL_URL", url);
+                koda_core::runtime_env::set("KODA_LOCAL_URL", url);
             } else {
                 println!("  \x1b[90mUsing default: {}\x1b[0m", default_url);
             }

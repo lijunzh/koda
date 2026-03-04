@@ -14,6 +14,7 @@ use crate::providers::ToolDefinition;
 pub const TOOL_NAME_SEP: char = '.';
 
 /// Registry of all connected MCP servers.
+#[derive(Default)]
 pub struct McpRegistry {
     /// Connected servers keyed by name.
     servers: HashMap<String, McpClient>,
