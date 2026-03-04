@@ -15,9 +15,7 @@ and knowledge management — all powered by the same engine.
 ```bash
 koda                      # Auto-starts embedded engine + CLI client (default)
 koda -p "fix the bug"     # Headless mode (direct engine, no server)
-koda server               # Standalone server for external clients
-koda server --port 9999   # Server on custom port
-koda connect <url>        # CLI client connecting to a remote engine
+koda server --stdio       # ACP server over stdio (for editor integration)
 ```
 
 ## Design Decisions
