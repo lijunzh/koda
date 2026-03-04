@@ -48,7 +48,7 @@ uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 
 # HTTP client (for LLM API)
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
 
 # Streaming support
 futures-util = "0.3"
