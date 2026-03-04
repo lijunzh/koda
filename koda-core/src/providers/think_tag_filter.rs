@@ -9,6 +9,19 @@
 
 use crate::providers::StreamChunk;
 
+/// Find the largest byte index ≤ `index` that is a valid char boundary.
+/// Equivalent to `str::floor_char_boundary` (stabilized in Rust 1.82+).
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    let mut i = index;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// A streaming filter that converts `<think>` tags into `ThinkingDelta` chunks.
 ///
 /// Feed it `StreamChunk::TextDelta` chunks and it emits a transformed stream
@@ -72,7 +85,7 @@ impl ThinkTagFilter {
                     // Still accumulating thinking content.
                     // Emit what we have so far as thinking (for progressive display)
                     // but keep the last 8 chars in case "</think>" spans chunks.
-                    let safe_len = self.buffer.len().saturating_sub(8);
+                    let safe_len = floor_char_boundary(&self.buffer, self.buffer.len().saturating_sub(8));
                     if safe_len > 0 {
                         let safe = self.buffer[..safe_len].to_string();
                         self.buffer = self.buffer[safe_len..].to_string();
@@ -93,7 +106,7 @@ impl ThinkTagFilter {
                 } else {
                     // No <think> tag found. Emit safe content, keeping
                     // the last 7 chars in case "<think>" spans chunks.
-                    let safe_len = self.buffer.len().saturating_sub(7);
+                    let safe_len = floor_char_boundary(&self.buffer, self.buffer.len().saturating_sub(7));
                     if safe_len > 0 {
                         let safe = self.buffer[..safe_len].to_string();
                         self.buffer = self.buffer[safe_len..].to_string();
@@ -197,6 +210,50 @@ mod tests {
         let chunks = filter.process(StreamChunk::ThinkingDelta("native thinking".into()));
         assert_eq!(chunks.len(), 1);
         assert!(matches!(&chunks[0], StreamChunk::ThinkingDelta(t) if t == "native thinking"));
+    }
+
+    #[test]
+    fn test_multibyte_emoji_no_panic() {
+        // Regression test for #30: slicing inside multi-byte char (🐻 = 4 bytes)
+        let mut filter = ThinkTagFilter::new();
+        let mut all = Vec::new();
+        // Buffer " 🐻** is" — 10 bytes, saturating_sub(7) = 3, which is inside 🐻
+        all.extend(filter.process(StreamChunk::TextDelta(" 🐻** is".into())));
+        all.extend(filter.flush());
+
+        let text: String = all
+            .iter()
+            .filter_map(|c| match c {
+                StreamChunk::TextDelta(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, " 🐻** is");
+    }
+
+    #[test]
+    fn test_multibyte_in_think_block() {
+        let mut filter = ThinkTagFilter::new();
+        let mut all = Vec::new();
+        all.extend(filter.process(StreamChunk::TextDelta("<think>思考中🤔</think>答え".into())));
+        all.extend(filter.flush());
+
+        let thinking: String = all
+            .iter()
+            .filter_map(|c| match c {
+                StreamChunk::ThinkingDelta(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        let text: String = all
+            .iter()
+            .filter_map(|c| match c {
+                StreamChunk::TextDelta(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(thinking, "思考中🤔");
+        assert_eq!(text, "答え");
     }
 
     #[test]
