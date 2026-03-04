@@ -41,7 +41,7 @@ once_cell = "1"
 ctrlc = "3"
 
 # REPL
-rustyline = "15"
+rustyline = "17"
 
 # Logging (subscriber for CLI configuration)
 tracing = "0.1"
