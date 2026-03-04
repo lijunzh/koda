@@ -15,7 +15,7 @@ See [DESIGN.md](DESIGN.md) for architectural decisions. See [#21](https://github
 ```bash
 cargo build                              # Debug build
 cargo build --release -p koda-cli        # Release build
-cargo test --workspace                   # Run all 347 tests
+cargo test --workspace                   # Run all 360 tests
 cargo test -p koda-core                  # Engine tests only
 cargo test -p koda-cli                   # CLI tests only
 cargo test -p koda-core --test perf_test # Run a specific test file
@@ -55,8 +55,11 @@ koda/
 │   └── tests/              # Engine integration tests
 ├── koda-cli/               # CLI binary
 │   ├── src/
+│   │   ├── lib.rs          # Crate root (exports acp_adapter)
 │   │   ├── main.rs         # CLI entry point (clap)
 │   │   ├── app.rs          # Application entry points (REPL + headless dispatch)
+│   │   ├── server.rs       # ACP server over stdio JSON-RPC (koda server --stdio)
+│   │   ├── acp_adapter.rs  # ACP protocol adapter (EngineEvent → ACP messages, approval flow)
 │   │   ├── headless.rs     # Single-prompt headless mode
 │   │   ├── repl.rs         # Slash command handling (/model, /provider, /help, /quit)
 │   │   ├── commands.rs     # /compact, /mcp, /provider, /trust handlers
@@ -115,6 +118,7 @@ Tools use PascalCase names. `mod.rs` has the registry, dispatcher, and `safe_res
 - `tests/capabilities_test.rs` — capabilities.md freshness
 
 **koda-cli** (unit + integration):
-- Unit tests in `src/` modules
+- Unit tests in `src/` modules (notably `acp_adapter.rs`)
 - `tests/cli_test.rs` — binary subprocess invocation
 - `tests/regression_test.rs` — REPL dispatch, input processing
+- `tests/server_test.rs` — ACP server integration tests (spawn subprocess, JSON-RPC lifecycle)
