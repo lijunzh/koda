@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/lijunzh/koda/blob/main/DESIGN.md
+    about: Architecture and technical design
+  - name: Roadmap
+    url: https://github.com/lijunzh/koda/blob/main/FUTURE.md
+    about: Feature roadmap and competitive analysis
