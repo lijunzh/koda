@@ -461,7 +461,7 @@ pub async fn run(
             pending_images,
             current_mode,
             &mut settings,
-            &crate::engine::CliSink,
+            &crate::engine::CliSink::new(),
         )
         .await?;
 
@@ -571,7 +571,7 @@ pub async fn run_headless(
         pending_images,
         ApprovalMode::Yolo,
         &mut settings,
-        &crate::engine::CliSink,
+        &crate::engine::CliSink::new(),
     )
     .await;
 

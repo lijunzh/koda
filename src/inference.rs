@@ -5,9 +5,9 @@
 
 use crate::approval::{self, ApprovalMode, Settings, ToolApproval};
 use crate::config::KodaConfig;
-use crate::confirm::{self, Confirmation};
+use crate::confirm;
 use crate::db::{Database, Role};
-use crate::engine::EngineEvent;
+use crate::engine::{ApprovalDecision, EngineEvent};
 use crate::interrupt;
 use crate::loop_guard::{self, LoopDetector};
 use crate::memory;
@@ -135,15 +135,12 @@ pub async fn inference_loop(
             .await
             .context("LLM inference failed")?;
 
-        // Collect the streamed response with markdown rendering
-        let mut md = crate::markdown::MarkdownStreamer::new();
+        // Collect the streamed response
         let mut full_text = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut usage = crate::providers::TokenUsage::default();
         let mut first_token = true;
         let mut char_count: usize = 0;
-        let mut in_think_block = false;
-        let mut think_buffer = String::new();
         let mut native_think_buf = String::new();
         let mut response_banner_shown = false;
         let mut thinking_banner_shown = false;
@@ -167,7 +164,7 @@ pub async fn inference_loop(
             if interrupted || interrupt::is_interrupted() {
                 spinner.finish_and_clear();
                 if !full_text.is_empty() {
-                    md.flush();
+                    sink.emit(EngineEvent::TextDone);
                 }
                 println!("\n\x1b[33m\u{26a0} Interrupted\x1b[0m");
                 interrupt::clear();
@@ -192,7 +189,7 @@ pub async fn inference_loop(
             match chunk {
                 StreamChunk::TextDelta(delta) => {
                     if first_token {
-                        // Flush any buffered native thinking before showing response
+                        // Flush any buffered thinking before showing response
                         if !native_think_buf.is_empty() {
                             spinner.finish_and_clear();
                             sink.emit(EngineEvent::ThinkingStart);
@@ -206,79 +203,34 @@ pub async fn inference_loop(
                         first_token = false;
                     }
 
-                    // If we just finished native thinking, show response banner
+                    // Show response banner if coming from thinking
                     if thinking_banner_shown && !response_banner_shown && !delta.trim().is_empty() {
                         sink.emit(EngineEvent::ResponseStart);
                         response_banner_shown = true;
                     }
 
-                    // Detect <think>...</think> tags for reasoning models
-                    // (DeepSeek-R1, Qwen QwQ, etc.)
+                    // Show response banner on first non-empty text
+                    if !response_banner_shown && !delta.trim().is_empty() {
+                        sink.emit(EngineEvent::ResponseStart);
+                        response_banner_shown = true;
+                    }
+
                     full_text.push_str(&delta);
                     char_count += delta.len();
-                    think_buffer.push_str(&delta);
-
-                    // Process the buffer for think tags
-                    loop {
-                        if in_think_block {
-                            // Looking for </think>
-                            if let Some(end_pos) = think_buffer.find("</think>") {
-                                // Render structured thinking block when complete
-                                let thinking = &think_buffer[..end_pos];
-                                if !thinking.is_empty() {
-                                    sink.emit(EngineEvent::ThinkingDelta {
-                                        text: thinking.to_string(),
-                                    });
-                                }
-                                think_buffer = think_buffer[end_pos + 8..].to_string();
-                                in_think_block = false;
-                                // Show AGENT RESPONSE banner after thinking ends
-                                sink.emit(EngineEvent::ResponseStart);
-                                response_banner_shown = true;
-                                continue; // process remaining buffer
-                            } else {
-                                // Still in think block — just accumulate, don't print yet
-                                // (spinner provides progress feedback while we buffer)
-                                break;
-                            }
-                        } else {
-                            // Looking for <think>
-                            if let Some(start_pos) = think_buffer.find("<think>") {
-                                // Render text before <think> tag with markdown
-                                let before = &think_buffer[..start_pos];
-                                if !before.is_empty() {
-                                    if !response_banner_shown && !before.trim().is_empty() {
-                                        sink.emit(EngineEvent::ResponseStart);
-                                        response_banner_shown = true;
-                                    }
-                                    md.push(before);
-                                }
-                                // Show THINKING banner
-                                sink.emit(EngineEvent::ThinkingStart);
-                                think_buffer = think_buffer[start_pos + 7..].to_string();
-                                in_think_block = true;
-                                continue; // process remaining buffer
-                            } else {
-                                // No think tag — check if buffer might contain
-                                // a partial "<think" at the end
-                                let safe_len =
-                                    think_buffer.rfind('<').unwrap_or(think_buffer.len());
-                                if safe_len > 0 {
-                                    let safe = &think_buffer[..safe_len];
-                                    if !response_banner_shown && !safe.trim().is_empty() {
-                                        sink.emit(EngineEvent::ResponseStart);
-                                        response_banner_shown = true;
-                                    }
-                                    md.push(safe);
-                                    think_buffer = think_buffer[safe_len..].to_string();
-                                }
-                                break;
-                            }
-                        }
-                    }
+                    sink.emit(EngineEvent::TextDelta {
+                        text: delta.clone(),
+                    });
                 }
                 StreamChunk::ThinkingDelta(delta) => {
-                    // Buffer — rendered as a complete block once thinking finishes
+                    // Buffer thinking — emit as a block when text or tool calls start
+                    if !thinking_banner_shown {
+                        spinner.finish_and_clear();
+                        sink.emit(EngineEvent::ThinkingStart);
+                        thinking_banner_shown = true;
+                    }
+                    sink.emit(EngineEvent::ThinkingDelta {
+                        text: delta.clone(),
+                    });
                     native_think_buf.push_str(&delta);
                 }
                 StreamChunk::ToolCalls(tcs) => {
@@ -309,14 +261,8 @@ pub async fn inference_loop(
             }
         }
 
-        // Flush remaining buffer
-        if !think_buffer.is_empty() && !in_think_block {
-            if !response_banner_shown && !think_buffer.trim().is_empty() {
-                sink.emit(EngineEvent::ResponseStart);
-            }
-            md.push(&think_buffer);
-        }
-        md.flush();
+        // Flush remaining text
+        sink.emit(EngineEvent::TextDone);
 
         // If we never showed the AGENT RESPONSE banner (no text or only thinking),
         // and there's non-thinking text, show it now
@@ -689,14 +635,14 @@ async fn execute_tools_sequential(
                     None
                 };
 
-                match confirm::confirm_tool_action(
+                match sink.request_approval(
                     &tc.function_name,
                     &detail,
                     diff_preview.as_deref(),
                     whitelist_hint.as_deref(),
                 ) {
-                    Confirmation::Approved => {}
-                    Confirmation::AlwaysAllow => {
+                    ApprovalDecision::Approve => {}
+                    ApprovalDecision::AlwaysAllow => {
                         // Add to whitelist and persist
                         if let Some(ref pattern) = whitelist_hint {
                             if let Err(e) = settings.add_allowed_command(pattern) {
@@ -709,7 +655,7 @@ async fn execute_tools_sequential(
                         }
                         // Fall through to execute
                     }
-                    Confirmation::Rejected => {
+                    ApprovalDecision::Reject => {
                         db.insert_message(
                             session_id,
                             &Role::Tool,
@@ -721,7 +667,7 @@ async fn execute_tools_sequential(
                         .await?;
                         continue;
                     }
-                    Confirmation::RejectedWithFeedback(feedback) => {
+                    ApprovalDecision::RejectWithFeedback { feedback } => {
                         let result = format!("User rejected this action with feedback: {feedback}");
                         db.insert_message(
                             session_id,
@@ -913,24 +859,24 @@ async fn execute_sub_agent(
                     } else {
                         None
                     };
-                    match confirm::confirm_tool_action(
+                    match sink.request_approval(
                         &tc.function_name,
                         &detail,
                         diff_preview.as_deref(),
                         whitelist_hint.as_deref(),
                     ) {
-                        confirm::Confirmation::Approved => {
+                        ApprovalDecision::Approve => {
                             tools.execute(&tc.function_name, &tc.arguments).await.output
                         }
-                        confirm::Confirmation::AlwaysAllow => {
+                        ApprovalDecision::AlwaysAllow => {
                             if let Some(ref pattern) = whitelist_hint {
                                 let _ = settings.add_allowed_command(pattern);
                             }
                             tools.execute(&tc.function_name, &tc.arguments).await.output
                         }
-                        confirm::Confirmation::Rejected => "[rejected by user]".to_string(),
-                        confirm::Confirmation::RejectedWithFeedback(fb) => {
-                            format!("[rejected: {fb}]")
+                        ApprovalDecision::Reject => "[rejected by user]".to_string(),
+                        ApprovalDecision::RejectWithFeedback { feedback } => {
+                            format!("[rejected: {feedback}]")
                         }
                     }
                 }

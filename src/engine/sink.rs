@@ -5,7 +5,7 @@
 //! using the existing display/markdown infrastructure — preserving the exact
 //! current user experience.
 
-use super::event::EngineEvent;
+use super::event::{ApprovalDecision, EngineEvent};
 
 /// Trait for consuming engine events.
 ///
@@ -16,6 +16,19 @@ use super::event::EngineEvent;
 pub trait EngineSink: Send + Sync {
     /// Emit an engine event to the client.
     fn emit(&self, event: EngineEvent);
+
+    /// Request approval from the user for a tool action.
+    ///
+    /// This is a blocking request/response: the engine pauses until the
+    /// client decides. In CLI mode, this shows an interactive select widget.
+    /// In server mode, this sends a WebSocket message and awaits the response.
+    fn request_approval(
+        &self,
+        tool_name: &str,
+        detail: &str,
+        preview: Option<&str>,
+        whitelist_hint: Option<&str>,
+    ) -> ApprovalDecision;
 }
 
 /// The CLI sink that renders EngineEvents to the terminal.
@@ -23,11 +36,15 @@ pub trait EngineSink: Send + Sync {
 /// This reproduces the exact current terminal output by delegating
 /// to `display::` and `println!()`. It's the default sink used in
 /// interactive and headless modes.
-pub struct CliSink;
+pub struct CliSink {
+    md: std::sync::Mutex<crate::markdown::MarkdownStreamer>,
+}
 
 impl CliSink {
     pub fn new() -> Self {
-        Self
+        Self {
+            md: std::sync::Mutex::new(crate::markdown::MarkdownStreamer::new()),
+        }
     }
 }
 
@@ -40,9 +57,11 @@ impl Default for CliSink {
 impl EngineSink for CliSink {
     fn emit(&self, event: EngineEvent) {
         match event {
-            EngineEvent::TextDelta { .. } | EngineEvent::TextDone => {
-                // Streaming text is handled by MarkdownStreamer in inference.rs,
-                // not through the sink (yet). These events are for future clients.
+            EngineEvent::TextDelta { text } => {
+                self.md.lock().unwrap().push(&text);
+            }
+            EngineEvent::TextDone => {
+                self.md.lock().unwrap().flush();
             }
             EngineEvent::ThinkingStart => {
                 crate::display::print_thinking_banner();
@@ -80,8 +99,7 @@ impl EngineSink for CliSink {
             }
             EngineEvent::SubAgentEnd { .. } => {}
             EngineEvent::ApprovalRequest { .. } => {
-                // Approval is handled separately via channels (see #41).
-                // The CLI adapter will intercept this in the REPL loop.
+                // Approval is handled via request_approval(), not emit().
             }
             EngineEvent::ActionBlocked {
                 tool_name: _,
@@ -163,8 +181,25 @@ impl EngineSink for CliSink {
             }
         }
     }
-}
 
+    fn request_approval(
+        &self,
+        tool_name: &str,
+        detail: &str,
+        preview: Option<&str>,
+        whitelist_hint: Option<&str>,
+    ) -> ApprovalDecision {
+        use crate::confirm::{self, Confirmation};
+        match confirm::confirm_tool_action(tool_name, detail, preview, whitelist_hint) {
+            Confirmation::Approved => ApprovalDecision::Approve,
+            Confirmation::Rejected => ApprovalDecision::Reject,
+            Confirmation::RejectedWithFeedback(fb) => {
+                ApprovalDecision::RejectWithFeedback { feedback: fb }
+            }
+            Confirmation::AlwaysAllow => ApprovalDecision::AlwaysAllow,
+        }
+    }
+}
 /// A sink that collects events into a Vec for testing.
 #[derive(Debug, Default)]
 pub struct TestSink {
@@ -195,6 +230,16 @@ impl TestSink {
 impl EngineSink for TestSink {
     fn emit(&self, event: EngineEvent) {
         self.events.lock().unwrap().push(event);
+    }
+
+    fn request_approval(
+        &self,
+        _tool_name: &str,
+        _detail: &str,
+        _preview: Option<&str>,
+        _whitelist_hint: Option<&str>,
+    ) -> ApprovalDecision {
+        ApprovalDecision::Approve
     }
 }
 

@@ -356,6 +356,7 @@ impl LlmProvider for OpenAiCompatProvider {
             let mut buffer = String::new();
             let mut tool_calls: Vec<(String, String, String)> = Vec::new(); // (id, name, args)
             let mut final_usage = TokenUsage::default();
+            let mut think_filter = super::think_tag_filter::ThinkTagFilter::new();
 
             while let Some(chunk_result) = byte_stream.next().await {
                 let Ok(bytes) = chunk_result else { break };
@@ -379,6 +380,9 @@ impl LlmProvider for OpenAiCompatProvider {
                                 })
                                 .collect();
                             let _ = tx.send(StreamChunk::ToolCalls(tcs)).await;
+                        }
+                        for filtered in think_filter.flush() {
+                            let _ = tx.send(filtered).await;
                         }
                         let _ = tx.send(StreamChunk::Done(final_usage.clone())).await;
                         return;
@@ -405,11 +409,15 @@ impl LlmProvider for OpenAiCompatProvider {
                             let _ = tx.send(StreamChunk::ThinkingDelta(reasoning.clone())).await;
                         }
 
-                        // Text delta
+                        // Text delta — run through <think> tag filter
                         if let Some(content) = &choice.delta.content
                             && !content.is_empty()
                         {
-                            let _ = tx.send(StreamChunk::TextDelta(content.clone())).await;
+                            for filtered in
+                                think_filter.process(StreamChunk::TextDelta(content.clone()))
+                            {
+                                let _ = tx.send(filtered).await;
+                            }
                         }
 
                         // Tool call deltas — accumulate
@@ -449,6 +457,10 @@ impl LlmProvider for OpenAiCompatProvider {
                     })
                     .collect();
                 let _ = tx.send(StreamChunk::ToolCalls(tcs)).await;
+            }
+            // Flush any remaining content in the <think> tag filter
+            for filtered in think_filter.flush() {
+                let _ = tx.send(filtered).await;
             }
             let _ = tx.send(StreamChunk::Done(final_usage)).await;
         });

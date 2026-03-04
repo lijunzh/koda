@@ -5,6 +5,7 @@
 pub mod anthropic;
 pub mod gemini;
 pub mod openai_compat;
+pub mod think_tag_filter;
 
 use anyhow::Result;
 use async_trait::async_trait;
