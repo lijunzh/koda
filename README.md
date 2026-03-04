@@ -24,11 +24,12 @@ not for enterprise teams or platform integrations. This focus drives every desig
 
 ```bash
 # From crates.io
-cargo install koda-agent
+cargo install koda-cli
 
 # From source
 git clone https://github.com/lijunzh/koda.git
 cd koda && cargo build --release
+# Binary is at target/release/koda
 ```
 
 On first run, an onboarding wizard guides you through provider and API key setup.
@@ -55,11 +56,16 @@ Koda natively understands the structure of your codebase using embedded `tree-si
 - **Extending with MCP:** To keep Koda's binary blazingly fast and lightweight, we restrict built-in parsers to the "Big 4" languages. Need AST support for Go, C++, or Java? Simply connect a community Tree-sitter MCP server via your `.mcp.json`!
 
 ### 🏗️ Architecture
-Koda is evolving toward a **server-backed platform** (see [DESIGN.md](DESIGN.md)):
-- **Engine** — pure Rust library with zero IO, communicates via `EngineEvent`/`EngineCommand` enums
-- **CLI Client** — the default interactive experience (rustyline REPL)
+
+Koda v0.1.x is an **intentional prototype** — a simplified, single-user CLI agent
+designed to test the feasibility of a Rust-based AI coding assistant. It prioritizes
+speed of iteration over architectural purity.
+
+v0.2.0 will evolve Koda into a **server-backed platform** (see [DESIGN.md](DESIGN.md)):
+- **`koda-core`** — pure Rust engine library with zero terminal deps
+- **`koda-cli`** — the CLI frontend (and future ACP server)
+- Workspace split complete: `EngineEvent`/`EngineCommand` protocol, `KodaAgent`/`KodaSession` structs
 - **ACP Server** — planned for v0.2.0, enabling VS Code, desktop apps, and Zed to connect
-- **Personal AI Platform** — coding is the starting point; email, calendar, docs, and knowledge management are on the roadmap
 - **Approval modes** — plan (read-only) / normal (smart confirm) / yolo (auto-approve) via `/trust`
 - **Diff preview** — see exactly what changes before approving Edit, Write, Delete
 - **Loop detection** — catches repeated tool calls with configurable iteration caps
@@ -125,9 +131,17 @@ User-level servers go in `~/.config/koda/mcp.json` (merged, project overrides).
 ## Development
 
 ```bash
-cargo test          # Run all tests
-cargo clippy        # Lint
-cargo run           # Run locally
+cargo test --workspace      # Run all 347 tests
+cargo clippy --workspace    # Lint
+cargo run -p koda-cli       # Run locally
+```
+
+### Workspace Structure
+
+```
+koda/
+├── koda-core/    # Engine library (providers, tools, inference, DB)
+└── koda-cli/     # CLI binary (REPL, display, approval UI)
 ```
 
 ## License

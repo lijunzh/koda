@@ -1290,8 +1290,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "koda-agent"
+version = "0.1.5"
+
+[[package]]
 name = "koda-cli"
-version = "0.1.4"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -1314,7 +1318,7 @@ dependencies = [
 
 [[package]]
 name = "koda-core"
-version = "0.1.4"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",

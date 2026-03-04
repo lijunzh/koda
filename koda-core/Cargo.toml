@@ -1,6 +1,6 @@
 [package]
 name = "koda-core"
-version = "0.1.4"
+version = "0.1.0"
 edition = "2024"
 description = "Core engine for the Koda AI coding agent"
 license = "MIT"
@@ -73,4 +73,6 @@ tree-sitter-typescript = "0.23.2"
 
 [dev-dependencies]
 tempfile = "3"
-path-clean = "1"
+tokio = { version = "1", features = ["full", "test-util"] }
+regex = "1"
+ignore = "0.4"

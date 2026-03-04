@@ -1,5 +1,5 @@
 [workspace]
-members = ["koda-core", "koda-cli"]
+members = ["koda-core", "koda-cli", "koda-agent"]
 resolver = "3"
 
 [profile.release]

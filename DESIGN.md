@@ -11,31 +11,27 @@ Koda is a personal AI assistant. Coding is the starting point, but the platform 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    koda (single binary)                    │
-│                                                          │
-│  ┌────────────────────────────────────────────────────┐  │
-│  │              koda-engine (library)                  │  │
-│  │                                                    │  │
-│  │  InferenceEngine  ToolRegistry  MCP  AgentSystem  │  │
-│  │  SessionManager   Memory       DB   Approval      │  │
-│  │                                                    │  │
-│  │  Output: EngineEvent (serde-serializable enum)    │  │
-│  │  Input:  EngineCommand (serde-serializable enum)  │  │
-│  └──────────────┬───────────────────┬────────────────┘  │
-│                 │                   │                    │
-│      ┌──────────┴──────┐  ┌────────┴─────────┐         │
-│      │  CLI Client     │  │  ACP Server      │         │
-│      │  (rustyline)    │  │  (WebSocket)     │         │
-│      │  Default mode   │  │  koda server     │         │
-│      └─────────────────┘  └──────────────────┘         │
-└──────────────────────────────────────────────────────────┘
-         │                           │
-    Terminal user              ┌─────┴──────────┐
-                               │ External clients│
-                               │ (Zed, VS Code, │
-                               │  Desktop app)  │
-                               └────────────────┘
+koda/
+├── Cargo.toml              # Workspace root
+├── koda-core/              # LIBRARY — engine, zero terminal deps
+│   ├── src/
+│   │   ├── agent.rs        # KodaAgent (shared: tools, prompt, MCP)
+│   │   ├── session.rs      # KodaSession (per-turn: DB, provider, cancel)
+│   │   ├── inference.rs    # Streaming inference loop
+│   │   ├── engine/         # EngineEvent, EngineCommand, EngineSink
+│   │   ├── providers/      # LLM providers
+│   │   ├── tools/          # Built-in tools
+│   │   └── ...             # DB, config, MCP, memory, approval
+│   └── tests/              # Engine integration tests
+└── koda-cli/               # BINARY — CLI + future ACP server
+    ├── src/
+    │   ├── main.rs         # CLI entry point
+    │   ├── app.rs          # Interactive REPL
+    │   ├── headless.rs     # Headless mode
+    │   ├── commands.rs     # Slash command handlers
+    │   ├── sink.rs         # CliSink (events → terminal)
+    │   └── ...             # display, markdown, confirm, input
+    └── tests/              # CLI integration tests
 ```
 
 ## Execution Modes
@@ -70,7 +66,7 @@ koda connect <url>        # CLI client connecting to a remote engine
 
 ### 3. Single Binary Philosophy
 
-**Decision**: `cargo install koda-agent` gives you everything. No separate server process required for normal usage.
+**Decision**: `cargo install koda-cli` gives you everything. No separate server process required for normal usage.
 
 **Rationale**: Koda's core value is zero-config simplicity. The CLI client talks to the engine via in-process `tokio::mpsc` channels. Server mode is opt-in (`koda server`) for external clients.
 
@@ -156,10 +152,23 @@ enum SlashCommand {
 
 ## Implementation Phases
 
-See GitHub Issues for tracking:
-- **Phase 1** (v0.1.4): Engine extraction — #39, #40, #41
-- **Phase 2** (v0.2.0): Server mode — #38
-- **Phase 3** (v0.2.x): External clients
+### v0.1.x — Prototype (complete)
+Intentional simplified prototype to test feasibility:
+- Engine extraction: `EngineEvent`/`EngineCommand` protocol types
+- Workspace split: `koda-core` (lib) + `koda-cli` (bin)
+- Channel-based approval (async, transport-agnostic)
+- `KodaAgent`/`KodaSession` structs
+- 347 tests, clippy clean
+
+### v0.2.0 — Server Architecture (in progress)
+See [#50](https://github.com/lijunzh/koda/issues/50) for the detailed plan:
+- Phase 4: ACP server (`koda server` subcommand)
+- Phase 5: Remote CLI client (`koda connect`)
+
+### v0.2.x — External Clients
+- VS Code extension
+- Zed agent panel integration
+- Desktop app
 
 ## References
 

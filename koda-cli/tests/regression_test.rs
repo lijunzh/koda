@@ -203,62 +203,6 @@ mod completions {
     }
 }
 
-mod capabilities_freshness {
-    //! Verify that src/capabilities.md stays in sync with actual commands.
-    //! If these tests fail, update src/capabilities.md to match the source of truth.
-    //!
-    //! Note: We do NOT check tool names here — the LLM already receives tool
-    //! definitions via the API. capabilities.md only documents things the LLM
-    //! can't see from tool definitions: commands, input features, MCP, memory.
-
-    const CAPABILITIES_MD: &str = include_str!("../src/capabilities.md");
-
-    /// Every slash command must appear in capabilities.md.
-    const EXPECTED_COMMANDS: &[&str] = &[
-        "/help",
-        "/agent",
-        "/compact",
-        "/cost",
-        "/diff",
-        "/mcp",
-        "/memory",
-        "/model",
-        "/provider",
-        "/sessions",
-        "/trust",
-        "/exit",
-    ];
-
-    #[test]
-    fn test_all_commands_documented_in_capabilities() {
-        for cmd in EXPECTED_COMMANDS {
-            assert!(
-                CAPABILITIES_MD.contains(cmd),
-                "Command '{cmd}' is missing from src/capabilities.md"
-            );
-        }
-    }
-
-    #[test]
-    fn test_capabilities_mentions_key_features() {
-        // These are things the LLM can't learn from tool definitions alone
-        let must_mention = [
-            "MCP",
-            "Memory",
-            "Agents",
-            "@file",     // input feature
-            ".mcp.json", // config format
-            "MEMORY.md", // memory file
-        ];
-        for feature in must_mention {
-            assert!(
-                CAPABILITIES_MD.contains(feature),
-                "Key feature '{feature}' is missing from src/capabilities.md"
-            );
-        }
-    }
-}
-
 mod display_regression {
     /// All tool names that should map to known labels.
     const KNOWN_TOOLS: &[(&str, &str)] = &[

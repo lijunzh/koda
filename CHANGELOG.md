@@ -4,7 +4,53 @@ All notable changes to Koda are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.1.3] - 2026-03-03
+## [0.1.0] - 2026-03-03
+
+First published release of `koda-core` and `koda-cli` as separate crates.
+v0.1.x was an intentional simplified prototype to test the feasibility of
+building a high-performance AI coding agent in Rust. With the architecture
+validated, v0.2.0 will evolve Koda into a modern client-server platform.
+
+✨ **Highlights:** Workspace split · Channel-based approval · KodaAgent/KodaSession structs · CI/CD for dual crate publishing
+
+### Architecture
+- **Workspace split**: Single `koda-agent` crate → `koda-core` (library) + `koda-cli` (binary)
+  - `koda-core`: pure engine with zero terminal dependencies
+  - `koda-cli`: CLI frontend, produces the `koda` binary
+  - `cargo install koda-cli` replaces `cargo install koda-agent`
+- **Channel-based approval**: `EngineSink::request_approval()` removed. Approval now flows through async `EngineEvent::ApprovalRequest` + `EngineCommand::ApprovalResponse` over `tokio::mpsc` channels — works over any transport.
+- **CancellationToken**: Replaces global `AtomicBool` interrupt flag. Proper per-session cancellation.
+- **KodaAgent**: Shared, immutable agent resources (tools, system prompt, MCP registry). `Arc`-shareable for parallel sub-agents.
+- **KodaSession**: Per-conversation state (DB, provider, settings, cancel token). `run_turn()` replaces 15-parameter `inference_loop()` call.
+- **App split**: `app.rs` (1127 lines) → `app.rs` (602) + `headless.rs` (88) + `commands.rs` (486)
+
+### Testing
+- Integration tests split by crate boundary: engine tests in `koda-core/tests/`, CLI tests in `koda-cli/tests/`
+- Recovered 55 orphaned integration tests from workspace migration
+- 347 tests total (was 293 in v0.1.4)
+
+### CI/CD
+- Updated for workspace: `cargo check/test/clippy --workspace`
+- Dual crate publishing: `koda-core` published first, then `koda-cli` (with 30s index delay)
+- Version verification checks both crate versions match the git tag
+
+### Documentation
+- README: updated install command (`koda-cli`), architecture section, prototype status
+- DESIGN.md: updated to reflect actual workspace structure and implementation phases
+- CLAUDE.md: rewritten for workspace layout, new types, test locations
+- CHANGELOG: added v0.1.4 and v0.1.5 entries
+
+## [0.1.4] - 2026-03-03
+
+✨ **Highlights:** Engine extraction · EngineEvent/EngineCommand protocol · EngineSink trait
+
+### Architecture
+- **EngineEvent** (18 variants) + **EngineCommand** (5 variants): JSON serde-ready protocol types defining the engine ↔ client boundary
+- **EngineSink** trait with CliSink (terminal) and TestSink (testing)
+- `inference.rs` fully decoupled from display/markdown/confirm modules
+- Approval flow routed through EngineSink
+- `<think>` tag parsing moved to provider layer (ThinkTagFilter)
+- Markdown streaming wired through CliSink
 
 This release introduces major leaps in model interoperability, significantly reduces token overhead, and lays the groundwork for external tool integration via the Model Context Protocol. It focuses on giving developers more flexibility with local providers and maintaining high performance over long sessions.
 

@@ -1,0 +1,16 @@
+[package]
+name = "koda-agent"
+version = "0.1.5"
+edition = "2024"
+description = "DEPRECATED — this crate has been renamed. Use `cargo install koda-cli` instead."
+license = "MIT"
+repository = "https://github.com/lijunzh/koda"
+homepage = "https://github.com/lijunzh/koda"
+readme = "README.md"
+keywords = ["deprecated", "ai", "coding-agent"]
+categories = ["command-line-utilities"]
+authors = ["Lijun Zhu"]
+
+[[bin]]
+name = "koda"
+path = "src/main.rs"
