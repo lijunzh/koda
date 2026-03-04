@@ -9,9 +9,9 @@ Single compiled binary. Multi-provider LLM support. Zero runtime dependencies.
 **Koda is a personal coding agent.** It's built for a single developer at a keyboard,
 not for enterprise teams or platform integrations. This focus drives every design decision:
 
-- **Single binary, zero runtime deps.** `cargo install` and you're done. No Node.js,
-  no Python, no Docker. Works offline with local models (LM Studio) or online with
-  cloud providers.
+- **Single binary, zero runtime deps.** `cargo install koda-cli` and you're done.
+  No Node.js, no Python, no Docker. Works offline with local models (LM Studio)
+  or online with cloud providers.
 - **Built-in tools for the core coding loop.** File ops, search, shell, web fetch,
   memory, and agents are compiled in — always available, zero latency, zero config.
 - **MCP for everything else.** Need GitHub API, databases, Slack? Connect external
@@ -28,7 +28,7 @@ cargo install koda-cli
 
 # From source
 git clone https://github.com/lijunzh/koda.git
-cd koda && cargo build --release
+cd koda && cargo build --release -p koda-cli
 # Binary is at target/release/koda
 ```
 
@@ -43,29 +43,12 @@ koda -p "fix the bug in auth.rs"  # Headless one-shot
 echo "explain this" | koda        # Piped input
 ```
 
-## What's Inside
+## Features
 
-- **17 built-in tools** — file ops, search, shell, web fetch, memory, agents, task tracking, and AST analysis
+- **17 built-in tools** — file ops, search, shell, web fetch, memory, agents, task tracking, AST analysis
 - **MCP support** — connect to any [MCP server](https://modelcontextprotocol.io) via `.mcp.json` (same format as Claude Code / Cursor)
 - **6 LLM providers** — LM Studio, OpenAI, Anthropic, Gemini, Groq, Grok
 - **5 embedded agents** — default, code reviewer, security auditor, test writer, release engineer
-
-### 🌳 AST Code Analysis
-Koda natively understands the structure of your codebase using embedded `tree-sitter` parsers.
-- **Built-in Languages:** Rust, Python, JavaScript, and TypeScript. Koda can instantly extract functions, classes, and generate call graphs (who calls what) without guessing.
-- **Extending with MCP:** To keep Koda's binary blazingly fast and lightweight, we restrict built-in parsers to the "Big 4" languages. Need AST support for Go, C++, or Java? Simply connect a community Tree-sitter MCP server via your `.mcp.json`!
-
-### 🏗️ Architecture
-
-Koda v0.1.x is an **intentional prototype** — a simplified, single-user CLI agent
-designed to test the feasibility of a Rust-based AI coding assistant. It prioritizes
-speed of iteration over architectural purity.
-
-v0.2.0 will evolve Koda into a **server-backed platform** (see [DESIGN.md](DESIGN.md)):
-- **`koda-core`** — pure Rust engine library with zero terminal deps
-- **`koda-cli`** — the CLI frontend (and future ACP server)
-- Workspace split complete: `EngineEvent`/`EngineCommand` protocol, `KodaAgent`/`KodaSession` structs
-- **ACP Server** — planned for v0.2.0, enabling VS Code, desktop apps, and Zed to connect
 - **Approval modes** — plan (read-only) / normal (smart confirm) / yolo (auto-approve) via `/trust`
 - **Diff preview** — see exactly what changes before approving Edit, Write, Delete
 - **Loop detection** — catches repeated tool calls with configurable iteration caps
@@ -76,6 +59,12 @@ v0.2.0 will evolve Koda into a **server-backed platform** (see [DESIGN.md](DESIG
 - **Git integration** — `/diff` review, commit message generation
 - **Headless mode** — `koda -p "prompt"` with JSON output for CI/CD
 - **Persistent memory** — project (`MEMORY.md`) and global (`~/.config/koda/memory.md`)
+
+### 🌳 AST Code Analysis
+
+Koda natively understands the structure of your codebase using embedded `tree-sitter` parsers.
+- **Built-in languages:** Rust, Python, JavaScript, TypeScript — instant function/class extraction and call graphs.
+- **Extending with MCP:** Need Go, C++, or Java? Connect a community Tree-sitter MCP server via `.mcp.json`.
 
 ## REPL Commands
 
@@ -122,26 +111,32 @@ namespaced names (e.g. `github.create_issue`). Manage at runtime with `/mcp`.
 
 User-level servers go in `~/.config/koda/mcp.json` (merged, project overrides).
 
+## Architecture
+
+Koda is a Cargo workspace with two crates:
+
+```
+koda/
+├── koda-core/    # Engine library (providers, tools, inference, DB) — zero terminal deps
+└── koda-cli/     # CLI binary (REPL, display, approval UI)
+```
+
+The engine communicates through `EngineEvent` (output) and `EngineCommand` (input) enums
+over async channels. See [DESIGN.md](DESIGN.md) for architectural decisions.
+
 ## Documentation
 
-- **[DESIGN.md](DESIGN.md)** — Architecture, design principles, technical stack
+- **[DESIGN.md](DESIGN.md)** — Design decisions and rationale
 - **[CHANGELOG.md](CHANGELOG.md)** — Release history
-- **[GitHub Issues](https://github.com/lijunzh/koda/issues)** — Roadmap and feature backlog
+- **[CLAUDE.md](CLAUDE.md)** — Developer guide for AI assistants
+- **[GitHub Issues](https://github.com/lijunzh/koda/issues)** — Roadmap and release tracking
 
 ## Development
 
 ```bash
-cargo test --workspace      # Run all 347 tests
-cargo clippy --workspace    # Lint
-cargo run -p koda-cli       # Run locally
-```
-
-### Workspace Structure
-
-```
-koda/
-├── koda-core/    # Engine library (providers, tools, inference, DB)
-└── koda-cli/     # CLI binary (REPL, display, approval UI)
+cargo test --workspace        # Run all 347 tests
+cargo clippy --workspace      # Lint
+cargo run -p koda-cli         # Run locally
 ```
 
 ## License
