@@ -38,6 +38,14 @@ koda/
 │   │   ├── agent.rs        # KodaAgent (shared config: tools, prompt, MCP)
 │   │   ├── session.rs      # KodaSession (per-conversation: DB, provider, settings)
 │   │   ├── inference.rs    # Streaming inference loop + tool execution
+│   │   ├── approval.rs     # Approval modes + bash command safety classification
+│   │   ├── context.rs      # Context window token tracking
+│   │   ├── keystore.rs     # Secure API key storage (~/.config/koda/keys.toml, 0600)
+│   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
+│   │   ├── memory.rs       # Semantic memory (global + project tiers → system prompt)
+│   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
+│   │   ├── runtime_env.rs  # Thread-safe runtime env for API keys
+│   │   ├── version.rs      # Background version checker (queries crates.io)
 │   │   ├── engine/         # EngineEvent, EngineCommand, EngineSink trait
 │   │   ├── providers/      # LLM providers (Anthropic, Gemini, OpenAI-compat)
 │   │   ├── tools/          # Built-in tools (Bash, Read, Write, Edit, etc.)
@@ -48,11 +56,18 @@ koda/
 ├── koda-cli/               # CLI binary
 │   ├── src/
 │   │   ├── main.rs         # CLI entry point (clap)
-│   │   ├── app.rs          # Interactive REPL loop
+│   │   ├── app.rs          # Application entry points (REPL + headless dispatch)
 │   │   ├── headless.rs     # Single-prompt headless mode
+│   │   ├── repl.rs         # Slash command handling (/model, /provider, /help, /quit)
 │   │   ├── commands.rs     # /compact, /mcp, /provider, /trust handlers
+│   │   ├── confirm.rs      # User confirmation UI for dangerous operations
+│   │   ├── input.rs        # rustyline Helper: slash-command + @file completions
+│   │   ├── interrupt.rs    # Ctrl+C double-tap graceful cancellation
+│   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
+│   │   ├── tui.rs          # Arrow-key interactive selection menus
 │   │   ├── sink.rs         # CliSink (EngineEvent → terminal rendering)
 │   │   ├── display.rs      # Terminal output formatting
+│   │   ├── highlight.rs    # Syntax highlighting via syntect
 │   │   └── markdown.rs     # Streaming markdown renderer
 │   └── tests/              # CLI integration tests
 └── DESIGN.md               # Architecture decisions
