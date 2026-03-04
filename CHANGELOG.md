@@ -9,8 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-03-04
+
 First release of `koda-core` and `koda-cli` as separate crates.
-See [#21](https://github.com/lijunzh/koda/issues/21) for the v0.1.0 release plan.
 
 ### Architecture
 - **Workspace split**: `koda-agent` (single crate) → `koda-core` (library) + `koda-cli` (binary)
@@ -22,6 +23,12 @@ See [#21](https://github.com/lijunzh/koda/issues/21) for the v0.1.0 release plan
 - **KodaAgent**: Shared, immutable agent resources (tools, prompt, MCP registry). `Arc`-shareable
 - **KodaSession**: Per-conversation state (DB, provider, settings, cancel token). `run_turn()` replaces 15-parameter `inference_loop()` call
 
+### Added
+- **ACP server** (`koda server --stdio`): JSON-RPC server over stdio implementing the Agent Client Protocol for editor integration (Zed, VS Code, etc.)
+  - Full ACP lifecycle: Initialize → Authenticate → NewSession → Prompt (streaming) → Cancel
+  - All 19 EngineEvent variants mapped to ACP protocol messages
+  - Bidirectional approval flow over JSON-RPC
+
 ### Testing
-- 347 tests across `koda-core` and `koda-cli`
+- 360 tests across `koda-core` and `koda-cli`
 - All CI checks passing: `cargo fmt`, `clippy -D warnings`, `test`, `doc`
