@@ -207,7 +207,7 @@ jobs:
             end
 
             test do
-              assert_match "koda-cli", shell_output("#{bin}/koda --version")
+              assert_match "koda", shell_output("#{bin}/koda --version")
             end
           end
           FORMULA
