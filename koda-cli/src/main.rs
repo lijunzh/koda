@@ -124,7 +124,8 @@ async fn main() -> Result<()> {
                 cli.thinking_budget,
                 cli.reasoning_effort,
             );
-        let db = koda_core::db::Database::init(&project_root, &koda_core::db::config_dir()?).await?;
+        let db =
+            koda_core::db::Database::init(&project_root, &koda_core::db::config_dir()?).await?;
         let session_id = match cli.session {
             Some(id) => id,
             None => db.create_session(&config.agent_name, &project_root).await?,
