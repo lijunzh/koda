@@ -7,7 +7,7 @@ use crate::approval::{self, ApprovalMode, Settings, ToolApproval};
 use crate::config::KodaConfig;
 use crate::confirm::{self, Confirmation};
 use crate::db::{Database, Role};
-use crate::display;
+use crate::engine::EngineEvent;
 use crate::interrupt;
 use crate::loop_guard::{self, LoopDetector};
 use crate::memory;
@@ -33,6 +33,7 @@ pub async fn inference_loop(
     pending_images: Option<Vec<ImageData>>,
     mode: ApprovalMode,
     settings: &mut Settings,
+    sink: &dyn crate::engine::EngineSink,
 ) -> Result<()> {
     // When native thinking is active, drop ShareReasoning from tool list
     let has_native_thinking = config.model_settings.thinking_budget.is_some()
@@ -194,8 +195,10 @@ pub async fn inference_loop(
                         // Flush any buffered native thinking before showing response
                         if !native_think_buf.is_empty() {
                             spinner.finish_and_clear();
-                            display::print_thinking_banner();
-                            display::render_thinking_block(&native_think_buf);
+                            sink.emit(EngineEvent::ThinkingStart);
+                            sink.emit(EngineEvent::ThinkingDelta {
+                                text: native_think_buf.clone(),
+                            });
                             native_think_buf.clear();
                             thinking_banner_shown = true;
                         }
@@ -205,7 +208,7 @@ pub async fn inference_loop(
 
                     // If we just finished native thinking, show response banner
                     if thinking_banner_shown && !response_banner_shown && !delta.trim().is_empty() {
-                        display::print_response_banner();
+                        sink.emit(EngineEvent::ResponseStart);
                         response_banner_shown = true;
                     }
 
@@ -223,12 +226,14 @@ pub async fn inference_loop(
                                 // Render structured thinking block when complete
                                 let thinking = &think_buffer[..end_pos];
                                 if !thinking.is_empty() {
-                                    display::render_thinking_block(thinking);
+                                    sink.emit(EngineEvent::ThinkingDelta {
+                                        text: thinking.to_string(),
+                                    });
                                 }
                                 think_buffer = think_buffer[end_pos + 8..].to_string();
                                 in_think_block = false;
                                 // Show AGENT RESPONSE banner after thinking ends
-                                display::print_response_banner();
+                                sink.emit(EngineEvent::ResponseStart);
                                 response_banner_shown = true;
                                 continue; // process remaining buffer
                             } else {
@@ -243,13 +248,13 @@ pub async fn inference_loop(
                                 let before = &think_buffer[..start_pos];
                                 if !before.is_empty() {
                                     if !response_banner_shown && !before.trim().is_empty() {
-                                        display::print_response_banner();
+                                        sink.emit(EngineEvent::ResponseStart);
                                         response_banner_shown = true;
                                     }
                                     md.push(before);
                                 }
                                 // Show THINKING banner
-                                display::print_thinking_banner();
+                                sink.emit(EngineEvent::ThinkingStart);
                                 think_buffer = think_buffer[start_pos + 7..].to_string();
                                 in_think_block = true;
                                 continue; // process remaining buffer
@@ -261,7 +266,7 @@ pub async fn inference_loop(
                                 if safe_len > 0 {
                                     let safe = &think_buffer[..safe_len];
                                     if !response_banner_shown && !safe.trim().is_empty() {
-                                        display::print_response_banner();
+                                        sink.emit(EngineEvent::ResponseStart);
                                         response_banner_shown = true;
                                     }
                                     md.push(safe);
@@ -279,8 +284,10 @@ pub async fn inference_loop(
                 StreamChunk::ToolCalls(tcs) => {
                     if !native_think_buf.is_empty() {
                         spinner.finish_and_clear();
-                        display::print_thinking_banner();
-                        display::render_thinking_block(&native_think_buf);
+                        sink.emit(EngineEvent::ThinkingStart);
+                        sink.emit(EngineEvent::ThinkingDelta {
+                            text: native_think_buf.clone(),
+                        });
                         native_think_buf.clear();
                     }
                     spinner.finish_and_clear();
@@ -290,8 +297,10 @@ pub async fn inference_loop(
                     // Flush any remaining native thinking (thinking-only turns)
                     if !native_think_buf.is_empty() {
                         spinner.finish_and_clear();
-                        display::print_thinking_banner();
-                        display::render_thinking_block(&native_think_buf);
+                        sink.emit(EngineEvent::ThinkingStart);
+                        sink.emit(EngineEvent::ThinkingDelta {
+                            text: native_think_buf.clone(),
+                        });
                         native_think_buf.clear();
                     }
                     usage = u;
@@ -303,7 +312,7 @@ pub async fn inference_loop(
         // Flush remaining buffer
         if !think_buffer.is_empty() && !in_think_block {
             if !response_banner_shown && !think_buffer.trim().is_empty() {
-                display::print_response_banner();
+                sink.emit(EngineEvent::ResponseStart);
             }
             md.push(&think_buffer);
         }
@@ -425,6 +434,7 @@ pub async fn inference_loop(
                 tools,
                 mode,
                 &settings.approval.allowed_commands,
+                sink,
             )
             .await?;
         } else {
@@ -437,6 +447,7 @@ pub async fn inference_loop(
                 tools,
                 mode,
                 settings,
+                sink,
             )
             .await?;
         }
@@ -480,6 +491,7 @@ async fn execute_one_tool(
     tools: &crate::tools::ToolRegistry,
     mode: ApprovalMode,
     allowed_commands: &[String],
+    sink: &dyn crate::engine::EngineSink,
 ) -> (String, String) {
     let result = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
@@ -494,6 +506,7 @@ async fn execute_one_tool(
             &tc.arguments,
             mode,
             &mut sub_settings,
+            sink,
         )
         .await
         {
@@ -535,10 +548,16 @@ async fn execute_tools_parallel(
     tools: &crate::tools::ToolRegistry,
     mode: ApprovalMode,
     allowed_commands: &[String],
+    sink: &dyn crate::engine::EngineSink,
 ) -> Result<()> {
     // Print all tool call banners upfront
     for tc in tool_calls {
-        display::print_tool_call(tc, false);
+        sink.emit(EngineEvent::ToolCallStart {
+            id: tc.id.clone(),
+            name: tc.function_name.clone(),
+            args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
+            is_sub_agent: false,
+        });
     }
 
     let count = tool_calls.len();
@@ -557,6 +576,7 @@ async fn execute_tools_parallel(
                 tools,
                 mode,
                 allowed_commands,
+                sink,
             )
         })
         .collect();
@@ -564,7 +584,11 @@ async fn execute_tools_parallel(
 
     // Store results and display output (in original order)
     for (i, (tc_id, result)) in results.into_iter().enumerate() {
-        display::print_tool_output(&tool_calls[i].function_name, &result);
+        sink.emit(EngineEvent::ToolCallResult {
+            id: tc_id.clone(),
+            name: tool_calls[i].function_name.clone(),
+            output: result.clone(),
+        });
         db.insert_message(
             session_id,
             &Role::Tool,
@@ -589,6 +613,7 @@ async fn execute_tools_sequential(
     tools: &crate::tools::ToolRegistry,
     mode: ApprovalMode,
     settings: &mut Settings,
+    sink: &dyn crate::engine::EngineSink,
 ) -> Result<()> {
     for tc in tool_calls {
         // Check for interrupt before each tool
@@ -601,7 +626,12 @@ async fn execute_tools_sequential(
         let parsed_args: serde_json::Value =
             serde_json::from_str(&tc.arguments).unwrap_or_default();
 
-        display::print_tool_call(tc, false);
+        sink.emit(EngineEvent::ToolCallStart {
+            id: tc.id.clone(),
+            name: tc.function_name.clone(),
+            args: parsed_args.clone(),
+            is_sub_agent: false,
+        });
 
         // Check approval for this tool call
         let approval = approval::check_tool(
@@ -717,9 +747,14 @@ async fn execute_tools_sequential(
             tools,
             mode,
             &settings.approval.allowed_commands,
+            sink,
         )
         .await;
-        display::print_tool_output(&tc.function_name, &result);
+        sink.emit(EngineEvent::ToolCallResult {
+            id: tc.id.clone(),
+            name: tc.function_name.clone(),
+            output: result.clone(),
+        });
 
         db.insert_message(
             session_id,
@@ -744,6 +779,7 @@ async fn execute_sub_agent(
     arguments: &str,
     mode: ApprovalMode,
     settings: &mut Settings,
+    sink: &dyn crate::engine::EngineSink,
 ) -> Result<String> {
     let args: serde_json::Value = serde_json::from_str(arguments)?;
     let agent_name = args["agent_name"]
@@ -754,7 +790,9 @@ async fn execute_sub_agent(
         .ok_or_else(|| anyhow::anyhow!("Missing 'prompt'"))?;
     let session_id = args["session_id"].as_str().map(|s| s.to_string());
 
-    display::print_sub_agent_start(agent_name);
+    sink.emit(EngineEvent::SubAgentStart {
+        agent_name: agent_name.to_string(),
+    });
 
     let sub_config = crate::config::KodaConfig::load(project_root, agent_name)
         .with_context(|| format!("Failed to load sub-agent: {agent_name}"))?;
@@ -830,7 +868,12 @@ async fn execute_sub_agent(
         }
 
         for tc in &response.tool_calls {
-            display::print_tool_call(tc, true);
+            sink.emit(EngineEvent::ToolCallStart {
+                id: tc.id.clone(),
+                name: tc.function_name.clone(),
+                args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
+                is_sub_agent: true,
+            });
 
             // Sub-agents inherit the parent's approval mode
             let parsed_args: serde_json::Value =
