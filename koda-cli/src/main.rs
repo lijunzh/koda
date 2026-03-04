@@ -17,13 +17,16 @@ mod sink;
 mod tui;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 /// Koda 🐻 - Your AI coding bear.
 #[derive(Parser, Debug)]
 #[command(name = "koda", version, about)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Run a single prompt and exit (headless mode).
     /// Use "-" to read from stdin.
     #[arg(short, long, value_name = "PROMPT")]
@@ -79,9 +82,39 @@ struct Cli {
     reasoning_effort: Option<String>,
 }
 
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Start ACP server for external clients
+    Server {
+        #[arg(long, default_value = "9999")]
+        port: u16,
+        #[arg(long)]
+        stdio: bool,
+    },
+    /// Connect CLI to a running server
+    Connect { url: String },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Handle subcommands first
+    if let Some(cmd) = &cli.command {
+        match cmd {
+            Command::Server { port, stdio } => {
+                println!(
+                    "Not implemented: Server mode (port: {}, stdio: {})",
+                    port, stdio
+                );
+                std::process::exit(0);
+            }
+            Command::Connect { url } => {
+                println!("Not implemented: Connect to {}", url);
+                std::process::exit(0);
+            }
+        }
+    }
 
     // Install Ctrl+C handler for graceful interrupts
     interrupt::install_handler();
