@@ -1,0 +1,9 @@
+[workspace]
+members = ["koda-core", "koda-cli"]
+resolver = "3"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"

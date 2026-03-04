@@ -1,0 +1,78 @@
+[package]
+name = "koda-core"
+version = "0.1.0"
+edition = "2024"
+description = "Core engine for the Koda AI coding agent"
+license = "MIT"
+repository = "https://github.com/lijunzh/koda"
+authors = ["Lijun Zhu"]
+
+[lib]
+name = "koda_core"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Logging
+tracing = "0.1"
+
+# File system (respects .gitignore)
+ignore = "0.4"
+
+# Path normalization
+path-clean = "1"
+
+# Text search
+regex = "1"
+
+# File globbing
+glob = "0.3"
+
+# URL parsing (for SSRF protection)
+url = "2"
+
+# Unique IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Base64 encoding (for image support)
+base64 = "0.22"
+
+# HTTP client (for LLM API)
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Streaming support
+futures-util = "0.3"
+
+# Error handling
+anyhow = "1"
+
+# Async trait support
+async-trait = "0.1"
+
+# MCP (Model Context Protocol) client
+rmcp = { version = "0.16", features = ["client", "transport-child-process"] }
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
+
+# AST analysis
+tree-sitter = "0.26.6"
+petgraph = "0.8.3"
+tree-sitter-rust = "0.24.0"
+tree-sitter-python = "0.25.0"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-typescript = "0.23.2"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full", "test-util"] }
+regex = "1"
+ignore = "0.4"

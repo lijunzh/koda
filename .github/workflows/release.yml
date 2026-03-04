@@ -1,0 +1,230 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  # Gate: run the full CI suite before building release artifacts.
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  # Verify that the git tag matches the workspace version.
+  verify-version:
+    name: Verify Version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag matches workspace versions
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          CORE_VER=$(grep '^version' koda-core/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          CLI_VER=$(grep '^version' koda-cli/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          if [ "$TAG" != "$CORE_VER" ]; then
+            echo "::error::Tag v$TAG does not match koda-core version $CORE_VER"
+            exit 1
+          fi
+          if [ "$TAG" != "$CLI_VER" ]; then
+            echo "::error::Tag v$TAG does not match koda-cli version $CLI_VER"
+            exit 1
+          fi
+          echo "✅ Tag v$TAG matches koda-core ($CORE_VER) and koda-cli ($CLI_VER)"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [ci, verify-version]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p koda-cli
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir koda-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/koda koda-${{ matrix.target }}/
+          cp README.md LICENSE koda-${{ matrix.target }}/
+          tar czf koda-${{ matrix.target }}.tar.gz koda-${{ matrix.target }}
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir koda-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/koda.exe koda-${{ matrix.target }}/
+          cp README.md LICENSE koda-${{ matrix.target }}/
+          7z a koda-${{ matrix.target }}.zip koda-${{ matrix.target }}/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: koda-${{ matrix.target }}
+          path: |
+            koda-${{ matrix.target }}.tar.gz
+            koda-${{ matrix.target }}.zip
+          if-no-files-found: ignore
+
+  publish:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    environment: crates-io
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish koda-core
+        run: cargo publish -p koda-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Wait for crates.io index
+        run: sleep 30
+      - name: Publish koda-cli
+        run: cargo publish -p koda-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  github-release:
+    name: GitHub Release
+    needs: build  # Only depends on build, not publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Extract release notes from CHANGELOG
+        run: |
+          # Extract the section for this version from CHANGELOG.md
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          # Get content between this version's header and the next ## header (or EOF)
+          awk "/^## \\[${VERSION}\\]/{found=1; next} /^## \\[/{if(found) exit} found" CHANGELOG.md > release_body.md
+          # If extraction failed, use a fallback
+          if [ ! -s release_body.md ]; then
+            echo "Release v${VERSION}" > release_body.md
+            echo "" >> release_body.md
+            echo "See [CHANGELOG.md](https://github.com/lijunzh/koda/blob/main/CHANGELOG.md) for details." >> release_body.md
+          fi
+          echo "--- Extracted release notes ---"
+          cat release_body.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_body.md
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+
+  update-homebrew:
+    name: Update Homebrew Tap
+    needs: github-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute SHA256 checksums
+        id: sha
+        run: |
+          echo "aarch64_mac=$(sha256sum artifacts/koda-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "x86_64_mac=$(sha256sum artifacts/koda-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "aarch64_linux=$(sha256sum artifacts/koda-aarch64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          echo "x86_64_linux=$(sha256sum artifacts/koda-x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      - name: Update formula
+        uses: actions/checkout@v4
+        with:
+          repository: lijunzh/homebrew-koda
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-koda
+
+      - name: Write updated formula
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          cat > homebrew-koda/Formula/koda.rb << 'FORMULA'
+          class Koda < Formula
+            desc "High-performance AI coding agent built in Rust"
+            homepage "https://github.com/lijunzh/koda"
+            version "VERSION_PLACEHOLDER"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-aarch64-apple-darwin.tar.gz"
+                sha256 "SHA_AARCH64_MAC"
+              else
+                url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-x86_64-apple-darwin.tar.gz"
+                sha256 "SHA_X86_64_MAC"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "SHA_AARCH64_LINUX"
+              else
+                url "https://github.com/lijunzh/koda/releases/download/vVERSION_PLACEHOLDER/koda-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "SHA_X86_64_LINUX"
+              end
+            end
+
+            def install
+              bin.install "koda"
+            end
+
+            test do
+              assert_match "koda-cli", shell_output("#{bin}/koda --version")
+            end
+          end
+          FORMULA
+          # Replace placeholders
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" homebrew-koda/Formula/koda.rb
+          sed -i "s/SHA_AARCH64_MAC/${{ steps.sha.outputs.aarch64_mac }}/g" homebrew-koda/Formula/koda.rb
+          sed -i "s/SHA_X86_64_MAC/${{ steps.sha.outputs.x86_64_mac }}/g" homebrew-koda/Formula/koda.rb
+          sed -i "s/SHA_AARCH64_LINUX/${{ steps.sha.outputs.aarch64_linux }}/g" homebrew-koda/Formula/koda.rb
+          sed -i "s/SHA_X86_64_LINUX/${{ steps.sha.outputs.x86_64_linux }}/g" homebrew-koda/Formula/koda.rb
+          # Fix indentation (heredoc adds leading spaces)
+          sed -i 's/^          //' homebrew-koda/Formula/koda.rb
+
+      - name: Push formula update
+        run: |
+          cd homebrew-koda
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/koda.rb
+          git commit -m "Update koda to ${GITHUB_REF#refs/tags/}"
+          git push
