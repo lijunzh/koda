@@ -16,7 +16,9 @@ fn koda_bin() -> String {
 }
 
 /// Send a JSON-RPC message to the server's stdin and read the response line.
+/// Panics with diagnostic info if the server process exits before responding.
 fn send_and_recv(
+    child: &mut std::process::Child,
     stdin: &mut impl Write,
     stdout: &mut impl BufRead,
     msg: &serde_json::Value,
@@ -27,10 +29,18 @@ fn send_and_recv(
 
     let mut response = String::new();
     stdout.read_line(&mut response).unwrap();
-    assert!(
-        !response.trim().is_empty(),
-        "Expected a response but got empty line"
-    );
+
+    if response.trim().is_empty() {
+        // Server likely crashed — collect exit status for diagnostics
+        let status = child.try_wait().ok().flatten();
+        panic!(
+            "Server returned empty response (process exited: {:?}). \
+             Sent: {}",
+            status,
+            serde_json::to_string_pretty(msg).unwrap()
+        );
+    }
+
     serde_json::from_str(response.trim()).unwrap()
 }
 
@@ -53,27 +63,33 @@ fn initialize_msg() -> serde_json::Value {
     })
 }
 
-/// Spawn the koda server process in a temp directory.
-fn spawn_server(tmp: &tempfile::TempDir) -> std::process::Child {
+/// Spawn the koda server process in a temp directory with isolated config/DB.
+fn spawn_server(
+    project_dir: &tempfile::TempDir,
+    config_dir: &tempfile::TempDir,
+) -> std::process::Child {
     Command::new(koda_bin())
         .arg("--project-root")
-        .arg(tmp.path())
+        .arg(project_dir.path())
         .args(["server", "--stdio"])
+        // Isolate DB per test — config_dir() reads XDG_CONFIG_HOME
+        .env("XDG_CONFIG_HOME", config_dir.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("Failed to start koda server")
 }
 
 #[test]
 fn test_server_initialize() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let mut child = spawn_server(&tmp);
+    let project_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let mut child = spawn_server(&project_dir, &config_dir);
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
 
-    let resp = send_and_recv(&mut stdin, &mut stdout, &initialize_msg());
+    let resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &initialize_msg());
 
     // Verify response structure
     assert_eq!(resp["jsonrpc"], "2.0");
@@ -96,13 +112,14 @@ fn test_server_initialize() {
 
 #[test]
 fn test_server_new_session() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let mut child = spawn_server(&tmp);
+    let project_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let mut child = spawn_server(&project_dir, &config_dir);
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
 
     // Initialize first
-    let _init_resp = send_and_recv(&mut stdin, &mut stdout, &initialize_msg());
+    let _init_resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &initialize_msg());
 
     // Create new session
     let new_session = serde_json::json!({
@@ -110,11 +127,11 @@ fn test_server_new_session() {
         "id": 2,
         "method": "session/new",
         "params": {
-            "cwd": tmp.path().to_string_lossy(),
+            "cwd": project_dir.path().to_string_lossy(),
             "mcpServers": []
         }
     });
-    let resp = send_and_recv(&mut stdin, &mut stdout, &new_session);
+    let resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &new_session);
 
     assert_eq!(resp["jsonrpc"], "2.0");
     assert_eq!(resp["id"], 2);
@@ -135,13 +152,14 @@ fn test_server_new_session() {
 
 #[test]
 fn test_server_cancel_notification() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let mut child = spawn_server(&tmp);
+    let project_dir = tempfile::TempDir::new().unwrap();
+    let config_dir = tempfile::TempDir::new().unwrap();
+    let mut child = spawn_server(&project_dir, &config_dir);
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
 
     // Initialize
-    let _init_resp = send_and_recv(&mut stdin, &mut stdout, &initialize_msg());
+    let _init_resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &initialize_msg());
 
     // Create session
     let new_session = serde_json::json!({
@@ -149,11 +167,11 @@ fn test_server_cancel_notification() {
         "id": 2,
         "method": "session/new",
         "params": {
-            "cwd": tmp.path().to_string_lossy(),
+            "cwd": project_dir.path().to_string_lossy(),
             "mcpServers": []
         }
     });
-    let resp = send_and_recv(&mut stdin, &mut stdout, &new_session);
+    let resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &new_session);
     let session_id = resp["result"]["sessionId"].as_str().unwrap();
 
     // Send cancel notification (no id = notification, should not crash)
@@ -176,7 +194,7 @@ fn test_server_cancel_notification() {
             "clientCapabilities": {}
         }
     });
-    let resp2 = send_and_recv(&mut stdin, &mut stdout, &init2);
+    let resp2 = send_and_recv(&mut child, &mut stdin, &mut stdout, &init2);
     assert_eq!(resp2["id"], 3);
     assert!(resp2["result"].is_object());
 
