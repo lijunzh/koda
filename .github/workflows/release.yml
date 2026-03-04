@@ -21,7 +21,7 @@ jobs:
     name: Verify Version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Check tag matches workspace versions
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
@@ -56,7 +56,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -99,7 +99,7 @@ jobs:
     environment: crates-io
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Publish koda-core
         run: cargo publish -p koda-core
@@ -122,7 +122,7 @@ jobs:
     needs: build  # Only depends on build, not publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/download-artifact@v4
         with:
@@ -171,7 +171,7 @@ jobs:
           echo "x86_64_linux=$(sha256sum artifacts/koda-x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)" >> $GITHUB_OUTPUT
 
       - name: Update formula
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: lijunzh/homebrew-koda
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
