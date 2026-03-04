@@ -13,6 +13,7 @@ mod interrupt;
 mod markdown;
 mod onboarding;
 mod repl;
+mod server;
 mod sink;
 mod tui;
 
@@ -103,11 +104,37 @@ async fn main() -> Result<()> {
     if let Some(cmd) = &cli.command {
         match cmd {
             Command::Server { port, stdio } => {
-                println!(
-                    "Not implemented: Server mode (port: {}, stdio: {})",
-                    port, stdio
-                );
-                std::process::exit(0);
+                if *stdio {
+                    // Load and inject stored API keys (env vars take precedence)
+                    match koda_core::keystore::KeyStore::load() {
+                        Ok(store) => store.inject_into_env(),
+                        Err(e) => tracing::warn!("Failed to load keystore: {e}"),
+                    }
+
+                    let project_root = cli.project_root.clone().unwrap_or_else(|| {
+                        std::env::current_dir().expect("Failed to get current directory")
+                    });
+                    let project_root = std::fs::canonicalize(&project_root)?;
+
+                    let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
+                    let config = config
+                        .with_overrides(
+                            cli.base_url.clone(),
+                            cli.model.clone(),
+                            cli.provider.clone(),
+                        )
+                        .with_model_overrides(
+                            cli.max_tokens,
+                            cli.temperature,
+                            cli.thinking_budget,
+                            cli.reasoning_effort.clone(),
+                        );
+                    server::run_stdio_server(project_root, config).await?;
+                } else {
+                    eprintln!("WebSocket server (--port {port}) not yet implemented. Use --stdio.");
+                    std::process::exit(1);
+                }
+                return Ok(());
             }
             Command::Connect { url } => {
                 println!("Not implemented: Connect to {}", url);
