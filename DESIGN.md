@@ -1,378 +1,170 @@
-# Architecture Design Document: Koda 🐻 (Rust AI Coding Agent)
+# Koda Architecture Design
 
-## 1. Executive Summary
-Koda 🐻 (Crate: `koda-agent`) is a high-performance, locally-focused AI coding agent built in Rust. It serves as an autonomous developer assistant capable of codebase analysis, terminal execution, and file manipulation. The Bear metaphor represents a sturdy, reliable companion that forages through your codebase with strength and precision. While the crate is named `koda-agent`, the CLI command is invoked simply as `koda`.
+## Overview
 
-## 2. Technical Stack
-| Category | Crate | Purpose |
-|----------|-------|---------|
-| Language | Rust (Edition 2024) | Core implementation |
-| Async Runtime | `tokio` | Multi-threaded async execution |
-| CLI Parser | `clap` | Command-line argument parsing |
-| Database | `sqlx` | Async SQLite for durable state |
-| Serialization | `serde`, `serde_json`, `toml` | Parsing LLM responses & configs |
-| HTTP Client | `reqwest` (with `stream` feature) | LLM API calls + SSE streaming |
-| Streaming | `futures-util` | Async byte stream processing |
-| REPL Input | `rustyline` | Line editing, completions, hints |
-| TUI Menus | `crossterm` | Arrow-key selection menus |
-| Spinners | `indicatif` | Terminal progress indicators |
-| Syntax Highlighting | `syntect` | Code block highlighting (bat engine) |
-| Logging | `tracing`, `tracing-appender` | Invisible background file logging |
-| File System | `ignore` | Respects `.gitignore` during scans |
-| File Globbing | `glob` | Pattern-based file discovery |
+Koda is evolving from a single-binary CLI coding agent into a **server-backed personal AI platform**. This document captures the architectural decisions, design rationale, and implementation plan.
 
-## 3. Design Principles
+## Vision
 
-### Philosophy
-Koda is a personal coding agent — built for a single developer at a keyboard, not
-for enterprise teams or platform integrations.
+Koda is a personal AI assistant. Coding is the starting point, but the platform will expand to support email, messaging, calendar, reminders, documentation, and knowledge management — all powered by the same engine.
 
-1. **Zero runtime dependencies** — single compiled binary, ships everywhere.
-2. **Built-in first for the core coding loop** — Read/Write/Edit/Bash/Grep cover ~95%
-   of daily coding tasks. MCP fills the rest for domain-specific needs.
-3. **MCP for everything else** — databases, cloud APIs, browser automation, docs.
-   Don't bloat the binary with features that belong in MCP servers.
-4. **Stay lean** — YAGNI. Complexity is a cost. Every line must earn its place.
-
-### Built-in vs MCP Decision Rule
-
-**Build as a built-in tool if ALL of these are true:**
-- Used in >50% of coding sessions (daily driver)
-- Latency-sensitive (called frequently in loops)
-- Small implementation (<200 lines)
-- Zero external dependencies
-
-**Defer to MCP if ANY of these are true:**
-- Domain-specific (databases, cloud, Slack, GitHub API)
-- Requires external runtime (node, python, docker)
-- Large implementation (>500 lines)
-- Already exists as a quality community MCP server
-
----
-
-## 4. Security Audit — 2025-04-01
-
-**RUSTSEC-2023-0071 (Medium 5.9):** `rsa` v0.9.10 via `sqlx → sqlx-mysql`.
-Marvin Attack timing sidechannel. No fixed upstream yet. Koda uses SQLite
-primarily — low risk. Monitor for upstream fix.
-
-**RUSTSEC-2025-0141:** `bincode` unmaintained (via `syntect`). No CVE. Stable.
-
-**RUSTSEC-2025-0119:** `number_prefix` unmaintained (via `indicatif`). No CVE. Stable.
-
----
-
-## 5. Core Architectural Concepts
-
-### 3.1. Single Binary CLI (Monolith)
-Koda is a single compiled binary. Unlike daemon-based tools, it is invoked once for an interactive session. State persistence across terminal restarts is achieved through a local SQLite database, providing the feeling of a persistent agent without background process overhead.
-
-### 3.2. Multi-Provider LLM Abstraction
-Koda abstracts the LLM provider via the `LlmProvider` trait. It supports:
-- **LM Studio** (localhost, auto-detects serving model)
-- **OpenAI** (GPT-4o, o1, o3)
-- **Anthropic** (Claude, via separate message format)
-- **Gemini**, **Groq**, **Grok** (all OpenAI-compatible)
-
-The provider trait exposes two methods:
-- `chat()` — non-streaming request/response
-- `chat_stream()` — SSE streaming via `tokio::mpsc` channel
-
-Providers are selected interactively via `/provider` (arrow-key menu) or via CLI flags/environment variables.
-
-### 3.3. Streaming Architecture
-All LLM responses stream token-by-token via Server-Sent Events (SSE):
+## Architecture
 
 ```
-User Input → chat_stream() → tokio::mpsc::Receiver<StreamChunk>
-                                    ↓
-                            TextDelta("Hello")   → MarkdownStreamer → terminal
-                            TextDelta(" world")  → MarkdownStreamer → terminal
-                            ToolCalls([...])      → execute tools → loop
-                            Done(usage)           → print footer
+┌──────────────────────────────────────────────────────────┐
+│                    koda (single binary)                    │
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │              koda-engine (library)                  │  │
+│  │                                                    │  │
+│  │  InferenceEngine  ToolRegistry  MCP  AgentSystem  │  │
+│  │  SessionManager   Memory       DB   Approval      │  │
+│  │                                                    │  │
+│  │  Output: EngineEvent (serde-serializable enum)    │  │
+│  │  Input:  EngineCommand (serde-serializable enum)  │  │
+│  └──────────────┬───────────────────┬────────────────┘  │
+│                 │                   │                    │
+│      ┌──────────┴──────┐  ┌────────┴─────────┐         │
+│      │  CLI Client     │  │  ACP Server      │         │
+│      │  (rustyline)    │  │  (WebSocket)     │         │
+│      │  Default mode   │  │  koda server     │         │
+│      └─────────────────┘  └──────────────────┘         │
+└──────────────────────────────────────────────────────────┘
+         │                           │
+    Terminal user              ┌─────┴──────────┐
+                               │ External clients│
+                               │ (Zed, VS Code, │
+                               │  Desktop app)  │
+                               └────────────────┘
 ```
 
-The `StreamChunk` enum:
-- `TextDelta(String)` — partial text content, rendered immediately
-- `ToolCalls(Vec<ToolCall>)` — accumulated tool call(s)
-- `Done(TokenUsage)` — stream complete with usage stats
+## Execution Modes
 
-### 3.4. Hybrid Memory System
-- **Execution Memory (SQLite — `.koda.db`):** Conversation history, tool call logs, token usage. Enables crash recovery and session resumption.
-- **Semantic Memory (Markdown — `MEMORY.md`):** Project-specific rules stored as plain text. Version-controllable and human-editable. Injected into the system prompt.
-- **Task Memory (`~/.config/koda/todo.md`):** Cross-project task tracking with project-scoped sections.
-- **Command History (`~/.config/koda/history`):** Persistent REPL history across sessions.
-
-### 3.5. Sub-Agent Orchestration
-Koda coordinates sub-agents via standard Tool Calling:
-- **`InvokeAgent` Tool:** The main LLM delegates to named sub-agents.
-- **Independent Execution:** Sub-agents run in isolated loops with their own config, model, and tool access.
-- **Result Coordination:** Sub-agent output is returned as a tool result string.
-
-### 3.6. Reasoning & Transparency
-The `ShareReasoning` tool allows the LLM to share internal reasoning
-with the user during complex decision-making. It is automatically
-disabled when native thinking (e.g. Anthropic extended thinking) is active.
-
-### 3.7. Safety & Path Validation
-- **Path Normalization:** `path-clean` prevents directory traversal attacks.
-- **Host Execution:** Tools run as child processes with user permissions.
-- **API Key Security:** Keys stored in `~/.config/koda/keys.toml` (chmod 600).
-
-## 6. Tool System
-
-### 6.1. Tool Naming Convention
-All tools use **PascalCase** names (inspired by Claude Code):
-
-| Tool | Module | Description |
-|------|--------|-------------|
-| `Read` | `file_tools` | Read file contents with optional line-range |
-| `Write` | `file_tools` | Create/overwrite files |
-| `Edit` | `file_tools` | Targeted find-and-replace (multi-edit) |
-| `Delete` | `file_tools` | Delete a file |
-| `List` | `file_tools` | List files/dirs (respects .gitignore) |
-| `Grep` | `grep` | Recursive text search (regex + case-insensitive) |
-| `Glob` | `glob_tool` | Find files by glob pattern |
-| `Bash` | `shell` | Execute shell commands with timeout |
-| `WebFetch` | `web_fetch` | Fetch URL content, strip HTML |
-| `MemoryRead` | `memory` | Read project & global memory |
-| `MemoryWrite` | `memory` | Save insights to persistent memory |
-| `ShareReasoning` | `reasoning` | Share internal reasoning with the user |
-| `InvokeAgent` | `agent` | Delegate to a sub-agent |
-| `ListAgents` | `agent` | List available sub-agents |
-| `CreateAgent` | `agent` | Create a new sub-agent (with validation) |
-
-### 6.2. Tool Registry
-Tools are registered in a `HashMap<String, ToolDefinition>` at startup. The registry:
-1. Loads all built-in tool definitions from each module
-2. Provides `get_definitions()` with optional allow-list filtering
-3. Routes tool execution via name-matched dispatch in `execute()`
-
-### 6.3. Tool Display
-Each tool has a semantic color and short label shown during execution:
-
-| Category | Color | Tools |
-|----------|-------|-------|
-| Read/navigate | Steel blue, Sky blue | `Read`, `List`, `WebFetch` |
-| Modify | Amber | `Write`, `Edit` |
-| Search | Silver | `Grep`, `Glob` |
-| Execute | Orange | `Bash` |
-| Danger | Crimson | `Delete` |
-| Memory | Teal | `MemoryRead`, `MemoryWrite` |
-| AI/meta | Violet, Ruby | `CreateAgent`, `InvokeAgent`, `ListAgents`, `ShareReasoning` |
-
-### 6.4. Confirmation System
-Destructive tools require user confirmation before execution:
-- `Bash`, `Delete`, `Write`, `Edit`, `WebFetch`
-- Three options: ✓ Approve, ✗ Reject, 💬 Feedback (reject with instructions)
-
-## 7. The Core Event Loop (State Machine)
-```
-1. Init       → Parse CLI, load config, init SQLite
-2. Prompt     → Receive user input (with completions, @file refs)
-3. Pre-process → Resolve @file references, inject context
-4. Context    → Assemble system prompt + sliding-window history
-5. Stream     → SSE streaming with markdown rendering
-6. Act        → Text → render to terminal
-                 Tool calls → confirm → execute, log results
-7. Loop       → Feed tool results back to step 4
+```bash
+koda                      # Auto-starts embedded engine + CLI client (default)
+koda -p "fix the bug"     # Headless mode (direct engine, no server)
+koda server               # Standalone server for external clients
+koda server --port 9999   # Server on custom port
+koda connect <url>        # CLI client connecting to a remote engine
 ```
 
-## 8. Database Schema
-```sql
-CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    agent_name TEXT NOT NULL
-);
+## Design Decisions
 
-CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    role TEXT NOT NULL, -- user, assistant, system, tool
-    content TEXT,
-    tool_calls TEXT, -- JSON blob of calls
-    tool_call_id TEXT,
-    prompt_tokens INTEGER,
-    completion_tokens INTEGER,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(session_id) REFERENCES sessions(id)
-);
+### 1. Engine as a Library, Not a Process
+
+**Decision**: The engine is a Rust library crate with zero IO. It communicates exclusively through `EngineEvent` (output) and `EngineCommand` (input) enums.
+
+**Rationale**: Studied four Rust projects:
+- **xi-editor**: Used stdio JSON-RPC. Discontinued. Lesson: protocol becomes bottleneck when core and frontend are separate processes.
+- **Zed**: Keeps `agent` (engine) and `agent_ui` (rendering) as separate crates in the same binary. Engine has zero UI imports.
+- **Goose**: Rust engine + ACP server + multiple frontends (Electron, Ink TUI, CLI).
+- **Neovim**: C core + msgpack-RPC. Terminal TUI is just one client.
+
+**Zed's approach wins**: engine and primary client in the same binary. Server mode is optional for external clients.
+
+### 2. ACP (Agent Client Protocol)
+
+**Decision**: Koda's server mode will speak ACP.
+
+**Rationale**: Both Zed and Goose independently converged on ACP (`@agentclientprotocol/sdk`). ACP defines session management, streaming messages, tool calls with permissions, and status updates — exactly what Koda needs. Adopting ACP gives us Zed integration for free.
+
+### 3. Single Binary Philosophy
+
+**Decision**: `cargo install koda-agent` gives you everything. No separate server process required for normal usage.
+
+**Rationale**: Koda's core value is zero-config simplicity. The CLI client talks to the engine via in-process `tokio::mpsc` channels. Server mode is opt-in (`koda server`) for external clients.
+
+### 4. Async Approval Flow
+
+**Decision**: Tool approval is an async request/response, not a blocking function call.
+
+**Rationale**: The current `confirm::confirm_tool_action()` blocks the inference loop to show a terminal select widget. In server mode, the approval decision comes from a remote client. The engine must emit `EngineEvent::ApprovalRequest` and await `EngineCommand::ApprovalResponse`.
+
+### 5. Database Evolution
+
+**Decision**: Keep SQLite for v0.2.0. Introduce a `Persistence` trait so the backend can be swapped later.
+
+**Rationale**: SQLite is excellent for conversations, sessions, and AST cache. But email, calendar, documents, and knowledge graphs may require full-text search (FTS5), vector embeddings, graph relationships, or multi-device sync. The trait boundary lets us evolve without rewriting.
+
+## Protocol: EngineEvent / EngineCommand
+
+### EngineEvent (Engine → Client)
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum EngineEvent {
+    // Streaming LLM output
+    TextDelta { text: String },
+    TextDone,
+    ThinkingStart,
+    ThinkingDelta { text: String },
+    ThinkingDone,
+    ResponseStart,
+
+    // Tool execution
+    ToolCallStart { id: String, name: String, args: Value },
+    ToolCallResult { id: String, output: String, success: bool },
+
+    // Interactive
+    ApprovalRequest { id: String, tool: String, detail: String, preview: Option<String> },
+
+    // Session metadata
+    StatusUpdate { model: String, context_pct: f64, mode: String },
+    Footer { tokens: i64, time_ms: u64, rate: f64, context: String },
+    Info(String),
+    Warn(String),
+    Error(String),
+}
 ```
 
-## 9. Project Directory Layout
-```text
-koda/
-├── Cargo.toml
-├── src/
-│   ├── main.rs           # CLI entry point
-│   ├── app.rs            # Main event loop + provider creation
-│   ├── config.rs         # Agent/provider configuration
-│   ├── confirm.rs        # User confirmation for destructive tools
-│   ├── db.rs             # SQLite interaction layer
-│   ├── display.rs        # Tool banners + response formatting
-│   ├── highlight.rs      # Syntax highlighting (syntect)
-│   ├── inference.rs      # Inference loop + sub-agent execution
-│   ├── input.rs          # REPL completions, hints, @file refs
-│   ├── interrupt.rs      # Ctrl+C handling
-│   ├── keystore.rs       # API key storage (~/.config/koda/keys.toml)
-│   ├── markdown.rs       # Streaming markdown renderer
-│   ├── memory.rs         # Semantic memory (MEMORY.md / CLAUDE.md / AGENTS.md)
-│   ├── clipboard.rs      # Copy/paste via platform commands
-│   ├── context.rs        # Context window usage tracking
-│   ├── onboarding.rs     # First-run setup wizard
-│   ├── version.rs        # Non-blocking crates.io version check
-│   ├── repl.rs           # Slash commands, banner, prompt
-│   ├── tui.rs            # Arrow-key selection menus
-│   ├── providers/
-│   │   ├── mod.rs          # LlmProvider trait + StreamChunk
-│   │   ├── openai_compat.rs # OpenAI/LM Studio/Groq/Gemini/Grok
-│   │   └── anthropic.rs     # Claude Messages API
-│   └── tools/
-│       ├── mod.rs           # Tool registry + path safety
-│       ├── file_tools.rs    # Read, Write, Edit, Delete, LS
-│       ├── grep.rs          # Grep
-│       ├── glob_tool.rs     # Glob
-│       ├── shell.rs         # Bash
-│       ├── web_fetch.rs     # WebFetch
-│       ├── agent.rs         # InvokeAgent, ListAgents, CreateAgent
-│       ├── memory.rs        # MemoryRead, MemoryWrite
-│       └── reasoning.rs     # ShareReasoning
-├── tests/
-│   ├── file_tools_test.rs   # File operation integration tests
-│   ├── new_tools_test.rs    # Glob, WebFetch, tool naming tests
-│   ├── regression_test.rs   # Command, display, naming regression tests
-│   └── cli_test.rs          # Binary invocation tests (--help, --version)
-└── agents/
-    └── default.json         # Default agent configuration
+### EngineCommand (Client → Engine)
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum EngineCommand {
+    UserPrompt { text: String, images: Vec<ImageData> },
+    Interrupt,
+    ApprovalResponse { id: String, decision: ApprovalDecision },
+    Command(SlashCommand),
+    Quit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum ApprovalDecision {
+    Approve,
+    Reject,
+    RejectWithFeedback(String),
+    AlwaysAllow,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+enum SlashCommand {
+    Compact,
+    SwitchModel { model: String },
+    SwitchProvider { provider: String },
+    ListSessions,
+    DeleteSession { id: String },
+    SetTrust { mode: String },
+    McpCommand { args: String },
+    Cost,
+    Memory { action: Option<String> },
+}
 ```
 
-## 10. Configuration & Paths
+## Implementation Phases
 
-### 12.1. User-Level Config (`~/.config/koda/`)
-| Path | Purpose |
-|------|---------|
-| `agents/` | User-level agent configs (auto-bootstrapped on first run) |
-| `keys.toml` | API keys per provider (chmod 600) |
-| `history` | REPL command history (rustyline) |
-| `todo.md` | Shared task list with project-scoped sections |
+See GitHub Issues for tracking:
+- **Phase 1** (v0.1.4): Engine extraction — #39, #40, #41
+- **Phase 2** (v0.2.0): Server mode — #38
+- **Phase 3** (v0.2.x): External clients
 
-### 12.2. Project-Level State
-| Path | Purpose |
-|------|---------|
-| `.koda.db` | SQLite database (sessions, messages, tool calls) |
-| `.koda_logs/` | Debug log files (tracing-appender) |
-| `agents/` | Project-specific agent configs |
-| `agents/` | Sub-agent configurations (JSON) |
-| `MEMORY.md` | Semantic memory (injected into system prompt) |
+## References
 
-### 12.3. Environment Variables
-| Variable | Description |
-|----------|-------------|
-| `KODA_BASE_URL` | Override LLM provider base URL |
-| `KODA_MODEL` | Override default model name |
-| `KODA_PROVIDER` | Override default provider |
-| `KODA_ACCEPT_INVALID_CERTS` | Accept self-signed certs |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-
-### 10.4. Agent Config Resolution Order
-1. **`<project_root>/agents/`** — repo-local agents
-2. **Next to the binary** — distribution bundles
-3. **`~/.config/koda/agents/`** — user-level (auto-created on first run)
-
-The default agent JSON is embedded into the binary at compile time via `include_str!`.
-
-## 11. Terminal Input & Display Architecture
-
-### 11.1. Startup Banner
-Two-column layout with title embedded in the top border:
-```
-╭── 🐻 Koda v0.1.0 ───────────────────────────────────────────────╮
-│                              │ Tips for getting started          │
-│   Welcome back!              │   /model      pick a model       │
-│                              │   /provider   switch provider    │
-│   gpt-4o                     │   /help       all commands       │
-│   openai                     │ ────────────────────────────── │
-│   ~/repo/koda           │ Recent activity                  │
-│                              │   • what is next on the design?  │
-╰──────────────────────────────────────────────────────────────────╯
-```
-
-### 11.2. Tool Display (dot + label + detail)
-Each tool call is shown with a colored dot, short label, and key arguments:
-```
-  ● Read src/main.rs                     ← steel blue
-  ● List . (recursive)                   ← sky blue
-  ● Edit src/lib.rs (replace)            ← amber
-  ● Search src/ for 'TODO'               ← silver
-  ● Glob . → **/*.rs                     ← silver
-  ● Shell $ cargo test                   ← orange
-  ● Fetch https://docs.rs/...            ← sky blue
-  ● Todo reading tasks                   ← silver
-  ● Create tool: GitLog                  ← violet
-  ● Agent frontend                       ← ruby
-```
-
-### 11.3. Streaming Markdown Renderer
-Tokens are rendered with full markdown formatting as they stream:
-
-| Element | Rendering |
-|---------|-----------|
-| `# Headers` | Bold cyan |
-| `**bold**` | Bold |
-| `*italic*` | Italic |
-| `` `code` `` | Cyan with backticks |
-| Code blocks | Syntax-highlighted (syntect), dim `│` border |
-| `- bullets` | Cyan `•` bullet |
-| `1. numbered` | Cyan number prefix |
-| `> blockquotes` | Dim `│` border, italic |
-| `[text](url)` | OSC 8 clickable hyperlinks |
-| Tables (`\|..\|`) | Aligned columns with dim borders |
-| `---` | Dim horizontal rule |
-
-## 12. Agent Architecture
-
-### 10.1. Built-in Agents (Compile-time Embedded)
-Five agents are embedded via `include_str!` — zero disk dependency:
-- **default** — main coding assistant
-- **reviewer** — critical code reviewer (read-only)
-- **security** — security auditor (OWASP, CWE-tagged)
-- **testgen** — QA engineer, writes tests
-- **releaser** — GitHub release workflow
-
-### 10.2. Agent Discovery (Priority Order)
-1. `<project>/agents/` — project-specific (highest priority, overrides built-ins)
-2. `~/.config/koda/agents/` — user-created (via CreateAgent tool)
-3. Built-in embedded — always available, immutable
-
-### 10.3. Parallel Tool Execution
-When the LLM returns multiple tool calls and none require user confirmation,
-they execute concurrently via `futures::join_all`. This enables parallel
-sub-agent invocation (e.g., reviewer + security + testgen simultaneously).
-
-## 13. Multi-Modal Support
-Images can be attached via `@image.png` references or drag-and-drop (bare path
-auto-detection). Images are base64-encoded in-flight (not persisted to DB) and
-sent using provider-specific formats:
-- **OpenAI**: multi-part content array with `image_url` data URIs
-- **Anthropic**: content blocks with `image` type and base64 source
-
-## 14. Context Window Management
-- **Auto-compact**: at 80% usage, the conversation is summarized via LLM
-- **Manual**: `/compact` command
-- **Sliding window**: old messages dropped as safety net
-- **Prompt caching**: Anthropic system prompt + tools cached (90% cheaper)
-
-## 15. Test Coverage
-
-288 tests across 6 suites:
-
-| Suite | Tests | Coverage |
-|-------|-------|---------|
-| Unit tests (`src/`) | 218 | All 33 source modules |
-| CLI binary integration | 6 | `--version`, `--help`, invalid flags, headless flags, output-format validation, stdin handling |
-| File tools integration | 17 | Path safety, CRUD, directory deletion, List filtering |
-| New tools integration | 22 | Glob, WebFetch, Todo sections, Constructor, naming conventions |
-| Performance benchmarks | 7 | DB insert/load, grep, markdown render, path resolution, SSE parsing, shell escape |
-| Regression | 18 | Command dispatch, completions, tool banners, provider key flow |
+- [ACP (Agent Client Protocol)](https://www.npmjs.com/package/@agentclientprotocol/sdk)
+- [Zed Agent Architecture](https://github.com/zed-industries/zed/tree/main/crates/agent)
+- [Goose ACP Server](https://github.com/block/goose/tree/main/crates/goose-acp)
+- [xi-editor Frontend Protocol](https://xi-editor.io/docs/frontend-protocol.html)
+- [Neovim API](https://neovim.io/doc/user/api.html)

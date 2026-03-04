@@ -53,6 +53,13 @@ echo "explain this" | koda        # Piped input
 Koda natively understands the structure of your codebase using embedded `tree-sitter` parsers.
 - **Built-in Languages:** Rust, Python, JavaScript, and TypeScript. Koda can instantly extract functions, classes, and generate call graphs (who calls what) without guessing.
 - **Extending with MCP:** To keep Koda's binary blazingly fast and lightweight, we restrict built-in parsers to the "Big 4" languages. Need AST support for Go, C++, or Java? Simply connect a community Tree-sitter MCP server via your `.mcp.json`!
+
+### 🏗️ Architecture
+Koda is evolving toward a **server-backed platform** (see [DESIGN.md](DESIGN.md)):
+- **Engine** — pure Rust library with zero IO, communicates via `EngineEvent`/`EngineCommand` enums
+- **CLI Client** — the default interactive experience (rustyline REPL)
+- **ACP Server** — planned for v0.2.0, enabling VS Code, desktop apps, and Zed to connect
+- **Personal AI Platform** — coding is the starting point; email, calendar, docs, and knowledge management are on the roadmap
 - **Approval modes** — plan (read-only) / normal (smart confirm) / yolo (auto-approve) via `/trust`
 - **Diff preview** — see exactly what changes before approving Edit, Write, Delete
 - **Loop detection** — catches repeated tool calls with configurable iteration caps
