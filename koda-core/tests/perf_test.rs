@@ -16,9 +16,7 @@ mod db_perf {
     #[tokio::test]
     async fn test_load_context_500_messages_under_1s() {
         let tmp = TempDir::new().unwrap();
-        // Database::init needs HOME for config_dir resolution
-        unsafe { std::env::set_var("HOME", tmp.path()) };
-        let db = Database::init(tmp.path()).await.unwrap();
+        let db = Database::init(tmp.path(), tmp.path()).await.unwrap();
         let session_id = db.create_session("test", tmp.path()).await.unwrap();
 
         // Insert 500 messages
@@ -49,8 +47,7 @@ mod db_perf {
     #[tokio::test]
     async fn test_insert_message_under_50ms() {
         let tmp = TempDir::new().unwrap();
-        unsafe { std::env::set_var("HOME", tmp.path()) };
-        let db = Database::init(tmp.path()).await.unwrap();
+        let db = Database::init(tmp.path(), tmp.path()).await.unwrap();
         let session_id = db.create_session("test", tmp.path()).await.unwrap();
 
         let start = Instant::now();

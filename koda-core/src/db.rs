@@ -69,7 +69,7 @@ pub struct Database {
 }
 
 /// Get the koda config directory (~/.config/koda/).
-fn config_dir() -> Result<std::path::PathBuf> {
+pub fn config_dir() -> Result<std::path::PathBuf> {
     let base = std::env::var("XDG_CONFIG_HOME")
         .ok()
         .map(std::path::PathBuf::from)
@@ -91,24 +91,28 @@ pub fn db_dir() -> Result<std::path::PathBuf> {
 
 impl Database {
     /// Initialize the database, run migrations, and enable WAL mode.
-    /// The database lives in `~/.config/koda/db/koda.db`.
-    pub async fn init(project_root: &Path) -> Result<Self> {
-        let db_dir = db_dir()?;
+    ///
+    /// `koda_config_dir` is the koda configuration directory (e.g. `~/.config/koda`).
+    /// The database lives in `<koda_config_dir>/db/koda.db`.
+    ///
+    /// Production callers should pass `db::config_dir()?`; tests pass a temp dir.
+    pub async fn init(project_root: &Path, koda_config_dir: &Path) -> Result<Self> {
+        let db_dir = koda_config_dir.join("db");
         std::fs::create_dir_all(&db_dir)
             .with_context(|| format!("Failed to create DB dir: {}", db_dir.display()))?;
 
         let db_path = db_dir.join("koda.db");
 
-        // Migrate old `~/.config/koda/koda.db` to the new `db/` folder if needed
-        let old_db_path = config_dir()?.join("koda.db");
+        // Migrate old `<koda_config_dir>/koda.db` to the new `db/` folder if needed
+        let old_db_path = koda_config_dir.join("koda.db");
         if old_db_path.exists() && !db_path.exists() {
             tracing::info!("Migrating koda.db to new db/ directory");
             if let Err(e) = std::fs::rename(&old_db_path, &db_path) {
                 tracing::warn!("Failed to move old koda.db to db/ folder: {}", e);
             }
             // Also try to move WAL files if they exist
-            let old_wal = config_dir()?.join("koda.db-wal");
-            let old_shm = config_dir()?.join("koda.db-shm");
+            let old_wal = koda_config_dir.join("koda.db-wal");
+            let old_shm = koda_config_dir.join("koda.db-shm");
             if old_wal.exists() {
                 let _ = std::fs::rename(old_wal, db_dir.join("koda.db-wal"));
             }
