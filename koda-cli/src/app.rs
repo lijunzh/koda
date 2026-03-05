@@ -110,6 +110,17 @@ pub async fn run(
     session_id: String,
     version_check: tokio::task::JoinHandle<Option<String>>,
 ) -> Result<()> {
+    // Restore last-used provider/model if available
+    let settings = koda_core::approval::Settings::load();
+    if let Some(ref last) = settings.last_provider {
+        let ptype =
+            koda_core::config::ProviderType::from_url_or_name("", Some(&last.provider_type));
+        config.provider_type = ptype;
+        config.base_url = last.base_url.clone();
+        config.model = last.model.clone();
+        config.model_settings.model = last.model.clone();
+    }
+
     let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
         Arc::new(RwLock::new(crate::commands::create_provider(&config)));
 
@@ -256,6 +267,13 @@ pub async fn run(
                 ReplAction::SwitchModel(model) => {
                     config.model = model.clone();
                     config.model_settings.model = model.clone();
+                    // Persist for next startup
+                    let mut s = koda_core::approval::Settings::load();
+                    let _ = s.save_last_provider(
+                        &config.provider_type.to_string(),
+                        &config.base_url,
+                        &config.model,
+                    );
                     println!("  \x1b[32m\u{2713}\x1b[0m Model set to: \x1b[36m{model}\x1b[0m");
                     continue;
                 }
@@ -291,6 +309,12 @@ pub async fn run(
                                 Ok(Some(idx)) => {
                                     config.model = models[idx].id.clone();
                                     config.model_settings.model = config.model.clone();
+                                    let mut s = koda_core::approval::Settings::load();
+                                    let _ = s.save_last_provider(
+                                        &config.provider_type.to_string(),
+                                        &config.base_url,
+                                        &config.model,
+                                    );
                                     println!(
                                         "  \x1b[32m\u{2713}\x1b[0m Model set to: \x1b[36m{}\x1b[0m",
                                         config.model
