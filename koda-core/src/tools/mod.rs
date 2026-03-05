@@ -23,6 +23,7 @@ pub fn normalize_tool_name(name: &str) -> String {
         "memorywrite" | "memory_write" => "MemoryWrite".to_string(),
         "sharereasoning" | "share_reasoning" => "ShareReasoning".to_string(),
         "todowrite" | "todo_write" | "todo" => "TodoWrite".to_string(),
+        "todoread" | "todo_read" => "TodoRead".to_string(),
         "listagents" | "list_agents" => "ListAgents".to_string(),
         "createagent" | "create_agent" => "CreateAgent".to_string(),
         "invokeagent" | "invoke_agent" => "InvokeAgent".to_string(),
@@ -118,6 +119,14 @@ impl ToolRegistry {
     ) -> Self {
         self.mcp_registry = Some(registry);
         self
+    }
+
+    /// Get all built-in tool names (excludes MCP tools).
+    /// Used by wiring tests to verify every tool is properly integrated.
+    pub fn all_builtin_tool_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.definitions.keys().cloned().collect();
+        names.sort();
+        names
     }
 
     /// Get tool definitions, optionally filtered by an allow-list.
@@ -221,6 +230,12 @@ impl ToolRegistry {
                 // Handled externally by the event loop (needs access to db/session_id).
                 return ToolResult {
                     output: "__TODO_WRITE__".to_string(),
+                };
+            }
+            "TodoRead" => {
+                // Handled externally by the event loop (needs access to db/session_id).
+                return ToolResult {
+                    output: "__TODO_READ__".to_string(),
                 };
             }
 
