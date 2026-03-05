@@ -161,6 +161,7 @@ pub fn tool_info(name: &str, args_json: &str) -> (&'static str, &'static str, St
             let name = json_str_multi(&args, &["name"]);
             (VIOLET, "Create", format!("agent: {name}"))
         }
+        "ListAgents" => (RUBY, "Agents", "listing available agents".to_string()),
         "MemoryRead" => (SILVER, "Memory", "reading memory".to_string()),
         "MemoryWrite" => {
             let scope = args
@@ -194,6 +195,16 @@ pub fn tool_info(name: &str, args_json: &str) -> (&'static str, &'static str, St
             (EMERALD, "Todo", format!("{done}/{total} complete"))
         }
         "TodoRead" => (STEEL_BLUE, "Todo", "reading checklist".to_string()),
+        "AstAnalysis" => {
+            let path = json_str_multi(&args, &["file_path", "path"]);
+            let symbol = args.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
+            let detail = if symbol.is_empty() {
+                format!("{path} (structure)")
+            } else {
+                format!("{path} → {symbol}")
+            };
+            (VIOLET, "AST", detail)
+        }
         // MCP tools: server_name.tool_name
         other if other.contains('.') => {
             let parts: Vec<&str> = other.splitn(2, '.').collect();
@@ -837,5 +848,20 @@ mod tests {
         // Oldest surviving entry should be output 5 (0..4 were evicted)
         assert_eq!(h.get(TOOL_HISTORY_CAP).unwrap().output, "output 5");
         assert_eq!(h.get(1).unwrap().output, "output 24");
+    }
+
+    /// Every built-in tool must have a display rendering in tool_info().
+    /// If this test fails, add a match arm for the new tool in tool_info().
+    #[test]
+    fn test_all_tools_have_display_rendering() {
+        let registry = koda_core::tools::ToolRegistry::new(std::path::PathBuf::from("/tmp/test"));
+        for name in registry.all_builtin_tool_names() {
+            let (_color, label, _detail) = tool_info(&name, "{}");
+            assert_ne!(
+                label, "Tool",
+                "Tool '{name}' has no display rendering in tool_info() (display.rs). \
+                 It fell through to the catch-all. Add a match arm for \"{name}\"."
+            );
+        }
     }
 }

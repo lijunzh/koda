@@ -121,6 +121,14 @@ impl ToolRegistry {
         self
     }
 
+    /// Get all built-in tool names (excludes MCP tools).
+    /// Used by wiring tests to verify every tool is properly integrated.
+    pub fn all_builtin_tool_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.definitions.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
     /// Get tool definitions, optionally filtered by an allow-list.
     /// Includes MCP tools merged with built-in tools.
     pub fn get_definitions(&self, allowed: &[String]) -> Vec<ToolDefinition> {
