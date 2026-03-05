@@ -15,10 +15,10 @@ See [DESIGN.md](DESIGN.md) for architectural decisions. See [#57](https://github
 ```bash
 cargo build                              # Debug build
 cargo build --release -p koda-cli        # Release build
-cargo test --workspace                   # Run all 372 tests
-cargo test -p koda-core                  # Engine tests only
-cargo test -p koda-cli                   # CLI tests only
-cargo test -p koda-core --test perf_test # Run a specific test file
+cargo test --workspace --features koda-core/test-support  # Run all tests (incl. E2E)
+cargo test -p koda-core --features test-support          # Engine tests only
+cargo test -p koda-cli                                   # CLI tests only
+cargo test -p koda-core --test perf_test                 # Run a specific test file
 cargo fmt --all                          # Format all crates
 cargo fmt --all --check                  # Check formatting (CI enforced)
 cargo clippy --workspace -- -D warnings  # Lint (CI enforced)
@@ -110,15 +110,41 @@ Tools use PascalCase names. `mod.rs` has the registry, dispatcher, and `safe_res
 
 ## Test Structure
 
-**koda-core** (unit + integration):
-- Unit tests co-located in `src/` modules
-- `tests/file_tools_test.rs` — path safety, file CRUD
-- `tests/new_tools_test.rs` — glob, tool naming
-- `tests/perf_test.rs` — DB, grep, markdown throughput
-- `tests/capabilities_test.rs` — capabilities.md freshness
+### Running tests
 
-**koda-cli** (unit + integration):
-- Unit tests in `src/` modules (notably `acp_adapter.rs`)
-- `tests/cli_test.rs` — binary subprocess invocation
-- `tests/regression_test.rs` — REPL dispatch, input processing
-- `tests/server_test.rs` — ACP server integration tests (spawn subprocess, JSON-RPC lifecycle)
+```bash
+# CI suite (all tests including E2E with mock provider)
+cargo test --workspace --features koda-core/test-support
+
+# Live smoke tests (requires LM Studio running locally)
+KODA_TEST_LMSTUDIO=1 cargo test -p koda-cli --test smoke_test -- --ignored
+```
+
+The `test-support` feature gates `MockProvider` and `TestSink` — they are excluded
+from production builds to keep `koda-core`'s public API clean.
+
+### Test tiers
+
+**Unit tests** — co-located in `src/` modules, no feature flag needed:
+```bash
+cargo test -p koda-core   # runs unit tests only (no E2E)
+```
+
+**E2E tests** (mock provider, CI) — require `test-support` feature:
+- `koda-core/tests/e2e_test.rs` — full inference loop with real tools in sandboxed temp dirs
+- `koda-core/tests/cancel_test.rs` — Ctrl+C interruption during inference
+
+**Integration tests** — no feature flag needed:
+- `koda-core/tests/file_tools_test.rs` — path safety, file CRUD
+- `koda-core/tests/new_tools_test.rs` — glob, tool naming
+- `koda-core/tests/perf_test.rs` — DB, grep, markdown throughput
+- `koda-core/tests/capabilities_test.rs` — capabilities.md freshness
+
+**CLI tests** — no feature flag needed:
+- `koda-cli/tests/cli_test.rs` — binary subprocess invocation
+- `koda-cli/tests/regression_test.rs` — REPL dispatch, input processing
+- `koda-cli/tests/server_test.rs` — ACP server integration (JSON-RPC lifecycle)
+
+**Live smoke tests** (`#[ignore]`, local only):
+- `koda-cli/tests/smoke_test.rs` — headless prompt, tool use, session resume against LM Studio
+- Gated by `KODA_TEST_LMSTUDIO=1` env var; never runs in CI
