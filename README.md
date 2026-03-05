@@ -85,18 +85,21 @@ Koda natively understands the structure of your codebase using embedded `tree-si
 
 **Tips:** `@file` to attach context · `Shift+Tab` to cycle trust mode · `Esc` to clear input
 
-### Keyboard Shortcuts (during inference)
+### Keyboard Shortcuts
 
-| Key | Action |
-|-----|--------|
-| **Enter** | Queue typed text as the next prompt |
-| **Ctrl+C** | Cancel the current inference turn |
-| **Ctrl+C ×2** | Force quit Koda |
-| **Ctrl+U** | Clear the input line |
-| **Ctrl+W** | Delete the last word |
-| **Backspace** | Delete the last character |
+| Key | Context | Action |
+|-----|---------|--------|
+| **Ctrl+C** | During inference | Cancel the current turn |
+| **Ctrl+C ×2** | During inference | Force quit Koda |
+| **Ctrl+C** | At prompt (empty) | Exit Koda |
+| **Ctrl+C** | At prompt (with text) | Clear the line |
+| **Esc** | At prompt | Clear the line |
+| **Shift+Tab** | At prompt | Cycle trust mode (plan → normal → yolo) |
+| **Ctrl+D** | At prompt | Exit Koda |
 
-You can type your next message while the model is running — it appears in the bottom bar and gets submitted automatically when the current turn finishes.
+> **Note:** Input is not accepted while the model is running. Wait for the turn
+> to complete, then type your next message. Type-ahead during inference is planned
+> for v0.1.2 via a TUI framework migration ([#57](https://github.com/lijunzh/koda/issues/57)).
 
 ## MCP (Model Context Protocol)
 
@@ -147,7 +150,7 @@ over async channels. See [DESIGN.md](DESIGN.md) for architectural decisions.
 ## Development
 
 ```bash
-cargo test --workspace        # Run all 360 tests
+cargo test --workspace        # Run all 370 tests
 cargo clippy --workspace      # Lint
 cargo run -p koda-cli         # Run locally
 ```

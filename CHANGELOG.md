@@ -9,6 +9,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **TodoRead tool** — read and display task lists from the database
+- **Dev workflow guidance** — system prompt teaches best practices for development workflows
+- **Pre-confirmation diff previews** — see exactly what Edit/Write/Delete will change before approving
+- **Redundant diff skip** — suppress post-execution diff when preview was already shown
+- **Async REPL event loop** — readline runs on a dedicated OS thread; inference, UI rendering, and approval prompts run concurrently via `tokio::select!`
+- **Tool output expand/collapse** — `/expand N` reprints full output; `/verbose` toggles persistent expansion
+
+### Removed
+- **Bottom bar / ANSI scroll regions** — reverted due to fundamental incompatibility with terminal scrollback. Users could not scroll back to the latest output after scrolling up during inference. See [#57](https://github.com/lijunzh/koda/issues/57) for the TUI migration plan.
+
+### Known Limitations
+- **No type-ahead during inference** — input is not accepted while the model is running. Planned for v0.1.2 via a TUI framework migration ([#57](https://github.com/lijunzh/koda/issues/57)).
+
 ## [0.1.0] - 2026-03-04
 
 First release of `koda-core` and `koda-cli` as separate crates.
