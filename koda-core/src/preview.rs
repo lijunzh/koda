@@ -6,8 +6,8 @@
 use crate::tools::safe_resolve_path;
 use std::path::Path;
 
-const GREEN: &str = "\x1b[32m";
-const RED: &str = "\x1b[31m";
+const GREEN: &str = "\x1b[42;30m"; // green background, black text
+const RED: &str = "\x1b[41;37m"; // red background, white text
 const DIM: &str = "\x1b[90m";
 const RESET: &str = "\x1b[0m";
 
