@@ -189,10 +189,10 @@ async fn test_read_tool_in_sandbox() {
 
     // Tool result should contain the file content
     let tool_result = events.iter().find_map(|e| {
-        if let EngineEvent::ToolCallResult { output, name, .. } = e {
-            if name == "Read" {
-                return Some(output.clone());
-            }
+        if let EngineEvent::ToolCallResult { output, name, .. } = e
+            && name == "Read"
+        {
+            return Some(output.clone());
         }
         None
     });
@@ -406,10 +406,10 @@ async fn test_glob_tool_in_sandbox() {
     let events = env.run_inference(&provider).await;
 
     let tool_result = events.iter().find_map(|e| {
-        if let EngineEvent::ToolCallResult { output, name, .. } = e {
-            if name == "Glob" {
-                return Some(output.clone());
-            }
+        if let EngineEvent::ToolCallResult { output, name, .. } = e
+            && name == "Glob"
+        {
+            return Some(output.clone());
         }
         None
     });
