@@ -7,8 +7,8 @@ use anyhow::{Context, Result};
 use rmcp::{
     ClientHandler, RoleClient, ServiceExt,
     model::{
-        CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation,
-        ProtocolVersion, Tool as McpTool,
+        CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation, ProtocolVersion,
+        Tool as McpTool,
     },
     service::RunningService,
     transport::TokioChildProcess,

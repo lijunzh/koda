@@ -22,6 +22,12 @@ pub(crate) enum UiEvent {
 pub(crate) struct UiRenderer {
     md: crate::markdown::MarkdownStreamer,
     spinner: Option<tokio::task::JoinHandle<()>>,
+    /// Recent tool outputs for `/expand` replay.
+    pub tool_history: crate::display::ToolOutputHistory,
+    /// When true, tool output is never collapsed.
+    pub verbose: bool,
+    /// Buffer for streaming thinking deltas (rendered line-by-line).
+    think_buf: String,
 }
 
 impl UiRenderer {
@@ -29,6 +35,9 @@ impl UiRenderer {
         Self {
             md: crate::markdown::MarkdownStreamer::new(),
             spinner: None,
+            tool_history: crate::display::ToolOutputHistory::new(),
+            verbose: false,
+            think_buf: String::new(),
         }
     }
 
@@ -42,12 +51,25 @@ impl UiRenderer {
                 self.md.flush();
             }
             EngineEvent::ThinkingStart => {
+                self.think_buf.clear();
                 crate::display::print_thinking_banner();
             }
             EngineEvent::ThinkingDelta { text } => {
-                crate::display::render_thinking_block(&text);
+                self.think_buf.push_str(&text);
+                // Render complete lines as they arrive
+                while let Some(newline_pos) = self.think_buf.find('\n') {
+                    let line = self.think_buf[..newline_pos].to_string();
+                    self.think_buf = self.think_buf[newline_pos + 1..].to_string();
+                    crate::display::render_thinking_line(&line);
+                }
             }
-            EngineEvent::ThinkingDone => {}
+            EngineEvent::ThinkingDone => {
+                // Flush remaining partial line
+                if !self.think_buf.is_empty() {
+                    let remaining = std::mem::take(&mut self.think_buf);
+                    crate::display::render_thinking_line(&remaining);
+                }
+            }
             EngineEvent::ResponseStart => {
                 crate::display::print_response_banner();
             }
@@ -70,7 +92,14 @@ impl UiRenderer {
                 name,
                 output,
             } => {
-                crate::display::print_tool_output(&name, &output);
+                self.tool_history.push(&name, &output);
+                if self.verbose {
+                    if let Some(record) = self.tool_history.get(1) {
+                        crate::display::print_tool_output_full(record);
+                    }
+                } else {
+                    crate::display::print_tool_output(&name, &output);
+                }
             }
             EngineEvent::SubAgentStart { agent_name } => {
                 crate::display::print_sub_agent_start(&agent_name);
