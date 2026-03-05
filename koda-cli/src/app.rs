@@ -238,7 +238,9 @@ pub async fn run(
         let input = if let Some(cmd) = pending_command.take() {
             cmd
         } else if let Some(buffered) = buffered_input.take() {
-            // Use input that was typed during the previous inference turn
+            // Show the queued input in the scroll area so the conversation flow is visible
+            let prompt_str = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
+            println!("{prompt_str}{buffered}");
             buffered
         } else {
             let prompt = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
@@ -684,12 +686,11 @@ pub async fn run(
                             std::future::pending::<Option<Result<crossterm::event::Event, std::io::Error>>>().await
                         }
                     } => {
-                        if let Ok(crossterm::event::Event::Key(key_event)) = event_result {
-                            if let Some(ref mut bar) = bottom_bar {
-                                if let Some(line) = bar.handle_key(key_event) {
-                                    buffered_input = Some(line);
-                                }
-                            }
+                        if let Ok(crossterm::event::Event::Key(key_event)) = event_result
+                            && let Some(ref mut bar) = bottom_bar
+                            && let Some(line) = bar.handle_key(key_event)
+                        {
+                            buffered_input = Some(line);
                         }
                     }
                     // Fallback: readline input (when no bottom bar)
@@ -717,10 +718,10 @@ pub async fn run(
         // Borrows on session/config/cmd_rx released here.
 
         // Stop input capture and collect any typed input
-        if let Some(ref mut bar) = bottom_bar {
-            if let Some(input) = bar.stop_input_capture() {
-                buffered_input = Some(input);
-            }
+        if let Some(ref mut bar) = bottom_bar
+            && let Some(input) = bar.stop_input_capture()
+        {
+            buffered_input = Some(input);
         }
 
         // Drain remaining UI events (e.g., SpinnerStop after Ctrl+C interrupt).

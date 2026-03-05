@@ -10,11 +10,10 @@
 
 use crossterm::{
     cursor,
-    event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
+    event::{EventStream, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{self, ClearType},
 };
-use futures_util::StreamExt;
 use std::io::{Write, stdout};
 
 /// Height of the fixed bottom area (status bar + input line).
@@ -28,6 +27,8 @@ pub struct BottomBar {
     status_text: String,
     /// Input buffer for type-ahead during inference.
     input_buf: String,
+    /// Queued message (after Enter, waiting for current turn to finish).
+    queued_msg: Option<String>,
     /// Whether we're in raw mode (capturing keystrokes).
     raw_mode: bool,
 }
@@ -51,6 +52,7 @@ impl BottomBar {
             cols,
             status_text: String::new(),
             input_buf: String::new(),
+            queued_msg: None,
             raw_mode: false,
         };
         bar.setup_scroll_region();
@@ -104,17 +106,22 @@ impl BottomBar {
         }
     }
 
-    /// Disable raw mode and return any buffered input.
+    /// Disable raw mode and return any buffered/queued input.
     pub fn stop_input_capture(&mut self) -> Option<String> {
         if self.raw_mode {
             let _ = terminal::disable_raw_mode();
             self.raw_mode = false;
         }
-        if self.input_buf.is_empty() {
-            None
-        } else {
-            Some(std::mem::take(&mut self.input_buf))
-        }
+        // Prefer queued (Enter was pressed) over partial buffer
+        let result = self.queued_msg.take().or_else(|| {
+            if self.input_buf.is_empty() {
+                None
+            } else {
+                Some(std::mem::take(&mut self.input_buf))
+            }
+        });
+        self.input_buf.clear();
+        result
     }
 
     /// Create an async event stream for reading keystrokes.
@@ -125,15 +132,21 @@ impl BottomBar {
 
     /// Handle a crossterm key event. Returns Some(line) on Enter.
     pub fn handle_key(&mut self, event: KeyEvent) -> Option<String> {
+        // Ignore keys if already queued
+        if self.queued_msg.is_some() {
+            return None;
+        }
+
         match event.code {
             KeyCode::Enter => {
                 let line = std::mem::take(&mut self.input_buf);
-                self.redraw_bar();
                 if line.trim().is_empty() {
-                    None
-                } else {
-                    Some(line)
+                    return None;
                 }
+                // Show "Queued" state in the bar
+                self.queued_msg = Some(line.clone());
+                self.redraw_bar();
+                Some(line)
             }
             KeyCode::Backspace => {
                 self.input_buf.pop();
@@ -182,17 +195,44 @@ impl BottomBar {
         }
     }
 
-    /// Redraw the bottom bar (status line + input prompt).
+    /// Redraw the bottom bar (input line on top, status bar on bottom).
     fn redraw_bar(&self) {
         let mut out = stdout();
-        let status_row = self.rows - BOTTOM_HEIGHT;
-        let input_row = self.rows - 1;
+        let input_row = self.rows - BOTTOM_HEIGHT;
+        let status_row = self.rows - 1;
         let width = self.cols as usize;
 
         // Save cursor position
         let _ = execute!(out, cursor::SavePosition);
 
-        // Draw status bar (inverted dim)
+        // Draw input line (top of bottom area)
+        let _ = execute!(out, cursor::MoveTo(0, input_row));
+        let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
+        if self.raw_mode {
+            if let Some(ref queued) = self.queued_msg {
+                // Show queued state
+                let display = if queued.len() > width.saturating_sub(12) {
+                    &queued[..width - 12]
+                } else {
+                    queued
+                };
+                let _ = write!(
+                    out,
+                    "\x1b[33m\u{23f3} Queued:\x1b[0m \x1b[90m{display}\x1b[0m\x1b[K"
+                );
+            } else {
+                // Show the input buffer with a prompt
+                let display = if self.input_buf.len() > width.saturating_sub(4) {
+                    let start = self.input_buf.len() - (width - 4);
+                    &self.input_buf[start..]
+                } else {
+                    &self.input_buf
+                };
+                let _ = write!(out, "\x1b[36m\u{276f}\x1b[0m {display}\x1b[K");
+            }
+        }
+
+        // Draw status bar (very bottom)
         let _ = execute!(out, cursor::MoveTo(0, status_row));
         let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
         let status = if self.status_text.is_empty() {
@@ -202,22 +242,6 @@ impl BottomBar {
         };
         let padded = format!("{:<width$}", status, width = width);
         let _ = write!(out, "\x1b[90;7m{padded}\x1b[0m");
-
-        // Draw input line
-        let _ = execute!(out, cursor::MoveTo(0, input_row));
-        let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
-        if self.raw_mode {
-            // Show the input buffer with a prompt
-            let prompt = "\x1b[36m\u{276f}\x1b[0m ";
-            let display = if self.input_buf.len() > width.saturating_sub(4) {
-                // Truncate from the left if too long
-                let start = self.input_buf.len() - (width - 4);
-                &self.input_buf[start..]
-            } else {
-                &self.input_buf
-            };
-            let _ = write!(out, "{prompt}{display}\x1b[K");
-        }
 
         // Restore cursor position (back to scroll region)
         let _ = execute!(out, cursor::RestorePosition);
