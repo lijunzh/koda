@@ -230,18 +230,37 @@ impl BottomBar {
         }
     }
 
-    /// Handle terminal resize. Only updates dimensions and scroll region.
-    /// The bar redraws naturally on the next UI event or keystroke.
+    /// Handle terminal resize. Clears old bar position, updates scroll region,
+    /// then redraws at the new position.
     pub fn on_resize(&mut self) {
         if let Ok((cols, rows)) = terminal::size() {
             if rows < 10 {
                 return;
             }
+
+            let old_rows = self.rows;
             self.cols = cols;
             self.rows = rows;
-            let scroll_end = self.rows - BOTTOM_HEIGHT;
+
             let mut out = stdout();
+
+            // Clear old bar lines (at previous positions)
+            let old_input_row = old_rows - BOTTOM_HEIGHT;
+            let old_status_row = old_rows - 1;
+            for row in [old_input_row, old_status_row] {
+                if row < rows {
+                    let _ = execute!(out, cursor::MoveTo(0, row));
+                    let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
+                }
+            }
+
+            // Update scroll region to new size
+            let scroll_end = self.rows - BOTTOM_HEIGHT;
             let _ = write!(out, "\x1b[1;{scroll_end}r");
+
+            // Redraw bar at new position
+            self.redraw_bar();
+
             let _ = out.flush();
 
             // Re-apply OPOST if in raw mode
