@@ -238,6 +238,14 @@ pub async fn run(
 
     // Set up the fixed bottom bar AFTER banner and startup output
     let mut bottom_bar = crate::bottom_bar::BottomBar::new();
+    if let Some(ref mut bar) = bottom_bar {
+        bar.set_status(&format!(
+            " {} │ {} │ {}",
+            config.model,
+            config.provider_type,
+            approval::read_mode(&shared_mode).label()
+        ));
+    }
 
     let mut renderer = UiRenderer::new();
     let mut pending_command: Option<String> = None;

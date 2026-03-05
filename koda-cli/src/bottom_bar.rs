@@ -249,13 +249,19 @@ impl BottomBar {
             if cols != self.cols || rows != self.rows {
                 self.cols = cols;
                 self.rows = rows;
-                // Full re-setup: update scroll region + redraw bar at new position.
-                // Safe between turns because no raw mode or event stream is active.
+                // Update scroll region to new size
                 let scroll_end = self.rows - BOTTOM_HEIGHT;
                 let mut out = stdout();
                 let _ = write!(out, "\x1b[1;{scroll_end}r");
-                self.redraw_bar();
-                let _ = execute!(out, cursor::MoveTo(0, scroll_end - 1));
+                // Redraw only the status bar (not input line — readline handles that)
+                let status_row = self.rows - 1;
+                let width = self.cols as usize;
+                let _ = execute!(out, cursor::SavePosition);
+                let _ = execute!(out, cursor::MoveTo(0, status_row));
+                let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
+                let padded = format!("{:<width$}", self.status_text, width = width);
+                let _ = write!(out, "\x1b[90;7m{padded}\x1b[0m");
+                let _ = execute!(out, cursor::RestorePosition);
                 let _ = out.flush();
             }
         }
