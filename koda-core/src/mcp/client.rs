@@ -8,7 +8,7 @@ use rmcp::{
     ClientHandler, RoleClient, ServiceExt,
     model::{
         CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation,
-        PaginatedRequestParams, ProtocolVersion, Tool as McpTool,
+        ProtocolVersion, Tool as McpTool,
     },
     service::RunningService,
     transport::TokioChildProcess,
@@ -33,19 +33,11 @@ impl ClientHandler for KodaClientHandler {
     // Notifications (progress, logging) are silently handled by rmcp defaults.
 
     fn get_info(&self) -> ClientInfo {
-        ClientInfo {
-            meta: None,
-            protocol_version: ProtocolVersion::V_2025_03_26,
-            capabilities: ClientCapabilities::builder().build(),
-            client_info: Implementation {
-                name: "koda".to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                icons: None,
-                title: None,
-                description: None,
-                website_url: None,
-            },
-        }
+        let mut info = ClientInfo::default();
+        info.protocol_version = ProtocolVersion::V_2025_03_26;
+        info.capabilities = ClientCapabilities::builder().build();
+        info.client_info = Implementation::new("koda", env!("CARGO_PKG_VERSION"));
+        info
     }
 }
 
@@ -96,10 +88,7 @@ impl McpClient {
 
         // Discover available tools via the Peer high-level API
         let tools_result = service
-            .list_tools(Some(PaginatedRequestParams {
-                meta: None,
-                cursor: None,
-            }))
+            .list_tools(Default::default())
             .await
             .map_err(|e| anyhow::anyhow!("Failed to list tools from '{name}': {e}"))?;
 
@@ -142,12 +131,10 @@ impl McpClient {
                 })?)
             };
 
-        let params = CallToolRequestParams {
-            meta: None,
-            task: None,
-            name: tool_name.to_string().into(),
-            arguments: args,
-        };
+        let mut params = CallToolRequestParams::new(tool_name.to_string());
+        if let Some(args) = args {
+            params = params.with_arguments(args);
+        }
 
         let result = self
             .service
