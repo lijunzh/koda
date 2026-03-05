@@ -51,13 +51,14 @@ impl BottomBar {
     fn setup_scroll_region(&mut self) {
         let scroll_end = self.rows - BOTTOM_HEIGHT;
         let mut out = stdout();
+        // Clear screen and move to top
+        let _ = execute!(out, terminal::Clear(ClearType::All));
+        let _ = execute!(out, cursor::MoveTo(0, 0));
         // Set scroll region to top portion
         let _ = write!(out, "\x1b[1;{scroll_end}r");
-        // Move cursor to top of scroll region
-        let _ = execute!(out, cursor::MoveTo(0, 0));
-        // Clear the bottom bar area
+        // Draw the bottom bar
         self.redraw_bar();
-        // Move cursor back to scroll region
+        // Move cursor to top of scroll region
         let _ = execute!(out, cursor::MoveTo(0, 0));
         let _ = out.flush();
     }
