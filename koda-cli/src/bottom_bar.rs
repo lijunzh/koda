@@ -230,7 +230,8 @@ impl BottomBar {
         }
     }
 
-    /// Handle terminal resize. Updates scroll region and redraws status bar.
+    /// Handle terminal resize. Only updates dimensions and scroll region.
+    /// The bar redraws naturally on the next UI event or keystroke.
     pub fn on_resize(&mut self) {
         if let Ok((cols, rows)) = terminal::size() {
             if rows < 10 {
@@ -240,17 +241,7 @@ impl BottomBar {
             self.rows = rows;
             let scroll_end = self.rows - BOTTOM_HEIGHT;
             let mut out = stdout();
-            let _ = execute!(out, cursor::SavePosition);
-            // Update scroll region
             let _ = write!(out, "\x1b[1;{scroll_end}r");
-            // Redraw only the status bar (not the input line — avoids prompt flooding)
-            let status_row = self.rows - 1;
-            let width = self.cols as usize;
-            let _ = execute!(out, cursor::MoveTo(0, status_row));
-            let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
-            let padded = format!("{:<width$}", self.status_text, width = width);
-            let _ = write!(out, "\x1b[90;7m{padded}\x1b[0m");
-            let _ = execute!(out, cursor::RestorePosition);
             let _ = out.flush();
 
             // Re-apply OPOST if in raw mode
