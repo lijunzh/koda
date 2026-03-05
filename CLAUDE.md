@@ -15,7 +15,7 @@ See [DESIGN.md](DESIGN.md) for architectural decisions. See [#57](https://github
 ```bash
 cargo build                              # Debug build
 cargo build --release -p koda-cli        # Release build
-cargo test --workspace                   # Run all 370 tests
+cargo test --workspace                   # Run all 372 tests
 cargo test -p koda-core                  # Engine tests only
 cargo test -p koda-cli                   # CLI tests only
 cargo test -p koda-core --test perf_test # Run a specific test file
