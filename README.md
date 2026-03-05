@@ -150,7 +150,7 @@ over async channels. See [DESIGN.md](DESIGN.md) for architectural decisions.
 ## Development
 
 ```bash
-cargo test --workspace        # Run all 370 tests
+cargo test --workspace        # Run all 372 tests
 cargo clippy --workspace      # Lint
 cargo run -p koda-cli         # Run locally
 ```
