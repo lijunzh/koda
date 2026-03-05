@@ -245,6 +245,11 @@ pub async fn run(
     let mut buffered_input: Option<String> = None;
 
     loop {
+        // Refresh bottom bar if terminal was resized since last turn
+        if let Some(ref mut bar) = bottom_bar {
+            bar.refresh_if_resized();
+        }
+
         // ── Phase 1: Wait for input ──────────────────────────
         let input = if let Some(cmd) = pending_command.take() {
             cmd

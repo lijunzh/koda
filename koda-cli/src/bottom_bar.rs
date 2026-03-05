@@ -231,14 +231,34 @@ impl BottomBar {
     }
 
     /// Handle terminal resize.
-    /// Currently a no-op — reliable resize with ANSI scroll regions requires
-    /// debounced redraws which adds complexity. The bar works correctly at
-    /// the terminal size when Koda starts. See issue #45.
+    /// Currently a no-op during inference — reliable resize with ANSI scroll
+    /// regions during rapid events is unsolved. See issue #45.
+    /// Use `refresh_if_resized()` between turns instead.
     #[allow(dead_code)]
     pub fn on_resize(&mut self) {
-        // Intentionally empty — resize handling deferred.
-        // Updating scroll regions during rapid resize events causes
-        // cursor positioning chaos (ghost bars, duplicated prompts).
+        // Intentionally empty during inference.
+    }
+
+    /// Check if terminal was resized and re-setup scroll region if needed.
+    /// Call this between turns (when readline is idle, no raw mode).
+    pub fn refresh_if_resized(&mut self) {
+        if let Ok((cols, rows)) = terminal::size() {
+            if rows < 10 {
+                return;
+            }
+            if cols != self.cols || rows != self.rows {
+                self.cols = cols;
+                self.rows = rows;
+                // Full re-setup: update scroll region + redraw bar at new position.
+                // Safe between turns because no raw mode or event stream is active.
+                let scroll_end = self.rows - BOTTOM_HEIGHT;
+                let mut out = stdout();
+                let _ = write!(out, "\x1b[1;{scroll_end}r");
+                self.redraw_bar();
+                let _ = execute!(out, cursor::MoveTo(0, scroll_end - 1));
+                let _ = out.flush();
+            }
+        }
     }
 
     /// Redraw the bottom bar (input line on top, status bar on bottom).
