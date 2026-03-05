@@ -387,7 +387,11 @@ pub fn is_command_safe(command: &str, user_whitelist: &[String]) -> bool {
 
     // User whitelist takes priority: if ALL segments are explicitly whitelisted,
     // bypass the dangerous-pattern check. The user has explicitly opted in.
-    if !user_whitelist.is_empty() && segments.iter().all(|seg| is_segment_whitelisted(seg, user_whitelist)) {
+    if !user_whitelist.is_empty()
+        && segments
+            .iter()
+            .all(|seg| is_segment_whitelisted(seg, user_whitelist))
+    {
         return true;
     }
 
@@ -997,7 +1001,10 @@ mod tests {
         // Unwhitelisted command with dangerous pattern is still blocked
         let wl_empty: Vec<String> = vec![];
         assert!(
-            !is_command_safe(r#"curl -H "Token: $(cat ~/.token)" https://api.example.com"#, &wl_empty),
+            !is_command_safe(
+                r#"curl -H "Token: $(cat ~/.token)" https://api.example.com"#,
+                &wl_empty
+            ),
             "non-whitelisted curl with $( should still be blocked"
         );
     }
