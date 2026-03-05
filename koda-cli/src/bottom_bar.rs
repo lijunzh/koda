@@ -140,7 +140,15 @@ impl BottomBar {
 
     /// Disable raw mode and return any buffered/queued input.
     pub fn stop_input_capture(&mut self) -> Option<String> {
+        // Clear the bottom bar line before exiting raw mode
         if self.raw_mode {
+            let mut out = stdout();
+            let input_row = self.rows - BOTTOM_HEIGHT;
+            let _ = execute!(out, cursor::SavePosition);
+            let _ = execute!(out, cursor::MoveTo(0, input_row));
+            let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
+            let _ = execute!(out, cursor::RestorePosition);
+            let _ = out.flush();
             let _ = terminal::disable_raw_mode();
             self.raw_mode = false;
         }
