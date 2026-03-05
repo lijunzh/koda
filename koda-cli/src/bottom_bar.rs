@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn test_bottom_height_is_reasonable() {
-        assert!(BOTTOM_HEIGHT >= 1 && BOTTOM_HEIGHT <= 5);
+        const { assert!(BOTTOM_HEIGHT >= 1 && BOTTOM_HEIGHT <= 5) };
     }
 
     #[test]
