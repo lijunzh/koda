@@ -97,11 +97,29 @@ impl BottomBar {
     }
 
     /// Enable raw mode for keystroke capture during inference.
+    /// Re-enables output post-processing (OPOST) so println! still works.
     pub fn start_input_capture(&mut self) {
         if !self.raw_mode {
             let _ = terminal::enable_raw_mode();
+            // Raw mode disables OPOST (output processing), which breaks println!
+            // Re-enable it so \n → \r\n translation works in the scroll area.
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsFd;
+                let out = std::io::stdout();
+                let stdout_fd = out.as_fd();
+                if let Ok(mut termios) = nix::sys::termios::tcgetattr(stdout_fd) {
+                    termios.output_flags |= nix::sys::termios::OutputFlags::OPOST;
+                    let _ = nix::sys::termios::tcsetattr(
+                        stdout_fd,
+                        nix::sys::termios::SetArg::TCSANOW,
+                        &termios,
+                    );
+                }
+            }
             self.raw_mode = true;
             self.input_buf.clear();
+            self.queued_msg = None;
             self.redraw_bar();
         }
     }
