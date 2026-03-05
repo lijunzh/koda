@@ -139,10 +139,18 @@ pub async fn inference_loop(
             message: "\u{1f36f} Thinking...".into(),
         });
 
-        let mut rx = provider
-            .chat_stream(&messages, tool_defs, &config.model_settings)
-            .await
-            .context("LLM inference failed")?;
+        let mut rx = tokio::select! {
+            result = provider.chat_stream(&messages, tool_defs, &config.model_settings) => {
+                result.context("LLM inference failed")?
+            }
+            _ = cancel.cancelled() => {
+                sink.emit(EngineEvent::SpinnerStop);
+                sink.emit(EngineEvent::Warn {
+                    message: "Interrupted".into(),
+                });
+                return Ok(());
+            }
+        };
 
         // Collect the streamed response
         let mut full_text = String::new();
@@ -192,13 +200,10 @@ pub async fn inference_loop(
             match chunk {
                 StreamChunk::TextDelta(delta) => {
                     if first_token {
-                        // Flush any buffered thinking before showing response
+                        // Close any open thinking block (content already streamed)
                         if !native_think_buf.is_empty() {
                             sink.emit(EngineEvent::SpinnerStop);
-                            sink.emit(EngineEvent::ThinkingStart);
-                            sink.emit(EngineEvent::ThinkingDelta {
-                                text: native_think_buf.clone(),
-                            });
+                            sink.emit(EngineEvent::ThinkingDone);
                             native_think_buf.clear();
                             thinking_banner_shown = true;
                         }
@@ -239,23 +244,17 @@ pub async fn inference_loop(
                 StreamChunk::ToolCalls(tcs) => {
                     if !native_think_buf.is_empty() {
                         sink.emit(EngineEvent::SpinnerStop);
-                        sink.emit(EngineEvent::ThinkingStart);
-                        sink.emit(EngineEvent::ThinkingDelta {
-                            text: native_think_buf.clone(),
-                        });
+                        sink.emit(EngineEvent::ThinkingDone);
                         native_think_buf.clear();
                     }
                     sink.emit(EngineEvent::SpinnerStop);
                     tool_calls = tcs;
                 }
                 StreamChunk::Done(u) => {
-                    // Flush any remaining native thinking (thinking-only turns)
+                    // Close any open thinking block (content already streamed)
                     if !native_think_buf.is_empty() {
                         sink.emit(EngineEvent::SpinnerStop);
-                        sink.emit(EngineEvent::ThinkingStart);
-                        sink.emit(EngineEvent::ThinkingDelta {
-                            text: native_think_buf.clone(),
-                        });
+                        sink.emit(EngineEvent::ThinkingDone);
                         native_think_buf.clear();
                     }
                     usage = u;
