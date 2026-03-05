@@ -19,6 +19,7 @@ use crate::sink::UiRenderer;
 use crate::tui::{self, SelectOption};
 
 use anyhow::Result;
+use futures_util::StreamExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -123,6 +124,8 @@ pub async fn run(
 
     let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
         Arc::new(RwLock::new(crate::commands::create_provider(&config)));
+
+    // Bottom bar created later, after banner prints
 
     // Auto-detect the serving model for local providers
     if config.model == "auto-detect" {
@@ -231,16 +234,25 @@ pub async fn run(
 
     std::thread::spawn(move || readline_thread(rl, rl_cmd_rx, input_tx));
 
-    // ── Event loop ───────────────────────────────────────────
+    // ── Event loop ───────────────────────────────────────
+
+    // Set up the fixed bottom bar AFTER banner and startup output
+    let mut bottom_bar = crate::bottom_bar::BottomBar::new();
 
     let mut renderer = UiRenderer::new();
     let mut pending_command: Option<String> = None;
     let mut silent_compact_deferred = false;
+    let mut buffered_input: Option<String> = None;
 
     loop {
         // ── Phase 1: Wait for input ──────────────────────────
         let input = if let Some(cmd) = pending_command.take() {
             cmd
+        } else if let Some(buffered) = buffered_input.take() {
+            // Show the queued input in the scroll area so the conversation flow is visible
+            let prompt_str = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
+            println!("{prompt_str}{buffered}");
+            buffered
         } else {
             let prompt = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
             if rl_cmd_tx.send(ReadlineCommand::ReadLine(prompt)).is_err() {
@@ -364,7 +376,7 @@ pub async fn run(
                     }
                     println!();
                     println!(
-                        "  \x1b[90mTips: @file to attach context \u{00b7} Ctrl+C to clear input \u{00b7} Ctrl+D to exit\x1b[0m"
+                        "  \x1b[90mTips: @file to attach context \u{00b7} type while model runs \u{00b7} Ctrl+C to cancel \u{00b7} Ctrl+D to exit\x1b[0m"
                     );
                     continue;
                 }
@@ -600,6 +612,29 @@ pub async fn run(
         session.mode = approval::read_mode(&shared_mode);
         session.update_provider(&config);
 
+        // Update bottom bar status for this turn
+        let turn_start = std::time::Instant::now();
+        let mut turn_tokens: i64 = 0;
+        if let Some(ref mut bar) = bottom_bar {
+            bar.set_status(&format!(
+                " {} │ {} │ {} │ 0s",
+                config.model,
+                config.provider_type,
+                approval::read_mode(&shared_mode).label()
+            ));
+        }
+
+        // Start input capture in the bottom bar (visible type-ahead)
+        let mut event_stream = if let Some(ref mut bar) = bottom_bar {
+            bar.start_input_capture();
+            Some(bar.event_stream())
+        } else {
+            // No bottom bar — fall back to readline for type-ahead
+            let prompt = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
+            let _ = rl_cmd_tx.send(ReadlineCommand::ReadLine(prompt));
+            None
+        };
+
         // Create a channel-forwarding sink for this turn
         let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
 
@@ -650,9 +685,63 @@ pub async fn run(
                                     .send(EngineCommand::ApprovalResponse { id, decision })
                                     .await;
                             }
-                            UiEvent::Engine(event) => {
-                                renderer.render(event);
+                            UiEvent::Engine(ref event) => {
+                                // Phase 3: update status bar with live stats
+                                if let EngineEvent::TextDelta { text } = event {
+                                    turn_tokens += (text.len() / 4) as i64;
+                                }
+                                if let Some(ref mut bar) = bottom_bar {
+                                    let elapsed = turn_start.elapsed().as_secs();
+                                    bar.set_status(&format!(
+                                        " {} │ {} │ {} │ {}s │ ~{} tokens",
+                                        config.model,
+                                        config.provider_type,
+                                        approval::read_mode(&shared_mode).label(),
+                                        elapsed,
+                                        turn_tokens,
+                                    ));
+                                }
+                                renderer.render(event.clone());
                             }
+                        }
+                    }
+                    // Phase 2: capture keystrokes in bottom bar during inference
+                    Some(event_result) = async {
+                        if let Some(ref mut stream) = event_stream {
+                            stream.next().await
+                        } else {
+                            // No event stream — wait for readline input instead
+                            std::future::pending::<Option<Result<crossterm::event::Event, std::io::Error>>>().await
+                        }
+                    } => {
+                        if let Ok(crossterm::event::Event::Key(key_event)) = event_result
+                            && let Some(ref mut bar) = bottom_bar
+                        {
+                            match bar.handle_key(key_event) {
+                                crate::bottom_bar::KeyAction::Submit(line) => {
+                                    buffered_input = Some(line);
+                                }
+                                crate::bottom_bar::KeyAction::Interrupt => {
+                                    if crate::interrupt::handle_sigint() {
+                                        eprintln!("\n\x1b[31mForce quit.\x1b[0m");
+                                        std::process::exit(130);
+                                    }
+                                    cancel_token.cancel();
+                                }
+                                crate::bottom_bar::KeyAction::None => {}
+                            }
+                        }
+                    }
+                    // Fallback: readline input (when no bottom bar)
+                    Some(input_event) = input_rx.recv(), if event_stream.is_none() => {
+                        match input_event {
+                            InputEvent::Line(line) => {
+                                let trimmed = line.trim().to_string();
+                                if !trimmed.is_empty() {
+                                    buffered_input = Some(trimmed);
+                                }
+                            }
+                            InputEvent::Eof => break,
                         }
                     }
                     _ = tokio::signal::ctrl_c() => {
@@ -667,6 +756,13 @@ pub async fn run(
         }
         // Borrows on session/config/cmd_rx released here.
 
+        // Stop input capture and collect any typed input
+        if let Some(ref mut bar) = bottom_bar
+            && let Some(input) = bar.stop_input_capture()
+        {
+            buffered_input = Some(input);
+        }
+
         // Drain remaining UI events (e.g., SpinnerStop after Ctrl+C interrupt).
         // Without this, the spinner task can keep running and overwrite the prompt.
         while let Ok(UiEvent::Engine(e)) = ui_rx.try_recv() {
@@ -674,6 +770,16 @@ pub async fn run(
         }
         // Safety net: ensure the spinner is stopped even if SpinnerStop was lost.
         renderer.stop_spinner();
+
+        // Reset status bar to idle state
+        if let Some(ref mut bar) = bottom_bar {
+            bar.set_status(&format!(
+                " {} │ {} │ {}",
+                config.model,
+                config.provider_type,
+                approval::read_mode(&shared_mode).label()
+            ));
+        }
 
         crate::interrupt::reset();
         session.cancel = tokio_util::sync::CancellationToken::new();
