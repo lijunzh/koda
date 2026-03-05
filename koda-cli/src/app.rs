@@ -1,22 +1,105 @@
 //! The main application entry points: interactive REPL and headless mode.
 //!
-//! Handles user input, command dispatch, and delegates to the inference engine.
+//! The REPL uses an async event loop with readline on a dedicated OS thread.
+//! The engine runs as a pinned future in `tokio::select!`, allowing concurrent
+//! event rendering while the inference turn is active.
 
 use crate::input::{self, KodaHelper};
+use crate::sink::UiEvent;
 use koda_core::agent::KodaAgent;
 use koda_core::approval::{self, ApprovalMode};
 use koda_core::config::KodaConfig;
 use koda_core::db::{Database, Role};
+use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent};
 use koda_core::providers::LlmProvider;
 use koda_core::session::KodaSession;
 
 use crate::repl::{self, ReplAction};
+use crate::sink::UiRenderer;
 use crate::tui::{self, SelectOption};
 
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+// ── Readline ↔ main loop protocol ────────────────────────────
+
+/// Events sent from the readline thread to the main async loop.
+enum InputEvent {
+    Line(String),
+    Eof,
+}
+
+/// Commands sent from the main async loop to the readline thread.
+enum ReadlineCommand {
+    /// Request a readline with the given prompt string.
+    ReadLine(String),
+    /// Update the model names available for tab-completion.
+    UpdateModelNames(Vec<String>),
+    /// Shut down the readline thread.
+    Shutdown,
+}
+
+// ── Readline thread ──────────────────────────────────────────
+
+/// Runs `rustyline` on a dedicated OS thread so it never blocks the
+/// tokio runtime.
+///
+/// - `cmd_rx`: receives commands from the main loop (std channel — blocking OK).
+/// - `input_tx`: sends user input back to the main loop (tokio channel).
+fn readline_thread(
+    mut rl: rustyline::Editor<KodaHelper, rustyline::history::DefaultHistory>,
+    cmd_rx: std::sync::mpsc::Receiver<ReadlineCommand>,
+    input_tx: tokio::sync::mpsc::Sender<InputEvent>,
+) {
+    loop {
+        match cmd_rx.recv() {
+            Ok(ReadlineCommand::ReadLine(prompt)) => {
+                match rl.readline(&prompt) {
+                    Ok(line) => {
+                        let _ = rl.add_history_entry(&line);
+                        // blocking_send is fine — we're on an OS thread.
+                        let _ = input_tx.blocking_send(InputEvent::Line(line));
+                    }
+                    Err(
+                        rustyline::error::ReadlineError::Interrupted
+                        | rustyline::error::ReadlineError::Eof,
+                    ) => {
+                        let _ = input_tx.blocking_send(InputEvent::Eof);
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
+            Ok(ReadlineCommand::UpdateModelNames(names)) => {
+                if let Some(h) = rl.helper_mut() {
+                    h.model_names = names;
+                }
+            }
+            Ok(ReadlineCommand::Shutdown) | Err(_) => {
+                let _ = rl.save_history(&history_file_path());
+                break;
+            }
+        }
+    }
+}
+
+// ── Approval helper ──────────────────────────────────────────
+
+fn map_confirmation(c: crate::confirm::Confirmation) -> ApprovalDecision {
+    use crate::confirm::Confirmation;
+    match c {
+        Confirmation::Approved => ApprovalDecision::Approve,
+        Confirmation::Rejected => ApprovalDecision::Reject,
+        Confirmation::RejectedWithFeedback(fb) => {
+            ApprovalDecision::RejectWithFeedback { feedback: fb }
+        }
+        Confirmation::AlwaysAllow => ApprovalDecision::AlwaysAllow,
+    }
+}
+
+// ── Main event loop ──────────────────────────────────────────
 
 /// Run the main interactive event loop.
 pub async fn run(
@@ -120,25 +203,40 @@ pub async fn run(
         let _ = rl.load_history(&history_path);
     }
 
+    // ── Channels ─────────────────────────────────────────────
+
+    // Readline thread ↔ main loop
+    let (rl_cmd_tx, rl_cmd_rx) = std::sync::mpsc::channel::<ReadlineCommand>();
+    let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<InputEvent>(4);
+
+    // Engine sink → main loop (UI events)
+    let (ui_tx, mut ui_rx) = tokio::sync::mpsc::channel::<UiEvent>(256);
+
+    // Main loop → engine (approval responses)
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<EngineCommand>(32);
+
+    // ── Spawn readline thread ────────────────────────────────
+
+    std::thread::spawn(move || readline_thread(rl, rl_cmd_rx, input_tx));
+
+    // ── Event loop ───────────────────────────────────────────
+
+    let mut renderer = UiRenderer::new();
     let mut pending_command: Option<String> = None;
     let mut silent_compact_deferred = false;
 
-    // Channel for approval responses from CLI → engine
-    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<koda_core::engine::EngineCommand>(32);
-    let cli_sink = crate::sink::CliSink::new(cmd_tx);
-
     loop {
+        // ── Phase 1: Wait for input ──────────────────────────
         let input = if let Some(cmd) = pending_command.take() {
             cmd
         } else {
             let prompt = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
-            match rl.readline(&prompt) {
-                Ok(line) => line,
-                Err(
-                    rustyline::error::ReadlineError::Interrupted
-                    | rustyline::error::ReadlineError::Eof,
-                ) => break,
-                Err(e) => return Err(e.into()),
+            if rl_cmd_tx.send(ReadlineCommand::ReadLine(prompt)).is_err() {
+                break; // readline thread died
+            }
+            match input_rx.recv().await {
+                Some(InputEvent::Line(line)) => line,
+                Some(InputEvent::Eof) | None => break,
             }
         };
 
@@ -147,9 +245,7 @@ pub async fn run(
             continue;
         }
 
-        let _ = rl.add_history_entry(&input);
-
-        // Handle REPL commands
+        // ── Phase 2: Handle slash commands ───────────────────
         if input.starts_with('/') {
             match repl::handle_command(&input, &config, &provider).await {
                 ReplAction::Quit => {
@@ -173,9 +269,8 @@ pub async fn run(
                         }
                         Ok(models) => {
                             drop(prov);
-                            if let Some(h) = rl.helper_mut() {
-                                h.model_names = models.iter().map(|m| m.id.clone()).collect();
-                            }
+                            let names: Vec<String> = models.iter().map(|m| m.id.clone()).collect();
+                            let _ = rl_cmd_tx.send(ReadlineCommand::UpdateModelNames(names));
                             let current_idx = models
                                 .iter()
                                 .position(|m| m.id == config.model)
@@ -209,18 +304,12 @@ pub async fn run(
                     continue;
                 }
                 ReplAction::SetupProvider(ptype, base_url) => {
-                    crate::commands::handle_setup_provider(
-                        &mut config,
-                        &provider,
-                        &mut rl,
-                        ptype,
-                        base_url,
-                    )
-                    .await;
+                    crate::commands::handle_setup_provider(&mut config, &provider, ptype, base_url)
+                        .await;
                     continue;
                 }
                 ReplAction::PickProvider => {
-                    crate::commands::handle_pick_provider(&mut config, &provider, &mut rl).await;
+                    crate::commands::handle_pick_provider(&mut config, &provider).await;
                     continue;
                 }
 
@@ -352,7 +441,9 @@ pub async fn run(
                                             Ok(false) => {
                                                 println!("  \x1b[31mSession not found.\x1b[0m")
                                             }
-                                            Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
+                                            Err(e) => {
+                                                println!("  \x1b[31mError: {e}\x1b[0m")
+                                            }
                                         }
                                     }
                                     n => println!(
@@ -366,7 +457,6 @@ pub async fn run(
                     continue;
                 }
                 ReplAction::InjectPrompt(prompt) => {
-                    // Treat injected prompt as user input (used by /diff review, /diff commit)
                     pending_command = Some(prompt);
                     continue;
                 }
@@ -388,10 +478,8 @@ pub async fn run(
                 }
                 ReplAction::SetTrust(mode_name) => {
                     let new_mode = if let Some(ref name) = mode_name {
-                        // Explicit: /trust yolo
                         ApprovalMode::parse(name)
                     } else {
-                        // Interactive picker
                         crate::commands::pick_trust_mode(approval::read_mode(&shared_mode))
                     };
                     if let Some(m) = new_mode {
@@ -414,9 +502,10 @@ pub async fn run(
             }
         }
 
+        // ── Phase 3: Prepare and run inference turn ──────────
+
         // Process @file references
         let processed = input::process_input(&input, &project_root);
-        // Show attached images
         if !processed.images.is_empty() {
             for (i, _img) in processed.images.iter().enumerate() {
                 println!("  \x1b[35m\u{1f5bc} Image {}\x1b[0m", i + 1);
@@ -447,7 +536,6 @@ pub async fn run(
             )
             .await?;
 
-        // Pass images to inference (they're not stored in DB, only used in-flight)
         let pending_images = if processed.images.is_empty() {
             None
         } else {
@@ -457,21 +545,68 @@ pub async fn run(
         // Sync session state from REPL changes (model/provider switching)
         session.mode = approval::read_mode(&shared_mode);
         session.update_provider(&config);
-        session
-            .run_turn(
+
+        // Create a channel-forwarding sink for this turn
+        let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
+
+        crate::interrupt::set_cancel_token(session.cancel.clone());
+
+        // Run turn in a scoped block so borrows are released on completion.
+        {
+            let turn = session.run_turn(
                 &config,
                 pending_images,
                 &cli_sink,
                 &mut cmd_rx,
                 &crate::app::cli_loop_continue_prompt,
-            )
-            .await?;
+            );
+            tokio::pin!(turn);
+
+            loop {
+                tokio::select! {
+                    result = &mut turn => {
+                        result?;
+                        break;
+                    }
+                    Some(ui_event) = ui_rx.recv() => {
+                        match ui_event {
+                            UiEvent::Engine(EngineEvent::ApprovalRequest {
+                                id,
+                                tool_name,
+                                detail,
+                                preview,
+                                whitelist_hint,
+                            }) => {
+                                // Readline thread is paused — stdin is free for TUI.
+                                let decision = map_confirmation(
+                                    crate::confirm::confirm_tool_action(
+                                        &tool_name,
+                                        &detail,
+                                        preview.as_deref(),
+                                        whitelist_hint.as_deref(),
+                                    ),
+                                );
+                                let _ = cmd_tx
+                                    .send(EngineCommand::ApprovalResponse { id, decision })
+                                    .await;
+                            }
+                            UiEvent::Engine(event) => {
+                                renderer.render(event);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Borrows on session/config/cmd_rx released here.
+
+        crate::interrupt::reset();
+        session.cancel = tokio_util::sync::CancellationToken::new();
 
         // Auto-compact when context window gets crowded
         if config.auto_compact_threshold > 0 {
             let ctx_pct = koda_core::context::percentage();
             if ctx_pct >= config.auto_compact_threshold {
-                // Fix 5: Defer compaction if tool calls are still pending
                 let pending = session
                     .db
                     .has_pending_tool_calls(&session.id)
@@ -504,10 +639,8 @@ pub async fn run(
         }
     }
 
-    if let Some(parent) = history_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = rl.save_history(&history_path);
+    // Shut down readline thread
+    let _ = rl_cmd_tx.send(ReadlineCommand::Shutdown);
 
     // Shut down MCP servers
     {

@@ -1,70 +1,45 @@
 //! CLI sink — renders EngineEvents to the terminal.
 //!
-//! This reproduces the exact current terminal output by delegating
-//! to `display::` and `markdown::`. It's the default sink used in
-//! interactive and headless modes.
+//! Two modes:
+//! - **Direct** (headless): renders events inline, handles approvals with blocking I/O.
+//! - **Channel** (REPL): forwards all events to the async event loop via `UiEvent`.
 
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent, EngineSink};
 
-/// The CLI sink that renders EngineEvents to the terminal.
-pub struct CliSink {
-    md: std::sync::Mutex<crate::markdown::MarkdownStreamer>,
-    spinner: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    cmd_tx: tokio::sync::mpsc::Sender<EngineCommand>,
+// ── UiEvent ──────────────────────────────────────────────────────
+
+/// Events forwarded from `CliSink` to the main event loop.
+pub(crate) enum UiEvent {
+    Engine(EngineEvent),
 }
 
-impl CliSink {
-    pub fn new(cmd_tx: tokio::sync::mpsc::Sender<EngineCommand>) -> Self {
+// ── UiRenderer ───────────────────────────────────────────────────
+
+/// Terminal renderer — owns the markdown streamer and spinner.
+///
+/// Handles all non-approval `EngineEvent` rendering. Owned by the
+/// main event loop (channel mode) or by `CliSink` (direct mode).
+pub(crate) struct UiRenderer {
+    md: crate::markdown::MarkdownStreamer,
+    spinner: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl UiRenderer {
+    pub fn new() -> Self {
         Self {
-            md: std::sync::Mutex::new(crate::markdown::MarkdownStreamer::new()),
-            spinner: std::sync::Mutex::new(None),
-            cmd_tx,
+            md: crate::markdown::MarkdownStreamer::new(),
+            spinner: None,
         }
     }
 
-    fn start_spinner(&self, message: String) {
-        // Stop any existing spinner first
-        self.stop_spinner();
-
-        let handle = tokio::spawn(async move {
-            let frames = ["⠋", "⠙", "⠸", "⠰", "⠠", "⠆", "⠎", "⠇"];
-            let start = std::time::Instant::now();
-            let mut i = 0usize;
-            loop {
-                let frame = frames[i % frames.len()];
-                let elapsed = start.elapsed().as_secs();
-                let display = if elapsed > 0 {
-                    format!("{message} ({elapsed}s)")
-                } else {
-                    message.clone()
-                };
-                eprint!("\r\x1b[36m{frame}\x1b[0m {display}\x1b[K");
-                let _ = std::io::Write::flush(&mut std::io::stderr());
-                i += 1;
-                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-            }
-        });
-
-        *self.spinner.lock().unwrap() = Some(handle);
-    }
-
-    fn stop_spinner(&self) {
-        if let Some(handle) = self.spinner.lock().unwrap().take() {
-            handle.abort();
-            eprint!("\r\x1b[K");
-            let _ = std::io::Write::flush(&mut std::io::stderr());
-        }
-    }
-}
-
-impl EngineSink for CliSink {
-    fn emit(&self, event: EngineEvent) {
+    /// Render a non-approval engine event to the terminal.
+    pub fn render(&mut self, event: EngineEvent) {
         match event {
             EngineEvent::TextDelta { text } => {
-                self.md.lock().unwrap().push(&text);
+                self.md.push(&text);
             }
             EngineEvent::TextDone => {
-                self.md.lock().unwrap().flush();
+                self.md.flush();
             }
             EngineEvent::ThinkingStart => {
                 crate::display::print_thinking_banner();
@@ -101,31 +76,9 @@ impl EngineSink for CliSink {
                 crate::display::print_sub_agent_start(&agent_name);
             }
             EngineEvent::SubAgentEnd { .. } => {}
-            EngineEvent::ApprovalRequest {
-                id,
-                tool_name,
-                detail,
-                preview,
-                whitelist_hint,
-            } => {
-                // Show terminal confirmation and send response through channel
-                use crate::confirm::{self, Confirmation};
-                let decision = match confirm::confirm_tool_action(
-                    &tool_name,
-                    &detail,
-                    preview.as_deref(),
-                    whitelist_hint.as_deref(),
-                ) {
-                    Confirmation::Approved => ApprovalDecision::Approve,
-                    Confirmation::Rejected => ApprovalDecision::Reject,
-                    Confirmation::RejectedWithFeedback(fb) => {
-                        ApprovalDecision::RejectWithFeedback { feedback: fb }
-                    }
-                    Confirmation::AlwaysAllow => ApprovalDecision::AlwaysAllow,
-                };
-                let _ = self
-                    .cmd_tx
-                    .blocking_send(EngineCommand::ApprovalResponse { id, decision });
+            EngineEvent::ApprovalRequest { .. } => {
+                // In channel mode: handled by the main event loop.
+                // In direct mode: handled by CliSink::emit() before reaching here.
             }
             EngineEvent::ActionBlocked {
                 tool_name: _,
@@ -208,6 +161,123 @@ impl EngineSink for CliSink {
             }
             EngineEvent::Error { message } => {
                 println!("  \x1b[31m\u{2717} {message}\x1b[0m");
+            }
+        }
+    }
+
+    fn start_spinner(&mut self, message: String) {
+        self.stop_spinner();
+
+        let handle = tokio::spawn(async move {
+            let frames = ["⠋", "⠙", "⠸", "⠰", "⠠", "⠆", "⠎", "⠇"];
+            let start = std::time::Instant::now();
+            let mut i = 0usize;
+            loop {
+                let frame = frames[i % frames.len()];
+                let elapsed = start.elapsed().as_secs();
+                let display = if elapsed > 0 {
+                    format!("{message} ({elapsed}s)")
+                } else {
+                    message.clone()
+                };
+                eprint!("\r\x1b[36m{frame}\x1b[0m {display}\x1b[K");
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                i += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            }
+        });
+
+        self.spinner = Some(handle);
+    }
+
+    fn stop_spinner(&mut self) {
+        if let Some(handle) = self.spinner.take() {
+            handle.abort();
+            eprint!("\r\x1b[K");
+            let _ = std::io::Write::flush(&mut std::io::stderr());
+        }
+    }
+}
+
+// ── CliSink ──────────────────────────────────────────────────────
+
+/// The CLI sink that renders EngineEvents to the terminal.
+///
+/// Operates in two modes:
+/// - **Direct**: renders events inline and handles approvals (headless mode).
+/// - **Channel**: forwards all events to a `UiEvent` channel (REPL async loop).
+pub struct CliSink {
+    mode: SinkMode,
+}
+
+enum SinkMode {
+    /// Direct rendering — used by headless mode.
+    Direct {
+        renderer: Box<std::sync::Mutex<UiRenderer>>,
+        cmd_tx: tokio::sync::mpsc::Sender<EngineCommand>,
+    },
+    /// Channel forwarding — used by the async REPL event loop.
+    Channel {
+        ui_tx: tokio::sync::mpsc::Sender<UiEvent>,
+    },
+}
+
+impl CliSink {
+    /// Create a direct-rendering sink (headless mode).
+    pub fn new(cmd_tx: tokio::sync::mpsc::Sender<EngineCommand>) -> Self {
+        Self {
+            mode: SinkMode::Direct {
+                renderer: Box::new(std::sync::Mutex::new(UiRenderer::new())),
+                cmd_tx,
+            },
+        }
+    }
+
+    /// Create a channel-forwarding sink (REPL async event loop).
+    pub fn channel(ui_tx: tokio::sync::mpsc::Sender<UiEvent>) -> Self {
+        Self {
+            mode: SinkMode::Channel { ui_tx },
+        }
+    }
+}
+
+impl EngineSink for CliSink {
+    fn emit(&self, event: EngineEvent) {
+        match &self.mode {
+            SinkMode::Direct { renderer, cmd_tx } => {
+                // ApprovalRequest requires blocking I/O — handle inline.
+                if let EngineEvent::ApprovalRequest {
+                    ref id,
+                    ref tool_name,
+                    ref detail,
+                    ref preview,
+                    ref whitelist_hint,
+                } = event
+                {
+                    use crate::confirm::{self, Confirmation};
+                    let decision = match confirm::confirm_tool_action(
+                        tool_name,
+                        detail,
+                        preview.as_deref(),
+                        whitelist_hint.as_deref(),
+                    ) {
+                        Confirmation::Approved => ApprovalDecision::Approve,
+                        Confirmation::Rejected => ApprovalDecision::Reject,
+                        Confirmation::RejectedWithFeedback(fb) => {
+                            ApprovalDecision::RejectWithFeedback { feedback: fb }
+                        }
+                        Confirmation::AlwaysAllow => ApprovalDecision::AlwaysAllow,
+                    };
+                    let _ = cmd_tx.blocking_send(EngineCommand::ApprovalResponse {
+                        id: id.clone(),
+                        decision,
+                    });
+                } else {
+                    renderer.lock().unwrap().render(event);
+                }
+            }
+            SinkMode::Channel { ui_tx } => {
+                let _ = ui_tx.try_send(UiEvent::Engine(event));
             }
         }
     }
