@@ -2,7 +2,6 @@
 //!
 //! Extracted from app.rs to keep each file under 600 lines.
 
-use crate::input::KodaHelper;
 use crate::tui::SelectOption;
 use koda_core::approval::ApprovalMode;
 use koda_core::config::{KodaConfig, ProviderType};
@@ -14,6 +13,19 @@ use tokio::sync::RwLock;
 
 /// Number of recent messages to preserve during compaction.
 const COMPACT_PRESERVE_COUNT: usize = 4;
+
+// ── Raw stdin input ──────────────────────────────────────────
+
+/// Read a line from stdin without rustyline (no completions needed).
+/// Used for API key and URL prompts during provider setup.
+fn read_line_raw(prompt: &str) -> anyhow::Result<String> {
+    use std::io::Write;
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
 
 // ── Compact handler ───────────────────────────────────────────
 
@@ -303,7 +315,6 @@ pub(crate) async fn handle_mcp_command(
 pub(crate) async fn handle_setup_provider(
     config: &mut KodaConfig,
     provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
-    rl: &mut rustyline::Editor<KodaHelper, rustyline::history::DefaultHistory>,
     ptype: ProviderType,
     base_url: String,
 ) {
@@ -326,9 +337,8 @@ pub(crate) async fn handle_setup_provider(
             println!("  \x1b[33m{}\x1b[0m is not set.", env_name);
             format!("  Paste your {} API key: ", config.provider_type)
         };
-        match rl.readline(&prompt_msg) {
+        match read_line_raw(&prompt_msg) {
             Ok(key) => {
-                let key = key.trim().to_string();
                 if key.is_empty() {
                     if !is_same_provider {
                         println!("  \x1b[31mNo key provided, provider not changed.\x1b[0m");
@@ -362,11 +372,10 @@ pub(crate) async fn handle_setup_provider(
     } else if !ptype.requires_api_key() {
         let default_url = ptype.default_base_url();
         let prompt_msg = format!("  Enter {} URL (enter for {}): ", ptype, default_url);
-        match rl.readline(&prompt_msg) {
+        match read_line_raw(&prompt_msg) {
             Ok(url) => {
-                let url = url.trim();
                 if !url.is_empty() {
-                    config.base_url = url.to_string();
+                    config.base_url = url;
                 } else {
                     config.base_url = default_url.to_string();
                 }
@@ -420,7 +429,6 @@ pub(crate) async fn handle_setup_provider(
 pub(crate) async fn handle_pick_provider(
     config: &mut KodaConfig,
     provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
-    rl: &mut rustyline::Editor<KodaHelper, rustyline::history::DefaultHistory>,
 ) {
     let providers = crate::repl::PROVIDERS;
     let current_idx = providers
@@ -450,7 +458,7 @@ pub(crate) async fn handle_pick_provider(
     let ptype = ProviderType::from_url_or_name("", Some(key));
     let base_url = ptype.default_base_url().to_string();
 
-    handle_setup_provider(config, provider, rl, ptype, base_url).await;
+    handle_setup_provider(config, provider, ptype, base_url).await;
 }
 
 // ── Trust mode picker ───────────────────────────────────────
