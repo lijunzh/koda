@@ -11,10 +11,23 @@ permissions:
   contents: write
 
 jobs:
-  # Gate: run the full CI suite before building release artifacts.
-  ci:
-    name: CI
-    uses: ./.github/workflows/ci.yml
+  # Gate: verify CI already passed on this commit (no re-run).
+  check-ci:
+    name: Verify CI Passed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CI status for this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COUNT=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${{ github.sha }}&status=success&per_page=1" \
+            --jq '.total_count')
+          if [ "$COUNT" -lt 1 ]; then
+            echo "::error::No successful CI run found for commit ${{ github.sha }}"
+            exit 1
+          fi
+          echo "CI passed for commit ${{ github.sha }}"
 
   # Verify that the git tag matches the workspace version.
   verify-version:
@@ -39,7 +52,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.target }}
-    needs: [ci, verify-version]
+    needs: [check-ci, verify-version]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
