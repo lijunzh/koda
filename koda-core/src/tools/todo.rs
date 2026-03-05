@@ -34,34 +34,58 @@ pub fn definitions() -> Vec<ToolDefinition> {
 pub fn format_todo_display(content: &str) -> String {
     let mut output = String::new();
     output.push_str("  \x1b[1m\u{1f4cb} Todo\x1b[0m\n");
-    output.push_str("  \x1b[90m\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\x1b[0m\n");
 
-    for line in content.lines() {
+    // Find the first unchecked item to highlight as "active"
+    let first_pending = content.lines().position(|l| {
+        let t = l.trim();
+        t.starts_with("- [ ] ") || t.starts_with("  - [ ] ")
+    });
+
+    for (i, line) in content.lines().enumerate() {
         let trimmed = line.trim();
+        let is_active = Some(i) == first_pending;
+
         if let Some(task) = trimmed
             .strip_prefix("- [x] ")
             .or_else(|| trimmed.strip_prefix("- [X] "))
         {
+            // Done: green check + strikethrough
             output.push_str(&format!(
-                "  \x1b[32m\u{2705}\x1b[0m \x1b[9m\x1b[90m{task}\x1b[0m\n"
+                "  \x1b[32m\u{2714}\x1b[0m \x1b[9m\x1b[90m{task}\x1b[0m\n"
             ));
         } else if let Some(task) = trimmed.strip_prefix("- [ ] ") {
-            output.push_str(&format!("  \x1b[90m\u{2b1c}\x1b[0m {task}\n"));
+            if is_active {
+                // Active: bold white square + bold text
+                output.push_str(&format!("  \x1b[33m\u{25a0}\x1b[0m \x1b[1m{task}\x1b[0m\n"));
+            } else {
+                // Pending: dim square
+                output.push_str(&format!(
+                    "  \x1b[90m\u{25a1}\x1b[0m \x1b[90m{task}\x1b[0m\n"
+                ));
+            }
         } else if let Some(task) = trimmed
             .strip_prefix("  - [x] ")
             .or_else(|| trimmed.strip_prefix("  - [X] "))
         {
+            // Nested done
             output.push_str(&format!(
-                "    \x1b[32m\u{2705}\x1b[0m \x1b[9m\x1b[90m{task}\x1b[0m\n"
+                "    \x1b[32m\u{2714}\x1b[0m \x1b[9m\x1b[90m{task}\x1b[0m\n"
             ));
         } else if let Some(task) = trimmed.strip_prefix("  - [ ] ") {
-            output.push_str(&format!("    \x1b[90m\u{2b1c}\x1b[0m {task}\n"));
+            if is_active {
+                output.push_str(&format!(
+                    "    \x1b[33m\u{25a0}\x1b[0m \x1b[1m{task}\x1b[0m\n"
+                ));
+            } else {
+                output.push_str(&format!(
+                    "    \x1b[90m\u{25a1}\x1b[0m \x1b[90m{task}\x1b[0m\n"
+                ));
+            }
         } else if !trimmed.is_empty() {
             output.push_str(&format!("  {trimmed}\n"));
         }
     }
 
-    output.push_str("  \x1b[90m\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\u{2504}\x1b[0m");
     output
 }
 
