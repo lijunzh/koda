@@ -71,7 +71,7 @@ fn calculate_hash<T: Hash>(t: &T) -> String {
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         name: "AstAnalysis".to_string(),
-        description: "Analyze code structure using AST (Abstract Syntax Tree). Use 'analyze_file' to get a structural summary of a file (functions, classes). Use 'get_call_graph' with a specific symbol to find callers and callees in the current file.".to_string(),
+        description: "Read-only AST code analysis. Supports Rust (.rs), Python (.py), JavaScript (.js), TypeScript (.ts). Use 'analyze_file' to get a structural summary (functions, classes, imports). Use 'get_call_graph' with a symbol name to find callers and callees. Results are cached in ast.db for performance. No files are modified.".to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
