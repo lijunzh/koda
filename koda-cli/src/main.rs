@@ -16,6 +16,8 @@ mod repl;
 mod server;
 mod sink;
 mod tui;
+mod tui_app;
+mod widgets;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -81,6 +83,10 @@ struct Cli {
     /// OpenAI reasoning effort (low, medium, high)
     #[arg(long)]
     reasoning_effort: Option<String>,
+
+    /// Use legacy readline-based input instead of TUI
+    #[arg(long)]
+    legacy: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -235,7 +241,11 @@ async fn main() -> Result<()> {
     };
 
     // Run the main event loop (pass version check handle for post-banner hint)
-    app::run(project_root, config, db, session_id, version_check).await
+    if cli.legacy {
+        app::run(project_root, config, db, session_id, version_check).await
+    } else {
+        tui_app::run(project_root, config, db, session_id, version_check).await
+    }
 }
 
 /// Resolve the headless prompt from -p flag, positional arg, or stdin pipe.
