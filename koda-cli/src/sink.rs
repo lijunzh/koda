@@ -26,6 +26,8 @@ pub(crate) struct UiRenderer {
     pub tool_history: crate::display::ToolOutputHistory,
     /// When true, tool output is never collapsed.
     pub verbose: bool,
+    /// Buffer for streaming thinking deltas (rendered line-by-line).
+    think_buf: String,
 }
 
 impl UiRenderer {
@@ -35,6 +37,7 @@ impl UiRenderer {
             spinner: None,
             tool_history: crate::display::ToolOutputHistory::new(),
             verbose: false,
+            think_buf: String::new(),
         }
     }
 
@@ -48,12 +51,25 @@ impl UiRenderer {
                 self.md.flush();
             }
             EngineEvent::ThinkingStart => {
+                self.think_buf.clear();
                 crate::display::print_thinking_banner();
             }
             EngineEvent::ThinkingDelta { text } => {
-                crate::display::render_thinking_block(&text);
+                self.think_buf.push_str(&text);
+                // Render complete lines as they arrive
+                while let Some(newline_pos) = self.think_buf.find('\n') {
+                    let line = self.think_buf[..newline_pos].to_string();
+                    self.think_buf = self.think_buf[newline_pos + 1..].to_string();
+                    crate::display::render_thinking_line(&line);
+                }
             }
-            EngineEvent::ThinkingDone => {}
+            EngineEvent::ThinkingDone => {
+                // Flush remaining partial line
+                if !self.think_buf.is_empty() {
+                    let remaining = std::mem::take(&mut self.think_buf);
+                    crate::display::render_thinking_line(&remaining);
+                }
+            }
             EngineEvent::ResponseStart => {
                 crate::display::print_response_banner();
             }

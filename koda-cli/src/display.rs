@@ -248,17 +248,22 @@ pub fn render_thinking_block(text: &str) {
     let show = total.min(THINKING_PREVIEW_LINES);
 
     for line in &lines[..show] {
-        if line.starts_with('#') {
-            println!("{CONTENT_INDENT}{VIOLET}│{RESET} \x1b[1;90m{line}{RESET}");
-        } else {
-            println!("{CONTENT_INDENT}{VIOLET}│{RESET} {DIM}{line}{RESET}");
-        }
+        render_thinking_line(line);
     }
     if total > THINKING_PREVIEW_LINES {
         let hidden = total - THINKING_PREVIEW_LINES;
         println!("{CONTENT_INDENT}{VIOLET}│{RESET} {DIM}... +{hidden} more lines{RESET}");
     }
     println!();
+}
+
+/// Render a single thinking line with the violet gutter.
+pub fn render_thinking_line(line: &str) {
+    if line.starts_with('#') {
+        println!("{CONTENT_INDENT}{VIOLET}│{RESET} \x1b[1;90m{line}{RESET}");
+    } else {
+        println!("{CONTENT_INDENT}{VIOLET}│{RESET} {DIM}{line}{RESET}");
+    }
 }
 
 /// Print the AGENT RESPONSE indicator.
