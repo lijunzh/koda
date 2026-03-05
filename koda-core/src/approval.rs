@@ -595,6 +595,16 @@ pub fn extract_whitelist_pattern(command: &str) -> String {
 pub struct Settings {
     #[serde(default)]
     pub approval: ApprovalSettings,
+    /// Last-used provider/model, restored on next startup.
+    #[serde(default)]
+    pub last_provider: Option<LastProvider>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LastProvider {
+    pub provider_type: String,
+    pub base_url: String,
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -633,6 +643,21 @@ impl Settings {
             self.save()?;
         }
         Ok(())
+    }
+
+    /// Save the last-used provider/model for restoration on next startup.
+    pub fn save_last_provider(
+        &mut self,
+        provider_type: &str,
+        base_url: &str,
+        model: &str,
+    ) -> anyhow::Result<()> {
+        self.last_provider = Some(LastProvider {
+            provider_type: provider_type.to_string(),
+            base_url: base_url.to_string(),
+            model: model.to_string(),
+        });
+        self.save()
     }
 
     fn settings_path() -> Option<PathBuf> {
