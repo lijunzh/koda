@@ -128,6 +128,9 @@ pub enum EngineEvent {
     SpinnerStop,
 
     // ── Messages ──────────────────────────────────────────────────────
+    /// Display the todo checklist (raw markdown content, client renders).
+    TodoDisplay { content: String },
+
     /// Informational message (not from the LLM).
     Info { message: String },
 

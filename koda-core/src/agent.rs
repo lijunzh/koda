@@ -19,6 +19,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// MCP server connection status entry (for client rendering).
+pub type McpStatus = (String, Result<usize, String>);
+
 /// Shared agent resources. Immutable after construction.
 ///
 /// Create once, share via `Arc<KodaAgent>` across sessions and sub-agents.
@@ -28,6 +31,8 @@ pub struct KodaAgent {
     pub tool_defs: Vec<ToolDefinition>,
     pub system_prompt: String,
     pub mcp_registry: Arc<RwLock<McpRegistry>>,
+    /// MCP server connection results from init (for client rendering).
+    pub mcp_statuses: Vec<McpStatus>,
 }
 
 impl KodaAgent {
@@ -36,9 +41,10 @@ impl KodaAgent {
     /// Initializes tools, MCP servers, system prompt, and tool definitions.
     pub async fn new(config: &KodaConfig, project_root: PathBuf) -> Result<Self> {
         let mcp_registry = Arc::new(RwLock::new(McpRegistry::new()));
+        let mcp_statuses;
         {
             let mut mcp = mcp_registry.write().await;
-            mcp.start_from_config(&project_root).await;
+            mcp_statuses = mcp.start_from_config(&project_root).await;
         }
 
         let tools = ToolRegistry::new(project_root.clone()).with_mcp_registry(mcp_registry.clone());
@@ -58,6 +64,7 @@ impl KodaAgent {
             tool_defs,
             system_prompt,
             mcp_registry,
+            mcp_statuses,
         })
     }
 }

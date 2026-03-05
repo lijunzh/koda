@@ -162,11 +162,12 @@ pub async fn handle_command(
 
         "/agent" => {
             let project_root = std::env::current_dir().unwrap_or_default();
-            let listing = koda_core::tools::agent::list_agents(&project_root);
+            let agents = koda_core::tools::agent::list_agents(&project_root);
+            let listing = crate::display::format_agents_list(&agents);
             println!();
             println!("  \x1b[1m\u{1f43b} Sub-Agents\x1b[0m");
             println!();
-            if listing.contains("No ") {
+            if agents.is_empty() {
                 println!("  \x1b[90m{listing}\x1b[0m");
             } else {
                 println!("{listing}");

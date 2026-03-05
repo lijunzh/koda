@@ -242,30 +242,21 @@ fn user_agents_dir() -> Result<PathBuf, std::env::VarError> {
         .join("agents"))
 }
 
-/// Format agent list for display (used by /agent command and ListAgents tool).
-pub fn list_agents(project_root: &Path) -> String {
-    let agents = discover_all_agents(project_root);
-
-    if agents.is_empty() {
-        return "No sub-agents configured.".to_string();
-    }
-
-    let lines: Vec<String> = agents
-        .iter()
+/// Return agent list data for display (used by /agent command and ListAgents tool).
+///
+/// Returns a list of `(name, description, source)` tuples.
+/// The client is responsible for formatting/coloring.
+pub fn list_agents(project_root: &Path) -> Vec<(String, String, String)> {
+    discover_all_agents(project_root)
+        .into_iter()
         .map(|a| {
-            let tag = match a.source {
-                "built-in" => "",
-                "user" => " \x1b[90m[user]\x1b[0m",
-                "project" => " \x1b[90m[project]\x1b[0m",
-                _ => "",
-            };
-            format!(
-                "  \x1b[36m{}\x1b[0m \u{2014} {}{}",
-                a.name, a.description, tag
+            (
+                a.name.to_string(),
+                a.description.to_string(),
+                a.source.to_string(),
             )
         })
-        .collect();
-    lines.join("\n")
+        .collect()
 }
 
 /// Format detailed agent list (for ListAgents with detail=true, used by CreateAgent workflow).
@@ -341,22 +332,22 @@ mod tests {
     #[test]
     fn test_list_agents_includes_builtins() {
         let dir = TempDir::new().unwrap();
-        // Even with no agents/ directory, built-ins are always available
         let result = list_agents(dir.path());
+        let names: Vec<&str> = result.iter().map(|(n, _, _)| n.as_str()).collect();
         assert!(
-            result.contains("reviewer"),
+            names.contains(&"reviewer"),
             "Should include built-in reviewer"
         );
         assert!(
-            result.contains("security"),
+            names.contains(&"security"),
             "Should include built-in security"
         );
         assert!(
-            result.contains("testgen"),
+            names.contains(&"testgen"),
             "Should include built-in testgen"
         );
         assert!(
-            result.contains("releaser"),
+            names.contains(&"releaser"),
             "Should include built-in releaser"
         );
     }
@@ -365,7 +356,8 @@ mod tests {
     fn test_list_agents_excludes_default() {
         let dir = TempDir::new().unwrap();
         let result = list_agents(dir.path());
-        assert!(!result.contains("default"), "Should exclude default agent");
+        let names: Vec<&str> = result.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert!(!names.contains(&"default"), "Should exclude default agent");
     }
 
     #[test]
@@ -373,15 +365,16 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let agents_dir = dir.path().join("agents");
         std::fs::create_dir(&agents_dir).unwrap();
-        // Override the built-in reviewer with a project-local one
         std::fs::write(
             agents_dir.join("reviewer.json"),
             r#"{"name":"reviewer","system_prompt":"You are a custom project reviewer. Your job is to do project-specific reviews."}"#,
         ).unwrap();
         let result = list_agents(dir.path());
-        assert!(result.contains("reviewer"));
-        assert!(
-            result.contains("[project]"),
+        let reviewer = result.iter().find(|(n, _, _)| n == "reviewer");
+        assert!(reviewer.is_some());
+        assert_eq!(
+            reviewer.unwrap().2,
+            "project",
             "Project agent should be tagged"
         );
     }

@@ -44,63 +44,46 @@ pub fn definitions() -> Vec<ToolDefinition> {
     ]
 }
 
-/// Format a todo list for CLI display with visual checkboxes.
-pub fn format_todo_display(content: &str) -> String {
-    let mut output = String::new();
-    output.push_str("  \x1b[1m\u{1f4cb} Todo\x1b[0m\n");
-
+/// Parse a todo list into structured items for client rendering.
+///
+/// Returns a list of `(indent_level, status, text)` tuples where
+/// status is `"done"`, `"active"` (first pending), `"pending"`, or `"text"`.
+pub fn parse_todo_items(content: &str) -> Vec<(usize, &'static str, String)> {
     // Find the first unchecked item to highlight as "active"
     let first_pending = content.lines().position(|l| {
         let t = l.trim();
         t.starts_with("- [ ] ") || t.starts_with("  - [ ] ")
     });
 
+    let mut items = Vec::new();
+
     for (i, line) in content.lines().enumerate() {
-        let trimmed = line.trim();
         let is_active = Some(i) == first_pending;
 
-        if let Some(task) = trimmed
-            .strip_prefix("- [x] ")
-            .or_else(|| trimmed.strip_prefix("- [X] "))
-        {
-            // Done: green check + strikethrough
-            output.push_str(&format!(
-                "  \x1b[32m\u{2714}\x1b[0m \x1b[9m\x1b[90m{task}\x1b[0m\n"
-            ));
-        } else if let Some(task) = trimmed.strip_prefix("- [ ] ") {
-            if is_active {
-                // Active: bold white square + bold text
-                output.push_str(&format!("  \x1b[33m\u{25a0}\x1b[0m \x1b[1m{task}\x1b[0m\n"));
-            } else {
-                // Pending: dim square
-                output.push_str(&format!(
-                    "  \x1b[90m\u{25a1}\x1b[0m \x1b[90m{task}\x1b[0m\n"
-                ));
-            }
-        } else if let Some(task) = trimmed
+        // Check nested (indented) patterns first, before trimming
+        if let Some(task) = line
             .strip_prefix("  - [x] ")
-            .or_else(|| trimmed.strip_prefix("  - [X] "))
+            .or_else(|| line.strip_prefix("  - [X] "))
         {
-            // Nested done
-            output.push_str(&format!(
-                "    \x1b[32m\u{2714}\x1b[0m \x1b[9m\x1b[90m{task}\x1b[0m\n"
-            ));
-        } else if let Some(task) = trimmed.strip_prefix("  - [ ] ") {
-            if is_active {
-                output.push_str(&format!(
-                    "    \x1b[33m\u{25a0}\x1b[0m \x1b[1m{task}\x1b[0m\n"
-                ));
-            } else {
-                output.push_str(&format!(
-                    "    \x1b[90m\u{25a1}\x1b[0m \x1b[90m{task}\x1b[0m\n"
-                ));
-            }
-        } else if !trimmed.is_empty() {
-            output.push_str(&format!("  {trimmed}\n"));
+            items.push((1, "done", task.to_string()));
+        } else if let Some(task) = line.strip_prefix("  - [ ] ") {
+            let status = if is_active { "active" } else { "pending" };
+            items.push((1, status, task.to_string()));
+        } else if let Some(task) = line
+            .trim()
+            .strip_prefix("- [x] ")
+            .or_else(|| line.trim().strip_prefix("- [X] "))
+        {
+            items.push((0, "done", task.to_string()));
+        } else if let Some(task) = line.trim().strip_prefix("- [ ] ") {
+            let status = if is_active { "active" } else { "pending" };
+            items.push((0, status, task.to_string()));
+        } else if !line.trim().is_empty() {
+            items.push((0, "text", line.trim().to_string()));
         }
     }
 
-    output
+    items
 }
 
 /// Extract the content string from tool arguments.
@@ -123,16 +106,15 @@ mod tests {
     }
 
     #[test]
-    fn test_format_todo_display() {
+    fn test_parse_todo_items() {
         let content =
             "- [x] Setup project\n- [ ] Write tests\n  - [ ] Unit tests\n  - [x] Integration tests";
-        let output = format_todo_display(content);
-        // Should contain visual checkmarks
-        assert!(output.contains("Todo"));
-        assert!(output.contains("Setup project"));
-        assert!(output.contains("Write tests"));
-        assert!(output.contains("Unit tests"));
-        assert!(output.contains("Integration tests"));
+        let items = parse_todo_items(content);
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0], (0, "done", "Setup project".into()));
+        assert_eq!(items[1], (0, "active", "Write tests".into())); // first pending = active
+        assert_eq!(items[2], (1, "pending", "Unit tests".into()));
+        assert_eq!(items[3], (1, "done", "Integration tests".into()));
     }
 
     #[test]

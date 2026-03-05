@@ -158,12 +158,37 @@ pub async fn run(
     repl::print_banner(&config, &session_id, &recent);
 
     // Show update hint if version check completed
-    if let Ok(Some(latest)) = version_check.await {
-        koda_core::version::print_update_hint(&latest);
+    if let Ok(Some(latest)) = version_check.await
+        && let Some((current, latest)) = koda_core::version::update_available(&latest)
+    {
+        let crate_name = koda_core::version::crate_name();
+        println!(
+            "  \x1b[90m\u{2728} Update available: \x1b[0m\x1b[36m{current}\x1b[0m\x1b[90m \u{2192} \x1b[0m\x1b[32m{latest}\x1b[0m\x1b[90m  (cargo install {crate_name})\x1b[0m"
+        );
+        println!();
     }
 
     // Build agent (tools, MCP, system prompt) and session
     let agent = Arc::new(KodaAgent::new(&config, project_root.clone()).await?);
+
+    // Render MCP connection statuses
+    if !agent.mcp_statuses.is_empty() {
+        println!(
+            "  \x1b[36m\u{1f50c} Connecting to {} MCP server(s)...\x1b[0m",
+            agent.mcp_statuses.len()
+        );
+        for (name, result) in &agent.mcp_statuses {
+            match result {
+                Ok(tool_count) => {
+                    println!("  \x1b[32m\u{2713}\x1b[0m {name} — {tool_count} tool(s)");
+                }
+                Err(msg) => {
+                    println!("  \x1b[31m\u{2717}\x1b[0m {name} — {msg}");
+                }
+            }
+        }
+        println!();
+    }
     let mut session = KodaSession::new(
         session_id.clone(),
         agent.clone(),

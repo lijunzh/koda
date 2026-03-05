@@ -763,6 +763,61 @@ pub fn print_tool_output_compact(tool_name: &str, output: &str) {
     }
 }
 
+/// Format a todo checklist for CLI display with colored checkboxes.
+///
+/// Takes the raw markdown checklist content from the engine.
+pub fn format_todo_display(content: &str) -> String {
+    let items = koda_core::tools::todo::parse_todo_items(content);
+    let mut output = String::new();
+    output.push_str("  \x1b[1m\u{1f4cb} Todo\x1b[0m\n");
+
+    for (indent, status, text) in &items {
+        let pad = if *indent > 0 { "    " } else { "  " };
+        match *status {
+            "done" => {
+                output.push_str(&format!(
+                    "{pad}\x1b[32m\u{2714}\x1b[0m \x1b[9m\x1b[90m{text}\x1b[0m\n"
+                ));
+            }
+            "active" => {
+                output.push_str(&format!(
+                    "{pad}\x1b[33m\u{25a0}\x1b[0m \x1b[1m{text}\x1b[0m\n"
+                ));
+            }
+            "pending" => {
+                output.push_str(&format!(
+                    "{pad}\x1b[90m\u{25a1}\x1b[0m \x1b[90m{text}\x1b[0m\n"
+                ));
+            }
+            _ => {
+                output.push_str(&format!("{pad}{text}\n"));
+            }
+        }
+    }
+
+    output
+}
+
+/// Format agent list for CLI display with colors.
+pub fn format_agents_list(agents: &[(String, String, String)]) -> String {
+    if agents.is_empty() {
+        return "No sub-agents configured.".to_string();
+    }
+
+    let lines: Vec<String> = agents
+        .iter()
+        .map(|(name, description, source)| {
+            let tag = match source.as_str() {
+                "user" => " \x1b[90m[user]\x1b[0m",
+                "project" => " \x1b[90m[project]\x1b[0m",
+                _ => "",
+            };
+            format!("  \x1b[36m{name}\x1b[0m \u{2014} {description}{tag}")
+        })
+        .collect();
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
