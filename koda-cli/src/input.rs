@@ -23,6 +23,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ),
     ("/agent", "List available sub-agents"),
     ("/compact", "Summarize conversation to reclaim context"),
+    ("/expand", "Show full output of last tool call (/expand N)"),
     ("/help", "Command palette"),
     ("/mcp", "MCP servers: status / add / remove / restart"),
     ("/memory", "View/save project & global memory"),
@@ -30,6 +31,7 @@ const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/model", "Pick a model interactively"),
     ("/provider", "Switch LLM provider"),
     ("/sessions", "List/resume/delete sessions"),
+    ("/verbose", "Toggle full tool output (on/off)"),
 ];
 
 /// The combined helper wired into `rustyline::Editor`.

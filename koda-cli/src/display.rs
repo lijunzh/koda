@@ -3,6 +3,9 @@
 //! Renders tool calls with icons and key arguments, and formats LLM responses
 //! with visual hierarchy: important content stays bright, verbose narration
 //! is dimmed, and metadata is shown in a footer.
+//!
+//! Also provides `ToolOutputHistory` — a bounded ring buffer that records
+//! recent tool outputs so `/expand` can reprint them in full.
 
 use koda_core::providers::ToolCall;
 
@@ -591,6 +594,77 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+// ── Tool output history ───────────────────────────────────────────
+
+/// Maximum number of tool outputs to remember.
+const TOOL_HISTORY_CAP: usize = 20;
+
+/// A recorded tool call output for later replay via `/expand`.
+#[derive(Clone)]
+pub struct ToolOutputRecord {
+    pub tool_name: String,
+    pub output: String,
+}
+
+/// Bounded ring buffer of recent tool outputs.
+pub struct ToolOutputHistory {
+    entries: Vec<ToolOutputRecord>,
+}
+
+impl ToolOutputHistory {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::with_capacity(TOOL_HISTORY_CAP),
+        }
+    }
+
+    /// Record a tool output. Drops the oldest entry if at capacity.
+    pub fn push(&mut self, tool_name: &str, output: &str) {
+        if self.entries.len() >= TOOL_HISTORY_CAP {
+            self.entries.remove(0);
+        }
+        self.entries.push(ToolOutputRecord {
+            tool_name: tool_name.to_string(),
+            output: output.to_string(),
+        });
+    }
+
+    /// Get the Nth most recent entry (1 = last, 2 = second-to-last, etc.).
+    pub fn get(&self, n: usize) -> Option<&ToolOutputRecord> {
+        if n == 0 || n > self.entries.len() {
+            return None;
+        }
+        Some(&self.entries[self.entries.len() - n])
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+/// Reprint a tool output in full (no collapsing).
+pub fn print_tool_output_full(record: &ToolOutputRecord) {
+    let border_color = match record.tool_name.as_str() {
+        "Read" => STEEL_BLUE,
+        "List" | "WebFetch" => SKY_BLUE,
+        "Grep" | "Glob" | "MemoryRead" => SILVER,
+        "Bash" => ORANGE,
+        "Write" | "Edit" | "MemoryWrite" => AMBER,
+        "Delete" => CRIMSON,
+        _ => DIM,
+    };
+
+    println!(
+        "\n{BOLD}\u{1f50d} Expand: {}{RESET} ({} lines)",
+        record.tool_name,
+        record.output.lines().count()
+    );
+    for line in record.output.lines() {
+        println!("{CONTENT_INDENT}{border_color}│{RESET} {line}");
+    }
+    println!();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -650,5 +724,31 @@ mod tests {
     fn test_truncate() {
         assert_eq!(truncate("short", 10), "short");
         assert_eq!(truncate("a long string here", 10), "a long st\u{2026}");
+    }
+
+    #[test]
+    fn test_tool_output_history_push_and_get() {
+        let mut h = ToolOutputHistory::new();
+        h.push("Read", "file contents");
+        h.push("Bash", "hello world");
+
+        assert_eq!(h.len(), 2);
+        assert_eq!(h.get(1).unwrap().tool_name, "Bash");
+        assert_eq!(h.get(1).unwrap().output, "hello world");
+        assert_eq!(h.get(2).unwrap().tool_name, "Read");
+        assert!(h.get(0).is_none());
+        assert!(h.get(3).is_none());
+    }
+
+    #[test]
+    fn test_tool_output_history_cap() {
+        let mut h = ToolOutputHistory::new();
+        for i in 0..25 {
+            h.push("Bash", &format!("output {i}"));
+        }
+        assert_eq!(h.len(), TOOL_HISTORY_CAP);
+        // Oldest surviving entry should be output 5 (0..4 were evicted)
+        assert_eq!(h.get(TOOL_HISTORY_CAP).unwrap().output, "output 5");
+        assert_eq!(h.get(1).unwrap().output, "output 24");
     }
 }

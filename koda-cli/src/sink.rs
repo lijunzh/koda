@@ -22,6 +22,10 @@ pub(crate) enum UiEvent {
 pub(crate) struct UiRenderer {
     md: crate::markdown::MarkdownStreamer,
     spinner: Option<tokio::task::JoinHandle<()>>,
+    /// Recent tool outputs for `/expand` replay.
+    pub tool_history: crate::display::ToolOutputHistory,
+    /// When true, tool output is never collapsed.
+    pub verbose: bool,
 }
 
 impl UiRenderer {
@@ -29,6 +33,8 @@ impl UiRenderer {
         Self {
             md: crate::markdown::MarkdownStreamer::new(),
             spinner: None,
+            tool_history: crate::display::ToolOutputHistory::new(),
+            verbose: false,
         }
     }
 
@@ -70,7 +76,14 @@ impl UiRenderer {
                 name,
                 output,
             } => {
-                crate::display::print_tool_output(&name, &output);
+                self.tool_history.push(&name, &output);
+                if self.verbose {
+                    if let Some(record) = self.tool_history.get(1) {
+                        crate::display::print_tool_output_full(record);
+                    }
+                } else {
+                    crate::display::print_tool_output(&name, &output);
+                }
             }
             EngineEvent::SubAgentStart { agent_name } => {
                 crate::display::print_sub_agent_start(&agent_name);

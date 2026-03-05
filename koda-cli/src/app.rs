@@ -319,12 +319,14 @@ pub async fn run(
                         ("/compact", "Summarize conversation to reclaim context"),
                         ("/cost", "Show token usage for this session"),
                         ("/diff", "Show git diff / review / commit message"),
+                        ("/expand", "Show full output of last tool call (/expand N)"),
                         ("/mcp", "MCP servers: status / add / remove / restart"),
                         ("/memory", "View/save project & global memory"),
                         ("/model", "Pick a model interactively"),
                         ("/provider", "Switch LLM provider"),
                         ("/sessions", "List/resume/delete sessions"),
                         ("/trust", "Set approval mode (always / auto / never)"),
+                        ("/verbose", "Toggle full tool output (on/off)"),
                         ("/exit", "Quit the session"),
                     ];
                     let options: Vec<SelectOption> = commands
@@ -495,6 +497,33 @@ pub async fn run(
                             name
                         );
                     }
+                    continue;
+                }
+                ReplAction::Expand(n) => {
+                    match renderer.tool_history.get(n) {
+                        Some(record) => {
+                            crate::display::print_tool_output_full(record);
+                        }
+                        None => {
+                            let total = renderer.tool_history.len();
+                            if total == 0 {
+                                println!("  \x1b[90mNo tool outputs recorded yet.\x1b[0m");
+                            } else {
+                                println!(
+                                    "  \x1b[33mNo tool output #{n}. Have {total} recorded (use /expand 1–{total}).\x1b[0m"
+                                );
+                            }
+                        }
+                    }
+                    continue;
+                }
+                ReplAction::Verbose(v) => {
+                    renderer.verbose = match v {
+                        Some(val) => val,
+                        None => !renderer.verbose,
+                    };
+                    let state = if renderer.verbose { "on" } else { "off" };
+                    println!("  \x1b[36mVerbose tool output: {state}\x1b[0m");
                     continue;
                 }
                 ReplAction::Handled => continue,
