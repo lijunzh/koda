@@ -6,8 +6,8 @@
 use crate::tools::safe_resolve_path;
 use std::path::Path;
 
-const GREEN: &str = "\x1b[42;30m"; // green background, black text
-const RED: &str = "\x1b[41;37m"; // red background, white text
+const GREEN: &str = "\x1b[32m"; // green foreground
+const RED: &str = "\x1b[31m"; // red foreground
 const DIM: &str = "\x1b[90m";
 const RESET: &str = "\x1b[0m";
 
@@ -30,7 +30,7 @@ pub async fn compute(
     }
 }
 
-/// Preview for Edit tool: show each replacement as old (red) → new (green).
+/// Preview for Edit tool: show each replacement as old (red) → new (green) with line numbers.
 async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<String> {
     // Handle both flat args {"path", "replacements"} and nested {"payload": {"file_path", "replacements"}}
     let inner = args.get("payload").unwrap_or(args);
@@ -41,11 +41,12 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<S
         .and_then(|v| v.as_str())?;
     let replacements = inner.get("replacements")?.as_array()?;
 
-    // Verify file exists
+    // Verify file exists and read content for line number computation
     let resolved = safe_resolve_path(project_root, path_str).ok()?;
     if !resolved.exists() {
         return Some(format!("{DIM}(file does not exist yet){RESET}"));
     }
+    let file_content = tokio::fs::read_to_string(&resolved).await.ok()?;
 
     let mut lines = Vec::new();
     let mut total_lines = 0usize;
@@ -57,6 +58,20 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<S
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
+        // Find the 1-based starting line number of old_str in the file.
+        // Count newlines before the match position (not lines(), which
+        // includes the partial line at byte_pos and over-counts by 1).
+        let start_line = file_content
+            .find(old_str)
+            .map(|byte_pos| {
+                file_content[..byte_pos]
+                    .bytes()
+                    .filter(|&b| b == b'\n')
+                    .count()
+                    + 1
+            })
+            .unwrap_or(1);
+
         if replacements.len() > 1 {
             lines.push(format!(
                 "{DIM}── replacement {}/{} ──{RESET}",
@@ -65,12 +80,12 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<S
             ));
         }
 
-        for line in old_str.lines() {
-            lines.push(format!("{RED}-{line}{RESET}"));
+        for (j, line) in old_str.lines().enumerate() {
+            lines.push(format!("{RED}{:>4} -{line}{RESET}", start_line + j));
             total_lines += 1;
         }
-        for line in new_str.lines() {
-            lines.push(format!("{GREEN}+{line}{RESET}"));
+        for (j, line) in new_str.lines().enumerate() {
+            lines.push(format!("{GREEN}{:>4} +{line}{RESET}", start_line + j));
             total_lines += 1;
         }
 
@@ -213,6 +228,26 @@ mod tests {
         let text = preview.unwrap();
         assert!(text.contains("hello"));
         assert!(text.contains("world"));
+        // Line number for println! on line 2
+        assert!(
+            text.contains("2 -"),
+            "should show line number for removed line"
+        );
+        assert!(
+            text.contains("2 +"),
+            "should show line number for added line"
+        );
+        // Must use foreground colors, not background fills
+        assert!(
+            text.contains("\x1b[31m"),
+            "removed lines should use red foreground"
+        );
+        assert!(
+            text.contains("\x1b[32m"),
+            "added lines should use green foreground"
+        );
+        assert!(!text.contains("\x1b[41"), "must not use red background");
+        assert!(!text.contains("\x1b[42"), "must not use green background");
     }
 
     #[tokio::test]
