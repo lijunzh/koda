@@ -15,7 +15,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
         name: "TodoWrite".to_string(),
         description: "Write or update your task checklist. Replaces the entire todo list. \
             Use markdown checkboxes: `- [x]` for done, `- [ ]` for pending. \
-            The todo list is automatically shown in your context every turn."
+            Call this BEFORE starting multi-step work to create the plan, then call again \
+            after EACH step to mark it done. The todo is shown to the user after every turn."
             .to_string(),
         parameters: json!({
             "type": "object",

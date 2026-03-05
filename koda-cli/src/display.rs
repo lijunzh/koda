@@ -257,12 +257,49 @@ pub fn render_thinking_block(text: &str) {
     println!();
 }
 
-/// Render a single thinking line with the violet gutter.
+/// Render a single thinking line with the violet gutter, word-wrapped to terminal width.
 pub fn render_thinking_line(line: &str) {
-    if line.starts_with('#') {
-        println!("{CONTENT_INDENT}{VIOLET}│{RESET} \x1b[1;90m{line}{RESET}");
+    let width = crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(80);
+    // Account for gutter: "  │ " = 4 visible chars
+    let content_width = width.saturating_sub(4);
+    let gutter = format!("{CONTENT_INDENT}{VIOLET}│{RESET}");
+    let cont_gutter = format!("{CONTENT_INDENT}{VIOLET}│{RESET}");
+
+    if line.len() <= content_width {
+        if line.starts_with('#') {
+            println!("{gutter} \x1b[1;90m{line}{RESET}");
+        } else {
+            println!("{gutter} {DIM}{line}{RESET}");
+        }
     } else {
-        println!("{CONTENT_INDENT}{VIOLET}│{RESET} {DIM}{line}{RESET}");
+        // Word-wrap long lines
+        let mut remaining = line;
+        let mut first = true;
+        while !remaining.is_empty() {
+            let split_at = if remaining.len() <= content_width {
+                remaining.len()
+            } else {
+                // Find last space before content_width
+                remaining[..content_width]
+                    .rfind(' ')
+                    .unwrap_or(content_width)
+            };
+            let (chunk, rest) = remaining.split_at(split_at);
+            remaining = rest.trim_start();
+
+            if first {
+                if line.starts_with('#') {
+                    println!("{gutter} \x1b[1;90m{chunk}{RESET}");
+                } else {
+                    println!("{gutter} {DIM}{chunk}{RESET}");
+                }
+                first = false;
+            } else {
+                println!("{cont_gutter} {DIM}{chunk}{RESET}");
+            }
+        }
     }
 }
 

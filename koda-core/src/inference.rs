@@ -355,14 +355,15 @@ pub async fn inference_loop(
             }
 
             let footer = parts.join(" \u{00b7} ");
-            println!("\n\n\x1b[90m{footer}{ctx_part}\x1b[0m");
 
-            // Show todo progress if a todo list exists for this session
-            if let Ok(Some(todo_content)) = db.get_todo(session_id).await {
+            // Show todo at end only if no tool calls were made this turn
+            // (if tools ran, TodoWrite already rendered inline when called)
+            if !made_tool_calls && let Ok(Some(todo_content)) = db.get_todo(session_id).await {
                 println!();
                 print!("{}", crate::tools::todo::format_todo_display(&todo_content));
             }
-            println!();
+
+            println!("\n\x1b[90m{footer}{ctx_part}\x1b[0m\n");
 
             return Ok(());
         }
@@ -487,6 +488,9 @@ async fn execute_one_tool(
                 if let Err(e) = db.set_todo(session_id, &content).await {
                     format!("Failed to save todo: {e}")
                 } else {
+                    // Show updated todo immediately
+                    println!();
+                    print!("{}", crate::tools::todo::format_todo_display(&content));
                     "Todo list updated.".to_string()
                 }
             }
