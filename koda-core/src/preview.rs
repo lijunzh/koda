@@ -91,11 +91,11 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<S
         for j in 0..pair_count {
             let (old_content, new_content) = intra_line_diff(old_line_vec[j], new_line_vec[j]);
             lines.push(format!(
-                "{LINE_RED}{:>4} -{old_content}{RESET}",
+                "{LINE_RED}{:>4} - {old_content}{RESET}",
                 start_line + j
             ));
             lines.push(format!(
-                "{LINE_GREEN}{:>4} +{new_content}{RESET}",
+                "{LINE_GREEN}{:>4} + {new_content}{RESET}",
                 start_line + j
             ));
             total_lines += 2;
@@ -104,7 +104,7 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<S
         // Remaining old lines (pure deletions without a new counterpart)
         for j in pair_count..old_line_vec.len() {
             lines.push(format!(
-                "{LINE_RED}{:>4} -{}{RESET}",
+                "{LINE_RED}{:>4} - {}{RESET}",
                 start_line + j,
                 old_line_vec[j]
             ));
@@ -114,7 +114,7 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<S
         // Remaining new lines (pure additions without an old counterpart)
         for j in pair_count..new_line_vec.len() {
             lines.push(format!(
-                "{LINE_GREEN}{:>4} +{}{RESET}",
+                "{LINE_GREEN}{:>4} + {}{RESET}",
                 start_line + j,
                 new_line_vec[j]
             ));
@@ -245,7 +245,7 @@ async fn preview_write(args: &serde_json::Value, project_root: &Path) -> Option<
         // Show first few lines of new content as preview
         let preview_count = line_count.min(8);
         for line in &content_lines[..preview_count] {
-            lines.push(format!("{LINE_GREEN}+{line}{RESET}"));
+            lines.push(format!("{LINE_GREEN}+ {line}{RESET}"));
         }
         if line_count > 8 {
             lines.push(format!("{DIM}... +{} more lines{RESET}", line_count - 8));
@@ -261,7 +261,7 @@ async fn preview_write(args: &serde_json::Value, project_root: &Path) -> Option<
 
         let preview_count = line_count.min(8);
         for line in &content_lines[..preview_count] {
-            lines.push(format!("{LINE_GREEN}+{line}{RESET}"));
+            lines.push(format!("{LINE_GREEN}+ {line}{RESET}"));
         }
         if line_count > 8 {
             lines.push(format!("{DIM}... +{} more lines{RESET}", line_count - 8));
@@ -339,11 +339,11 @@ mod tests {
         assert!(text.contains("world"));
         // Line number for println! on line 2
         assert!(
-            text.contains("2 -"),
+            text.contains("2 - "),
             "should show line number for removed line"
         );
         assert!(
-            text.contains("2 +"),
+            text.contains("2 + "),
             "should show line number for added line"
         );
         // Line-level dark background colors
