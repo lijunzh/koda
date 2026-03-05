@@ -3,6 +3,34 @@
 //! Each tool is a function that takes JSON arguments and returns a string result.
 //! Path validation is enforced here to prevent directory traversal.
 
+/// Normalize a tool name to PascalCase.
+///
+/// Small models sometimes send lowercase names (`bash`, `read`, `list`)
+/// instead of PascalCase (`Bash`, `Read`, `List`). This maps common
+/// variants to the canonical name. See issue #49.
+pub fn normalize_tool_name(name: &str) -> String {
+    match name.to_lowercase().as_str() {
+        "bash" | "shell" => "Bash".to_string(),
+        "read" => "Read".to_string(),
+        "write" => "Write".to_string(),
+        "edit" => "Edit".to_string(),
+        "delete" => "Delete".to_string(),
+        "list" => "List".to_string(),
+        "grep" | "search" => "Grep".to_string(),
+        "glob" => "Glob".to_string(),
+        "webfetch" | "web_fetch" | "fetch" => "WebFetch".to_string(),
+        "memoryread" | "memory_read" => "MemoryRead".to_string(),
+        "memorywrite" | "memory_write" => "MemoryWrite".to_string(),
+        "sharereasoning" | "share_reasoning" => "ShareReasoning".to_string(),
+        "todowrite" | "todo_write" | "todo" => "TodoWrite".to_string(),
+        "listagents" | "list_agents" => "ListAgents".to_string(),
+        "createagent" | "create_agent" => "CreateAgent".to_string(),
+        "invokeagent" | "invoke_agent" => "InvokeAgent".to_string(),
+        "astanalysis" | "ast_analysis" => "AstAnalysis".to_string(),
+        _ => name.to_string(), // pass through unknown names (e.g., MCP tools)
+    }
+}
+
 pub mod agent;
 pub mod ast;
 pub mod file_tools;
