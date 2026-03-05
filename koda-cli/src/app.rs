@@ -609,6 +609,10 @@ pub async fn run(
                                 preview,
                                 whitelist_hint,
                             }) => {
+                                // Track that a preview was shown for this tool
+                                if preview.is_some() {
+                                    renderer.preview_shown = true;
+                                }
                                 // Readline thread is paused — stdin is free for TUI.
                                 let decision = map_confirmation(
                                     crate::confirm::confirm_tool_action(

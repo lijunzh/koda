@@ -28,6 +28,8 @@ pub(crate) struct UiRenderer {
     pub verbose: bool,
     /// Buffer for streaming thinking deltas (rendered line-by-line).
     think_buf: String,
+    /// Set when an ApprovalRequest with a preview was shown; cleared on next ToolCallResult.
+    pub preview_shown: bool,
 }
 
 impl UiRenderer {
@@ -38,6 +40,7 @@ impl UiRenderer {
             tool_history: crate::display::ToolOutputHistory::new(),
             verbose: false,
             think_buf: String::new(),
+            preview_shown: false,
         }
     }
 
@@ -93,13 +96,19 @@ impl UiRenderer {
                 output,
             } => {
                 self.tool_history.push(&name, &output);
-                if self.verbose {
+                let is_diff_tool =
+                    matches!(name.as_str(), "Write" | "Edit" | "Delete" | "MemoryWrite");
+                if self.preview_shown && is_diff_tool {
+                    // Preview was already shown before confirmation — show compact summary
+                    crate::display::print_tool_output_compact(&name, &output);
+                } else if self.verbose {
                     if let Some(record) = self.tool_history.get(1) {
                         crate::display::print_tool_output_full(record);
                     }
                 } else {
                     crate::display::print_tool_output(&name, &output);
                 }
+                self.preview_shown = false;
             }
             EngineEvent::SubAgentStart { agent_name } => {
                 crate::display::print_sub_agent_start(&agent_name);
