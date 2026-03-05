@@ -631,7 +631,7 @@ pub async fn run(
                 processed.prompt.clone()
             };
 
-        session
+        if let Err(e) = session
             .db
             .insert_message(
                 &session.id,
@@ -641,7 +641,10 @@ pub async fn run(
                 None,
                 None,
             )
-            .await?;
+            .await
+        {
+            tracing::warn!("Failed to persist user message: {e}");
+        }
 
         let pending_images = if processed.images.is_empty() {
             None
@@ -777,6 +780,11 @@ pub async fn run(
         let mut mcp = agent.mcp_registry.write().await;
         mcp.shutdown();
     }
+
+    println!(
+        "\n\x1b[90mResume this session with:\n  koda --resume {}\x1b[0m",
+        session.id
+    );
 
     Ok(())
 }
