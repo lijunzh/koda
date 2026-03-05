@@ -134,6 +134,9 @@ impl UiRenderer {
             EngineEvent::StatusUpdate { .. } => {
                 // Status bar updates are a TUI/server concern, not CLI.
             }
+            EngineEvent::TodoDisplay { content } => {
+                print!("{}", crate::display::format_todo_display(&content));
+            }
             EngineEvent::Footer {
                 prompt_tokens,
                 completion_tokens,
