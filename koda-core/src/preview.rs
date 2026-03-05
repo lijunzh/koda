@@ -6,8 +6,8 @@
 use crate::tools::safe_resolve_path;
 use std::path::Path;
 
-const GREEN: &str = "\x1b[32m"; // green foreground
-const RED: &str = "\x1b[31m"; // red foreground
+const GREEN: &str = "\x1b[42m"; // green background
+const RED: &str = "\x1b[41m"; // red background
 const DIM: &str = "\x1b[90m";
 const RESET: &str = "\x1b[0m";
 
@@ -237,17 +237,15 @@ mod tests {
             text.contains("2 +"),
             "should show line number for added line"
         );
-        // Must use foreground colors, not background fills
+        // Must use background colors
         assert!(
-            text.contains("\x1b[31m"),
-            "removed lines should use red foreground"
+            text.contains("\x1b[41m"),
+            "removed lines should use red background"
         );
         assert!(
-            text.contains("\x1b[32m"),
-            "added lines should use green foreground"
+            text.contains("\x1b[42m"),
+            "added lines should use green background"
         );
-        assert!(!text.contains("\x1b[41"), "must not use red background");
-        assert!(!text.contains("\x1b[42"), "must not use green background");
     }
 
     #[tokio::test]
