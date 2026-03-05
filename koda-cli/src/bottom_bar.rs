@@ -19,6 +19,16 @@ use std::io::{Write, stdout};
 /// Height of the fixed bottom area (status bar + input line).
 const BOTTOM_HEIGHT: u16 = 2;
 
+/// Action returned by keystroke handling.
+pub enum KeyAction {
+    /// No action (regular typing, backspace, etc.)
+    None,
+    /// User pressed Enter — submit this text.
+    Submit(String),
+    /// User pressed Ctrl+C — interrupt current turn.
+    Interrupt,
+}
+
 /// Manages the fixed bottom bar with ANSI scroll regions.
 pub struct BottomBar {
     enabled: bool,
@@ -148,40 +158,36 @@ impl BottomBar {
         EventStream::new()
     }
 
-    /// Handle a crossterm key event. Returns Some(line) on Enter.
-    pub fn handle_key(&mut self, event: KeyEvent) -> Option<String> {
+    /// Handle a crossterm key event.
+    /// Returns `KeyAction` indicating what happened.
+    pub fn handle_key(&mut self, event: KeyEvent) -> KeyAction {
         // Ignore keys if already queued
         if self.queued_msg.is_some() {
-            return None;
+            return KeyAction::None;
         }
 
         match event.code {
             KeyCode::Enter => {
                 let line = std::mem::take(&mut self.input_buf);
                 if line.trim().is_empty() {
-                    return None;
+                    return KeyAction::None;
                 }
                 // Show "Queued" state in the bar
                 self.queued_msg = Some(line.clone());
                 self.redraw_bar();
-                Some(line)
-            }
-            KeyCode::Backspace => {
-                self.input_buf.pop();
-                self.redraw_bar();
-                None
+                KeyAction::Submit(line)
             }
             KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Ctrl+C: clear the input buffer
+                // Ctrl+C: interrupt (raw mode swallows SIGINT)
                 self.input_buf.clear();
                 self.redraw_bar();
-                None
+                KeyAction::Interrupt
             }
             KeyCode::Char('u') if event.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Ctrl+U: clear line
                 self.input_buf.clear();
                 self.redraw_bar();
-                None
+                KeyAction::None
             }
             KeyCode::Char('w') if event.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Ctrl+W: delete last word
@@ -192,14 +198,19 @@ impl BottomBar {
                     self.input_buf.clear();
                 }
                 self.redraw_bar();
-                None
+                KeyAction::None
+            }
+            KeyCode::Backspace => {
+                self.input_buf.pop();
+                self.redraw_bar();
+                KeyAction::None
             }
             KeyCode::Char(c) => {
                 self.input_buf.push(c);
                 self.redraw_bar();
-                None
+                KeyAction::None
             }
-            _ => None,
+            _ => KeyAction::None,
         }
     }
 

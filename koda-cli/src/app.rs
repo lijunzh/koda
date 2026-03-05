@@ -688,9 +688,20 @@ pub async fn run(
                     } => {
                         if let Ok(crossterm::event::Event::Key(key_event)) = event_result
                             && let Some(ref mut bar) = bottom_bar
-                            && let Some(line) = bar.handle_key(key_event)
                         {
-                            buffered_input = Some(line);
+                            match bar.handle_key(key_event) {
+                                crate::bottom_bar::KeyAction::Submit(line) => {
+                                    buffered_input = Some(line);
+                                }
+                                crate::bottom_bar::KeyAction::Interrupt => {
+                                    if crate::interrupt::handle_sigint() {
+                                        eprintln!("\n\x1b[31mForce quit.\x1b[0m");
+                                        std::process::exit(130);
+                                    }
+                                    cancel_token.cancel();
+                                }
+                                crate::bottom_bar::KeyAction::None => {}
+                            }
                         }
                     }
                     // Fallback: readline input (when no bottom bar)
