@@ -329,7 +329,43 @@ impl Database {
 
         // Reverse so messages are in chronological order
         window.reverse();
+
+        // Fix orphaned tool calls from interrupted sessions: if the last message
+        // is an assistant message with tool_calls but no subsequent tool results,
+        // strip the tool_calls so the LLM doesn't see inconsistent state.
+        // This happens when a session was interrupted between saving the assistant
+        // response and executing/saving tool results.
+        Self::fix_orphaned_tool_calls(&mut window);
+
         Ok(window)
+    }
+
+    /// Strip tool_calls from any assistant message whose tool calls have no
+    /// corresponding tool result messages following it.
+    fn fix_orphaned_tool_calls(messages: &mut [Message]) {
+        let len = messages.len();
+        if len == 0 {
+            return;
+        }
+
+        // Walk backwards: find the last assistant message with tool_calls
+        // and check if tool result messages follow it.
+        let mut i = len;
+        while i > 0 {
+            i -= 1;
+            if messages[i].role == "assistant" && messages[i].tool_calls.is_some() {
+                // Check if the next message is a tool result
+                let has_result = i + 1 < len && messages[i + 1].role == "tool";
+                if !has_result {
+                    messages[i].tool_calls = None;
+                }
+                break; // only need to fix the trailing orphan
+            }
+            // If we hit a non-tool, non-assistant message going backwards, stop
+            if messages[i].role != "tool" {
+                break;
+            }
+        }
     }
 
     /// Load recent user messages across all sessions (for the startup banner).
@@ -1021,6 +1057,127 @@ mod tests {
         .await
         .unwrap();
         assert!(!db.has_pending_tool_calls(&session).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_fix_orphaned_tool_calls() {
+        let (db, _tmp) = setup().await;
+        let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+        // Normal turn: user → assistant with tool_calls → tool result
+        db.insert_message(&session, &Role::User, Some("hello"), None, None, None)
+            .await
+            .unwrap();
+        db.insert_message(
+            &session,
+            &Role::Assistant,
+            Some("Let me read that."),
+            Some(r#"[{"id":"tc1","name":"Read","arguments":"{}"}]"#),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        db.insert_message(
+            &session,
+            &Role::Tool,
+            Some("file contents"),
+            None,
+            Some("tc1"),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Interrupted turn: assistant with tool_calls but NO tool result
+        db.insert_message(
+            &session,
+            &Role::Assistant,
+            Some("I'll edit the file."),
+            Some(r#"[{"id":"tc2","name":"Edit","arguments":"{}"}]"#),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let msgs = db.load_context(&session, 100_000).await.unwrap();
+
+        // The first assistant's tool_calls should be preserved (has tool result)
+        let first_asst = msgs
+            .iter()
+            .find(|m| m.content.as_deref() == Some("Let me read that."))
+            .unwrap();
+        assert!(
+            first_asst.tool_calls.is_some(),
+            "completed tool_calls should be preserved"
+        );
+
+        // The orphaned assistant's tool_calls should be stripped
+        let orphaned = msgs
+            .iter()
+            .find(|m| m.content.as_deref() == Some("I'll edit the file."))
+            .unwrap();
+        assert!(
+            orphaned.tool_calls.is_none(),
+            "orphaned tool_calls should be stripped"
+        );
+    }
+
+    #[test]
+    fn test_fix_orphaned_tool_calls_unit() {
+        fn msg(
+            role: &str,
+            content: Option<&str>,
+            tool_calls: Option<&str>,
+            tool_call_id: Option<&str>,
+        ) -> Message {
+            Message {
+                id: 0,
+                session_id: String::new(),
+                role: role.into(),
+                content: content.map(Into::into),
+                tool_calls: tool_calls.map(Into::into),
+                tool_call_id: tool_call_id.map(Into::into),
+                prompt_tokens: None,
+                completion_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
+                thinking_tokens: None,
+            }
+        }
+
+        // No messages — no crash
+        let mut empty: Vec<Message> = vec![];
+        Database::fix_orphaned_tool_calls(&mut empty);
+        assert!(empty.is_empty());
+
+        // Last message is user — no change
+        let mut msgs = vec![msg("user", Some("hi"), None, None)];
+        Database::fix_orphaned_tool_calls(&mut msgs);
+        assert!(msgs[0].tool_calls.is_none());
+
+        // Last message is assistant with tool_calls, no tool result — stripped
+        let mut msgs = vec![
+            msg("user", Some("hi"), None, None),
+            msg(
+                "assistant",
+                Some("doing it"),
+                Some(r#"[{"id":"t1"}]"#),
+                None,
+            ),
+        ];
+        Database::fix_orphaned_tool_calls(&mut msgs);
+        assert!(msgs[1].tool_calls.is_none());
+
+        // Last message is tool result — assistant tool_calls preserved
+        let mut msgs = vec![
+            msg("user", Some("hi"), None, None),
+            msg("assistant", None, Some(r#"[{"id":"t1"}]"#), None),
+            msg("tool", Some("ok"), None, Some("t1")),
+        ];
+        Database::fix_orphaned_tool_calls(&mut msgs);
+        assert!(msgs[1].tool_calls.is_some());
     }
 
     #[tokio::test]
