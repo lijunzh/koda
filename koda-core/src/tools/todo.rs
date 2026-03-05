@@ -9,26 +9,39 @@
 use crate::providers::ToolDefinition;
 use serde_json::{Value, json};
 
-/// Return the TodoWrite tool definition.
+/// Return the TodoRead and TodoWrite tool definitions.
 pub fn definitions() -> Vec<ToolDefinition> {
-    vec![ToolDefinition {
-        name: "TodoWrite".to_string(),
-        description: "Write or update your task checklist. Replaces the entire todo list. \
+    vec![
+        ToolDefinition {
+            name: "TodoRead".to_string(),
+            description: "Read the current task checklist. Returns the todo list \
+                in markdown checkbox format, or a message if no todo exists."
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        },
+        ToolDefinition {
+            name: "TodoWrite".to_string(),
+            description: "Write or update your task checklist. Replaces the entire todo list. \
             Use markdown checkboxes: `- [x]` for done, `- [ ]` for pending. \
             Call this BEFORE starting multi-step work to create the plan, then call again \
             after EACH step to mark it done. The todo is shown to the user after every turn."
-            .to_string(),
-        parameters: json!({
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "The full todo list in markdown checkbox format"
-                }
-            },
-            "required": ["content"]
-        }),
-    }]
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The full todo list in markdown checkbox format"
+                    }
+                },
+                "required": ["content"]
+            }),
+        },
+    ]
 }
 
 /// Format a todo list for CLI display with visual checkboxes.
@@ -104,8 +117,9 @@ mod tests {
     #[test]
     fn test_definitions() {
         let defs = definitions();
-        assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].name, "TodoWrite");
+        assert_eq!(defs.len(), 2);
+        assert_eq!(defs[0].name, "TodoRead");
+        assert_eq!(defs[1].name, "TodoWrite");
     }
 
     #[test]

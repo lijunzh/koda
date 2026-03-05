@@ -487,6 +487,13 @@ async fn execute_one_tool(
             Ok(output) => output,
             Err(e) => format!("Error invoking sub-agent: {e}"),
         }
+    } else if tc.function_name == "TodoRead" {
+        // Return current todo list from DB
+        match db.get_todo(session_id).await {
+            Ok(Some(content)) => content,
+            Ok(None) => "No todo list set. Use TodoWrite to create one.".to_string(),
+            Err(e) => format!("Failed to read todo: {e}"),
+        }
     } else if tc.function_name == "TodoWrite" {
         // Handle todo updates: save to DB and render for the user
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();

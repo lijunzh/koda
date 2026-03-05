@@ -120,6 +120,7 @@ const READ_ONLY_TOOLS: &[&str] = &[
     "InvokeAgent", // sub-agents inherit parent's approval mode
     "WebFetch",    // GET-only URL fetch
     "TodoWrite",   // internal checklist, no file changes
+    "TodoRead",    // read-only checklist access
 ];
 
 /// Decide whether a tool call should be auto-approved, confirmed, or blocked.
