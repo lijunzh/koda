@@ -12,10 +12,10 @@ use koda_core::preview::{
     WritePreview,
 };
 
-const LINE_RED: &str = "\x1b[48;2;80;0;0m"; // dark red bg — removed line
-const LINE_GREEN: &str = "\x1b[48;2;0;60;0m"; // dark green bg — added line
-const WORD_RED: &str = "\x1b[48;2;130;15;15m"; // brighter red — changed word
-const WORD_GREEN: &str = "\x1b[48;2;15;100;15m"; // brighter green — changed word
+const LINE_RED: &str = "\x1b[48;2;50;0;0m"; // dark red bg — removed line
+const LINE_GREEN: &str = "\x1b[48;2;0;35;0m"; // dark green bg — added line
+const WORD_RED: &str = "\x1b[48;2;100;0;0m"; // brighter red — changed word
+const WORD_GREEN: &str = "\x1b[48;2;0;70;0m"; // brighter green — changed word
 const DIM: &str = "\x1b[90m";
 const RESET: &str = "\x1b[0m";
 
