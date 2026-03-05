@@ -102,21 +102,16 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<S
         }
 
         // Remaining old lines (pure deletions without a new counterpart)
-        for j in pair_count..old_line_vec.len() {
-            lines.push(format!(
-                "{LINE_RED}{:>4} -\t{}{RESET}",
-                start_line + j,
-                old_line_vec[j]
-            ));
+        for (j, line) in old_line_vec.iter().enumerate().skip(pair_count) {
+            lines.push(format!("{LINE_RED}{:>4} -\t{line}{RESET}", start_line + j,));
             total_lines += 1;
         }
 
         // Remaining new lines (pure additions without an old counterpart)
-        for j in pair_count..new_line_vec.len() {
+        for (j, line) in new_line_vec.iter().enumerate().skip(pair_count) {
             lines.push(format!(
-                "{LINE_GREEN}{:>4} +\t{}{RESET}",
+                "{LINE_GREEN}{:>4} +\t{line}{RESET}",
                 start_line + j,
-                new_line_vec[j]
             ));
             total_lines += 1;
         }
