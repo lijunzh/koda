@@ -52,6 +52,8 @@ pub struct BottomBar {
     queued_msg: Option<String>,
     /// Whether we're in raw mode (capturing keystrokes).
     raw_mode: bool,
+    /// The prompt string (same format as readline) for rendering during inference.
+    prompt: String,
 }
 
 impl BottomBar {
@@ -75,6 +77,7 @@ impl BottomBar {
             input_buf: String::new(),
             queued_msg: None,
             raw_mode: false,
+            prompt: String::new(),
         };
         bar.setup_scroll_region();
         Some(bar)
@@ -109,6 +112,11 @@ impl BottomBar {
         let _ = write!(out, "\x1b[1;{}r", self.rows);
         let _ = execute!(out, cursor::MoveTo(0, self.rows - 1));
         let _ = out.flush();
+    }
+
+    /// Set the prompt string (same format as readline's prompt).
+    pub fn set_prompt(&mut self, prompt: &str) {
+        self.prompt = prompt.to_string();
     }
 
     /// Update the live stats text (shown inline with input during inference).
@@ -264,7 +272,6 @@ impl BottomBar {
     fn redraw_bar(&self) {
         let mut out = stdout();
         let input_row = self.rows - BOTTOM_HEIGHT;
-        let width = self.cols as usize;
 
         // Save cursor position
         let _ = execute!(out, cursor::SavePosition);
@@ -274,30 +281,20 @@ impl BottomBar {
         let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
         if self.raw_mode {
             if let Some(ref queued) = self.queued_msg {
-                // Show queued state
-                let display = if queued.len() > width.saturating_sub(12) {
-                    &queued[..width - 12]
-                } else {
-                    queued
-                };
+                // Show queued state with prompt
                 let _ = write!(
                     out,
-                    "\x1b[33m\u{23f3} Queued:\x1b[0m \x1b[90m{display}\x1b[0m"
+                    "{}\x1b[33m\u{23f3} Queued:\x1b[0m \x1b[90m{queued}\x1b[0m\x1b[K",
+                    self.prompt
                 );
             } else {
-                // Show input buffer + live stats
+                // Show prompt + input buffer + live stats (right-aligned)
                 let stats = if self.status_text.is_empty() {
                     String::new()
                 } else {
-                    format!(" \x1b[90m{}", self.status_text)
+                    format!(" \x1b[90m│ {}\x1b[0m", self.status_text)
                 };
-                let display = if self.input_buf.len() > width.saturating_sub(4) {
-                    let start = self.input_buf.len() - (width - 4);
-                    &self.input_buf[start..]
-                } else {
-                    &self.input_buf
-                };
-                let _ = write!(out, "\x1b[36m\u{276f}\x1b[0m {display}{stats}\x1b[0m\x1b[K");
+                let _ = write!(out, "{}{}{}\x1b[K", self.prompt, self.input_buf, stats);
             }
         }
 

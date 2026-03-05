@@ -625,7 +625,9 @@ pub async fn run(
         }
 
         // Start input capture in the bottom bar (visible type-ahead)
+        let prompt = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
         let mut event_stream = if let Some(ref mut bar) = bottom_bar {
+            bar.set_prompt(&prompt);
             bar.start_input_capture();
             Some(bar.event_stream())
         } else {
