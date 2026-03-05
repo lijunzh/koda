@@ -113,8 +113,7 @@ pub async fn run(
     let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
         Arc::new(RwLock::new(crate::commands::create_provider(&config)));
 
-    // Set up the fixed bottom bar (scroll region + status line)
-    let mut bottom_bar = crate::bottom_bar::BottomBar::new();
+    // Bottom bar created later, after banner prints
 
     // Auto-detect the serving model for local providers
     if config.model == "auto-detect" {
@@ -223,7 +222,10 @@ pub async fn run(
 
     std::thread::spawn(move || readline_thread(rl, rl_cmd_rx, input_tx));
 
-    // ── Event loop ───────────────────────────────────────────
+    // ── Event loop ───────────────────────────────────────
+
+    // Set up the fixed bottom bar AFTER banner and startup output
+    let mut bottom_bar = crate::bottom_bar::BottomBar::new();
 
     let mut renderer = UiRenderer::new();
     let mut pending_command: Option<String> = None;
