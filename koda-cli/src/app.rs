@@ -59,6 +59,7 @@ fn readline_thread(
                 match rl.readline(&prompt) {
                     Ok(line) => {
                         let _ = rl.add_history_entry(&line);
+                        let _ = rl.save_history(&history_file_path());
                         // blocking_send is fine — we're on an OS thread.
                         let _ = input_tx.blocking_send(InputEvent::Line(line));
                     }
