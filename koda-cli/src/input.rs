@@ -424,7 +424,9 @@ fn mime_type_for(path: &str) -> &'static str {
 
 /// Strip surrounding quotes from a token (terminals often quote dragged paths).
 fn strip_quotes(s: &str) -> &str {
-    if s.len() >= 2 && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\''))) {
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
         &s[1..s.len() - 1]
     } else {
         s
