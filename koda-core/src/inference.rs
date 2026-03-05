@@ -248,7 +248,14 @@ pub async fn inference_loop(
                         native_think_buf.clear();
                     }
                     sink.emit(EngineEvent::SpinnerStop);
-                    tool_calls = tcs;
+                    // Normalize tool names (small models send lowercase)
+                    tool_calls = tcs
+                        .into_iter()
+                        .map(|mut tc| {
+                            tc.function_name = tools::normalize_tool_name(&tc.function_name);
+                            tc
+                        })
+                        .collect();
                 }
                 StreamChunk::Done(u) => {
                     // Close any open thinking block (content already streamed)
