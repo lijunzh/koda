@@ -113,6 +113,9 @@ pub async fn run(
     let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
         Arc::new(RwLock::new(crate::commands::create_provider(&config)));
 
+    // Set up the fixed bottom bar (scroll region + status line)
+    let mut bottom_bar = crate::bottom_bar::BottomBar::new();
+
     // Auto-detect the serving model for local providers
     if config.model == "auto-detect" {
         let prov = provider.read().await;
@@ -575,6 +578,16 @@ pub async fn run(
         // Sync session state from REPL changes (model/provider switching)
         session.mode = approval::read_mode(&shared_mode);
         session.update_provider(&config);
+
+        // Update bottom bar status for this turn
+        if let Some(ref mut bar) = bottom_bar {
+            bar.set_status(&format!(
+                " {} │ {} │ {}",
+                config.model,
+                config.provider_type,
+                approval::read_mode(&shared_mode).label()
+            ));
+        }
 
         // Create a channel-forwarding sink for this turn
         let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
