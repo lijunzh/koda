@@ -244,10 +244,16 @@ impl BottomBar {
 
             let mut out = stdout();
 
-            // Clear old bar lines (at previous positions)
+            // Clear old bar lines AND old input line (at previous positions)
             let old_input_row = old_rows - BOTTOM_HEIGHT;
             let old_status_row = old_rows - 1;
-            for row in [old_input_row, old_status_row] {
+            let new_input_row = rows - BOTTOM_HEIGHT;
+            let new_status_row = rows - 1;
+            // Collect all rows that need clearing (old positions + new positions)
+            let mut clear_rows = vec![old_input_row, old_status_row, new_input_row, new_status_row];
+            clear_rows.sort();
+            clear_rows.dedup();
+            for row in clear_rows {
                 if row < rows {
                     let _ = execute!(out, cursor::MoveTo(0, row));
                     let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
