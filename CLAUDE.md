@@ -15,10 +15,10 @@ See [DESIGN.md](DESIGN.md) for architectural decisions. See [#57](https://github
 ```bash
 cargo build                              # Debug build
 cargo build --release -p koda-cli        # Release build
-cargo test --workspace                   # Run all 372 tests
-cargo test -p koda-core                  # Engine tests only
-cargo test -p koda-cli                   # CLI tests only
-cargo test -p koda-core --test perf_test # Run a specific test file
+cargo test --workspace --features koda-core/test-support  # Run all tests (incl. E2E)
+cargo test -p koda-core --features test-support          # Engine tests only
+cargo test -p koda-cli                                   # CLI tests only
+cargo test -p koda-core --test perf_test                 # Run a specific test file
 cargo fmt --all                          # Format all crates
 cargo fmt --all --check                  # Check formatting (CI enforced)
 cargo clippy --workspace -- -D warnings  # Lint (CI enforced)
