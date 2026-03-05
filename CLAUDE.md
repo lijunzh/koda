@@ -8,14 +8,14 @@ Koda is a high-performance AI coding agent built in Rust (edition 2024). Two-cra
 - `koda-core` (library) — pure engine with zero terminal deps
 - `koda-cli` (binary `koda`) — CLI frontend
 
-See [DESIGN.md](DESIGN.md) for architectural decisions. See [#21](https://github.com/lijunzh/koda/issues/21) for the v0.1.0 release plan.
+See [DESIGN.md](DESIGN.md) for architectural decisions. See [#57](https://github.com/lijunzh/koda/issues/57) for the TUI migration plan (v0.1.2).
 
 ## Build & Development Commands
 
 ```bash
 cargo build                              # Debug build
 cargo build --release -p koda-cli        # Release build
-cargo test --workspace                   # Run all 360 tests
+cargo test --workspace                   # Run all 370 tests
 cargo test -p koda-core                  # Engine tests only
 cargo test -p koda-cli                   # CLI tests only
 cargo test -p koda-core --test perf_test # Run a specific test file
@@ -67,8 +67,8 @@ koda/
 │   │   ├── input.rs        # rustyline Helper: slash-command + @file completions
 │   │   ├── interrupt.rs    # Ctrl+C double-tap graceful cancellation
 │   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
-│   │   ├── tui.rs          # Arrow-key interactive selection menus
-│   │   ├── sink.rs         # CliSink (EngineEvent → terminal rendering)
+│   │   ├── tui.rs          # Arrow-key interactive selection menus (approval, /model, /help)
+│   │   ├── sink.rs         # CliSink (EngineEvent → terminal rendering, inline spinner)
 │   │   ├── display.rs      # Terminal output formatting
 │   │   ├── highlight.rs    # Syntax highlighting via syntect
 │   │   └── markdown.rs     # Streaming markdown renderer
