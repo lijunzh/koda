@@ -230,23 +230,22 @@ impl BottomBar {
         }
     }
 
-    /// Handle terminal resize.
+    /// Handle terminal resize. Updates scroll region boundaries without
+    /// redrawing — the next status update or keystroke will redraw cleanly.
     pub fn on_resize(&mut self) {
         if let Ok((cols, rows)) = terminal::size() {
+            if rows < 10 {
+                return;
+            }
             self.cols = cols;
             self.rows = rows;
-            // Update scroll region without clearing — just adjust boundaries
             let scroll_end = self.rows - BOTTOM_HEIGHT;
             let mut out = stdout();
-            let _ = execute!(out, cursor::SavePosition);
-            // Reset scroll region to new size
+            // Just update the scroll region boundary
             let _ = write!(out, "\x1b[1;{scroll_end}r");
-            // Redraw the bar at the new position
-            self.redraw_bar();
-            let _ = execute!(out, cursor::RestorePosition);
             let _ = out.flush();
 
-            // Re-apply OPOST if in raw mode (resize may reset terminal flags)
+            // Re-apply OPOST if in raw mode
             if self.raw_mode {
                 #[cfg(unix)]
                 {
