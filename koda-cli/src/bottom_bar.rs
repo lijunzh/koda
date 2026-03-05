@@ -5,12 +5,16 @@
 //! All existing `println!` output is confined to the scroll region
 //! automatically — no changes needed to display code.
 //!
-//! Based on the same technique used by vim, less, and tmux.
+//! During inference, captures raw keystrokes and renders them in the
+//! input line so users can see what they're typing.
 
 use crossterm::{
-    cursor, execute,
+    cursor,
+    event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
+    execute,
     terminal::{self, ClearType},
 };
+use futures_util::StreamExt;
 use std::io::{Write, stdout};
 
 /// Height of the fixed bottom area (status bar + input line).
@@ -22,6 +26,10 @@ pub struct BottomBar {
     rows: u16,
     cols: u16,
     status_text: String,
+    /// Input buffer for type-ahead during inference.
+    input_buf: String,
+    /// Whether we're in raw mode (capturing keystrokes).
+    raw_mode: bool,
 }
 
 impl BottomBar {
@@ -42,6 +50,8 @@ impl BottomBar {
             rows,
             cols,
             status_text: String::new(),
+            input_buf: String::new(),
+            raw_mode: false,
         };
         bar.setup_scroll_region();
         Some(bar)
@@ -68,6 +78,9 @@ impl BottomBar {
         if !self.enabled {
             return;
         }
+        if self.raw_mode {
+            let _ = terminal::disable_raw_mode();
+        }
         let mut out = stdout();
         // Reset scroll region to full terminal
         let _ = write!(out, "\x1b[1;{}r", self.rows);
@@ -81,6 +94,84 @@ impl BottomBar {
         self.redraw_bar();
     }
 
+    /// Enable raw mode for keystroke capture during inference.
+    pub fn start_input_capture(&mut self) {
+        if !self.raw_mode {
+            let _ = terminal::enable_raw_mode();
+            self.raw_mode = true;
+            self.input_buf.clear();
+            self.redraw_bar();
+        }
+    }
+
+    /// Disable raw mode and return any buffered input.
+    pub fn stop_input_capture(&mut self) -> Option<String> {
+        if self.raw_mode {
+            let _ = terminal::disable_raw_mode();
+            self.raw_mode = false;
+        }
+        if self.input_buf.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut self.input_buf))
+        }
+    }
+
+    /// Create an async event stream for reading keystrokes.
+    /// Call this once and poll it in the tokio::select! loop.
+    pub fn event_stream(&self) -> EventStream {
+        EventStream::new()
+    }
+
+    /// Handle a crossterm key event. Returns Some(line) on Enter.
+    pub fn handle_key(&mut self, event: KeyEvent) -> Option<String> {
+        match event.code {
+            KeyCode::Enter => {
+                let line = std::mem::take(&mut self.input_buf);
+                self.redraw_bar();
+                if line.trim().is_empty() {
+                    None
+                } else {
+                    Some(line)
+                }
+            }
+            KeyCode::Backspace => {
+                self.input_buf.pop();
+                self.redraw_bar();
+                None
+            }
+            KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+C: clear the input buffer
+                self.input_buf.clear();
+                self.redraw_bar();
+                None
+            }
+            KeyCode::Char('u') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+U: clear line
+                self.input_buf.clear();
+                self.redraw_bar();
+                None
+            }
+            KeyCode::Char('w') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+W: delete last word
+                let trimmed = self.input_buf.trim_end().to_string();
+                if let Some(pos) = trimmed.rfind(' ') {
+                    self.input_buf = trimmed[..pos + 1].to_string();
+                } else {
+                    self.input_buf.clear();
+                }
+                self.redraw_bar();
+                None
+            }
+            KeyCode::Char(c) => {
+                self.input_buf.push(c);
+                self.redraw_bar();
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// Handle terminal resize.
     #[allow(dead_code)]
     pub fn on_resize(&mut self) {
@@ -91,26 +182,42 @@ impl BottomBar {
         }
     }
 
-    /// Redraw the bottom bar (status line + input prompt placeholder).
+    /// Redraw the bottom bar (status line + input prompt).
     fn redraw_bar(&self) {
         let mut out = stdout();
         let status_row = self.rows - BOTTOM_HEIGHT;
-        let _input_row = self.rows - 1;
+        let input_row = self.rows - 1;
+        let width = self.cols as usize;
 
         // Save cursor position
         let _ = execute!(out, cursor::SavePosition);
 
-        // Draw status bar
+        // Draw status bar (inverted dim)
         let _ = execute!(out, cursor::MoveTo(0, status_row));
         let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
-        // Dim background for status bar
         let status = if self.status_text.is_empty() {
             String::new()
         } else {
             self.status_text.clone()
         };
-        let padded = format!("{:<width$}", status, width = self.cols as usize);
+        let padded = format!("{:<width$}", status, width = width);
         let _ = write!(out, "\x1b[90;7m{padded}\x1b[0m");
+
+        // Draw input line
+        let _ = execute!(out, cursor::MoveTo(0, input_row));
+        let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
+        if self.raw_mode {
+            // Show the input buffer with a prompt
+            let prompt = "\x1b[36m\u{276f}\x1b[0m ";
+            let display = if self.input_buf.len() > width.saturating_sub(4) {
+                // Truncate from the left if too long
+                let start = self.input_buf.len() - (width - 4);
+                &self.input_buf[start..]
+            } else {
+                &self.input_buf
+            };
+            let _ = write!(out, "{prompt}{display}\x1b[K");
+        }
 
         // Restore cursor position (back to scroll region)
         let _ = execute!(out, cursor::RestorePosition);

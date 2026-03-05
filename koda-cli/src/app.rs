@@ -19,6 +19,7 @@ use crate::sink::UiRenderer;
 use crate::tui::{self, SelectOption};
 
 use anyhow::Result;
+use futures_util::StreamExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -597,9 +598,16 @@ pub async fn run(
             ));
         }
 
-        // Start readline for type-ahead during inference
-        let prompt = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
-        let _ = rl_cmd_tx.send(ReadlineCommand::ReadLine(prompt));
+        // Start input capture in the bottom bar (visible type-ahead)
+        let mut event_stream = if let Some(ref mut bar) = bottom_bar {
+            bar.start_input_capture();
+            Some(bar.event_stream())
+        } else {
+            // No bottom bar — fall back to readline for type-ahead
+            let prompt = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
+            let _ = rl_cmd_tx.send(ReadlineCommand::ReadLine(prompt));
+            None
+        };
 
         // Create a channel-forwarding sink for this turn
         let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
@@ -667,8 +675,25 @@ pub async fn run(
                             }
                         }
                     }
-                    // Phase 2: buffer input that arrives during inference
-                    Some(input_event) = input_rx.recv() => {
+                    // Phase 2: capture keystrokes in bottom bar during inference
+                    Some(event_result) = async {
+                        if let Some(ref mut stream) = event_stream {
+                            stream.next().await
+                        } else {
+                            // No event stream — wait for readline input instead
+                            std::future::pending::<Option<Result<crossterm::event::Event, std::io::Error>>>().await
+                        }
+                    } => {
+                        if let Ok(crossterm::event::Event::Key(key_event)) = event_result {
+                            if let Some(ref mut bar) = bottom_bar {
+                                if let Some(line) = bar.handle_key(key_event) {
+                                    buffered_input = Some(line);
+                                }
+                            }
+                        }
+                    }
+                    // Fallback: readline input (when no bottom bar)
+                    Some(input_event) = input_rx.recv(), if event_stream.is_none() => {
                         match input_event {
                             InputEvent::Line(line) => {
                                 let trimmed = line.trim().to_string();
@@ -690,6 +715,13 @@ pub async fn run(
             }
         }
         // Borrows on session/config/cmd_rx released here.
+
+        // Stop input capture and collect any typed input
+        if let Some(ref mut bar) = bottom_bar {
+            if let Some(input) = bar.stop_input_capture() {
+                buffered_input = Some(input);
+            }
+        }
 
         // Drain remaining UI events (e.g., SpinnerStop after Ctrl+C interrupt).
         // Without this, the spinner task can keep running and overwrite the prompt.
