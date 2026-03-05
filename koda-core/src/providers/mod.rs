@@ -144,11 +144,9 @@ pub fn build_http_client() -> reqwest::Client {
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
     if accept_invalid_certs {
-        eprintln!(
-            "  \x1b[33m\u{26a0} WARNING: TLS certificate validation is DISABLED (KODA_ACCEPT_INVALID_CERTS=1)\x1b[0m"
+        tracing::warn!(
+            "TLS certificate validation disabled! API keys and conversation data may be intercepted."
         );
-        eprintln!("    API keys and conversation data may be intercepted.");
-        tracing::warn!("TLS certificate validation disabled!");
     }
     builder = builder.danger_accept_invalid_certs(accept_invalid_certs);
 

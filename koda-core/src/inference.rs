@@ -136,7 +136,7 @@ pub async fn inference_loop(
 
         // Stream the response
         sink.emit(EngineEvent::SpinnerStart {
-            message: "\u{1f36f} Thinking...".into(),
+            message: "Thinking...".into(),
         });
 
         let mut rx = tokio::select! {
@@ -306,9 +306,9 @@ pub async fn inference_loop(
         // If no tool calls, we already streamed the response — done
         if tool_calls.is_empty() {
             if made_tool_calls && full_text.trim().is_empty() {
-                println!(
-                    "\n  \x1b[33m\u{26a0} Model produced an empty response after tool use — it may have given up mid-task. Try rephrasing or switching to a more capable model.\x1b[0m"
-                );
+                sink.emit(EngineEvent::Warn {
+                    message: "Model produced an empty response after tool use — it may have given up mid-task. Try rephrasing or switching to a more capable model.".into(),
+                });
             }
             total_prompt_tokens += usage.prompt_tokens;
             total_completion_tokens += usage.completion_tokens;
@@ -325,52 +325,32 @@ pub async fn inference_loop(
 
             let total_elapsed = loop_start.elapsed();
             let total_secs = total_elapsed.as_secs_f64();
-            let time_str = format_duration(total_elapsed);
             let rate = if total_secs > 0.0 && display_tokens > 0 {
                 display_tokens as f64 / total_secs
             } else {
                 0.0
             };
 
-            let ctx = crate::context::format_footer();
-            let ctx_part = if ctx.is_empty() {
-                String::new()
-            } else {
-                format!(" \u{00b7} {ctx}")
-            };
-
-            // Build enriched footer parts
-            let mut parts = Vec::new();
-            if total_prompt_tokens > 0 {
-                let prompt_k = format_token_count(total_prompt_tokens);
-                parts.push(format!("in: {prompt_k}"));
-            }
-            if display_tokens > 0 {
-                parts.push(format!("out: {display_tokens}"));
-            }
-            parts.push(time_str);
-            if display_tokens > 0 {
-                parts.push(format!("{rate:.0} t/s"));
-            }
-            if total_cache_read_tokens > 0 {
-                let cache_k = format_token_count(total_cache_read_tokens);
-                parts.push(format!("cache: {cache_k} read"));
-            }
-            if total_thinking_tokens > 0 {
-                let think_k = format_token_count(total_thinking_tokens);
-                parts.push(format!("thinking: {think_k}"));
-            }
-
-            let footer = parts.join(" \u{00b7} ");
+            let context = crate::context::format_footer();
 
             // Show todo at end only if no tool calls were made this turn
             // (if tools ran, TodoWrite already rendered inline when called)
             if !made_tool_calls && let Ok(Some(todo_content)) = db.get_todo(session_id).await {
-                println!();
-                print!("{}", crate::tools::todo::format_todo_display(&todo_content));
+                sink.emit(EngineEvent::TodoDisplay {
+                    content: todo_content,
+                });
             }
 
-            println!("\n\x1b[90m{footer}{ctx_part}\x1b[0m\n");
+            sink.emit(EngineEvent::Footer {
+                prompt_tokens: total_prompt_tokens,
+                completion_tokens: total_completion_tokens,
+                cache_read_tokens: total_cache_read_tokens,
+                thinking_tokens: total_thinking_tokens,
+                total_chars: total_char_count,
+                elapsed_ms: total_elapsed.as_millis() as u64,
+                rate,
+                context,
+            });
 
             return Ok(());
         }
@@ -423,10 +403,12 @@ pub async fn inference_loop(
         // Loop detection: same tool+args repeated REPEAT_THRESHOLD times → stop immediately.
         if let Some(fp) = loop_detector.record(&tool_calls) {
             let culprit = fp.split(':').next().unwrap_or("unknown");
-            println!(
-                "\n  \x1b[31m\u{26a0}  Loop detected: '{culprit}' is repeating with identical arguments.\
-                \n  Stopping to avoid wasted work. Rephrase the task or check for ambiguity.\x1b[0m"
-            );
+            sink.emit(EngineEvent::Warn {
+                message: format!(
+                    "Loop detected: '{culprit}' is repeating with identical arguments. \
+                     Stopping to avoid wasted work. Rephrase the task or check for ambiguity."
+                ),
+            });
             break Ok(());
         }
 
@@ -503,8 +485,9 @@ async fn execute_one_tool(
                     format!("Failed to save todo: {e}")
                 } else {
                     // Show updated todo immediately
-                    println!();
-                    print!("{}", crate::tools::todo::format_todo_display(&content));
+                    sink.emit(EngineEvent::TodoDisplay {
+                        content: content.clone(),
+                    });
                     "Todo list updated.".to_string()
                 }
             }
@@ -543,7 +526,9 @@ async fn execute_tools_parallel(
     }
 
     let count = tool_calls.len();
-    println!("\n  \x1b[36m\u{1f43b} Running {count} tools in parallel...\x1b[0m");
+    sink.emit(EngineEvent::Info {
+        message: format!("Running {count} tools in parallel..."),
+    });
 
     // Launch all tool calls concurrently
     let futures: Vec<_> = tool_calls
@@ -694,9 +679,11 @@ async fn execute_tools_sequential(
                             if let Err(e) = settings.add_allowed_command(pattern) {
                                 tracing::warn!("Failed to save whitelist: {e}");
                             } else {
-                                println!(
-                                    "  \x1b[32m\u{2713}\x1b[0m Added '\x1b[1m{pattern}\x1b[0m' to always-allowed commands"
-                                );
+                                sink.emit(EngineEvent::Info {
+                                    message: format!(
+                                        "Added '{pattern}' to always-allowed commands"
+                                    ),
+                                });
                             }
                         }
                         // Fall through to execute
@@ -966,10 +953,12 @@ async fn execute_sub_agent(
         }
     }
 
-    println!(
-        "  \x1b[33m\u{26a0}  Sub-agent '{agent_name}' hit its iteration limit ({MAX_SUB_AGENT_LIMIT}). Returning partial result.\x1b[0m",
-        MAX_SUB_AGENT_LIMIT = loop_guard::MAX_SUB_AGENT_ITERATIONS
-    );
+    sink.emit(EngineEvent::Warn {
+        message: format!(
+            "Sub-agent '{agent_name}' hit its iteration limit ({}). Returning partial result.",
+            loop_guard::MAX_SUB_AGENT_ITERATIONS
+        ),
+    });
     Ok("(sub-agent reached maximum iterations)".to_string())
 }
 

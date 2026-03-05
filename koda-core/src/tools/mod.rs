@@ -216,7 +216,22 @@ impl ToolRegistry {
                 if detail {
                     Ok(agent::list_agents_detail(&self.project_root))
                 } else {
-                    Ok(agent::list_agents(&self.project_root))
+                    let agents = agent::list_agents(&self.project_root);
+                    if agents.is_empty() {
+                        Ok("No sub-agents configured.".to_string())
+                    } else {
+                        let lines: Vec<String> = agents
+                            .iter()
+                            .map(|(name, desc, source)| {
+                                if source == "built-in" {
+                                    format!("  {name} — {desc}")
+                                } else {
+                                    format!("  {name} — {desc} [{source}]")
+                                }
+                            })
+                            .collect();
+                        Ok(lines.join("\n"))
+                    }
                 }
             }
             "CreateAgent" => Ok(agent::create_agent(&self.project_root, &args)),
@@ -345,7 +360,7 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
                 .or(args.get("cmd"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            format!("\x1b[1m{cmd}\x1b[0m")
+            cmd.to_string()
         }
         "Delete" => {
             let path = args
@@ -358,9 +373,9 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             if recursive {
-                format!("Delete directory (recursive): \x1b[1m{path}\x1b[0m")
+                format!("Delete directory (recursive): {path}")
             } else {
-                format!("Delete: \x1b[1m{path}\x1b[0m")
+                format!("Delete: {path}")
             }
         }
         "Write" => {
@@ -374,9 +389,9 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             if overwrite {
-                format!("Overwrite file: \x1b[1m{path}\x1b[0m")
+                format!("Overwrite file: {path}")
             } else {
-                format!("Create file: \x1b[1m{path}\x1b[0m")
+                format!("Create file: {path}")
             }
         }
         "Edit" => {
@@ -392,11 +407,11 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
                     .and_then(|v| v.as_str())
                     .unwrap_or("?")
             };
-            format!("Edit file: \x1b[1m{path}\x1b[0m")
+            format!("Edit file: {path}")
         }
         "WebFetch" => {
             let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("?");
-            format!("Fetch URL: \x1b[1m{url}\x1b[0m")
+            format!("Fetch URL: {url}")
         }
         _ => format!("Execute: {tool_name}"),
     }
