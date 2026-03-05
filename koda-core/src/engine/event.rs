@@ -86,8 +86,8 @@ pub enum EngineEvent {
         tool_name: String,
         /// Human-readable description of the action.
         detail: String,
-        /// Optional diff preview or action preview.
-        preview: Option<String>,
+        /// Structured diff preview (rendered by the client).
+        preview: Option<crate::preview::DiffPreview>,
         /// If set, the client can offer an "Always allow" option for this pattern.
         whitelist_hint: Option<String>,
     },
@@ -96,7 +96,7 @@ pub enum EngineEvent {
     ActionBlocked {
         tool_name: String,
         detail: String,
-        preview: Option<String>,
+        preview: Option<crate::preview::DiffPreview>,
     },
 
     // ── Session metadata ──────────────────────────────────────────────

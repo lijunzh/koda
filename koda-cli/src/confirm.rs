@@ -32,7 +32,7 @@ pub enum Confirmation {
 pub fn confirm_tool_action(
     _tool_name: &str,
     detail: &str,
-    preview: Option<&str>,
+    preview: Option<&koda_core::preview::DiffPreview>,
     whitelist_hint: Option<&str>,
 ) -> Confirmation {
     // Show the action details
@@ -40,9 +40,10 @@ pub fn confirm_tool_action(
     println!("  \x1b[90m{detail}\x1b[0m");
 
     // Show diff preview if available
-    if let Some(preview_text) = preview {
+    if let Some(preview) = preview {
         println!();
-        for line in preview_text.lines() {
+        let rendered = crate::diff_render::render(preview);
+        for line in rendered.lines() {
             println!("  {line}");
         }
     }

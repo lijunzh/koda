@@ -634,16 +634,15 @@ async fn execute_tools_sequential(
                 // Execute without asking
             }
             ToolApproval::Blocked => {
-                // Plan mode: show what would happen, don't execute
+                // Plan mode: emit ActionBlocked event, let the client render it
                 let detail = tools::describe_action(&tc.function_name, &parsed_args);
                 let diff_preview =
                     preview::compute(&tc.function_name, &parsed_args, project_root).await;
-                println!("  \x1b[33m\u{1f4cb} Would execute: {detail}\x1b[0m");
-                if let Some(ref preview_text) = diff_preview {
-                    for line in preview_text.lines() {
-                        println!("  {line}");
-                    }
-                }
+                sink.emit(EngineEvent::ActionBlocked {
+                    tool_name: tc.function_name.clone(),
+                    detail: detail.clone(),
+                    preview: diff_preview,
+                });
                 db.insert_message(
                     session_id,
                     &Role::Tool,
@@ -683,7 +682,7 @@ async fn execute_tools_sequential(
                     &cancel,
                     &tc.function_name,
                     &detail,
-                    diff_preview.as_deref(),
+                    diff_preview,
                     whitelist_hint.as_deref(),
                 )
                 .await
@@ -897,7 +896,13 @@ async fn execute_sub_agent(
                 }
                 ToolApproval::Blocked => {
                     let detail = tools::describe_action(&tc.function_name, &parsed_args);
-                    println!("  \x1b[33m\u{1f4cb} Would execute: {detail}\x1b[0m");
+                    let diff_preview =
+                        preview::compute(&tc.function_name, &parsed_args, project_root).await;
+                    sink.emit(EngineEvent::ActionBlocked {
+                        tool_name: tc.function_name.clone(),
+                        detail,
+                        preview: diff_preview,
+                    });
                     "[plan mode] Action described but not executed.".to_string()
                 }
                 ToolApproval::NeedsConfirmation => {
@@ -926,7 +931,7 @@ async fn execute_sub_agent(
                         &sub_cancel,
                         &tc.function_name,
                         &detail,
-                        diff_preview.as_deref(),
+                        diff_preview,
                         whitelist_hint.as_deref(),
                     )
                     .await
@@ -1071,7 +1076,7 @@ async fn request_approval(
     cancel: &CancellationToken,
     tool_name: &str,
     detail: &str,
-    preview: Option<&str>,
+    preview: Option<crate::preview::DiffPreview>,
     whitelist_hint: Option<&str>,
 ) -> Option<ApprovalDecision> {
     let approval_id = uuid::Uuid::new_v4().to_string();
@@ -1079,7 +1084,7 @@ async fn request_approval(
         id: approval_id.clone(),
         tool_name: tool_name.to_string(),
         detail: detail.to_string(),
-        preview: preview.map(|s| s.to_string()),
+        preview,
         whitelist_hint: whitelist_hint.map(|s| s.to_string()),
     });
 
