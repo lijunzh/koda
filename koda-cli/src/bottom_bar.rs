@@ -172,6 +172,11 @@ impl BottomBar {
     /// Handle a crossterm key event.
     /// Returns `KeyAction` indicating what happened.
     pub fn handle_key(&mut self, event: KeyEvent) -> KeyAction {
+        // Only handle key press events (not release/repeat)
+        if event.kind != crossterm::event::KeyEventKind::Press {
+            return KeyAction::None;
+        }
+
         // Ignore keys if already queued
         if self.queued_msg.is_some() {
             return KeyAction::None;
@@ -226,12 +231,38 @@ impl BottomBar {
     }
 
     /// Handle terminal resize.
-    #[allow(dead_code)]
     pub fn on_resize(&mut self) {
         if let Ok((cols, rows)) = terminal::size() {
             self.cols = cols;
             self.rows = rows;
-            self.setup_scroll_region();
+            // Update scroll region without clearing — just adjust boundaries
+            let scroll_end = self.rows - BOTTOM_HEIGHT;
+            let mut out = stdout();
+            let _ = execute!(out, cursor::SavePosition);
+            // Reset scroll region to new size
+            let _ = write!(out, "\x1b[1;{scroll_end}r");
+            // Redraw the bar at the new position
+            self.redraw_bar();
+            let _ = execute!(out, cursor::RestorePosition);
+            let _ = out.flush();
+
+            // Re-apply OPOST if in raw mode (resize may reset terminal flags)
+            if self.raw_mode {
+                #[cfg(unix)]
+                {
+                    use std::os::fd::AsFd;
+                    let o = stdout();
+                    let fd = o.as_fd();
+                    if let Ok(mut termios) = nix::sys::termios::tcgetattr(fd) {
+                        termios.output_flags |= nix::sys::termios::OutputFlags::OPOST;
+                        let _ = nix::sys::termios::tcsetattr(
+                            fd,
+                            nix::sys::termios::SetArg::TCSANOW,
+                            &termios,
+                        );
+                    }
+                }
+            }
         }
     }
 
