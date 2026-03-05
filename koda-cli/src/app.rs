@@ -230,11 +230,15 @@ pub async fn run(
     let mut renderer = UiRenderer::new();
     let mut pending_command: Option<String> = None;
     let mut silent_compact_deferred = false;
+    let mut buffered_input: Option<String> = None;
 
     loop {
         // ── Phase 1: Wait for input ──────────────────────────
         let input = if let Some(cmd) = pending_command.take() {
             cmd
+        } else if let Some(buffered) = buffered_input.take() {
+            // Use input that was typed during the previous inference turn
+            buffered
         } else {
             let prompt = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
             if rl_cmd_tx.send(ReadlineCommand::ReadLine(prompt)).is_err() {
@@ -582,14 +586,20 @@ pub async fn run(
         session.update_provider(&config);
 
         // Update bottom bar status for this turn
+        let turn_start = std::time::Instant::now();
+        let mut turn_tokens: i64 = 0;
         if let Some(ref mut bar) = bottom_bar {
             bar.set_status(&format!(
-                " {} │ {} │ {}",
+                " {} │ {} │ {} │ 0s",
                 config.model,
                 config.provider_type,
                 approval::read_mode(&shared_mode).label()
             ));
         }
+
+        // Start readline for type-ahead during inference
+        let prompt = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
+        let _ = rl_cmd_tx.send(ReadlineCommand::ReadLine(prompt));
 
         // Create a channel-forwarding sink for this turn
         let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
@@ -637,9 +647,36 @@ pub async fn run(
                                     .send(EngineCommand::ApprovalResponse { id, decision })
                                     .await;
                             }
-                            UiEvent::Engine(event) => {
-                                renderer.render(event);
+                            UiEvent::Engine(ref event) => {
+                                // Phase 3: update status bar with live stats
+                                if let EngineEvent::TextDelta { text } = event {
+                                    turn_tokens += (text.len() / 4) as i64;
+                                }
+                                if let Some(ref mut bar) = bottom_bar {
+                                    let elapsed = turn_start.elapsed().as_secs();
+                                    bar.set_status(&format!(
+                                        " {} │ {} │ {} │ {}s │ ~{} tokens",
+                                        config.model,
+                                        config.provider_type,
+                                        approval::read_mode(&shared_mode).label(),
+                                        elapsed,
+                                        turn_tokens,
+                                    ));
+                                }
+                                renderer.render(event.clone());
                             }
+                        }
+                    }
+                    // Phase 2: buffer input that arrives during inference
+                    Some(input_event) = input_rx.recv() => {
+                        match input_event {
+                            InputEvent::Line(line) => {
+                                let trimmed = line.trim().to_string();
+                                if !trimmed.is_empty() {
+                                    buffered_input = Some(trimmed);
+                                }
+                            }
+                            InputEvent::Eof => break,
                         }
                     }
                     _ = tokio::signal::ctrl_c() => {
@@ -661,6 +698,16 @@ pub async fn run(
         }
         // Safety net: ensure the spinner is stopped even if SpinnerStop was lost.
         renderer.stop_spinner();
+
+        // Reset status bar to idle state
+        if let Some(ref mut bar) = bottom_bar {
+            bar.set_status(&format!(
+                " {} │ {} │ {}",
+                config.model,
+                config.provider_type,
+                approval::read_mode(&shared_mode).label()
+            ));
+        }
 
         crate::interrupt::reset();
         session.cancel = tokio_util::sync::CancellationToken::new();
