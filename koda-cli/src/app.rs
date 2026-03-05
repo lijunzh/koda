@@ -778,6 +778,11 @@ pub async fn run(
         mcp.shutdown();
     }
 
+    println!(
+        "\n\x1b[90mResume this session with:\n  koda --resume {}\x1b[0m",
+        session.id
+    );
+
     Ok(())
 }
 
