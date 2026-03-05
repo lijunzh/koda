@@ -352,7 +352,7 @@ pub async fn run(
                     }
                     println!();
                     println!(
-                        "  \x1b[90mTips: @file to attach context \u{00b7} Ctrl+C to clear input \u{00b7} Ctrl+D to exit\x1b[0m"
+                        "  \x1b[90mTips: @file to attach context \u{00b7} type while model runs \u{00b7} Ctrl+C to cancel \u{00b7} Ctrl+D to exit\x1b[0m"
                     );
                     continue;
                 }

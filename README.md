@@ -85,6 +85,19 @@ Koda natively understands the structure of your codebase using embedded `tree-si
 
 **Tips:** `@file` to attach context · `Shift+Tab` to cycle trust mode · `Esc` to clear input
 
+### Keyboard Shortcuts (during inference)
+
+| Key | Action |
+|-----|--------|
+| **Enter** | Queue typed text as the next prompt |
+| **Ctrl+C** | Cancel the current inference turn |
+| **Ctrl+C ×2** | Force quit Koda |
+| **Ctrl+U** | Clear the input line |
+| **Ctrl+W** | Delete the last word |
+| **Backspace** | Delete the last character |
+
+You can type your next message while the model is running — it appears in the bottom bar and gets submitted automatically when the current turn finishes.
+
 ## MCP (Model Context Protocol)
 
 Koda connects to external [MCP servers](https://modelcontextprotocol.io) for additional tools.

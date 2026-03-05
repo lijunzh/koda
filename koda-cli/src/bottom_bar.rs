@@ -1,12 +1,23 @@
 //! Fixed bottom bar using ANSI scroll regions.
 //!
 //! Sets up a scroll region for the main output (top N-2 rows) and
-//! reserves the bottom 2 rows for a status bar and input prompt.
+//! reserves the bottom 2 rows for an input line and a status bar.
 //! All existing `println!` output is confined to the scroll region
 //! automatically — no changes needed to display code.
 //!
 //! During inference, captures raw keystrokes and renders them in the
 //! input line so users can see what they're typing.
+//!
+//! ## Keyboard shortcuts (during inference)
+//!
+//! | Key | Action |
+//! |-----|--------|
+//! | **Enter** | Queue typed text as the next prompt |
+//! | **Ctrl+C** | Cancel the current inference turn |
+//! | **Ctrl+C ×2** | Force quit Koda |
+//! | **Ctrl+U** | Clear the input line |
+//! | **Ctrl+W** | Delete the last word |
+//! | **Backspace** | Delete the last character |
 
 use crossterm::{
     cursor,
