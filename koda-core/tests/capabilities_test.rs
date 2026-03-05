@@ -29,7 +29,7 @@ fn test_all_commands_documented_in_capabilities() {
 
 #[test]
 fn test_capabilities_mentions_key_features() {
-    let must_mention = ["MCP", "Memory", "Agents", "@file", ".mcp.json", "MEMORY.md"];
+    let must_mention = ["MCP", "Memory", "Agents", "@file", ".mcp.json", "MEMORY.md", "TodoRead", "TodoWrite"];
     for feature in must_mention {
         assert!(
             CAPABILITIES_MD.contains(feature),

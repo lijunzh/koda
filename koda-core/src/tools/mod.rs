@@ -224,6 +224,12 @@ impl ToolRegistry {
                     output: "__TODO_WRITE__".to_string(),
                 };
             }
+            "TodoRead" => {
+                // Handled externally by the event loop (needs access to db/session_id).
+                return ToolResult {
+                    output: "__TODO_READ__".to_string(),
+                };
+            }
 
             other => Err(anyhow::anyhow!("Unknown tool: {other}")),
         };

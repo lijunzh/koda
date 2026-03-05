@@ -193,6 +193,7 @@ pub fn tool_info(name: &str, args_json: &str) -> (&'static str, &'static str, St
                 .count();
             (EMERALD, "Todo", format!("{done}/{total} complete"))
         }
+        "TodoRead" => (STEEL_BLUE, "Todo", "reading checklist".to_string()),
         // MCP tools: server_name.tool_name
         other if other.contains('.') => {
             let parts: Vec<&str> = other.splitn(2, '.').collect();

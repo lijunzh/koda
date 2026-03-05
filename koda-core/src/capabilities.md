@@ -19,6 +19,11 @@ Refer to this when the user asks "what can you do?" or about features.
 - Project: `MEMORY.md` (also reads `CLAUDE.md`, `AGENTS.md`) | Global: `~/.config/koda/memory.md`
 - Use `MemoryWrite` to save rules, conventions, or learned facts
 
+### Task Tracking
+
+- `TodoWrite` to create/update a markdown checklist for multi-step tasks
+- `TodoRead` to check current progress (also auto-injected into system prompt each turn)
+
 ### MCP
 
 External tool servers configured in `.mcp.json` (project) or `~/.config/koda/mcp.json` (global).
