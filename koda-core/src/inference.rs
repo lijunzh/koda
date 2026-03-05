@@ -139,10 +139,18 @@ pub async fn inference_loop(
             message: "\u{1f36f} Thinking...".into(),
         });
 
-        let mut rx = provider
-            .chat_stream(&messages, tool_defs, &config.model_settings)
-            .await
-            .context("LLM inference failed")?;
+        let mut rx = tokio::select! {
+            result = provider.chat_stream(&messages, tool_defs, &config.model_settings) => {
+                result.context("LLM inference failed")?
+            }
+            _ = cancel.cancelled() => {
+                sink.emit(EngineEvent::SpinnerStop);
+                sink.emit(EngineEvent::Warn {
+                    message: "Interrupted".into(),
+                });
+                return Ok(());
+            }
+        };
 
         // Collect the streamed response
         let mut full_text = String::new();
