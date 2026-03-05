@@ -129,6 +129,7 @@ pub fn engine_event_to_acp(
         EngineEvent::Footer { .. } => None,
         EngineEvent::SpinnerStart { .. } => None,
         EngineEvent::SpinnerStop => None,
+        EngineEvent::TodoDisplay { .. } => None,
 
         EngineEvent::Info { message } => {
             let cb = acp::ContentBlock::Text(acp::TextContent::new(format!("[info] {message}")));
