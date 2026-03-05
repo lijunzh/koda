@@ -158,13 +158,7 @@ pub async fn inference_loop(
         loop {
             let chunk = tokio::select! {
                 c = rx.recv() => c,
-                _ = async {
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        if cancel.is_cancelled() { break; }
-                    }
-                } => {
-                    // Ctrl+C during receive
+                _ = cancel.cancelled() => {
                     interrupted = true;
                     None
                 }
@@ -175,7 +169,9 @@ pub async fn inference_loop(
                 if !full_text.is_empty() {
                     sink.emit(EngineEvent::TextDone);
                 }
-                println!("\n\x1b[33m\u{26a0} Interrupted\x1b[0m");
+                sink.emit(EngineEvent::Warn {
+                    message: "Interrupted".into(),
+                });
                 if !full_text.is_empty() {
                     db.insert_message(
                         session_id,
@@ -187,7 +183,6 @@ pub async fn inference_loop(
                     )
                     .await?;
                 }
-                // Store last response for /copy
 
                 return Ok(());
             }
@@ -590,7 +585,9 @@ async fn execute_tools_sequential(
     for tc in tool_calls {
         // Check for interrupt before each tool
         if cancel.is_cancelled() {
-            println!("\n  \x1b[33m\u{26a0} Interrupted\x1b[0m");
+            sink.emit(EngineEvent::Warn {
+                message: "Interrupted".into(),
+            });
             return Ok(());
         }
 
