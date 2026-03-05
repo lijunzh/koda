@@ -700,7 +700,7 @@ pub async fn run(
                                     crate::confirm::confirm_tool_action(
                                         &tool_name,
                                         &detail,
-                                        preview.as_deref(),
+                                        preview.as_ref(),
                                         whitelist_hint.as_deref(),
                                     ),
                                 );

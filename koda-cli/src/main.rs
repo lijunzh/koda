@@ -5,6 +5,7 @@
 mod app;
 mod commands;
 mod confirm;
+mod diff_render;
 mod display;
 mod headless;
 mod highlight;
