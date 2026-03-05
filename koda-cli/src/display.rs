@@ -721,6 +721,36 @@ pub fn print_tool_output_full(record: &ToolOutputRecord) {
     println!();
 }
 
+/// Print a compact summary for tool output when the preview was already shown.
+pub fn print_tool_output_compact(tool_name: &str, output: &str) {
+    let border_color = match tool_name {
+        "Write" | "Edit" | "MemoryWrite" => AMBER,
+        "Delete" => CRIMSON,
+        _ => DIM,
+    };
+
+    // Count additions and removals from diff output
+    let additions = output
+        .lines()
+        .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
+        .count();
+    let removals = output
+        .lines()
+        .filter(|l| l.starts_with('-') && !l.starts_with("---"))
+        .count();
+
+    if additions > 0 || removals > 0 {
+        println!(
+            "{CONTENT_INDENT}{border_color}│{RESET} {DIM}\x1b[32m+{additions}\x1b[0m {DIM}\x1b[31m-{removals}{RESET}"
+        );
+    } else {
+        let line_count = output.lines().count();
+        println!(
+            "{CONTENT_INDENT}{border_color}│{RESET} {DIM}\u{2714} Done ({line_count} lines){RESET}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
