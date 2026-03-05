@@ -5,9 +5,10 @@ Refer to this when the user asks "what can you do?" or about features.
 ### Commands (user types these in the REPL)
 
 /help — command palette | /agent — list sub-agents | /compact — reclaim context
-/cost — token usage | /diff — git diff/review/commit | /mcp — MCP server management
-/memory — persistent memory | /model — switch model | /provider — switch provider
-/sessions — manage sessions | /trust — plan/normal/yolo | /exit — quit
+/cost — token usage | /diff — git diff/review/commit | /expand — show full tool output
+/mcp — MCP server management | /memory — persistent memory | /model — switch model
+/provider — switch provider | /sessions — resume/delete sessions (interactive picker)
+/trust — plan/normal/yolo | /verbose — toggle full tool output | /exit — quit
 
 ### Input
 
