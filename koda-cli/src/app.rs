@@ -631,7 +631,7 @@ pub async fn run(
                 processed.prompt.clone()
             };
 
-        session
+        if let Err(e) = session
             .db
             .insert_message(
                 &session.id,
@@ -641,7 +641,10 @@ pub async fn run(
                 None,
                 None,
             )
-            .await?;
+            .await
+        {
+            tracing::warn!("Failed to persist user message: {e}");
+        }
 
         let pending_images = if processed.images.is_empty() {
             None
