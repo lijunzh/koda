@@ -29,7 +29,9 @@ fn test_all_commands_documented_in_capabilities() {
 
 #[test]
 fn test_capabilities_mentions_key_features() {
-    let must_mention = ["MCP", "Memory", "Agents", "@file", ".mcp.json", "MEMORY.md"];
+    // Tool names (TodoRead, TodoWrite, etc.) are auto-generated from
+    // ToolRegistry definitions — no need to check them in capabilities.md.
+    let must_mention = ["MCP", "Memory", "@file", ".mcp.json", "MEMORY.md"];
     for feature in must_mention {
         assert!(
             CAPABILITIES_MD.contains(feature),
