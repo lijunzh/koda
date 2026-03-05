@@ -190,7 +190,7 @@ impl UiRenderer {
         self.spinner = Some(handle);
     }
 
-    fn stop_spinner(&mut self) {
+    pub(crate) fn stop_spinner(&mut self) {
         if let Some(handle) = self.spinner.take() {
             handle.abort();
             eprint!("\r\x1b[K");

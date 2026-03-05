@@ -549,7 +549,9 @@ pub async fn run(
         // Create a channel-forwarding sink for this turn
         let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
 
-        crate::interrupt::set_cancel_token(session.cancel.clone());
+        // Clone the cancel token so we can trigger it from the Ctrl+C branch
+        // while `session` is borrowed by `run_turn`.
+        let cancel_token = session.cancel.clone();
 
         // Run turn in a scoped block so borrows are released on completion.
         {
@@ -595,10 +597,25 @@ pub async fn run(
                             }
                         }
                     }
+                    _ = tokio::signal::ctrl_c() => {
+                        if crate::interrupt::handle_sigint() {
+                            eprintln!("\n\x1b[31mForce quit.\x1b[0m");
+                            std::process::exit(130);
+                        }
+                        cancel_token.cancel();
+                    }
                 }
             }
         }
         // Borrows on session/config/cmd_rx released here.
+
+        // Drain remaining UI events (e.g., SpinnerStop after Ctrl+C interrupt).
+        // Without this, the spinner task can keep running and overwrite the prompt.
+        while let Ok(UiEvent::Engine(e)) = ui_rx.try_recv() {
+            renderer.render(e);
+        }
+        // Safety net: ensure the spinner is stopped even if SpinnerStop was lost.
+        renderer.stop_spinner();
 
         crate::interrupt::reset();
         session.cancel = tokio_util::sync::CancellationToken::new();
