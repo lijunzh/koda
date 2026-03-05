@@ -314,45 +314,59 @@ pub fn print_tool_output(tool_name: &str, output: &str) {
                 output_lines.pop();
             }
 
-            // Head + tail display with collapsed middle
-            const HEAD: usize = 2;
-            const TAIL: usize = 2;
+            let is_error = exit_code.is_some_and(|c| c != 0);
+
+            // Show more lines on error (HEAD 8 + TAIL 4) vs success (HEAD 2 + TAIL 2)
+            let (head, tail) = if is_error { (8, 4) } else { (2, 2) };
             let total = output_lines.len();
-            if total <= HEAD + TAIL {
+
+            if is_error {
+                println!(
+                    "{CONTENT_INDENT}{border_color}\u{2514}{RESET} {CRIMSON}Error: Exit code {}\x1b[0m",
+                    exit_code.unwrap_or(1)
+                );
+            }
+
+            if total <= head + tail {
                 for line in &output_lines {
                     let dl = truncate_display_line(line);
-                    println!("{CONTENT_INDENT}{border_color}│{RESET} {dl}");
+                    if is_error {
+                        println!("{CONTENT_INDENT}{border_color}│{RESET} {CRIMSON}{dl}{RESET}");
+                    } else {
+                        println!("{CONTENT_INDENT}{border_color}│{RESET} {dl}");
+                    }
                 }
             } else {
-                for line in &output_lines[..HEAD] {
+                for line in &output_lines[..head] {
                     let dl = truncate_display_line(line);
-                    println!("{CONTENT_INDENT}{border_color}│{RESET} {dl}");
+                    if is_error {
+                        println!("{CONTENT_INDENT}{border_color}│{RESET} {CRIMSON}{dl}{RESET}");
+                    } else {
+                        println!("{CONTENT_INDENT}{border_color}│{RESET} {dl}");
+                    }
                 }
-                let collapsed = total - HEAD - TAIL;
+                let collapsed = total - head - tail;
                 println!(
                     "{CONTENT_INDENT}{border_color}│{RESET} {DIM}\u{2026} +{collapsed} lines{RESET}"
                 );
-                for line in &output_lines[total - TAIL..] {
+                for line in &output_lines[total - tail..] {
                     let dl = truncate_display_line(line);
-                    println!("{CONTENT_INDENT}{border_color}│{RESET} {dl}");
+                    if is_error {
+                        println!("{CONTENT_INDENT}{border_color}│{RESET} {CRIMSON}{dl}{RESET}");
+                    } else {
+                        println!("{CONTENT_INDENT}{border_color}│{RESET} {dl}");
+                    }
                 }
-            }
-
-            // Only show exit code if non-zero
-            if let Some(code) = exit_code
-                && code != 0
-            {
-                println!(
-                    "{CONTENT_INDENT}{border_color}│{RESET} {CRIMSON}Exit code: {code}{RESET}"
-                );
             }
         }
         "Write" | "Edit" | "MemoryWrite" => {
             for line in output.lines() {
                 if line.starts_with('+') && !line.starts_with("+++") {
-                    println!("{CONTENT_INDENT}{border_color}│{RESET} \x1b[32m{line}\x1b[0m");
+                    // Green background for additions
+                    println!("{CONTENT_INDENT}{border_color}│{RESET} \x1b[42;30m{line}\x1b[0m");
                 } else if line.starts_with('-') && !line.starts_with("---") {
-                    println!("{CONTENT_INDENT}{border_color}│{RESET} \x1b[31m{line}\x1b[0m");
+                    // Red background for deletions
+                    println!("{CONTENT_INDENT}{border_color}│{RESET} \x1b[41;37m{line}\x1b[0m");
                 } else if line.starts_with("@@") {
                     println!("{CONTENT_INDENT}{border_color}│{RESET} \x1b[36m{line}\x1b[0m");
                 } else {
