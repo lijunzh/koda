@@ -52,15 +52,21 @@ pub async fn run_headless(
         .await?;
 
     let cli_sink = crate::sink::CliSink::new(cmd_tx);
-    let result = session
-        .run_turn(
+    let cancel = session.cancel.clone();
+    let result = tokio::select! {
+        r = session.run_turn(
             &config,
             pending_images,
             &cli_sink,
             &mut cmd_rx,
             &crate::app::cli_loop_continue_prompt,
-        )
-        .await;
+        ) => r,
+        _ = tokio::signal::ctrl_c() => {
+            cancel.cancel();
+            eprintln!("\n\x1b[33m\u{26a0} Interrupted\x1b[0m");
+            Ok(())
+        }
+    };
 
     // For JSON output, wrap the last assistant response
     if output_format == "json" {

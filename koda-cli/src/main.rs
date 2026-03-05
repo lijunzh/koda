@@ -143,9 +143,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Install Ctrl+C handler for graceful interrupts
-    interrupt::install_handler();
-
     // Resolve headless prompt: -p flag, positional arg, or stdin
     let headless_prompt = resolve_headless_prompt(&cli)?;
 
