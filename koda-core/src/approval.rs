@@ -121,6 +121,7 @@ const READ_ONLY_TOOLS: &[&str] = &[
     "WebFetch",    // GET-only URL fetch
     "TodoWrite",   // internal checklist, no file changes
     "TodoRead",    // read-only checklist access
+    "AstAnalysis", // read-only AST parsing, no file modifications
 ];
 
 /// Decide whether a tool call should be auto-approved, confirmed, or blocked.
