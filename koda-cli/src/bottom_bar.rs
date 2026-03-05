@@ -230,63 +230,15 @@ impl BottomBar {
         }
     }
 
-    /// Handle terminal resize. Clears old bar position, updates scroll region,
-    /// then redraws at the new position.
+    /// Handle terminal resize.
+    /// Currently a no-op — reliable resize with ANSI scroll regions requires
+    /// debounced redraws which adds complexity. The bar works correctly at
+    /// the terminal size when Koda starts. See issue #45.
+    #[allow(dead_code)]
     pub fn on_resize(&mut self) {
-        if let Ok((cols, rows)) = terminal::size() {
-            if rows < 10 {
-                return;
-            }
-
-            let old_rows = self.rows;
-            self.cols = cols;
-            self.rows = rows;
-
-            let mut out = stdout();
-
-            // Clear old bar lines AND old input line (at previous positions)
-            let old_input_row = old_rows - BOTTOM_HEIGHT;
-            let old_status_row = old_rows - 1;
-            let new_input_row = rows - BOTTOM_HEIGHT;
-            let new_status_row = rows - 1;
-            // Collect all rows that need clearing (old positions + new positions)
-            let mut clear_rows = vec![old_input_row, old_status_row, new_input_row, new_status_row];
-            clear_rows.sort();
-            clear_rows.dedup();
-            for row in clear_rows {
-                if row < rows {
-                    let _ = execute!(out, cursor::MoveTo(0, row));
-                    let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
-                }
-            }
-
-            // Update scroll region to new size
-            let scroll_end = self.rows - BOTTOM_HEIGHT;
-            let _ = write!(out, "\x1b[1;{scroll_end}r");
-
-            // Redraw bar at new position
-            self.redraw_bar();
-
-            let _ = out.flush();
-
-            // Re-apply OPOST if in raw mode
-            if self.raw_mode {
-                #[cfg(unix)]
-                {
-                    use std::os::fd::AsFd;
-                    let o = stdout();
-                    let fd = o.as_fd();
-                    if let Ok(mut termios) = nix::sys::termios::tcgetattr(fd) {
-                        termios.output_flags |= nix::sys::termios::OutputFlags::OPOST;
-                        let _ = nix::sys::termios::tcsetattr(
-                            fd,
-                            nix::sys::termios::SetArg::TCSANOW,
-                            &termios,
-                        );
-                    }
-                }
-            }
-        }
+        // Intentionally empty — resize handling deferred.
+        // Updating scroll regions during rapid resize events causes
+        // cursor positioning chaos (ghost bars, duplicated prompts).
     }
 
     /// Redraw the bottom bar (input line on top, status bar on bottom).

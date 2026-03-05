@@ -635,13 +635,6 @@ pub async fn run(
             None
         };
 
-        // Set up SIGWINCH listener for terminal resize (Unix only, no-op on Windows)
-        #[cfg(unix)]
-        let mut sigwinch =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change()).ok();
-        #[cfg(not(unix))]
-        let mut sigwinch: Option<futures_util::stream::Pending<()>> = None;
-
         // Create a channel-forwarding sink for this turn
         let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
 
@@ -761,18 +754,6 @@ pub async fn run(
                             std::process::exit(130);
                         }
                         cancel_token.cancel();
-                    }
-                    // Handle terminal resize
-                    _ = async {
-                        if let Some(ref mut sig) = sigwinch {
-                            sig.recv().await
-                        } else {
-                            std::future::pending::<Option<()>>().await
-                        }
-                    } => {
-                        if let Some(ref mut bar) = bottom_bar {
-                            bar.on_resize();
-                        }
                     }
                 }
             }
