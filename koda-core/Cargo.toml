@@ -71,8 +71,23 @@ tree-sitter-python = "0.25.0"
 tree-sitter-javascript = "0.25.0"
 tree-sitter-typescript = "0.23.2"
 
+[features]
+test-support = []
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
 regex = "1"
 ignore = "0.4"
+anyhow = "1"
+async-trait = "0.1"
+
+# Integration tests that need mock infrastructure.
+# Run with: cargo test -p koda-core --features test-support
+[[test]]
+name = "e2e_test"
+required-features = ["test-support"]
+
+[[test]]
+name = "cancel_test"
+required-features = ["test-support"]

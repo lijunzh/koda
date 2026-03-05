@@ -7,6 +7,9 @@ pub mod gemini;
 pub mod openai_compat;
 pub mod think_tag_filter;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod mock;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
