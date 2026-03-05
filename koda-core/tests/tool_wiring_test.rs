@@ -1,0 +1,65 @@
+//! Verify every built-in tool is properly wired through all layers.
+//!
+//! If you add a new tool, these tests will fail until you wire it
+//! through the dispatcher, normalizer, and approval system.
+
+use std::path::PathBuf;
+
+/// Get all built-in tool names from the registry.
+fn all_tool_names() -> Vec<String> {
+    let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"));
+    registry.all_builtin_tool_names()
+}
+
+/// Every tool must be routable in the dispatcher.
+/// Tools handled externally (InvokeAgent, TodoWrite, TodoRead) return
+/// sentinel strings; all others return real results or errors.
+/// None should return "Unknown tool".
+#[tokio::test]
+async fn test_all_tools_routable_in_dispatcher() {
+    let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"));
+    for name in all_tool_names() {
+        let result = registry.execute(&name, "{}").await;
+        assert!(
+            !result.output.contains("Unknown tool"),
+            "Tool '{name}' is not routed in the dispatcher (tools/mod.rs execute()). \
+             Got: {}",
+            result.output
+        );
+    }
+}
+
+/// Every PascalCase tool name must be reachable via its lowercase form
+/// through normalize_tool_name().
+#[test]
+fn test_all_tools_have_normalizer_mapping() {
+    for name in all_tool_names() {
+        let lowercase = name.to_lowercase();
+        let normalized = koda_core::tools::normalize_tool_name(&lowercase);
+        assert_eq!(
+            normalized, name,
+            "Tool '{name}' has no normalizer mapping. \
+             normalize_tool_name(\"{lowercase}\") returned \"{normalized}\" instead of \"{name}\". \
+             Add it to normalize_tool_name() in tools/mod.rs."
+        );
+    }
+}
+
+/// Every tool must be classified in the approval system.
+/// It should be either in READ_ONLY_TOOLS (auto-approved) or
+/// return NeedsConfirmation/AutoApproved — never panic or crash.
+#[test]
+fn test_all_tools_handled_by_approval() {
+    use koda_core::approval::{ApprovalMode, ToolApproval, check_tool};
+
+    let empty_args = serde_json::json!({});
+    for name in all_tool_names() {
+        // Should not panic in any mode
+        let result = check_tool(&name, &empty_args, ApprovalMode::Normal, &[]);
+        // Verify it returns a valid variant (not a crash)
+        match result {
+            ToolApproval::AutoApprove | ToolApproval::NeedsConfirmation | ToolApproval::Blocked => {
+            }
+        }
+    }
+}

@@ -49,6 +49,7 @@ impl KodaAgent {
             &config.system_prompt,
             &semantic_memory,
             &config.agents_dir,
+            &tool_defs,
         );
 
         Ok(Self {

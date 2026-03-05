@@ -487,6 +487,13 @@ async fn execute_one_tool(
             Ok(output) => output,
             Err(e) => format!("Error invoking sub-agent: {e}"),
         }
+    } else if tc.function_name == "TodoRead" {
+        // Return current todo list from DB
+        match db.get_todo(session_id).await {
+            Ok(Some(content)) => content,
+            Ok(None) => "No todo list set. Use TodoWrite to create one.".to_string(),
+            Err(e) => format!("Failed to read todo: {e}"),
+        }
     } else if tc.function_name == "TodoWrite" {
         // Handle todo updates: save to DB and render for the user
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
@@ -813,6 +820,7 @@ async fn execute_sub_agent(
         &sub_config.system_prompt,
         &semantic_memory,
         &sub_config.agents_dir,
+        &tool_defs,
     );
 
     let system_tokens = system_prompt.len() / 4 + 100;
@@ -962,13 +970,32 @@ async fn execute_sub_agent(
 
 // ── System prompt builder ─────────────────────────────────────
 
-/// Build the full system prompt with semantic memory and available agents.
-pub fn build_system_prompt(base_prompt: &str, semantic_memory: &str, agents_dir: &Path) -> String {
+/// Build the full system prompt with semantic memory, tools, and available agents.
+pub fn build_system_prompt(
+    base_prompt: &str,
+    semantic_memory: &str,
+    agents_dir: &Path,
+    tool_defs: &[crate::providers::ToolDefinition],
+) -> String {
     let mut prompt = base_prompt.to_string();
 
-    // Embed the capabilities reference so the LLM can describe itself accurately
+    // Embed the capabilities reference (REPL features, not tools)
     prompt.push_str("\n\n");
     prompt.push_str(include_str!("capabilities.md"));
+
+    // Auto-generate tool reference from definitions
+    if !tool_defs.is_empty() {
+        prompt.push_str("\n### Available Tools\n\n");
+        for def in tool_defs {
+            // First sentence of description only (keep it concise)
+            let short_desc = def
+                .description
+                .split('.')
+                .next()
+                .unwrap_or(&def.description);
+            prompt.push_str(&format!("- **{}**: {}\n", def.name, short_desc));
+        }
+    }
 
     let available_agents = list_available_agents(agents_dir);
     if !available_agents.is_empty() {
@@ -1098,7 +1125,7 @@ mod tests {
     #[test]
     fn test_build_system_prompt_no_agents_no_memory() {
         let dir = TempDir::new().unwrap();
-        let result = build_system_prompt("You are helpful.", "", dir.path());
+        let result = build_system_prompt("You are helpful.", "", dir.path(), &[]);
         assert!(result.contains("You are helpful."));
         assert!(result.contains("No sub-agents are configured"));
         assert!(!result.contains("Project Memory"));
@@ -1109,7 +1136,8 @@ mod tests {
     #[test]
     fn test_build_system_prompt_with_memory() {
         let dir = TempDir::new().unwrap();
-        let result = build_system_prompt("Base prompt.", "Uses Rust. Prefers tokio.", dir.path());
+        let result =
+            build_system_prompt("Base prompt.", "Uses Rust. Prefers tokio.", dir.path(), &[]);
         assert!(result.contains("Base prompt."));
         assert!(result.contains("Project Memory"));
         assert!(result.contains("Uses Rust"));
@@ -1121,7 +1149,7 @@ mod tests {
         std::fs::write(dir.path().join("reviewer.json"), "{}").unwrap();
         std::fs::write(dir.path().join("planner.json"), "{}").unwrap();
 
-        let result = build_system_prompt("Base.", "", dir.path());
+        let result = build_system_prompt("Base.", "", dir.path(), &[]);
         assert!(result.contains("Available Sub-Agents"));
         assert!(result.contains("reviewer"));
         assert!(result.contains("planner"));
@@ -1134,10 +1162,26 @@ mod tests {
         std::fs::write(dir.path().join("README.md"), "docs").unwrap();
         std::fs::write(dir.path().join("agent.json"), "{}").unwrap();
 
-        let result = build_system_prompt("Base.", "", dir.path());
+        let result = build_system_prompt("Base.", "", dir.path(), &[]);
         assert!(result.contains("agent"));
         // README.md should not appear as an agent
         assert!(!result.contains("README"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_with_tools() {
+        let dir = TempDir::new().unwrap();
+        let tools = vec![crate::providers::ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file. Returns the content.".to_string(),
+            parameters: serde_json::json!({}),
+        }];
+        let result = build_system_prompt("Base.", "", dir.path(), &tools);
+        assert!(result.contains("Available Tools"));
+        assert!(result.contains("**Read**"));
+        assert!(result.contains("Read a file"));
+        // Only first sentence
+        assert!(!result.contains("Returns the content"));
     }
 
     #[test]
