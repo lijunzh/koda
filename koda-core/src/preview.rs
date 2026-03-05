@@ -6,8 +6,10 @@
 use crate::tools::safe_resolve_path;
 use std::path::Path;
 
-const GREEN: &str = "\x1b[42m"; // green background
-const RED: &str = "\x1b[41m"; // red background
+const LINE_RED: &str = "\x1b[48;5;52m"; // dark red background — removed line
+const LINE_GREEN: &str = "\x1b[48;5;22m"; // dark green background — added line
+const WORD_RED: &str = "\x1b[48;5;88m"; // brighter red — changed words in removed line
+const WORD_GREEN: &str = "\x1b[48;5;28m"; // brighter green — changed words in added line
 const DIM: &str = "\x1b[90m";
 const RESET: &str = "\x1b[0m";
 
@@ -30,7 +32,8 @@ pub async fn compute(
     }
 }
 
-/// Preview for Edit tool: show each replacement as old (red) → new (green) with line numbers.
+/// Preview for Edit tool: show each replacement as old (red) → new (green) with line numbers
+/// and intra-line word highlighting for the changed region.
 async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<String> {
     // Handle both flat args {"path", "replacements"} and nested {"payload": {"file_path", "replacements"}}
     let inner = args.get("payload").unwrap_or(args);
@@ -80,12 +83,41 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<S
             ));
         }
 
-        for (j, line) in old_str.lines().enumerate() {
-            lines.push(format!("{RED}{:>4} -{line}{RESET}", start_line + j));
+        let old_line_vec: Vec<&str> = old_str.lines().collect();
+        let new_line_vec: Vec<&str> = new_str.lines().collect();
+        let pair_count = old_line_vec.len().min(new_line_vec.len());
+
+        // Paired lines: render with intra-line word highlighting
+        for j in 0..pair_count {
+            let (old_content, new_content) = intra_line_diff(old_line_vec[j], new_line_vec[j]);
+            lines.push(format!(
+                "{LINE_RED}{:>4} -{old_content}{RESET}",
+                start_line + j
+            ));
+            lines.push(format!(
+                "{LINE_GREEN}{:>4} +{new_content}{RESET}",
+                start_line + j
+            ));
+            total_lines += 2;
+        }
+
+        // Remaining old lines (pure deletions without a new counterpart)
+        for j in pair_count..old_line_vec.len() {
+            lines.push(format!(
+                "{LINE_RED}{:>4} -{}{RESET}",
+                start_line + j,
+                old_line_vec[j]
+            ));
             total_lines += 1;
         }
-        for (j, line) in new_str.lines().enumerate() {
-            lines.push(format!("{GREEN}{:>4} +{line}{RESET}", start_line + j));
+
+        // Remaining new lines (pure additions without an old counterpart)
+        for j in pair_count..new_line_vec.len() {
+            lines.push(format!(
+                "{LINE_GREEN}{:>4} +{}{RESET}",
+                start_line + j,
+                new_line_vec[j]
+            ));
             total_lines += 1;
         }
 
@@ -108,6 +140,81 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<S
     }
 
     Some(lines.join("\n"))
+}
+
+/// Compute intra-line diff content for a pair of lines.
+///
+/// Returns `(old_content, new_content)` with word-level highlight escapes
+/// embedded. The caller wraps each in the line-level background + RESET.
+fn intra_line_diff(old_line: &str, new_line: &str) -> (String, String) {
+    let (pre_bytes, suf_bytes_old, suf_bytes_new) = common_prefix_suffix(old_line, new_line);
+
+    let old_prefix = &old_line[..pre_bytes];
+    let old_changed = &old_line[pre_bytes..old_line.len() - suf_bytes_old];
+    let old_suffix = &old_line[old_line.len() - suf_bytes_old..];
+
+    let new_prefix = &new_line[..pre_bytes];
+    let new_changed = &new_line[pre_bytes..new_line.len() - suf_bytes_new];
+    let new_suffix = &new_line[new_line.len() - suf_bytes_new..];
+
+    let old_content = if old_changed.is_empty() {
+        format!("{old_prefix}{old_suffix}")
+    } else {
+        format!("{old_prefix}{WORD_RED}{old_changed}{LINE_RED}{old_suffix}")
+    };
+
+    let new_content = if new_changed.is_empty() {
+        format!("{new_prefix}{new_suffix}")
+    } else {
+        format!("{new_prefix}{WORD_GREEN}{new_changed}{LINE_GREEN}{new_suffix}")
+    };
+
+    (old_content, new_content)
+}
+
+/// Find the byte lengths of the common prefix and suffix shared by `old` and `new`.
+///
+/// Returns `(prefix_bytes, suffix_bytes_old, suffix_bytes_new)`.
+/// Because the prefix chars are identical in both strings, `prefix_bytes` is
+/// the same for both. The suffix may differ in byte length for multi-byte chars.
+fn common_prefix_suffix(old: &str, new: &str) -> (usize, usize, usize) {
+    let prefix_chars = old
+        .chars()
+        .zip(new.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let prefix_bytes = old
+        .char_indices()
+        .nth(prefix_chars)
+        .map(|(i, _)| i)
+        .unwrap_or(old.len());
+
+    // Compute suffix only within the remaining part after the prefix
+    let old_rest: Vec<char> = old[prefix_bytes..].chars().collect();
+    let new_rest: Vec<char> = new[prefix_bytes..].chars().collect();
+
+    let suffix_chars = old_rest
+        .iter()
+        .rev()
+        .zip(new_rest.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let suffix_bytes_old: usize = old_rest
+        .iter()
+        .rev()
+        .take(suffix_chars)
+        .map(|c| c.len_utf8())
+        .sum();
+    let suffix_bytes_new: usize = new_rest
+        .iter()
+        .rev()
+        .take(suffix_chars)
+        .map(|c| c.len_utf8())
+        .sum();
+
+    (prefix_bytes, suffix_bytes_old, suffix_bytes_new)
 }
 
 /// Preview for Write tool: show new-file summary or overwrite diff.
@@ -138,7 +245,7 @@ async fn preview_write(args: &serde_json::Value, project_root: &Path) -> Option<
         // Show first few lines of new content as preview
         let preview_count = line_count.min(8);
         for line in &content_lines[..preview_count] {
-            lines.push(format!("{GREEN}+{line}{RESET}"));
+            lines.push(format!("{LINE_GREEN}+{line}{RESET}"));
         }
         if line_count > 8 {
             lines.push(format!("{DIM}... +{} more lines{RESET}", line_count - 8));
@@ -154,7 +261,7 @@ async fn preview_write(args: &serde_json::Value, project_root: &Path) -> Option<
 
         let preview_count = line_count.min(8);
         for line in &content_lines[..preview_count] {
-            lines.push(format!("{GREEN}+{line}{RESET}"));
+            lines.push(format!("{LINE_GREEN}+{line}{RESET}"));
         }
         if line_count > 8 {
             lines.push(format!("{DIM}... +{} more lines{RESET}", line_count - 8));
@@ -186,7 +293,7 @@ async fn preview_delete(args: &serde_json::Value, project_root: &Path) -> Option
             .map(|c| c.lines().count())
             .unwrap_or(0);
         Some(format!(
-            "{RED}Removing {line_count} lines ({size} bytes){RESET}"
+            "{LINE_RED}Removing {line_count} lines ({size} bytes){RESET}"
         ))
     } else if meta.is_dir() {
         let recursive = args
@@ -194,9 +301,11 @@ async fn preview_delete(args: &serde_json::Value, project_root: &Path) -> Option
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         if recursive {
-            Some(format!("{RED}Removing directory and all contents{RESET}"))
+            Some(format!(
+                "{LINE_RED}Removing directory and all contents{RESET}"
+            ))
         } else {
-            Some(format!("{RED}Removing empty directory{RESET}"))
+            Some(format!("{LINE_RED}Removing empty directory{RESET}"))
         }
     } else {
         None
@@ -237,14 +346,23 @@ mod tests {
             text.contains("2 +"),
             "should show line number for added line"
         );
-        // Must use background colors
+        // Line-level dark background colors
         assert!(
-            text.contains("\x1b[41m"),
-            "removed lines should use red background"
+            text.contains(LINE_RED),
+            "removed lines should use dark red background"
         );
         assert!(
-            text.contains("\x1b[42m"),
-            "added lines should use green background"
+            text.contains(LINE_GREEN),
+            "added lines should use dark green background"
+        );
+        // Intra-line word highlights: "hello" vs "world" are the changed words
+        assert!(
+            text.contains(WORD_RED),
+            "changed word in removed line should be highlighted"
+        );
+        assert!(
+            text.contains(WORD_GREEN),
+            "changed word in added line should be highlighted"
         );
     }
 
