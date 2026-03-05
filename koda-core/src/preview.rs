@@ -6,10 +6,10 @@
 use crate::tools::safe_resolve_path;
 use std::path::Path;
 
-const LINE_RED: &str = "\x1b[48;5;52m"; // dark red background — removed line
-const LINE_GREEN: &str = "\x1b[48;5;22m"; // dark green background — added line
-const WORD_RED: &str = "\x1b[48;5;88m"; // brighter red — changed words in removed line
-const WORD_GREEN: &str = "\x1b[48;5;28m"; // brighter green — changed words in added line
+const LINE_RED: &str = "\x1b[48;2;80;0;0m"; // dark red background — removed line
+const LINE_GREEN: &str = "\x1b[48;2;0;60;0m"; // dark green background — added line
+const WORD_RED: &str = "\x1b[48;2;150;20;20m"; // brighter red — changed words in removed line
+const WORD_GREEN: &str = "\x1b[48;2;20;120;20m"; // brighter green — changed words in added line
 const DIM: &str = "\x1b[90m";
 const RESET: &str = "\x1b[0m";
 
