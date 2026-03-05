@@ -18,6 +18,7 @@ pub enum ReplAction {
     ShowHelp,
     ShowCost,
     ListSessions,
+    ResumeSession(String),
     DeleteSession(String),
     /// Inject text as if the user typed it (used by /diff review, /diff commit)
     InjectPrompt(String),
@@ -182,6 +183,14 @@ pub async fn handle_command(
             Some(sub) if sub.starts_with("delete ") => {
                 let id = sub.strip_prefix("delete ").unwrap().trim().to_string();
                 ReplAction::DeleteSession(id)
+            }
+            Some(sub) if sub.starts_with("resume ") => {
+                let id = sub.strip_prefix("resume ").unwrap().trim().to_string();
+                ReplAction::ResumeSession(id)
+            }
+            // Bare ID shorthand: /sessions <id>
+            Some(id) if !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') => {
+                ReplAction::ResumeSession(id.to_string())
             }
             _ => ReplAction::ListSessions,
         },
