@@ -9,21 +9,30 @@ mod repl_commands {
     fn dispatch(input: &str) -> &'static str {
         let parts: Vec<&str> = input.splitn(2, ' ').collect();
         let cmd = parts[0];
+        let arg = parts.get(1).copied().unwrap_or("");
 
         match cmd {
             "/exit" => "Quit",
-            "/model" if parts.len() > 1 => "SwitchModel",
+            "/model" if !arg.is_empty() => "SwitchModel",
             "/model" => "PickModel",
-            "/provider" if parts.len() > 1 => "SetupProvider",
+            "/provider" if !arg.is_empty() => "SetupProvider",
             "/provider" => "PickProvider",
             "/help" => "ShowHelp",
             "/cost" => "ShowCost",
-            "/trust" if parts.len() > 1 => "SetTrust",
+            "/trust" if !arg.is_empty() => "SetTrust",
             "/trust" => "PickTrust",
-            "/diff" if parts.len() > 1 => "InjectPrompt_or_Handled",
+            "/diff" if !arg.is_empty() => "InjectPrompt_or_Handled",
             "/diff" => "Handled",
-            "/sessions" if parts.len() > 1 && parts[1].starts_with("delete ") => "DeleteSession",
+            "/sessions" if arg.starts_with("delete ") => "DeleteSession",
+            "/sessions" if arg.starts_with("resume ") => "ResumeSession",
+            "/sessions"
+                if !arg.is_empty() && arg.chars().all(|c| c.is_ascii_hexdigit() || c == '-') =>
+            {
+                "ResumeSession"
+            }
             "/sessions" => "ListSessions",
+            "/expand" => "Expand",
+            "/verbose" => "Verbose",
             "/memory" => "Handled",
 
             "/compact" => "Compact",
@@ -55,6 +64,10 @@ mod repl_commands {
         assert_eq!(dispatch("/diff commit"), "InjectPrompt_or_Handled");
         assert_eq!(dispatch("/sessions"), "ListSessions");
         assert_eq!(dispatch("/sessions delete abc123"), "DeleteSession");
+        assert_eq!(dispatch("/sessions resume abc123"), "ResumeSession");
+        assert_eq!(dispatch("/sessions abc12345"), "ResumeSession");
+        assert_eq!(dispatch("/expand"), "Expand");
+        assert_eq!(dispatch("/verbose"), "Verbose");
         assert_eq!(dispatch("/memory"), "Handled");
         assert_eq!(dispatch("/memory add test"), "Handled");
         assert_eq!(dispatch("/memory global test"), "Handled");
@@ -222,6 +235,8 @@ mod display_regression {
         ("ListAgents", "Tool"),
         ("CreateAgent", "Create"),
         ("TodoWrite", "Todo"),
+        ("TodoRead", "Todo"),
+        ("AstAnalysis", "AST"),
     ];
 
     fn tool_label(name: &str) -> &'static str {
@@ -238,7 +253,8 @@ mod display_regression {
             "MemoryRead" | "MemoryWrite" => "Memory",
             "InvokeAgent" => "Agent",
             "CreateAgent" => "Create",
-            "TodoWrite" => "Todo",
+            "TodoWrite" | "TodoRead" => "Todo",
+            "AstAnalysis" => "AST",
             _ => "Tool",
         }
     }
@@ -263,8 +279,8 @@ mod display_regression {
     fn test_tool_count() {
         assert_eq!(
             KNOWN_TOOLS.len(),
-            16,
-            "Expected 16 known tools (update this test when adding tools)"
+            18,
+            "Expected 18 known tools (update this test when adding tools)"
         );
     }
 }
