@@ -27,6 +27,10 @@ pub enum ReplAction {
     SetTrust(Option<String>),
     /// MCP server management command
     McpCommand(String),
+    /// Expand Nth most recent tool output (1 = last)
+    Expand(usize),
+    /// Toggle verbose tool output (None = toggle, Some = set)
+    Verbose(Option<bool>),
     Handled,
     NotACommand,
 }
@@ -143,6 +147,17 @@ pub async fn handle_command(
         "/compact" => ReplAction::Compact,
 
         "/mcp" => ReplAction::McpCommand(arg.unwrap_or("").to_string()),
+
+        "/expand" => {
+            let n: usize = arg.and_then(|s| s.parse().ok()).unwrap_or(1);
+            ReplAction::Expand(n)
+        }
+
+        "/verbose" => match arg {
+            Some("on") => ReplAction::Verbose(Some(true)),
+            Some("off") => ReplAction::Verbose(Some(false)),
+            _ => ReplAction::Verbose(None), // toggle
+        },
 
         "/agent" => {
             let project_root = std::env::current_dir().unwrap_or_default();
