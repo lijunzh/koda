@@ -32,11 +32,14 @@ pub async fn compute(
 
 /// Preview for Edit tool: show each replacement as old (red) → new (green).
 async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<String> {
-    let path_str = args
+    // Handle both flat args {"path", "replacements"} and nested {"payload": {"file_path", "replacements"}}
+    let inner = args.get("payload").unwrap_or(args);
+
+    let path_str = inner
         .get("path")
-        .or(args.get("file_path"))
+        .or(inner.get("file_path"))
         .and_then(|v| v.as_str())?;
-    let replacements = args.get("replacements")?.as_array()?;
+    let replacements = inner.get("replacements")?.as_array()?;
 
     // Verify file exists
     let resolved = safe_resolve_path(project_root, path_str).ok()?;
@@ -94,11 +97,13 @@ async fn preview_edit(args: &serde_json::Value, project_root: &Path) -> Option<S
 
 /// Preview for Write tool: show new-file summary or overwrite diff.
 async fn preview_write(args: &serde_json::Value, project_root: &Path) -> Option<String> {
-    let path_str = args
+    let inner = args.get("payload").unwrap_or(args);
+
+    let path_str = inner
         .get("path")
-        .or(args.get("file_path"))
+        .or(inner.get("file_path"))
         .and_then(|v| v.as_str())?;
-    let content = args.get("content").and_then(|v| v.as_str())?;
+    let content = inner.get("content").and_then(|v| v.as_str())?;
     let resolved = safe_resolve_path(project_root, path_str).ok()?;
 
     let content_lines: Vec<&str> = content.lines().collect();
@@ -146,9 +151,11 @@ async fn preview_write(args: &serde_json::Value, project_root: &Path) -> Option<
 
 /// Preview for Delete tool: show file/dir size info.
 async fn preview_delete(args: &serde_json::Value, project_root: &Path) -> Option<String> {
-    let path_str = args
+    let inner = args.get("payload").unwrap_or(args);
+
+    let path_str = inner
         .get("path")
-        .or(args.get("file_path"))
+        .or(inner.get("file_path"))
         .and_then(|v| v.as_str())?;
     let resolved = safe_resolve_path(project_root, path_str).ok()?;
 
