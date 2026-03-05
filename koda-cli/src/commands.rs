@@ -397,6 +397,14 @@ pub(crate) async fn handle_setup_provider(
         config.provider_type
     );
 
+    // Persist for next startup
+    let mut s = koda_core::approval::Settings::load();
+    let _ = s.save_last_provider(
+        &config.provider_type.to_string(),
+        &config.base_url,
+        &config.model,
+    );
+
     let prov = provider.read().await;
     match prov.list_models().await {
         Ok(models) => {
