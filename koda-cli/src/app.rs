@@ -413,32 +413,53 @@ pub async fn run(
                 }
                 ReplAction::ListSessions => {
                     match session.db.list_sessions(10, &project_root).await {
+                        Ok(sessions) if sessions.is_empty() => {
+                            println!("  \x1b[90mNo other sessions found.\x1b[0m");
+                        }
                         Ok(sessions) => {
-                            println!();
-                            println!("  \x1b[1m\u{1f43b} Recent Sessions\x1b[0m");
-                            println!();
-                            if sessions.is_empty() {
-                                println!("  \x1b[90mNo sessions found.\x1b[0m");
-                            } else {
-                                for s in &sessions {
-                                    let marker = if s.id == session.id {
-                                        " \x1b[32m← current\x1b[0m"
+                            let current_idx = sessions
+                                .iter()
+                                .position(|s| s.id == session.id)
+                                .unwrap_or(0);
+                            let options: Vec<SelectOption> = sessions
+                                .iter()
+                                .map(|s| {
+                                    let desc = if s.id == session.id {
+                                        format!(
+                                            "{}  {} msgs  {}k tokens  \u{25c0} current",
+                                            s.created_at,
+                                            s.message_count,
+                                            s.total_tokens / 1000
+                                        )
                                     } else {
-                                        ""
+                                        format!(
+                                            "{}  {} msgs  {}k tokens",
+                                            s.created_at,
+                                            s.message_count,
+                                            s.total_tokens / 1000
+                                        )
                                     };
-                                    println!(
-                                        "  \x1b[36m{}\x1b[0m  \x1b[90m{}  {}  {} msgs  {}k tokens\x1b[0m{}",
-                                        &s.id[..8],
-                                        s.created_at,
-                                        s.agent_name,
-                                        s.message_count,
-                                        s.total_tokens / 1000,
-                                        marker,
-                                    );
+                                    SelectOption::new(&s.id[..8], desc)
+                                })
+                                .collect();
+                            match tui::select("\u{1f43b} Sessions", &options, current_idx) {
+                                Ok(Some(idx)) => {
+                                    let target = &sessions[idx];
+                                    if target.id == session.id {
+                                        println!("  \x1b[90mAlready in this session.\x1b[0m");
+                                    } else {
+                                        session.id = target.id.clone();
+                                        println!(
+                                            "  \x1b[32m\u{2713}\x1b[0m Resumed session \x1b[36m{}\x1b[0m  \x1b[90m{}  {} msgs\x1b[0m",
+                                            &target.id[..8],
+                                            target.created_at,
+                                            target.message_count,
+                                        );
+                                    }
                                 }
+                                Ok(None) => println!("  \x1b[90mCancelled.\x1b[0m"),
+                                Err(e) => println!("  \x1b[31mTUI error: {e}\x1b[0m"),
                             }
-                            println!();
-                            println!("  \x1b[90mResume: koda --session <id>\x1b[0m");
                             println!("  \x1b[90mDelete: /sessions delete <id>\x1b[0m");
                         }
                         Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
@@ -472,6 +493,38 @@ pub async fn run(
                                                 println!("  \x1b[31mError: {e}\x1b[0m")
                                             }
                                         }
+                                    }
+                                    n => println!(
+                                        "  \x1b[31mAmbiguous: '{id}' matches {n} sessions. Be more specific.\x1b[0m"
+                                    ),
+                                }
+                            }
+                            Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
+                        }
+                    }
+                    continue;
+                }
+                ReplAction::ResumeSession(ref id) => {
+                    if session.id.starts_with(id) {
+                        println!("  \x1b[90mAlready in this session.\x1b[0m");
+                    } else {
+                        match session.db.list_sessions(100, &project_root).await {
+                            Ok(sessions) => {
+                                let matches: Vec<_> =
+                                    sessions.iter().filter(|s| s.id.starts_with(id)).collect();
+                                match matches.len() {
+                                    0 => println!(
+                                        "  \x1b[31mNo session found matching '{id}'.\x1b[0m"
+                                    ),
+                                    1 => {
+                                        let target = &matches[0];
+                                        session.id = target.id.clone();
+                                        println!(
+                                            "  \x1b[32m\u{2713}\x1b[0m Resumed session \x1b[36m{}\x1b[0m  \x1b[90m{}  {} msgs\x1b[0m",
+                                            &target.id[..8],
+                                            target.created_at,
+                                            target.message_count,
+                                        );
                                     }
                                     n => println!(
                                         "  \x1b[31mAmbiguous: '{id}' matches {n} sessions. Be more specific.\x1b[0m"
@@ -621,7 +674,9 @@ pub async fn run(
             loop {
                 tokio::select! {
                     result = &mut turn => {
-                        result?;
+                        if let Err(e) = result {
+                            println!("\n  \x1b[31m\u{2717} Turn failed: {e}\x1b[0m");
+                        }
                         break;
                     }
                     Some(ui_event) = ui_rx.recv() => {
