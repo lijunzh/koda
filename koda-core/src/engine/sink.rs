@@ -20,13 +20,13 @@ pub trait EngineSink: Send + Sync {
 }
 
 /// A sink that collects events into a Vec for testing.
-#[allow(dead_code)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default)]
 pub struct TestSink {
     events: std::sync::Mutex<Vec<EngineEvent>>,
 }
 
-#[allow(dead_code)]
+#[cfg(any(test, feature = "test-support"))]
 impl TestSink {
     pub fn new() -> Self {
         Self::default()
@@ -48,6 +48,7 @@ impl TestSink {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl EngineSink for TestSink {
     fn emit(&self, event: EngineEvent) {
         self.events.lock().unwrap().push(event);
