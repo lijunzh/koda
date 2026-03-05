@@ -124,8 +124,9 @@ impl UiRenderer {
                 preview,
             } => {
                 println!("  \x1b[33m\u{1f4cb} Would execute: {detail}\x1b[0m");
-                if let Some(preview_text) = preview {
-                    for line in preview_text.lines() {
+                if let Some(ref preview) = preview {
+                    let rendered = crate::diff_render::render(preview);
+                    for line in rendered.lines() {
                         println!("  {line}");
                     }
                 }
@@ -296,7 +297,7 @@ impl EngineSink for CliSink {
                     let decision = match confirm::confirm_tool_action(
                         tool_name,
                         detail,
-                        preview.as_deref(),
+                        preview.as_ref(),
                         whitelist_hint.as_deref(),
                     ) {
                         Confirmation::Approved => ApprovalDecision::Approve,
