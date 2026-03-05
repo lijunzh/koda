@@ -27,8 +27,8 @@ use crossterm::{
 };
 use std::io::{Write, stdout};
 
-/// Height of the fixed bottom area (status bar + input line).
-const BOTTOM_HEIGHT: u16 = 2;
+/// Height of the fixed bottom area (input line only during inference).
+const BOTTOM_HEIGHT: u16 = 1;
 
 /// Action returned by keystroke handling.
 pub enum KeyAction {
@@ -111,10 +111,12 @@ impl BottomBar {
         let _ = out.flush();
     }
 
-    /// Update the status bar text and redraw.
+    /// Update the live stats text (shown inline with input during inference).
     pub fn set_status(&mut self, text: &str) {
         self.status_text = text.to_string();
-        self.redraw_bar();
+        if self.raw_mode {
+            self.redraw_bar();
+        }
     }
 
     /// Enable raw mode for keystroke capture during inference.
@@ -249,35 +251,25 @@ impl BottomBar {
             if cols != self.cols || rows != self.rows {
                 self.cols = cols;
                 self.rows = rows;
-                // Update scroll region to new size
+                // Update scroll region to new size (no bar to draw between turns)
                 let scroll_end = self.rows - BOTTOM_HEIGHT;
                 let mut out = stdout();
                 let _ = write!(out, "\x1b[1;{scroll_end}r");
-                // Redraw only the status bar (not input line — readline handles that)
-                let status_row = self.rows - 1;
-                let width = self.cols as usize;
-                let _ = execute!(out, cursor::SavePosition);
-                let _ = execute!(out, cursor::MoveTo(0, status_row));
-                let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
-                let padded = format!("{:<width$}", self.status_text, width = width);
-                let _ = write!(out, "\x1b[90;7m{padded}\x1b[0m");
-                let _ = execute!(out, cursor::RestorePosition);
                 let _ = out.flush();
             }
         }
     }
 
-    /// Redraw the bottom bar (input line on top, status bar on bottom).
+    /// Redraw the bottom input line.
     fn redraw_bar(&self) {
         let mut out = stdout();
         let input_row = self.rows - BOTTOM_HEIGHT;
-        let status_row = self.rows - 1;
         let width = self.cols as usize;
 
         // Save cursor position
         let _ = execute!(out, cursor::SavePosition);
 
-        // Draw input line (top of bottom area)
+        // Draw input line
         let _ = execute!(out, cursor::MoveTo(0, input_row));
         let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
         if self.raw_mode {
@@ -290,30 +282,24 @@ impl BottomBar {
                 };
                 let _ = write!(
                     out,
-                    "\x1b[33m\u{23f3} Queued:\x1b[0m \x1b[90m{display}\x1b[0m\x1b[K"
+                    "\x1b[33m\u{23f3} Queued:\x1b[0m \x1b[90m{display}\x1b[0m"
                 );
             } else {
-                // Show the input buffer with a prompt
+                // Show input buffer + live stats
+                let stats = if self.status_text.is_empty() {
+                    String::new()
+                } else {
+                    format!(" \x1b[90m{}", self.status_text)
+                };
                 let display = if self.input_buf.len() > width.saturating_sub(4) {
                     let start = self.input_buf.len() - (width - 4);
                     &self.input_buf[start..]
                 } else {
                     &self.input_buf
                 };
-                let _ = write!(out, "\x1b[36m\u{276f}\x1b[0m {display}\x1b[K");
+                let _ = write!(out, "\x1b[36m\u{276f}\x1b[0m {display}{stats}\x1b[0m\x1b[K");
             }
         }
-
-        // Draw status bar (very bottom)
-        let _ = execute!(out, cursor::MoveTo(0, status_row));
-        let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
-        let status = if self.status_text.is_empty() {
-            String::new()
-        } else {
-            self.status_text.clone()
-        };
-        let padded = format!("{:<width$}", status, width = width);
-        let _ = write!(out, "\x1b[90;7m{padded}\x1b[0m");
 
         // Restore cursor position (back to scroll region)
         let _ = execute!(out, cursor::RestorePosition);

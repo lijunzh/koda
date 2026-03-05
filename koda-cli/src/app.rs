@@ -238,14 +238,6 @@ pub async fn run(
 
     // Set up the fixed bottom bar AFTER banner and startup output
     let mut bottom_bar = crate::bottom_bar::BottomBar::new();
-    if let Some(ref mut bar) = bottom_bar {
-        bar.set_status(&format!(
-            " {} │ {} │ {}",
-            config.model,
-            config.provider_type,
-            approval::read_mode(&shared_mode).label()
-        ));
-    }
 
     let mut renderer = UiRenderer::new();
     let mut pending_command: Option<String> = None;
@@ -629,12 +621,7 @@ pub async fn run(
         let turn_start = std::time::Instant::now();
         let mut turn_tokens: i64 = 0;
         if let Some(ref mut bar) = bottom_bar {
-            bar.set_status(&format!(
-                " {} │ {} │ {} │ 0s",
-                config.model,
-                config.provider_type,
-                approval::read_mode(&shared_mode).label()
-            ));
+            bar.set_status("0s");
         }
 
         // Start input capture in the bottom bar (visible type-ahead)
@@ -706,12 +693,8 @@ pub async fn run(
                                 if let Some(ref mut bar) = bottom_bar {
                                     let elapsed = turn_start.elapsed().as_secs();
                                     bar.set_status(&format!(
-                                        " {} │ {} │ {} │ {}s │ ~{} tokens",
-                                        config.model,
-                                        config.provider_type,
-                                        approval::read_mode(&shared_mode).label(),
-                                        elapsed,
-                                        turn_tokens,
+                                        "{}s │ ~{} tokens",
+                                        elapsed, turn_tokens,
                                     ));
                                 }
                                 renderer.render(event.clone());
@@ -788,14 +771,9 @@ pub async fn run(
         // Safety net: ensure the spinner is stopped even if SpinnerStop was lost.
         renderer.stop_spinner();
 
-        // Reset status bar to idle state
+        // Clear live stats from bottom bar
         if let Some(ref mut bar) = bottom_bar {
-            bar.set_status(&format!(
-                " {} │ {} │ {}",
-                config.model,
-                config.provider_type,
-                approval::read_mode(&shared_mode).label()
-            ));
+            bar.set_status("");
         }
 
         crate::interrupt::reset();
