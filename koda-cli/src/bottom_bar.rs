@@ -45,15 +45,12 @@ pub struct BottomBar {
     enabled: bool,
     rows: u16,
     cols: u16,
-    status_text: String,
     /// Input buffer for type-ahead during inference.
     input_buf: String,
     /// Queued message (after Enter, waiting for current turn to finish).
     queued_msg: Option<String>,
     /// Whether we're in raw mode (capturing keystrokes).
     raw_mode: bool,
-    /// The prompt string (same format as readline) for rendering during inference.
-    prompt: String,
 }
 
 impl BottomBar {
@@ -73,11 +70,9 @@ impl BottomBar {
             enabled: true,
             rows,
             cols,
-            status_text: String::new(),
             input_buf: String::new(),
             queued_msg: None,
             raw_mode: false,
-            prompt: String::new(),
         };
         bar.setup_scroll_region();
         Some(bar)
@@ -112,20 +107,6 @@ impl BottomBar {
         let _ = write!(out, "\x1b[1;{}r", self.rows);
         let _ = execute!(out, cursor::MoveTo(0, self.rows - 1));
         let _ = out.flush();
-    }
-
-    /// Set the prompt string (same format as readline's prompt).
-    pub fn set_prompt(&mut self, prompt: &str) {
-        self.prompt = prompt.to_string();
-    }
-
-    /// Update the live stats text (shown inline with input during inference).
-    pub fn set_status(&mut self, text: &str) {
-        self.status_text = text.to_string();
-        // Only redraw if user has started typing or queued something
-        if self.raw_mode && (!self.input_buf.is_empty() || self.queued_msg.is_some()) {
-            self.redraw_bar();
-        }
     }
 
     /// Enable raw mode for keystroke capture during inference.
@@ -275,32 +256,21 @@ impl BottomBar {
         let mut out = stdout();
         let input_row = self.rows - BOTTOM_HEIGHT;
 
-        // Save cursor position
         let _ = execute!(out, cursor::SavePosition);
-
-        // Draw input line
         let _ = execute!(out, cursor::MoveTo(0, input_row));
         let _ = execute!(out, terminal::Clear(ClearType::CurrentLine));
+
         if self.raw_mode {
             if let Some(ref queued) = self.queued_msg {
-                // Show queued state with prompt
                 let _ = write!(
                     out,
-                    "{}\x1b[33m\u{23f3} Queued:\x1b[0m \x1b[90m{queued}\x1b[0m\x1b[K",
-                    self.prompt
+                    "\x1b[33m\u{23f3} Queued:\x1b[0m \x1b[90m{queued}\x1b[0m\x1b[K"
                 );
             } else {
-                // Show prompt + input buffer + live stats (right-aligned)
-                let stats = if self.status_text.is_empty() {
-                    String::new()
-                } else {
-                    format!(" \x1b[90m│ {}\x1b[0m", self.status_text)
-                };
-                let _ = write!(out, "{}{}{}\x1b[K", self.prompt, self.input_buf, stats);
+                let _ = write!(out, "\x1b[36m\u{276f}\x1b[0m {}\x1b[K", self.input_buf);
             }
         }
 
-        // Restore cursor position (back to scroll region)
         let _ = execute!(out, cursor::RestorePosition);
         let _ = out.flush();
     }

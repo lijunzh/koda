@@ -38,6 +38,8 @@ enum ReadlineCommand {
     ReadLine(String),
     /// Update the model names available for tab-completion.
     UpdateModelNames(Vec<String>),
+    /// Add a line to readline history (for buffered input that bypassed readline).
+    AddHistory(String),
     /// Shut down the readline thread.
     Shutdown,
 }
@@ -78,6 +80,10 @@ fn readline_thread(
                 if let Some(h) = rl.helper_mut() {
                     h.model_names = names;
                 }
+            }
+            Ok(ReadlineCommand::AddHistory(line)) => {
+                let _ = rl.add_history_entry(&line);
+                let _ = rl.save_history(&history_file_path());
             }
             Ok(ReadlineCommand::Shutdown) | Err(_) => {
                 let _ = rl.save_history(&history_file_path());
@@ -257,6 +263,8 @@ pub async fn run(
             // Show the queued input in the scroll area so the conversation flow is visible
             let prompt_str = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
             println!("{prompt_str}{buffered}");
+            // Save to readline history (buffered input bypassed readline)
+            let _ = rl_cmd_tx.send(ReadlineCommand::AddHistory(buffered.clone()));
             buffered
         } else {
             let prompt = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
@@ -617,17 +625,8 @@ pub async fn run(
         session.mode = approval::read_mode(&shared_mode);
         session.update_provider(&config);
 
-        // Update bottom bar status for this turn
-        let turn_start = std::time::Instant::now();
-        let mut turn_tokens: i64 = 0;
-        if let Some(ref mut bar) = bottom_bar {
-            bar.set_status("0s");
-        }
-
         // Start input capture in the bottom bar (visible type-ahead)
-        let prompt = repl::format_prompt(&config.model, approval::read_mode(&shared_mode));
         let mut event_stream = if let Some(ref mut bar) = bottom_bar {
-            bar.set_prompt(&prompt);
             bar.start_input_capture();
             Some(bar.event_stream())
         } else {
@@ -688,17 +687,6 @@ pub async fn run(
                                     .await;
                             }
                             UiEvent::Engine(ref event) => {
-                                // Phase 3: update status bar with live stats
-                                if let EngineEvent::TextDelta { text } = event {
-                                    turn_tokens += (text.len() / 4) as i64;
-                                }
-                                if let Some(ref mut bar) = bottom_bar {
-                                    let elapsed = turn_start.elapsed().as_secs();
-                                    bar.set_status(&format!(
-                                        "{}s │ ~{} tokens",
-                                        elapsed, turn_tokens,
-                                    ));
-                                }
                                 renderer.render(event.clone());
                             }
                         }
@@ -772,11 +760,6 @@ pub async fn run(
         }
         // Safety net: ensure the spinner is stopped even if SpinnerStop was lost.
         renderer.stop_spinner();
-
-        // Clear live stats from bottom bar
-        if let Some(ref mut bar) = bottom_bar {
-            bar.set_status("");
-        }
 
         crate::interrupt::reset();
         session.cancel = tokio_util::sync::CancellationToken::new();
