@@ -15,15 +15,20 @@ pub fn spawn_version_check() -> tokio::task::JoinHandle<Option<String>> {
     tokio::spawn(async move { check_latest_version().await })
 }
 
-/// Print the update hint if a newer version was found.
-pub fn print_update_hint(latest: &str) {
+/// Check whether `latest` is newer than the current version.
+/// Returns `Some((current, latest))` if an update is available.
+pub fn update_available(latest: &str) -> Option<(&'static str, String)> {
     let current = env!("CARGO_PKG_VERSION");
     if latest != current && is_newer(latest, current) {
-        println!(
-            "  \x1b[90m\u{2728} Update available: \x1b[0m\x1b[36m{current}\x1b[0m\x1b[90m \u{2192} \x1b[0m\x1b[32m{latest}\x1b[0m\x1b[90m  (cargo install {CRATE_NAME})\x1b[0m"
-        );
-        println!();
+        Some((current, latest.to_string()))
+    } else {
+        None
     }
+}
+
+/// The crate name, useful for building install commands.
+pub fn crate_name() -> &'static str {
+    CRATE_NAME
 }
 
 /// Query crates.io for the latest version.

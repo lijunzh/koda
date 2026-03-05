@@ -30,41 +30,35 @@ impl McpRegistry {
 
     /// Load configs from `.mcp.json` files and connect to all servers.
     /// Logs errors for servers that fail to connect but doesn't abort.
-    pub async fn start_from_config(&mut self, project_root: &Path) {
+    ///
+    /// Returns a list of `(name, result)` status entries for the client to render.
+    pub async fn start_from_config(
+        &mut self,
+        project_root: &Path,
+    ) -> Vec<(String, Result<usize, String>)> {
         let configs = config::load_mcp_configs(project_root);
         if configs.is_empty() {
-            return;
+            return Vec::new();
         }
 
-        println!(
-            "  \x1b[36m\u{1f50c} Connecting to {} MCP server(s)...\x1b[0m",
-            configs.len()
-        );
+        let mut statuses = Vec::new();
 
         for (name, server_config) in configs {
             match McpClient::connect(name.clone(), server_config).await {
                 Ok(client) => {
                     let tool_count = client.tool_definitions().len();
-                    println!(
-                        "  \x1b[32m\u{2713}\x1b[0m {} — {} tool(s)",
-                        name, tool_count
-                    );
+                    statuses.push((name.clone(), Ok(tool_count)));
                     self.servers.insert(name, client);
                 }
                 Err(e) => {
-                    println!(
-                        "  \x1b[31m\u{2717}\x1b[0m {} — {}",
-                        name,
-                        format_error_short(&e)
-                    );
+                    let msg = format_error_short(&e);
                     tracing::error!("Failed to connect MCP server '{name}': {e:#}");
+                    statuses.push((name, Err(msg)));
                 }
             }
         }
 
-        if !self.servers.is_empty() {
-            println!();
-        }
+        statuses
     }
 
     /// Connect a single new server and add it to the registry.
