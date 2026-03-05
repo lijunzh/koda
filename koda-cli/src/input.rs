@@ -424,7 +424,7 @@ fn mime_type_for(path: &str) -> &'static str {
 
 /// Strip surrounding quotes from a token (terminals often quote dragged paths).
 fn strip_quotes(s: &str) -> &str {
-    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+    if s.len() >= 2 && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\''))) {
         &s[1..s.len() - 1]
     } else {
         s
@@ -808,6 +808,8 @@ mod tests {
         assert_eq!(strip_quotes("\"/path/to/file.png\""), "/path/to/file.png");
         assert_eq!(strip_quotes("/no/quotes.png"), "/no/quotes.png");
         assert_eq!(strip_quotes("'mismatched"), "'mismatched");
+        assert_eq!(strip_quotes("'"), "'");
+        assert_eq!(strip_quotes("\""), "\"");
     }
 
     #[test]
