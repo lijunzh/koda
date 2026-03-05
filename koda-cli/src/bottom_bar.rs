@@ -122,7 +122,8 @@ impl BottomBar {
     /// Update the live stats text (shown inline with input during inference).
     pub fn set_status(&mut self, text: &str) {
         self.status_text = text.to_string();
-        if self.raw_mode {
+        // Only redraw if user has started typing or queued something
+        if self.raw_mode && (!self.input_buf.is_empty() || self.queued_msg.is_some()) {
             self.redraw_bar();
         }
     }
@@ -151,7 +152,8 @@ impl BottomBar {
             self.raw_mode = true;
             self.input_buf.clear();
             self.queued_msg = None;
-            self.redraw_bar();
+            // Don't redraw yet — readline's prompt is still visible.
+            // The bar appears when the user starts typing or on first status update.
         }
     }
 
