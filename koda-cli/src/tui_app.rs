@@ -306,8 +306,18 @@ pub async fn run(
             } else if let Some(queued) = input_queue.pop_front() {
                 // Echo queued input above viewport
                 let mode = approval::read_mode(&shared_mode);
-                let prompt = repl::format_prompt(&config.model, mode);
-                emit_above(&mut terminal, Line::raw(format!("{prompt}{queued}")));
+                let icon = match mode {
+                    ApprovalMode::Plan => "\u{1f4cb}",
+                    ApprovalMode::Normal => "\u{1f43b}",
+                    ApprovalMode::Yolo => "\u{26a1}",
+                };
+                emit_above(
+                    &mut terminal,
+                    Line::from(vec![
+                        Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
+                        Span::raw(queued.clone()),
+                    ]),
+                );
                 Some(queued)
             } else {
                 None
@@ -665,8 +675,15 @@ pub async fn run(
                                 save_history(&history);
                                 history_idx = None;
                                 let mode = approval::read_mode(&shared_mode);
-                                let prompt = repl::format_prompt(&config.model, mode);
-                                emit_above(&mut terminal, Line::raw(format!("{prompt}{text}")));
+                                let icon = match mode {
+                                    ApprovalMode::Plan => "\u{1f4cb}",
+                                    ApprovalMode::Normal => "\u{1f43b}",
+                                    ApprovalMode::Yolo => "\u{26a1}",
+                                };
+                                emit_above(&mut terminal, Line::from(vec![
+                                    Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
+                                    Span::raw(text.clone()),
+                                ]));
                                 pending_command = Some(text);
                             }
                         }
