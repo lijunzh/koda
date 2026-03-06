@@ -43,24 +43,19 @@ pub fn select(title: &str, options: &[SelectOption], initial: usize) -> io::Resu
 
 /// Show a selection menu inline above the ratatui viewport.
 ///
-/// Reserves space with `insert_before()`, then renders in-place
-/// using crossterm cursor movement (no `\n` scrolling).
+/// Renders at the current cursor position using crossterm (same
+/// pattern as the approval widget). Overwrites the viewport
+/// temporarily; viewport redraws after selection.
 pub fn select_inline(
-    terminal: &mut Term,
+    _terminal: &mut Term,
     title: &str,
     options: &[SelectOption],
     initial: usize,
 ) -> io::Result<Option<usize>> {
     let total_lines = menu_height(options);
-
-    // Reserve space above the viewport
-    let _ = terminal.insert_before(total_lines as u16, |_| {});
-
-    // Cursor is now at the viewport top. Move up into the reserved space.
-    let mut stdout = io::stdout();
-    execute!(stdout, cursor::MoveUp(total_lines as u16))?;
-
     let mut selected = initial.min(options.len().saturating_sub(1));
+    let mut stdout = io::stdout();
+
     render_inline(&mut stdout, title, options, selected)?;
 
     loop {
@@ -78,22 +73,20 @@ pub fn select_inline(
                     }
                 }
                 KeyCode::Enter => {
-                    // Move past the menu area so viewport stays clean
-                    execute!(stdout, cursor::MoveDown(total_lines as u16))?;
+                    clear_inline(&mut stdout, total_lines)?;
                     return Ok(Some(selected));
                 }
                 KeyCode::Esc => {
-                    execute!(stdout, cursor::MoveDown(total_lines as u16))?;
+                    clear_inline(&mut stdout, total_lines)?;
                     return Ok(None);
                 }
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    execute!(stdout, cursor::MoveDown(total_lines as u16))?;
+                    clear_inline(&mut stdout, total_lines)?;
                     return Ok(None);
                 }
                 _ => {}
             }
 
-            // Re-render in place (cursor is at menu top)
             render_inline(&mut stdout, title, options, selected)?;
         }
     }
@@ -194,6 +187,15 @@ fn clear_lines(stdout: &mut io::Stdout, lines: usize) -> io::Result<()> {
 }
 
 // ── Inline renderer (cursor movement, no \n) ─────────────────
+
+fn clear_inline(stdout: &mut io::Stdout, total_lines: usize) -> io::Result<()> {
+    for _ in 0..total_lines {
+        execute!(stdout, Clear(ClearType::CurrentLine), cursor::MoveDown(1))?;
+    }
+    execute!(stdout, cursor::MoveUp(total_lines as u16))?;
+    stdout.flush()?;
+    Ok(())
+}
 
 fn render_inline(
     stdout: &mut io::Stdout,
