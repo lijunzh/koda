@@ -333,13 +333,8 @@ pub async fn run(
                 if !input.is_empty() {
                     // Try slash commands first
                     if input.starts_with('/') {
-                        // Temporarily exit raw mode for TUI-based slash commands
-                        let _ = terminal.clear();
-                        let _ = crossterm::terminal::disable_raw_mode();
-                        print!("\x1b[{}A\x1b[J", VIEWPORT_HEIGHT);
-                        let _ = std::io::Write::flush(&mut std::io::stdout());
-
                         let action = tui_commands::handle_slash_command(
+                            &mut terminal,
                             &input,
                             &mut config,
                             &provider,
@@ -355,16 +350,17 @@ pub async fn run(
                         match action {
                             SlashAction::Continue => {}
                             SlashAction::Quit => {
-                                println!("\x1b[36m\u{1f43b} Goodbye!\x1b[0m");
+                                tui_output::emit_line(
+                                    &mut terminal,
+                                    Line::styled(
+                                        "\u{1f43b} Goodbye!",
+                                        Style::default().fg(Color::Cyan),
+                                    ),
+                                );
                                 should_quit = true;
                                 continue;
                             }
                         }
-
-                        // Re-enter raw mode
-                        crossterm::terminal::enable_raw_mode()?;
-                        terminal = init_terminal()?;
-                        crossterm_events = EventStream::new();
                     } else {
                         // ── Start inference turn inline ──────────
                         let user_input = input.clone();

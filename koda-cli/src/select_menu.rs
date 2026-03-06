@@ -1,15 +1,15 @@
 //! Arrow-key interactive selection menus (standalone crossterm widget).
 //!
-//! Used by onboarding, commands, and slash commands for picking
-//! from a list using \u{2191}/\u{2193} arrow keys and Enter.
-//! Manages its own raw mode internally \u{2014} works both inside
-//! and outside the TUI viewport.
+//! Two entry points:
+//! - `select()` — manages raw mode internally (onboarding, commands)
+//! - `select_raw()` — assumes raw mode already active (TUI slash commands)
 
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
-    terminal::{self, ClearType},
+    style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
+    terminal::{self, Clear, ClearType},
 };
 use std::io::{self, Write};
 
@@ -28,17 +28,34 @@ impl SelectOption {
     }
 }
 
-/// Show an interactive arrow-key selection menu.
+/// Show a selection menu, managing raw mode internally.
 ///
 /// Returns `Some(index)` on Enter, `None` on Esc/Ctrl-C.
 pub fn select(title: &str, options: &[SelectOption], initial: usize) -> io::Result<Option<usize>> {
+    terminal::enable_raw_mode()?;
+    let result = run_select_loop(title, options, initial);
+    terminal::disable_raw_mode()?;
+    result
+}
+
+/// Show a selection menu, assuming raw mode is already active.
+///
+/// Does NOT toggle raw mode — safe to call from the TUI event loop.
+pub fn select_raw(
+    title: &str,
+    options: &[SelectOption],
+    initial: usize,
+) -> io::Result<Option<usize>> {
+    run_select_loop(title, options, initial)
+}
+
+fn run_select_loop(
+    title: &str,
+    options: &[SelectOption],
+    initial: usize,
+) -> io::Result<Option<usize>> {
     let mut selected = initial.min(options.len().saturating_sub(1));
     let mut stdout = io::stdout();
-
-    // Enter raw mode for key-by-key input
-    terminal::enable_raw_mode()?;
-
-    // Render initial state
     let lines_drawn = render_menu(&mut stdout, title, options, selected)?;
 
     loop {
@@ -57,30 +74,25 @@ pub fn select(title: &str, options: &[SelectOption], initial: usize) -> io::Resu
                 }
                 KeyCode::Enter => {
                     clear_menu(&mut stdout, lines_drawn)?;
-                    terminal::disable_raw_mode()?;
                     return Ok(Some(selected));
                 }
                 KeyCode::Esc => {
                     clear_menu(&mut stdout, lines_drawn)?;
-                    terminal::disable_raw_mode()?;
                     return Ok(None);
                 }
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                     clear_menu(&mut stdout, lines_drawn)?;
-                    terminal::disable_raw_mode()?;
                     return Ok(None);
                 }
                 _ => {}
             }
 
-            // Re-render
             clear_menu(&mut stdout, lines_drawn)?;
             render_menu(&mut stdout, title, options, selected)?;
         }
     }
 }
 
-/// Render the menu and return how many lines were drawn.
 fn render_menu(
     stdout: &mut io::Stdout,
     title: &str,
@@ -90,34 +102,55 @@ fn render_menu(
     let mut lines = 0;
 
     // Title
-    write!(stdout, "\r\n  \x1b[1;36m{title}\x1b[0m\r\n")?;
+    execute!(
+        stdout,
+        Print("\r\n  "),
+        SetForegroundColor(Color::Cyan),
+        SetAttribute(Attribute::Bold),
+        Print(title),
+        SetAttribute(Attribute::Reset),
+        Print("\r\n"),
+    )?;
     lines += 2;
 
     // Options
     for (i, opt) in options.iter().enumerate() {
         if i == selected {
-            write!(stdout, "  \x1b[36m › \x1b[1m{}\x1b[0m", opt.label)?;
+            execute!(
+                stdout,
+                Print("  "),
+                SetForegroundColor(Color::Cyan),
+                Print("\u{203a} "),
+                SetAttribute(Attribute::Bold),
+                Print(&opt.label),
+                SetAttribute(Attribute::NoBold),
+            )?;
         } else {
-            write!(stdout, "  \x1b[90m   {}\x1b[0m", opt.label)?;
+            execute!(
+                stdout,
+                Print("  "),
+                SetForegroundColor(Color::DarkGrey),
+                Print("   "),
+                Print(&opt.label),
+            )?;
         }
 
         if !opt.description.is_empty() {
-            let desc_style = if i == selected {
-                "\x1b[36m"
-            } else {
-                "\x1b[90m"
-            };
-            write!(stdout, "  {desc_style}{}\x1b[0m", opt.description)?;
+            execute!(stdout, Print(format!("  {}", opt.description)))?;
         }
 
-        write!(stdout, "\r\n")?;
+        execute!(stdout, ResetColor, Print("\r\n"))?;
         lines += 1;
     }
 
     // Footer hint
-    write!(
+    execute!(
         stdout,
-        "\r\n  \x1b[90m↑/↓ navigate  enter select  esc cancel\x1b[0m\r\n"
+        Print("\r\n  "),
+        SetForegroundColor(Color::DarkGrey),
+        Print("\u{2191}/\u{2193} navigate  enter select  esc cancel"),
+        ResetColor,
+        Print("\r\n"),
     )?;
     lines += 2;
 
@@ -125,14 +158,9 @@ fn render_menu(
     Ok(lines)
 }
 
-/// Clear the menu by moving cursor up and clearing lines.
 fn clear_menu(stdout: &mut io::Stdout, lines: usize) -> io::Result<()> {
     for _ in 0..lines {
-        execute!(
-            stdout,
-            cursor::MoveUp(1),
-            terminal::Clear(ClearType::CurrentLine)
-        )?;
+        execute!(stdout, cursor::MoveUp(1), Clear(ClearType::CurrentLine))?;
     }
     Ok(())
 }
