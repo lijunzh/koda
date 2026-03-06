@@ -229,6 +229,14 @@ async fn handle_pick_model(
 }
 
 fn handle_help(terminal: &mut Term, pending_command: &mut Option<String>) {
+    // Show tips first, before the interactive menu
+    tui_output::emit_blank(terminal);
+    dim_msg(
+        terminal,
+        "Tips: @file to attach context \u{00b7} Shift+Tab to cycle mode \u{00b7} Ctrl+C to cancel \u{00b7} Ctrl+D to exit".into(),
+    );
+    tui_output::emit_blank(terminal);
+
     let commands = [
         ("/agent", "List available sub-agents"),
         ("/compact", "Summarize conversation to reclaim context"),
@@ -252,11 +260,6 @@ fn handle_help(terminal: &mut Term, pending_command: &mut Option<String>) {
         let (cmd, _) = commands[idx];
         *pending_command = Some(cmd.to_string());
     }
-    tui_output::emit_blank(terminal);
-    dim_msg(
-        terminal,
-        "Tips: @file to attach context \u{00b7} Shift+Tab to cycle mode \u{00b7} Ctrl+C to cancel \u{00b7} Ctrl+D to exit".into(),
-    );
 }
 
 async fn handle_cost(terminal: &mut Term, session: &KodaSession, config: &KodaConfig) {
