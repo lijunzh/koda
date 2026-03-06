@@ -389,6 +389,7 @@ fn truncate_visible(s: &str, max: usize) -> String {
 
 /// Format the REPL prompt: `[Koda 🐻] [model] (~/repo) ❯`
 /// Shows a context warning when usage exceeds 75%.
+#[allow(dead_code)] // Used by legacy/headless paths
 pub fn format_prompt(model: &str, mode: koda_core::approval::ApprovalMode) -> String {
     let cwd = pretty_cwd();
     let pct = koda_core::context::percentage();

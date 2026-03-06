@@ -1,9 +1,8 @@
-//! Diff preview renderer with syntax highlighting and word-level diffs.
+//! Diff preview renderer — native ratatui `Line`/`Span` output.
 //!
 //! Takes structured [`DiffPreview`] data from koda-core and produces
-//! ANSI-colored terminal output with:
+//! `Vec<Line<'static>>` with:
 //! - Dark background tint for line-level diffs (red removed, green added)
-//! - Brighter background for the changed words within a line
 //! - Syntax highlighting (foreground colors via syntect)
 
 use crate::highlight::CodeHighlighter;
@@ -11,28 +10,40 @@ use koda_core::preview::{
     DeleteDirPreview, DeleteFilePreview, DiffPreview, EditPreview, WriteOverwritePreview,
     WritePreview,
 };
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
 
-const LINE_RED: &str = "\x1b[48;2;50;0;0m"; // dark red bg — removed line
-const LINE_GREEN: &str = "\x1b[48;2;0;35;0m"; // dark green bg — added line
-const WORD_RED: &str = "\x1b[48;2;100;0;0m"; // brighter red — changed word
-const WORD_GREEN: &str = "\x1b[48;2;0;70;0m"; // brighter green — changed word
-const DIM: &str = "\x1b[90m";
-const RESET: &str = "\x1b[0m";
+// Background styles for diff lines
+const LINE_RED_BG: Style = Style::new().bg(Color::Rgb(50, 0, 0));
+const LINE_GREEN_BG: Style = Style::new().bg(Color::Rgb(0, 35, 0));
+const DIM: Style = Style::new().fg(Color::DarkGray);
 
-/// Render a [`DiffPreview`] as ANSI-colored terminal output.
-pub fn render(preview: &DiffPreview) -> String {
+/// Render a [`DiffPreview`] as native ratatui `Line`s.
+pub fn render_lines(preview: &DiffPreview) -> Vec<Line<'static>> {
     match preview {
         DiffPreview::Edit(edit) => render_edit(edit),
         DiffPreview::WriteNew(w) => render_write_new(w),
         DiffPreview::WriteOverwrite(w) => render_write_overwrite(w),
         DiffPreview::DeleteFile(d) => render_delete_file(d),
         DiffPreview::DeleteDir(d) => render_delete_dir(d),
-        DiffPreview::FileNotYetExists => format!("{DIM}(file does not exist yet){RESET}"),
-        DiffPreview::PathNotFound => format!("{DIM}(path does not exist){RESET}"),
+        DiffPreview::FileNotYetExists => {
+            vec![Line::styled("(file does not exist yet)", DIM)]
+        }
+        DiffPreview::PathNotFound => {
+            vec![Line::styled("(path does not exist)", DIM)]
+        }
     }
 }
 
-fn render_edit(edit: &EditPreview) -> String {
+/// Legacy ANSI render — kept for `app.rs` / `confirm.rs` (legacy mode).
+pub fn render(preview: &DiffPreview) -> String {
+    // Delegate to the old ANSI rendering for backward compat
+    render_ansi(preview)
+}
+
+fn render_edit(edit: &EditPreview) -> Vec<Line<'static>> {
     let ext = std::path::Path::new(&edit.path)
         .extension()
         .and_then(|e| e.to_str())
@@ -42,237 +53,222 @@ fn render_edit(edit: &EditPreview) -> String {
 
     for r in &edit.replacements {
         if r.total > 1 {
-            lines.push(format!(
-                "{DIM}── replacement {}/{} ──{RESET}",
-                r.index + 1,
-                r.total
+            lines.push(Line::styled(
+                format!(
+                    "\u{2500}\u{2500} replacement {}/{} \u{2500}\u{2500}",
+                    r.index + 1,
+                    r.total
+                ),
+                DIM,
             ));
         }
 
-        let pair_count = r.old_lines.len().min(r.new_lines.len());
         let mut hl_old = CodeHighlighter::new(ext);
         let mut hl_new = CodeHighlighter::new(ext);
 
-        // Paired lines: intra-line word highlighting + syntax
-        for j in 0..pair_count {
-            let (pre_bytes, suf_bytes_old, suf_bytes_new) =
-                common_prefix_suffix(&r.old_lines[j], &r.new_lines[j]);
-
-            let old_hl = highlight_for_diff(&mut hl_old, &r.old_lines[j]);
-            let new_hl = highlight_for_diff(&mut hl_new, &r.new_lines[j]);
-
-            let changed_end_old = r.old_lines[j].len() - suf_bytes_old;
-            let changed_end_new = r.new_lines[j].len() - suf_bytes_new;
-
-            let old_rendered =
-                inject_word_highlight(&old_hl, pre_bytes, changed_end_old, LINE_RED, WORD_RED);
-            let new_rendered =
-                inject_word_highlight(&new_hl, pre_bytes, changed_end_new, LINE_GREEN, WORD_GREEN);
-
-            lines.push(format!(
-                "{LINE_RED}{:>4} -\t{old_rendered}{RESET}",
-                r.start_line + j
-            ));
-            lines.push(format!(
-                "{LINE_GREEN}{:>4} +\t{new_rendered}{RESET}",
-                r.start_line + j
-            ));
+        for (j, old_line) in r.old_lines.iter().enumerate() {
+            let mut spans = vec![Span::styled(
+                format!("{:>4} - ", r.start_line + j),
+                Style::default().fg(Color::Red).add_modifier(Modifier::DIM),
+            )];
+            let highlighted = hl_old.highlight_spans(old_line);
+            for mut s in highlighted {
+                s.style = s.style.bg(Color::Rgb(50, 0, 0));
+                spans.push(s);
+            }
+            lines.push(Line::from(spans));
         }
 
-        // Remaining old lines (pure deletions)
-        for (j, line) in r.old_lines.iter().enumerate().skip(pair_count) {
-            let hl = highlight_for_diff(&mut hl_old, line);
-            lines.push(format!("{LINE_RED}{:>4} -\t{hl}{RESET}", r.start_line + j,));
-        }
-
-        // Remaining new lines (pure additions)
-        for (j, line) in r.new_lines.iter().enumerate().skip(pair_count) {
-            let hl = highlight_for_diff(&mut hl_new, line);
-            lines.push(format!(
-                "{LINE_GREEN}{:>4} +\t{hl}{RESET}",
-                r.start_line + j,
-            ));
+        for (j, new_line) in r.new_lines.iter().enumerate() {
+            let mut spans = vec![Span::styled(
+                format!("{:>4} + ", r.start_line + j),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::DIM),
+            )];
+            let highlighted = hl_new.highlight_spans(new_line);
+            for mut s in highlighted {
+                s.style = s.style.bg(Color::Rgb(0, 35, 0));
+                spans.push(s);
+            }
+            lines.push(Line::from(spans));
         }
     }
 
     if edit.truncated_count > 0 {
-        lines.push(format!(
-            "{DIM}... and {} more replacement(s){RESET}",
-            edit.truncated_count
+        lines.push(Line::styled(
+            format!("... and {} more replacement(s)", edit.truncated_count),
+            DIM,
         ));
     }
 
-    lines.join("\n")
+    lines
 }
 
-fn render_write_new(w: &WritePreview) -> String {
-    let mut lines = vec![format!(
-        "{DIM}New file: {} lines ({} bytes){RESET}",
-        w.line_count, w.byte_count
+fn render_write_new(w: &WritePreview) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        format!("New file: {} lines ({} bytes)", w.line_count, w.byte_count),
+        DIM,
     )];
     for line in &w.first_lines {
-        lines.push(format!("{LINE_GREEN}+\t{line}{RESET}"));
+        lines.push(Line::from(vec![
+            Span::styled("+ ", Style::default().fg(Color::Green)),
+            Span::styled(line.clone(), LINE_GREEN_BG),
+        ]));
     }
     if w.truncated {
-        lines.push(format!(
-            "{DIM}... +{} more lines{RESET}",
-            w.line_count - w.first_lines.len()
+        lines.push(Line::styled(
+            format!("... +{} more lines", w.line_count - w.first_lines.len()),
+            DIM,
         ));
     }
-    lines.join("\n")
+    lines
 }
 
-fn render_write_overwrite(w: &WriteOverwritePreview) -> String {
-    let mut lines = vec![format!(
-        "{DIM}Overwriting {} lines ({} bytes) → {} lines ({} bytes){RESET}",
-        w.old_line_count, w.old_byte_count, w.new_line_count, w.new_byte_count
+fn render_write_overwrite(w: &WriteOverwritePreview) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        format!(
+            "Overwriting {} lines ({} bytes) \u{2192} {} lines ({} bytes)",
+            w.old_line_count, w.old_byte_count, w.new_line_count, w.new_byte_count
+        ),
+        DIM,
     )];
     for line in &w.first_lines {
-        lines.push(format!("{LINE_GREEN}+\t{line}{RESET}"));
+        lines.push(Line::from(vec![
+            Span::styled("+ ", Style::default().fg(Color::Green)),
+            Span::styled(line.clone(), LINE_GREEN_BG),
+        ]));
     }
     if w.truncated {
-        lines.push(format!(
-            "{DIM}... +{} more lines{RESET}",
-            w.new_line_count - w.first_lines.len()
+        lines.push(Line::styled(
+            format!("... +{} more lines", w.new_line_count - w.first_lines.len()),
+            DIM,
         ));
     }
-    lines.join("\n")
+    lines
 }
 
-fn render_delete_file(d: &DeleteFilePreview) -> String {
-    format!(
-        "{LINE_RED}Removing {} lines ({} bytes){RESET}",
-        d.line_count, d.byte_count
-    )
+fn render_delete_file(d: &DeleteFilePreview) -> Vec<Line<'static>> {
+    vec![Line::styled(
+        format!("Removing {} lines ({} bytes)", d.line_count, d.byte_count),
+        LINE_RED_BG,
+    )]
 }
 
-fn render_delete_dir(d: &DeleteDirPreview) -> String {
+fn render_delete_dir(d: &DeleteDirPreview) -> Vec<Line<'static>> {
     if d.recursive {
-        format!("{LINE_RED}Removing directory and all contents{RESET}")
+        vec![Line::styled(
+            "Removing directory and all contents",
+            LINE_RED_BG,
+        )]
     } else {
-        format!("{LINE_RED}Removing empty directory{RESET}")
+        vec![Line::styled("Removing empty directory", LINE_RED_BG)]
     }
 }
 
-// ── Syntax highlighting helpers ───────────────────────────────
+// ── Legacy ANSI rendering (kept for app.rs / confirm.rs) ────────
 
-/// Syntax-highlight a line for diff display.
-///
-/// Strips the trailing `\x1b[0m` that [`CodeHighlighter::highlight_line`]
-/// appends, because the caller manages reset/background itself.
-fn highlight_for_diff(hl: &mut CodeHighlighter, line: &str) -> String {
-    let output = hl.highlight_line(line);
-    output
-        .strip_suffix("\x1b[0m")
-        .unwrap_or(&output)
-        .to_string()
-}
+const ANSI_LINE_RED: &str = "\x1b[48;2;50;0;0m";
+const ANSI_LINE_GREEN: &str = "\x1b[48;2;0;35;0m";
+const ANSI_DIM: &str = "\x1b[90m";
+const ANSI_RESET: &str = "\x1b[0m";
 
-// ── Intra-line word diff ──────────────────────────────────────
-
-/// Walk `syntect_output` (foreground ANSI codes interleaved with raw text)
-/// and inject word-level background at the raw byte offsets
-/// `changed_start..changed_end`.
-///
-/// syntect only emits `\x1b[38;2;…m` (foreground), so our background
-/// codes persist through them. We switch from `line_bg` to `word_bg` at
-/// the changed region and back.
-fn inject_word_highlight(
-    syntect_output: &str,
-    changed_start: usize,
-    changed_end: usize,
-    line_bg: &str,
-    word_bg: &str,
-) -> String {
-    if changed_start >= changed_end {
-        return syntect_output.to_string();
-    }
-
-    let mut result = String::with_capacity(syntect_output.len() + 64);
-    let mut raw_bytes = 0usize;
-    let mut in_word = false;
-    let mut chars = syntect_output.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '\x1b' {
-            // Consume the ANSI escape sequence without advancing raw_bytes
-            result.push(ch);
-            for ec in chars.by_ref() {
-                result.push(ec);
-                if ec == 'm' {
-                    break;
+fn render_ansi(preview: &DiffPreview) -> String {
+    match preview {
+        DiffPreview::Edit(edit) => {
+            let ext = std::path::Path::new(&edit.path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let mut lines = Vec::new();
+            for r in &edit.replacements {
+                if r.total > 1 {
+                    lines.push(format!(
+                        "{ANSI_DIM}\u{2500}\u{2500} replacement {}/{} \u{2500}\u{2500}{ANSI_RESET}",
+                        r.index + 1,
+                        r.total
+                    ));
+                }
+                let mut hl = CodeHighlighter::new(ext);
+                for (j, line) in r.old_lines.iter().enumerate() {
+                    let h = hl.highlight_line(line).replace("\x1b[0m", "");
+                    lines.push(format!(
+                        "{ANSI_LINE_RED}{:>4} -\t{h}{ANSI_RESET}",
+                        r.start_line + j
+                    ));
+                }
+                let mut hl = CodeHighlighter::new(ext);
+                for (j, line) in r.new_lines.iter().enumerate() {
+                    let h = hl.highlight_line(line).replace("\x1b[0m", "");
+                    lines.push(format!(
+                        "{ANSI_LINE_GREEN}{:>4} +\t{h}{ANSI_RESET}",
+                        r.start_line + j
+                    ));
                 }
             }
-        } else {
-            if !in_word && raw_bytes == changed_start {
-                result.push_str(word_bg);
-                in_word = true;
+            if edit.truncated_count > 0 {
+                lines.push(format!(
+                    "{ANSI_DIM}... and {} more replacement(s){ANSI_RESET}",
+                    edit.truncated_count
+                ));
             }
-            if in_word && raw_bytes == changed_end {
-                result.push_str(line_bg);
-                in_word = false;
-            }
-            result.push(ch);
-            raw_bytes += ch.len_utf8();
+            lines.join("\n")
         }
+        DiffPreview::WriteNew(w) => {
+            let mut lines = vec![format!(
+                "{ANSI_DIM}New file: {} lines ({} bytes){ANSI_RESET}",
+                w.line_count, w.byte_count
+            )];
+            for line in &w.first_lines {
+                lines.push(format!("{ANSI_LINE_GREEN}+\t{line}{ANSI_RESET}"));
+            }
+            if w.truncated {
+                lines.push(format!(
+                    "{ANSI_DIM}... +{} more lines{ANSI_RESET}",
+                    w.line_count - w.first_lines.len()
+                ));
+            }
+            lines.join("\n")
+        }
+        DiffPreview::WriteOverwrite(w) => {
+            let mut lines = vec![format!(
+                "{ANSI_DIM}Overwriting {} lines → {} lines{ANSI_RESET}",
+                w.old_line_count, w.new_line_count
+            )];
+            for line in &w.first_lines {
+                lines.push(format!("{ANSI_LINE_GREEN}+\t{line}{ANSI_RESET}"));
+            }
+            if w.truncated {
+                lines.push(format!(
+                    "{ANSI_DIM}... +{} more lines{ANSI_RESET}",
+                    w.new_line_count - w.first_lines.len()
+                ));
+            }
+            lines.join("\n")
+        }
+        DiffPreview::DeleteFile(d) => format!(
+            "{ANSI_LINE_RED}Removing {} lines ({} bytes){ANSI_RESET}",
+            d.line_count, d.byte_count
+        ),
+        DiffPreview::DeleteDir(d) => {
+            if d.recursive {
+                format!("{ANSI_LINE_RED}Removing directory and all contents{ANSI_RESET}")
+            } else {
+                format!("{ANSI_LINE_RED}Removing empty directory{ANSI_RESET}")
+            }
+        }
+        DiffPreview::FileNotYetExists => format!("{ANSI_DIM}(file does not exist yet){ANSI_RESET}"),
+        DiffPreview::PathNotFound => format!("{ANSI_DIM}(path does not exist){ANSI_RESET}"),
     }
-
-    if in_word {
-        result.push_str(line_bg);
-    }
-
-    result
-}
-
-/// Find byte lengths of the common prefix and suffix between two strings.
-///
-/// Returns `(prefix_bytes, suffix_bytes_old, suffix_bytes_new)`.
-fn common_prefix_suffix(old: &str, new: &str) -> (usize, usize, usize) {
-    let prefix_chars = old
-        .chars()
-        .zip(new.chars())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    let prefix_bytes = old
-        .char_indices()
-        .nth(prefix_chars)
-        .map(|(i, _)| i)
-        .unwrap_or(old.len());
-
-    let old_rest: Vec<char> = old[prefix_bytes..].chars().collect();
-    let new_rest: Vec<char> = new[prefix_bytes..].chars().collect();
-
-    let suffix_chars = old_rest
-        .iter()
-        .rev()
-        .zip(new_rest.iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    let suffix_bytes_old: usize = old_rest
-        .iter()
-        .rev()
-        .take(suffix_chars)
-        .map(|c| c.len_utf8())
-        .sum();
-    let suffix_bytes_new: usize = new_rest
-        .iter()
-        .rev()
-        .take(suffix_chars)
-        .map(|c| c.len_utf8())
-        .sum();
-
-    (prefix_bytes, suffix_bytes_old, suffix_bytes_new)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koda_core::preview::{EditPreview, ReplacementPreview};
+    use koda_core::preview::ReplacementPreview;
 
     #[test]
-    fn test_render_edit_has_syntax_and_word_highlight() {
+    fn test_render_lines_edit_has_line_numbers() {
         let preview = DiffPreview::Edit(EditPreview {
             path: "test.rs".into(),
             replacements: vec![ReplacementPreview {
@@ -284,69 +280,35 @@ mod tests {
             }],
             truncated_count: 0,
         });
-        let rendered = render(&preview);
-
-        // Line numbers present
-        assert!(
-            rendered.contains("2 -\t"),
-            "should have line number for removed"
-        );
-        assert!(
-            rendered.contains("2 +\t"),
-            "should have line number for added"
-        );
-
-        // Line-level backgrounds
-        assert!(rendered.contains(LINE_RED), "removed line background");
-        assert!(rendered.contains(LINE_GREEN), "added line background");
-
-        // Word-level highlights for the changed region
-        assert!(
-            rendered.contains(WORD_RED),
-            "changed word highlight in removed"
-        );
-        assert!(
-            rendered.contains(WORD_GREEN),
-            "changed word highlight in added"
-        );
-
-        // Syntax highlighting: .rs extension → syntect should add foreground codes
-        assert!(
-            rendered.contains("\x1b[38;2;"),
-            "should have syntect foreground colors"
-        );
+        let lines = render_lines(&preview);
+        assert_eq!(lines.len(), 2); // one removed + one added
+        // Check line numbers in first span
+        let first_span = &lines[0].spans[0];
+        assert!(first_span.content.contains("2 -"));
+        let second_span = &lines[1].spans[0];
+        assert!(second_span.content.contains("2 +"));
     }
 
     #[test]
-    fn test_inject_word_highlight_no_change() {
-        let result = inject_word_highlight("hello world", 5, 5, LINE_RED, WORD_RED);
-        assert_eq!(result, "hello world");
+    fn test_render_lines_write_new() {
+        let preview = DiffPreview::WriteNew(WritePreview {
+            line_count: 10,
+            byte_count: 200,
+            first_lines: vec!["line 1".into(), "line 2".into()],
+            truncated: true,
+        });
+        let lines = render_lines(&preview);
+        assert!(lines.len() >= 3); // header + 2 lines + truncation
     }
 
     #[test]
-    fn test_inject_word_highlight_with_change() {
-        let result = inject_word_highlight("hello world", 0, 5, LINE_RED, WORD_RED);
-        assert!(result.contains(WORD_RED));
-        assert!(result.contains(LINE_RED));
-        assert!(result.contains("hello"));
-    }
-
-    #[test]
-    fn test_common_prefix_suffix_basic() {
-        let (pre, suf_old, suf_new) = common_prefix_suffix("hello world", "hello earth");
-        assert_eq!(pre, 6); // "hello " is common
-        assert_eq!(suf_old, 0);
-        assert_eq!(suf_new, 0);
-    }
-
-    #[test]
-    fn test_common_prefix_suffix_with_suffix() {
-        let (pre, suf_old, suf_new) =
-            common_prefix_suffix("println!(\"hello\");", "println!(\"world\");");
-        // Common prefix: "println!("
-        assert_eq!(pre, 10);
-        // Common suffix: ");"  — wait, actually `");` (3 bytes)
-        assert_eq!(suf_old, 3);
-        assert_eq!(suf_new, 3);
+    fn test_legacy_render_still_works() {
+        let preview = DiffPreview::DeleteFile(DeleteFilePreview {
+            line_count: 5,
+            byte_count: 100,
+        });
+        let ansi = render(&preview);
+        assert!(ansi.contains("\x1b["));
+        assert!(ansi.contains("Removing"));
     }
 }
