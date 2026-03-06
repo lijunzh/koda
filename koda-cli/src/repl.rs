@@ -163,7 +163,22 @@ pub async fn handle_command(
         "/agent" => {
             let project_root = std::env::current_dir().unwrap_or_default();
             let agents = koda_core::tools::agent::list_agents(&project_root);
-            let listing = crate::display::format_agents_list(&agents);
+            let listing = if agents.is_empty() {
+                "No sub-agents configured.".to_string()
+            } else {
+                agents
+                    .iter()
+                    .map(|(name, desc, source)| {
+                        let tag = match source.as_str() {
+                            "user" => " \x1b[90m[user]\x1b[0m",
+                            "project" => " \x1b[90m[project]\x1b[0m",
+                            _ => "",
+                        };
+                        format!("  \x1b[36m{name}\x1b[0m \u{2014} {desc}{tag}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
             println!();
             println!("  \x1b[1m\u{1f43b} Sub-Agents\x1b[0m");
             println!();
