@@ -414,3 +414,130 @@ async fn test_glob_tool_in_sandbox() {
     assert!(output.contains("main.rs"), "Glob should find main.rs");
     assert!(output.contains("lib.rs"), "Glob should find lib.rs");
 }
+
+// ── Compaction E2E ────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_compact_session_summarizes_and_reduces_messages() {
+    use koda_core::compact;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    let env = Env::new().await;
+
+    // Stuff 10 user/assistant message pairs into the session
+    for i in 0..10 {
+        env.db
+            .insert_message(
+                &env.session_id,
+                &Role::User,
+                Some(&format!("User message {i} about implementing feature X")),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        env.db
+            .insert_message(
+                &env.session_id,
+                &Role::Assistant,
+                Some(&format!(
+                    "Assistant response {i}: I've made the changes to file_{i}.rs"
+                )),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    // Verify we have 20 messages
+    let before = env.db.load_context(&env.session_id, 100_000).await.unwrap();
+    assert_eq!(before.len(), 20);
+
+    // Create a mock provider that returns a summary
+    let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
+        Arc::new(RwLock::new(Box::new(MockProvider::new(vec![
+            MockResponse::Text("Summary: User implemented feature X across 10 files.".into()),
+        ]))));
+
+    // Run compaction
+    let result = compact::compact_session(
+        &env.db,
+        &env.session_id,
+        100_000,
+        &env.config.model_settings,
+        &provider,
+    )
+    .await
+    .unwrap();
+
+    // Should succeed
+    let compact_result = result.unwrap();
+    assert!(compact_result.deleted > 0, "should have deleted messages");
+    assert!(
+        compact_result.summary_tokens > 0,
+        "should have summary tokens"
+    );
+
+    // Verify message count decreased
+    let after = env.db.load_context(&env.session_id, 100_000).await.unwrap();
+    assert!(
+        after.len() < before.len(),
+        "message count should decrease after compaction: {} < {}",
+        after.len(),
+        before.len()
+    );
+
+    // Verify the summary is in the history
+    let has_summary = after.iter().any(|m| {
+        m.content
+            .as_deref()
+            .unwrap_or("")
+            .contains("Compacted conversation summary")
+    });
+    assert!(has_summary, "should contain compaction summary message");
+}
+
+#[tokio::test]
+async fn test_compact_skips_short_conversation() {
+    use koda_core::compact::{self, CompactSkip};
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    let env = Env::new().await;
+
+    // Only 2 messages — too short
+    env.insert_user_message("hello").await;
+    env.db
+        .insert_message(
+            &env.session_id,
+            &Role::Assistant,
+            Some("hi"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
+        Arc::new(RwLock::new(Box::new(MockProvider::new(vec![]))));
+
+    let result = compact::compact_session(
+        &env.db,
+        &env.session_id,
+        100_000,
+        &env.config.model_settings,
+        &provider,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(result, Err(CompactSkip::TooShort(2))),
+        "should skip compaction for short conversations"
+    );
+}

@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod compact;
 pub mod config;
 pub mod context;
 pub mod db;
