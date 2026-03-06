@@ -32,6 +32,13 @@ pub enum ReplAction {
     Expand(usize),
     /// Toggle verbose tool output (None = toggle, Some = set)
     Verbose(Option<bool>),
+    /// List available sub-agents
+    ListAgents,
+    /// Show git diff summary
+    ShowDiff,
+    /// Memory management command
+    MemoryCommand(Option<String>),
+    #[allow(dead_code)]
     Handled,
     NotACommand,
 }
@@ -72,78 +79,21 @@ pub async fn handle_command(
             None => ReplAction::SetTrust(None),
         },
 
-        "/diff" => {
-            // Run git diff
-            let output = std::process::Command::new("git")
-                .args(["diff", "--stat"])
-                .output();
-
-            let diff_stat = match output {
-                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-                Ok(o) => {
-                    let err = String::from_utf8_lossy(&o.stderr);
-                    println!("  \x1b[31mGit error: {err}\x1b[0m");
-                    return ReplAction::Handled;
-                }
-                Err(e) => {
-                    println!("  \x1b[31mFailed to run git: {e}\x1b[0m");
-                    return ReplAction::Handled;
-                }
-            };
-
-            if diff_stat.trim().is_empty() {
-                // Try staged changes
-                let staged = std::process::Command::new("git")
-                    .args(["diff", "--cached", "--stat"])
-                    .output()
-                    .ok()
-                    .and_then(|o| {
-                        if o.status.success() {
-                            let s = String::from_utf8_lossy(&o.stdout).to_string();
-                            if s.trim().is_empty() { None } else { Some(s) }
-                        } else {
-                            None
-                        }
-                    });
-
-                if staged.is_none() {
-                    println!("  \x1b[90mNo uncommitted changes.\x1b[0m");
-                    return ReplAction::Handled;
-                }
+        "/diff" => match arg {
+            Some("review") => {
+                let full_diff = get_git_diff();
+                ReplAction::InjectPrompt(format!(
+                    "Review these uncommitted changes. Point out bugs, improvements, and concerns:\n\n```diff\n{full_diff}\n```"
+                ))
             }
-
-            match arg {
-                Some("review") => {
-                    // Get full diff for LLM review
-                    let full_diff = get_git_diff();
-                    ReplAction::InjectPrompt(format!(
-                        "Review these uncommitted changes. Point out bugs, improvements, and concerns:\n\n```diff\n{full_diff}\n```"
-                    ))
-                }
-                Some("commit") => {
-                    // Get full diff for commit message generation
-                    let full_diff = get_git_diff();
-                    ReplAction::InjectPrompt(format!(
-                        "Write a conventional commit message for these changes. Use the format: type: description\n\nInclude a body with bullet points for each logical change.\n\n```diff\n{full_diff}\n```"
-                    ))
-                }
-                _ => {
-                    // Just show the summary
-                    println!();
-                    println!("  \x1b[1m\u{1f43b} Uncommitted Changes\x1b[0m");
-                    println!();
-                    for line in diff_stat.lines() {
-                        println!("  \x1b[90m{line}\x1b[0m");
-                    }
-                    println!();
-                    println!(
-                        "  \x1b[90m/diff review   \u{2014} ask Koda to review the changes\x1b[0m"
-                    );
-                    println!("  \x1b[90m/diff commit   \u{2014} generate a commit message\x1b[0m");
-                    ReplAction::Handled
-                }
+            Some("commit") => {
+                let full_diff = get_git_diff();
+                ReplAction::InjectPrompt(format!(
+                    "Write a conventional commit message for these changes. Use the format: type: description\n\nInclude a body with bullet points for each logical change.\n\n```diff\n{full_diff}\n```"
+                ))
             }
-        }
+            _ => ReplAction::ShowDiff,
+        },
 
         "/compact" => ReplAction::Compact,
 
@@ -160,40 +110,7 @@ pub async fn handle_command(
             _ => ReplAction::Verbose(None), // toggle
         },
 
-        "/agent" => {
-            let project_root = std::env::current_dir().unwrap_or_default();
-            let agents = koda_core::tools::agent::list_agents(&project_root);
-            let listing = if agents.is_empty() {
-                "No sub-agents configured.".to_string()
-            } else {
-                agents
-                    .iter()
-                    .map(|(name, desc, source)| {
-                        let tag = match source.as_str() {
-                            "user" => " \x1b[90m[user]\x1b[0m",
-                            "project" => " \x1b[90m[project]\x1b[0m",
-                            _ => "",
-                        };
-                        format!("  \x1b[36m{name}\x1b[0m \u{2014} {desc}{tag}")
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            println!();
-            println!("  \x1b[1m\u{1f43b} Sub-Agents\x1b[0m");
-            println!();
-            if agents.is_empty() {
-                println!("  \x1b[90m{listing}\x1b[0m");
-            } else {
-                println!("{listing}");
-            }
-            println!();
-            println!("  \x1b[90mAsk Koda to invoke them, or use koda --agent <name>\x1b[0m");
-            println!(
-                "  \x1b[90mNeed a specialist? Ask Koda to create one for recurring tasks\x1b[0m"
-            );
-            ReplAction::Handled
-        }
+        "/agent" => ReplAction::ListAgents,
 
         "/sessions" => match arg {
             Some(sub) if sub.starts_with("delete ") => {
@@ -211,58 +128,7 @@ pub async fn handle_command(
             _ => ReplAction::ListSessions,
         },
 
-        "/memory" => {
-            let project_root = std::env::current_dir().unwrap_or_default();
-            match arg {
-                Some(text) if text.starts_with("global ") => {
-                    let entry = text.strip_prefix("global ").unwrap().trim();
-                    if entry.is_empty() {
-                        println!("  Usage: /memory global <text>");
-                    } else {
-                        match koda_core::memory::append_global(entry) {
-                            Ok(()) => println!("  \x1b[32m\u{2713}\x1b[0m Saved to global memory"),
-                            Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
-                        }
-                    }
-                }
-                Some(text) if text.starts_with("add ") => {
-                    let entry = text.strip_prefix("add ").unwrap().trim();
-                    if entry.is_empty() {
-                        println!("  Usage: /memory add <text>");
-                    } else {
-                        match koda_core::memory::append(&project_root, entry) {
-                            Ok(()) => println!(
-                                "  \x1b[32m\u{2713}\x1b[0m Saved to project memory (MEMORY.md)"
-                            ),
-                            Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
-                        }
-                    }
-                }
-                _ => {
-                    // Show current memory status
-                    let active = koda_core::memory::active_project_file(&project_root);
-                    println!();
-                    println!("  \x1b[1m\u{1f43b} Memory\x1b[0m");
-                    println!();
-                    match active {
-                        Some(f) => println!("  Project: \x1b[36m{f}\x1b[0m"),
-                        None => println!(
-                            "  Project: \x1b[90m(none — will create MEMORY.md on first write)\x1b[0m"
-                        ),
-                    }
-                    println!("  Global:  \x1b[36m~/.config/koda/memory.md\x1b[0m");
-                    println!();
-                    println!("  Commands:");
-                    println!("    /memory add <text>      Save to project MEMORY.md");
-                    println!("    /memory global <text>   Save to global memory");
-                    println!();
-                    println!(
-                        "  \x1b[90mTip: the LLM can also call MemoryWrite to save insights automatically.\x1b[0m"
-                    );
-                }
-            }
-            ReplAction::Handled
-        }
+        "/memory" => ReplAction::MemoryCommand(arg.map(|s| s.to_string())),
 
         _ => ReplAction::NotACommand,
     }
