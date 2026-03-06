@@ -89,7 +89,7 @@ pub async fn handle_slash_command(
         ReplAction::SwitchModel(model) => {
             config.model = model.clone();
             config.model_settings.model = model.clone();
-            save_provider(config);
+            crate::tui_wizards::save_provider(config);
             ok_msg(terminal, format!("Model set to: {model}"));
             SlashAction::Continue
         }
@@ -98,14 +98,12 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
         ReplAction::SetupProvider(ptype, base_url) => {
-            run_legacy_command(terminal, || async {
-                crate::commands::handle_setup_provider(config, provider, ptype, base_url).await;
-            })
-            .await;
+            crate::tui_wizards::handle_setup_provider(terminal, config, provider, ptype, base_url)
+                .await;
             SlashAction::Continue
         }
         ReplAction::PickProvider => {
-            handle_pick_provider(terminal, config, provider).await;
+            crate::tui_wizards::handle_pick_provider(terminal, config, provider).await;
             SlashAction::Continue
         }
         ReplAction::ShowHelp => {
@@ -133,19 +131,11 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
         ReplAction::Compact => {
-            run_legacy_command(terminal, || async {
-                crate::commands::handle_compact(&session.db, &session.id, config, provider, false)
-                    .await;
-            })
-            .await;
+            crate::tui_wizards::handle_compact(terminal, session, config, provider).await;
             SlashAction::Continue
         }
         ReplAction::McpCommand(ref args) => {
-            let args = args.clone();
-            run_legacy_command(terminal, || async {
-                crate::commands::handle_mcp_command(&args, &agent.mcp_registry, project_root).await;
-            })
-            .await;
+            crate::tui_wizards::handle_mcp(terminal, args, &agent.mcp_registry, project_root).await;
             SlashAction::Continue
         }
         ReplAction::SetTrust(mode_name) => {
@@ -215,7 +205,7 @@ async fn handle_pick_model(
                 Ok(Some(idx)) => {
                     config.model = models[idx].id.clone();
                     config.model_settings.model = config.model.clone();
-                    save_provider(config);
+                    crate::tui_wizards::save_provider(config);
                     ok_msg(terminal, format!("Model set to: {}", config.model));
                 }
                 Ok(None) => dim_msg(terminal, "Cancelled.".into()),
@@ -473,7 +463,7 @@ fn handle_trust(
     let new_mode = if let Some(ref name) = mode_name {
         ApprovalMode::parse(name)
     } else {
-        pick_trust_inline(terminal, approval::read_mode(shared_mode))
+        crate::tui_wizards::pick_trust_inline(terminal, approval::read_mode(shared_mode))
     };
     if let Some(m) = new_mode {
         approval::set_mode(shared_mode, m);
@@ -530,105 +520,4 @@ fn handle_expand(terminal: &mut Term, renderer: &TuiRenderer, n: usize) {
             }
         }
     }
-}
-
-// ── Legacy command shim ─────────────────────────────────────
-//
-// Commands that haven't been migrated to native TUI yet (/provider setup,
-// /compact, /mcp) still use println!. We temporarily exit raw mode,
-// clear the viewport, run the command, then re-init the terminal.
-// The caller in tui_app.rs must re-init the terminal after these.
-
-async fn run_legacy_command<F, Fut>(terminal: &mut Term, f: F)
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = ()>,
-{
-    let _ = terminal.clear();
-    let _ = crossterm::terminal::disable_raw_mode();
-    print!("\x1b[2A\x1b[J");
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-
-    f().await;
-
-    println!();
-}
-
-// ── Provider picker (native select, legacy setup) ───────────
-
-async fn handle_pick_provider(
-    terminal: &mut Term,
-    config: &mut KodaConfig,
-    provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
-) {
-    let providers = crate::repl::PROVIDERS;
-    let current_idx = providers
-        .iter()
-        .position(|(key, _, _)| {
-            koda_core::config::ProviderType::from_url_or_name("", Some(key)) == config.provider_type
-        })
-        .unwrap_or(0);
-    let options: Vec<SelectOption> = providers
-        .iter()
-        .map(|(_, name, url)| SelectOption::new(*name, *url))
-        .collect();
-
-    let idx = match select_menu::select_inline(
-        terminal,
-        "\u{1f43b} Select a provider",
-        &options,
-        current_idx,
-    ) {
-        Ok(Some(idx)) => idx,
-        Ok(None) => {
-            dim_msg(terminal, "Cancelled.".into());
-            return;
-        }
-        Err(e) => {
-            err_msg(terminal, format!("TUI error: {e}"));
-            return;
-        }
-    };
-
-    let (key, _, _) = providers[idx];
-    let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
-    let base_url = ptype.default_base_url().to_string();
-
-    // Provider setup wizard uses println! — run in legacy mode
-    run_legacy_command(terminal, || async {
-        crate::commands::handle_setup_provider(config, provider, ptype, base_url).await;
-    })
-    .await;
-}
-
-// ── Trust picker (native TUI) ───────────────────────────────
-
-fn pick_trust_inline(terminal: &mut Term, current: ApprovalMode) -> Option<ApprovalMode> {
-    use ApprovalMode::*;
-    let modes = [Plan, Normal, Yolo];
-    let options: Vec<SelectOption> = modes
-        .iter()
-        .map(|m| {
-            let label = match m {
-                Plan => "\u{1f4cb} plan",
-                Normal => "\u{1f43b} normal",
-                Yolo => "\u{26a1} yolo",
-            };
-            SelectOption::new(label, m.description())
-        })
-        .collect();
-    let initial = modes.iter().position(|m| *m == current).unwrap_or(1);
-    match select_menu::select_inline(terminal, "\u{1f43b} Trust level", &options, initial) {
-        Ok(Some(idx)) => Some(modes[idx]),
-        _ => None,
-    }
-}
-
-fn save_provider(config: &KodaConfig) {
-    let mut s = koda_core::approval::Settings::load();
-    let _ = s.save_last_provider(
-        &config.provider_type.to_string(),
-        &config.base_url,
-        &config.model,
-    );
 }
