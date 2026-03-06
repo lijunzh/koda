@@ -88,8 +88,8 @@ struct Cli {
     #[arg(long)]
     reasoning_effort: Option<String>,
 
-    /// Use legacy readline-based input instead of TUI
-    #[arg(long)]
+    /// Use legacy readline-based input instead of TUI (deprecated)
+    #[arg(long, hide = true)]
     legacy: bool,
 }
 

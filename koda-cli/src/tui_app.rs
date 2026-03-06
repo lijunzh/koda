@@ -21,6 +21,7 @@ use crate::input;
 use crate::repl;
 use crate::sink::UiEvent;
 use crate::tui_commands::{self, SlashAction};
+use crate::tui_output;
 use crate::tui_render::TuiRenderer;
 use crate::widgets::status_bar::StatusBar;
 
@@ -39,7 +40,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::Paragraph,
 };
 use std::collections::VecDeque;
@@ -61,20 +62,6 @@ enum TuiState {
     Idle,
     /// An inference turn is running.
     Inferring,
-}
-
-// ── Approval helper ──────────────────────────────────────────
-
-fn map_confirmation(c: crate::confirm::Confirmation) -> ApprovalDecision {
-    use crate::confirm::Confirmation;
-    match c {
-        Confirmation::Approved => ApprovalDecision::Approve,
-        Confirmation::Rejected => ApprovalDecision::Reject,
-        Confirmation::RejectedWithFeedback(fb) => {
-            ApprovalDecision::RejectWithFeedback { feedback: fb }
-        }
-        Confirmation::AlwaysAllow => ApprovalDecision::AlwaysAllow,
-    }
 }
 
 // ── Viewport drawing ─────────────────────────────────────────
@@ -515,42 +502,55 @@ pub async fn run(
                                                 if preview.is_some() {
                                                     renderer.preview_shown = true;
                                                 }
-                                                // Exit raw mode for approval UI
-                                                let _ = terminal.clear();
-                                                let _ = crossterm::terminal::disable_raw_mode();
-                                                print!("\x1b[{}A\x1b[J", VIEWPORT_HEIGHT);
-                                                let _ = std::io::Write::flush(&mut std::io::stdout());
-
-                                                let decision = map_confirmation(
-                                                    crate::confirm::confirm_tool_action(
-                                                        &tool_name,
-                                                        &detail,
-                                                        preview.as_ref(),
-                                                        whitelist_hint.as_deref(),
-                                                    ),
+                                                // Inline approval — stays in raw mode
+                                                let decision = crate::widgets::approval::prompt_approval(
+                                                    &mut terminal,
+                                                    &tool_name,
+                                                    &detail,
+                                                    preview.as_ref(),
+                                                    whitelist_hint.as_deref(),
                                                 );
                                                 let _ = cmd_tx
                                                     .send(EngineCommand::ApprovalResponse { id, decision })
                                                     .await;
-
-                                                crossterm::terminal::enable_raw_mode()?;
-                                                terminal = init_terminal()?;
-                                                crossterm_events = EventStream::new();
                                             }
                                             UiEvent::Engine(EngineEvent::LoopCapReached { cap, recent_tools }) => {
-                                                let _ = terminal.clear();
-                                                let _ = crossterm::terminal::disable_raw_mode();
-                                                print!("\x1b[{}A\x1b[J", VIEWPORT_HEIGHT);
-                                                let _ = std::io::Write::flush(&mut std::io::stdout());
-
-                                                let action = crate::app::cli_loop_continue_prompt(cap, &recent_tools);
+                                                // Show cap info above viewport
+                                                tui_output::emit_blank(&mut terminal);
+                                                tui_output::emit_line(
+                                                    &mut terminal,
+                                                    Line::from(vec![
+                                                        Span::raw("  "),
+                                                        Span::styled(
+                                                            format!("\u{26a0} Hard cap reached ({cap} iterations)"),
+                                                            Style::default().fg(Color::Yellow),
+                                                        ),
+                                                    ]),
+                                                );
+                                                for name in &recent_tools {
+                                                    tui_output::emit_line(
+                                                        &mut terminal,
+                                                        Line::from(vec![
+                                                            Span::raw("    "),
+                                                            Span::styled(format!("\u{25cf} {name}"), Style::default().fg(Color::DarkGray)),
+                                                        ]),
+                                                    );
+                                                }
+                                                // Use approval widget for continue/stop
+                                                let decision = crate::widgets::approval::prompt_approval(
+                                                    &mut terminal,
+                                                    "LoopCap",
+                                                    "Continue running?",
+                                                    None,
+                                                    None,
+                                                );
+                                                let action = match decision {
+                                                    ApprovalDecision::Approve => koda_core::loop_guard::LoopContinuation::Continue200,
+                                                    _ => koda_core::loop_guard::LoopContinuation::Stop,
+                                                };
                                                 let _ = cmd_tx
                                                     .send(EngineCommand::LoopDecision { action })
                                                     .await;
-
-                                                crossterm::terminal::enable_raw_mode()?;
-                                                terminal = init_terminal()?;
-                                                crossterm_events = EventStream::new();
                                             }
                                             UiEvent::Engine(ref event) => {
                                                 renderer.render_to_terminal(event.clone(), &mut terminal);
