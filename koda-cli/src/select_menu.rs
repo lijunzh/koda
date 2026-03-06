@@ -79,15 +79,16 @@ pub fn select_inline(
                     }
                 }
                 KeyCode::Enter => {
-                    clear_inline(&mut stdout, total_lines)?;
+                    // Move cursor past menu — content stays in scrollback
+                    move_past_menu(&mut stdout, title, options, selected, total_lines)?;
                     return Ok(Some(selected));
                 }
                 KeyCode::Esc => {
-                    clear_inline(&mut stdout, total_lines)?;
+                    move_past_menu(&mut stdout, title, options, selected, total_lines)?;
                     return Ok(None);
                 }
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    clear_inline(&mut stdout, total_lines)?;
+                    move_past_menu(&mut stdout, title, options, selected, total_lines)?;
                     return Ok(None);
                 }
                 _ => {}
@@ -194,12 +195,21 @@ fn clear_lines(stdout: &mut io::Stdout, lines: usize) -> io::Result<()> {
 
 // ── Inline renderer (cursor movement, no \n) ─────────────────
 
-fn clear_inline(stdout: &mut io::Stdout, total_lines: usize) -> io::Result<()> {
-    for _ in 0..total_lines {
-        execute!(stdout, Clear(ClearType::CurrentLine), cursor::MoveDown(1))?;
-    }
-    // Don't move back up — leave cursor at the viewport position
-    // so subsequent insert_before() calls work correctly.
+/// Re-render the final selection state and move cursor below the menu.
+/// Menu content stays in scrollback (like Claude Code).
+fn move_past_menu(
+    stdout: &mut io::Stdout,
+    title: &str,
+    options: &[SelectOption],
+    selected: usize,
+    total_lines: usize,
+) -> io::Result<()> {
+    // Re-render so the final selected state is in scrollback
+    render_inline(stdout, title, options, selected)?;
+    // Cursor is at menu top after render_inline; move to bottom
+    execute!(stdout, cursor::MoveDown(total_lines as u16 - 1))?;
+    // One more \n to position at the line after the menu
+    execute!(stdout, Print("\r\n"))?;
     stdout.flush()?;
     Ok(())
 }
