@@ -14,6 +14,7 @@ pub struct StatusBar<'a> {
     model: &'a str,
     mode_label: &'a str,
     context_pct: u32,
+    queue_len: usize,
 }
 
 impl<'a> StatusBar<'a> {
@@ -22,7 +23,13 @@ impl<'a> StatusBar<'a> {
             model,
             mode_label,
             context_pct,
+            queue_len: 0,
         }
+    }
+
+    pub fn with_queue(mut self, queue_len: usize) -> Self {
+        self.queue_len = queue_len;
+        self
     }
 }
 
@@ -67,6 +74,20 @@ impl Widget for StatusBar<'_> {
             ),
         ]);
 
-        line.render(area, buf);
+        // Append queue indicator if any
+        if self.queue_len > 0 {
+            let mut spans = line.into_iter().collect::<Vec<_>>();
+            spans.push(Span::styled(
+                "\u{2502}",
+                Style::default().fg(Color::Rgb(60, 60, 60)),
+            ));
+            spans.push(Span::styled(
+                format!(" {} queued ", self.queue_len),
+                Style::default().fg(Color::Yellow),
+            ));
+            Line::from(spans).render(area, buf);
+        } else {
+            line.render(area, buf);
+        }
     }
 }

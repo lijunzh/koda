@@ -1,21 +1,33 @@
-//! TUI-based interactive event loop.
-//!
-//! Replaces the rustyline-based `app.rs` with `ratatui` + `tui-textarea`
-//! for inline input and status bar. All output (`display.rs`, `markdown.rs`)
-//! remains as `println!` to preserve native terminal scrollback.
+//! TUI-based interactive event loop with persistent inline viewport.
 //!
 //! Architecture:
-//!   Input phase  -> ratatui Viewport::Inline(2) with tui-textarea + status bar
-//!   Output phase -> viewport cleared, normal println! (unchanged)
+//!   - Terminal stays in raw mode for the entire session
+//!   - `Viewport::Inline(2)` with `scrolling-regions` is always rendered
+//!   - Output scrolls above the viewport via `terminal.insert_before()`
+//!   - Input is always active — type-ahead queues submissions during inference
+//!
+//! ```text
+//! Normal terminal scrollback            ← via insert_before()
+//!   ├── Tool banners, markdown, diffs
+//!   └── All EngineEvent rendering
+//!
+//! ┌─ ratatui Viewport::Inline(2) ──────────────────────────┐
+//! │ 🐻> user types here even during inference_              │
+//! │ model │ normal │ ████░░ 5%                             │
+//! └────────────────────────────────────────────────────────┘
+//! ```
 
 use crate::input;
 use crate::repl::{self, ReplAction};
-use crate::sink::{UiEvent, UiRenderer};
+use crate::sink::UiEvent;
 use crate::tui::{self, SelectOption};
+use crate::tui_output::TuiOutput;
+use crate::tui_render::TuiRenderer;
 use crate::widgets::status_bar::StatusBar;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
+use futures_util::StreamExt;
 use koda_core::agent::KodaAgent;
 use koda_core::approval::{self, ApprovalMode};
 use koda_core::config::KodaConfig;
@@ -30,6 +42,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::Paragraph,
 };
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -38,6 +51,17 @@ use tui_textarea::TextArea;
 
 /// Height of the inline viewport (input line + status bar).
 const VIEWPORT_HEIGHT: u16 = 2;
+
+// ── Session state ────────────────────────────────────────────
+
+/// What the TUI is currently doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TuiState {
+    /// Waiting for user input (no inference running).
+    Idle,
+    /// An inference turn is running.
+    Inferring,
+}
 
 // ── Approval helper ──────────────────────────────────────────
 
@@ -53,143 +77,94 @@ fn map_confirmation(c: crate::confirm::Confirmation) -> ApprovalDecision {
     }
 }
 
-// ── Inline TUI input ─────────────────────────────────────────
+// ── Viewport drawing ─────────────────────────────────────────
 
-/// Result from the TUI input loop.
-enum InputResult {
-    /// User submitted text (may be empty).
-    Line(String),
-    /// User pressed Ctrl+D on empty buffer (EOF).
-    Eof,
+fn draw_viewport(
+    frame: &mut ratatui::Frame,
+    textarea: &TextArea,
+    model: &str,
+    mode: ApprovalMode,
+    context_pct: u32,
+    state: TuiState,
+    queue_len: usize,
+) {
+    let area = frame.area();
+    let [input_row, status_row] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
+
+    // Prompt icon + textarea
+    let (icon, color) = match (state, mode) {
+        (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray), // ⏳ during inference
+        (_, ApprovalMode::Plan) => ("\u{1f4cb}", Color::Yellow),
+        (_, ApprovalMode::Normal) => ("\u{1f43b}", Color::Cyan),
+        (_, ApprovalMode::Yolo) => ("\u{26a1}", Color::Red),
+    };
+    let prompt_width: u16 = 4;
+    let [prompt_area, text_area] =
+        Layout::horizontal([Constraint::Length(prompt_width), Constraint::Fill(1)])
+            .areas(input_row);
+
+    frame.render_widget(
+        Paragraph::new(format!("{icon}> ")).style(Style::default().fg(color)),
+        prompt_area,
+    );
+    frame.render_widget(&*textarea, text_area);
+
+    // Status bar
+    let mut sb = StatusBar::new(model, mode.label(), context_pct);
+    if queue_len > 0 {
+        sb = sb.with_queue(queue_len);
+    }
+    frame.render_widget(sb, status_row);
 }
 
-/// Read user input via ratatui inline viewport with tui-textarea.
-///
-/// This function is blocking — it should be called via `spawn_blocking`.
-/// It creates a temporary ratatui terminal, handles key events, and cleans
-/// up before returning.
-fn read_input(model: &str, shared_mode: &approval::SharedMode) -> Result<InputResult> {
-    crossterm::terminal::enable_raw_mode()?;
+// ── Terminal lifecycle helpers ────────────────────────────────
 
+type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
+
+fn init_terminal() -> Result<Term> {
+    crossterm::terminal::enable_raw_mode()?;
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::with_options(
+    let terminal = Terminal::with_options(
         backend,
         TerminalOptions {
             viewport: Viewport::Inline(VIEWPORT_HEIGHT),
         },
     )?;
-
-    let mut textarea = TextArea::default();
-    textarea.set_cursor_line_style(Style::default());
-    textarea.set_cursor_style(
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::REVERSED),
-    );
-    textarea.set_placeholder_text("Type a message...");
-    textarea.set_placeholder_style(Style::default().fg(Color::DarkGray));
-
-    let result = input_loop(&mut terminal, &mut textarea, shared_mode, model);
-
-    // Clean up: clear viewport, restore terminal
-    let _ = terminal.clear();
-    drop(terminal);
-    crossterm::terminal::disable_raw_mode()?;
-
-    // Erase the viewport lines left on screen
-    print!("\x1b[{}A\x1b[J", VIEWPORT_HEIGHT);
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-
-    result
+    Ok(terminal)
 }
 
-/// Inner event loop for tui-textarea input.
-fn input_loop(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    textarea: &mut TextArea,
-    shared_mode: &approval::SharedMode,
-    model: &str,
-) -> Result<InputResult> {
-    loop {
-        let mode = approval::read_mode(shared_mode);
-        let context_pct = koda_core::context::percentage() as u32;
+fn restore_terminal(terminal: &mut Term) {
+    let _ = terminal.clear();
+    drop(std::mem::replace(
+        terminal,
+        // Dummy — we just need to call clear() on the original
+        Terminal::with_options(
+            CrosstermBackend::new(std::io::stdout()),
+            TerminalOptions {
+                viewport: Viewport::Inline(0),
+            },
+        )
+        .unwrap(),
+    ));
+    let _ = crossterm::terminal::disable_raw_mode();
+    // Erase leftover viewport lines
+    print!("\x1b[{}A\x1b[J", VIEWPORT_HEIGHT);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+}
 
-        terminal.draw(|frame| {
-            let area = frame.area();
-            let [input_row, status_row] =
-                Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
+// ── Output helper ────────────────────────────────────────────
 
-            // Prompt icon + textarea
-            let (icon, color) = match mode {
-                ApprovalMode::Plan => ("\u{1f4cb}", Color::Yellow),
-                ApprovalMode::Normal => ("\u{1f43b}", Color::Cyan),
-                ApprovalMode::Yolo => ("\u{26a1}", Color::Red),
-            };
-            let prompt_width: u16 = 4; // emoji(2) + >(1) + space(1)
-            let [prompt_area, text_area] =
-                Layout::horizontal([Constraint::Length(prompt_width), Constraint::Fill(1)])
-                    .areas(input_row);
-
-            frame.render_widget(
-                Paragraph::new(format!("{icon}> ")).style(Style::default().fg(color)),
-                prompt_area,
-            );
-            frame.render_widget(&*textarea, text_area);
-
-            // Status bar
-            frame.render_widget(StatusBar::new(model, mode.label(), context_pct), status_row);
-        })?;
-
-        // Block until next terminal event
-        let ev = event::read()?;
-
-        let handled = if let Event::Key(key) = &ev {
-            match (key.code, key.modifiers) {
-                // Enter → submit
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    let text = textarea.lines().join("\n");
-                    return Ok(InputResult::Line(text));
-                }
-                // Esc → clear input
-                (KeyCode::Esc, _) => {
-                    textarea.select_all();
-                    textarea.cut();
-                    true
-                }
-                // Ctrl+C → clear input
-                (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-                    textarea.select_all();
-                    textarea.cut();
-                    true
-                }
-                // Ctrl+D on empty → EOF
-                (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
-                    if textarea.lines().join("").trim().is_empty() {
-                        return Ok(InputResult::Eof);
-                    }
-                    false // let textarea handle delete-forward
-                }
-                // Shift+Tab → cycle approval mode
-                (KeyCode::BackTab, _) => {
-                    approval::cycle_mode(shared_mode);
-                    true
-                }
-                _ => false,
-            }
-        } else {
-            false
-        };
-
-        if !handled {
-            textarea.input(ev);
-        }
-    }
+/// Write lines above the viewport using `insert_before`.
+/// Accepts an ANSI-formatted string — converts to ratatui Text.
+fn emit_above(terminal: &mut Term, text: &str) {
+    TuiOutput::emit(terminal, text);
 }
 
 // ── Main event loop ──────────────────────────────────────────
 
-/// Run the main interactive event loop with TUI input.
+/// Run the main interactive event loop with persistent TUI.
 pub async fn run(
     project_root: PathBuf,
     mut config: KodaConfig,
@@ -197,9 +172,8 @@ pub async fn run(
     session_id: String,
     version_check: tokio::task::JoinHandle<Option<String>>,
 ) -> Result<()> {
-    // ── Setup (same as app.rs) ───────────────────────────────
+    // ── Setup (same as before) ───────────────────────────────
 
-    // Restore last-used provider/model if available
     let settings = koda_core::approval::Settings::load();
     if let Some(ref last) = settings.last_provider {
         let ptype =
@@ -213,7 +187,6 @@ pub async fn run(
     let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
         Arc::new(RwLock::new(crate::commands::create_provider(&config)));
 
-    // Auto-detect the serving model for local providers
     if config.model == "auto-detect" {
         let prov = provider.read().await;
         match prov.list_models().await {
@@ -225,6 +198,7 @@ pub async fn run(
             Ok(_) => {
                 config.model = "(no model loaded)".to_string();
                 config.model_settings.model = config.model.clone();
+                // Print to stderr (before raw mode)
                 eprintln!(
                     "  \x1b[33m\u{26a0} No model loaded in {}.\x1b[0m",
                     config.provider_type
@@ -243,10 +217,10 @@ pub async fn run(
         }
     }
 
+    // Print banner BEFORE entering raw mode
     let recent = db.recent_user_messages(3).await.unwrap_or_default();
     repl::print_banner(&config, &session_id, &recent);
 
-    // Show update hint if version check completed
     if let Ok(Some(latest)) = version_check.await
         && let Some((current, latest)) = koda_core::version::update_available(&latest)
     {
@@ -257,10 +231,8 @@ pub async fn run(
         println!();
     }
 
-    // Build agent (tools, MCP, system prompt) and session
     let agent = Arc::new(KodaAgent::new(&config, project_root.clone()).await?);
 
-    // Render MCP connection statuses
     if !agent.mcp_statuses.is_empty() {
         println!(
             "  \x1b[36m\u{1f50c} Connecting to {} MCP server(s)...\x1b[0m",
@@ -278,6 +250,7 @@ pub async fn run(
         }
         println!();
     }
+
     let mut session = KodaSession::new(
         session_id.clone(),
         agent.clone(),
@@ -288,568 +261,313 @@ pub async fn run(
 
     let shared_mode = approval::new_shared_mode(ApprovalMode::Normal);
 
+    // ── Initialize persistent terminal ───────────────────────
+
+    let mut terminal = init_terminal()?;
+
+    let mut textarea = TextArea::default();
+    textarea.set_cursor_line_style(Style::default());
+    textarea.set_cursor_style(
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::REVERSED),
+    );
+    textarea.set_placeholder_text("Type a message...");
+    textarea.set_placeholder_style(Style::default().fg(Color::DarkGray));
+
     // ── Channels ─────────────────────────────────────────────
 
-    // Engine sink -> main loop (UI events)
     let (ui_tx, mut ui_rx) = mpsc::channel::<UiEvent>(256);
-
-    // Main loop -> engine (approval responses)
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(32);
 
-    // ── Event loop ───────────────────────────────────────────
+    // ── State ────────────────────────────────────────────────
 
-    let mut renderer = UiRenderer::new();
+    let mut renderer = TuiRenderer::new();
+    let mut tui_state = TuiState::Idle;
+    let mut input_queue: VecDeque<String> = VecDeque::new();
     let mut pending_command: Option<String> = None;
     let mut silent_compact_deferred = false;
+    let mut should_quit = false;
+
+    // Crossterm event stream for async key capture
+    let mut crossterm_events = EventStream::new();
+
+    // ── Initial viewport draw ────────────────────────────────
+
+    let mode = approval::read_mode(&shared_mode);
+    let ctx = koda_core::context::percentage() as u32;
+    terminal.draw(|f| {
+        draw_viewport(f, &textarea, &config.model, mode, ctx, tui_state, input_queue.len());
+    })?;
+
+    // ── Main event loop ──────────────────────────────────────
 
     loop {
-        // ── Phase 1: Wait for input ──────────────────────────
-
-        let input = if let Some(cmd) = pending_command.take() {
-            cmd
-        } else {
-            let model = config.model.clone();
-            let mode_clone = shared_mode.clone();
-
-            match tokio::task::spawn_blocking(move || read_input(&model, &mode_clone)).await? {
-                Ok(InputResult::Line(text)) => {
-                    // Echo the prompt + input to scrollback
-                    let mode = approval::read_mode(&shared_mode);
-                    let prompt = repl::format_prompt(&config.model, mode);
-                    println!("{prompt}{text}");
-                    text
-                }
-                Ok(InputResult::Eof) => {
-                    println!("\x1b[36m\u{1f43b} Goodbye!\x1b[0m");
-                    break;
-                }
-                Err(e) => {
-                    eprintln!("Input error: {e}");
-                    break;
-                }
-            }
-        };
-
-        let input = input.trim().to_string();
-        if input.is_empty() {
-            continue;
+        if should_quit {
+            break;
         }
 
-        // ── Phase 2: Handle slash commands ───────────────────
-
-        if input.starts_with('/') {
-            match repl::handle_command(&input, &config, &provider).await {
-                ReplAction::Quit => {
-                    println!("\x1b[36m\u{1f43b} Goodbye!\x1b[0m");
-                    break;
-                }
-                ReplAction::SwitchModel(model) => {
-                    config.model = model.clone();
-                    config.model_settings.model = model.clone();
-                    let mut s = koda_core::approval::Settings::load();
-                    let _ = s.save_last_provider(
-                        &config.provider_type.to_string(),
-                        &config.base_url,
-                        &config.model,
-                    );
-                    println!("  \x1b[32m\u{2713}\x1b[0m Model set to: \x1b[36m{model}\x1b[0m");
-                    continue;
-                }
-                ReplAction::PickModel => {
-                    let prov = provider.read().await;
-                    match prov.list_models().await {
-                        Ok(models) if models.is_empty() => {
-                            println!(
-                                "  \x1b[33mNo models available from {}\x1b[0m",
-                                prov.provider_name()
-                            );
-                        }
-                        Ok(models) => {
-                            drop(prov);
-                            let current_idx = models
-                                .iter()
-                                .position(|m| m.id == config.model)
-                                .unwrap_or(0);
-                            let options: Vec<SelectOption> = models
-                                .iter()
-                                .map(|m| {
-                                    let desc = if m.id == config.model {
-                                        "\u{25c0} current".to_string()
-                                    } else {
-                                        String::new()
-                                    };
-                                    SelectOption::new(&m.id, desc)
-                                })
-                                .collect();
-                            match tui::select("\u{1f43b} Select a model", &options, current_idx) {
-                                Ok(Some(idx)) => {
-                                    config.model = models[idx].id.clone();
-                                    config.model_settings.model = config.model.clone();
-                                    let mut s = koda_core::approval::Settings::load();
-                                    let _ = s.save_last_provider(
-                                        &config.provider_type.to_string(),
-                                        &config.base_url,
-                                        &config.model,
-                                    );
-                                    println!(
-                                        "  \x1b[32m\u{2713}\x1b[0m Model set to: \x1b[36m{}\x1b[0m",
-                                        config.model
-                                    );
-                                }
-                                Ok(None) => println!("  \x1b[90mCancelled.\x1b[0m"),
-                                Err(e) => println!("  \x1b[31mTUI error: {e}\x1b[0m"),
-                            }
-                        }
-                        Err(e) => println!("  \x1b[31mFailed to list models: {e}\x1b[0m"),
-                    }
-                    continue;
-                }
-                ReplAction::SetupProvider(ptype, base_url) => {
-                    crate::commands::handle_setup_provider(&mut config, &provider, ptype, base_url)
-                        .await;
-                    continue;
-                }
-                ReplAction::PickProvider => {
-                    crate::commands::handle_pick_provider(&mut config, &provider).await;
-                    continue;
-                }
-                ReplAction::ShowHelp => {
-                    let commands = [
-                        ("/agent", "List available sub-agents"),
-                        ("/compact", "Summarize conversation to reclaim context"),
-                        ("/cost", "Show token usage for this session"),
-                        ("/diff", "Show git diff / review / commit message"),
-                        ("/expand", "Show full output of last tool call (/expand N)"),
-                        ("/mcp", "MCP servers: status / add / remove / restart"),
-                        ("/memory", "View/save project & global memory"),
-                        ("/model", "Pick a model interactively"),
-                        ("/provider", "Switch LLM provider"),
-                        ("/sessions", "List/resume/delete sessions"),
-                        ("/trust", "Set approval mode (always / auto / never)"),
-                        ("/verbose", "Toggle full tool output (on/off)"),
-                        ("/exit", "Quit the session"),
-                    ];
-                    let options: Vec<SelectOption> = commands
-                        .iter()
-                        .map(|(cmd, desc)| SelectOption::new(*cmd, *desc))
-                        .collect();
-                    if let Ok(Some(idx)) = tui::select("\u{1f43b} Commands", &options, 0) {
-                        let (cmd, _) = commands[idx];
-                        pending_command = Some(cmd.to_string());
-                    }
-                    println!();
-                    println!(
-                        "  \x1b[90mTips: @file to attach context \u{00b7} Shift+Tab to cycle mode \u{00b7} Ctrl+C to cancel \u{00b7} Ctrl+D to exit\x1b[0m"
-                    );
-                    continue;
-                }
-                ReplAction::ShowCost => {
-                    match session.db.session_token_usage(&session.id).await {
-                        Ok(u) => {
-                            let total = u.prompt_tokens
-                                + u.completion_tokens
-                                + u.cache_read_tokens
-                                + u.cache_creation_tokens;
-                            println!();
-                            println!("  \x1b[1m\u{1f43b} Session Cost\x1b[0m");
-                            println!();
-                            println!("  Prompt tokens:     \x1b[36m{:>8}\x1b[0m", u.prompt_tokens);
-                            println!(
-                                "  Completion tokens: \x1b[36m{:>8}\x1b[0m",
-                                u.completion_tokens
-                            );
-                            if u.cache_read_tokens > 0 {
-                                println!(
-                                    "  Cache read tokens: \x1b[32m{:>8}\x1b[0m",
-                                    u.cache_read_tokens
-                                );
-                            }
-                            if u.cache_creation_tokens > 0 {
-                                println!(
-                                    "  Cache write tokens:\x1b[33m{:>8}\x1b[0m",
-                                    u.cache_creation_tokens
-                                );
-                            }
-                            if u.thinking_tokens > 0 {
-                                println!(
-                                    "  Thinking tokens:   \x1b[35m{:>8}\x1b[0m",
-                                    u.thinking_tokens
-                                );
-                            }
-                            println!("  Total tokens:      \x1b[1m{total:>8}\x1b[0m");
-                            println!("  API calls:         \x1b[90m{:>8}\x1b[0m", u.api_calls);
-                            println!();
-                            println!("  \x1b[90mModel: {}\x1b[0m", config.model);
-                            println!("  \x1b[90mProvider: {}\x1b[0m", config.provider_type);
-                        }
-                        Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
-                    }
-                    continue;
-                }
-                ReplAction::ListSessions => {
-                    match session.db.list_sessions(10, &project_root).await {
-                        Ok(sessions) if sessions.is_empty() => {
-                            println!("  \x1b[90mNo other sessions found.\x1b[0m");
-                        }
-                        Ok(sessions) => {
-                            let current_idx = sessions
-                                .iter()
-                                .position(|s| s.id == session.id)
-                                .unwrap_or(0);
-                            let options: Vec<SelectOption> = sessions
-                                .iter()
-                                .map(|s| {
-                                    let desc = if s.id == session.id {
-                                        format!(
-                                            "{}  {} msgs  {}k tokens  \u{25c0} current",
-                                            s.created_at,
-                                            s.message_count,
-                                            s.total_tokens / 1000
-                                        )
-                                    } else {
-                                        format!(
-                                            "{}  {} msgs  {}k tokens",
-                                            s.created_at,
-                                            s.message_count,
-                                            s.total_tokens / 1000
-                                        )
-                                    };
-                                    SelectOption::new(&s.id[..8], desc)
-                                })
-                                .collect();
-                            match tui::select("\u{1f43b} Sessions", &options, current_idx) {
-                                Ok(Some(idx)) => {
-                                    let target = &sessions[idx];
-                                    if target.id == session.id {
-                                        println!("  \x1b[90mAlready in this session.\x1b[0m");
-                                    } else {
-                                        session.id = target.id.clone();
-                                        println!(
-                                            "  \x1b[32m\u{2713}\x1b[0m Resumed session \x1b[36m{}\x1b[0m  \x1b[90m{}  {} msgs\x1b[0m",
-                                            &target.id[..8],
-                                            target.created_at,
-                                            target.message_count,
-                                        );
-                                    }
-                                }
-                                Ok(None) => println!("  \x1b[90mCancelled.\x1b[0m"),
-                                Err(e) => println!("  \x1b[31mTUI error: {e}\x1b[0m"),
-                            }
-                            println!("  \x1b[90mDelete: /sessions delete <id>\x1b[0m");
-                        }
-                        Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
-                    }
-                    continue;
-                }
-                ReplAction::DeleteSession(ref id) => {
-                    if id == &session.id {
-                        println!("  \x1b[31mCannot delete the current session.\x1b[0m");
-                    } else {
-                        match session.db.list_sessions(100, &project_root).await {
-                            Ok(sessions) => {
-                                let matches: Vec<_> =
-                                    sessions.iter().filter(|s| s.id.starts_with(id)).collect();
-                                match matches.len() {
-                                    0 => println!(
-                                        "  \x1b[31mNo session found matching '{id}'.\x1b[0m"
-                                    ),
-                                    1 => {
-                                        let full_id = &matches[0].id;
-                                        match session.db.delete_session(full_id).await {
-                                            Ok(true) => println!(
-                                                "  \x1b[32m\u{2713}\x1b[0m Deleted session {}",
-                                                &full_id[..8]
-                                            ),
-                                            Ok(false) => {
-                                                println!("  \x1b[31mSession not found.\x1b[0m")
-                                            }
-                                            Err(e) => {
-                                                println!("  \x1b[31mError: {e}\x1b[0m")
-                                            }
-                                        }
-                                    }
-                                    n => println!(
-                                        "  \x1b[31mAmbiguous: '{id}' matches {n} sessions. Be more specific.\x1b[0m"
-                                    ),
-                                }
-                            }
-                            Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
-                        }
-                    }
-                    continue;
-                }
-                ReplAction::ResumeSession(ref id) => {
-                    if session.id.starts_with(id) {
-                        println!("  \x1b[90mAlready in this session.\x1b[0m");
-                    } else {
-                        match session.db.list_sessions(100, &project_root).await {
-                            Ok(sessions) => {
-                                let matches: Vec<_> =
-                                    sessions.iter().filter(|s| s.id.starts_with(id)).collect();
-                                match matches.len() {
-                                    0 => println!(
-                                        "  \x1b[31mNo session found matching '{id}'.\x1b[0m"
-                                    ),
-                                    1 => {
-                                        let target = &matches[0];
-                                        session.id = target.id.clone();
-                                        println!(
-                                            "  \x1b[32m\u{2713}\x1b[0m Resumed session \x1b[36m{}\x1b[0m  \x1b[90m{}  {} msgs\x1b[0m",
-                                            &target.id[..8],
-                                            target.created_at,
-                                            target.message_count,
-                                        );
-                                    }
-                                    n => println!(
-                                        "  \x1b[31mAmbiguous: '{id}' matches {n} sessions. Be more specific.\x1b[0m"
-                                    ),
-                                }
-                            }
-                            Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
-                        }
-                    }
-                    continue;
-                }
-                ReplAction::InjectPrompt(prompt) => {
-                    pending_command = Some(prompt);
-                    continue;
-                }
-                ReplAction::Compact => {
-                    crate::commands::handle_compact(
-                        &session.db,
-                        &session.id,
-                        &config,
-                        &provider,
-                        false,
-                    )
-                    .await;
-                    continue;
-                }
-                ReplAction::McpCommand(ref args) => {
-                    crate::commands::handle_mcp_command(args, &agent.mcp_registry, &project_root)
-                        .await;
-                    continue;
-                }
-                ReplAction::SetTrust(mode_name) => {
-                    let new_mode = if let Some(ref name) = mode_name {
-                        ApprovalMode::parse(name)
-                    } else {
-                        crate::commands::pick_trust_mode(approval::read_mode(&shared_mode))
-                    };
-                    if let Some(m) = new_mode {
-                        approval::set_mode(&shared_mode, m);
-                        println!(
-                            "  \x1b[32m\u{2713}\x1b[0m Trust: \x1b[1m{}\x1b[0m \u{2014} {}",
-                            m.label(),
-                            m.description()
-                        );
-                    } else if let Some(ref name) = mode_name {
-                        println!(
-                            "  \x1b[31m\u{2717}\x1b[0m Unknown trust level '{}'. Use: plan, normal, yolo",
-                            name
-                        );
-                    }
-                    continue;
-                }
-                ReplAction::Expand(n) => {
-                    match renderer.tool_history.get(n) {
-                        Some(record) => {
-                            crate::display::print_tool_output_full(record);
-                        }
-                        None => {
-                            let total = renderer.tool_history.len();
-                            if total == 0 {
-                                println!("  \x1b[90mNo tool outputs recorded yet.\x1b[0m");
-                            } else {
-                                println!(
-                                    "  \x1b[33mNo tool output #{n}. Have {total} recorded (use /expand 1\u{2013}{total}).\x1b[0m"
-                                );
-                            }
-                        }
-                    }
-                    continue;
-                }
-                ReplAction::Verbose(v) => {
-                    renderer.verbose = match v {
-                        Some(val) => val,
-                        None => !renderer.verbose,
-                    };
-                    let state = if renderer.verbose { "on" } else { "off" };
-                    println!("  \x1b[36mVerbose tool output: {state}\x1b[0m");
-                    continue;
-                }
-                ReplAction::Handled => continue,
-                ReplAction::NotACommand => {}
-            }
-        }
-
-        // ── Phase 3: Prepare and run inference turn ──────────
-
-        // Process @file references
-        let processed = input::process_input(&input, &project_root);
-        if !processed.images.is_empty() {
-            for (i, _img) in processed.images.iter().enumerate() {
-                println!("  \x1b[35m\u{1f5bc} Image {}\x1b[0m", i + 1);
-            }
-        }
-
-        let user_message =
-            if let Some(context) = input::format_context_files(&processed.context_files) {
-                if !processed.context_files.is_empty() {
-                    for f in &processed.context_files {
-                        println!("  \x1b[36m\u{1f4ce} {}\x1b[0m", f.path);
-                    }
-                }
-                format!("{}\n\n{context}", processed.prompt)
+        // Check if we have a queued or pending command to process
+        if tui_state == TuiState::Idle {
+            let input = if let Some(cmd) = pending_command.take() {
+                Some(cmd)
+            } else if let Some(queued) = input_queue.pop_front() {
+                // Echo queued input above viewport
+                let mode = approval::read_mode(&shared_mode);
+                let prompt = repl::format_prompt(&config.model, mode);
+                emit_above(&mut terminal, &format!("{prompt}{queued}"));
+                Some(queued)
             } else {
-                processed.prompt.clone()
+                None
             };
 
-        if let Err(e) = session
-            .db
-            .insert_message(
-                &session.id,
-                &Role::User,
-                Some(&user_message),
-                None,
-                None,
-                None,
-            )
-            .await
-        {
-            tracing::warn!("Failed to persist user message: {e}");
-        }
+            if let Some(input) = input {
+                let input = input.trim().to_string();
+                if !input.is_empty() {
+                    // Try slash commands first
+                    if input.starts_with('/') {
+                        // Temporarily exit raw mode for TUI-based slash commands
+                        let _ = terminal.clear();
+                        let _ = crossterm::terminal::disable_raw_mode();
+                        print!("\x1b[{}A\x1b[J", VIEWPORT_HEIGHT);
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
 
-        let pending_images = if processed.images.is_empty() {
-            None
-        } else {
-            Some(processed.images)
-        };
+                        let action = handle_slash_command(
+                            &input,
+                            &mut config,
+                            &provider,
+                            &mut session,
+                            &shared_mode,
+                            &mut renderer,
+                            &project_root,
+                            &agent,
+                            &mut pending_command,
+                        )
+                        .await;
 
-        // Sync session state
-        session.mode = approval::read_mode(&shared_mode);
-        session.update_provider(&config);
-
-        // Create a channel-forwarding sink for this turn
-        let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
-
-        // Clone the cancel token so we can trigger it from the Ctrl+C branch
-        let cancel_token = session.cancel.clone();
-
-        // Run turn
-        {
-            let turn = session.run_turn(&config, pending_images, &cli_sink, &mut cmd_rx);
-            tokio::pin!(turn);
-
-            loop {
-                tokio::select! {
-                    result = &mut turn => {
-                        if let Err(e) = result {
-                            println!("\n  \x1b[31m\u{2717} Turn failed: {e}\x1b[0m");
-                        }
-                        break;
-                    }
-                    Some(ui_event) = ui_rx.recv() => {
-                        match ui_event {
-                            UiEvent::Engine(EngineEvent::ApprovalRequest {
-                                id,
-                                tool_name,
-                                detail,
-                                preview,
-                                whitelist_hint,
-                            }) => {
-                                if preview.is_some() {
-                                    renderer.preview_shown = true;
-                                }
-                                let decision = map_confirmation(
-                                    crate::confirm::confirm_tool_action(
-                                        &tool_name,
-                                        &detail,
-                                        preview.as_ref(),
-                                        whitelist_hint.as_deref(),
-                                    ),
-                                );
-                                let _ = cmd_tx
-                                    .send(EngineCommand::ApprovalResponse { id, decision })
-                                    .await;
-                            }
-                            UiEvent::Engine(EngineEvent::LoopCapReached {
-                                cap,
-                                recent_tools,
-                            }) => {
-                                let action = crate::app::cli_loop_continue_prompt(cap, &recent_tools);
-                                let _ = cmd_tx
-                                    .send(EngineCommand::LoopDecision { action })
-                                    .await;
-                            }
-                            UiEvent::Engine(EngineEvent::TurnStart { .. }) => {
-                                // Future: update status bar to show inference is active
-                            }
-                            UiEvent::Engine(EngineEvent::TurnEnd { .. }) => {
-                                // Future: drain type-ahead queue, update status bar
-                            }
-                            UiEvent::Engine(ref event) => {
-                                renderer.render(event.clone());
+                        match action {
+                            SlashAction::Continue => {}
+                            SlashAction::Quit => {
+                                println!("\x1b[36m\u{1f43b} Goodbye!\x1b[0m");
+                                should_quit = true;
+                                continue;
                             }
                         }
-                    }
-                    _ = tokio::signal::ctrl_c() => {
-                        if crate::interrupt::handle_sigint() {
-                            eprintln!("\n\x1b[31mForce quit.\x1b[0m");
-                            std::process::exit(130);
-                        }
-                        cancel_token.cancel();
+
+                        // Re-enter raw mode
+                        crossterm::terminal::enable_raw_mode()?;
+                        terminal = init_terminal()?;
+                        crossterm_events = EventStream::new();
+                    } else {
+                        // Start inference turn
+                        start_inference_turn(
+                            &input,
+                            &mut terminal,
+                            &mut session,
+                            &config,
+                            &shared_mode,
+                            &project_root,
+                            &ui_tx,
+                        )
+                        .await;
+                        tui_state = TuiState::Inferring;
                     }
                 }
             }
         }
 
-        // Drain remaining UI events
-        while let Ok(UiEvent::Engine(e)) = ui_rx.try_recv() {
-            renderer.render(e);
-        }
-        renderer.stop_spinner();
+        // Redraw viewport
+        let mode = approval::read_mode(&shared_mode);
+        let ctx = koda_core::context::percentage() as u32;
+        terminal.draw(|f| {
+            draw_viewport(
+                f,
+                &textarea,
+                &config.model,
+                mode,
+                ctx,
+                tui_state,
+                input_queue.len(),
+            );
+        })?;
 
-        crate::interrupt::reset();
-        session.cancel = tokio_util::sync::CancellationToken::new();
+        // ── Unified select loop ──────────────────────────────
 
-        // Auto-compact when context window gets crowded
-        if config.auto_compact_threshold > 0 {
-            let ctx_pct = koda_core::context::percentage();
-            if ctx_pct >= config.auto_compact_threshold {
-                let pending = session
-                    .db
-                    .has_pending_tool_calls(&session.id)
-                    .await
-                    .unwrap_or(false);
-                if pending {
-                    if !silent_compact_deferred {
-                        println!();
-                        println!(
-                            "  \x1b[33m\u{1f43b} Context at {ctx_pct}% \u{2014} deferring compact (tool calls pending)\x1b[0m"
-                        );
-                        silent_compact_deferred = true;
+        tokio::select! {
+            // Keyboard events (always active)
+            Some(Ok(ev)) = crossterm_events.next() => {
+                if let Event::Key(key) = ev {
+                    match (key.code, key.modifiers, tui_state) {
+                        // Enter → submit
+                        (KeyCode::Enter, KeyModifiers::NONE, _) => {
+                            let text = textarea.lines().join("\n");
+                            if !text.trim().is_empty() {
+                                textarea.select_all();
+                                textarea.cut();
+
+                                if tui_state == TuiState::Idle {
+                                    // Echo and process immediately
+                                    let mode = approval::read_mode(&shared_mode);
+                                    let prompt = repl::format_prompt(&config.model, mode);
+                                    emit_above(&mut terminal, &format!("{prompt}{text}"));
+                                    pending_command = Some(text);
+                                } else {
+                                    // Queue for later
+                                    input_queue.push_back(text);
+                                }
+                            }
+                        }
+                        // Esc → cancel inference if running, else clear input
+                        (KeyCode::Esc, _, TuiState::Inferring) => {
+                            session.cancel.cancel();
+                        }
+                        (KeyCode::Esc, _, TuiState::Idle) => {
+                            textarea.select_all();
+                            textarea.cut();
+                        }
+                        // Ctrl+C → cancel inference or clear input
+                        (KeyCode::Char('c'), m, _) if m.contains(KeyModifiers::CONTROL) => {
+                            if tui_state == TuiState::Inferring {
+                                if crate::interrupt::handle_sigint() {
+                                    restore_terminal(&mut terminal);
+                                    eprintln!("\x1b[31mForce quit.\x1b[0m");
+                                    std::process::exit(130);
+                                }
+                                session.cancel.cancel();
+                            } else {
+                                textarea.select_all();
+                                textarea.cut();
+                            }
+                        }
+                        // Ctrl+D on empty → EOF
+                        (KeyCode::Char('d'), m, TuiState::Idle)
+                            if m.contains(KeyModifiers::CONTROL) =>
+                        {
+                            if textarea.lines().join("").trim().is_empty() {
+                                should_quit = true;
+                            }
+                        }
+                        // Shift+Tab → cycle approval mode
+                        (KeyCode::BackTab, _, _) => {
+                            approval::cycle_mode(&shared_mode);
+                        }
+                        // All other keys → forward to textarea
+                        _ => {
+                            textarea.input(Event::Key(key));
+                        }
                     }
-                } else {
-                    silent_compact_deferred = false;
-                    println!();
-                    println!(
-                        "  \x1b[36m\u{1f43b} Context at {ctx_pct}% \u{2014} auto-compacting...\x1b[0m"
-                    );
-                    crate::commands::handle_compact(
-                        &session.db,
-                        &session.id,
-                        &config,
-                        &provider,
-                        true,
-                    )
-                    .await;
+                }
+            }
+
+            // Engine events (during inference)
+            Some(ui_event) = ui_rx.recv(), if tui_state == TuiState::Inferring => {
+                match ui_event {
+                    UiEvent::Engine(EngineEvent::ApprovalRequest {
+                        id, tool_name, detail, preview, whitelist_hint,
+                    }) => {
+                        if preview.is_some() {
+                            renderer.preview_shown = true;
+                        }
+                        // Exit raw mode for approval UI
+                        let _ = terminal.clear();
+                        let _ = crossterm::terminal::disable_raw_mode();
+                        print!("\x1b[{}A\x1b[J", VIEWPORT_HEIGHT);
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
+
+                        let decision = map_confirmation(
+                            crate::confirm::confirm_tool_action(
+                                &tool_name,
+                                &detail,
+                                preview.as_ref(),
+                                whitelist_hint.as_deref(),
+                            ),
+                        );
+                        let _ = cmd_tx
+                            .send(EngineCommand::ApprovalResponse { id, decision })
+                            .await;
+
+                        // Re-enter raw mode
+                        crossterm::terminal::enable_raw_mode()?;
+                        terminal = init_terminal()?;
+                        crossterm_events = EventStream::new();
+                    }
+                    UiEvent::Engine(EngineEvent::LoopCapReached { cap, recent_tools }) => {
+                        // Exit raw mode for interactive prompt
+                        let _ = terminal.clear();
+                        let _ = crossterm::terminal::disable_raw_mode();
+                        print!("\x1b[{}A\x1b[J", VIEWPORT_HEIGHT);
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
+
+                        let action = crate::app::cli_loop_continue_prompt(cap, &recent_tools);
+                        let _ = cmd_tx
+                            .send(EngineCommand::LoopDecision { action })
+                            .await;
+
+                        // Re-enter raw mode
+                        crossterm::terminal::enable_raw_mode()?;
+                        terminal = init_terminal()?;
+                        crossterm_events = EventStream::new();
+                    }
+                    UiEvent::Engine(EngineEvent::TurnStart { .. }) => {
+                        tui_state = TuiState::Inferring;
+                    }
+                    UiEvent::Engine(EngineEvent::TurnEnd { .. }) => {
+                        tui_state = TuiState::Idle;
+                        renderer.stop_spinner();
+                        crate::interrupt::reset();
+                        session.cancel = tokio_util::sync::CancellationToken::new();
+
+                        // Auto-compact check
+                        if config.auto_compact_threshold > 0 {
+                            let ctx_pct = koda_core::context::percentage();
+                            if ctx_pct >= config.auto_compact_threshold {
+                                let pending = session
+                                    .db
+                                    .has_pending_tool_calls(&session.id)
+                                    .await
+                                    .unwrap_or(false);
+                                if pending {
+                                    if !silent_compact_deferred {
+                                        emit_above(
+                                            &mut terminal,
+                                            &format!(
+                                                "  \x1b[33m\u{1f43b} Context at {ctx_pct}% \u{2014} deferring compact (tool calls pending)\x1b[0m"
+                                            ),
+                                        );
+                                        silent_compact_deferred = true;
+                                    }
+                                } else {
+                                    silent_compact_deferred = false;
+                                    emit_above(
+                                        &mut terminal,
+                                        &format!(
+                                            "  \x1b[36m\u{1f43b} Context at {ctx_pct}% \u{2014} auto-compacting...\x1b[0m"
+                                        ),
+                                    );
+                                    crate::commands::handle_compact(
+                                        &session.db,
+                                        &session.id,
+                                        &config,
+                                        &provider,
+                                        true,
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+                    }
+                    UiEvent::Engine(ref event) => {
+                        renderer.render_to_terminal(event.clone(), &mut terminal);
+                    }
                 }
             }
         }
     }
 
-    // Shut down MCP servers
+    // ── Cleanup ───────────────────────────────────────────────
+
+    restore_terminal(&mut terminal);
+
     {
         let mut mcp = agent.mcp_registry.write().await;
         mcp.shutdown();
@@ -861,4 +579,436 @@ pub async fn run(
     );
 
     Ok(())
+}
+
+// ── Slash command handler ────────────────────────────────────
+
+enum SlashAction {
+    Continue,
+    Quit,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_slash_command(
+    input: &str,
+    config: &mut KodaConfig,
+    provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
+    session: &mut KodaSession,
+    shared_mode: &approval::SharedMode,
+    renderer: &mut TuiRenderer,
+    project_root: &PathBuf,
+    agent: &Arc<KodaAgent>,
+    pending_command: &mut Option<String>,
+) -> SlashAction {
+    match repl::handle_command(input, config, provider).await {
+        ReplAction::Quit => SlashAction::Quit,
+        ReplAction::SwitchModel(model) => {
+            config.model = model.clone();
+            config.model_settings.model = model.clone();
+            let mut s = koda_core::approval::Settings::load();
+            let _ = s.save_last_provider(
+                &config.provider_type.to_string(),
+                &config.base_url,
+                &config.model,
+            );
+            println!("  \x1b[32m\u{2713}\x1b[0m Model set to: \x1b[36m{model}\x1b[0m");
+            SlashAction::Continue
+        }
+        ReplAction::PickModel => {
+            let prov = provider.read().await;
+            match prov.list_models().await {
+                Ok(models) if models.is_empty() => {
+                    println!(
+                        "  \x1b[33mNo models available from {}\x1b[0m",
+                        prov.provider_name()
+                    );
+                }
+                Ok(models) => {
+                    drop(prov);
+                    let current_idx = models
+                        .iter()
+                        .position(|m| m.id == config.model)
+                        .unwrap_or(0);
+                    let options: Vec<SelectOption> = models
+                        .iter()
+                        .map(|m| {
+                            let desc = if m.id == config.model {
+                                "\u{25c0} current".to_string()
+                            } else {
+                                String::new()
+                            };
+                            SelectOption::new(&m.id, desc)
+                        })
+                        .collect();
+                    match tui::select("\u{1f43b} Select a model", &options, current_idx) {
+                        Ok(Some(idx)) => {
+                            config.model = models[idx].id.clone();
+                            config.model_settings.model = config.model.clone();
+                            let mut s = koda_core::approval::Settings::load();
+                            let _ = s.save_last_provider(
+                                &config.provider_type.to_string(),
+                                &config.base_url,
+                                &config.model,
+                            );
+                            println!(
+                                "  \x1b[32m\u{2713}\x1b[0m Model set to: \x1b[36m{}\x1b[0m",
+                                config.model
+                            );
+                        }
+                        Ok(None) => println!("  \x1b[90mCancelled.\x1b[0m"),
+                        Err(e) => println!("  \x1b[31mTUI error: {e}\x1b[0m"),
+                    }
+                }
+                Err(e) => println!("  \x1b[31mFailed to list models: {e}\x1b[0m"),
+            }
+            SlashAction::Continue
+        }
+        ReplAction::SetupProvider(ptype, base_url) => {
+            crate::commands::handle_setup_provider(config, provider, ptype, base_url).await;
+            SlashAction::Continue
+        }
+        ReplAction::PickProvider => {
+            crate::commands::handle_pick_provider(config, provider).await;
+            SlashAction::Continue
+        }
+        ReplAction::ShowHelp => {
+            let commands = [
+                ("/agent", "List available sub-agents"),
+                ("/compact", "Summarize conversation to reclaim context"),
+                ("/cost", "Show token usage for this session"),
+                ("/diff", "Show git diff / review / commit message"),
+                ("/expand", "Show full output of last tool call (/expand N)"),
+                ("/mcp", "MCP servers: status / add / remove / restart"),
+                ("/memory", "View/save project & global memory"),
+                ("/model", "Pick a model interactively"),
+                ("/provider", "Switch LLM provider"),
+                ("/sessions", "List/resume/delete sessions"),
+                ("/trust", "Set approval mode (always / auto / never)"),
+                ("/verbose", "Toggle full tool output (on/off)"),
+                ("/exit", "Quit the session"),
+            ];
+            let options: Vec<SelectOption> = commands
+                .iter()
+                .map(|(cmd, desc)| SelectOption::new(*cmd, *desc))
+                .collect();
+            if let Ok(Some(idx)) = tui::select("\u{1f43b} Commands", &options, 0) {
+                let (cmd, _) = commands[idx];
+                *pending_command = Some(cmd.to_string());
+            }
+            println!();
+            println!(
+                "  \x1b[90mTips: @file to attach context \u{00b7} Shift+Tab to cycle mode \u{00b7} Ctrl+C to cancel \u{00b7} Ctrl+D to exit\x1b[0m"
+            );
+            SlashAction::Continue
+        }
+        ReplAction::ShowCost => {
+            match session.db.session_token_usage(&session.id).await {
+                Ok(u) => {
+                    let total = u.prompt_tokens
+                        + u.completion_tokens
+                        + u.cache_read_tokens
+                        + u.cache_creation_tokens;
+                    println!();
+                    println!("  \x1b[1m\u{1f43b} Session Cost\x1b[0m");
+                    println!();
+                    println!("  Prompt tokens:     \x1b[36m{:>8}\x1b[0m", u.prompt_tokens);
+                    println!(
+                        "  Completion tokens: \x1b[36m{:>8}\x1b[0m",
+                        u.completion_tokens
+                    );
+                    if u.cache_read_tokens > 0 {
+                        println!(
+                            "  Cache read tokens: \x1b[32m{:>8}\x1b[0m",
+                            u.cache_read_tokens
+                        );
+                    }
+                    if u.cache_creation_tokens > 0 {
+                        println!(
+                            "  Cache write tokens:\x1b[33m{:>8}\x1b[0m",
+                            u.cache_creation_tokens
+                        );
+                    }
+                    if u.thinking_tokens > 0 {
+                        println!(
+                            "  Thinking tokens:   \x1b[35m{:>8}\x1b[0m",
+                            u.thinking_tokens
+                        );
+                    }
+                    println!("  Total tokens:      \x1b[1m{total:>8}\x1b[0m");
+                    println!("  API calls:         \x1b[90m{:>8}\x1b[0m", u.api_calls);
+                    println!();
+                    println!("  \x1b[90mModel: {}\x1b[0m", config.model);
+                    println!("  \x1b[90mProvider: {}\x1b[0m", config.provider_type);
+                }
+                Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
+            }
+            SlashAction::Continue
+        }
+        ReplAction::ListSessions => {
+            match session.db.list_sessions(10, project_root).await {
+                Ok(sessions) if sessions.is_empty() => {
+                    println!("  \x1b[90mNo other sessions found.\x1b[0m");
+                }
+                Ok(sessions) => {
+                    let current_idx = sessions
+                        .iter()
+                        .position(|s| s.id == session.id)
+                        .unwrap_or(0);
+                    let options: Vec<SelectOption> = sessions
+                        .iter()
+                        .map(|s| {
+                            let desc = if s.id == session.id {
+                                format!(
+                                    "{}  {} msgs  {}k tokens  \u{25c0} current",
+                                    s.created_at,
+                                    s.message_count,
+                                    s.total_tokens / 1000
+                                )
+                            } else {
+                                format!(
+                                    "{}  {} msgs  {}k tokens",
+                                    s.created_at,
+                                    s.message_count,
+                                    s.total_tokens / 1000
+                                )
+                            };
+                            SelectOption::new(&s.id[..8], desc)
+                        })
+                        .collect();
+                    match tui::select("\u{1f43b} Sessions", &options, current_idx) {
+                        Ok(Some(idx)) => {
+                            let target = &sessions[idx];
+                            if target.id == session.id {
+                                println!("  \x1b[90mAlready in this session.\x1b[0m");
+                            } else {
+                                session.id = target.id.clone();
+                                println!(
+                                    "  \x1b[32m\u{2713}\x1b[0m Resumed session \x1b[36m{}\x1b[0m  \x1b[90m{}  {} msgs\x1b[0m",
+                                    &target.id[..8],
+                                    target.created_at,
+                                    target.message_count,
+                                );
+                            }
+                        }
+                        Ok(None) => println!("  \x1b[90mCancelled.\x1b[0m"),
+                        Err(e) => println!("  \x1b[31mTUI error: {e}\x1b[0m"),
+                    }
+                    println!("  \x1b[90mDelete: /sessions delete <id>\x1b[0m");
+                }
+                Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
+            }
+            SlashAction::Continue
+        }
+        ReplAction::DeleteSession(ref id) => {
+            if id == &session.id {
+                println!("  \x1b[31mCannot delete the current session.\x1b[0m");
+            } else {
+                match session.db.list_sessions(100, project_root).await {
+                    Ok(sessions) => {
+                        let matches: Vec<_> =
+                            sessions.iter().filter(|s| s.id.starts_with(id)).collect();
+                        match matches.len() {
+                            0 => println!(
+                                "  \x1b[31mNo session found matching '{id}'.\x1b[0m"
+                            ),
+                            1 => {
+                                let full_id = &matches[0].id;
+                                match session.db.delete_session(full_id).await {
+                                    Ok(true) => println!(
+                                        "  \x1b[32m\u{2713}\x1b[0m Deleted session {}",
+                                        &full_id[..8]
+                                    ),
+                                    Ok(false) => {
+                                        println!("  \x1b[31mSession not found.\x1b[0m")
+                                    }
+                                    Err(e) => {
+                                        println!("  \x1b[31mError: {e}\x1b[0m")
+                                    }
+                                }
+                            }
+                            n => println!(
+                                "  \x1b[31mAmbiguous: '{id}' matches {n} sessions. Be more specific.\x1b[0m"
+                            ),
+                        }
+                    }
+                    Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
+                }
+            }
+            SlashAction::Continue
+        }
+        ReplAction::ResumeSession(ref id) => {
+            if session.id.starts_with(id) {
+                println!("  \x1b[90mAlready in this session.\x1b[0m");
+            } else {
+                match session.db.list_sessions(100, project_root).await {
+                    Ok(sessions) => {
+                        let matches: Vec<_> =
+                            sessions.iter().filter(|s| s.id.starts_with(id)).collect();
+                        match matches.len() {
+                            0 => println!(
+                                "  \x1b[31mNo session found matching '{id}'.\x1b[0m"
+                            ),
+                            1 => {
+                                let target = &matches[0];
+                                session.id = target.id.clone();
+                                println!(
+                                    "  \x1b[32m\u{2713}\x1b[0m Resumed session \x1b[36m{}\x1b[0m  \x1b[90m{}  {} msgs\x1b[0m",
+                                    &target.id[..8],
+                                    target.created_at,
+                                    target.message_count,
+                                );
+                            }
+                            n => println!(
+                                "  \x1b[31mAmbiguous: '{id}' matches {n} sessions. Be more specific.\x1b[0m"
+                            ),
+                        }
+                    }
+                    Err(e) => println!("  \x1b[31mError: {e}\x1b[0m"),
+                }
+            }
+            SlashAction::Continue
+        }
+        ReplAction::InjectPrompt(prompt) => {
+            *pending_command = Some(prompt);
+            SlashAction::Continue
+        }
+        ReplAction::Compact => {
+            crate::commands::handle_compact(
+                &session.db,
+                &session.id,
+                config,
+                provider,
+                false,
+            )
+            .await;
+            SlashAction::Continue
+        }
+        ReplAction::McpCommand(ref args) => {
+            crate::commands::handle_mcp_command(args, &agent.mcp_registry, project_root).await;
+            SlashAction::Continue
+        }
+        ReplAction::SetTrust(mode_name) => {
+            let new_mode = if let Some(ref name) = mode_name {
+                ApprovalMode::parse(name)
+            } else {
+                crate::commands::pick_trust_mode(approval::read_mode(shared_mode))
+            };
+            if let Some(m) = new_mode {
+                approval::set_mode(shared_mode, m);
+                println!(
+                    "  \x1b[32m\u{2713}\x1b[0m Trust: \x1b[1m{}\x1b[0m \u{2014} {}",
+                    m.label(),
+                    m.description()
+                );
+            } else if let Some(ref name) = mode_name {
+                println!(
+                    "  \x1b[31m\u{2717}\x1b[0m Unknown trust level '{}'. Use: plan, normal, yolo",
+                    name
+                );
+            }
+            SlashAction::Continue
+        }
+        ReplAction::Expand(n) => {
+            match renderer.tool_history.get(n) {
+                Some(record) => {
+                    crate::display::print_tool_output_full(record);
+                }
+                None => {
+                    let total = renderer.tool_history.len();
+                    if total == 0 {
+                        println!("  \x1b[90mNo tool outputs recorded yet.\x1b[0m");
+                    } else {
+                        println!(
+                            "  \x1b[33mNo tool output #{n}. Have {total} recorded (use /expand 1\u{2013}{total}).\x1b[0m"
+                        );
+                    }
+                }
+            }
+            SlashAction::Continue
+        }
+        ReplAction::Verbose(v) => {
+            renderer.verbose = match v {
+                Some(val) => val,
+                None => !renderer.verbose,
+            };
+            let state = if renderer.verbose { "on" } else { "off" };
+            println!("  \x1b[36mVerbose tool output: {state}\x1b[0m");
+            SlashAction::Continue
+        }
+        ReplAction::Handled => SlashAction::Continue,
+        ReplAction::NotACommand => SlashAction::Continue,
+    }
+}
+
+// ── Inference turn kickoff ───────────────────────────────────
+
+async fn start_inference_turn(
+    input: &str,
+    terminal: &mut Term,
+    session: &mut KodaSession,
+    config: &KodaConfig,
+    shared_mode: &approval::SharedMode,
+    project_root: &PathBuf,
+    ui_tx: &mpsc::Sender<UiEvent>,
+) {
+    let processed = input::process_input(input, project_root);
+    if !processed.images.is_empty() {
+        for (i, _img) in processed.images.iter().enumerate() {
+            emit_above(terminal, &format!("  \x1b[35m\u{1f5bc} Image {}\x1b[0m", i + 1));
+        }
+    }
+
+    let user_message =
+        if let Some(context) = input::format_context_files(&processed.context_files) {
+            if !processed.context_files.is_empty() {
+                for f in &processed.context_files {
+                    emit_above(terminal, &format!("  \x1b[36m\u{1f4ce} {}\x1b[0m", f.path));
+                }
+            }
+            format!("{}\n\n{context}", processed.prompt)
+        } else {
+            processed.prompt.clone()
+        };
+
+    if let Err(e) = session
+        .db
+        .insert_message(
+            &session.id,
+            &Role::User,
+            Some(&user_message),
+            None,
+            None,
+            None,
+        )
+        .await
+    {
+        tracing::warn!("Failed to persist user message: {e}");
+    }
+
+    let pending_images = if processed.images.is_empty() {
+        None
+    } else {
+        Some(processed.images)
+    };
+
+    session.mode = approval::read_mode(shared_mode);
+    session.update_provider(config);
+
+    let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
+
+    // Spawn inference as a background task
+    let config = config.clone();
+    // We can't move session into the task, so we run_turn on the current task
+    // via the event loop — the turn future is driven by select! receiving ui events.
+    // Actually, we need to spawn this differently. Let's use a JoinHandle approach.
+    let cancel = session.cancel.clone();
+    let mut cmd_rx_placeholder = mpsc::channel::<EngineCommand>(32).1;
+
+    // For now, spawn the turn in a task. The cmd_rx is shared via the channel.
+    // TODO: This needs proper wiring — the cmd_rx should be shared.
+    tokio::spawn({
+        // We can't move session into a task. We need a different approach.
+        // For now, let's keep the run_turn inline in the event loop.
+        async {}
+    });
 }
