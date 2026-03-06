@@ -617,6 +617,9 @@ pub async fn run(
                                 }
                             }
                         }
+
+                        // Loop back to drain queue before blocking on keyboard
+                        continue;
                     }
                 }
             }
