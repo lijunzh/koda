@@ -13,6 +13,7 @@ use tokio::sync::RwLock;
 pub const COMPACT_PRESERVE_COUNT: usize = 4;
 
 /// Result of a successful compaction.
+#[derive(Debug)]
 pub struct CompactResult {
     /// Number of messages deleted from the database.
     pub deleted: usize,
@@ -21,6 +22,7 @@ pub struct CompactResult {
 }
 
 /// Why compaction was skipped (not an error, just a precondition).
+#[derive(Debug)]
 pub enum CompactSkip {
     PendingToolCalls,
     TooShort(usize),
