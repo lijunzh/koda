@@ -56,6 +56,12 @@ pub fn select_inline(
     let mut selected = initial.min(options.len().saturating_sub(1));
     let mut stdout = io::stdout();
 
+    // Scroll terminal to make room for the menu, then move back up
+    for _ in 0..total_lines {
+        execute!(stdout, Print("\n"))?;
+    }
+    execute!(stdout, cursor::MoveUp(total_lines as u16))?;
+
     render_inline(&mut stdout, title, options, selected)?;
 
     loop {
