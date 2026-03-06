@@ -17,6 +17,16 @@ pub struct StatusBar<'a> {
     queue_len: usize,
     /// Elapsed seconds during inference (0 = idle).
     elapsed_secs: u64,
+    /// Last turn stats (shown after inference completes).
+    last_turn: Option<&'a TurnStats>,
+}
+
+/// Stats from the most recent inference turn.
+#[derive(Debug, Clone, Default)]
+pub struct TurnStats {
+    pub tokens_out: i64,
+    pub elapsed_ms: u64,
+    pub rate: f64,
 }
 
 impl<'a> StatusBar<'a> {
@@ -27,6 +37,7 @@ impl<'a> StatusBar<'a> {
             context_pct,
             queue_len: 0,
             elapsed_secs: 0,
+            last_turn: None,
         }
     }
 
@@ -37,6 +48,11 @@ impl<'a> StatusBar<'a> {
 
     pub fn with_elapsed(mut self, secs: u64) -> Self {
         self.elapsed_secs = secs;
+        self
+    }
+
+    pub fn with_last_turn(mut self, stats: &'a TurnStats) -> Self {
+        self.last_turn = Some(stats);
         self
     }
 }
@@ -103,6 +119,26 @@ impl Widget for StatusBar<'_> {
             spans.push(Span::styled(
                 format!(" {} queued ", self.queue_len),
                 Style::default().fg(Color::Yellow),
+            ));
+        }
+
+        // Last turn stats (shown after inference, cleared on next turn)
+        if let Some(stats) = self.last_turn {
+            spans.push(Span::styled(
+                "\u{2502}",
+                Style::default().fg(Color::Rgb(60, 60, 60)),
+            ));
+            let time = if stats.elapsed_ms >= 1000 {
+                format!("{:.1}s", stats.elapsed_ms as f64 / 1000.0)
+            } else {
+                format!("{}ms", stats.elapsed_ms)
+            };
+            spans.push(Span::styled(
+                format!(
+                    " {} tok \u{00b7} {} \u{00b7} {:.0} t/s ",
+                    stats.tokens_out, time, stats.rate
+                ),
+                Style::default().fg(Color::DarkGray),
             ));
         }
 
