@@ -100,15 +100,7 @@ impl TuiRenderer {
             }
             EngineEvent::ResponseStart => {
                 self.response_started = true;
-                tui_output::emit_blank(terminal);
-                tui_output::emit_line(
-                    terminal,
-                    Line::styled(
-                        "  \u{2500}\u{2500}\u{2500} Response \u{2500}\u{2500}\u{2500}",
-                        DIM,
-                    ),
-                );
-                tui_output::emit_blank(terminal);
+                tui_output::emit_line(terminal, Line::styled("  \u{2500}\u{2500}\u{2500}", DIM));
             }
             EngineEvent::ToolCallStart {
                 id: _,
@@ -118,7 +110,6 @@ impl TuiRenderer {
             } => {
                 let indent = if is_sub_agent { "  " } else { "" };
                 let (dot_style, detail) = tool_call_styles(&name, &args);
-                tui_output::emit_blank(terminal);
                 tui_output::emit_line(
                     terminal,
                     Line::from(vec![
@@ -381,7 +372,6 @@ fn render_footer(
 
     tui_output::emit_blank(terminal);
     tui_output::emit_line(terminal, Line::styled(footer, DIM));
-    tui_output::emit_blank(terminal);
 }
 
 /// Render a todo checklist.
