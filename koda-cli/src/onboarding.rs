@@ -3,7 +3,7 @@
 //! Detects if this is the first run (no `~/.config/koda/` exists) and guides
 //! the user through provider selection and API key setup.
 
-use crate::tui::SelectOption;
+use crate::select_menu::SelectOption;
 use koda_core::config::ProviderType;
 use koda_core::keystore::KeyStore;
 
@@ -54,15 +54,16 @@ pub fn run_wizard() -> Option<ProviderType> {
         SelectOption::new("vLLM", "Local high-performance serving (localhost:8000)"),
     ];
 
-    let selection = match crate::tui::select("\u{1f43b} Choose your LLM provider", &options, 0) {
-        Ok(Some(idx)) => idx,
-        _ => {
-            println!("  \x1b[90mSkipped setup. Using LM Studio (localhost) as default.\x1b[0m");
-            println!("  \x1b[90mYou can change this anytime with /provider\x1b[0m");
-            println!();
-            return None;
-        }
-    };
+    let selection =
+        match crate::select_menu::select("\u{1f43b} Choose your LLM provider", &options, 0) {
+            Ok(Some(idx)) => idx,
+            _ => {
+                println!("  \x1b[90mSkipped setup. Using LM Studio (localhost) as default.\x1b[0m");
+                println!("  \x1b[90mYou can change this anytime with /provider\x1b[0m");
+                println!();
+                return None;
+            }
+        };
 
     let provider_type = match selection {
         0 => ProviderType::LMStudio,
