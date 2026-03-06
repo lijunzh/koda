@@ -108,6 +108,22 @@ pub async fn handle_slash_command(
         }
         ReplAction::ShowHelp => {
             handle_help(terminal, pending_command);
+            // If /help selected a command, execute it right away
+            if let Some(cmd) = pending_command.take() {
+                return Box::pin(handle_slash_command(
+                    terminal,
+                    &cmd,
+                    config,
+                    provider,
+                    session,
+                    shared_mode,
+                    renderer,
+                    project_root,
+                    agent,
+                    pending_command,
+                ))
+                .await;
+            }
             SlashAction::Continue
         }
         ReplAction::ShowCost => {
