@@ -26,6 +26,8 @@ pub struct TuiRenderer {
     think_buf: String,
     /// Set when an ApprovalRequest with a preview was shown.
     pub preview_shown: bool,
+    /// Whether we've emitted any text content for the current response.
+    has_emitted_text: bool,
     /// Whether we've emitted the response banner for this turn.
     response_started: bool,
 }
@@ -38,6 +40,7 @@ impl TuiRenderer {
             text_buf: String::new(),
             think_buf: String::new(),
             preview_shown: false,
+            has_emitted_text: false,
             response_started: false,
         }
     }
@@ -47,10 +50,15 @@ impl TuiRenderer {
         match event {
             EngineEvent::TextDelta { text } => {
                 self.text_buf.push_str(&text);
-                // Flush complete lines
+                // Flush complete lines (skip leading blank lines)
                 while let Some(pos) = self.text_buf.find('\n') {
                     let line_text = self.text_buf[..pos].to_string();
                     self.text_buf = self.text_buf[pos + 1..].to_string();
+                    // Skip empty lines at the very start of a response
+                    if line_text.is_empty() && !self.has_emitted_text {
+                        continue;
+                    }
+                    self.has_emitted_text = true;
                     tui_output::emit_line(terminal, Line::raw(&line_text));
                 }
             }
@@ -61,6 +69,7 @@ impl TuiRenderer {
                     tui_output::emit_line(terminal, Line::raw(&remaining));
                 }
                 self.response_started = false;
+                self.has_emitted_text = false;
             }
             EngineEvent::ThinkingStart => {
                 self.think_buf.clear();
@@ -370,7 +379,6 @@ fn render_footer(
         footer.push_str(&format!(" \u{00b7} {context}"));
     }
 
-    tui_output::emit_blank(terminal);
     tui_output::emit_line(terminal, Line::styled(footer, DIM));
 }
 
