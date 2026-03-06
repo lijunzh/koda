@@ -43,7 +43,6 @@ rustyline = "17"
 # TUI (inline viewport: input + status bar)
 ratatui = { version = "0.29", default-features = false, features = ["crossterm", "scrolling-regions"] }
 tui-textarea = "0.7"
-ansi-to-tui = "7"
 
 # Logging (subscriber for CLI configuration)
 tracing = "0.1"

@@ -1,49 +1,60 @@
-//! Output bridge: ANSI strings → ratatui `insert_before()`.
+//! Output bridge: native ratatui types → `insert_before()`.
 //!
-//! Uses `ansi-to-tui` to convert existing ANSI-formatted output
-//! into ratatui `Text` for rendering above the inline viewport.
-//! This is a temporary bridge until rendering is migrated to native
-//! ratatui `Line`/`Span` (tracked in #78 Step 2).
+//! All rendering produces `ratatui::text::Line` / `Text` directly.
+//! This module provides helpers for writing styled content above
+//! the persistent inline viewport.
 
-use ansi_to_tui::IntoText;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
 
 type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 
-/// Bridge for writing ANSI-formatted text above the inline viewport.
-pub struct TuiOutput;
-
-impl TuiOutput {
-    /// Write an ANSI-formatted string above the viewport.
-    ///
-    /// Each call inserts content that scrolls into terminal scrollback.
-    /// Empty strings are skipped.
-    pub fn emit(terminal: &mut Term, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        let line_count = text.lines().count().max(1) as u16;
-        let _ = terminal.insert_before(line_count, |buf| {
-            match text.into_text() {
-                Ok(styled) => {
-                    Paragraph::new(styled).render(buf.area, buf);
-                }
-                Err(_) => {
-                    // Fallback: render as plain text
-                    Paragraph::new(text).render(buf.area, buf);
-                }
-            }
-        });
+/// Write `Line`s above the inline viewport via `insert_before()`.
+pub fn emit_lines(terminal: &mut Term, lines: &[Line<'_>]) {
+    if lines.is_empty() {
+        return;
     }
-
-    /// Write multiple lines above the viewport.
-    pub fn emit_lines(terminal: &mut Term, lines: &[String]) {
-        for line in lines {
-            Self::emit(terminal, line);
-        }
-    }
+    let height = lines.len() as u16;
+    let owned: Vec<Line<'static>> = lines
+        .iter()
+        .map(|l| {
+            Line::from(
+                l.spans
+                    .iter()
+                    .map(|s| Span::styled(s.content.to_string(), s.style))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    let _ = terminal.insert_before(height, |buf| {
+        Paragraph::new(owned).render(buf.area, buf);
+    });
 }
+
+/// Write a single `Line` above the viewport.
+pub fn emit_line(terminal: &mut Term, line: Line<'_>) {
+    emit_lines(terminal, &[line]);
+}
+
+/// Write a blank line above the viewport.
+pub fn emit_blank(terminal: &mut Term) {
+    emit_line(terminal, Line::raw(""));
+}
+
+// ── Style constants ─────────────────────────────────────────────
+// Centralized color palette for the TUI renderer.
+
+pub const DIM: Style = Style::new().fg(Color::DarkGray);
+pub const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
+pub const CYAN: Style = Style::new().fg(Color::Cyan);
+pub const YELLOW: Style = Style::new().fg(Color::Yellow);
+pub const RED: Style = Style::new().fg(Color::Red);
+pub const GREEN: Style = Style::new().fg(Color::Green);
+pub const MAGENTA: Style = Style::new().fg(Color::Magenta);
+pub const ORANGE: Style = Style::new().fg(Color::Rgb(255, 165, 0));
+pub const AMBER: Style = Style::new().fg(Color::Rgb(255, 191, 0));

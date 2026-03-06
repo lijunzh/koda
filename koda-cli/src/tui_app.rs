@@ -21,7 +21,6 @@ use crate::input;
 use crate::repl::{self, ReplAction};
 use crate::sink::UiEvent;
 use crate::tui::{self, SelectOption};
-use crate::tui_output::TuiOutput;
 use crate::tui_render::TuiRenderer;
 use crate::widgets::status_bar::StatusBar;
 
@@ -40,6 +39,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
+    text::Line,
     widgets::Paragraph,
 };
 use std::collections::VecDeque;
@@ -156,10 +156,9 @@ fn restore_terminal(terminal: &mut Term) {
 
 // ── Output helper ────────────────────────────────────────────
 
-/// Write lines above the viewport using `insert_before`.
-/// Accepts an ANSI-formatted string — converts to ratatui Text.
-fn emit_above(terminal: &mut Term, text: &str) {
-    TuiOutput::emit(terminal, text);
+/// Write a message line above the viewport.
+fn emit_above(terminal: &mut Term, line: ratatui::text::Line<'_>) {
+    crate::tui_output::emit_line(terminal, line);
 }
 
 // ── Main event loop ──────────────────────────────────────────
@@ -297,7 +296,15 @@ pub async fn run(
     let mode = approval::read_mode(&shared_mode);
     let ctx = koda_core::context::percentage() as u32;
     terminal.draw(|f| {
-        draw_viewport(f, &textarea, &config.model, mode, ctx, tui_state, input_queue.len());
+        draw_viewport(
+            f,
+            &textarea,
+            &config.model,
+            mode,
+            ctx,
+            tui_state,
+            input_queue.len(),
+        );
     })?;
 
     // ── Main event loop ──────────────────────────────────────
@@ -315,7 +322,7 @@ pub async fn run(
                 // Echo queued input above viewport
                 let mode = approval::read_mode(&shared_mode);
                 let prompt = repl::format_prompt(&config.model, mode);
-                emit_above(&mut terminal, &format!("{prompt}{queued}"));
+                emit_above(&mut terminal, Line::raw(format!("{prompt}{queued}")));
                 Some(queued)
             } else {
                 None
@@ -409,7 +416,7 @@ pub async fn run(
                                     // Echo and process immediately
                                     let mode = approval::read_mode(&shared_mode);
                                     let prompt = repl::format_prompt(&config.model, mode);
-                                    emit_above(&mut terminal, &format!("{prompt}{text}"));
+                                    emit_above(&mut terminal, Line::raw(format!("{prompt}{text}")));
                                     pending_command = Some(text);
                                 } else {
                                     // Queue for later
@@ -530,9 +537,13 @@ pub async fn run(
                                     if !silent_compact_deferred {
                                         emit_above(
                                             &mut terminal,
-                                            &format!(
-                                                "  \x1b[33m\u{1f43b} Context at {ctx_pct}% \u{2014} deferring compact (tool calls pending)\x1b[0m"
-                                            ),
+                                            Line::from(vec![
+                                                ratatui::text::Span::raw("  "),
+                                                ratatui::text::Span::styled(
+                                                    format!("\u{1f43b} Context at {ctx_pct}% \u{2014} deferring compact (tool calls pending)"),
+                                                    Style::default().fg(Color::Yellow),
+                                                ),
+                                            ]),
                                         );
                                         silent_compact_deferred = true;
                                     }
@@ -540,9 +551,13 @@ pub async fn run(
                                     silent_compact_deferred = false;
                                     emit_above(
                                         &mut terminal,
-                                        &format!(
-                                            "  \x1b[36m\u{1f43b} Context at {ctx_pct}% \u{2014} auto-compacting...\x1b[0m"
-                                        ),
+                                        Line::from(vec![
+                                            ratatui::text::Span::raw("  "),
+                                            ratatui::text::Span::styled(
+                                                format!("\u{1f43b} Context at {ctx_pct}% \u{2014} auto-compacting..."),
+                                                Style::default().fg(Color::Cyan),
+                                            ),
+                                        ]),
                                     );
                                     crate::commands::handle_compact(
                                         &session.db,
@@ -808,9 +823,7 @@ async fn handle_slash_command(
                         let matches: Vec<_> =
                             sessions.iter().filter(|s| s.id.starts_with(id)).collect();
                         match matches.len() {
-                            0 => println!(
-                                "  \x1b[31mNo session found matching '{id}'.\x1b[0m"
-                            ),
+                            0 => println!("  \x1b[31mNo session found matching '{id}'.\x1b[0m"),
                             1 => {
                                 let full_id = &matches[0].id;
                                 match session.db.delete_session(full_id).await {
@@ -845,9 +858,7 @@ async fn handle_slash_command(
                         let matches: Vec<_> =
                             sessions.iter().filter(|s| s.id.starts_with(id)).collect();
                         match matches.len() {
-                            0 => println!(
-                                "  \x1b[31mNo session found matching '{id}'.\x1b[0m"
-                            ),
+                            0 => println!("  \x1b[31mNo session found matching '{id}'.\x1b[0m"),
                             1 => {
                                 let target = &matches[0];
                                 session.id = target.id.clone();
@@ -873,14 +884,8 @@ async fn handle_slash_command(
             SlashAction::Continue
         }
         ReplAction::Compact => {
-            crate::commands::handle_compact(
-                &session.db,
-                &session.id,
-                config,
-                provider,
-                false,
-            )
-            .await;
+            crate::commands::handle_compact(&session.db, &session.id, config, provider, false)
+                .await;
             SlashAction::Continue
         }
         ReplAction::McpCommand(ref args) => {
@@ -954,21 +959,39 @@ async fn start_inference_turn(
     let processed = input::process_input(input, project_root);
     if !processed.images.is_empty() {
         for (i, _img) in processed.images.iter().enumerate() {
-            emit_above(terminal, &format!("  \x1b[35m\u{1f5bc} Image {}\x1b[0m", i + 1));
+            emit_above(
+                terminal,
+                Line::from(vec![
+                    ratatui::text::Span::raw("  "),
+                    ratatui::text::Span::styled(
+                        format!("\u{1f5bc} Image {}", i + 1),
+                        Style::default().fg(Color::Magenta),
+                    ),
+                ]),
+            );
         }
     }
 
-    let user_message =
-        if let Some(context) = input::format_context_files(&processed.context_files) {
-            if !processed.context_files.is_empty() {
-                for f in &processed.context_files {
-                    emit_above(terminal, &format!("  \x1b[36m\u{1f4ce} {}\x1b[0m", f.path));
-                }
+    let user_message = if let Some(context) = input::format_context_files(&processed.context_files)
+    {
+        if !processed.context_files.is_empty() {
+            for f in &processed.context_files {
+                emit_above(
+                    terminal,
+                    Line::from(vec![
+                        ratatui::text::Span::raw("  "),
+                        ratatui::text::Span::styled(
+                            format!("\u{1f4ce} {}", f.path),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                    ]),
+                );
             }
-            format!("{}\n\n{context}", processed.prompt)
-        } else {
-            processed.prompt.clone()
-        };
+        }
+        format!("{}\n\n{context}", processed.prompt)
+    } else {
+        processed.prompt.clone()
+    };
 
     if let Err(e) = session
         .db
