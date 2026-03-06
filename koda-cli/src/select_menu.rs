@@ -198,7 +198,8 @@ fn clear_inline(stdout: &mut io::Stdout, total_lines: usize) -> io::Result<()> {
     for _ in 0..total_lines {
         execute!(stdout, Clear(ClearType::CurrentLine), cursor::MoveDown(1))?;
     }
-    execute!(stdout, cursor::MoveUp(total_lines as u16))?;
+    // Don't move back up — leave cursor at the viewport position
+    // so subsequent insert_before() calls work correctly.
     stdout.flush()?;
     Ok(())
 }
