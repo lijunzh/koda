@@ -229,13 +229,26 @@ async fn handle_pick_model(
 }
 
 fn handle_help(terminal: &mut Term, pending_command: &mut Option<String>) {
-    // Show tips first, before the interactive menu
-    tui_output::emit_blank(terminal);
-    dim_msg(
-        terminal,
-        "Tips: @file to attach context \u{00b7} Shift+Tab to cycle mode \u{00b7} Ctrl+C to cancel \u{00b7} Ctrl+D to exit".into(),
-    );
-    tui_output::emit_blank(terminal);
+    // Emit tips via crossterm (same rendering system as select_inline)
+    // so cursor math stays consistent — no insert_before here.
+    {
+        use crossterm::{
+            execute,
+            style::{Color, Print, ResetColor, SetForegroundColor},
+        };
+        let mut stdout = std::io::stdout();
+        execute!(
+            stdout,
+            Print("\r\n  "),
+            SetForegroundColor(Color::DarkGrey),
+            Print(
+                "Tips: @file to attach context \u{00b7} Shift+Tab to cycle mode \u{00b7} Ctrl+C to cancel \u{00b7} Ctrl+D to exit"
+            ),
+            ResetColor,
+            Print("\r\n"),
+        )
+        .ok();
+    }
 
     let commands = [
         ("/agent", "List available sub-agents"),
