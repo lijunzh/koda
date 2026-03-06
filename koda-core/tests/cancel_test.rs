@@ -99,7 +99,6 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
         &sink,
         cancel,
         &mut cmd_rx,
-        &|_, _| koda_core::loop_guard::LoopContinuation::Stop,
     )
     .await;
 

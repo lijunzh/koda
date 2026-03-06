@@ -382,13 +382,7 @@ async fn handle_prompt(
     let config = state.config.clone();
     let result = active
         .session
-        .run_turn(
-            &config,
-            None,
-            &sink,
-            &mut cmd_rx,
-            &server_loop_continue_prompt,
-        )
+        .run_turn(&config, None, &sink, &mut cmd_rx)
         .await;
 
     // Drop the sink so the streaming task finishes
@@ -404,14 +398,6 @@ async fn handle_prompt(
     let response = acp::PromptResponse::new(stop_reason);
     let resp = wrap_response(id, acp::AgentResponse::PromptResponse(response));
     send_json(out_tx, &resp).await;
-}
-
-/// Server always continues — no terminal to prompt.
-fn server_loop_continue_prompt(
-    _cap: u32,
-    _recent_names: &[String],
-) -> koda_core::loop_guard::LoopContinuation {
-    koda_core::loop_guard::LoopContinuation::Continue200
 }
 
 // ── Helpers ─────────────────────────────────────────────────
