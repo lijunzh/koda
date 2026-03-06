@@ -11,7 +11,6 @@ use koda_core::{
     db::{Database, Role},
     engine::{EngineCommand, EngineEvent, sink::TestSink},
     inference,
-    loop_guard::LoopContinuation,
     providers::{
         ChatMessage, LlmProvider, LlmResponse, ModelInfo, StreamChunk, ToolDefinition,
         mock::{MockProvider, MockResponse},
@@ -83,7 +82,6 @@ impl Env {
             &sink,
             CancellationToken::new(),
             &mut cmd_rx,
-            &|_, _| LoopContinuation::Stop,
         )
         .await;
 
@@ -255,7 +253,6 @@ async fn test_provider_error_emits_error_event() {
         &sink,
         CancellationToken::new(),
         &mut cmd_rx,
-        &|_, _| LoopContinuation::Stop,
     )
     .await;
 
@@ -369,7 +366,6 @@ async fn test_cancel_during_streaming() {
         &sink,
         cancel,
         &mut cmd_rx,
-        &|_, _| LoopContinuation::Stop,
     )
     .await;
 

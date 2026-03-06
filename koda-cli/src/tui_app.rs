@@ -738,13 +738,7 @@ pub async fn run(
 
         // Run turn
         {
-            let turn = session.run_turn(
-                &config,
-                pending_images,
-                &cli_sink,
-                &mut cmd_rx,
-                &cli_loop_continue_prompt,
-            );
+            let turn = session.run_turn(&config, pending_images, &cli_sink, &mut cmd_rx);
             tokio::pin!(turn);
 
             loop {
@@ -778,6 +772,21 @@ pub async fn run(
                                 let _ = cmd_tx
                                     .send(EngineCommand::ApprovalResponse { id, decision })
                                     .await;
+                            }
+                            UiEvent::Engine(EngineEvent::LoopCapReached {
+                                cap,
+                                recent_tools,
+                            }) => {
+                                let action = crate::app::cli_loop_continue_prompt(cap, &recent_tools);
+                                let _ = cmd_tx
+                                    .send(EngineCommand::LoopDecision { action })
+                                    .await;
+                            }
+                            UiEvent::Engine(EngineEvent::TurnStart { .. }) => {
+                                // Future: update status bar to show inference is active
+                            }
+                            UiEvent::Engine(EngineEvent::TurnEnd { .. }) => {
+                                // Future: drain type-ahead queue, update status bar
                             }
                             UiEvent::Engine(ref event) => {
                                 renderer.render(event.clone());
@@ -852,37 +861,4 @@ pub async fn run(
     );
 
     Ok(())
-}
-
-// ── Utilities ─────────────────────────────────────────────────
-
-/// CLI implementation of the loop-continue prompt.
-/// Shows a terminal select widget when the hard cap is hit.
-fn cli_loop_continue_prompt(
-    cap: u32,
-    recent_names: &[String],
-) -> koda_core::loop_guard::LoopContinuation {
-    use koda_core::loop_guard::LoopContinuation;
-
-    println!("\n  \x1b[33m\u{26a0}  Hard cap reached ({cap} iterations).\x1b[0m");
-
-    if !recent_names.is_empty() {
-        println!("  Last tool calls:");
-        for name in recent_names {
-            println!("    \x1b[90m\u{25cf}\x1b[0m {name}");
-        }
-    }
-    println!();
-
-    let options = vec![
-        SelectOption::new("Stop", "End the task here"),
-        SelectOption::new("+50 more", "Continue for 50 more iterations"),
-        SelectOption::new("+200 more", "Continue for 200 more iterations"),
-    ];
-
-    match crate::tui::select("Continue?", &options, 0) {
-        Ok(Some(1)) => LoopContinuation::Continue50,
-        Ok(Some(2)) => LoopContinuation::Continue200,
-        _ => LoopContinuation::Stop,
-    }
 }
