@@ -355,6 +355,22 @@ pub async fn run(
                                     terminal = init_terminal()?;
                                     crossterm_events = EventStream::new();
                                 }
+                                // Force viewport redraw to resync after crossterm writes
+                                let mode = approval::read_mode(&shared_mode);
+                                let ctx = koda_core::context::percentage() as u32;
+                                terminal.draw(|f| {
+                                    draw_viewport(
+                                        f,
+                                        &textarea,
+                                        &config.model,
+                                        mode,
+                                        ctx,
+                                        tui_state,
+                                        input_queue.len(),
+                                        inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
+                                        renderer.last_turn_stats.as_ref(),
+                                    );
+                                })?;
                             }
                             SlashAction::Quit => {
                                 tui_output::emit_line(
