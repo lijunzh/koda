@@ -1,20 +1,40 @@
 //! TUI-based interactive event loop with persistent inline viewport.
 //!
-//! Architecture:
-//!   - Terminal stays in raw mode for the entire session
-//!   - `Viewport::Inline(2)` with `scrolling-regions` is always rendered
-//!   - Output scrolls above the viewport via `terminal.insert_before()`
-//!   - Input is always active — type-ahead queues submissions during inference
+//! # Rendering Architecture
+//!
+//! Two rendering systems coexist, bridged by terminal re-initialization:
+//!
+//! ## 1. Engine output — ratatui `insert_before()`
+//!
+//! LLM streaming, tool calls, diffs, and approval prompts render as
+//! native `ratatui::text::Line`/`Span` via `tui_output::emit_line()`.
+//! Content scrolls into terminal scrollback above the viewport.
+//!
+//! ## 2. Slash commands — crossterm direct writes
+//!
+//! `/model`, `/help`, `/provider`, etc. render via `tui_output::write_line()`
+//! which writes styled content directly to stdout with `\r\n` line endings.
+//! Interactive select menus (`select_inline`) use crossterm cursor movement
+//! for in-place arrow-key navigation.
+//!
+//! ## Bridge: `init_terminal()` resync
+//!
+//! After every slash command, we create a fresh `Terminal` with
+//! `Viewport::Inline(2)`. This anchors the viewport at the current
+//! cursor position — wherever crossterm left it — eliminating stale
+//! cursor tracking. No raw mode toggle needed.
 //!
 //! ```text
-//! Normal terminal scrollback            ← via insert_before()
-//!   ├── Tool banners, markdown, diffs
-//!   └── All EngineEvent rendering
-//!
-//! ┌─ ratatui Viewport::Inline(2) ──────────────────────────┐
-//! │ 🐻> user types here even during inference_              │
+//! ┌─ scrollback ────────────────────────────────────────────┐
+//! │ Engine output via insert_before() (ratatui Line/Span)   │
+//! │ Slash command output via write_line() (crossterm)       │
+//! │ Select menus via select_inline() (crossterm)            │
+//! ├─────────────────────────────────────────────────────────┤
+//! │ ← init_terminal() resyncs viewport here →              │
+//! ├─ ratatui Viewport::Inline(2) ──────────────────────────┤
+//! │ \u{1f43b}> user types here even during inference_              │
 //! │ model │ normal │ ████░░ 5%                             │
-//! └────────────────────────────────────────────────────────┘
+//! └─────────────────────────────────────────────────────────┘
 //! ```
 
 use crate::input;
@@ -349,12 +369,10 @@ pub async fn run(
 
                         match action {
                             SlashAction::Continue => {
-                                // Re-init terminal if a legacy command disabled raw mode
-                                if !crossterm::terminal::is_raw_mode_enabled().unwrap_or(true) {
-                                    crossterm::terminal::enable_raw_mode()?;
-                                    terminal = init_terminal()?;
-                                    crossterm_events = EventStream::new();
-                                }
+                                // Re-init terminal to resync viewport with cursor
+                                // position after crossterm direct writes.
+                                terminal = init_terminal()?;
+                                crossterm_events = EventStream::new();
                             }
                             SlashAction::Quit => {
                                 tui_output::emit_line(
