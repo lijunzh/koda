@@ -101,6 +101,14 @@ impl TuiRenderer {
             EngineEvent::ResponseStart => {
                 self.response_started = true;
                 tui_output::emit_blank(terminal);
+                tui_output::emit_line(
+                    terminal,
+                    Line::styled(
+                        "  \u{2500}\u{2500}\u{2500} Response \u{2500}\u{2500}\u{2500}",
+                        DIM,
+                    ),
+                );
+                tui_output::emit_blank(terminal);
             }
             EngineEvent::ToolCallStart {
                 id: _,

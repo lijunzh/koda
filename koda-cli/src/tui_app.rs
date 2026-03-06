@@ -652,6 +652,10 @@ pub async fn run(
             Some(Ok(ev)) = crossterm_events.next() => {
                 if let Event::Key(key) = ev {
                     match (key.code, key.modifiers) {
+                        // Alt+Enter → insert newline (multi-line input)
+                        (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
+                            textarea.insert_newline();
+                        }
                         (KeyCode::Enter, KeyModifiers::NONE) => {
                             let text = textarea.lines().join("\n");
                             if !text.trim().is_empty() {
