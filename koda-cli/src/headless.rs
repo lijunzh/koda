@@ -51,7 +51,7 @@ pub async fn run_headless(
         )
         .await?;
 
-    let cli_sink = crate::sink::CliSink::new(cmd_tx);
+    let cli_sink = crate::headless_sink::HeadlessSink::new(cmd_tx);
     let cancel = session.cancel.clone();
     let result = tokio::select! {
         r = session.run_turn(

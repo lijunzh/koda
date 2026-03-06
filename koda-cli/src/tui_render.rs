@@ -18,7 +18,7 @@ type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 /// TUI-aware renderer that outputs above the viewport.
 pub struct TuiRenderer {
     /// Recent tool outputs for `/expand` replay.
-    pub tool_history: crate::display::ToolOutputHistory,
+    pub tool_history: crate::tool_history::ToolOutputHistory,
     /// When true, tool output is never collapsed.
     pub verbose: bool,
     /// Last turn stats for status bar display.
@@ -38,7 +38,7 @@ pub struct TuiRenderer {
 impl TuiRenderer {
     pub fn new() -> Self {
         Self {
-            tool_history: crate::display::ToolOutputHistory::new(),
+            tool_history: crate::tool_history::ToolOutputHistory::new(),
             verbose: false,
             last_turn_stats: None,
             text_buf: String::new(),
