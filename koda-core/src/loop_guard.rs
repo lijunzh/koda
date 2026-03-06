@@ -104,7 +104,8 @@ fn is_mutating_tool(name: &str) -> bool {
 /// Prompt the user when the hard iteration cap is hit.
 ///
 /// Options for continuing after hitting the hard cap.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LoopContinuation {
     Stop,
     Continue50,

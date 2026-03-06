@@ -59,7 +59,6 @@ pub async fn run_headless(
             pending_images,
             &cli_sink,
             &mut cmd_rx,
-            &crate::app::cli_loop_continue_prompt,
         ) => r,
         _ = tokio::signal::ctrl_c() => {
             cancel.cancel();

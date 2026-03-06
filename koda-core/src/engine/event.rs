@@ -121,11 +121,38 @@ pub enum EngineEvent {
         context: String,
     },
 
-    /// Spinner/progress indicator.
+    /// Spinner/progress indicator (presentational hint).
+    ///
+    /// Clients may render this as a terminal spinner, a status bar update,
+    /// or ignore it entirely. The ratatui TUI uses the status bar instead.
     SpinnerStart { message: String },
 
-    /// Stop the spinner.
+    /// Stop the spinner (presentational hint).
+    ///
+    /// See `SpinnerStart` — clients may ignore this.
     SpinnerStop,
+
+    // ── Turn lifecycle ─────────────────────────────────────────────────
+    /// An inference turn is starting.
+    ///
+    /// Emitted at the beginning of `inference_loop()`. Clients can use this
+    /// to lock input, start timers, or update status indicators.
+    TurnStart { turn_id: String },
+
+    /// An inference turn has ended.
+    ///
+    /// Emitted when `inference_loop()` completes. Clients can use this to
+    /// unlock input, drain type-ahead queues, or update status.
+    TurnEnd {
+        turn_id: String,
+        reason: TurnEndReason,
+    },
+
+    /// The engine's iteration hard cap was reached.
+    ///
+    /// The client must respond with `EngineCommand::LoopDecision`.
+    /// Until the client responds, the inference loop is paused.
+    LoopCapReached { cap: u32, recent_tools: Vec<String> },
 
     // ── Messages ──────────────────────────────────────────────────────
     /// Display the todo checklist (raw markdown content, client renders).
@@ -141,15 +168,37 @@ pub enum EngineEvent {
     Error { message: String },
 }
 
+/// Why an inference turn ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnEndReason {
+    /// The LLM produced a final text response (no more tool calls).
+    Complete,
+    /// The user or system cancelled the turn.
+    Cancelled,
+    /// The turn failed with an error.
+    Error { message: String },
+}
+
 // ── Client → Engine ──────────────────────────────────────────────────────
 
 /// Commands sent from the client to the engine.
-/// Not yet consumed outside the engine module — wired in v0.2.0 server mode.
-#[allow(dead_code)]
+///
+/// Currently consumed variants:
+/// - `ApprovalResponse` — during tool confirmation flow
+/// - `Interrupt` — during approval waits and inference streaming
+/// - `LoopDecision` — when iteration hard cap is reached
+///
+/// Future (server mode, v0.2.0):
+/// - `UserPrompt`, `SlashCommand`, `Quit` — defined for wire protocol
+///   completeness but currently handled client-side.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineCommand {
     /// User submitted a prompt.
+    ///
+    /// Currently handled client-side. Will be consumed by the engine
+    /// in server mode (v0.2.0) for prompt queuing.
     UserPrompt {
         text: String,
         /// Base64-encoded images attached to the prompt.
@@ -158,6 +207,9 @@ pub enum EngineCommand {
     },
 
     /// User requested interruption of the current operation.
+    ///
+    /// Consumed during approval waits. Also triggers `CancellationToken`
+    /// for streaming interruption.
     Interrupt,
 
     /// Response to an `EngineEvent::ApprovalRequest`.
@@ -167,10 +219,22 @@ pub enum EngineCommand {
         decision: ApprovalDecision,
     },
 
+    /// Response to an `EngineEvent::LoopCapReached`.
+    ///
+    /// Tells the engine whether to continue or stop after hitting
+    /// the iteration hard cap.
+    LoopDecision {
+        action: crate::loop_guard::LoopContinuation,
+    },
+
     /// A slash command from the REPL.
+    ///
+    /// Currently handled client-side. Defined for wire protocol completeness.
     SlashCommand(SlashCommand),
 
     /// User requested to quit the session.
+    ///
+    /// Currently handled client-side. Defined for wire protocol completeness.
     Quit,
 }
 
@@ -402,5 +466,99 @@ mod tests {
         let json = serde_json::to_string(&img).unwrap();
         let deserialized: ImageAttachment = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.mime_type, "image/png");
+    }
+
+    #[test]
+    fn test_turn_lifecycle_roundtrip() {
+        let start = EngineEvent::TurnStart {
+            turn_id: "turn-1".into(),
+        };
+        let json = serde_json::to_string(&start).unwrap();
+        assert!(json.contains("turn_start"));
+        let _: EngineEvent = serde_json::from_str(&json).unwrap();
+
+        let end_complete = EngineEvent::TurnEnd {
+            turn_id: "turn-1".into(),
+            reason: TurnEndReason::Complete,
+        };
+        let json = serde_json::to_string(&end_complete).unwrap();
+        let deserialized: EngineEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            deserialized,
+            EngineEvent::TurnEnd {
+                reason: TurnEndReason::Complete,
+                ..
+            }
+        ));
+
+        let end_error = EngineEvent::TurnEnd {
+            turn_id: "turn-2".into(),
+            reason: TurnEndReason::Error {
+                message: "oops".into(),
+            },
+        };
+        let json = serde_json::to_string(&end_error).unwrap();
+        let _: EngineEvent = serde_json::from_str(&json).unwrap();
+
+        let end_cancelled = EngineEvent::TurnEnd {
+            turn_id: "turn-3".into(),
+            reason: TurnEndReason::Cancelled,
+        };
+        let json = serde_json::to_string(&end_cancelled).unwrap();
+        let _: EngineEvent = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_loop_cap_reached_roundtrip() {
+        let event = EngineEvent::LoopCapReached {
+            cap: 200,
+            recent_tools: vec!["Bash".into(), "Edit".into()],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("loop_cap_reached"));
+        let deserialized: EngineEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            deserialized,
+            EngineEvent::LoopCapReached { cap: 200, .. }
+        ));
+    }
+
+    #[test]
+    fn test_loop_decision_roundtrip() {
+        use crate::loop_guard::LoopContinuation;
+
+        let cmd = EngineCommand::LoopDecision {
+            action: LoopContinuation::Continue50,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        let deserialized: EngineCommand = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            deserialized,
+            EngineCommand::LoopDecision {
+                action: LoopContinuation::Continue50
+            }
+        ));
+
+        let cmd_stop = EngineCommand::LoopDecision {
+            action: LoopContinuation::Stop,
+        };
+        let json = serde_json::to_string(&cmd_stop).unwrap();
+        let _: EngineCommand = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_turn_end_reason_variants() {
+        let reasons = vec![
+            TurnEndReason::Complete,
+            TurnEndReason::Cancelled,
+            TurnEndReason::Error {
+                message: "failed".into(),
+            },
+        ];
+        for reason in reasons {
+            let json = serde_json::to_string(&reason).unwrap();
+            let roundtripped: TurnEndReason = serde_json::from_str(&json).unwrap();
+            assert_eq!(reason, roundtripped);
+        }
     }
 }

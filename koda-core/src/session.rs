@@ -9,7 +9,6 @@ use crate::approval::{ApprovalMode, Settings};
 use crate::config::KodaConfig;
 use crate::db::Database;
 use crate::engine::{EngineCommand, EngineSink};
-use crate::loop_guard;
 use crate::providers::{self, ImageData, LlmProvider};
 
 use anyhow::Result;
@@ -55,16 +54,22 @@ impl KodaSession {
 
     /// Run one inference turn: prompt → streaming → tool execution → response.
     ///
-    /// This wraps `inference::inference_loop()` with all the session state.
+    /// Emits `TurnStart` and `TurnEnd` lifecycle events. The loop-cap prompt
+    /// is handled via `EngineEvent::LoopCapReached` / `EngineCommand::LoopDecision`
+    /// through the `cmd_rx` channel.
     pub async fn run_turn(
         &mut self,
         config: &KodaConfig,
         pending_images: Option<Vec<ImageData>>,
         sink: &dyn EngineSink,
         cmd_rx: &mut mpsc::Receiver<EngineCommand>,
-        loop_continue_prompt: &dyn Fn(u32, &[String]) -> loop_guard::LoopContinuation,
     ) -> Result<()> {
-        crate::inference::inference_loop(
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        sink.emit(crate::engine::EngineEvent::TurnStart {
+            turn_id: turn_id.clone(),
+        });
+
+        let result = crate::inference::inference_loop(
             &self.agent.project_root,
             config,
             &self.db,
@@ -79,9 +84,19 @@ impl KodaSession {
             sink,
             self.cancel.clone(),
             cmd_rx,
-            loop_continue_prompt,
         )
-        .await
+        .await;
+
+        let reason = match &result {
+            Ok(()) if self.cancel.is_cancelled() => crate::engine::event::TurnEndReason::Cancelled,
+            Ok(()) => crate::engine::event::TurnEndReason::Complete,
+            Err(e) => crate::engine::event::TurnEndReason::Error {
+                message: e.to_string(),
+            },
+        };
+        sink.emit(crate::engine::EngineEvent::TurnEnd { turn_id, reason });
+
+        result
     }
 
     /// Replace the provider (e.g., after switching models or providers).
