@@ -1,7 +1,7 @@
 //! Native TUI wizard handlers for /provider, /compact, /mcp, /trust.
 //!
 //! Extracted from tui_commands.rs to keep files under 600 lines.
-//! All output rendered through tui_output::emit_line().
+//! All output rendered through tui_output::write_line(&).
 
 use crate::select_menu::{self, SelectOption};
 use crate::tui_output;
@@ -28,36 +28,31 @@ const CYAN: Style = Style::new().fg(Color::Cyan);
 const WARN: Style = Style::new().fg(Color::Yellow);
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 
-fn ok_msg(terminal: &mut Term, msg: String) {
-    tui_output::emit_line(
-        terminal,
-        Line::from(vec![Span::styled("  \u{2713} ", OK), Span::raw(msg)]),
-    );
+fn ok_msg(msg: String) {
+    tui_output::write_line(&Line::from(vec![
+        Span::styled("  \u{2713} ", OK),
+        Span::raw(msg),
+    ]));
 }
-fn err_msg(terminal: &mut Term, msg: String) {
-    tui_output::emit_line(
-        terminal,
-        Line::from(vec![
-            Span::styled("  \u{2717} ", ERR),
-            Span::styled(msg, ERR),
-        ]),
-    );
+fn err_msg(msg: String) {
+    tui_output::write_line(&Line::from(vec![
+        Span::styled("  \u{2717} ", ERR),
+        Span::styled(msg, ERR),
+    ]));
 }
-fn dim_msg(terminal: &mut Term, msg: String) {
-    tui_output::emit_line(terminal, Line::styled(format!("  {msg}"), DIM));
+fn dim_msg(msg: String) {
+    tui_output::write_line(&Line::styled(format!("  {msg}"), DIM));
 }
-fn warn_msg(terminal: &mut Term, msg: String) {
-    tui_output::emit_line(
-        terminal,
-        Line::from(vec![
-            Span::styled("  \u{26a0} ", WARN),
-            Span::styled(msg, WARN),
-        ]),
-    );
+fn warn_msg(msg: String) {
+    tui_output::write_line(&Line::from(vec![
+        Span::styled("  \u{26a0} ", WARN),
+        Span::styled(msg, WARN),
+    ]));
 }
 
 // ── Provider (native TUI) ───────────────────────────────────
 
+#[allow(unused_variables)]
 pub(crate) async fn handle_pick_provider(
     terminal: &mut Term,
     config: &mut KodaConfig,
@@ -83,11 +78,11 @@ pub(crate) async fn handle_pick_provider(
     ) {
         Ok(Some(idx)) => idx,
         Ok(None) => {
-            dim_msg(terminal, "Cancelled.".into());
+            dim_msg("Cancelled.".into());
             return;
         }
         Err(e) => {
-            err_msg(terminal, format!("TUI error: {e}"));
+            err_msg(format!("TUI error: {e}"));
             return;
         }
     };
@@ -98,6 +93,7 @@ pub(crate) async fn handle_pick_provider(
     handle_setup_provider(terminal, config, provider, ptype, base_url).await;
 }
 
+#[allow(unused_variables)]
 pub(crate) async fn handle_setup_provider(
     terminal: &mut Term,
     config: &mut KodaConfig,
@@ -121,26 +117,26 @@ pub(crate) async fn handle_setup_provider(
                 config.provider_type
             )
         } else {
-            warn_msg(terminal, format!("{env_name} is not set."));
+            warn_msg(format!("{env_name} is not set."));
             format!("Paste your {} API key: ", config.provider_type)
         };
 
         let key = crate::widgets::text_input::read_line(terminal, &prompt, true);
         if key.is_empty() {
             if !is_same_provider {
-                err_msg(terminal, "No key provided, provider not changed.".into());
+                err_msg("No key provided, provider not changed.".into());
                 return;
             }
         } else {
             koda_core::runtime_env::set(env_name, &key);
             let masked = koda_core::keystore::mask_key(&key);
-            ok_msg(terminal, format!("{env_name} set to {masked}"));
+            ok_msg(format!("{env_name} set to {masked}"));
             if let Ok(mut store) = koda_core::keystore::KeyStore::load() {
                 store.set(env_name, &key);
                 if let Err(e) = store.save() {
-                    warn_msg(terminal, format!("Could not persist key: {e}"));
+                    warn_msg(format!("Could not persist key: {e}"));
                 } else if let Ok(path) = koda_core::keystore::KeyStore::keys_path() {
-                    ok_msg(terminal, format!("Saved to {}", path.display()));
+                    ok_msg(format!("Saved to {}", path.display()));
                 }
             }
         }
@@ -153,11 +149,11 @@ pub(crate) async fn handle_setup_provider(
         } else {
             config.base_url = default_url.to_string();
         }
-        ok_msg(terminal, format!("URL set to {}", config.base_url));
+        ok_msg(format!("URL set to {}", config.base_url));
     }
 
     *provider.write().await = crate::commands::create_provider(config);
-    ok_msg(terminal, format!("Provider: {}", config.provider_type));
+    ok_msg(format!("Provider: {}", config.provider_type));
     save_provider(config);
 
     // Verify connection
@@ -168,28 +164,22 @@ pub(crate) async fn handle_setup_provider(
                 config.model = first.id.clone();
                 config.model_settings.model = config.model.clone();
             }
-            ok_msg(terminal, "Connection verified! Available models:".into());
+            ok_msg("Connection verified! Available models:".into());
             for m in &models {
                 let marker = if m.id == config.model {
                     " \u{25c0} selected"
                 } else {
                     ""
                 };
-                tui_output::emit_line(
-                    terminal,
-                    Line::from(vec![
-                        Span::raw(format!("      {}", m.id)),
-                        Span::styled(marker, OK),
-                    ]),
-                );
+                tui_output::write_line(&Line::from(vec![
+                    Span::raw(format!("      {}", m.id)),
+                    Span::styled(marker, OK),
+                ]));
             }
         }
         Err(e) => {
-            warn_msg(terminal, format!("Could not verify connection: {e}"));
-            dim_msg(
-                terminal,
-                format!("Model set to: {} (unverified)", config.model),
-            );
+            warn_msg(format!("Could not verify connection: {e}"));
+            dim_msg(format!("Model set to: {} (unverified)", config.model));
         }
     }
 }
@@ -198,6 +188,7 @@ pub(crate) async fn handle_setup_provider(
 
 const COMPACT_PRESERVE_COUNT: usize = 4;
 
+#[allow(unused_variables)]
 pub(crate) async fn handle_compact(
     terminal: &mut Term,
     session: &KodaSession,
@@ -207,10 +198,7 @@ pub(crate) async fn handle_compact(
     use koda_core::providers::ChatMessage;
 
     if let Ok(true) = session.db.has_pending_tool_calls(&session.id).await {
-        warn_msg(
-            terminal,
-            "Tool calls are still pending — deferring compact.".into(),
-        );
+        warn_msg("Tool calls are still pending — deferring compact.".into());
         return;
     }
 
@@ -221,33 +209,27 @@ pub(crate) async fn handle_compact(
     {
         Ok(msgs) => msgs,
         Err(e) => {
-            err_msg(terminal, format!("Error loading conversation: {e}"));
+            err_msg(format!("Error loading conversation: {e}"));
             return;
         }
     };
 
     if history.len() < 4 {
-        dim_msg(
-            terminal,
-            format!(
-                "Conversation is too short to compact ({} messages).",
-                history.len()
-            ),
-        );
+        dim_msg(format!(
+            "Conversation is too short to compact ({} messages).",
+            history.len()
+        ));
         return;
     }
 
-    tui_output::emit_line(
-        terminal,
-        Line::styled(
-            format!(
-                "  \u{1f43b} Compacting {} messages (preserving last {})...",
-                history.len(),
-                COMPACT_PRESERVE_COUNT
-            ),
-            CYAN,
+    tui_output::write_line(&Line::styled(
+        format!(
+            "  \u{1f43b} Compacting {} messages (preserving last {})...",
+            history.len(),
+            COMPACT_PRESERVE_COUNT
         ),
-    );
+        CYAN,
+    ));
 
     // Build conversation text for summarization
     let mut conversation_text = String::new();
@@ -294,7 +276,7 @@ pub(crate) async fn handle_compact(
     let response = match prov.chat(&messages, &[], &config.model_settings).await {
         Ok(r) => r,
         Err(e) => {
-            err_msg(terminal, format!("Failed to generate summary: {e}"));
+            err_msg(format!("Failed to generate summary: {e}"));
             return;
         }
     };
@@ -302,10 +284,7 @@ pub(crate) async fn handle_compact(
     let summary = match response.content {
         Some(text) if !text.trim().is_empty() => text,
         _ => {
-            err_msg(
-                terminal,
-                "LLM returned an empty summary. Aborting compact.".into(),
-            );
+            err_msg("LLM returned an empty summary. Aborting compact.".into());
             return;
         }
     };
@@ -319,21 +298,18 @@ pub(crate) async fn handle_compact(
     {
         Ok(deleted) => {
             let summary_tokens = summary.len() / 4;
-            ok_msg(
-                terminal,
-                format!("Compacted {deleted} messages → ~{summary_tokens} tokens"),
-            );
-            dim_msg(
-                terminal,
-                "Conversation context has been summarized. Continue as normal!".into(),
-            );
+            ok_msg(format!(
+                "Compacted {deleted} messages → ~{summary_tokens} tokens"
+            ));
+            dim_msg("Conversation context has been summarized. Continue as normal!".into());
         }
-        Err(e) => err_msg(terminal, format!("Failed to compact session: {e}")),
+        Err(e) => err_msg(format!("Failed to compact session: {e}")),
     }
 }
 
 // ── MCP (native TUI) ───────────────────────────────────────
 
+#[allow(unused_variables)]
 pub(crate) async fn handle_mcp(
     terminal: &mut Term,
     args: &str,
@@ -347,55 +323,42 @@ pub(crate) async fn handle_mcp(
         "" | "status" => {
             let registry = mcp_registry.read().await;
             let servers = registry.server_info();
-            tui_output::emit_blank(terminal);
+            tui_output::write_blank();
             if servers.is_empty() {
-                dim_msg(terminal, "No MCP servers connected.".into());
-                dim_msg(
-                    terminal,
-                    "Add servers via .mcp.json or /mcp add <name> <command> [args...]".into(),
-                );
+                dim_msg("No MCP servers connected.".into());
+                dim_msg("Add servers via .mcp.json or /mcp add <name> <command> [args...]".into());
             } else {
-                tui_output::emit_line(terminal, Line::styled("  \u{1f50c} MCP Servers", BOLD));
-                tui_output::emit_blank(terminal);
+                tui_output::write_line(&Line::styled("  \u{1f50c} MCP Servers", BOLD));
+                tui_output::write_blank();
                 for server in &servers {
                     let cmd = if server.args.is_empty() {
                         server.command.clone()
                     } else {
                         format!("{} {}", server.command, server.args.join(" "))
                     };
-                    tui_output::emit_line(
-                        terminal,
-                        Line::from(vec![
-                            Span::styled("  \u{25cf} ", OK),
-                            Span::styled(&server.name, BOLD),
-                            Span::raw(format!(" \u{2014} {} tool(s)", server.tool_count)),
-                        ]),
-                    );
-                    dim_msg(terminal, format!("    {cmd}"));
+                    tui_output::write_line(&Line::from(vec![
+                        Span::styled("  \u{25cf} ", OK),
+                        Span::styled(&server.name, BOLD),
+                        Span::raw(format!(" \u{2014} {} tool(s)", server.tool_count)),
+                    ]));
+                    dim_msg(format!("    {cmd}"));
                     for tool_name in &server.tool_names {
-                        tui_output::emit_line(
-                            terminal,
-                            Line::from(vec![
-                                Span::styled("    \u{2022} ", CYAN),
-                                Span::raw(tool_name.clone()),
-                            ]),
-                        );
+                        tui_output::write_line(&Line::from(vec![
+                            Span::styled("    \u{2022} ", CYAN),
+                            Span::raw(tool_name.clone()),
+                        ]));
                     }
                 }
             }
-            tui_output::emit_blank(terminal);
+            tui_output::write_blank();
         }
 
         "add" => {
             let rest = args.strip_prefix("add").unwrap_or("").trim();
             let add_parts: Vec<&str> = rest.splitn(2, ' ').collect();
             if add_parts.len() < 2 {
-                warn_msg(
-                    terminal,
-                    "Usage: /mcp add <name> <command> [args...]".into(),
-                );
+                warn_msg("Usage: /mcp add <name> <command> [args...]".into());
                 dim_msg(
-                    terminal,
                     "Example: /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem /tmp".into(),
                 );
                 return;
@@ -415,14 +378,14 @@ pub(crate) async fn handle_mcp(
             if let Err(e) =
                 koda_core::mcp::config::save_server_to_project(project_root, &name, &config)
             {
-                err_msg(terminal, format!("Failed to save config: {e}"));
+                err_msg(format!("Failed to save config: {e}"));
                 return;
             }
 
-            tui_output::emit_line(
-                terminal,
-                Line::styled(format!("  \u{1f50c} Connecting to '{name}'..."), CYAN),
-            );
+            tui_output::write_line(&Line::styled(
+                format!("  \u{1f50c} Connecting to '{name}'..."),
+                CYAN,
+            ));
             let mut registry = mcp_registry.write().await;
             match registry.add_server(name.clone(), config).await {
                 Ok(()) => {
@@ -432,27 +395,26 @@ pub(crate) async fn handle_mcp(
                         .find(|s| s.name == name)
                         .map(|s| s.tool_count)
                         .unwrap_or(0);
-                    ok_msg(
-                        terminal,
-                        format!("Added '{name}' ({tool_count} tools). Saved to .mcp.json"),
-                    );
+                    ok_msg(format!(
+                        "Added '{name}' ({tool_count} tools). Saved to .mcp.json"
+                    ));
                 }
-                Err(e) => err_msg(terminal, format!("Failed to connect: {e}")),
+                Err(e) => err_msg(format!("Failed to connect: {e}")),
             }
         }
 
         "remove" => {
             let name = args.strip_prefix("remove").unwrap_or("").trim();
             if name.is_empty() {
-                warn_msg(terminal, "Usage: /mcp remove <name>".into());
+                warn_msg("Usage: /mcp remove <name>".into());
                 return;
             }
             let mut registry = mcp_registry.write().await;
             if registry.remove_server(name) {
                 let _ = koda_core::mcp::config::remove_server_from_project(project_root, name);
-                ok_msg(terminal, format!("Removed MCP server '{name}'"));
+                ok_msg(format!("Removed MCP server '{name}'"));
             } else {
-                err_msg(terminal, format!("MCP server '{name}' not found"));
+                err_msg(format!("MCP server '{name}' not found"));
             }
         }
 
@@ -460,41 +422,42 @@ pub(crate) async fn handle_mcp(
             let name = args.strip_prefix("restart").unwrap_or("").trim();
             let mut registry = mcp_registry.write().await;
             if name.is_empty() {
-                tui_output::emit_line(
-                    terminal,
-                    Line::styled("  \u{1f50c} Restarting all MCP servers...", CYAN),
-                );
+                tui_output::write_line(&Line::styled(
+                    "  \u{1f50c} Restarting all MCP servers...",
+                    CYAN,
+                ));
                 registry.restart_all(project_root).await;
-                ok_msg(terminal, "Done".into());
+                ok_msg("Done".into());
             } else {
-                tui_output::emit_line(
-                    terminal,
-                    Line::styled(format!("  \u{1f50c} Restarting '{name}'..."), CYAN),
-                );
+                tui_output::write_line(&Line::styled(
+                    format!("  \u{1f50c} Restarting '{name}'..."),
+                    CYAN,
+                ));
                 match registry.restart_server(name, project_root).await {
-                    Ok(()) => ok_msg(terminal, format!("Restarted '{name}'")),
-                    Err(e) => err_msg(terminal, format!("Failed: {e}")),
+                    Ok(()) => ok_msg(format!("Restarted '{name}'")),
+                    Err(e) => err_msg(format!("Failed: {e}")),
                 }
             }
         }
 
         other => {
-            warn_msg(terminal, format!("Unknown MCP command: {other}"));
-            dim_msg(terminal, "Usage: /mcp [status|add|remove|restart]".into());
+            warn_msg(format!("Unknown MCP command: {other}"));
+            dim_msg("Usage: /mcp [status|add|remove|restart]".into());
         }
     }
 }
 
 // ── Agents (native TUI) ──────────────────────────────────
 
+#[allow(unused_variables)]
 pub(crate) fn handle_list_agents(terminal: &mut Term, project_root: &std::path::Path) {
     let agents = koda_core::tools::agent::list_agents(project_root);
-    tui_output::emit_blank(terminal);
-    tui_output::emit_line(terminal, Line::styled("  \u{1f43b} Sub-Agents", BOLD));
-    tui_output::emit_blank(terminal);
+    tui_output::write_blank();
+    tui_output::write_line(&Line::styled("  \u{1f43b} Sub-Agents", BOLD));
+    tui_output::write_blank();
 
     if agents.is_empty() {
-        dim_msg(terminal, "No sub-agents configured.".into());
+        dim_msg("No sub-agents configured.".into());
     } else {
         for (name, desc, source) in &agents {
             let tag = match source.as_str() {
@@ -502,30 +465,22 @@ pub(crate) fn handle_list_agents(terminal: &mut Term, project_root: &std::path::
                 "project" => " [project]",
                 _ => "",
             };
-            tui_output::emit_line(
-                terminal,
-                Line::from(vec![
-                    Span::styled(format!("  {name}"), CYAN),
-                    Span::raw(format!(" \u{2014} {desc}")),
-                    Span::styled(tag, DIM),
-                ]),
-            );
+            tui_output::write_line(&Line::from(vec![
+                Span::styled(format!("  {name}"), CYAN),
+                Span::raw(format!(" \u{2014} {desc}")),
+                Span::styled(tag, DIM),
+            ]));
         }
     }
 
-    tui_output::emit_blank(terminal);
-    dim_msg(
-        terminal,
-        "Ask Koda to invoke them, or use koda --agent <name>".into(),
-    );
-    dim_msg(
-        terminal,
-        "Need a specialist? Ask Koda to create one for recurring tasks".into(),
-    );
+    tui_output::write_blank();
+    dim_msg("Ask Koda to invoke them, or use koda --agent <name>".into());
+    dim_msg("Need a specialist? Ask Koda to create one for recurring tasks".into());
 }
 
 // ── Diff (native TUI) ────────────────────────────────────
 
+#[allow(unused_variables)]
 pub(crate) fn handle_diff(terminal: &mut Term) {
     let output = std::process::Command::new("git")
         .args(["diff", "--stat"])
@@ -535,11 +490,11 @@ pub(crate) fn handle_diff(terminal: &mut Term) {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
         Ok(o) => {
             let err = String::from_utf8_lossy(&o.stderr);
-            err_msg(terminal, format!("Git error: {err}"));
+            err_msg(format!("Git error: {err}"));
             return;
         }
         Err(e) => {
-            err_msg(terminal, format!("Failed to run git: {e}"));
+            err_msg(format!("Failed to run git: {e}"));
             return;
         }
     };
@@ -568,32 +523,24 @@ pub(crate) fn handle_diff(terminal: &mut Term) {
     } else if let Some(s) = staged_stat {
         s
     } else {
-        dim_msg(terminal, "No uncommitted changes.".into());
+        dim_msg("No uncommitted changes.".into());
         return;
     };
 
-    tui_output::emit_blank(terminal);
-    tui_output::emit_line(
-        terminal,
-        Line::styled("  \u{1f43b} Uncommitted Changes", BOLD),
-    );
-    tui_output::emit_blank(terminal);
+    tui_output::write_blank();
+    tui_output::write_line(&Line::styled("  \u{1f43b} Uncommitted Changes", BOLD));
+    tui_output::write_blank();
     for line in stat.lines() {
-        dim_msg(terminal, line.to_string());
+        dim_msg(line.to_string());
     }
-    tui_output::emit_blank(terminal);
-    dim_msg(
-        terminal,
-        "/diff review   \u{2014} ask Koda to review the changes".into(),
-    );
-    dim_msg(
-        terminal,
-        "/diff commit   \u{2014} generate a commit message".into(),
-    );
+    tui_output::write_blank();
+    dim_msg("/diff review   \u{2014} ask Koda to review the changes".into());
+    dim_msg("/diff commit   \u{2014} generate a commit message".into());
 }
 
 // ── Memory (native TUI) ───────────────────────────────────
 
+#[allow(unused_variables)]
 pub(crate) fn handle_memory(
     terminal: &mut Term,
     arg: Option<&str>,
@@ -603,60 +550,49 @@ pub(crate) fn handle_memory(
         Some(text) if text.starts_with("global ") => {
             let entry = text.strip_prefix("global ").unwrap().trim();
             if entry.is_empty() {
-                warn_msg(terminal, "Usage: /memory global <text>".into());
+                warn_msg("Usage: /memory global <text>".into());
             } else {
                 match koda_core::memory::append_global(entry) {
-                    Ok(()) => ok_msg(terminal, "Saved to global memory".into()),
-                    Err(e) => err_msg(terminal, format!("Error: {e}")),
+                    Ok(()) => ok_msg("Saved to global memory".into()),
+                    Err(e) => err_msg(format!("Error: {e}")),
                 }
             }
         }
         Some(text) if text.starts_with("add ") => {
             let entry = text.strip_prefix("add ").unwrap().trim();
             if entry.is_empty() {
-                warn_msg(terminal, "Usage: /memory add <text>".into());
+                warn_msg("Usage: /memory add <text>".into());
             } else {
                 match koda_core::memory::append(project_root, entry) {
-                    Ok(()) => ok_msg(terminal, "Saved to project memory (MEMORY.md)".into()),
-                    Err(e) => err_msg(terminal, format!("Error: {e}")),
+                    Ok(()) => ok_msg("Saved to project memory (MEMORY.md)".into()),
+                    Err(e) => err_msg(format!("Error: {e}")),
                 }
             }
         }
         _ => {
             let active = koda_core::memory::active_project_file(project_root);
-            tui_output::emit_blank(terminal);
-            tui_output::emit_line(terminal, Line::styled("  \u{1f43b} Memory", BOLD));
-            tui_output::emit_blank(terminal);
+            tui_output::write_blank();
+            tui_output::write_line(&Line::styled("  \u{1f43b} Memory", BOLD));
+            tui_output::write_blank();
             match active {
-                Some(f) => tui_output::emit_line(
-                    terminal,
-                    Line::from(vec![Span::raw("  Project: "), Span::styled(f, CYAN)]),
-                ),
-                None => dim_msg(
-                    terminal,
-                    "Project: (none \u{2014} will create MEMORY.md on first write)".into(),
-                ),
+                Some(f) => tui_output::write_line(&Line::from(vec![
+                    Span::raw("  Project: "),
+                    Span::styled(f, CYAN),
+                ])),
+                None => {
+                    dim_msg("Project: (none \u{2014} will create MEMORY.md on first write)".into())
+                }
             }
-            tui_output::emit_line(
-                terminal,
-                Line::from(vec![
-                    Span::raw("  Global:  "),
-                    Span::styled("~/.config/koda/memory.md", CYAN),
-                ]),
-            );
-            tui_output::emit_blank(terminal);
-            dim_msg(terminal, "Commands:".into());
+            tui_output::write_line(&Line::from(vec![
+                Span::raw("  Global:  "),
+                Span::styled("~/.config/koda/memory.md", CYAN),
+            ]));
+            tui_output::write_blank();
+            dim_msg("Commands:".into());
+            dim_msg("  /memory add <text>      Save to project MEMORY.md".into());
+            dim_msg("  /memory global <text>   Save to global memory".into());
+            tui_output::write_blank();
             dim_msg(
-                terminal,
-                "  /memory add <text>      Save to project MEMORY.md".into(),
-            );
-            dim_msg(
-                terminal,
-                "  /memory global <text>   Save to global memory".into(),
-            );
-            tui_output::emit_blank(terminal);
-            dim_msg(
-                terminal,
                 "Tip: the LLM can also call MemoryWrite to save insights automatically.".into(),
             );
         }

@@ -1,6 +1,6 @@
 //! Slash command handler for the TUI event loop.
 //!
-//! All output rendered through `tui_output::emit_line()` with native
+//! All output rendered through `tui_output::write_line(&)` with native
 //! ratatui `Line`/`Span` styling. Stays in raw mode.
 
 use crate::repl::ReplAction;
@@ -29,7 +29,11 @@ pub enum SlashAction {
     Quit,
 }
 
-// ── Style helpers ────────────────────────────────────────────
+// ── Style helpers (crossterm direct writes) ─────────────────
+//
+// All slash command output goes through write_line/write_blank
+// (crossterm \r\n), NOT insert_before. This avoids cursor conflicts
+// with select_inline which also uses crossterm.
 
 const DIM: Style = Style::new().fg(Color::DarkGray);
 const ERR: Style = Style::new().fg(Color::Red);
@@ -38,40 +42,34 @@ const CYAN: Style = Style::new().fg(Color::Cyan);
 const WARN: Style = Style::new().fg(Color::Yellow);
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 
-fn ok_msg(terminal: &mut Term, msg: String) {
-    tui_output::emit_line(
-        terminal,
-        Line::from(vec![Span::styled("  \u{2713} ", OK), Span::raw(msg)]),
-    );
+fn ok_msg(msg: String) {
+    tui_output::write_line(&Line::from(vec![
+        Span::styled("  \u{2713} ", OK),
+        Span::raw(msg),
+    ]));
 }
 
-fn err_msg(terminal: &mut Term, msg: String) {
-    tui_output::emit_line(
-        terminal,
-        Line::from(vec![
-            Span::styled("  \u{2717} ", ERR),
-            Span::styled(msg, ERR),
-        ]),
-    );
+fn err_msg(msg: String) {
+    tui_output::write_line(&Line::from(vec![
+        Span::styled("  \u{2717} ", ERR),
+        Span::styled(msg, ERR),
+    ]));
 }
 
-fn dim_msg(terminal: &mut Term, msg: String) {
-    tui_output::emit_line(terminal, Line::styled(format!("  {msg}"), DIM));
+fn dim_msg(msg: String) {
+    tui_output::write_line(&Line::styled(format!("  {msg}"), DIM));
 }
 
-fn warn_msg(terminal: &mut Term, msg: String) {
-    tui_output::emit_line(
-        terminal,
-        Line::from(vec![
-            Span::styled("  \u{26a0} ", WARN),
-            Span::styled(msg, WARN),
-        ]),
-    );
+fn warn_msg(msg: String) {
+    tui_output::write_line(&Line::from(vec![
+        Span::styled("  \u{26a0} ", WARN),
+        Span::styled(msg, WARN),
+    ]));
 }
 
 // ── Main handler ────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, unused_variables)]
 pub async fn handle_slash_command(
     terminal: &mut Term,
     input: &str,
@@ -90,7 +88,7 @@ pub async fn handle_slash_command(
             config.model = model.clone();
             config.model_settings.model = model.clone();
             crate::tui_wizards::save_provider(config);
-            ok_msg(terminal, format!("Model set to: {model}"));
+            ok_msg(format!("Model set to: {model}"));
             SlashAction::Continue
         }
         ReplAction::PickModel => {
@@ -169,10 +167,10 @@ pub async fn handle_slash_command(
                 None => !renderer.verbose,
             };
             let state = if renderer.verbose { "on" } else { "off" };
-            tui_output::emit_line(
-                terminal,
-                Line::styled(format!("  Verbose tool output: {state}"), CYAN),
-            );
+            tui_output::write_line(&Line::styled(
+                format!("  Verbose tool output: {state}"),
+                CYAN,
+            ));
             SlashAction::Continue
         }
         ReplAction::ListAgents => {
@@ -194,6 +192,7 @@ pub async fn handle_slash_command(
 
 // ── Sub-handlers ───────────────────────────────────────────
 
+#[allow(unused_variables)]
 async fn handle_pick_model(
     terminal: &mut Term,
     config: &mut KodaConfig,
@@ -202,10 +201,7 @@ async fn handle_pick_model(
     let prov = provider.read().await;
     match prov.list_models().await {
         Ok(models) if models.is_empty() => {
-            warn_msg(
-                terminal,
-                format!("No models available from {}", prov.provider_name()),
-            );
+            warn_msg(format!("No models available from {}", prov.provider_name()));
         }
         Ok(models) => {
             drop(prov);
@@ -234,16 +230,17 @@ async fn handle_pick_model(
                     config.model = models[idx].id.clone();
                     config.model_settings.model = config.model.clone();
                     crate::tui_wizards::save_provider(config);
-                    ok_msg(terminal, format!("Model set to: {}", config.model));
+                    ok_msg(format!("Model set to: {}", config.model));
                 }
-                Ok(None) => dim_msg(terminal, "Cancelled.".into()),
-                Err(e) => err_msg(terminal, format!("TUI error: {e}")),
+                Ok(None) => dim_msg("Cancelled.".into()),
+                Err(e) => err_msg(format!("TUI error: {e}")),
             }
         }
-        Err(e) => err_msg(terminal, format!("Failed to list models: {e}")),
+        Err(e) => err_msg(format!("Failed to list models: {e}")),
     }
 }
 
+#[allow(unused_variables)]
 fn handle_help(terminal: &mut Term, pending_command: &mut Option<String>) {
     // Emit tips via crossterm (same rendering system as select_inline)
     // so cursor math stays consistent — no insert_before here.
@@ -291,16 +288,17 @@ fn handle_help(terminal: &mut Term, pending_command: &mut Option<String>) {
     }
 }
 
-async fn handle_cost(terminal: &mut Term, session: &KodaSession, config: &KodaConfig) {
+#[allow(unused_variables)]
+async fn handle_cost(_terminal: &mut Term, session: &KodaSession, config: &KodaConfig) {
     match session.db.session_token_usage(&session.id).await {
         Ok(u) => {
             let total = u.prompt_tokens
                 + u.completion_tokens
                 + u.cache_read_tokens
                 + u.cache_creation_tokens;
-            tui_output::emit_blank(terminal);
-            tui_output::emit_line(terminal, Line::styled("  \u{1f43b} Session Cost", BOLD));
-            tui_output::emit_blank(terminal);
+            tui_output::write_blank();
+            tui_output::write_line(&Line::styled("  \u{1f43b} Session Cost", BOLD));
+            tui_output::write_blank();
 
             let mut rows = vec![
                 ("Prompt tokens:", format!("{:>8}", u.prompt_tokens), CYAN),
@@ -335,22 +333,20 @@ async fn handle_cost(terminal: &mut Term, session: &KodaSession, config: &KodaCo
             rows.push(("API calls:", format!("{:>8}", u.api_calls), DIM));
 
             for (label, value, style) in &rows {
-                tui_output::emit_line(
-                    terminal,
-                    Line::from(vec![
-                        Span::raw(format!("  {label:<21}")),
-                        Span::styled(value, *style),
-                    ]),
-                );
+                tui_output::write_line(&Line::from(vec![
+                    Span::raw(format!("  {label:<21}")),
+                    Span::styled(value, *style),
+                ]));
             }
-            tui_output::emit_blank(terminal);
-            dim_msg(terminal, format!("Model: {}", config.model));
-            dim_msg(terminal, format!("Provider: {}", config.provider_type));
+            tui_output::write_blank();
+            dim_msg(format!("Model: {}", config.model));
+            dim_msg(format!("Provider: {}", config.provider_type));
         }
-        Err(e) => err_msg(terminal, format!("Error: {e}")),
+        Err(e) => err_msg(format!("Error: {e}")),
     }
 }
 
+#[allow(unused_variables)]
 async fn handle_list_sessions(
     terminal: &mut Term,
     session: &mut KodaSession,
@@ -358,7 +354,7 @@ async fn handle_list_sessions(
 ) {
     match session.db.list_sessions(10, project_root).await {
         Ok(sessions) if sessions.is_empty() => {
-            dim_msg(terminal, "No other sessions found.".into());
+            dim_msg("No other sessions found.".into());
         }
         Ok(sessions) => {
             let current_idx = sessions
@@ -391,35 +387,30 @@ async fn handle_list_sessions(
                 Ok(Some(idx)) => {
                     let target = &sessions[idx];
                     if target.id == session.id {
-                        dim_msg(terminal, "Already in this session.".into());
+                        dim_msg("Already in this session.".into());
                     } else {
                         session.id = target.id.clone();
-                        tui_output::emit_line(
-                            terminal,
-                            Line::from(vec![
-                                Span::styled("  \u{2713} ", OK),
-                                Span::raw("Resumed session "),
-                                Span::styled(&target.id[..8], CYAN),
-                                Span::styled(
-                                    format!(
-                                        "  {}  {} msgs",
-                                        target.created_at, target.message_count
-                                    ),
-                                    DIM,
-                                ),
-                            ]),
-                        );
+                        tui_output::write_line(&Line::from(vec![
+                            Span::styled("  \u{2713} ", OK),
+                            Span::raw("Resumed session "),
+                            Span::styled(&target.id[..8], CYAN),
+                            Span::styled(
+                                format!("  {}  {} msgs", target.created_at, target.message_count),
+                                DIM,
+                            ),
+                        ]));
                     }
                 }
-                Ok(None) => dim_msg(terminal, "Cancelled.".into()),
-                Err(e) => err_msg(terminal, format!("TUI error: {e}")),
+                Ok(None) => dim_msg("Cancelled.".into()),
+                Err(e) => err_msg(format!("TUI error: {e}")),
             }
-            dim_msg(terminal, "Delete: /sessions delete <id>".into());
+            dim_msg("Delete: /sessions delete <id>".into());
         }
-        Err(e) => err_msg(terminal, format!("Error: {e}")),
+        Err(e) => err_msg(format!("Error: {e}")),
     }
 }
 
+#[allow(unused_variables)]
 async fn handle_delete_session(
     terminal: &mut Term,
     session: &KodaSession,
@@ -427,34 +418,32 @@ async fn handle_delete_session(
     project_root: &std::path::Path,
 ) {
     if id == session.id {
-        err_msg(terminal, "Cannot delete the current session.".into());
+        err_msg("Cannot delete the current session.".into());
     } else {
         match session.db.list_sessions(100, project_root).await {
             Ok(sessions) => {
                 let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(id)).collect();
                 match matches.len() {
-                    0 => err_msg(terminal, format!("No session found matching '{id}'.")),
+                    0 => err_msg(format!("No session found matching '{id}'.")),
                     1 => {
                         let full_id = &matches[0].id;
                         match session.db.delete_session(full_id).await {
-                            Ok(true) => {
-                                ok_msg(terminal, format!("Deleted session {}", &full_id[..8]))
-                            }
-                            Ok(false) => err_msg(terminal, "Session not found.".into()),
-                            Err(e) => err_msg(terminal, format!("Error: {e}")),
+                            Ok(true) => ok_msg(format!("Deleted session {}", &full_id[..8])),
+                            Ok(false) => err_msg("Session not found.".into()),
+                            Err(e) => err_msg(format!("Error: {e}")),
                         }
                     }
-                    n => err_msg(
-                        terminal,
-                        format!("Ambiguous: '{id}' matches {n} sessions. Be more specific."),
-                    ),
+                    n => err_msg(format!(
+                        "Ambiguous: '{id}' matches {n} sessions. Be more specific."
+                    )),
                 }
             }
-            Err(e) => err_msg(terminal, format!("Error: {e}")),
+            Err(e) => err_msg(format!("Error: {e}")),
         }
     }
 }
 
+#[allow(unused_variables)]
 async fn handle_resume_session(
     terminal: &mut Term,
     session: &mut KodaSession,
@@ -462,43 +451,37 @@ async fn handle_resume_session(
     project_root: &std::path::Path,
 ) {
     if session.id.starts_with(id) {
-        dim_msg(terminal, "Already in this session.".into());
+        dim_msg("Already in this session.".into());
     } else {
         match session.db.list_sessions(100, project_root).await {
             Ok(sessions) => {
                 let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(id)).collect();
                 match matches.len() {
-                    0 => err_msg(terminal, format!("No session found matching '{id}'.")),
+                    0 => err_msg(format!("No session found matching '{id}'.")),
                     1 => {
                         let target = &matches[0];
                         session.id = target.id.clone();
-                        tui_output::emit_line(
-                            terminal,
-                            Line::from(vec![
-                                Span::styled("  \u{2713} ", OK),
-                                Span::raw("Resumed session "),
-                                Span::styled(&target.id[..8], CYAN),
-                                Span::styled(
-                                    format!(
-                                        "  {}  {} msgs",
-                                        target.created_at, target.message_count
-                                    ),
-                                    DIM,
-                                ),
-                            ]),
-                        );
+                        tui_output::write_line(&Line::from(vec![
+                            Span::styled("  \u{2713} ", OK),
+                            Span::raw("Resumed session "),
+                            Span::styled(&target.id[..8], CYAN),
+                            Span::styled(
+                                format!("  {}  {} msgs", target.created_at, target.message_count),
+                                DIM,
+                            ),
+                        ]));
                     }
-                    n => err_msg(
-                        terminal,
-                        format!("Ambiguous: '{id}' matches {n} sessions. Be more specific."),
-                    ),
+                    n => err_msg(format!(
+                        "Ambiguous: '{id}' matches {n} sessions. Be more specific."
+                    )),
                 }
             }
-            Err(e) => err_msg(terminal, format!("Error: {e}")),
+            Err(e) => err_msg(format!("Error: {e}")),
         }
     }
 }
 
+#[allow(unused_variables)]
 fn handle_trust(
     terminal: &mut Term,
     mode_name: Option<String>,
@@ -511,56 +494,44 @@ fn handle_trust(
     };
     if let Some(m) = new_mode {
         approval::set_mode(shared_mode, m);
-        tui_output::emit_line(
-            terminal,
-            Line::from(vec![
-                Span::styled("  \u{2713} ", OK),
-                Span::raw("Trust: "),
-                Span::styled(m.label(), BOLD),
-                Span::raw(format!(" \u{2014} {}", m.description())),
-            ]),
-        );
+        tui_output::write_line(&Line::from(vec![
+            Span::styled("  \u{2713} ", OK),
+            Span::raw("Trust: "),
+            Span::styled(m.label(), BOLD),
+            Span::raw(format!(" \u{2014} {}", m.description())),
+        ]));
     } else if let Some(ref name) = mode_name {
-        err_msg(
-            terminal,
-            format!("Unknown trust level '{name}'. Use: plan, normal, yolo"),
-        );
+        err_msg(format!(
+            "Unknown trust level '{name}'. Use: plan, normal, yolo"
+        ));
     }
 }
 
+#[allow(unused_variables)]
 fn handle_expand(terminal: &mut Term, renderer: &TuiRenderer, n: usize) {
     match renderer.tool_history.get(n) {
         Some(record) => {
-            tui_output::emit_blank(terminal);
-            tui_output::emit_line(
-                terminal,
-                Line::from(vec![
-                    Span::styled(format!("  \u{1f50d} Expand: {}", record.tool_name), BOLD),
-                    Span::styled(format!(" ({} lines)", record.output.lines().count()), DIM),
-                ]),
-            );
+            tui_output::write_blank();
+            tui_output::write_line(&Line::from(vec![
+                Span::styled(format!("  \u{1f50d} Expand: {}", record.tool_name), BOLD),
+                Span::styled(format!(" ({} lines)", record.output.lines().count()), DIM),
+            ]));
             for line in record.output.lines() {
-                tui_output::emit_line(
-                    terminal,
-                    Line::from(vec![
-                        Span::styled("  \u{2502} ", DIM),
-                        Span::raw(line.to_string()),
-                    ]),
-                );
+                tui_output::write_line(&Line::from(vec![
+                    Span::styled("  \u{2502} ", DIM),
+                    Span::raw(line.to_string()),
+                ]));
             }
-            tui_output::emit_blank(terminal);
+            tui_output::write_blank();
         }
         None => {
             let total = renderer.tool_history.len();
             if total == 0 {
-                dim_msg(terminal, "No tool outputs recorded yet.".into());
+                dim_msg("No tool outputs recorded yet.".into());
             } else {
-                warn_msg(
-                    terminal,
-                    format!(
-                        "No tool output #{n}. Have {total} recorded (use /expand 1\u{2013}{total})."
-                    ),
-                );
+                warn_msg(format!(
+                    "No tool output #{n}. Have {total} recorded (use /expand 1\u{2013}{total})."
+                ));
             }
         }
     }
