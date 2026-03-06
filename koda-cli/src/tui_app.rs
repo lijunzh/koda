@@ -108,7 +108,7 @@ fn draw_viewport(
         Paragraph::new(format!("{icon}> ")).style(Style::default().fg(color)),
         prompt_area,
     );
-    frame.render_widget(&*textarea, text_area);
+    frame.render_widget(textarea, text_area);
 
     // Status bar
     let mut sb = StatusBar::new(model, mode.label(), context_pct);
@@ -366,18 +366,259 @@ pub async fn run(
                         terminal = init_terminal()?;
                         crossterm_events = EventStream::new();
                     } else {
-                        // Start inference turn
-                        start_inference_turn(
-                            &input,
-                            &mut terminal,
-                            &mut session,
-                            &config,
-                            &shared_mode,
-                            &project_root,
-                            &ui_tx,
-                        )
-                        .await;
+                        // ── Start inference turn inline ──────────
+                        let user_input = input.clone();
+                        let processed = input::process_input(&user_input, &project_root);
+                        if !processed.images.is_empty() {
+                            for (i, _img) in processed.images.iter().enumerate() {
+                                emit_above(
+                                    &mut terminal,
+                                    Line::from(vec![
+                                        ratatui::text::Span::raw("  "),
+                                        ratatui::text::Span::styled(
+                                            format!("\u{1f5bc} Image {}", i + 1),
+                                            Style::default().fg(Color::Magenta),
+                                        ),
+                                    ]),
+                                );
+                            }
+                        }
+
+                        let user_message = if let Some(context) =
+                            input::format_context_files(&processed.context_files)
+                        {
+                            for f in &processed.context_files {
+                                emit_above(
+                                    &mut terminal,
+                                    Line::from(vec![
+                                        ratatui::text::Span::raw("  "),
+                                        ratatui::text::Span::styled(
+                                            format!("\u{1f4ce} {}", f.path),
+                                            Style::default().fg(Color::Cyan),
+                                        ),
+                                    ]),
+                                );
+                            }
+                            format!("{}\n\n{context}", processed.prompt)
+                        } else {
+                            processed.prompt.clone()
+                        };
+
+                        if let Err(e) = session
+                            .db
+                            .insert_message(
+                                &session.id,
+                                &Role::User,
+                                Some(&user_message),
+                                None,
+                                None,
+                                None,
+                            )
+                            .await
+                        {
+                            tracing::warn!("Failed to persist user message: {e}");
+                        }
+
+                        let pending_images = if processed.images.is_empty() {
+                            None
+                        } else {
+                            Some(processed.images)
+                        };
+
+                        session.mode = approval::read_mode(&shared_mode);
+                        session.update_provider(&config);
+
+                        let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
+                        let cancel_token = session.cancel.clone();
+
+                        // Run the inference turn as a pinned future
                         tui_state = TuiState::Inferring;
+
+                        {
+                            let turn =
+                                session.run_turn(&config, pending_images, &cli_sink, &mut cmd_rx);
+                            tokio::pin!(turn);
+
+                            loop {
+                                // Redraw viewport inside inference loop
+                                let mode = approval::read_mode(&shared_mode);
+                                let ctx = koda_core::context::percentage() as u32;
+                                terminal.draw(|f| {
+                                    draw_viewport(
+                                        f,
+                                        &textarea,
+                                        &config.model,
+                                        mode,
+                                        ctx,
+                                        tui_state,
+                                        input_queue.len(),
+                                    );
+                                })?;
+
+                                tokio::select! {
+                                    result = &mut turn => {
+                                        if let Err(e) = result {
+                                            emit_above(
+                                                &mut terminal,
+                                                Line::from(vec![
+                                                    ratatui::text::Span::raw("  "),
+                                                    ratatui::text::Span::styled(
+                                                        format!("\u{2717} Turn failed: {e}"),
+                                                        Style::default().fg(Color::Red),
+                                                    ),
+                                                ]),
+                                            );
+                                        }
+                                        break;
+                                    }
+                                    Some(Ok(ev)) = crossterm_events.next() => {
+                                        if let Event::Key(key) = ev {
+                                            match (key.code, key.modifiers) {
+                                                (KeyCode::Enter, KeyModifiers::NONE) => {
+                                                    let text = textarea.lines().join("\n");
+                                                    if !text.trim().is_empty() {
+                                                        textarea.select_all();
+                                                        textarea.cut();
+                                                        input_queue.push_back(text);
+                                                    }
+                                                }
+                                                (KeyCode::Esc, _) => {
+                                                    cancel_token.cancel();
+                                                }
+                                                (KeyCode::Char('c'), m)
+                                                    if m.contains(KeyModifiers::CONTROL) =>
+                                                {
+                                                    if crate::interrupt::handle_sigint() {
+                                                        restore_terminal(&mut terminal);
+                                                        eprintln!("\x1b[31mForce quit.\x1b[0m");
+                                                        std::process::exit(130);
+                                                    }
+                                                    cancel_token.cancel();
+                                                }
+                                                (KeyCode::BackTab, _) => {
+                                                    approval::cycle_mode(&shared_mode);
+                                                }
+                                                _ => {
+                                                    textarea.input(Event::Key(key));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Some(ui_event) = ui_rx.recv() => {
+                                        match ui_event {
+                                            UiEvent::Engine(EngineEvent::ApprovalRequest {
+                                                id, tool_name, detail, preview, whitelist_hint,
+                                            }) => {
+                                                if preview.is_some() {
+                                                    renderer.preview_shown = true;
+                                                }
+                                                // Exit raw mode for approval UI
+                                                let _ = terminal.clear();
+                                                let _ = crossterm::terminal::disable_raw_mode();
+                                                print!("\x1b[{}A\x1b[J", VIEWPORT_HEIGHT);
+                                                let _ = std::io::Write::flush(&mut std::io::stdout());
+
+                                                let decision = map_confirmation(
+                                                    crate::confirm::confirm_tool_action(
+                                                        &tool_name,
+                                                        &detail,
+                                                        preview.as_ref(),
+                                                        whitelist_hint.as_deref(),
+                                                    ),
+                                                );
+                                                let _ = cmd_tx
+                                                    .send(EngineCommand::ApprovalResponse { id, decision })
+                                                    .await;
+
+                                                crossterm::terminal::enable_raw_mode()?;
+                                                terminal = init_terminal()?;
+                                                crossterm_events = EventStream::new();
+                                            }
+                                            UiEvent::Engine(EngineEvent::LoopCapReached { cap, recent_tools }) => {
+                                                let _ = terminal.clear();
+                                                let _ = crossterm::terminal::disable_raw_mode();
+                                                print!("\x1b[{}A\x1b[J", VIEWPORT_HEIGHT);
+                                                let _ = std::io::Write::flush(&mut std::io::stdout());
+
+                                                let action = crate::app::cli_loop_continue_prompt(cap, &recent_tools);
+                                                let _ = cmd_tx
+                                                    .send(EngineCommand::LoopDecision { action })
+                                                    .await;
+
+                                                crossterm::terminal::enable_raw_mode()?;
+                                                terminal = init_terminal()?;
+                                                crossterm_events = EventStream::new();
+                                            }
+                                            UiEvent::Engine(ref event) => {
+                                                renderer.render_to_terminal(event.clone(), &mut terminal);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } // end of pinned turn block
+
+                        // Turn completed — cleanup
+                        tui_state = TuiState::Idle;
+                        renderer.stop_spinner();
+                        crate::interrupt::reset();
+                        session.cancel = tokio_util::sync::CancellationToken::new();
+
+                        // Drain remaining UI events
+                        while let Ok(UiEvent::Engine(e)) = ui_rx.try_recv() {
+                            renderer.render_to_terminal(e, &mut terminal);
+                        }
+
+                        // Auto-compact
+                        if config.auto_compact_threshold > 0 {
+                            let ctx_pct = koda_core::context::percentage();
+                            if ctx_pct >= config.auto_compact_threshold {
+                                let pending = session
+                                    .db
+                                    .has_pending_tool_calls(&session.id)
+                                    .await
+                                    .unwrap_or(false);
+                                if pending {
+                                    if !silent_compact_deferred {
+                                        emit_above(
+                                            &mut terminal,
+                                            Line::from(vec![
+                                                ratatui::text::Span::raw("  "),
+                                                ratatui::text::Span::styled(
+                                                    format!(
+                                                        "\u{1f43b} Context at {ctx_pct}% \u{2014} deferring compact (tool calls pending)"
+                                                    ),
+                                                    Style::default().fg(Color::Yellow),
+                                                ),
+                                            ]),
+                                        );
+                                        silent_compact_deferred = true;
+                                    }
+                                } else {
+                                    silent_compact_deferred = false;
+                                    emit_above(
+                                        &mut terminal,
+                                        Line::from(vec![
+                                            ratatui::text::Span::raw("  "),
+                                            ratatui::text::Span::styled(
+                                                format!(
+                                                    "\u{1f43b} Context at {ctx_pct}% \u{2014} auto-compacting..."
+                                                ),
+                                                Style::default().fg(Color::Cyan),
+                                            ),
+                                        ]),
+                                    );
+                                    crate::commands::handle_compact(
+                                        &session.db,
+                                        &session.id,
+                                        &config,
+                                        &provider,
+                                        true,
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -398,181 +639,42 @@ pub async fn run(
             );
         })?;
 
-        // ── Unified select loop ──────────────────────────────
+        // ── Idle: wait for keyboard input ────────────────────
 
         tokio::select! {
-            // Keyboard events (always active)
             Some(Ok(ev)) = crossterm_events.next() => {
                 if let Event::Key(key) = ev {
-                    match (key.code, key.modifiers, tui_state) {
-                        // Enter → submit
-                        (KeyCode::Enter, KeyModifiers::NONE, _) => {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Enter, KeyModifiers::NONE) => {
                             let text = textarea.lines().join("\n");
                             if !text.trim().is_empty() {
                                 textarea.select_all();
                                 textarea.cut();
-
-                                if tui_state == TuiState::Idle {
-                                    // Echo and process immediately
-                                    let mode = approval::read_mode(&shared_mode);
-                                    let prompt = repl::format_prompt(&config.model, mode);
-                                    emit_above(&mut terminal, Line::raw(format!("{prompt}{text}")));
-                                    pending_command = Some(text);
-                                } else {
-                                    // Queue for later
-                                    input_queue.push_back(text);
-                                }
+                                let mode = approval::read_mode(&shared_mode);
+                                let prompt = repl::format_prompt(&config.model, mode);
+                                emit_above(&mut terminal, Line::raw(format!("{prompt}{text}")));
+                                pending_command = Some(text);
                             }
                         }
-                        // Esc → cancel inference if running, else clear input
-                        (KeyCode::Esc, _, TuiState::Inferring) => {
-                            session.cancel.cancel();
-                        }
-                        (KeyCode::Esc, _, TuiState::Idle) => {
+                        (KeyCode::Esc, _) => {
                             textarea.select_all();
                             textarea.cut();
                         }
-                        // Ctrl+C → cancel inference or clear input
-                        (KeyCode::Char('c'), m, _) if m.contains(KeyModifiers::CONTROL) => {
-                            if tui_state == TuiState::Inferring {
-                                if crate::interrupt::handle_sigint() {
-                                    restore_terminal(&mut terminal);
-                                    eprintln!("\x1b[31mForce quit.\x1b[0m");
-                                    std::process::exit(130);
-                                }
-                                session.cancel.cancel();
-                            } else {
-                                textarea.select_all();
-                                textarea.cut();
-                            }
+                        (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+                            textarea.select_all();
+                            textarea.cut();
                         }
-                        // Ctrl+D on empty → EOF
-                        (KeyCode::Char('d'), m, TuiState::Idle)
-                            if m.contains(KeyModifiers::CONTROL) =>
-                        {
+                        (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
                             if textarea.lines().join("").trim().is_empty() {
                                 should_quit = true;
                             }
                         }
-                        // Shift+Tab → cycle approval mode
-                        (KeyCode::BackTab, _, _) => {
+                        (KeyCode::BackTab, _) => {
                             approval::cycle_mode(&shared_mode);
                         }
-                        // All other keys → forward to textarea
                         _ => {
                             textarea.input(Event::Key(key));
                         }
-                    }
-                }
-            }
-
-            // Engine events (during inference)
-            Some(ui_event) = ui_rx.recv(), if tui_state == TuiState::Inferring => {
-                match ui_event {
-                    UiEvent::Engine(EngineEvent::ApprovalRequest {
-                        id, tool_name, detail, preview, whitelist_hint,
-                    }) => {
-                        if preview.is_some() {
-                            renderer.preview_shown = true;
-                        }
-                        // Exit raw mode for approval UI
-                        let _ = terminal.clear();
-                        let _ = crossterm::terminal::disable_raw_mode();
-                        print!("\x1b[{}A\x1b[J", VIEWPORT_HEIGHT);
-                        let _ = std::io::Write::flush(&mut std::io::stdout());
-
-                        let decision = map_confirmation(
-                            crate::confirm::confirm_tool_action(
-                                &tool_name,
-                                &detail,
-                                preview.as_ref(),
-                                whitelist_hint.as_deref(),
-                            ),
-                        );
-                        let _ = cmd_tx
-                            .send(EngineCommand::ApprovalResponse { id, decision })
-                            .await;
-
-                        // Re-enter raw mode
-                        crossterm::terminal::enable_raw_mode()?;
-                        terminal = init_terminal()?;
-                        crossterm_events = EventStream::new();
-                    }
-                    UiEvent::Engine(EngineEvent::LoopCapReached { cap, recent_tools }) => {
-                        // Exit raw mode for interactive prompt
-                        let _ = terminal.clear();
-                        let _ = crossterm::terminal::disable_raw_mode();
-                        print!("\x1b[{}A\x1b[J", VIEWPORT_HEIGHT);
-                        let _ = std::io::Write::flush(&mut std::io::stdout());
-
-                        let action = crate::app::cli_loop_continue_prompt(cap, &recent_tools);
-                        let _ = cmd_tx
-                            .send(EngineCommand::LoopDecision { action })
-                            .await;
-
-                        // Re-enter raw mode
-                        crossterm::terminal::enable_raw_mode()?;
-                        terminal = init_terminal()?;
-                        crossterm_events = EventStream::new();
-                    }
-                    UiEvent::Engine(EngineEvent::TurnStart { .. }) => {
-                        tui_state = TuiState::Inferring;
-                    }
-                    UiEvent::Engine(EngineEvent::TurnEnd { .. }) => {
-                        tui_state = TuiState::Idle;
-                        renderer.stop_spinner();
-                        crate::interrupt::reset();
-                        session.cancel = tokio_util::sync::CancellationToken::new();
-
-                        // Auto-compact check
-                        if config.auto_compact_threshold > 0 {
-                            let ctx_pct = koda_core::context::percentage();
-                            if ctx_pct >= config.auto_compact_threshold {
-                                let pending = session
-                                    .db
-                                    .has_pending_tool_calls(&session.id)
-                                    .await
-                                    .unwrap_or(false);
-                                if pending {
-                                    if !silent_compact_deferred {
-                                        emit_above(
-                                            &mut terminal,
-                                            Line::from(vec![
-                                                ratatui::text::Span::raw("  "),
-                                                ratatui::text::Span::styled(
-                                                    format!("\u{1f43b} Context at {ctx_pct}% \u{2014} deferring compact (tool calls pending)"),
-                                                    Style::default().fg(Color::Yellow),
-                                                ),
-                                            ]),
-                                        );
-                                        silent_compact_deferred = true;
-                                    }
-                                } else {
-                                    silent_compact_deferred = false;
-                                    emit_above(
-                                        &mut terminal,
-                                        Line::from(vec![
-                                            ratatui::text::Span::raw("  "),
-                                            ratatui::text::Span::styled(
-                                                format!("\u{1f43b} Context at {ctx_pct}% \u{2014} auto-compacting..."),
-                                                Style::default().fg(Color::Cyan),
-                                            ),
-                                        ]),
-                                    );
-                                    crate::commands::handle_compact(
-                                        &session.db,
-                                        &session.id,
-                                        &config,
-                                        &provider,
-                                        true,
-                                    )
-                                    .await;
-                                }
-                            }
-                        }
-                    }
-                    UiEvent::Engine(ref event) => {
-                        renderer.render_to_terminal(event.clone(), &mut terminal);
                     }
                 }
             }
@@ -611,7 +713,7 @@ async fn handle_slash_command(
     session: &mut KodaSession,
     shared_mode: &approval::SharedMode,
     renderer: &mut TuiRenderer,
-    project_root: &PathBuf,
+    project_root: &std::path::Path,
     agent: &Arc<KodaAgent>,
     pending_command: &mut Option<String>,
 ) -> SlashAction {
@@ -943,95 +1045,4 @@ async fn handle_slash_command(
         ReplAction::Handled => SlashAction::Continue,
         ReplAction::NotACommand => SlashAction::Continue,
     }
-}
-
-// ── Inference turn kickoff ───────────────────────────────────
-
-async fn start_inference_turn(
-    input: &str,
-    terminal: &mut Term,
-    session: &mut KodaSession,
-    config: &KodaConfig,
-    shared_mode: &approval::SharedMode,
-    project_root: &PathBuf,
-    ui_tx: &mpsc::Sender<UiEvent>,
-) {
-    let processed = input::process_input(input, project_root);
-    if !processed.images.is_empty() {
-        for (i, _img) in processed.images.iter().enumerate() {
-            emit_above(
-                terminal,
-                Line::from(vec![
-                    ratatui::text::Span::raw("  "),
-                    ratatui::text::Span::styled(
-                        format!("\u{1f5bc} Image {}", i + 1),
-                        Style::default().fg(Color::Magenta),
-                    ),
-                ]),
-            );
-        }
-    }
-
-    let user_message = if let Some(context) = input::format_context_files(&processed.context_files)
-    {
-        if !processed.context_files.is_empty() {
-            for f in &processed.context_files {
-                emit_above(
-                    terminal,
-                    Line::from(vec![
-                        ratatui::text::Span::raw("  "),
-                        ratatui::text::Span::styled(
-                            format!("\u{1f4ce} {}", f.path),
-                            Style::default().fg(Color::Cyan),
-                        ),
-                    ]),
-                );
-            }
-        }
-        format!("{}\n\n{context}", processed.prompt)
-    } else {
-        processed.prompt.clone()
-    };
-
-    if let Err(e) = session
-        .db
-        .insert_message(
-            &session.id,
-            &Role::User,
-            Some(&user_message),
-            None,
-            None,
-            None,
-        )
-        .await
-    {
-        tracing::warn!("Failed to persist user message: {e}");
-    }
-
-    let pending_images = if processed.images.is_empty() {
-        None
-    } else {
-        Some(processed.images)
-    };
-
-    session.mode = approval::read_mode(shared_mode);
-    session.update_provider(config);
-
-    let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
-
-    // Spawn inference as a background task
-    let config = config.clone();
-    // We can't move session into the task, so we run_turn on the current task
-    // via the event loop — the turn future is driven by select! receiving ui events.
-    // Actually, we need to spawn this differently. Let's use a JoinHandle approach.
-    let cancel = session.cancel.clone();
-    let mut cmd_rx_placeholder = mpsc::channel::<EngineCommand>(32).1;
-
-    // For now, spawn the turn in a task. The cmd_rx is shared via the channel.
-    // TODO: This needs proper wiring — the cmd_rx should be shared.
-    tokio::spawn({
-        // We can't move session into a task. We need a different approach.
-        // For now, let's keep the run_turn inline in the event loop.
-        async {}
-    });
 }
