@@ -186,124 +186,42 @@ pub(crate) async fn handle_setup_provider(
 
 // ── Compact (native TUI) ────────────────────────────────────
 
-const COMPACT_PRESERVE_COUNT: usize = 4;
-
 #[allow(unused_variables)]
 pub(crate) async fn handle_compact(
-    terminal: &mut Term,
+    _terminal: &mut Term,
     session: &KodaSession,
     config: &KodaConfig,
     provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
 ) {
-    use koda_core::providers::ChatMessage;
+    use koda_core::compact::{self, CompactSkip};
 
-    if let Ok(true) = session.db.has_pending_tool_calls(&session.id).await {
-        warn_msg("Tool calls are still pending — deferring compact.".into());
-        return;
-    }
+    tui_output::write_line(&Line::styled("  \u{1f43b} Compacting...", CYAN));
 
-    let history = match session
-        .db
-        .load_context(&session.id, config.max_context_tokens)
-        .await
+    match compact::compact_session(
+        &session.db,
+        &session.id,
+        config.max_context_tokens,
+        &config.model_settings,
+        provider,
+    )
+    .await
     {
-        Ok(msgs) => msgs,
-        Err(e) => {
-            err_msg(format!("Error loading conversation: {e}"));
-            return;
-        }
-    };
-
-    if history.len() < 4 {
-        dim_msg(format!(
-            "Conversation is too short to compact ({} messages).",
-            history.len()
-        ));
-        return;
-    }
-
-    tui_output::write_line(&Line::styled(
-        format!(
-            "  \u{1f43b} Compacting {} messages (preserving last {})...",
-            history.len(),
-            COMPACT_PRESERVE_COUNT
-        ),
-        CYAN,
-    ));
-
-    // Build conversation text for summarization
-    let mut conversation_text = String::new();
-    for msg in &history {
-        let role = msg.role.as_str();
-        if let Some(ref content) = msg.content {
-            let truncated: String = content.chars().take(2000).collect();
-            conversation_text.push_str(&format!("[{role}]: {truncated}\n\n"));
-        }
-        if let Some(ref tool_calls) = msg.tool_calls {
-            let truncated: String = tool_calls.chars().take(500).collect();
-            conversation_text.push_str(&format!("[{role} tool_calls]: {truncated}\n\n"));
-        }
-    }
-    if conversation_text.len() > 20_000 {
-        let mut end = 20_000;
-        while end > 0 && !conversation_text.is_char_boundary(end) {
-            end -= 1;
-        }
-        conversation_text.truncate(end);
-        conversation_text.push_str("\n\n[...truncated for summarization...]");
-    }
-
-    let summary_prompt = format!(
-        "Summarize the conversation below. This summary will replace the older messages \
-         so an AI assistant can continue the session seamlessly.\n\
-         \n\
-         Preserve ALL of the following:\n\
-         1. **User Intent** — Every goal, request, and requirement.\n\
-         2. **Key Decisions** — Decisions made and their rationale.\n\
-         3. **Files & Code** — Every file created, modified, or deleted.\n\
-         4. **Errors & Fixes** — Bugs encountered and how they were resolved.\n\
-         5. **Current State** — What is working, what has been tested.\n\
-         6. **Pending Tasks** — Anything unfinished or deferred.\n\
-         7. **Next Step** — Only if clearly stated or implied.\n\
-         \n\
-         Use concise bullet points. Do not add new ideas.\n\
-         \n\
-         ---\n\n{conversation_text}"
-    );
-
-    let messages = vec![ChatMessage::text("user", &summary_prompt)];
-    let prov = provider.read().await;
-    let response = match prov.chat(&messages, &[], &config.model_settings).await {
-        Ok(r) => r,
-        Err(e) => {
-            err_msg(format!("Failed to generate summary: {e}"));
-            return;
-        }
-    };
-
-    let summary = match response.content {
-        Some(text) if !text.trim().is_empty() => text,
-        _ => {
-            err_msg("LLM returned an empty summary. Aborting compact.".into());
-            return;
-        }
-    };
-
-    let compact_message = format!("[Compacted conversation summary]\n\n{summary}");
-
-    match session
-        .db
-        .compact_session(&session.id, &compact_message, COMPACT_PRESERVE_COUNT)
-        .await
-    {
-        Ok(deleted) => {
-            let summary_tokens = summary.len() / 4;
+        Ok(Ok(result)) => {
             ok_msg(format!(
-                "Compacted {deleted} messages → ~{summary_tokens} tokens"
+                "Compacted {} messages \u{2192} ~{} tokens",
+                result.deleted, result.summary_tokens
             ));
             dim_msg("Conversation context has been summarized. Continue as normal!".into());
         }
-        Err(e) => err_msg(format!("Failed to compact session: {e}")),
+        Ok(Err(CompactSkip::PendingToolCalls)) => {
+            warn_msg("Tool calls are still pending \u{2014} deferring compact.".into());
+        }
+        Ok(Err(CompactSkip::TooShort(n))) => {
+            dim_msg(format!(
+                "Conversation is too short to compact ({n} messages)."
+            ));
+        }
+        Err(e) => err_msg(format!("Compact failed: {e}")),
     }
 }
 
