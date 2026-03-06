@@ -41,8 +41,8 @@ pub fn prompt_approval(
     // Show diff preview if available
     if let Some(preview) = preview {
         tui_output::emit_blank(terminal);
-        let rendered = crate::diff_render::render(preview);
-        tui_output::emit_ansi_lines(terminal, &rendered);
+        let diff_lines = crate::diff_render::render_lines(preview);
+        tui_output::emit_lines(terminal, &diff_lines);
     }
     tui_output::emit_blank(terminal);
 

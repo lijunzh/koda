@@ -3,9 +3,7 @@
 //! All output is rendered as `ratatui::text::Line` / `Span` and written
 //! above the viewport via `insert_before()`. No ANSI strings.
 
-use crate::tui_output::{
-    self, AMBER, BOLD, CYAN, DIM, GREEN, MAGENTA, ORANGE, RED, YELLOW, emit_ansi_lines,
-};
+use crate::tui_output::{self, AMBER, BOLD, CYAN, DIM, GREEN, MAGENTA, ORANGE, RED, YELLOW};
 use crate::widgets::status_bar::TurnStats;
 use koda_core::engine::EngineEvent;
 use ratatui::{
@@ -189,10 +187,8 @@ impl TuiRenderer {
                     ]),
                 );
                 if let Some(preview) = preview {
-                    let rendered = crate::diff_render::render(&preview);
-                    // diff_render produces ANSI strings — write directly via crossterm
-                    // since Span::raw would show escape codes as literal text
-                    emit_ansi_lines(terminal, &rendered);
+                    let diff_lines = crate::diff_render::render_lines(&preview);
+                    tui_output::emit_lines(terminal, &diff_lines);
                 }
             }
             EngineEvent::Footer {

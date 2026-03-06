@@ -46,35 +46,6 @@ pub fn emit_blank(terminal: &mut Term) {
     emit_line(terminal, Line::raw(""));
 }
 
-/// Write ANSI-formatted text above the viewport.
-///
-/// For content that already contains ANSI escape codes (e.g., diff_render output),
-/// we insert blank lines via ratatui to scroll the viewport, then write the ANSI
-/// content directly to stdout where the terminal interprets the escape codes.
-///
-/// This is a transitional helper until diff rendering is migrated to native
-/// ratatui `Line`/`Span`.
-pub fn emit_ansi_lines(terminal: &mut Term, text: &str) {
-    use std::io::Write;
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.is_empty() {
-        return;
-    }
-    let height = lines.len() as u16;
-    // Insert blank lines to make room above the viewport
-    let _ = terminal.insert_before(height, |buf| {
-        // Leave the buffer empty — we'll overwrite with direct ANSI
-        let _ = buf;
-    });
-    // Move cursor up and write ANSI content directly
-    let mut stdout = std::io::stdout();
-    write!(stdout, "\x1b[{height}A").ok();
-    for line in &lines {
-        write!(stdout, "\r  {line}\x1b[K\n").ok();
-    }
-    stdout.flush().ok();
-}
-
 // ── Style constants ─────────────────────────────────────────────
 // Centralized color palette for the TUI renderer.
 
