@@ -1,6 +1,6 @@
 //! Status bar widget for the inline TUI viewport.
 //!
-//! Shows: model name | approval mode | context usage bar
+//! Shows: model name | approval mode | context usage bar | inference state
 
 use ratatui::{
     buffer::Buffer,
@@ -15,6 +15,8 @@ pub struct StatusBar<'a> {
     mode_label: &'a str,
     context_pct: u32,
     queue_len: usize,
+    /// Elapsed seconds during inference (0 = idle).
+    elapsed_secs: u64,
 }
 
 impl<'a> StatusBar<'a> {
@@ -24,11 +26,17 @@ impl<'a> StatusBar<'a> {
             mode_label,
             context_pct,
             queue_len: 0,
+            elapsed_secs: 0,
         }
     }
 
     pub fn with_queue(mut self, queue_len: usize) -> Self {
         self.queue_len = queue_len;
+        self
+    }
+
+    pub fn with_elapsed(mut self, secs: u64) -> Self {
+        self.elapsed_secs = secs;
         self
     }
 }
@@ -52,7 +60,7 @@ impl Widget for StatusBar<'_> {
             Color::DarkGray
         };
 
-        let line = Line::from(vec![
+        let mut spans = vec![
             Span::styled(
                 format!(" {} ", self.model),
                 Style::default().fg(Color::DarkGray),
@@ -72,11 +80,22 @@ impl Widget for StatusBar<'_> {
                 ),
                 Style::default().fg(ctx_color),
             ),
-        ]);
+        ];
 
-        // Append queue indicator if any
+        // Elapsed time during inference
+        if self.elapsed_secs > 0 {
+            spans.push(Span::styled(
+                "\u{2502}",
+                Style::default().fg(Color::Rgb(60, 60, 60)),
+            ));
+            spans.push(Span::styled(
+                format!(" \u{23f3} {}s ", self.elapsed_secs),
+                Style::default().fg(Color::Cyan),
+            ));
+        }
+
+        // Queue indicator
         if self.queue_len > 0 {
-            let mut spans = line.into_iter().collect::<Vec<_>>();
             spans.push(Span::styled(
                 "\u{2502}",
                 Style::default().fg(Color::Rgb(60, 60, 60)),
@@ -85,9 +104,8 @@ impl Widget for StatusBar<'_> {
                 format!(" {} queued ", self.queue_len),
                 Style::default().fg(Color::Yellow),
             ));
-            Line::from(spans).render(area, buf);
-        } else {
-            line.render(area, buf);
         }
+
+        Line::from(spans).render(area, buf);
     }
 }

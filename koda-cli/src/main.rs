@@ -18,6 +18,7 @@ mod server;
 mod sink;
 mod tui;
 mod tui_app;
+mod tui_commands;
 mod tui_output;
 mod tui_render;
 mod widgets;

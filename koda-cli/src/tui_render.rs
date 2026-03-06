@@ -240,6 +240,7 @@ impl TuiRenderer {
     }
 
     /// Stop any running spinner (no-op in TUI mode).
+    #[allow(dead_code)]
     pub fn stop_spinner(&mut self) {}
 }
 
