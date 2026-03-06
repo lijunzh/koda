@@ -649,14 +649,38 @@ pub async fn run(
                                             ),
                                         ]),
                                     );
-                                    crate::commands::handle_compact(
+                                    match koda_core::compact::compact_session(
                                         &session.db,
                                         &session.id,
-                                        &config,
+                                        config.max_context_tokens,
+                                        &config.model_settings,
                                         &provider,
-                                        true,
                                     )
-                                    .await;
+                                    .await
+                                    {
+                                        Ok(Ok(result)) => {
+                                            emit_above(
+                                                &mut terminal,
+                                                Line::styled(
+                                                    format!(
+                                                        "  \u{2713} Compacted {} messages \u{2192} ~{} tokens",
+                                                        result.deleted, result.summary_tokens
+                                                    ),
+                                                    Style::default().fg(Color::Green),
+                                                ),
+                                            );
+                                        }
+                                        Ok(Err(_skip)) => {} // silently skip
+                                        Err(e) => {
+                                            emit_above(
+                                                &mut terminal,
+                                                Line::styled(
+                                                    format!("  \u{2717} Auto-compact failed: {e}"),
+                                                    Style::default().fg(Color::Red),
+                                                ),
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }

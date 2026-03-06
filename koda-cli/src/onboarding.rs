@@ -99,30 +99,32 @@ pub fn run_wizard() -> Option<ProviderType> {
             let _ = std::io::Write::flush(&mut std::io::stdout());
 
             let mut key = String::new();
-            if std::io::stdin().read_line(&mut key).is_ok() {
-                let key = key.trim();
-                if !key.is_empty() {
-                    // Save to keystore
-                    match KeyStore::load() {
-                        Ok(mut store) => {
-                            store.set(env_key, key);
-                            if let Err(e) = store.save() {
-                                println!("  \x1b[31mFailed to save key: {e}\x1b[0m");
-                            } else {
-                                // Also inject into current process
-                                koda_core::runtime_env::set(env_key, key);
-                                println!(
-                                    "  \x1b[32m\u{2713}\x1b[0m Saved to \x1b[36m~/.config/koda/keys.toml\x1b[0m"
-                                );
-                            }
+            // Use rpassword to avoid echoing the API key to the terminal
+            if let Ok(k) = rpassword::read_password() {
+                key = k;
+            }
+            let key = key.trim();
+            if !key.is_empty() {
+                // Save to keystore
+                match KeyStore::load() {
+                    Ok(mut store) => {
+                        store.set(env_key, key);
+                        if let Err(e) = store.save() {
+                            println!("  \x1b[31mFailed to save key: {e}\x1b[0m");
+                        } else {
+                            // Also inject into current process
+                            koda_core::runtime_env::set(env_key, key);
+                            println!(
+                                "  \x1b[32m\u{2713}\x1b[0m Saved to \x1b[36m~/.config/koda/keys.toml\x1b[0m"
+                            );
                         }
-                        Err(e) => println!("  \x1b[31mFailed to load keystore: {e}\x1b[0m"),
                     }
-                } else {
-                    println!(
-                        "  \x1b[90mSkipped. Set {env_key} in your environment or use /provider later.\x1b[0m"
-                    );
+                    Err(e) => println!("  \x1b[31mFailed to load keystore: {e}\x1b[0m"),
                 }
+            } else {
+                println!(
+                    "  \x1b[90mSkipped. Set {env_key} in your environment or use /provider later.\x1b[0m"
+                );
             }
         }
     } else {

@@ -5,14 +5,10 @@
 use crate::select_menu::SelectOption;
 use koda_core::approval::ApprovalMode;
 use koda_core::config::{KodaConfig, ProviderType};
-use koda_core::db::Database;
 use koda_core::providers::LlmProvider;
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-/// Number of recent messages to preserve during compaction.
-const COMPACT_PRESERVE_COUNT: usize = 4;
 
 // ── Raw stdin input ──────────────────────────────────────────
 
@@ -25,153 +21,6 @@ fn read_line_raw(prompt: &str) -> anyhow::Result<String> {
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
     Ok(line.trim().to_string())
-}
-
-// ── Compact handler ───────────────────────────────────────────
-
-/// Compact the conversation by summarizing history via the LLM.
-/// When `silent` is true (auto-compact), suppresses the "too short" message.
-///
-/// Improvements over v1:
-/// - Preserves the most recent messages (Fix 1)
-/// - Inserts summary as `system` role, not `user` (Fix 3)
-/// - Adds a continuation instruction for the LLM (Fix 2)
-/// - Checks for pending tool calls before proceeding (Fix 5)
-/// - Uses a structured summarization prompt (Fix 6)
-pub(crate) async fn handle_compact(
-    db: &Database,
-    session_id: &str,
-    config: &KodaConfig,
-    provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
-    silent: bool,
-) {
-    use koda_core::providers::ChatMessage;
-
-    // Fix 5: Defer compaction if tool calls are pending
-    if let Ok(true) = db.has_pending_tool_calls(session_id).await {
-        if !silent {
-            println!("  \x1b[33mTool calls are still pending — deferring compact.\x1b[0m");
-        }
-        return;
-    }
-
-    // Load current conversation
-    let history = match db.load_context(session_id, config.max_context_tokens).await {
-        Ok(msgs) => msgs,
-        Err(e) => {
-            if !silent {
-                println!("  \x1b[31mError loading conversation: {e}\x1b[0m");
-            }
-            return;
-        }
-    };
-
-    if history.len() < 4 {
-        if !silent {
-            println!(
-                "  \x1b[90mConversation is too short to compact ({} messages).\x1b[0m",
-                history.len()
-            );
-        }
-        return;
-    }
-
-    // Format the conversation for summarization
-    let mut conversation_text = String::new();
-    for msg in &history {
-        let role = msg.role.as_str();
-        if let Some(ref content) = msg.content {
-            // Cap individual messages to avoid blowing the summary prompt
-            let truncated: String = content.chars().take(2000).collect();
-            conversation_text.push_str(&format!("[{role}]: {truncated}\n\n"));
-        }
-        if let Some(ref tool_calls) = msg.tool_calls {
-            let truncated: String = tool_calls.chars().take(500).collect();
-            conversation_text.push_str(&format!("[{role} tool_calls]: {truncated}\n\n"));
-        }
-    }
-
-    // Cap total conversation text
-    if conversation_text.len() > 20_000 {
-        let mut end = 20_000;
-        while end > 0 && !conversation_text.is_char_boundary(end) {
-            end -= 1;
-        }
-        conversation_text.truncate(end);
-        conversation_text.push_str("\n\n[...truncated for summarization...]");
-    }
-
-    println!();
-    println!(
-        "  \x1b[36m\u{1f43b} Compacting {} messages (preserving last {})...\x1b[0m",
-        history.len(),
-        COMPACT_PRESERVE_COUNT,
-    );
-
-    // Fix 6: Structured summarization prompt preserving code-relevant context
-    let summary_prompt = format!(
-        "Summarize the conversation below. This summary will replace the older messages \
-         so an AI assistant can continue the session seamlessly.\n\
-         \n\
-         Preserve ALL of the following — do NOT omit any section:\n\
-         \n\
-         1. **User Intent** — Every goal, request, and requirement the user stated.\n\
-         2. **Key Decisions** — Decisions made and their rationale.\n\
-         3. **Files & Code** — Every file created, modified, or deleted. Include file paths, \n\
-            key function/struct names, and the purpose of each change.\n\
-         4. **Errors & Fixes** — Bugs encountered, error messages, and how they were resolved.\n\
-         5. **Current State** — What is working, what has been tested, what the project \n\
-            looks like right now.\n\
-         6. **Pending Tasks** — Anything unfinished or explicitly deferred.\n\
-         7. **Next Step** — Only if one was clearly stated or implied.\n\
-         \n\
-         Use concise bullet points. Do not add new ideas or suggestions.\n\
-         \n\
-         ---\n\n{conversation_text}"
-    );
-
-    let messages = vec![ChatMessage::text("user", &summary_prompt)];
-
-    // Call the LLM for the summary (no tools, no streaming)
-    let prov = provider.read().await;
-    let response = match prov.chat(&messages, &[], &config.model_settings).await {
-        Ok(r) => r,
-        Err(e) => {
-            println!("  \x1b[31mFailed to generate summary: {e}\x1b[0m");
-            return;
-        }
-    };
-
-    let summary = match response.content {
-        Some(text) if !text.trim().is_empty() => text,
-        _ => {
-            println!("  \x1b[31mLLM returned an empty summary. Aborting compact.\x1b[0m");
-            return;
-        }
-    };
-
-    // Fix 3: Summary is wrapped clearly for the LLM context (inserted as system role in DB)
-    let compact_message = format!("[Compacted conversation summary]\n\n{summary}");
-
-    // Fix 1: Preserve recent messages; Fix 2 & 3: DB inserts system + assistant continuation
-    match db
-        .compact_session(session_id, &compact_message, COMPACT_PRESERVE_COUNT)
-        .await
-    {
-        Ok(deleted) => {
-            let summary_tokens = summary.len() / 4;
-            println!(
-                "  \x1b[32m\u{2713}\x1b[0m Compacted {deleted} messages → ~{summary_tokens} tokens"
-            );
-            println!(
-                "  \x1b[90mConversation context has been summarized. Continue as normal!\x1b[0m"
-            );
-        }
-        Err(e) => {
-            println!("  \x1b[31mFailed to compact session: {e}\x1b[0m");
-        }
-    }
-    println!();
 }
 
 // ── MCP command handler ──────────────────────────────────────
