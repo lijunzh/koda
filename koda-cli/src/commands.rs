@@ -2,7 +2,7 @@
 //!
 //! Extracted from app.rs to keep each file under 600 lines.
 
-use crate::tui::SelectOption;
+use crate::select_menu::SelectOption;
 use koda_core::approval::ApprovalMode;
 use koda_core::config::{KodaConfig, ProviderType};
 use koda_core::db::Database;
@@ -450,17 +450,18 @@ pub(crate) async fn handle_pick_provider(
         .map(|(_, name, url)| SelectOption::new(*name, *url))
         .collect();
 
-    let selection = match crate::tui::select("\u{1f43b} Select a provider", &options, current_idx) {
-        Ok(Some(idx)) => idx,
-        Ok(None) => {
-            println!("  \x1b[90mCancelled.\x1b[0m");
-            return;
-        }
-        Err(e) => {
-            println!("  \x1b[31mTUI error: {e}\x1b[0m");
-            return;
-        }
-    };
+    let selection =
+        match crate::select_menu::select("\u{1f43b} Select a provider", &options, current_idx) {
+            Ok(Some(idx)) => idx,
+            Ok(None) => {
+                println!("  \x1b[90mCancelled.\x1b[0m");
+                return;
+            }
+            Err(e) => {
+                println!("  \x1b[31mTUI error: {e}\x1b[0m");
+                return;
+            }
+        };
 
     let (key, _, _) = providers[selection];
     let ptype = ProviderType::from_url_or_name("", Some(key));
@@ -488,7 +489,7 @@ pub(crate) fn pick_trust_mode(current: ApprovalMode) -> Option<ApprovalMode> {
         .collect();
 
     let initial = modes.iter().position(|m| *m == current).unwrap_or(1);
-    match crate::tui::select("\u{1f43b} Trust level", &options, initial) {
+    match crate::select_menu::select("\u{1f43b} Trust level", &options, initial) {
         Ok(Some(idx)) => Some(modes[idx]),
         _ => None,
     }

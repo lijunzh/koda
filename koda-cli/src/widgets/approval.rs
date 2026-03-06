@@ -1,7 +1,8 @@
 //! Inline approval widget for the TUI.
 //!
 //! Renders approval prompt + options above the viewport using
-//! `insert_before()`, then handles key events in a sub-loop.
+//! `insert_before()` for permanent content, then crossterm styled
+//! output for the in-place selection menu.
 //! Stays in raw mode the entire time — no mode switching.
 
 use crate::tui_output;
@@ -11,7 +12,7 @@ use koda_core::preview::DiffPreview;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
 };
 use std::io::Write;
@@ -106,81 +107,76 @@ pub fn prompt_approval(
 }
 
 fn render_options(_terminal: &mut Term, options: &[(&str, &str)], selected: usize) {
-    // We re-render by clearing previous options and redrawing.
-    // Since insert_before scrolls content up, we use a simple approach:
-    // render all options as a batch via insert_before on first call,
-    // then update by clearing and re-inserting.
-    //
-    // For simplicity, we render the options + hint as a single insert_before block.
-    let total_lines = options.len() + 2; // options + title + hint
-    let mut lines = Vec::with_capacity(total_lines);
+    use crossterm::{
+        cursor, execute,
+        style::{Attribute, Color as CColor, Print, ResetColor, SetAttribute, SetForegroundColor},
+        terminal::{Clear, ClearType},
+    };
+    let mut stdout = std::io::stdout();
+    let height = (options.len() + 2) as u16; // title + options + hint
 
-    lines.push(Line::from(vec![Span::styled(
-        "  \u{1f43b} Confirm action?",
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )]));
+    // Title
+    execute!(
+        stdout,
+        Clear(ClearType::CurrentLine),
+        Print("\r  "),
+        SetForegroundColor(CColor::Cyan),
+        SetAttribute(Attribute::Bold),
+        Print("\u{1f43b} Confirm action?"),
+        SetAttribute(Attribute::Reset),
+        cursor::MoveDown(1),
+    )
+    .ok();
 
+    // Options
     for (i, (label, desc)) in options.iter().enumerate() {
+        execute!(stdout, Clear(ClearType::CurrentLine)).ok();
         if i == selected {
-            lines.push(Line::from(vec![
-                Span::styled("  \u{203a} ", Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    label.to_string(),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!("  {desc}"), Style::default().fg(Color::Cyan)),
-            ]));
+            execute!(
+                stdout,
+                Print("\r  "),
+                SetForegroundColor(CColor::Cyan),
+                Print("\u{203a} "),
+                SetAttribute(Attribute::Bold),
+                Print(label),
+                SetAttribute(Attribute::NoBold),
+                Print(format!("  {desc}")),
+                ResetColor,
+                cursor::MoveDown(1),
+            )
+            .ok();
         } else {
-            lines.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(label.to_string(), Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("  {desc}"), Style::default().fg(Color::DarkGray)),
-            ]));
+            execute!(
+                stdout,
+                Print("\r    "),
+                SetForegroundColor(CColor::DarkGrey),
+                Print(format!("{label}  {desc}")),
+                ResetColor,
+                cursor::MoveDown(1),
+            )
+            .ok();
         }
     }
 
-    lines.push(Line::styled(
-        "  \u{2191}/\u{2193} navigate  enter select  esc cancel",
-        Style::default().fg(Color::DarkGray),
-    ));
-
-    // Clear previous render and redraw
-    // Move cursor up by total_lines, clear, then insert
-    let height = lines.len() as u16;
-    // Use crossterm to clear the area first
-    use crossterm::{cursor, execute, terminal::Clear, terminal::ClearType};
-    let mut stdout = std::io::stdout();
-    // We can't easily clear previous insert_before content.
-    // Instead, use a simpler approach: render into the viewport area temporarily
-    // by clearing existing option lines and re-inserting.
-    //
-    // Workaround: On first render, insert. On re-render, move up and overwrite.
-    // For simplicity, we'll just always insert fresh lines.
-    // This means each key press adds more lines above — not ideal.
-    // Better approach: use the terminal's cursor to overwrite in place.
-
-    // Simple approach: overwrite in place using cursor movement
-    for line in &lines {
-        let rendered = line
-            .spans
-            .iter()
-            .map(|s| format_span(s))
-            .collect::<String>();
-        execute!(stdout, Clear(ClearType::CurrentLine)).ok();
-        write!(stdout, "\r{rendered}").ok();
-        execute!(stdout, cursor::MoveDown(1)).ok();
-    }
-    // Move back up to start position
-    execute!(stdout, cursor::MoveUp(height)).ok();
+    // Hint
+    execute!(
+        stdout,
+        Clear(ClearType::CurrentLine),
+        Print("\r  "),
+        SetForegroundColor(CColor::DarkGrey),
+        Print("\u{2191}/\u{2193} navigate  enter select  esc cancel"),
+        ResetColor,
+        cursor::MoveUp(height),
+    )
+    .ok();
     stdout.flush().ok();
 }
 
 fn clear_options(terminal: &mut Term, options: &[(&str, &str)]) {
-    use crossterm::{cursor, execute, terminal::Clear, terminal::ClearType};
+    use crossterm::{
+        cursor, execute,
+        terminal::{Clear, ClearType},
+    };
     let mut stdout = std::io::stdout();
     let total_lines = options.len() + 2;
     for _ in 0..total_lines {
@@ -188,41 +184,13 @@ fn clear_options(terminal: &mut Term, options: &[(&str, &str)]) {
     }
     execute!(stdout, cursor::MoveUp(total_lines as u16)).ok();
     stdout.flush().ok();
-    // Also insert blank lines to push content into scrollback properly
     tui_output::emit_blank(terminal);
-}
-
-/// Format a Span into ANSI for direct stdout writing.
-fn format_span(span: &Span) -> String {
-    let mut result = String::new();
-    let style = span.style;
-
-    if style.add_modifier.contains(Modifier::BOLD) {
-        result.push_str("\x1b[1m");
-    }
-
-    if let Some(fg) = style.fg {
-        match fg {
-            Color::Cyan => result.push_str("\x1b[36m"),
-            Color::DarkGray => result.push_str("\x1b[90m"),
-            Color::Red => result.push_str("\x1b[31m"),
-            Color::Green => result.push_str("\x1b[32m"),
-            Color::Yellow => result.push_str("\x1b[33m"),
-            _ => {}
-        }
-    }
-
-    result.push_str(&span.content);
-
-    if style.fg.is_some() || !style.add_modifier.is_empty() {
-        result.push_str("\x1b[0m");
-    }
-
-    result
 }
 
 /// Read feedback text inline (in raw mode).
 fn read_feedback_inline(terminal: &mut Term) -> String {
+    use crossterm::{cursor, style::Print};
+
     tui_output::emit_line(
         terminal,
         Line::from(vec![
@@ -236,7 +204,7 @@ fn read_feedback_inline(terminal: &mut Term) -> String {
 
     let mut buf = String::new();
     let mut stdout = std::io::stdout();
-    write!(stdout, "\r  ").ok();
+    crossterm::execute!(stdout, Print("\r  ")).ok();
     stdout.flush().ok();
 
     loop {
@@ -249,20 +217,24 @@ fn read_feedback_inline(terminal: &mut Term) -> String {
                 }
                 KeyCode::Backspace => {
                     if buf.pop().is_some() {
-                        write!(stdout, "\x1b[D \x1b[D").ok();
-                        stdout.flush().ok();
+                        crossterm::execute!(
+                            stdout,
+                            cursor::MoveLeft(1),
+                            Print(" "),
+                            cursor::MoveLeft(1),
+                        )
+                        .ok();
                     }
                 }
                 KeyCode::Char(c) => {
                     buf.push(c);
-                    write!(stdout, "{c}").ok();
-                    stdout.flush().ok();
+                    crossterm::execute!(stdout, Print(c.to_string())).ok();
                 }
                 _ => {}
             }
         }
     }
-    write!(stdout, "\r\n").ok();
+    crossterm::execute!(stdout, Print("\r\n")).ok();
     stdout.flush().ok();
     buf.trim().to_string()
 }

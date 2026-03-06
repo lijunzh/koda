@@ -1,7 +1,9 @@
-//! Arrow-key interactive selection menus.
+//! Arrow-key interactive selection menus (standalone crossterm widget).
 //!
-//! Provides a simple `select()` function for picking from a list
-//! using ↑/↓ arrow keys and Enter, with Esc to cancel.
+//! Used by onboarding, commands, and slash commands for picking
+//! from a list using \u{2191}/\u{2193} arrow keys and Enter.
+//! Manages its own raw mode internally \u{2014} works both inside
+//! and outside the TUI viewport.
 
 use crossterm::{
     cursor,
