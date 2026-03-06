@@ -19,6 +19,7 @@ mod tui_app;
 mod tui_commands;
 mod tui_output;
 mod tui_render;
+mod tui_wizards;
 mod widgets;
 
 use anyhow::{Context, Result};
