@@ -54,6 +54,7 @@ base64 = "0.22"
 agent-client-protocol-schema = { version = "0.11", features = ["unstable_session_model", "unstable_session_list", "unstable"] }
 tokio-tungstenite = "0.28"
 futures-util = "0.3.32"
+rpassword = "7.4.0"
 
 [dev-dependencies]
 tempfile = "3"
