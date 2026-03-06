@@ -348,7 +348,14 @@ pub async fn run(
                         .await;
 
                         match action {
-                            SlashAction::Continue => {}
+                            SlashAction::Continue => {
+                                // Re-init terminal if a legacy command disabled raw mode
+                                if !crossterm::terminal::is_raw_mode_enabled().unwrap_or(true) {
+                                    crossterm::terminal::enable_raw_mode()?;
+                                    terminal = init_terminal()?;
+                                    crossterm_events = EventStream::new();
+                                }
+                            }
                             SlashAction::Quit => {
                                 tui_output::emit_line(
                                     &mut terminal,

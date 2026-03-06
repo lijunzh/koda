@@ -434,6 +434,7 @@ pub(crate) async fn handle_setup_provider(
     println!();
 }
 
+#[allow(dead_code)] // Used by onboarding (pre-raw-mode)
 pub(crate) async fn handle_pick_provider(
     config: &mut KodaConfig,
     provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
@@ -473,6 +474,7 @@ pub(crate) async fn handle_pick_provider(
 // ── Trust mode picker ───────────────────────────────────────
 
 /// Interactive trust mode picker (arrow-key menu).
+#[allow(dead_code)] // Used by onboarding (pre-raw-mode)
 pub(crate) fn pick_trust_mode(current: ApprovalMode) -> Option<ApprovalMode> {
     use ApprovalMode::*;
     let modes = [Plan, Normal, Yolo];
