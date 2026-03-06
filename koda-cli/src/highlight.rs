@@ -52,6 +52,30 @@ impl CodeHighlighter {
             None => line.to_string(),
         }
     }
+
+    /// Highlight a line and return ratatui `Span`s with foreground colors.
+    ///
+    /// Each span gets the syntect foreground color mapped to `ratatui::style::Color::Rgb`.
+    /// No background is set — the caller controls backgrounds for diff rendering.
+    pub fn highlight_spans(&mut self, line: &str) -> Vec<ratatui::text::Span<'static>> {
+        use ratatui::style::{Color, Style as RStyle};
+        use ratatui::text::Span;
+
+        match &mut self.highlighter {
+            Some(h) => {
+                let ranges = h.highlight_line(line, &SYNTAX_SET).unwrap_or_default();
+                ranges
+                    .into_iter()
+                    .map(|(style, text)| {
+                        let fg =
+                            Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
+                        Span::styled(text.to_string(), RStyle::default().fg(fg))
+                    })
+                    .collect()
+            }
+            None => vec![Span::raw(line.to_string())],
+        }
+    }
 }
 
 #[cfg(test)]
