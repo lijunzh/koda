@@ -32,6 +32,8 @@ pub enum ReplAction {
     Expand(usize),
     /// Toggle verbose tool output (None = toggle, Some = set)
     Verbose(Option<bool>),
+    /// List available sub-agents
+    ListAgents,
     Handled,
     NotACommand,
 }
@@ -160,40 +162,7 @@ pub async fn handle_command(
             _ => ReplAction::Verbose(None), // toggle
         },
 
-        "/agent" => {
-            let project_root = std::env::current_dir().unwrap_or_default();
-            let agents = koda_core::tools::agent::list_agents(&project_root);
-            let listing = if agents.is_empty() {
-                "No sub-agents configured.".to_string()
-            } else {
-                agents
-                    .iter()
-                    .map(|(name, desc, source)| {
-                        let tag = match source.as_str() {
-                            "user" => " \x1b[90m[user]\x1b[0m",
-                            "project" => " \x1b[90m[project]\x1b[0m",
-                            _ => "",
-                        };
-                        format!("  \x1b[36m{name}\x1b[0m \u{2014} {desc}{tag}")
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            println!();
-            println!("  \x1b[1m\u{1f43b} Sub-Agents\x1b[0m");
-            println!();
-            if agents.is_empty() {
-                println!("  \x1b[90m{listing}\x1b[0m");
-            } else {
-                println!("{listing}");
-            }
-            println!();
-            println!("  \x1b[90mAsk Koda to invoke them, or use koda --agent <name>\x1b[0m");
-            println!(
-                "  \x1b[90mNeed a specialist? Ask Koda to create one for recurring tasks\x1b[0m"
-            );
-            ReplAction::Handled
-        }
+        "/agent" => ReplAction::ListAgents,
 
         "/sessions" => match arg {
             Some(sub) if sub.starts_with("delete ") => {

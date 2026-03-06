@@ -159,6 +159,10 @@ pub async fn handle_slash_command(
             );
             SlashAction::Continue
         }
+        ReplAction::ListAgents => {
+            crate::tui_wizards::handle_list_agents(terminal, project_root);
+            SlashAction::Continue
+        }
         ReplAction::Handled => SlashAction::Continue,
         ReplAction::NotACommand => SlashAction::Continue,
     }

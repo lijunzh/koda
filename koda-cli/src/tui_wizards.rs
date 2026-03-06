@@ -485,6 +485,45 @@ pub(crate) async fn handle_mcp(
     }
 }
 
+// ── Agents (native TUI) ──────────────────────────────────
+
+pub(crate) fn handle_list_agents(terminal: &mut Term, project_root: &std::path::Path) {
+    let agents = koda_core::tools::agent::list_agents(project_root);
+    tui_output::emit_blank(terminal);
+    tui_output::emit_line(terminal, Line::styled("  \u{1f43b} Sub-Agents", BOLD));
+    tui_output::emit_blank(terminal);
+
+    if agents.is_empty() {
+        dim_msg(terminal, "No sub-agents configured.".into());
+    } else {
+        for (name, desc, source) in &agents {
+            let tag = match source.as_str() {
+                "user" => " [user]",
+                "project" => " [project]",
+                _ => "",
+            };
+            tui_output::emit_line(
+                terminal,
+                Line::from(vec![
+                    Span::styled(format!("  {name}"), CYAN),
+                    Span::raw(format!(" \u{2014} {desc}")),
+                    Span::styled(tag, DIM),
+                ]),
+            );
+        }
+    }
+
+    tui_output::emit_blank(terminal);
+    dim_msg(
+        terminal,
+        "Ask Koda to invoke them, or use koda --agent <name>".into(),
+    );
+    dim_msg(
+        terminal,
+        "Need a specialist? Ask Koda to create one for recurring tasks".into(),
+    );
+}
+
 // ── Trust picker (native TUI) ───────────────────────────────
 
 pub(crate) fn pick_trust_inline(
