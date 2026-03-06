@@ -282,7 +282,7 @@ pub async fn run(
     let mut silent_compact_deferred = false;
     let mut should_quit = false;
     let mut inference_start: Option<std::time::Instant> = None;
-    let mut history: Vec<String> = Vec::new();
+    let mut history: Vec<String> = load_history();
     let mut history_idx: Option<usize> = None; // None = not browsing history
 
     // Crossterm event stream for async key capture
@@ -480,6 +480,7 @@ pub async fn run(
                                                         textarea.select_all();
                                                         textarea.cut();
                                                         history.push(text.clone());
+                                                        save_history(&history);
                                                         history_idx = None;
                                                         input_queue.push_back(text);
                                                     }
@@ -657,6 +658,7 @@ pub async fn run(
                                 textarea.select_all();
                                 textarea.cut();
                                 history.push(text.clone());
+                                save_history(&history);
                                 history_idx = None;
                                 let mode = approval::read_mode(&shared_mode);
                                 let prompt = repl::format_prompt(&config.model, mode);
@@ -733,4 +735,39 @@ pub async fn run(
     );
 
     Ok(())
+}
+
+// ── History persistence ───────────────────────────────────────
+
+const MAX_HISTORY: usize = 500;
+
+fn history_file_path() -> PathBuf {
+    let config_dir = std::env::var("XDG_CONFIG_HOME")
+        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config")))
+        .or_else(|_| std::env::var("USERPROFILE").map(|h| format!("{h}/.config")))
+        .unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(config_dir).join("koda").join("history")
+}
+
+fn load_history() -> Vec<String> {
+    let path = history_file_path();
+    match std::fs::read_to_string(&path) {
+        Ok(content) => content
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn save_history(history: &[String]) {
+    let path = history_file_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Keep only the last MAX_HISTORY entries
+    let start = history.len().saturating_sub(MAX_HISTORY);
+    let content = history[start..].join("\n");
+    let _ = std::fs::write(&path, content);
 }
