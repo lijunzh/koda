@@ -2,7 +2,7 @@
 //!
 //! Two entry points:
 //! - `select()` — manages raw mode internally (onboarding, commands)
-//! - `select_raw()` — assumes raw mode already active (TUI slash commands)
+//! - `select_inline()` — renders above the ratatui viewport (TUI slash commands)
 
 use crossterm::{
     cursor,
@@ -11,7 +11,10 @@ use crossterm::{
     style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{self, Clear, ClearType},
 };
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io::{self, Write};
+
+type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 
 /// A selectable option with a label and optional description.
 pub struct SelectOption {
@@ -30,7 +33,7 @@ impl SelectOption {
 
 /// Show a selection menu, managing raw mode internally.
 ///
-/// Returns `Some(index)` on Enter, `None` on Esc/Ctrl-C.
+/// For use OUTSIDE the TUI (onboarding, commands).
 pub fn select(title: &str, options: &[SelectOption], initial: usize) -> io::Result<Option<usize>> {
     terminal::enable_raw_mode()?;
     let result = run_select_loop(title, options, initial);
@@ -38,25 +41,27 @@ pub fn select(title: &str, options: &[SelectOption], initial: usize) -> io::Resu
     result
 }
 
-/// Show a selection menu, assuming raw mode is already active.
+/// Show a selection menu inline above the ratatui viewport.
 ///
-/// Does NOT toggle raw mode — safe to call from the TUI event loop.
-pub fn select_raw(
+/// Reserves space with `insert_before()`, then renders in-place
+/// using crossterm cursor movement (no `\n` scrolling).
+pub fn select_inline(
+    terminal: &mut Term,
     title: &str,
     options: &[SelectOption],
     initial: usize,
 ) -> io::Result<Option<usize>> {
-    run_select_loop(title, options, initial)
-}
+    let total_lines = menu_height(options);
 
-fn run_select_loop(
-    title: &str,
-    options: &[SelectOption],
-    initial: usize,
-) -> io::Result<Option<usize>> {
-    let mut selected = initial.min(options.len().saturating_sub(1));
+    // Reserve space above the viewport
+    let _ = terminal.insert_before(total_lines as u16, |_| {});
+
+    // Cursor is now at the viewport top. Move up into the reserved space.
     let mut stdout = io::stdout();
-    let lines_drawn = render_menu(&mut stdout, title, options, selected)?;
+    execute!(stdout, cursor::MoveUp(total_lines as u16))?;
+
+    let mut selected = initial.min(options.len().saturating_sub(1));
+    render_inline(&mut stdout, title, options, selected)?;
 
     loop {
         if let Event::Key(KeyEvent {
@@ -73,27 +78,76 @@ fn run_select_loop(
                     }
                 }
                 KeyCode::Enter => {
-                    clear_menu(&mut stdout, lines_drawn)?;
+                    // Move past the menu area so viewport stays clean
+                    execute!(stdout, cursor::MoveDown(total_lines as u16))?;
                     return Ok(Some(selected));
                 }
                 KeyCode::Esc => {
-                    clear_menu(&mut stdout, lines_drawn)?;
+                    execute!(stdout, cursor::MoveDown(total_lines as u16))?;
                     return Ok(None);
                 }
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    clear_menu(&mut stdout, lines_drawn)?;
+                    execute!(stdout, cursor::MoveDown(total_lines as u16))?;
                     return Ok(None);
                 }
                 _ => {}
             }
 
-            clear_menu(&mut stdout, lines_drawn)?;
-            render_menu(&mut stdout, title, options, selected)?;
+            // Re-render in place (cursor is at menu top)
+            render_inline(&mut stdout, title, options, selected)?;
         }
     }
 }
 
-fn render_menu(
+// ── Standalone mode (manages own raw mode) ────────────────────
+
+fn run_select_loop(
+    title: &str,
+    options: &[SelectOption],
+    initial: usize,
+) -> io::Result<Option<usize>> {
+    let mut selected = initial.min(options.len().saturating_sub(1));
+    let mut stdout = io::stdout();
+    let lines_drawn = render_standalone(&mut stdout, title, options, selected)?;
+
+    loop {
+        if let Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) = event::read()?
+        {
+            match code {
+                KeyCode::Up => {
+                    selected = selected.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if selected + 1 < options.len() {
+                        selected += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    clear_lines(&mut stdout, lines_drawn)?;
+                    return Ok(Some(selected));
+                }
+                KeyCode::Esc => {
+                    clear_lines(&mut stdout, lines_drawn)?;
+                    return Ok(None);
+                }
+                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    clear_lines(&mut stdout, lines_drawn)?;
+                    return Ok(None);
+                }
+                _ => {}
+            }
+
+            clear_lines(&mut stdout, lines_drawn)?;
+            render_standalone(&mut stdout, title, options, selected)?;
+        }
+    }
+}
+
+// ── Standalone renderer (uses \r\n, for pre-raw-mode) ───────────
+
+fn render_standalone(
     stdout: &mut io::Stdout,
     title: &str,
     options: &[SelectOption],
@@ -101,7 +155,6 @@ fn render_menu(
 ) -> io::Result<usize> {
     let mut lines = 0;
 
-    // Title
     execute!(
         stdout,
         Print("\r\n  "),
@@ -113,37 +166,12 @@ fn render_menu(
     )?;
     lines += 2;
 
-    // Options
     for (i, opt) in options.iter().enumerate() {
-        if i == selected {
-            execute!(
-                stdout,
-                Print("  "),
-                SetForegroundColor(Color::Cyan),
-                Print("\u{203a} "),
-                SetAttribute(Attribute::Bold),
-                Print(&opt.label),
-                SetAttribute(Attribute::NoBold),
-            )?;
-        } else {
-            execute!(
-                stdout,
-                Print("  "),
-                SetForegroundColor(Color::DarkGrey),
-                Print("   "),
-                Print(&opt.label),
-            )?;
-        }
-
-        if !opt.description.is_empty() {
-            execute!(stdout, Print(format!("  {}", opt.description)))?;
-        }
-
-        execute!(stdout, ResetColor, Print("\r\n"))?;
+        render_option_line(stdout, opt, i == selected)?;
+        execute!(stdout, Print("\r\n"))?;
         lines += 1;
     }
 
-    // Footer hint
     execute!(
         stdout,
         Print("\r\n  "),
@@ -158,11 +186,91 @@ fn render_menu(
     Ok(lines)
 }
 
-fn clear_menu(stdout: &mut io::Stdout, lines: usize) -> io::Result<()> {
+fn clear_lines(stdout: &mut io::Stdout, lines: usize) -> io::Result<()> {
     for _ in 0..lines {
         execute!(stdout, cursor::MoveUp(1), Clear(ClearType::CurrentLine))?;
     }
     Ok(())
+}
+
+// ── Inline renderer (cursor movement, no \n) ─────────────────
+
+fn render_inline(
+    stdout: &mut io::Stdout,
+    title: &str,
+    options: &[SelectOption],
+    selected: usize,
+) -> io::Result<()> {
+    // Title
+    execute!(
+        stdout,
+        Clear(ClearType::CurrentLine),
+        Print("\r  "),
+        SetForegroundColor(Color::Cyan),
+        SetAttribute(Attribute::Bold),
+        Print(title),
+        SetAttribute(Attribute::Reset),
+        cursor::MoveDown(1),
+    )?;
+
+    // Options
+    for (i, opt) in options.iter().enumerate() {
+        execute!(stdout, Clear(ClearType::CurrentLine))?;
+        render_option_line(stdout, opt, i == selected)?;
+        execute!(stdout, cursor::MoveDown(1))?;
+    }
+
+    // Hint
+    execute!(
+        stdout,
+        Clear(ClearType::CurrentLine),
+        Print("\r  "),
+        SetForegroundColor(Color::DarkGrey),
+        Print("\u{2191}/\u{2193} navigate  enter select  esc cancel"),
+        ResetColor,
+    )?;
+
+    // Move cursor back to top of menu for next re-render
+    let height = menu_height(options);
+    execute!(stdout, cursor::MoveUp(height as u16 - 1))?;
+    stdout.flush()?;
+    Ok(())
+}
+
+// ── Shared rendering ─────────────────────────────────────
+
+fn render_option_line(
+    stdout: &mut io::Stdout,
+    opt: &SelectOption,
+    is_selected: bool,
+) -> io::Result<()> {
+    if is_selected {
+        execute!(
+            stdout,
+            Print("\r  "),
+            SetForegroundColor(Color::Cyan),
+            Print("\u{203a} "),
+            SetAttribute(Attribute::Bold),
+            Print(&opt.label),
+            SetAttribute(Attribute::NoBold),
+        )?;
+    } else {
+        execute!(
+            stdout,
+            Print("\r    "),
+            SetForegroundColor(Color::DarkGrey),
+            Print(&opt.label),
+        )?;
+    }
+    if !opt.description.is_empty() {
+        execute!(stdout, Print(format!("  {}", opt.description)))?;
+    }
+    execute!(stdout, ResetColor)?;
+    Ok(())
+}
+
+fn menu_height(options: &[SelectOption]) -> usize {
+    options.len() + 2 // title + options + hint
 }
 
 #[cfg(test)]
@@ -174,5 +282,11 @@ mod tests {
         let opt = SelectOption::new("hello", "world");
         assert_eq!(opt.label, "hello");
         assert_eq!(opt.description, "world");
+    }
+
+    #[test]
+    fn test_menu_height() {
+        let opts = vec![SelectOption::new("a", ""), SelectOption::new("b", "")];
+        assert_eq!(menu_height(&opts), 4); // title + 2 opts + hint
     }
 }

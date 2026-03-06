@@ -195,7 +195,12 @@ async fn handle_pick_model(
                     SelectOption::new(&m.id, desc)
                 })
                 .collect();
-            match select_menu::select_raw("\u{1f43b} Select a model", &options, current_idx) {
+            match select_menu::select_inline(
+                terminal,
+                "\u{1f43b} Select a model",
+                &options,
+                current_idx,
+            ) {
                 Ok(Some(idx)) => {
                     config.model = models[idx].id.clone();
                     config.model_settings.model = config.model.clone();
@@ -230,7 +235,7 @@ fn handle_help(terminal: &mut Term, pending_command: &mut Option<String>) {
         .iter()
         .map(|(cmd, desc)| SelectOption::new(*cmd, *desc))
         .collect();
-    if let Ok(Some(idx)) = select_menu::select_raw("\u{1f43b} Commands", &options, 0) {
+    if let Ok(Some(idx)) = select_menu::select_inline(terminal, "\u{1f43b} Commands", &options, 0) {
         let (cmd, _) = commands[idx];
         *pending_command = Some(cmd.to_string());
     }
@@ -336,7 +341,8 @@ async fn handle_list_sessions(
                     SelectOption::new(&s.id[..8], desc)
                 })
                 .collect();
-            match select_menu::select_raw("\u{1f43b} Sessions", &options, current_idx) {
+            match select_menu::select_inline(terminal, "\u{1f43b} Sessions", &options, current_idx)
+            {
                 Ok(Some(idx)) => {
                     let target = &sessions[idx];
                     if target.id == session.id {
