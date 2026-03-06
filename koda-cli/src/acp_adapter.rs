@@ -130,6 +130,9 @@ pub fn engine_event_to_acp(
         EngineEvent::SpinnerStart { .. } => None,
         EngineEvent::SpinnerStop => None,
         EngineEvent::TodoDisplay { .. } => None,
+        EngineEvent::TurnStart { .. } => None,
+        EngineEvent::TurnEnd { .. } => None,
+        EngineEvent::LoopCapReached { .. } => None,
 
         EngineEvent::Info { message } => {
             let cb = acp::ContentBlock::Text(acp::TextContent::new(format!("[info] {message}")));
@@ -243,6 +246,14 @@ impl EngineSink for AcpSink {
             let _ = self
                 .tx
                 .try_send(AcpOutgoing::PermissionRequest { rpc_id, request });
+            return;
+        }
+
+        // Handle loop cap — server always auto-continues
+        if matches!(event, EngineEvent::LoopCapReached { .. }) {
+            let _ = self.cmd_tx.try_send(EngineCommand::LoopDecision {
+                action: koda_core::loop_guard::LoopContinuation::Continue200,
+            });
             return;
         }
 
@@ -476,6 +487,17 @@ mod tests {
                 message: "x".into(),
             },
             EngineEvent::SpinnerStop,
+            EngineEvent::TurnStart {
+                turn_id: "t1".into(),
+            },
+            EngineEvent::TurnEnd {
+                turn_id: "t1".into(),
+                reason: koda_core::engine::event::TurnEndReason::Complete,
+            },
+            EngineEvent::LoopCapReached {
+                cap: 200,
+                recent_tools: vec![],
+            },
         ];
         for event in none_events {
             assert!(
