@@ -134,6 +134,15 @@ impl UiRenderer {
             EngineEvent::StatusUpdate { .. } => {
                 // Status bar updates are a TUI/server concern, not CLI.
             }
+            EngineEvent::TurnStart { .. } => {
+                // Turn lifecycle: handled by the event loop, not the renderer.
+            }
+            EngineEvent::TurnEnd { .. } => {
+                // Turn lifecycle: handled by the event loop, not the renderer.
+            }
+            EngineEvent::LoopCapReached { .. } => {
+                // Loop cap: handled by the event loop, not the renderer.
+            }
             EngineEvent::TodoDisplay { content } => {
                 print!("{}", crate::display::format_todo_display(&content));
             }
@@ -313,6 +322,11 @@ impl EngineSink for CliSink {
                     let _ = cmd_tx.blocking_send(EngineCommand::ApprovalResponse {
                         id: id.clone(),
                         decision,
+                    });
+                } else if matches!(event, EngineEvent::LoopCapReached { .. }) {
+                    // Headless/direct mode: auto-continue
+                    let _ = cmd_tx.blocking_send(EngineCommand::LoopDecision {
+                        action: koda_core::loop_guard::LoopContinuation::Continue200,
                     });
                 } else {
                     renderer.lock().unwrap().render(event);

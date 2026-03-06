@@ -36,7 +36,6 @@ pub async fn inference_loop(
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
-    loop_continue_prompt: &dyn Fn(u32, &[String]) -> loop_guard::LoopContinuation,
 ) -> Result<()> {
     // When native thinking is active, drop ShareReasoning from tool list
     let has_native_thinking = config.model_settings.thinking_budget.is_some()
@@ -70,11 +69,30 @@ pub async fn inference_loop(
 
     loop {
         if iteration >= hard_cap {
-            let extra = loop_guard::ask_continue_or_stop(
-                hard_cap,
-                &loop_detector.recent_names(),
-                loop_continue_prompt,
-            );
+            let recent = loop_detector.recent_names();
+            sink.emit(EngineEvent::LoopCapReached {
+                cap: hard_cap,
+                recent_tools: recent,
+            });
+
+            // Wait for client decision via EngineCommand::LoopDecision
+            let extra = loop {
+                tokio::select! {
+                    cmd = cmd_rx.recv() => match cmd {
+                        Some(EngineCommand::LoopDecision { action }) => {
+                            break action.extra_iterations();
+                        }
+                        Some(EngineCommand::Interrupt) => {
+                            cancel.cancel();
+                            break 0;
+                        }
+                        None => break 0,
+                        _ => continue,
+                    },
+                    _ = cancel.cancelled() => break 0,
+                }
+            };
+
             if extra == 0 {
                 break Ok(());
             }
@@ -379,7 +397,6 @@ pub async fn inference_loop(
                 &settings.approval.allowed_commands,
                 sink,
                 cancel.clone(),
-                loop_continue_prompt,
             )
             .await?;
         } else {
@@ -395,7 +412,6 @@ pub async fn inference_loop(
                 sink,
                 cancel.clone(),
                 cmd_rx,
-                loop_continue_prompt,
             )
             .await?;
         }
@@ -443,7 +459,6 @@ async fn execute_one_tool(
     allowed_commands: &[String],
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
-    loop_continue_prompt: &dyn Fn(u32, &[String]) -> loop_guard::LoopContinuation,
 ) -> (String, String) {
     let result = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
@@ -462,7 +477,6 @@ async fn execute_one_tool(
             cancel.clone(),
             // Sub-agents get a fresh command channel (they auto-approve in all modes)
             &mut mpsc::channel(1).1,
-            loop_continue_prompt,
         )
         .await
         {
@@ -513,7 +527,6 @@ async fn execute_tools_parallel(
     allowed_commands: &[String],
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
-    loop_continue_prompt: &dyn Fn(u32, &[String]) -> loop_guard::LoopContinuation,
 ) -> Result<()> {
     // Print all tool call banners upfront
     for tc in tool_calls {
@@ -545,7 +558,6 @@ async fn execute_tools_parallel(
                 allowed_commands,
                 sink,
                 cancel.clone(),
-                loop_continue_prompt,
             )
         })
         .collect();
@@ -585,7 +597,6 @@ async fn execute_tools_sequential(
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
-    loop_continue_prompt: &dyn Fn(u32, &[String]) -> loop_guard::LoopContinuation,
 ) -> Result<()> {
     for tc in tool_calls {
         // Check for interrupt before each tool
@@ -732,7 +743,6 @@ async fn execute_tools_sequential(
             &settings.approval.allowed_commands,
             sink,
             cancel.clone(),
-            loop_continue_prompt,
         )
         .await;
         sink.emit(EngineEvent::ToolCallResult {
@@ -768,7 +778,6 @@ async fn execute_sub_agent(
     sink: &dyn crate::engine::EngineSink,
     _cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
-    _loop_continue_prompt: &dyn Fn(u32, &[String]) -> loop_guard::LoopContinuation,
 ) -> Result<String> {
     let args: serde_json::Value = serde_json::from_str(arguments)?;
     let agent_name = args["agent_name"]

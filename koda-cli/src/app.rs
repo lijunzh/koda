@@ -690,13 +690,7 @@ pub async fn run(
 
         // Run turn in a scoped block so borrows are released on completion.
         {
-            let turn = session.run_turn(
-                &config,
-                pending_images,
-                &cli_sink,
-                &mut cmd_rx,
-                &crate::app::cli_loop_continue_prompt,
-            );
+            let turn = session.run_turn(&config, pending_images, &cli_sink, &mut cmd_rx);
             tokio::pin!(turn);
 
             loop {
@@ -733,6 +727,17 @@ pub async fn run(
                                     .send(EngineCommand::ApprovalResponse { id, decision })
                                     .await;
                             }
+                            UiEvent::Engine(EngineEvent::LoopCapReached {
+                                cap,
+                                recent_tools,
+                            }) => {
+                                let action = cli_loop_continue_prompt(cap, &recent_tools);
+                                let _ = cmd_tx
+                                    .send(EngineCommand::LoopDecision { action })
+                                    .await;
+                            }
+                            UiEvent::Engine(EngineEvent::TurnStart { .. }) => {}
+                            UiEvent::Engine(EngineEvent::TurnEnd { .. }) => {}
                             UiEvent::Engine(ref event) => {
                                 renderer.render(event.clone());
                             }
