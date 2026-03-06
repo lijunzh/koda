@@ -524,6 +524,145 @@ pub(crate) fn handle_list_agents(terminal: &mut Term, project_root: &std::path::
     );
 }
 
+// ── Diff (native TUI) ────────────────────────────────────
+
+pub(crate) fn handle_diff(terminal: &mut Term) {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--stat"])
+        .output();
+
+    let diff_stat = match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            err_msg(terminal, format!("Git error: {err}"));
+            return;
+        }
+        Err(e) => {
+            err_msg(terminal, format!("Failed to run git: {e}"));
+            return;
+        }
+    };
+
+    // Check unstaged + staged
+    let has_unstaged = !diff_stat.trim().is_empty();
+    let staged_stat = if !has_unstaged {
+        std::process::Command::new("git")
+            .args(["diff", "--cached", "--stat"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    let s = String::from_utf8_lossy(&o.stdout).to_string();
+                    if s.trim().is_empty() { None } else { Some(s) }
+                } else {
+                    None
+                }
+            })
+    } else {
+        None
+    };
+
+    let stat = if has_unstaged {
+        diff_stat
+    } else if let Some(s) = staged_stat {
+        s
+    } else {
+        dim_msg(terminal, "No uncommitted changes.".into());
+        return;
+    };
+
+    tui_output::emit_blank(terminal);
+    tui_output::emit_line(
+        terminal,
+        Line::styled("  \u{1f43b} Uncommitted Changes", BOLD),
+    );
+    tui_output::emit_blank(terminal);
+    for line in stat.lines() {
+        dim_msg(terminal, line.to_string());
+    }
+    tui_output::emit_blank(terminal);
+    dim_msg(
+        terminal,
+        "/diff review   \u{2014} ask Koda to review the changes".into(),
+    );
+    dim_msg(
+        terminal,
+        "/diff commit   \u{2014} generate a commit message".into(),
+    );
+}
+
+// ── Memory (native TUI) ───────────────────────────────────
+
+pub(crate) fn handle_memory(
+    terminal: &mut Term,
+    arg: Option<&str>,
+    project_root: &std::path::Path,
+) {
+    match arg {
+        Some(text) if text.starts_with("global ") => {
+            let entry = text.strip_prefix("global ").unwrap().trim();
+            if entry.is_empty() {
+                warn_msg(terminal, "Usage: /memory global <text>".into());
+            } else {
+                match koda_core::memory::append_global(entry) {
+                    Ok(()) => ok_msg(terminal, "Saved to global memory".into()),
+                    Err(e) => err_msg(terminal, format!("Error: {e}")),
+                }
+            }
+        }
+        Some(text) if text.starts_with("add ") => {
+            let entry = text.strip_prefix("add ").unwrap().trim();
+            if entry.is_empty() {
+                warn_msg(terminal, "Usage: /memory add <text>".into());
+            } else {
+                match koda_core::memory::append(project_root, entry) {
+                    Ok(()) => ok_msg(terminal, "Saved to project memory (MEMORY.md)".into()),
+                    Err(e) => err_msg(terminal, format!("Error: {e}")),
+                }
+            }
+        }
+        _ => {
+            let active = koda_core::memory::active_project_file(project_root);
+            tui_output::emit_blank(terminal);
+            tui_output::emit_line(terminal, Line::styled("  \u{1f43b} Memory", BOLD));
+            tui_output::emit_blank(terminal);
+            match active {
+                Some(f) => tui_output::emit_line(
+                    terminal,
+                    Line::from(vec![Span::raw("  Project: "), Span::styled(f, CYAN)]),
+                ),
+                None => dim_msg(
+                    terminal,
+                    "Project: (none \u{2014} will create MEMORY.md on first write)".into(),
+                ),
+            }
+            tui_output::emit_line(
+                terminal,
+                Line::from(vec![
+                    Span::raw("  Global:  "),
+                    Span::styled("~/.config/koda/memory.md", CYAN),
+                ]),
+            );
+            tui_output::emit_blank(terminal);
+            dim_msg(terminal, "Commands:".into());
+            dim_msg(
+                terminal,
+                "  /memory add <text>      Save to project MEMORY.md".into(),
+            );
+            dim_msg(
+                terminal,
+                "  /memory global <text>   Save to global memory".into(),
+            );
+            tui_output::emit_blank(terminal);
+            dim_msg(
+                terminal,
+                "Tip: the LLM can also call MemoryWrite to save insights automatically.".into(),
+            );
+        }
+    }
+}
+
 // ── Trust picker (native TUI) ───────────────────────────────
 
 pub(crate) fn pick_trust_inline(

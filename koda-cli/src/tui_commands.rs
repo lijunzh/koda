@@ -163,6 +163,14 @@ pub async fn handle_slash_command(
             crate::tui_wizards::handle_list_agents(terminal, project_root);
             SlashAction::Continue
         }
+        ReplAction::ShowDiff => {
+            crate::tui_wizards::handle_diff(terminal);
+            SlashAction::Continue
+        }
+        ReplAction::MemoryCommand(ref arg) => {
+            crate::tui_wizards::handle_memory(terminal, arg.as_deref(), project_root);
+            SlashAction::Continue
+        }
         ReplAction::Handled => SlashAction::Continue,
         ReplAction::NotACommand => SlashAction::Continue,
     }
