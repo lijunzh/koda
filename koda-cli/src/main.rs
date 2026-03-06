@@ -2,7 +2,6 @@
 //!
 //! CLI entry point. The binary is named `koda` for ergonomics.
 
-mod app;
 mod commands;
 mod confirm;
 mod diff_render;
@@ -87,10 +86,6 @@ struct Cli {
     /// OpenAI reasoning effort (low, medium, high)
     #[arg(long)]
     reasoning_effort: Option<String>,
-
-    /// Use legacy readline-based input instead of TUI
-    #[arg(long)]
-    legacy: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -244,12 +239,8 @@ async fn main() -> Result<()> {
         None => db.create_session(&config.agent_name, &project_root).await?,
     };
 
-    // Run the main event loop (pass version check handle for post-banner hint)
-    if cli.legacy {
-        app::run(project_root, config, db, session_id, version_check).await
-    } else {
-        tui_app::run(project_root, config, db, session_id, version_check).await
-    }
+    // Run the main event loop
+    tui_app::run(project_root, config, db, session_id, version_check).await
 }
 
 /// Resolve the headless prompt from -p flag, positional arg, or stdin pipe.
