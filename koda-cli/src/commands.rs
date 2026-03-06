@@ -177,6 +177,7 @@ pub(crate) async fn handle_compact(
 // ── MCP command handler ──────────────────────────────────────
 
 /// Handle `/mcp` subcommands: status, add, remove, restart.
+#[allow(dead_code)] // Replaced by tui_wizards::handle_mcp
 pub(crate) async fn handle_mcp_command(
     args: &str,
     mcp_registry: &Arc<tokio::sync::RwLock<koda_core::mcp::McpRegistry>>,

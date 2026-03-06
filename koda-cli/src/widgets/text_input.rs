@@ -1,4 +1,3 @@
-#![allow(dead_code)] // Will be used when provider setup is migrated to native TUI
 //! Inline text input widget for the TUI.
 //!
 //! Renders a prompt above the viewport, reads character-by-character
