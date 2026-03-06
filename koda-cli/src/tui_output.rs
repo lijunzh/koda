@@ -1,8 +1,13 @@
-//! Output bridge: native ratatui types → `insert_before()`.
+//! Output bridge for the TUI.
 //!
-//! All rendering produces `ratatui::text::Line` / `Text` directly.
-//! This module provides helpers for writing styled content above
-//! the persistent inline viewport.
+//! Two rendering paths (see `tui_app.rs` for full architecture):
+//!
+//! - **`emit_line()`** — ratatui `insert_before()` for engine output
+//!   (LLM streaming, tool calls, diffs). Managed by ratatui.
+//!
+//! - **`write_line()`** — crossterm direct writes for slash commands.
+//!   Uses `\r\n` line endings in raw mode. After slash commands,
+//!   `tui_app` calls `init_terminal()` to resync the viewport.
 
 use ratatui::{
     Terminal,
