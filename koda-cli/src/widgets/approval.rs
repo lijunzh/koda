@@ -42,12 +42,7 @@ pub fn prompt_approval(
     if let Some(preview) = preview {
         tui_output::emit_blank(terminal);
         let rendered = crate::diff_render::render(preview);
-        for line in rendered.lines() {
-            tui_output::emit_line(
-                terminal,
-                Line::from(vec![Span::raw("  "), Span::raw(line.to_string())]),
-            );
-        }
+        tui_output::emit_ansi_lines(terminal, &rendered);
     }
     tui_output::emit_blank(terminal);
 
