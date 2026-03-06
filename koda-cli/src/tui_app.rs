@@ -76,6 +76,7 @@ fn draw_viewport(
     state: TuiState,
     queue_len: usize,
     elapsed_secs: u64,
+    last_turn: Option<&crate::widgets::status_bar::TurnStats>,
 ) {
     let area = frame.area();
     let [input_row, status_row] =
@@ -106,6 +107,9 @@ fn draw_viewport(
     }
     if elapsed_secs > 0 {
         sb = sb.with_elapsed(elapsed_secs);
+    }
+    if let Some(stats) = last_turn {
+        sb = sb.with_last_turn(stats);
     }
     frame.render_widget(sb, status_row);
 }
@@ -289,6 +293,7 @@ pub async fn run(
             tui_state,
             input_queue.len(),
             inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
+            renderer.last_turn_stats.as_ref(),
         );
     })?;
 
@@ -429,6 +434,7 @@ pub async fn run(
                         // Run the inference turn as a pinned future
                         tui_state = TuiState::Inferring;
                         inference_start = Some(std::time::Instant::now());
+                        renderer.last_turn_stats = None;
 
                         {
                             let turn =
@@ -449,6 +455,7 @@ pub async fn run(
                                         tui_state,
                                         input_queue.len(),
                                         inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
+                                        renderer.last_turn_stats.as_ref(),
                                     );
                                 })?;
 
@@ -653,6 +660,7 @@ pub async fn run(
                 tui_state,
                 input_queue.len(),
                 inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
+                renderer.last_turn_stats.as_ref(),
             );
         })?;
 

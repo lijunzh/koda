@@ -4,6 +4,7 @@
 //! above the viewport via `insert_before()`. No ANSI strings.
 
 use crate::tui_output::{self, AMBER, BOLD, CYAN, DIM, GREEN, MAGENTA, ORANGE, RED, YELLOW};
+use crate::widgets::status_bar::TurnStats;
 use koda_core::engine::EngineEvent;
 use ratatui::{
     Terminal,
@@ -20,6 +21,8 @@ pub struct TuiRenderer {
     pub tool_history: crate::display::ToolOutputHistory,
     /// When true, tool output is never collapsed.
     pub verbose: bool,
+    /// Last turn stats for status bar display.
+    pub last_turn_stats: Option<TurnStats>,
     /// Buffer for streaming text deltas (flushed line-by-line).
     text_buf: String,
     /// Buffer for streaming thinking deltas.
@@ -37,6 +40,7 @@ impl TuiRenderer {
         Self {
             tool_history: crate::display::ToolOutputHistory::new(),
             verbose: false,
+            last_turn_stats: None,
             text_buf: String::new(),
             think_buf: String::new(),
             preview_shown: false,
@@ -193,26 +197,22 @@ impl TuiRenderer {
                 }
             }
             EngineEvent::Footer {
-                prompt_tokens,
                 completion_tokens,
-                cache_read_tokens,
-                thinking_tokens,
                 total_chars,
                 elapsed_ms,
                 rate,
-                context,
+                ..
             } => {
-                render_footer(
-                    terminal,
-                    prompt_tokens,
-                    completion_tokens,
-                    cache_read_tokens,
-                    thinking_tokens,
-                    total_chars,
+                let tokens_out = if completion_tokens > 0 {
+                    completion_tokens
+                } else {
+                    (total_chars / 4) as i64
+                };
+                self.last_turn_stats = Some(TurnStats {
+                    tokens_out,
                     elapsed_ms,
                     rate,
-                    &context,
-                );
+                });
             }
             EngineEvent::SpinnerStart { .. } | EngineEvent::SpinnerStop => {
                 // TUI mode: spinner state is in the status bar.
@@ -324,62 +324,6 @@ fn render_tool_output(terminal: &mut Term, name: &str, output: &str, verbose: bo
             )]),
         );
     }
-}
-
-/// Render the inference footer with token stats.
-#[allow(clippy::too_many_arguments)]
-fn render_footer(
-    terminal: &mut Term,
-    prompt_tokens: i64,
-    completion_tokens: i64,
-    cache_read_tokens: i64,
-    thinking_tokens: i64,
-    total_chars: usize,
-    elapsed_ms: u64,
-    rate: f64,
-    context: &str,
-) {
-    let display_tokens = if completion_tokens > 0 {
-        completion_tokens
-    } else {
-        (total_chars / 4) as i64
-    };
-    let time_str =
-        koda_core::inference::format_duration(std::time::Duration::from_millis(elapsed_ms));
-
-    let mut parts = Vec::new();
-    if prompt_tokens > 0 {
-        parts.push(format!(
-            "in: {}",
-            koda_core::inference::format_token_count(prompt_tokens)
-        ));
-    }
-    if display_tokens > 0 {
-        parts.push(format!("out: {display_tokens}"));
-    }
-    parts.push(time_str);
-    if display_tokens > 0 {
-        parts.push(format!("{rate:.0} t/s"));
-    }
-    if cache_read_tokens > 0 {
-        parts.push(format!(
-            "cache: {} read",
-            koda_core::inference::format_token_count(cache_read_tokens)
-        ));
-    }
-    if thinking_tokens > 0 {
-        parts.push(format!(
-            "thinking: {}",
-            koda_core::inference::format_token_count(thinking_tokens)
-        ));
-    }
-
-    let mut footer = parts.join(" \u{00b7} ");
-    if !context.is_empty() {
-        footer.push_str(&format!(" \u{00b7} {context}"));
-    }
-
-    tui_output::emit_line(terminal, Line::styled(footer, DIM));
 }
 
 /// Render a todo checklist.
