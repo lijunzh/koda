@@ -332,7 +332,16 @@ pub async fn handle_slash_command(
         ReplAction::Expand(n) => {
             match renderer.tool_history.get(n) {
                 Some(record) => {
-                    crate::display::print_tool_output_full(record);
+                    // Print expanded tool output (legacy println, tracked in #84)
+                    println!(
+                        "\n\x1b[1m\u{1f50d} Expand: {}\x1b[0m ({} lines)",
+                        record.tool_name,
+                        record.output.lines().count()
+                    );
+                    for line in record.output.lines() {
+                        println!("  \x1b[90m\u{2502}\x1b[0m {line}");
+                    }
+                    println!();
                 }
                 None => {
                     let total = renderer.tool_history.len();
