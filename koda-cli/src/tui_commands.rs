@@ -5,7 +5,7 @@
 //! can use `println!` and the legacy `tui::select()` widget.
 
 use crate::repl::ReplAction;
-use crate::tui::{self, SelectOption};
+use crate::select_menu::{self, SelectOption};
 use crate::tui_render::TuiRenderer;
 
 use koda_core::agent::KodaAgent;
@@ -73,7 +73,7 @@ pub async fn handle_slash_command(
                             SelectOption::new(&m.id, desc)
                         })
                         .collect();
-                    match tui::select("\u{1f43b} Select a model", &options, current_idx) {
+                    match select_menu::select("\u{1f43b} Select a model", &options, current_idx) {
                         Ok(Some(idx)) => {
                             config.model = models[idx].id.clone();
                             config.model_settings.model = config.model.clone();
@@ -124,7 +124,7 @@ pub async fn handle_slash_command(
                 .iter()
                 .map(|(cmd, desc)| SelectOption::new(*cmd, *desc))
                 .collect();
-            if let Ok(Some(idx)) = tui::select("\u{1f43b} Commands", &options, 0) {
+            if let Ok(Some(idx)) = select_menu::select("\u{1f43b} Commands", &options, 0) {
                 let (cmd, _) = commands[idx];
                 *pending_command = Some(cmd.to_string());
             }
@@ -208,7 +208,7 @@ pub async fn handle_slash_command(
                             SelectOption::new(&s.id[..8], desc)
                         })
                         .collect();
-                    match tui::select("\u{1f43b} Sessions", &options, current_idx) {
+                    match select_menu::select("\u{1f43b} Sessions", &options, current_idx) {
                         Ok(Some(idx)) => {
                             let target = &sessions[idx];
                             if target.id == session.id {
