@@ -282,6 +282,8 @@ pub async fn run(
     let mut silent_compact_deferred = false;
     let mut should_quit = false;
     let mut inference_start: Option<std::time::Instant> = None;
+    let mut history: Vec<String> = Vec::new();
+    let mut history_idx: Option<usize> = None; // None = not browsing history
 
     // Crossterm event stream for async key capture
     let mut crossterm_events = EventStream::new();
@@ -477,6 +479,8 @@ pub async fn run(
                                                     if !text.trim().is_empty() {
                                                         textarea.select_all();
                                                         textarea.cut();
+                                                        history.push(text.clone());
+                                                        history_idx = None;
                                                         input_queue.push_back(text);
                                                     }
                                                 }
@@ -652,19 +656,49 @@ pub async fn run(
                             if !text.trim().is_empty() {
                                 textarea.select_all();
                                 textarea.cut();
+                                history.push(text.clone());
+                                history_idx = None;
                                 let mode = approval::read_mode(&shared_mode);
                                 let prompt = repl::format_prompt(&config.model, mode);
                                 emit_above(&mut terminal, Line::raw(format!("{prompt}{text}")));
                                 pending_command = Some(text);
                             }
                         }
+                        (KeyCode::Up, KeyModifiers::NONE) => {
+                            if !history.is_empty() {
+                                let idx = match history_idx {
+                                    None => history.len() - 1,
+                                    Some(i) => i.saturating_sub(1),
+                                };
+                                history_idx = Some(idx);
+                                textarea.select_all();
+                                textarea.cut();
+                                textarea.insert_str(&history[idx]);
+                            }
+                        }
+                        (KeyCode::Down, KeyModifiers::NONE) => {
+                            if let Some(idx) = history_idx {
+                                if idx + 1 < history.len() {
+                                    history_idx = Some(idx + 1);
+                                    textarea.select_all();
+                                    textarea.cut();
+                                    textarea.insert_str(&history[idx + 1]);
+                                } else {
+                                    history_idx = None;
+                                    textarea.select_all();
+                                    textarea.cut();
+                                }
+                            }
+                        }
                         (KeyCode::Esc, _) => {
                             textarea.select_all();
                             textarea.cut();
+                            history_idx = None;
                         }
                         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
                             textarea.select_all();
                             textarea.cut();
+                            history_idx = None;
                         }
                         (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
                             if textarea.lines().join("").trim().is_empty() {
@@ -675,6 +709,7 @@ pub async fn run(
                             approval::cycle_mode(&shared_mode);
                         }
                         _ => {
+                            history_idx = None;
                             textarea.input(Event::Key(key));
                         }
                     }
