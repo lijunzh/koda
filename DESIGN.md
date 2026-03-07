@@ -116,16 +116,66 @@ not via a `Tool` trait with dynamic dispatch.
 **Rationale**: Rust's exhaustive matching catches missing tool handlers at compile
 time — adding a tool without a match arm is a compile error. A `HashMap<String, Box<dyn Tool>>`
 would move this to a runtime error. The match statement works well at the current
-scale (~15 tools).
+scale (~20 tools).
 
-**Known tech debt**: Three tools (`InvokeAgent`, `TodoWrite`, `TodoRead`) return
-sentinel strings (`"__INVOKE_AGENT__"`) because they need DB/session access that
-the registry doesn't have. A `ToolContext` struct would fix this. Tracked in
-[#122](https://github.com/lijunzh/koda/issues/122).
+**v0.1.3 update**: The `__INVOKE_AGENT__` sentinel was removed. InvokeAgent is now
+handled at the dispatch level (`tool_dispatch.rs`) before reaching the registry.
+RecallContext uses an optional `db` + `session_id` on the ToolRegistry, set via
+`.with_session()`. No more sentinel strings anywhere.
 
 **Future trigger**: When tool additions become frequent enough that editing 3
 locations per tool (definitions, match arm, module import) is a bottleneck,
 convert to a `Tool` trait + `ToolContext`. Do both together, not piecemeal.
+
+### 8. Model-Adaptive Architecture (v0.1.3)
+
+**Decision**: Koda classifies models into three tiers (Strong/Standard/Lite)
+and adapts system prompts, tool loading, loop limits, and parallel execution
+accordingly.
+
+**Rationale**: One-size-fits-all wastes tokens on strong models (verbose prompts
+they don't need) and confuses weak models (terse instructions they can't follow).
+The tiered system adapts automatically.
+
+**How it works**:
+- `ModelTier::from_model_name()` auto-detects from model name + provider
+- `build_system_prompt_tiered()` adjusts verbosity per tier
+- `get_definitions_tiered()` loads core-only tools for Strong (+ DiscoverTools)
+- `ModelTier::allows_parallel_tools()` gates parallel execution
+- CLI `--model-tier` flag and agent JSON `"model_tier"` field for overrides
+
+**Key constraint**: The system prompt must be stable within a session to preserve
+Anthropic prompt cache hit rates. Tier is determined at session start, not per-turn.
+
+### 9. Context Window Auto-Detection (v0.1.3)
+
+**Decision**: `model_context.rs` maps model names to context window sizes.
+No API call required — pure lookup table.
+
+**Rationale**: The previous hardcoded 32K default meant Opus users were using
+16% of their available context, triggering premature compaction. Auto-detection
+is the single highest-impact change in v0.1.3.
+
+### 10. Lazy Tool Loading with DiscoverTools (v0.1.3)
+
+**Decision**: Strong-tier models get only 9 tools upfront. Everything else is
+discoverable on demand by category.
+
+**Rationale**: 20+ tool schemas cost ~2000 tokens/turn. Core tools handle 90%+
+of turns. DiscoverTools costs ~50 tokens for the schema + ~80 for category hints.
+Net savings: ~57% reduction in per-turn tool overhead for Strong tier.
+
+### 11. Rate Limit Retry (v0.1.3)
+
+**Decision**: Exponential backoff retry for 429/rate-limit errors. Up to 5
+attempts with delays of 2, 4, 8, 16, 32 seconds.
+
+### 12. Sub-Agent Model Routing (v0.1.3)
+
+**Decision**: Sub-agents respect their own provider/model config when
+explicitly set. The parent's base_url is only inherited if the sub-agent
+uses the same provider. This enables cheap models for grunt work while
+expensive models handle reasoning.
 
 ## References
 
