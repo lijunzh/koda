@@ -17,9 +17,11 @@ Refer to this when the user asks "what can you do?" or about features.
 
 ### Model Tiers
 
-Koda auto-adapts to your model. Override with `--model-tier strong|standard|lite`.
-- Strong (Opus, GPT-4o): minimal prompts, lazy tools, parallel execution
-- Standard (Flash, Mistral): full prompts, all tools
+Koda starts all models at Standard and adapts based on tool-use quality.
+Override with `--model-tier strong|standard|lite`.
+- Strong (promoted after 3 successful turns): minimal prompts, lazy tools
+- Standard (default): full prompts, all tools
+- Lite (demoted after hallucinations): verbose prompts, step-by-step guidance
 - Lite (local models): verbose prompts, step-by-step, sequential
 
 ### Built-in Agents

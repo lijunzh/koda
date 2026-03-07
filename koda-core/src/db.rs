@@ -469,7 +469,8 @@ impl Database {
         let tool_len = msg.tool_calls.as_deref().map_or(0, |c| c.len());
         // Use the same formula as inference_helpers::estimate_tokens
         // to avoid budget mismatch between load_context and inference_loop.
-        ((content_len + tool_len) as f64 / 3.5) as usize + 10
+        ((content_len + tool_len) as f64 / crate::inference_helpers::CHARS_PER_TOKEN) as usize
+            + crate::inference_helpers::PER_MESSAGE_OVERHEAD
     }
 
     /// Get token usage totals for a session.

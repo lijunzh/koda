@@ -59,12 +59,9 @@ pub async fn handle_slash_command(
             config.model = model.clone();
             config.model_settings.model = model.clone();
             config.recalculate_model_derived();
-            // Query actual capabilities from the API
             {
                 let prov = provider.read().await;
-                if let Ok(caps) = prov.model_capabilities(&model).await {
-                    config.apply_provider_capabilities(&caps);
-                }
+                config.query_and_apply_capabilities(prov.as_ref()).await;
             }
             crate::tui_wizards::save_provider(config);
             ok_msg(format!("Model set to: {model}"));
@@ -219,12 +216,9 @@ async fn handle_pick_model(
                     config.model = models[idx].id.clone();
                     config.model_settings.model = config.model.clone();
                     config.recalculate_model_derived();
-                    // Query actual capabilities from the API (re-acquire lock)
                     {
                         let prov = provider.read().await;
-                        if let Ok(caps) = prov.model_capabilities(&config.model).await {
-                            config.apply_provider_capabilities(&caps);
-                        }
+                        config.query_and_apply_capabilities(prov.as_ref()).await;
                     }
                     crate::tui_wizards::save_provider(config);
                     ok_msg(format!("Model set to: {}", config.model));

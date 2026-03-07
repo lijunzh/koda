@@ -9,6 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- **Observe-and-adapt tier system** — all models start at Standard; `TierObserver` promotes to Strong after 3 successful tool-use turns, demotes to Lite after 2+ hallucinated names or malformed args. Name-based tier guessing removed.
+- **Context window from API** — `query_and_apply_capabilities()` queries the provider API for actual context window and max output tokens. Falls back to hardcoded lookup. Called in all entry points (TUI, headless, ACP server).
+- **Decoupled resource limits** — iteration cap (200), parallel tools (always on), and auto-compact threshold (85%) are now the same for all tiers. Local models are no longer capped at 50 iterations.
+- **Named constants** — `CHARS_PER_TOKEN`, `PER_MESSAGE_OVERHEAD`, `SYSTEM_PROMPT_OVERHEAD` replace magic numbers across 4 files.
+
 ## [0.1.3] - 2026-03-06
 
 ### Added

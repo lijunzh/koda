@@ -273,21 +273,7 @@ pub async fn run(
     // This overrides the hardcoded context window with the real value.
     if config.model != "(no model loaded)" && config.model != "(connection failed)" {
         let prov = provider.read().await;
-        match prov.model_capabilities(&config.model).await {
-            Ok(caps) if caps.context_window.is_some() || caps.max_output_tokens.is_some() => {
-                config.apply_provider_capabilities(&caps);
-            }
-            Ok(_) => {
-                tracing::debug!(
-                    "Provider did not report capabilities for {}; using lookup table ({}k tokens)",
-                    config.model,
-                    config.max_context_tokens / 1000
-                );
-            }
-            Err(e) => {
-                tracing::debug!("Could not query model capabilities: {e:#}");
-            }
-        }
+        config.query_and_apply_capabilities(prov.as_ref()).await;
     }
 
     // Print banner BEFORE entering raw mode
