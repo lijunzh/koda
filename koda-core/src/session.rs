@@ -41,6 +41,8 @@ impl KodaSession {
     ) -> Self {
         let provider = providers::create_provider(config);
         let settings = Settings::load();
+        // Wire db+session into ToolRegistry for RecallContext
+        agent.tools.set_session(Arc::new(db.clone()), id.clone());
         Self {
             id,
             agent,
@@ -68,6 +70,17 @@ impl KodaSession {
         sink.emit(crate::engine::EngineEvent::TurnStart {
             turn_id: turn_id.clone(),
         });
+
+        // Surface intent-based agent/skill suggestions
+        if let Ok(last_msg) = self.db.last_user_message(&self.id).await {
+            let suggestion = crate::intent::classify_intent(&last_msg);
+            if let (Some(ref agent), Some(ref reason)) = (suggestion.suggestion, suggestion.reason)
+            {
+                sink.emit(crate::engine::EngineEvent::Info {
+                    message: format!("\u{1f4a1} Tip: {reason} (agent: {agent})"),
+                });
+            }
+        }
 
         let result = crate::inference::inference_loop(
             &self.agent.project_root,
