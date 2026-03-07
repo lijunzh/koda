@@ -65,12 +65,16 @@ koda/
 │   │   ├── keystore.rs     # Secure API key storage (~/.config/koda/keys.toml, 0600)
 │   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
 │   │   ├── memory.rs       # Semantic memory (global + project tiers → system prompt)
+│   │   ├── model_context.rs# Model → context window size lookup table
+│   │   ├── model_tier.rs   # ModelTier enum (Strong/Standard/Lite) + auto-detection
+│   │   ├── intent.rs       # Rule-based intent classifier (task → agent/skill)
+│   │   ├── task_phase.rs   # Task phase state machine (Understanding→Verifying)
 │   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
 │   │   ├── runtime_env.rs  # Thread-safe runtime env for API keys
 │   │   ├── version.rs      # Background version checker (queries crates.io)
 │   │   ├── engine/         # EngineEvent, EngineCommand, EngineSink trait
 │   │   ├── providers/      # LLM providers (Anthropic, Gemini, OpenAI-compat, mock)
-│   │   ├── tools/          # Built-in tools (Bash, Read, Write, Edit, etc.)
+│   │   ├── tools/          # Built-in tools (Bash, Read, Write, Edit, DiscoverTools, RecallContext, etc.)
 │   │   ├── mcp/            # MCP client (registry, config, capability_registry)
 │   │   ├── db.rs           # SQLite persistence (WAL mode, parameterized queries)
 │   │   └── config.rs       # Agent/provider config
