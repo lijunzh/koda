@@ -40,7 +40,9 @@ pub async fn inference_loop(
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
 ) -> Result<()> {
-    let system_tokens = system_prompt.len() / 4 + 100;
+    // Use the same formula as estimate_tokens (chars/3.5 + overhead)
+    // to keep the budget calculation consistent with re-estimation later.
+    let system_tokens = (system_prompt.len() as f64 / 3.5) as usize + 100;
     let available = config.max_context_tokens.saturating_sub(system_tokens);
     // Hard cap is configurable per-agent; user can extend it interactively.
     let mut hard_cap = config.max_iterations;

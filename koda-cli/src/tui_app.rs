@@ -231,6 +231,8 @@ pub async fn run(
         config.base_url = last.base_url.clone();
         config.model = last.model.clone();
         config.model_settings.model = last.model.clone();
+        // Recalculate context window and tier for the restored model
+        config.recalculate_model_derived();
     }
 
     let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
@@ -242,6 +244,7 @@ pub async fn run(
             Ok(models) if !models.is_empty() => {
                 config.model = models[0].id.clone();
                 config.model_settings.model = config.model.clone();
+                config.recalculate_model_derived();
                 tracing::info!("Auto-detected model: {}", config.model);
             }
             Ok(_) => {
