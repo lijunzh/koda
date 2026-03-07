@@ -452,6 +452,8 @@ impl KodaConfig {
     ///
     /// Call this whenever `self.model` or `self.provider_type` changes to keep
     /// context window, tier, and iteration defaults in sync with the new model.
+    /// Uses the hardcoded lookup table as a synchronous fallback.
+    /// For API-sourced values, call `apply_provider_capabilities` after this.
     pub fn recalculate_model_derived(&mut self) {
         let new_ctx = crate::model_context::context_window_for_model(&self.model);
         self.max_context_tokens = new_ctx;
@@ -460,6 +462,26 @@ impl KodaConfig {
         self.model_tier = ModelTier::from_model_name(&self.model, &self.provider_type);
         self.max_iterations = self.model_tier.default_max_iterations();
         self.auto_compact_threshold = self.model_tier.default_auto_compact_threshold();
+    }
+
+    /// Apply capabilities queried from the provider API.
+    ///
+    /// Overrides the hardcoded context window and max output tokens with
+    /// values reported by the provider. Call this after `recalculate_model_derived`
+    /// when you have access to the provider.
+    pub fn apply_provider_capabilities(&mut self, caps: &crate::providers::ModelCapabilities) {
+        if let Some(ctx) = caps.context_window {
+            self.max_context_tokens = ctx;
+            self.model_settings.max_context_tokens = ctx;
+            tracing::info!("Context window from API: {} tokens for {}", ctx, self.model);
+        }
+        if let Some(max_out) = caps.max_output_tokens {
+            // Only override if not explicitly set by the user/agent config
+            if self.model_settings.max_tokens.is_none() {
+                self.model_settings.max_tokens = Some(max_out as u32);
+                tracing::info!("Max output tokens from API: {} for {}", max_out, self.model);
+            }
+        }
     }
 
     /// Built-in agent configs, embedded at compile time.
