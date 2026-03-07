@@ -42,26 +42,30 @@ On first run, an onboarding wizard guides you through provider and API key setup
 ```bash
 koda                              # Interactive REPL (auto-detects LM Studio)
 koda --provider anthropic         # Use a cloud provider
+koda --model-tier strong          # Override auto-detected tier
 koda -p "fix the bug in auth.rs"  # Headless one-shot
 echo "explain this" | koda        # Piped input
 ```
 
 ## Features
 
-- **17 built-in tools** — file ops, search, shell, web fetch, memory, agents, task tracking, AST analysis
+- **20+ built-in tools** — file ops, search, shell, web fetch, memory, agents, AST analysis, email, context recall
 - **MCP support** — connect to any [MCP server](https://modelcontextprotocol.io) via `.mcp.json` (same format as Claude Code / Cursor)
-- **6 LLM providers** — LM Studio, OpenAI, Anthropic, Gemini, Groq, Grok
-- **5 embedded agents** — default, code reviewer, security auditor, test writer, release engineer
+- **14 LLM providers** — LM Studio, OpenAI, Anthropic, Gemini, Groq, Grok, Ollama, DeepSeek, Mistral, MiniMax, OpenRouter, Together, Fireworks, vLLM
+- **6 built-in agents** — default, test writer, release engineer, codebase scout, planner, verifier
+- **Model-adaptive** — auto-detects model tier (Strong/Standard/Lite) and adjusts prompts, tool loading, and parameters
+- **Lazy tool loading** — Strong models get 9 core tools; discover more on demand via `DiscoverTools`
+- **Smart context** — auto-detects context window (200K for Opus, 1M for Gemini), rate limit retry with backoff, auto-compact
 - **Approval modes** — plan (read-only) / normal (smart confirm) / yolo (auto-approve) via `/trust`
 - **Diff preview** — see exactly what changes before approving Edit, Write, Delete
 - **Loop detection** — catches repeated tool calls with configurable iteration caps
 - **Parallel execution** — concurrent tool calls and sub-agent orchestration
-- **Smart context** — auto-compact (configurable threshold), sliding window, prompt caching (Anthropic)
 - **Extended thinking** — structured thinking block display with configurable budgets
 - **Image analysis** — `@image.png` or drag-and-drop for multi-modal input
 - **Git integration** — `/diff` review, commit message generation
 - **Headless mode** — `koda -p "prompt"` with JSON output for CI/CD
 - **Persistent memory** — project (`MEMORY.md`) and global (`~/.config/koda/memory.md`)
+- **Cost tracking** — per-turn and per-session cost estimation including thinking tokens
 
 ### 🌳 AST Code Analysis
 
@@ -130,16 +134,90 @@ User-level servers go in `~/.config/koda/mcp.json` (merged, project overrides).
 
 ## Architecture
 
-Koda is a Cargo workspace with two crates:
+Koda is a Cargo workspace with four crates:
 
 ```
 koda/
-├── koda-core/    # Engine library (providers, tools, inference, DB) — zero terminal deps
-└── koda-cli/     # CLI binary (REPL, display, approval UI)
+├── koda-core/     # Engine library (providers, tools, inference, DB) — zero terminal deps
+├── koda-cli/      # CLI binary (REPL, display, approval UI)
+├── koda-ast/      # MCP server: tree-sitter AST analysis
+└── koda-email/    # MCP server: email via IMAP/SMTP
 ```
 
 The engine communicates through `EngineEvent` (output) and `EngineCommand` (input) enums
 over async channels. See [DESIGN.md](DESIGN.md) for architectural decisions.
+
+### Model-Adaptive Architecture
+
+Koda auto-detects your model's capabilities and adapts its behavior:
+
+| Tier | Models | Behavior |
+|------|--------|----------|
+| **Strong** | Opus, Sonnet, GPT-4o, o-series, Gemini 2.5 Pro | Minimal prompts, lazy tool loading, parallel execution |
+| **Standard** | Flash, DeepSeek, Mistral Large, Llama 70B | Full prompts, all tools, balanced |
+| **Lite** | Local models, 7B/8B, Flash Lite | Verbose prompts, sequential execution, lower loop caps |
+
+Override with `--model-tier strong|standard|lite` or `"model_tier": "strong"` in agent config.
+
+## Getting the Most Out of Koda
+
+### Use the right model tier
+
+Koda auto-detects your model's tier, but you can override it:
+
+```bash
+koda --model-tier strong    # Minimal prompts, lazy tools (saves ~57% token overhead)
+koda --model-tier lite      # Verbose prompts, step-by-step guidance for small models
+```
+
+The status bar shows your current tier: `claude-sonnet-4-6 [Strong]`
+
+### Delegate with sub-agents
+
+Koda ships with specialized agents. Use them for focused tasks:
+
+| Agent | Purpose | Tools |
+|-------|---------|-------|
+| **scout** | Codebase exploration (read-only) | Read, List, Grep, Glob |
+| **testgen** | Test generation | All tools |
+| **planner** | Task decomposition (read-only) | Read, List, Grep, Glob |
+| **verifier** | Quality verification | Read, Grep, Bash |
+| **releaser** | Release engineering | All tools |
+
+Koda's intent classifier suggests agents automatically: "find all uses of X" → scout, "write tests" → testgen.
+
+Sub-agents can run on different models for cost optimization:
+```json
+// agents/scout.json — use cheap model for exploration
+{
+  "name": "scout",
+  "provider": "gemini",
+  "model": "gemini-2.5-flash",
+  "allowed_tools": ["Read", "List", "Grep", "Glob"],
+  "max_iterations": 10
+}
+```
+
+### Context window management
+
+Koda auto-detects your model's context window and manages it:
+
+| Model | Context | Auto-compact at |
+|-------|---------|----------------|
+| Claude Opus/Sonnet | 200K tokens | 90% (Strong) |
+| Gemini 2.5 | 1M tokens | 80% (Standard) |
+| GPT-4o | 128K tokens | 90% (Strong) |
+| Local models | 4K–128K | 70% (Lite) |
+
+Use `/compact` manually, or let auto-compact handle it. The `/cost` command shows token usage and estimated cost.
+
+### Save tokens with DiscoverTools
+
+Strong-tier models load only core tools (Read, Write, Edit, etc.) by default. When the model needs agents, skills, or other capabilities, it calls `DiscoverTools` to load them on demand — saving ~57% per-turn tool overhead.
+
+### Recall older context
+
+If context was dropped from the sliding window, the model can use `RecallContext` to search or retrieve specific turns from conversation history.
 
 ## Documentation
 
@@ -151,7 +229,7 @@ over async channels. See [DESIGN.md](DESIGN.md) for architectural decisions.
 ## Development
 
 ```bash
-cargo test --workspace --features koda-core/test-support  # Run all 284 tests
+cargo test --workspace --features koda-core/test-support  # Run all 489 tests
 cargo clippy --workspace      # Lint
 cargo run -p koda-cli         # Run locally
 ```
