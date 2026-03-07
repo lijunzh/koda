@@ -49,8 +49,9 @@ impl ServerHandler for AstServer {
         let mut info = InitializeResult::new(ServerCapabilities::builder().enable_tools().build());
         info.server_info = Implementation::new("koda-ast", env!("CARGO_PKG_VERSION"));
         info.instructions = Some(
-            "AST analysis server for Rust, Python, JavaScript, and TypeScript. \
-             Use AstAnalysis tool with action 'analyze_file' or 'get_call_graph'."
+            "AST analysis server for Rust, Python, JavaScript, TypeScript, Go, Java, \
+             C/C++, and Bash. Use AstAnalysis tool with action 'analyze_file' or \
+             'get_call_graph'."
                 .to_string(),
         );
         info
@@ -62,7 +63,7 @@ impl AstServer {
     /// Read-only AST code analysis for Rust, Python, JavaScript, TypeScript.
     #[tool(
         name = "AstAnalysis",
-        description = "Read-only AST code analysis. Use 'analyze_file' for functions/classes/structs summary, or 'get_call_graph' with a symbol name to find callers and callees. Supports .rs, .py, .js, .ts files."
+        description = "Read-only AST code analysis. Use 'analyze_file' for functions/classes/structs summary, or 'get_call_graph' with a symbol name to find callers and callees. Supports .rs, .py, .pyi, .pyw, .js, .jsx, .mjs, .cjs, .ts, .mts, .cts, .tsx, .go, .java, .c, .h, .cpp, .cc, .cxx, .hpp, .hh, .sh, .bash files."
     )]
     async fn ast_analysis(
         &self,
