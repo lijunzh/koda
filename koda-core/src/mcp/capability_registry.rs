@@ -24,19 +24,47 @@ pub struct CapabilityEntry {
 }
 
 /// Built-in capability registry — auto-provisionable MCP servers.
-const REGISTRY: &[CapabilityEntry] = &[CapabilityEntry {
-    server_name: "koda-ast",
-    command: "koda-ast",
-    tools: &["AstAnalysis"],
-    description: "Tree-sitter AST analysis for Rust, Python, JS, TS",
-    install_hint: "brew install koda (includes koda-ast) or cargo install koda-ast",
-    tool_definitions: &[(
-        "AstAnalysis",
-        "Read-only AST code analysis. Supports .rs, .py, .js, .ts. \
-         Use action 'analyze_file' for structure summary or 'get_call_graph' with a symbol.",
-        r#"{"type":"object","properties":{"action":{"type":"string","description":"'analyze_file' or 'get_call_graph'"},"file_path":{"type":"string","description":"Path to file"},"symbol":{"type":"string","description":"Symbol for get_call_graph"}},"required":["action","file_path"]}"#,
-    )],
-}];
+const REGISTRY: &[CapabilityEntry] = &[
+    CapabilityEntry {
+        server_name: "koda-ast",
+        command: "koda-ast",
+        tools: &["AstAnalysis"],
+        description: "Tree-sitter AST analysis for Rust, Python, JS, TS",
+        install_hint: "brew install koda (includes koda-ast) or cargo install koda-ast",
+        tool_definitions: &[(
+            "AstAnalysis",
+            "Read-only AST code analysis. Supports .rs, .py, .js, .ts. \
+             Use action 'analyze_file' for structure summary or 'get_call_graph' with a symbol.",
+            r#"{"type":"object","properties":{"action":{"type":"string","description":"'analyze_file' or 'get_call_graph'"},"file_path":{"type":"string","description":"Path to file"},"symbol":{"type":"string","description":"Symbol for get_call_graph"}},"required":["action","file_path"]}"#,
+        )],
+    },
+    CapabilityEntry {
+        server_name: "koda-email",
+        command: "koda-email",
+        tools: &["EmailRead", "EmailSend", "EmailSearch"],
+        description: "Email read/send/search via IMAP/SMTP",
+        install_hint: "brew install koda (includes koda-email) or cargo install koda-email",
+        tool_definitions: &[
+            (
+                "EmailRead",
+                "Read recent emails from INBOX. Returns subject, sender, date, and a text snippet. \
+                 Use 'count' to control how many (default 5, max 20).",
+                r#"{"type":"object","properties":{"count":{"type":"integer","description":"Number of recent emails to fetch (default 5, max 20)"}},"required":[]}"#,
+            ),
+            (
+                "EmailSend",
+                "Send an email via SMTP. Requires 'to' (recipient), 'subject', and 'body'.",
+                r#"{"type":"object","properties":{"to":{"type":"string","description":"Recipient email address"},"subject":{"type":"string","description":"Email subject line"},"body":{"type":"string","description":"Email body text"}},"required":["to","subject","body"]}"#,
+            ),
+            (
+                "EmailSearch",
+                "Search emails in INBOX. Plain text searches subject and body. \
+                 Use 'from:addr' to search by sender, 'subject:text' to search by subject.",
+                r#"{"type":"object","properties":{"query":{"type":"string","description":"Search query. Use 'from:' or 'subject:' prefixes for targeted search."},"max_results":{"type":"integer","description":"Max results (default 10, max 50)"}},"required":["query"]}"#,
+            ),
+        ],
+    },
+];
 
 /// Get tool definitions from all capability registry entries.
 ///
@@ -102,6 +130,24 @@ mod tests {
         assert!(!defs.is_empty());
         let ast = defs.iter().find(|d| d.name == "AstAnalysis");
         assert!(ast.is_some(), "AstAnalysis should be in tool definitions");
+    }
+
+    #[test]
+    fn test_find_email_tools() {
+        for tool_name in &["EmailRead", "EmailSend", "EmailSearch"] {
+            let entry = find_server_for_tool(tool_name);
+            assert!(entry.is_some(), "{tool_name} should be in registry");
+            assert_eq!(entry.unwrap().server_name, "koda-email");
+        }
+    }
+
+    #[test]
+    fn test_tool_definitions_include_email() {
+        let defs = tool_definitions();
+        for name in &["EmailRead", "EmailSend", "EmailSearch"] {
+            let found = defs.iter().find(|d| d.name == *name);
+            assert!(found.is_some(), "{name} should be in tool definitions");
+        }
     }
 
     #[tokio::test]
