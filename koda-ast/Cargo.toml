@@ -1,0 +1,29 @@
+[package]
+name = "koda-ast"
+version = "0.1.0"
+edition = "2024"
+description = "MCP server for tree-sitter AST analysis — part of the koda ecosystem"
+license = "MIT"
+
+[[bin]]
+name = "koda-ast"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "1.1", features = ["server", "macros", "transport-io"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+schemars = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tree-sitter = "0.26.6"
+tree-sitter-rust = "0.24.0"
+tree-sitter-python = "0.25.0"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-typescript = "0.23.2"
+petgraph = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
