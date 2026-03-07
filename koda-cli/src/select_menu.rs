@@ -210,6 +210,8 @@ fn move_past_menu(
     execute!(stdout, cursor::MoveDown(total_lines as u16 - 1))?;
     // One more \n to position at the line after the menu
     execute!(stdout, Print("\r\n"))?;
+    // Clear everything below cursor so leftover menu lines don't linger
+    execute!(stdout, Clear(ClearType::FromCursorDown))?;
     stdout.flush()?;
     Ok(())
 }
