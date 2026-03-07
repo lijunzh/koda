@@ -9,6 +9,7 @@
 //! - `client` — wraps `rmcp` to connect, list tools, and call tools
 //! - `registry` — manages multiple MCP server connections
 
+pub mod capability_registry;
 pub mod client;
 pub mod config;
 pub mod registry;
