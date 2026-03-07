@@ -10,9 +10,9 @@
 
 use crate::config::KodaConfig;
 use crate::mcp::McpRegistry;
+use crate::memory;
 use crate::providers::ToolDefinition;
 use crate::tools::ToolRegistry;
-use crate::{inference, memory};
 
 use anyhow::Result;
 use std::path::PathBuf;
@@ -51,7 +51,7 @@ impl KodaAgent {
         let tool_defs = tools.get_definitions(&config.allowed_tools);
 
         let semantic_memory = memory::load(&project_root)?;
-        let system_prompt = inference::build_system_prompt(
+        let system_prompt = crate::prompt::build_system_prompt(
             &config.system_prompt,
             &semantic_memory,
             &config.agents_dir,
