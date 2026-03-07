@@ -235,13 +235,14 @@ impl ModelSettings {
             ProviderType::Anthropic => Some(16384),
             _ => None,
         };
+        let max_context_tokens = crate::model_context::context_window_for_model(model);
         Self {
             model: model.to_string(),
             max_tokens,
             temperature: None,
             thinking_budget: None,
             reasoning_effort: None,
-            max_context_tokens: 32_000,
+            max_context_tokens,
         }
     }
 }
@@ -333,9 +334,12 @@ impl KodaConfig {
             .model
             .unwrap_or_else(|| provider_type.default_model().to_string());
 
-        let max_context_tokens = agent.max_context_tokens.unwrap_or(32_000);
         let mut settings = ModelSettings::defaults_for(&model, &provider_type);
-        settings.max_context_tokens = max_context_tokens;
+        // Agent config can override the auto-detected context window
+        if let Some(ctx) = agent.max_context_tokens {
+            settings.max_context_tokens = ctx;
+        }
+        let max_context_tokens = settings.max_context_tokens;
         if let Some(mt) = agent.max_tokens {
             settings.max_tokens = Some(mt);
         }
@@ -449,6 +453,7 @@ impl KodaConfig {
     pub fn default_for_testing(provider_type: ProviderType) -> Self {
         let model = provider_type.default_model().to_string();
         let model_settings = ModelSettings::defaults_for(&model, &provider_type);
+        let max_context_tokens = model_settings.max_context_tokens;
         Self {
             agent_name: "test".to_string(),
             system_prompt: "You are a test agent.".to_string(),
@@ -456,7 +461,7 @@ impl KodaConfig {
             base_url: provider_type.default_base_url().to_string(),
             model,
             provider_type,
-            max_context_tokens: 32_000,
+            max_context_tokens,
             agents_dir: PathBuf::from("agents"),
             model_settings,
             max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,

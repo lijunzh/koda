@@ -232,7 +232,7 @@ async fn test_provider_error_emits_error_event() {
     let env = Env::new().await;
     env.insert_user_message("trigger error").await;
 
-    let provider = MockProvider::new(vec![MockResponse::Error("API rate limit".into())]);
+    let provider = MockProvider::new(vec![MockResponse::Error("Internal server error".into())]);
     let sink = TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     let mut settings = Settings::load();
@@ -261,7 +261,7 @@ async fn test_provider_error_emits_error_event() {
     let err = result.unwrap_err();
     let chain = format!("{err:?}"); // debug format shows full error chain
     assert!(
-        chain.contains("API rate limit"),
+        chain.contains("Internal server error"),
         "error chain should contain provider message, got: {chain}"
     );
 }
