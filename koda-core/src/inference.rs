@@ -85,16 +85,7 @@ pub async fn inference_loop(
             hard_cap += extra;
         }
 
-        // Build system message with current todo (if any)
-        let system_with_todo = match db.get_todo(session_id).await.unwrap_or(None) {
-            Some(todo) => format!(
-                "{base_system_prompt}\n\n## Current Task List\n\
-                 You are tracking these tasks. Update with TodoWrite as you make progress.\n\
-                 {todo}"
-            ),
-            None => base_system_prompt.clone(),
-        };
-        let system_message = ChatMessage::text("system", &system_with_todo);
+        let system_message = ChatMessage::text("system", &base_system_prompt);
 
         // Assemble context with sliding window
         let history = db.load_context(session_id, available).await?;
