@@ -341,7 +341,7 @@ fn render_tool_output(
     let show = total.min(max_lines);
 
     // Syntax highlighting for Read tool output
-    let use_highlight = matches!(name, "Read" | "Grep") && file_ext.is_some();
+    let use_highlight = name == "Read" && file_ext.is_some();
     let mut highlighter = if use_highlight {
         Some(crate::highlight::CodeHighlighter::new(file_ext.unwrap()))
     } else {
@@ -351,6 +351,8 @@ fn render_tool_output(
     for line in &lines[..show] {
         if name == "Grep" {
             render_grep_line(terminal, line);
+        } else if name == "List" {
+            render_list_line(terminal, line);
         } else if let Some(ref mut hl) = highlighter {
             let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
             spans.extend(hl.highlight_spans(line));
@@ -374,6 +376,50 @@ fn render_tool_output(
             )]),
         );
     }
+}
+
+/// Render a single list entry with directory/file coloring.
+///
+/// List output format: `d path/to/dir` (directory) or `  path/to/file` (file).
+/// Directories are shown in bold, files colored by extension.
+fn render_list_line(terminal: &mut Term, line: &str) {
+    let is_dir = line.starts_with("d ");
+    let path_str = if is_dir {
+        &line[2..]
+    } else {
+        line.trim_start()
+    };
+
+    let style = if is_dir {
+        Style::default()
+            .add_modifier(ratatui::style::Modifier::BOLD)
+    } else {
+        // Color files by extension category
+        let ext = std::path::Path::new(path_str)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        match ext {
+            "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "rb" | "java" | "c" | "cpp"
+            | "h" | "cs" | "swift" | "kt" => Style::default().fg(Color::Green),
+            "toml" | "yaml" | "yml" | "json" | "xml" | "ini" | "cfg" | "conf" => {
+                Style::default().fg(Color::Yellow)
+            }
+            "md" | "txt" | "rst" | "adoc" => Style::default().fg(Color::White),
+            "lock" | "sum" => Style::default().fg(Color::DarkGray),
+            _ => Style::default().fg(Color::Reset),
+        }
+    };
+
+    let prefix = if is_dir { "\u{1f4c1} " } else { "   " };
+    tui_output::emit_line(
+        terminal,
+        Line::from(vec![
+            Span::styled("  \u{2502} ", DIM),
+            Span::raw(prefix),
+            Span::styled(path_str.to_string(), style),
+        ]),
+    );
 }
 
 /// Render a single grep result line with the file path highlighted.
