@@ -4,6 +4,7 @@
 //! when a tool call arrives for a tool that isn't built-in.
 
 use crate::mcp::config::McpServerConfig;
+use crate::providers::ToolDefinition;
 
 /// An entry in the capability registry.
 #[derive(Debug, Clone)]
@@ -18,6 +19,8 @@ pub struct CapabilityEntry {
     pub description: &'static str,
     /// Install command hint (shown if binary not found).
     pub install_hint: &'static str,
+    /// Tool definition for the LLM (so it knows to call the tool).
+    pub tool_definitions: &'static [(&'static str, &'static str, &'static str)], // (name, description, params_json)
 }
 
 /// Built-in capability registry — auto-provisionable MCP servers.
@@ -27,7 +30,33 @@ const REGISTRY: &[CapabilityEntry] = &[CapabilityEntry {
     tools: &["AstAnalysis"],
     description: "Tree-sitter AST analysis for Rust, Python, JS, TS",
     install_hint: "cargo install koda-ast",
+    tool_definitions: &[(
+        "AstAnalysis",
+        "Read-only AST code analysis. Supports .rs, .py, .js, .ts. \
+         Use action 'analyze_file' for structure summary or 'get_call_graph' with a symbol.",
+        r#"{"type":"object","properties":{"action":{"type":"string","description":"'analyze_file' or 'get_call_graph'"},"file_path":{"type":"string","description":"Path to file"},"symbol":{"type":"string","description":"Symbol for get_call_graph"}},"required":["action","file_path"]}"#,
+    )],
 }];
+
+/// Get tool definitions from all capability registry entries.
+///
+/// These are injected into the LLM's tool list so it knows auto-provisionable
+/// tools exist, even before the MCP server is connected.
+pub fn tool_definitions() -> Vec<ToolDefinition> {
+    REGISTRY
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .tool_definitions
+                .iter()
+                .map(|(name, desc, params)| ToolDefinition {
+                    name: name.to_string(),
+                    description: desc.to_string(),
+                    parameters: serde_json::from_str(params).unwrap_or_default(),
+                })
+        })
+        .collect()
+}
 
 /// Look up which MCP server provides a given tool name.
 pub fn find_server_for_tool(tool_name: &str) -> Option<&'static CapabilityEntry> {
@@ -65,5 +94,31 @@ mod tests {
     #[test]
     fn test_unknown_tool() {
         assert!(find_server_for_tool("UnknownTool123").is_none());
+    }
+
+    #[test]
+    fn test_tool_definitions_include_ast() {
+        let defs = tool_definitions();
+        assert!(!defs.is_empty());
+        let ast = defs.iter().find(|d| d.name == "AstAnalysis");
+        assert!(ast.is_some(), "AstAnalysis should be in tool definitions");
+    }
+
+    #[tokio::test]
+    async fn test_auto_provision_returns_install_hint() {
+        // When koda-ast is not on PATH and MCP registry is None,
+        // executing AstAnalysis should return an install hint, not "Unknown tool"
+        let registry = crate::tools::ToolRegistry::new(std::path::PathBuf::from("/tmp/test"));
+        let result = registry.execute("AstAnalysis", "{}").await;
+        assert!(
+            !result.output.contains("Unknown tool"),
+            "Should not return 'Unknown tool', got: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("koda-ast"),
+            "Should mention koda-ast server, got: {}",
+            result.output
+        );
     }
 }
