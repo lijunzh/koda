@@ -3,7 +3,7 @@
 //! All output is rendered as `ratatui::text::Line` / `Span` and written
 //! above the viewport via `insert_before()`. No ANSI strings.
 
-use crate::tui_output::{self, AMBER, BOLD, CYAN, DIM, GREEN, MAGENTA, ORANGE, RED, YELLOW};
+use crate::tui_output::{self, AMBER, BOLD, CYAN, DIM, MAGENTA, ORANGE, RED, YELLOW};
 use crate::widgets::status_bar::TurnStats;
 use koda_core::engine::EngineEvent;
 use ratatui::{
@@ -230,9 +230,6 @@ impl TuiRenderer {
             EngineEvent::SpinnerStart { .. } | EngineEvent::SpinnerStop => {
                 // TUI mode: spinner state is in the status bar.
             }
-            EngineEvent::TodoDisplay { content } => {
-                render_todo(terminal, &content);
-            }
             EngineEvent::Info { message } => {
                 tui_output::emit_line(
                     terminal,
@@ -334,24 +331,6 @@ fn render_tool_output(terminal: &mut Term, _name: &str, output: &str, verbose: b
                 format!("  \u{2502} ... ({} more lines)", total - show),
                 DIM,
             )]),
-        );
-    }
-}
-
-/// Render a todo checklist.
-fn render_todo(terminal: &mut Term, content: &str) {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        let style = if trimmed.starts_with("- [x]") || trimmed.starts_with("- [X]") {
-            GREEN
-        } else if trimmed.starts_with("- [ ]") {
-            YELLOW
-        } else {
-            DIM
-        };
-        tui_output::emit_line(
-            terminal,
-            Line::from(vec![Span::raw("  "), Span::styled(line.to_string(), style)]),
         );
     }
 }

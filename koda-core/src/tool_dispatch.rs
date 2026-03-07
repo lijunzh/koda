@@ -40,7 +40,7 @@ pub(crate) async fn execute_one_tool(
     project_root: &Path,
     config: &KodaConfig,
     db: &Database,
-    session_id: &str,
+    _session_id: &str,
     tools: &crate::tools::ToolRegistry,
     mode: ApprovalMode,
     allowed_commands: &[String],
@@ -69,30 +69,6 @@ pub(crate) async fn execute_one_tool(
         {
             Ok(output) => output,
             Err(e) => format!("Error invoking sub-agent: {e}"),
-        }
-    } else if tc.function_name == "TodoRead" {
-        // Return current todo list from DB
-        match db.get_todo(session_id).await {
-            Ok(Some(content)) => content,
-            Ok(None) => "No todo list set. Use TodoWrite to create one.".to_string(),
-            Err(e) => format!("Failed to read todo: {e}"),
-        }
-    } else if tc.function_name == "TodoWrite" {
-        // Handle todo updates: save to DB and render for the user
-        let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
-        match crate::tools::todo::extract_content(&args) {
-            Some(content) => {
-                if let Err(e) = db.set_todo(session_id, &content).await {
-                    format!("Failed to save todo: {e}")
-                } else {
-                    // Show updated todo immediately
-                    sink.emit(EngineEvent::TodoDisplay {
-                        content: content.clone(),
-                    });
-                    "Todo list updated.".to_string()
-                }
-            }
-            None => "Error: 'content' parameter is required.".to_string(),
         }
     } else {
         let r = tools.execute(&tc.function_name, &tc.arguments).await;
