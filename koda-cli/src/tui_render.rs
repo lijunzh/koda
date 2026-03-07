@@ -262,7 +262,6 @@ fn tool_call_styles(name: &str, args: &serde_json::Value) -> (Style, String) {
         "Write" | "Edit" => AMBER,
         "Delete" => RED,
         "WebFetch" => Style::new().fg(Color::Blue),
-        "Think" | "ShareReasoning" => DIM,
         _ => DIM,
     };
 
@@ -296,8 +295,8 @@ fn tool_call_styles(name: &str, args: &serde_json::Value) -> (Style, String) {
 }
 
 /// Render tool output with collapsing for long outputs.
-fn render_tool_output(terminal: &mut Term, name: &str, output: &str, verbose: bool) {
-    if output.is_empty() || name == "ShareReasoning" {
+fn render_tool_output(terminal: &mut Term, _name: &str, output: &str, verbose: bool) {
+    if output.is_empty() {
         return;
     }
 

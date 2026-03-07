@@ -37,19 +37,6 @@ pub async fn inference_loop(
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
 ) -> Result<()> {
-    // When native thinking is active, drop ShareReasoning from tool list
-    let has_native_thinking = config.model_settings.thinking_budget.is_some()
-        || config.model_settings.reasoning_effort.is_some();
-    let tool_defs: Vec<crate::providers::ToolDefinition> = if has_native_thinking {
-        tool_defs
-            .iter()
-            .filter(|t| t.name != "ShareReasoning")
-            .cloned()
-            .collect()
-    } else {
-        tool_defs.to_vec()
-    };
-    let tool_defs = &tool_defs;
     let system_tokens = system_prompt.len() / 4 + 100;
     let available = config.max_context_tokens.saturating_sub(system_tokens);
     // Hard cap is configurable per-agent; user can extend it interactively.
