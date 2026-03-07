@@ -92,14 +92,17 @@ pub async fn compact_session_with_provider(
     );
 
     let messages = vec![ChatMessage::text("user", &summary_prompt)];
-    // Use reduced settings for compaction — summarization doesn't need
-    // thinking/reasoning budgets or high max_tokens.
+    // Use reduced settings for compaction on the SAME model/provider.
+    // We intentionally keep the same model (not a cheaper one) because:
+    // 1. A cheaper model may have a smaller context window and fail on long histories
+    // 2. The conversation text is already capped at 20K chars (manageable for any model)
+    // 3. The real savings come from disabling thinking/reasoning, not switching models
     let compact_settings = ModelSettings {
         model: model_settings.model.clone(),
-        max_tokens: Some(4096), // summaries are short
-        temperature: Some(0.3), // deterministic summaries
-        thinking_budget: None,  // no thinking needed for summarization
-        reasoning_effort: None, // no reasoning needed
+        max_tokens: Some(4096),
+        temperature: Some(0.3),
+        thinking_budget: None,
+        reasoning_effort: None,
         max_context_tokens: model_settings.max_context_tokens,
     };
     let response = provider.chat(&messages, &[], &compact_settings).await?;
