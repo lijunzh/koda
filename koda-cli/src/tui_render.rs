@@ -212,6 +212,7 @@ impl TuiRenderer {
                 prompt_tokens,
                 completion_tokens,
                 cache_read_tokens,
+                thinking_tokens,
                 total_chars,
                 elapsed_ms,
                 rate,
@@ -227,6 +228,7 @@ impl TuiRenderer {
                     prompt_tokens,
                     completion_tokens,
                     cache_read_tokens,
+                    thinking_tokens,
                 );
                 self.last_turn_stats = Some(TurnStats {
                     tokens_in: prompt_tokens,

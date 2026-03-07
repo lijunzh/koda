@@ -8,7 +8,8 @@ use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent};
 use crate::inference_helpers::{
-    PREFLIGHT_COMPACT_THRESHOLD, assemble_messages, estimate_tokens, is_context_overflow_error,
+    PREFLIGHT_COMPACT_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages, estimate_tokens,
+    is_context_overflow_error, is_rate_limit_error, rate_limit_backoff,
 };
 use crate::loop_guard::LoopDetector;
 use crate::providers::{ChatMessage, ImageData, LlmProvider, StreamChunk, ToolCall};
@@ -159,20 +160,50 @@ pub async fn inference_loop(
             }
         }
 
-        // Stream the response
+        // Stream the response (with rate limit retry)
         sink.emit(EngineEvent::SpinnerStart {
             message: "Thinking...".into(),
         });
 
-        let stream_result = tokio::select! {
-            result = provider.chat_stream(&messages, tool_defs, &config.model_settings) => result,
-            _ = cancel.cancelled() => {
-                sink.emit(EngineEvent::SpinnerStop);
-                sink.emit(EngineEvent::Warn {
-                    message: "Interrupted".into(),
-                });
-                return Ok(());
+        let stream_result = 'retry: {
+            let mut last_err = None;
+            for attempt in 0..RATE_LIMIT_MAX_RETRIES {
+                let result = tokio::select! {
+                    result = provider.chat_stream(&messages, tool_defs, &config.model_settings) => result,
+                    _ = cancel.cancelled() => {
+                        sink.emit(EngineEvent::SpinnerStop);
+                        sink.emit(EngineEvent::Warn {
+                            message: "Interrupted".into(),
+                        });
+                        return Ok(());
+                    }
+                };
+                match result {
+                    Ok(rx) => break 'retry Ok(rx),
+                    Err(e) if is_rate_limit_error(&e) && attempt + 1 < RATE_LIMIT_MAX_RETRIES => {
+                        let delay = rate_limit_backoff(attempt);
+                        sink.emit(EngineEvent::SpinnerStop);
+                        sink.emit(EngineEvent::Warn {
+                            message: format!(
+                                "\u{23f3} Rate limited. Retrying in {}s...",
+                                delay.as_secs()
+                            ),
+                        });
+                        tracing::warn!(
+                            "Rate limit (attempt {}/{}): {e:#}",
+                            attempt + 1,
+                            RATE_LIMIT_MAX_RETRIES
+                        );
+                        tokio::time::sleep(delay).await;
+                        sink.emit(EngineEvent::SpinnerStart {
+                            message: format!("Retrying (attempt {})...", attempt + 2),
+                        });
+                        last_err = Some(e);
+                    }
+                    Err(e) => break 'retry Err(e),
+                }
             }
+            Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Rate limit retries exhausted")))
         };
 
         // Graceful recovery: if the provider returns a context-overflow error,

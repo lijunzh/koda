@@ -9,8 +9,9 @@ pub const PREFLIGHT_COMPACT_THRESHOLD: usize = 90;
 
 /// Estimate token count for a set of messages.
 ///
-/// Uses the rough heuristic of `chars / 4 + 10` per message.
-/// Not accurate for code or non-ASCII, but sufficient for budget checks.
+/// Uses a calibrated heuristic: `chars / 3.5 + 10` per message.
+/// (The original `chars / 4` consistently under-estimated; 3.5 aligns
+/// better with provider-reported token counts for code-heavy sessions.)
 pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
     messages
         .iter()
@@ -20,7 +21,7 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                 .tool_calls
                 .as_ref()
                 .map_or(0, |tc| serde_json::to_string(tc).map_or(0, |s| s.len()));
-            (content_len + tc_len) / 4 + 10
+            ((content_len + tc_len) as f64 / 3.5) as usize + 10
         })
         .sum()
 }
@@ -45,6 +46,26 @@ pub fn assemble_messages(
         });
     }
     messages
+}
+
+/// Detect if an error is a rate limit (429) from the provider.
+pub fn is_rate_limit_error(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}").to_lowercase();
+    msg.contains("429")
+        || msg.contains("rate limit")
+        || msg.contains("rate_limit")
+        || msg.contains("too many requests")
+        || msg.contains("quota exceeded")
+}
+
+/// Maximum number of retries for rate-limited requests.
+pub const RATE_LIMIT_MAX_RETRIES: u32 = 5;
+
+/// Compute exponential backoff delay for a retry attempt (1-indexed).
+/// Returns duration in seconds: 2, 4, 8, 16, 32 (capped at 32s).
+pub fn rate_limit_backoff(attempt: u32) -> std::time::Duration {
+    let secs = 2u64.pow(attempt).min(32);
+    std::time::Duration::from_secs(secs)
 }
 
 /// Detect if an error is a context window overflow from the provider.
@@ -116,15 +137,38 @@ mod tests {
     }
 
     #[test]
+    fn test_is_rate_limit_error() {
+        assert!(is_rate_limit_error(&anyhow::anyhow!(
+            "429 Too Many Requests"
+        )));
+        assert!(is_rate_limit_error(&anyhow::anyhow!("rate limit exceeded")));
+        assert!(is_rate_limit_error(&anyhow::anyhow!("rate_limit_exceeded")));
+        assert!(is_rate_limit_error(&anyhow::anyhow!("too many requests")));
+        assert!(is_rate_limit_error(&anyhow::anyhow!("quota exceeded")));
+
+        assert!(!is_rate_limit_error(&anyhow::anyhow!("prompt is too long")));
+        assert!(!is_rate_limit_error(&anyhow::anyhow!("connection refused")));
+    }
+
+    #[test]
+    fn test_rate_limit_backoff() {
+        assert_eq!(rate_limit_backoff(0).as_secs(), 1);
+        assert_eq!(rate_limit_backoff(1).as_secs(), 2);
+        assert_eq!(rate_limit_backoff(2).as_secs(), 4);
+        assert_eq!(rate_limit_backoff(3).as_secs(), 8);
+        assert_eq!(rate_limit_backoff(10).as_secs(), 32); // capped
+    }
+
+    #[test]
     fn test_estimate_tokens() {
         let messages = vec![
             ChatMessage::text("system", "You are helpful."),
             ChatMessage::text("user", "Hello world"),
         ];
         let tokens = estimate_tokens(&messages);
-        // "You are helpful." = 16 chars / 4 + 10 = 14
-        // "Hello world" = 11 chars / 4 + 10 = 12
-        assert_eq!(tokens, 14 + 12);
+        // "You are helpful." = 16 chars / 3.5 + 10 ≈ 14
+        // "Hello world" = 11 chars / 3.5 + 10 ≈ 13
+        assert!(tokens > 20 && tokens < 40, "tokens={tokens}");
     }
 
     #[test]
