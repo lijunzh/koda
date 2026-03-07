@@ -70,8 +70,10 @@ use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tui_textarea::TextArea;
 
-/// Height of the inline viewport (input line + status bar).
-const VIEWPORT_HEIGHT: u16 = 2;
+/// Minimum viewport height (1 input line + 1 status bar).
+const MIN_VIEWPORT_HEIGHT: u16 = 2;
+/// Maximum viewport height to avoid taking over the terminal.
+const MAX_VIEWPORT_HEIGHT: u16 = 10;
 
 // ── Session state ────────────────────────────────────────────
 
@@ -99,8 +101,8 @@ fn draw_viewport(
     last_turn: Option<&crate::widgets::status_bar::TurnStats>,
 ) {
     let area = frame.area();
-    let [input_row, status_row] =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
+    let [input_rows, status_row] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
 
     // Prompt icon + textarea
     let (icon, color) = match (state, mode) {
@@ -112,7 +114,7 @@ fn draw_viewport(
     let prompt_width: u16 = 4;
     let [prompt_area, text_area] =
         Layout::horizontal([Constraint::Length(prompt_width), Constraint::Fill(1)])
-            .areas(input_row);
+            .areas(input_rows);
 
     frame.render_widget(
         Paragraph::new(format!("{icon}> ")).style(Style::default().fg(color)),
@@ -138,25 +140,49 @@ fn draw_viewport(
 
 type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 
-fn init_terminal() -> Result<Term> {
+fn init_terminal(height: u16) -> Result<Term> {
     crossterm::terminal::enable_raw_mode()?;
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::with_options(
         backend,
         TerminalOptions {
-            viewport: Viewport::Inline(VIEWPORT_HEIGHT),
+            viewport: Viewport::Inline(height),
         },
     )?;
     Ok(terminal)
 }
 
-fn restore_terminal(terminal: &mut Term) {
+fn restore_terminal(terminal: &mut Term, height: u16) {
     let _ = terminal.clear();
     let _ = crossterm::terminal::disable_raw_mode();
     // Erase leftover viewport lines
-    print!("\x1b[{}A\x1b[J", VIEWPORT_HEIGHT);
+    print!("\x1b[{}A\x1b[J", height);
     let _ = std::io::Write::flush(&mut std::io::stdout());
+}
+
+/// Resize the viewport if the textarea line count changed.
+///
+/// Returns the (possibly new) terminal and updated height.
+/// Reinitializes the terminal when the viewport needs to grow or shrink.
+fn maybe_resize_viewport(
+    terminal: Term,
+    textarea: &TextArea,
+    current_height: u16,
+) -> Result<(Term, u16)> {
+    let input_lines = textarea.lines().len().max(1) as u16;
+    let desired = (input_lines + 1).clamp(MIN_VIEWPORT_HEIGHT, MAX_VIEWPORT_HEIGHT);
+    if desired == current_height {
+        return Ok((terminal, current_height));
+    }
+    // Erase old viewport, reinit with new height
+    drop(terminal);
+    let _ = crossterm::terminal::disable_raw_mode();
+    // Move cursor up past old viewport and clear
+    print!("\x1b[{}A\x1b[J", current_height);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let new_term = init_terminal(desired)?;
+    Ok((new_term, desired))
 }
 
 // ── Output helper ────────────────────────────────────────────
@@ -267,7 +293,8 @@ pub async fn run(
 
     // ── Initialize persistent terminal ───────────────────────
 
-    let mut terminal = init_terminal()?;
+    let mut viewport_height = MIN_VIEWPORT_HEIGHT;
+    let mut terminal = init_terminal(viewport_height)?;
 
     let mut textarea = TextArea::default();
     textarea.set_cursor_line_style(Style::default());
@@ -304,6 +331,7 @@ pub async fn run(
 
     let mode = approval::read_mode(&shared_mode);
     let ctx = koda_core::context::percentage() as u32;
+    (terminal, viewport_height) = maybe_resize_viewport(terminal, &textarea, viewport_height)?;
     terminal.draw(|f| {
         draw_viewport(
             f,
@@ -372,7 +400,8 @@ pub async fn run(
                             SlashAction::Continue => {
                                 // Re-init terminal to resync viewport with cursor
                                 // position after crossterm direct writes.
-                                terminal = init_terminal()?;
+                                viewport_height = MIN_VIEWPORT_HEIGHT;
+                                terminal = init_terminal(viewport_height)?;
                                 crossterm_events = EventStream::new();
                             }
                             SlashAction::Quit => {
@@ -518,7 +547,7 @@ pub async fn run(
                                                     if m.contains(KeyModifiers::CONTROL) =>
                                                 {
                                                     if crate::interrupt::handle_sigint() {
-                                                        restore_terminal(&mut terminal);
+                                                        restore_terminal(&mut terminal, viewport_height);
                                                         eprintln!("\x1b[31mForce quit.\x1b[0m");
                                                         std::process::exit(130);
                                                     }
@@ -693,9 +722,10 @@ pub async fn run(
             }
         }
 
-        // Redraw viewport
+        // Redraw viewport (resize if textarea grew/shrank)
         let mode = approval::read_mode(&shared_mode);
         let ctx = koda_core::context::percentage() as u32;
+        (terminal, viewport_height) = maybe_resize_viewport(terminal, &textarea, viewport_height)?;
         terminal.draw(|f| {
             draw_viewport(
                 f,
@@ -806,8 +836,7 @@ pub async fn run(
 
     // ── Cleanup ───────────────────────────────────────────────
 
-    restore_terminal(&mut terminal);
-
+    restore_terminal(&mut terminal, viewport_height);
     {
         let mut mcp = agent.mcp_registry.write().await;
         mcp.shutdown();
