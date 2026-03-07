@@ -21,14 +21,14 @@ type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 /// character. Returns the trimmed input, or empty string on Esc.
 ///
 /// If `mask` is true, input is shown as `*` characters (for API keys).
-pub fn read_line(terminal: &mut Term, prompt: &str, mask: bool) -> String {
-    tui_output::emit_line(
-        terminal,
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(prompt, Style::default().fg(Color::Cyan)),
-        ]),
-    );
+pub fn read_line(_terminal: &mut Term, prompt: &str, mask: bool) -> String {
+    // Use write_line (crossterm direct) not emit_line (ratatui insert_before)
+    // because this is called during slash commands where the ratatui viewport
+    // is desynced after select_inline.
+    tui_output::write_line(&Line::from(vec![
+        Span::raw("  "),
+        Span::styled(prompt.to_string(), Style::default().fg(Color::Cyan)),
+    ]));
 
     let mut buf = String::new();
     let mut stdout = std::io::stdout();
