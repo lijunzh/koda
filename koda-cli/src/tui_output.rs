@@ -46,11 +46,6 @@ pub fn emit_line(terminal: &mut Term, line: Line<'_>) {
     emit_lines(terminal, &[line]);
 }
 
-/// Write a blank line above the viewport.
-pub fn emit_blank(terminal: &mut Term) {
-    emit_line(terminal, Line::raw(""));
-}
-
 // ── Style constants ─────────────────────────────────────────
 // Centralized color palette for the TUI renderer.
 
