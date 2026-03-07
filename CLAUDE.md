@@ -12,6 +12,22 @@ Koda is a high-performance AI coding agent built in Rust (edition 2024). Four-cr
 
 See [DESIGN.md](DESIGN.md) for architectural decisions. See [#70](https://github.com/lijunzh/koda/issues/70) for the TUI design.
 
+### v0.1.3 Architecture (Token Efficiency)
+
+Koda adapts behavior based on model capability:
+
+- **ModelTier** (`model_tier.rs`): Strong/Standard/Lite auto-detected from model name
+  - Strong: minimal prompts, lazy tool loading (DiscoverTools), parallel tools
+  - Standard: full prompts, all tools, current behavior
+  - Lite: verbose prompts, sequential tools, lower loop limits
+- **Context auto-detection** (`model_context.rs`): maps model→context window (Opus=200K, Gemini=1M)
+- **DiscoverTools** (`tools/discover.rs`): on-demand tool schema injection by category
+- **RecallContext** (`tools/recall.rs`): search/recall older conversation turns
+- **TaskPhase** (`task_phase.rs`): auto-detected phase (Understanding→Executing→Verifying)
+- **Intent classifier** (`intent.rs`): rule-based task routing to agents/skills
+- **Rate limit retry**: exponential backoff (2/4/8/16/32s) for 429 errors
+- **Built-in agents**: default, testgen, releaser, scout, planner, verifier
+
 ## Build & Development Commands
 
 ```bash
