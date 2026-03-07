@@ -12,6 +12,7 @@ use ratatui::{
 
 pub struct StatusBar<'a> {
     model: &'a str,
+    tier_label: &'a str,
     mode_label: &'a str,
     context_pct: u32,
     queue_len: usize,
@@ -36,9 +37,10 @@ pub struct TurnStats {
 }
 
 impl<'a> StatusBar<'a> {
-    pub fn new(model: &'a str, mode_label: &'a str, context_pct: u32) -> Self {
+    pub fn new(model: &'a str, tier_label: &'a str, mode_label: &'a str, context_pct: u32) -> Self {
         Self {
             model,
+            tier_label,
             mode_label,
             context_pct,
             queue_len: 0,
@@ -86,6 +88,10 @@ impl Widget for StatusBar<'_> {
             Span::styled(
                 format!(" {} ", self.model),
                 Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format!("[{}]", self.tier_label),
+                Style::default().fg(Color::Rgb(100, 100, 100)),
             ),
             Span::styled("\u{2502}", Style::default().fg(Color::Rgb(60, 60, 60))),
             Span::styled(
