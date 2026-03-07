@@ -51,11 +51,12 @@ impl KodaAgent {
         let tool_defs = tools.get_definitions(&config.allowed_tools);
 
         let semantic_memory = memory::load(&project_root)?;
-        let system_prompt = crate::prompt::build_system_prompt(
+        let system_prompt = crate::prompt::build_system_prompt_tiered(
             &config.system_prompt,
             &semantic_memory,
             &config.agents_dir,
             &tool_defs,
+            config.model_tier,
         );
 
         Ok(Self {

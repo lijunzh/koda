@@ -2,6 +2,7 @@
 //!
 //! Builds the system prompt from agent config, memory, and available tools.
 
+use crate::model_tier::ModelTier;
 use std::path::Path;
 
 pub fn build_system_prompt(
@@ -9,6 +10,23 @@ pub fn build_system_prompt(
     semantic_memory: &str,
     agents_dir: &Path,
     tool_defs: &[crate::providers::ToolDefinition],
+) -> String {
+    build_system_prompt_tiered(
+        base_prompt,
+        semantic_memory,
+        agents_dir,
+        tool_defs,
+        ModelTier::Standard,
+    )
+}
+
+/// Build system prompt with tier-aware verbosity.
+pub fn build_system_prompt_tiered(
+    base_prompt: &str,
+    semantic_memory: &str,
+    agents_dir: &Path,
+    tool_defs: &[crate::providers::ToolDefinition],
+    tier: ModelTier,
 ) -> String {
     let mut prompt = base_prompt.to_string();
 
@@ -21,21 +39,39 @@ pub fn build_system_prompt(
          feasible with the information you have.\n",
     );
 
-    // Embed the capabilities reference (REPL features, not tools)
-    prompt.push_str("\n\n");
-    prompt.push_str(include_str!("capabilities.md"));
+    // Embed the capabilities reference — Strong tier skips it (can discover)
+    if tier != ModelTier::Strong {
+        prompt.push_str("\n\n");
+        prompt.push_str(include_str!("capabilities.md"));
+    }
 
     // Auto-generate tool reference from definitions
     if !tool_defs.is_empty() {
         prompt.push_str("\n### Available Tools\n\n");
         for def in tool_defs {
-            // First sentence of description only (keep it concise)
-            let short_desc = def
-                .description
-                .split('.')
-                .next()
-                .unwrap_or(&def.description);
-            prompt.push_str(&format!("- **{}**: {}\n", def.name, short_desc));
+            let desc = match tier {
+                ModelTier::Strong => {
+                    // First sentence only (concise)
+                    def.description
+                        .split('.')
+                        .next()
+                        .unwrap_or(&def.description)
+                        .to_string()
+                }
+                ModelTier::Lite => {
+                    // Full description for weak models
+                    def.description.clone()
+                }
+                ModelTier::Standard => {
+                    // First sentence
+                    def.description
+                        .split('.')
+                        .next()
+                        .unwrap_or(&def.description)
+                        .to_string()
+                }
+            };
+            prompt.push_str(&format!("- **{}**: {}\n", def.name, desc));
         }
     }
 

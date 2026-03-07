@@ -485,7 +485,9 @@ pub async fn inference_loop(
         made_tool_calls = true;
 
         // Execute tool calls — parallelize when possible
+        // (Lite tier models must use sequential to avoid confusion)
         if tool_calls.len() > 1
+            && config.model_tier.allows_parallel_tools()
             && can_parallelize(&tool_calls, mode, &settings.approval.allowed_commands)
         {
             execute_tools_parallel(
