@@ -95,6 +95,25 @@ impl ThinkTagFilter {
                     break;
                 }
             } else {
+                // Strip stale </think> closing tags left over from a previous
+                // turn. This happens when the model sends `<think>...` + tool
+                // calls in turn N, then starts turn N+1 with `</think>answer`.
+                // The filter is re-created per turn, so `in_think_block` is false
+                // and the bare `</think>` would leak into visible output.
+                if let Some(pos) = self.buffer.find("</think>") {
+                    // Only strip if it appears before any <think> open tag
+                    // (otherwise the <think> handler below should run first).
+                    let open_pos = self.buffer.find("<think>");
+                    if open_pos.is_none() || pos < open_pos.unwrap() {
+                        let before = self.buffer[..pos].to_string();
+                        self.buffer = self.buffer[pos + 8..].to_string();
+                        if !before.is_empty() {
+                            output.push(StreamChunk::TextDelta(before));
+                        }
+                        continue;
+                    }
+                }
+
                 // Looking for <think>
                 if let Some(start_pos) = self.buffer.find("<think>") {
                     let before = self.buffer[..start_pos].to_string();
@@ -107,8 +126,12 @@ impl ThinkTagFilter {
                 } else {
                     // No <think> tag found. Emit safe content, keeping
                     // the last 7 chars in case "<think>" spans chunks.
-                    let safe_len =
-                        floor_char_boundary(&self.buffer, self.buffer.len().saturating_sub(7));
+                    // Also keep 8 chars for "</think>" spanning chunks.
+                    let hold_back = 8; // max(len("<think>"), len("</think>"))
+                    let safe_len = floor_char_boundary(
+                        &self.buffer,
+                        self.buffer.len().saturating_sub(hold_back),
+                    );
                     if safe_len > 0 {
                         let safe = self.buffer[..safe_len].to_string();
                         self.buffer = self.buffer[safe_len..].to_string();
@@ -286,5 +309,110 @@ mod tests {
 
         assert_eq!(thinking, "thought1thought2");
         assert_eq!(text, "intromiddleend");
+    }
+
+    // ── Stale </think> tag tests (issue #191) ──────────────────
+
+    #[test]
+    fn test_stale_close_tag_stripped() {
+        // Simulates turn N+1 starting with </think> from turn N's unclosed block.
+        let mut filter = ThinkTagFilter::new();
+        let mut all = Vec::new();
+        all.extend(filter.process(StreamChunk::TextDelta(
+            "</think>\n\nHere is the answer".into(),
+        )));
+        all.extend(filter.flush());
+
+        let text: String = all
+            .iter()
+            .filter_map(|c| match c {
+                StreamChunk::TextDelta(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        let thinking: String = all
+            .iter()
+            .filter_map(|c| match c {
+                StreamChunk::ThinkingDelta(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert_eq!(text, "\n\nHere is the answer");
+        assert!(thinking.is_empty());
+    }
+
+    #[test]
+    fn test_stale_close_tag_across_chunks() {
+        // </think> split across chunk boundary at the start of a response.
+        let mut filter = ThinkTagFilter::new();
+        let mut all = Vec::new();
+        all.extend(filter.process(StreamChunk::TextDelta("</thi".into())));
+        all.extend(filter.process(StreamChunk::TextDelta("nk>answer".into())));
+        all.extend(filter.flush());
+
+        let text: String = all
+            .iter()
+            .filter_map(|c| match c {
+                StreamChunk::TextDelta(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert_eq!(text, "answer");
+    }
+
+    #[test]
+    fn test_stale_close_then_new_think_block() {
+        // Stale </think> followed by a fresh <think>...</think>.
+        let mut filter = ThinkTagFilter::new();
+        let mut all = Vec::new();
+        all.extend(filter.process(StreamChunk::TextDelta(
+            "</think>prefix<think>reasoning</think>answer".into(),
+        )));
+        all.extend(filter.flush());
+
+        let text: String = all
+            .iter()
+            .filter_map(|c| match c {
+                StreamChunk::TextDelta(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        let thinking: String = all
+            .iter()
+            .filter_map(|c| match c {
+                StreamChunk::ThinkingDelta(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert_eq!(text, "prefixanswer");
+        assert_eq!(thinking, "reasoning");
+    }
+
+    #[test]
+    fn test_text_before_stale_close() {
+        // Some models emit a bit of text before the stale </think>.
+        let mut filter = ThinkTagFilter::new();
+        let mut all = Vec::new();
+        all.extend(filter.process(StreamChunk::TextDelta("oops </think>real answer".into())));
+        all.extend(filter.flush());
+
+        let text: String = all
+            .iter()
+            .filter_map(|c| match c {
+                StreamChunk::TextDelta(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert_eq!(text, "oops real answer");
     }
 }
