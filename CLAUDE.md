@@ -14,13 +14,17 @@ See [DESIGN.md](DESIGN.md) for architectural decisions. See [#70](https://github
 
 ### v0.1.3 Architecture (Token Efficiency)
 
-Koda adapts behavior based on model capability:
+Koda adapts behavior based on observed model quality:
 
-- **ModelTier** (`model_tier.rs`): Strong/Standard/Lite auto-detected from model name
-  - Strong: minimal prompts, lazy tool loading (DiscoverTools), parallel tools
-  - Standard: full prompts, all tools, current behavior
-  - Lite: verbose prompts, sequential tools, lower loop limits
-- **Context auto-detection** (`model_context.rs`): maps model→context window (Opus=200K, Gemini=1M)
+- **ModelTier** (`model_tier.rs`): Strong/Standard/Lite prompt strategies
+  - All models start at Standard; `TierObserver` promotes/demotes at runtime
+  - Strong: minimal prompts, lazy tool loading (DiscoverTools)
+  - Standard: full prompts, all tools (default for all models)
+  - Lite: verbose prompts, step-by-step guidance (demoted models)
+- **TierObserver** (`tier_observer.rs`): tracks tool-call quality across turns
+  - Promotes after 3 successful turns, demotes after 2+ failures
+- **Context from API** (`providers/`): queries actual context window from provider
+  - Fallback: `model_context.rs` lookup table
 - **DiscoverTools** (`tools/discover.rs`): on-demand tool schema injection by category
 - **RecallContext** (`tools/recall.rs`): search/recall older conversation turns
 - **TaskPhase** (`task_phase.rs`): auto-detected phase (Understanding→Executing→Verifying)
@@ -65,8 +69,9 @@ koda/
 │   │   ├── keystore.rs     # Secure API key storage (~/.config/koda/keys.toml, 0600)
 │   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
 │   │   ├── memory.rs       # Semantic memory (global + project tiers → system prompt)
-│   │   ├── model_context.rs# Model → context window size lookup table
-│   │   ├── model_tier.rs   # ModelTier enum (Strong/Standard/Lite) + auto-detection
+│   │   ├── model_context.rs# Model → context window size lookup table (fallback)
+│   │   ├── model_tier.rs   # ModelTier enum (Strong/Standard/Lite) prompt strategies
+│   │   ├── tier_observer.rs# Runtime tier promotion/demotion based on tool-use quality
 │   │   ├── intent.rs       # Rule-based intent classifier (task → agent/skill)
 │   │   ├── task_phase.rs   # Task phase state machine (Understanding→Verifying)
 │   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
