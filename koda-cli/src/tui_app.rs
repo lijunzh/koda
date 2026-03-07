@@ -93,6 +93,7 @@ fn draw_viewport(
     frame: &mut ratatui::Frame,
     textarea: &TextArea,
     model: &str,
+    tier_label: &str,
     mode: ApprovalMode,
     context_pct: u32,
     state: TuiState,
@@ -123,7 +124,7 @@ fn draw_viewport(
     frame.render_widget(textarea, text_area);
 
     // Status bar
-    let mut sb = StatusBar::new(model, mode.label(), context_pct);
+    let mut sb = StatusBar::new(model, tier_label, mode.label(), context_pct);
     if queue_len > 0 {
         sb = sb.with_queue(queue_len);
     }
@@ -364,6 +365,7 @@ pub async fn run(
             f,
             &textarea,
             &config.model,
+            config.model_tier.label(),
             mode,
             ctx,
             tui_state,
@@ -542,6 +544,7 @@ pub async fn run(
                                         f,
                                         &textarea,
                                         &config.model,
+                                        config.model_tier.label(),
                                         mode,
                                         ctx,
                                         tui_state,
@@ -788,6 +791,7 @@ pub async fn run(
                 f,
                 &textarea,
                 &config.model,
+                config.model_tier.label(),
                 mode,
                 ctx,
                 tui_state,

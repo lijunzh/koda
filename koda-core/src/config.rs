@@ -10,6 +10,7 @@ pub struct ProviderMeta {
     pub env_key: &'static str,
     pub api_key: bool,
 }
+use crate::model_tier::ModelTier;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -274,6 +275,9 @@ pub struct AgentConfig {
     pub max_iterations: Option<u32>,
     #[serde(default)]
     pub auto_compact_threshold: Option<usize>,
+    /// Override the auto-detected model tier.
+    #[serde(default)]
+    pub model_tier: Option<ModelTier>,
 }
 
 /// Runtime configuration assembled from CLI args, env vars, and agent JSON.
@@ -291,6 +295,8 @@ pub struct KodaConfig {
     pub max_iterations: u32,
     /// Context usage percentage (0-100) that triggers auto-compact. 0 = disabled.
     pub auto_compact_threshold: usize,
+    /// Model capability tier (auto-detected or overridden).
+    pub model_tier: ModelTier,
 }
 
 impl KodaConfig {
@@ -353,11 +359,17 @@ impl KodaConfig {
             settings.reasoning_effort = Some(re.clone());
         }
 
+        let model_tier = agent
+            .model_tier
+            .unwrap_or_else(|| ModelTier::from_model_name(&model, &provider_type));
+
         let max_iterations = agent
             .max_iterations
-            .unwrap_or(crate::loop_guard::MAX_ITERATIONS_DEFAULT);
+            .unwrap_or_else(|| model_tier.default_max_iterations());
 
-        let auto_compact_threshold = agent.auto_compact_threshold.unwrap_or(80);
+        let auto_compact_threshold = agent
+            .auto_compact_threshold
+            .unwrap_or_else(|| model_tier.default_auto_compact_threshold());
 
         Ok(Self {
             agent_name: agent.name,
@@ -371,6 +383,7 @@ impl KodaConfig {
             model_settings: settings,
             max_iterations,
             auto_compact_threshold,
+            model_tier,
         })
     }
 
@@ -421,6 +434,18 @@ impl KodaConfig {
         self
     }
 
+    /// Override the auto-detected model tier.
+    pub fn with_tier_override(mut self, tier_str: Option<&str>) -> Self {
+        if let Some(t) = tier_str {
+            self.model_tier = match t {
+                "strong" => ModelTier::Strong,
+                "lite" => ModelTier::Lite,
+                _ => ModelTier::Standard,
+            };
+        }
+        self
+    }
+
     /// Built-in agent configs, embedded at compile time.
     /// These are always available regardless of disk state.
     const BUILTIN_AGENTS: &[(&str, &str)] = &[
@@ -454,6 +479,7 @@ impl KodaConfig {
         let model = provider_type.default_model().to_string();
         let model_settings = ModelSettings::defaults_for(&model, &provider_type);
         let max_context_tokens = model_settings.max_context_tokens;
+        let model_tier = ModelTier::from_model_name(&model, &provider_type);
         Self {
             agent_name: "test".to_string(),
             system_prompt: "You are a test agent.".to_string(),
@@ -466,6 +492,7 @@ impl KodaConfig {
             model_settings,
             max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,
             auto_compact_threshold: 80,
+            model_tier,
         }
     }
 

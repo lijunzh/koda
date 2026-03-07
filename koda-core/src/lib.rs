@@ -21,6 +21,7 @@ pub mod loop_guard;
 pub mod mcp;
 pub mod memory;
 pub mod model_context;
+pub mod model_tier;
 pub mod preview;
 pub mod prompt;
 pub mod providers;
