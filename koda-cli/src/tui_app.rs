@@ -622,48 +622,46 @@ pub async fn run(
                                                 if preview.is_some() {
                                                     renderer.preview_shown = true;
                                                 }
-                                                // Inline approval — stays in raw mode
+                                                // Inline approval — uses crossterm direct writes
                                                 let decision = crate::widgets::approval::prompt_approval(
-                                                    &mut terminal,
                                                     &tool_name,
                                                     &detail,
                                                     preview.as_ref(),
                                                     whitelist_hint.as_deref(),
                                                 );
+                                                // Resync ratatui viewport after crossterm writes
+                                                crossterm_events = EventStream::new();
+                                                terminal = init_terminal(viewport_height)?;
                                                 let _ = cmd_tx
                                                     .send(EngineCommand::ApprovalResponse { id, decision })
                                                     .await;
                                             }
                                             UiEvent::Engine(EngineEvent::LoopCapReached { cap, recent_tools }) => {
-                                                // Show cap info above viewport
-                                                tui_output::emit_blank(&mut terminal);
-                                                tui_output::emit_line(
-                                                    &mut terminal,
-                                                    Line::from(vec![
-                                                        Span::raw("  "),
-                                                        Span::styled(
-                                                            format!("\u{26a0} Hard cap reached ({cap} iterations)"),
-                                                            Style::default().fg(Color::Yellow),
-                                                        ),
-                                                    ]),
-                                                );
+                                                // Show cap info via crossterm (matches approval widget path)
+                                                tui_output::write_blank();
+                                                tui_output::write_line(&Line::from(vec![
+                                                    Span::raw("  "),
+                                                    Span::styled(
+                                                        format!("\u{26a0} Hard cap reached ({cap} iterations)"),
+                                                        Style::default().fg(Color::Yellow),
+                                                    ),
+                                                ]));
                                                 for name in &recent_tools {
-                                                    tui_output::emit_line(
-                                                        &mut terminal,
-                                                        Line::from(vec![
-                                                            Span::raw("    "),
-                                                            Span::styled(format!("\u{25cf} {name}"), Style::default().fg(Color::DarkGray)),
-                                                        ]),
-                                                    );
+                                                    tui_output::write_line(&Line::from(vec![
+                                                        Span::raw("    "),
+                                                        Span::styled(format!("\u{25cf} {name}"), Style::default().fg(Color::DarkGray)),
+                                                    ]));
                                                 }
                                                 // Use approval widget for continue/stop
                                                 let decision = crate::widgets::approval::prompt_approval(
-                                                    &mut terminal,
                                                     "LoopCap",
                                                     "Continue running?",
                                                     None,
                                                     None,
                                                 );
+                                                // Resync ratatui viewport after crossterm writes
+                                                crossterm_events = EventStream::new();
+                                                terminal = init_terminal(viewport_height)?;
                                                 let action = match decision {
                                                     ApprovalDecision::Approve => koda_core::loop_guard::LoopContinuation::Continue200,
                                                     _ => koda_core::loop_guard::LoopContinuation::Stop,
@@ -852,7 +850,8 @@ pub async fn run(
                                 }
                             }
                         }
-                        (KeyCode::Up, KeyModifiers::NONE) => {
+                        (KeyCode::Up, KeyModifiers::NONE)
+                        | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
                             if !history.is_empty() {
                                 let idx = match history_idx {
                                     None => history.len() - 1,
@@ -864,7 +863,8 @@ pub async fn run(
                                 textarea.insert_str(&history[idx]);
                             }
                         }
-                        (KeyCode::Down, KeyModifiers::NONE) => {
+                        (KeyCode::Down, KeyModifiers::NONE)
+                        | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
                             if let Some(idx) = history_idx {
                                 if idx + 1 < history.len() {
                                     history_idx = Some(idx + 1);

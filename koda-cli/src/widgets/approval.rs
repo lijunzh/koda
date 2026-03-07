@@ -1,8 +1,11 @@
 //! Inline approval widget for the TUI.
 //!
-//! Renders approval prompt + options above the viewport using
-//! `insert_before()` for permanent content, then crossterm styled
-//! output for the in-place selection menu.
+//! Renders the entire approval prompt using crossterm direct writes
+//! (`write_line()`), avoiding ratatui `insert_before()`. This keeps
+//! cursor tracking consistent so the interactive options menu renders
+//! at the correct position. The caller must reinitialize the terminal
+//! after this widget returns to resync ratatui's viewport.
+//!
 //! Stays in raw mode the entire time — no mode switching.
 
 use crate::tui_output;
@@ -10,42 +13,37 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use koda_core::engine::ApprovalDecision;
 use koda_core::preview::DiffPreview;
 use ratatui::{
-    Terminal,
-    backend::CrosstermBackend,
     style::{Color, Style},
     text::{Line, Span},
 };
 use std::io::Write;
 
-type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
-
 /// Run an inline approval prompt. Returns the user's decision.
 ///
-/// Renders the prompt above the viewport and handles arrow-key
-/// navigation entirely within raw mode.
+/// Uses crossterm direct writes for all output (detail, diff, options).
+/// The caller must reinitialize the terminal afterwards to resync
+/// ratatui's viewport tracking.
 pub fn prompt_approval(
-    terminal: &mut Term,
     _tool_name: &str,
     detail: &str,
     preview: Option<&DiffPreview>,
     whitelist_hint: Option<&str>,
 ) -> ApprovalDecision {
-    // Show detail above viewport
-    tui_output::emit_line(
-        terminal,
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(detail.to_string(), Style::default().fg(Color::DarkGray)),
-        ]),
-    );
+    // Show detail via crossterm (not ratatui insert_before)
+    tui_output::write_line(&Line::from(vec![
+        Span::raw("  "),
+        Span::styled(detail.to_string(), Style::default().fg(Color::DarkGray)),
+    ]));
 
     // Show diff preview if available
     if let Some(preview) = preview {
-        tui_output::emit_blank(terminal);
+        tui_output::write_blank();
         let diff_lines = crate::diff_render::render_lines(preview);
-        tui_output::emit_lines(terminal, &diff_lines);
+        for line in &diff_lines {
+            tui_output::write_line(line);
+        }
     }
-    tui_output::emit_blank(terminal);
+    tui_output::write_blank();
 
     // Build options
     let mut options = vec![
@@ -57,31 +55,45 @@ pub fn prompt_approval(
         options.push(("\u{1f513} Always allow", "Auto-approve from now on"));
     }
 
+    // Scroll terminal to make room for the options menu.
+    // The cursor is at a known position after write_line(). We print
+    // newlines to push content up, then move back so the crossterm
+    // options render in the space we just created.
+    {
+        let total_lines = (options.len() + 2) as u16; // title + options + hint
+        let mut stdout = std::io::stdout();
+        for _ in 0..total_lines {
+            crossterm::execute!(stdout, crossterm::style::Print("\n")).ok();
+        }
+        crossterm::execute!(stdout, crossterm::cursor::MoveUp(total_lines)).ok();
+        stdout.flush().ok();
+    }
+
     // Render options and run selection loop
     let mut selected: usize = 0;
-    render_options(terminal, &options, selected);
+    render_options(&options, selected);
 
     loop {
         if let Ok(Event::Key(key)) = event::read() {
             match (key.code, key.modifiers) {
                 (KeyCode::Up, _) => {
                     selected = selected.saturating_sub(1);
-                    render_options(terminal, &options, selected);
+                    render_options(&options, selected);
                 }
                 (KeyCode::Down, _) => {
                     if selected + 1 < options.len() {
                         selected += 1;
                     }
-                    render_options(terminal, &options, selected);
+                    render_options(&options, selected);
                 }
                 (KeyCode::Enter, _) => {
-                    clear_options(terminal, &options);
+                    clear_options(&options);
                     return match selected {
                         0 => ApprovalDecision::Approve,
                         1 => ApprovalDecision::Reject,
                         2 => {
                             // Feedback: get text from user inline
-                            let feedback = read_feedback_inline(terminal);
+                            let feedback = read_feedback_inline();
                             if feedback.is_empty() {
                                 ApprovalDecision::Reject
                             } else {
@@ -93,11 +105,11 @@ pub fn prompt_approval(
                     };
                 }
                 (KeyCode::Esc, _) => {
-                    clear_options(terminal, &options);
+                    clear_options(&options);
                     return ApprovalDecision::Reject;
                 }
                 (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-                    clear_options(terminal, &options);
+                    clear_options(&options);
                     return ApprovalDecision::Reject;
                 }
                 _ => {}
@@ -106,14 +118,16 @@ pub fn prompt_approval(
     }
 }
 
-fn render_options(_terminal: &mut Term, options: &[(&str, &str)], selected: usize) {
+fn render_options(options: &[(&str, &str)], selected: usize) {
     use crossterm::{
         cursor, execute,
         style::{Attribute, Color as CColor, Print, ResetColor, SetAttribute, SetForegroundColor},
         terminal::{Clear, ClearType},
     };
     let mut stdout = std::io::stdout();
-    let height = (options.len() + 2) as u16; // title + options + hint
+    // After rendering: title MoveDown + N option MoveDowns = N+1 moves.
+    // Hint has no MoveDown. To return cursor to the title line: MoveUp(N+1).
+    let move_back = (options.len() + 1) as u16;
 
     // Title
     execute!(
@@ -158,7 +172,7 @@ fn render_options(_terminal: &mut Term, options: &[(&str, &str)], selected: usiz
         }
     }
 
-    // Hint
+    // Hint (no MoveDown — cursor stays on this line)
     execute!(
         stdout,
         Clear(ClearType::CurrentLine),
@@ -166,13 +180,13 @@ fn render_options(_terminal: &mut Term, options: &[(&str, &str)], selected: usiz
         SetForegroundColor(CColor::DarkGrey),
         Print("\u{2191}/\u{2193} navigate  enter select  esc cancel"),
         ResetColor,
-        cursor::MoveUp(height),
+        cursor::MoveUp(move_back),
     )
     .ok();
     stdout.flush().ok();
 }
 
-fn clear_options(_terminal: &mut Term, options: &[(&str, &str)]) {
+fn clear_options(options: &[(&str, &str)]) {
     use crossterm::{
         cursor, execute,
         terminal::{Clear, ClearType},
@@ -184,25 +198,20 @@ fn clear_options(_terminal: &mut Term, options: &[(&str, &str)]) {
     }
     execute!(stdout, cursor::MoveUp(total_lines as u16)).ok();
     stdout.flush().ok();
-    // Use write_blank (crossterm) not emit_blank (ratatui) since we're
-    // in the crossterm rendering path for the options menu.
     tui_output::write_blank();
 }
 
 /// Read feedback text inline (in raw mode).
-fn read_feedback_inline(terminal: &mut Term) -> String {
+fn read_feedback_inline() -> String {
     use crossterm::{cursor, style::Print};
 
-    tui_output::emit_line(
-        terminal,
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                "\u{276f} Tell koda what to change: ",
-                Style::default().fg(Color::Green),
-            ),
-        ]),
-    );
+    tui_output::write_line(&Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            "\u{276f} Tell koda what to change: ",
+            Style::default().fg(Color::Green),
+        ),
+    ]));
 
     let mut buf = String::new();
     let mut stdout = std::io::stdout();
