@@ -9,6 +9,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-03-06
+
+### Added
+- **Inline TUI** — ratatui `Viewport::Inline` with persistent input + status bar ([#70](https://github.com/lijunzh/koda/issues/70))
+  - Type-ahead during inference (input queued while model runs)
+  - Inline approval widget (arrow-key approve/reject/feedback)
+  - Status bar: model name, approval mode, context meter (`████░░ 5%`), elapsed time
+  - Dynamic viewport expansion: input area grows with multi-line text (2–10 rows)
+  - Paste detection: multi-line paste enters text mode instead of submitting
+- **Streaming markdown renderer** — headers, **bold**, *italic*, `code`, fenced blocks with syntax highlighting, lists, blockquotes, horizontal rules
+- **Tab completion** — three modes:
+  - Slash commands: `/d` + Tab → dropdown select (`/diff`, `/diff commit`, `/diff review`)
+  - `@file` paths: `@src/m` + Tab → dropdown with filesystem walking (case-insensitive)
+  - `/model` names: `/model gpt` + Tab → dropdown with substring matching
+- **Compaction module** — `koda-core::compact` with pure logic, zero UI deps. Shared by TUI and headless modes
+- **Alt+Enter** for multi-line input (Shift+Enter on terminals with kitty protocol)
+
+### Fixed
+- **TUI auto-compaction** — was calling `println!` inside raw mode, corrupting the viewport
+- **API key echoing** — onboarding now uses `rpassword` for silent input
+- **Path traversal in @file** — `@../../etc/passwd` now blocked by `safe_resolve_path()`
+- **Select menu cleanup** — leftover menu items no longer linger after `/provider`, `/model`
+- **Rendering path consistency** — all slash commands use crossterm; approval widget fixed
+- **Event clone in hot path** — `TextDelta` events no longer cloned during streaming
+- **Lock poisoning** — `runtime_env` recovers gracefully instead of panicking
+- **Raw mode RAII guard** — `select_menu` restores terminal on panic
+
+### Changed
+- **Legacy cleanup** — deleted ~550 lines of dead code (`commands.rs`, old `handle_compact`, ANSI helpers)
+- **DRY style helpers** — `ok_msg`/`err_msg`/`dim_msg`/`warn_msg` shared from `tui_output.rs`
+- **Dropped rustyline** — replaced by `tui-textarea` widget
+
+### Removed
+- `app.rs` (864 lines) — legacy rustyline event loop
+- `display.rs` (922 lines) — legacy terminal output formatting
+- `markdown.rs` (564 lines) — legacy ANSI markdown renderer (replaced by `md_render.rs`)
+- `confirm.rs` (104 lines) — legacy confirmation prompts
+
+### Testing
+- 284 tests across `koda-core` and `koda-cli`
+- New: 12 compaction tests (7 unit + 2 E2E + skip/boundary), 12 markdown tests, 19 completer tests, 2 path traversal tests
+
 ## [0.1.1] - 2026-03-05
 
 ### Added

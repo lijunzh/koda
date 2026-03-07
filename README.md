@@ -83,23 +83,21 @@ Koda natively understands the structure of your codebase using embedded `tree-si
 | `/trust` | Switch approval mode (plan/normal/yolo) |
 | `/exit` | Quit Koda |
 
-**Tips:** `@file` to attach context · `Shift+Tab` to cycle trust mode · `Esc` to clear input
+**Tips:** `@file` to attach context · Tab to autocomplete · `Shift+Tab` to cycle trust mode · `Alt+Enter` for multi-line
 
 ### Keyboard Shortcuts
 
 | Key | Context | Action |
 |-----|---------|--------|
+| **Tab** | At prompt | Autocomplete (`/commands`, `@files`, `/model names`) |
+| **Alt+Enter** | At prompt | Insert newline (multi-line input) |
 | **Ctrl+C** | During inference | Cancel the current turn |
 | **Ctrl+C ×2** | During inference | Force quit Koda |
-| **Ctrl+C** | At prompt (empty) | Exit Koda |
 | **Ctrl+C** | At prompt (with text) | Clear the line |
 | **Esc** | At prompt | Clear the line |
 | **Shift+Tab** | At prompt | Cycle trust mode (plan → normal → yolo) |
-| **Ctrl+D** | At prompt | Exit Koda |
-
-> **Note:** Input is not accepted while the model is running. Wait for the turn
-> to complete, then type your next message. Type-ahead during inference is planned
-> for v0.1.2 via a TUI framework migration ([#57](https://github.com/lijunzh/koda/issues/57)).
+| **Ctrl+D** | At prompt (empty) | Exit Koda |
+| **↑/↓** | At prompt | Browse command history |
 
 ## MCP (Model Context Protocol)
 
@@ -150,7 +148,7 @@ over async channels. See [DESIGN.md](DESIGN.md) for architectural decisions.
 ## Development
 
 ```bash
-cargo test --workspace        # Run all 372 tests
+cargo test --workspace --features koda-core/test-support  # Run all 284 tests
 cargo clippy --workspace      # Lint
 cargo run -p koda-cli         # Run locally
 ```
