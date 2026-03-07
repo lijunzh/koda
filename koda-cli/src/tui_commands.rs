@@ -255,7 +255,7 @@ fn handle_help(terminal: &mut Term, pending_command: &mut Option<String>) {
             Print("\r\n  "),
             SetForegroundColor(Color::DarkGrey),
             Print(
-                "Tips: @file to attach context \u{00b7} Shift+Enter for newline \u{00b7} Shift+Tab to cycle mode \u{00b7} Ctrl+C to cancel"
+                "Tips: @file to attach context \u{00b7} Alt+Enter for newline \u{00b7} Shift+Tab to cycle mode \u{00b7} Ctrl+C to cancel"
             ),
             ResetColor,
             Print("\r\n"),
