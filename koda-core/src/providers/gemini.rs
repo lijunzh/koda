@@ -9,8 +9,8 @@
 //! - SSE streaming via `streamGenerateContent?alt=sse`
 
 use super::{
-    ChatMessage, LlmProvider, LlmResponse, ModelInfo, StreamChunk, TokenUsage, ToolCall,
-    ToolDefinition,
+    ChatMessage, LlmProvider, LlmResponse, ModelCapabilities, ModelInfo, StreamChunk, TokenUsage,
+    ToolCall, ToolDefinition,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -253,6 +253,12 @@ struct GeminiModelInfo {
     name: String,
     #[serde(default)]
     supported_generation_methods: Vec<String>,
+    /// Max input tokens (reported by the Gemini models API).
+    #[serde(default)]
+    input_token_limit: Option<usize>,
+    /// Max output tokens (reported by the Gemini models API).
+    #[serde(default)]
+    output_token_limit: Option<usize>,
 }
 
 // ── Implementation ───────────────────────────────────────────
@@ -352,6 +358,34 @@ impl LlmProvider for GeminiProvider {
 
     fn provider_name(&self) -> &str {
         "gemini"
+    }
+
+    async fn model_capabilities(&self, model: &str) -> Result<ModelCapabilities> {
+        let resp = self
+            .client
+            .get(format!(
+                "{}/v1beta/models/{}?key={}",
+                self.base_url, model, self.api_key
+            ))
+            .send()
+            .await
+            .context("Failed to query Gemini model info")?;
+
+        if !resp.status().is_success() {
+            return Ok(ModelCapabilities::default());
+        }
+
+        let info: GeminiModelInfo = resp.json().await.unwrap_or(GeminiModelInfo {
+            name: model.to_string(),
+            supported_generation_methods: vec![],
+            input_token_limit: None,
+            output_token_limit: None,
+        });
+
+        Ok(ModelCapabilities {
+            context_window: info.input_token_limit,
+            max_output_tokens: info.output_token_limit,
+        })
     }
 
     async fn chat_stream(
