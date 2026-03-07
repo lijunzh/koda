@@ -109,6 +109,12 @@ impl AstServer {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Handle --version flag
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("koda-ast {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
