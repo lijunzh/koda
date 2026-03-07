@@ -1417,6 +1417,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "koda-ast"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "petgraph",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "tree-sitter",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+]
+
+[[package]]
 name = "koda-cli"
 version = "0.1.2"
 dependencies = [
