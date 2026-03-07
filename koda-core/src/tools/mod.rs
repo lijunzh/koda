@@ -52,9 +52,17 @@ use path_clean::PathClean;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::providers::ToolDefinition;
+
+/// Shared file-read cache: tracks (size, mtime) per cache key so we can
+/// detect stale reads and avoid re-streaming unchanged files.
+///
+/// Wrapped in `Arc` so parent and sub-agent `ToolRegistry` instances
+/// share the same cache — reads by one agent benefit all others.
+pub type FileReadCache = Arc<std::sync::Mutex<HashMap<String, (u64, SystemTime)>>>;
 
 /// Result of executing a tool.
 #[derive(Debug, Clone)]
@@ -66,7 +74,7 @@ pub struct ToolResult {
 pub struct ToolRegistry {
     project_root: PathBuf,
     definitions: HashMap<String, ToolDefinition>,
-    read_cache: std::sync::Mutex<HashMap<String, (u64, SystemTime)>>,
+    read_cache: FileReadCache,
     /// Connected MCP servers providing additional tools.
     mcp_registry: Option<std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpRegistry>>>,
     /// Undo stack for file mutations.
@@ -126,7 +134,7 @@ impl ToolRegistry {
         Self {
             project_root,
             definitions,
-            read_cache: std::sync::Mutex::new(HashMap::new()),
+            read_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
             mcp_registry: None,
             undo: std::sync::Mutex::new(crate::undo::UndoStack::new()),
             skill_registry,
@@ -142,6 +150,20 @@ impl ToolRegistry {
     ) -> Self {
         self.mcp_registry = Some(registry);
         self
+    }
+
+    /// Share an existing file-read cache (e.g. from the parent agent).
+    ///
+    /// Sub-agents that share the parent's cache avoid redundant disk reads
+    /// for files already loaded in the same session.
+    pub fn with_shared_cache(mut self, cache: FileReadCache) -> Self {
+        self.read_cache = cache;
+        self
+    }
+
+    /// Get a clone of the `Arc` file-read cache for sharing with sub-agents.
+    pub fn file_read_cache(&self) -> FileReadCache {
+        Arc::clone(&self.read_cache)
     }
 
     /// Attach database + session for tools that need history access.
