@@ -99,6 +99,16 @@ pub async fn handle_slash_command(
             handle_cost(terminal, session, config).await;
             SlashAction::Continue
         }
+        ReplAction::Undo => {
+            match agent.tools.undo.lock() {
+                Ok(mut undo) => match undo.undo() {
+                    Some(summary) => ok_msg(summary),
+                    None => warn_msg("Nothing to undo.".to_string()),
+                },
+                Err(e) => err_msg(format!("Undo error: {e}")),
+            }
+            SlashAction::Continue
+        }
         ReplAction::ListSessions => {
             handle_list_sessions(terminal, session, project_root).await;
             SlashAction::Continue
@@ -246,6 +256,7 @@ fn handle_help(terminal: &mut Term, pending_command: &mut Option<String>) {
         ("/provider", "Switch LLM provider"),
         ("/sessions", "List/resume/delete sessions"),
         ("/trust", "Set approval mode (always / auto / never)"),
+        ("/undo", "Undo last turn's file changes"),
         ("/verbose", "Toggle full tool output (on/off)"),
         ("/exit", "Quit the session"),
     ];

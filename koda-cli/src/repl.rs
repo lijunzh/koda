@@ -38,6 +38,8 @@ pub enum ReplAction {
     ShowDiff,
     /// Memory management command
     MemoryCommand(Option<String>),
+    /// Undo last turn's file mutations
+    Undo,
     #[allow(dead_code)]
     Handled,
     NotACommand,
@@ -129,6 +131,8 @@ pub async fn handle_command(
         },
 
         "/memory" => ReplAction::MemoryCommand(arg.map(|s| s.to_string())),
+
+        "/undo" => ReplAction::Undo,
 
         _ => ReplAction::NotACommand,
     }

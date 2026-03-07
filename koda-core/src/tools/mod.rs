@@ -63,6 +63,8 @@ pub struct ToolRegistry {
     read_cache: std::sync::Mutex<HashMap<String, (u64, SystemTime)>>,
     /// Connected MCP servers providing additional tools.
     mcp_registry: Option<std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpRegistry>>>,
+    /// Undo stack for file mutations.
+    pub undo: std::sync::Mutex<crate::undo::UndoStack>,
 }
 
 impl ToolRegistry {
@@ -104,6 +106,7 @@ impl ToolRegistry {
             definitions,
             read_cache: std::sync::Mutex::new(HashMap::new()),
             mcp_registry: None,
+            undo: std::sync::Mutex::new(crate::undo::UndoStack::new()),
         }
     }
 
@@ -178,6 +181,17 @@ impl ToolRegistry {
             "Executing tool: {name} with args: [{} chars]",
             arguments.len()
         );
+
+        // Snapshot file before mutation (for /undo)
+        if let Some(file_path) = crate::undo::is_mutating_tool(name)
+            .then(|| crate::undo::extract_file_path(name, &args))
+            .flatten()
+        {
+            let resolved = self.project_root.join(&file_path);
+            if let Ok(mut undo) = self.undo.lock() {
+                undo.snapshot(&resolved);
+            }
+        }
 
         let result = match name {
             // File tools
