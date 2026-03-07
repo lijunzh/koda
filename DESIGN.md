@@ -135,7 +135,8 @@ accordingly.
 
 **Rationale**: One-size-fits-all wastes tokens on strong models (verbose prompts
 they don't need) and confuses weak models (terse instructions they can't follow).
-The tiered system adapts automatically.
+Competitor analysis showed Claude Code, Goose, and Aider all adapt behavior to
+model capability, but none do it as explicitly as a tiered system.
 
 **How it works**:
 - `ModelTier::from_model_name()` auto-detects from model name + provider
@@ -153,29 +154,44 @@ Anthropic prompt cache hit rates. Tier is determined at session start, not per-t
 No API call required — pure lookup table.
 
 **Rationale**: The previous hardcoded 32K default meant Opus users were using
-16% of their available context, triggering premature compaction. Auto-detection
-is the single highest-impact change in v0.1.3.
+16% of their available context, triggering premature compaction that lost
+information. Auto-detection is the single highest-impact change in v0.1.3.
+
+**Fallback**: Unknown models get 128K (generous but safe). Local models
+("auto-detect") get 4K (conservative). Agent config can always override.
 
 ### 10. Lazy Tool Loading with DiscoverTools (v0.1.3)
 
-**Decision**: Strong-tier models get only 9 tools upfront. Everything else is
-discoverable on demand by category.
+**Decision**: Strong-tier models get only 9 tools (8 core + DiscoverTools)
+upfront. Everything else is discoverable on demand by category.
 
-**Rationale**: 20+ tool schemas cost ~2000 tokens/turn. Core tools handle 90%+
-of turns. DiscoverTools costs ~50 tokens for the schema + ~80 for category hints.
-Net savings: ~57% reduction in per-turn tool overhead for Strong tier.
+**Rationale**: 20+ tool schemas cost ~2000 tokens/turn. Core tools (Read, Write,
+Edit, etc.) handle 90%+ of turns. Agents, skills, memory, web, AST, and email
+tools are situational. DiscoverTools costs ~50 tokens for the schema + ~80 tokens
+for category hints in the system prompt.
+
+**Net savings**: ~57% reduction in per-turn tool overhead for Strong tier.
+Standard and Lite tiers still get all tools (they need the explicit schemas).
 
 ### 11. Rate Limit Retry (v0.1.3)
 
 **Decision**: Exponential backoff retry for 429/rate-limit errors. Up to 5
 attempts with delays of 2, 4, 8, 16, 32 seconds.
 
+**Rationale**: Long sessions with Opus hit rate limits regularly. Previously,
+a 429 killed the session. Now the user sees a countdown and the request
+automatically retries.
+
 ### 12. Sub-Agent Model Routing (v0.1.3)
 
 **Decision**: Sub-agents respect their own provider/model config when
 explicitly set. The parent's base_url is only inherited if the sub-agent
-uses the same provider. This enables cheap models for grunt work while
-expensive models handle reasoning.
+uses the same provider.
+
+**Rationale**: The biggest cost lever — expensive models think, cheap models
+grunt. A scout on Gemini Flash costs 1/20th of Opus for codebase exploration.
+The parent's Anthropic prompt cache is unaffected because sub-agents make
+independent API calls to potentially different providers.
 
 ## References
 
