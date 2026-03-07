@@ -24,66 +24,35 @@ pub enum ModelTier {
 
 impl ModelTier {
     /// Auto-detect tier from model name and provider.
-    pub fn from_model_name(model: &str, provider: &ProviderType) -> Self {
-        let m = model.to_lowercase();
-
-        // Strong tier — frontier models
-        if m.contains("opus")
-            || m.contains("sonnet")
-            || (m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4"))
-            || m.starts_with("gpt-4o")
-            || m.starts_with("gpt-4.1")
-            || m.contains("gemini-2.5-pro")
-            || m.contains("deepseek-r1")
-            || m.contains("grok-3")
-        {
-            return Self::Strong;
-        }
-
-        // Lite tier — small/local models
-        if m.contains("lite")
-            || m.contains("nano")
-            || m.contains("-8b")
-            || m.contains("-7b")
-            || m.contains("-3b")
-            || m.contains("-1b")
-            || m == "auto-detect"
-            || matches!(
-                provider,
-                ProviderType::LMStudio | ProviderType::Ollama | ProviderType::Vllm
-            )
-        {
-            return Self::Lite;
-        }
-
-        // Everything else is Standard
+    ///
+    /// Returns Standard as the default. The `TierObserver` will
+    /// promote to Strong or demote to Lite based on observed behavior.
+    /// This is only used as an initial hint; the observer has final say.
+    pub fn from_model_name(_model: &str, _provider: &ProviderType) -> Self {
+        // All models start at Standard. TierObserver promotes/demotes
+        // based on actual tool-use quality rather than name guessing.
         Self::Standard
     }
 
     /// Default max iterations for the inference loop.
+    ///
+    /// All tiers get the same cap. Local models are free to run,
+    /// and the user can extend interactively.
     pub fn default_max_iterations(self) -> u32 {
-        match self {
-            Self::Strong => 200,
-            Self::Standard => 200,
-            Self::Lite => 50,
-        }
+        200
     }
 
-    /// Default auto-compact threshold (percentage).
+    /// Default auto-compact threshold (percentage of context window).
     pub fn default_auto_compact_threshold(self) -> usize {
-        match self {
-            Self::Strong => 90,
-            Self::Standard => 80,
-            Self::Lite => 70,
-        }
+        85
     }
 
     /// Whether parallel tool execution is allowed.
+    ///
+    /// Enabled for all tiers. If a model sends broken parallel calls,
+    /// the errors will trigger demotion via TierObserver.
     pub fn allows_parallel_tools(self) -> bool {
-        match self {
-            Self::Strong | Self::Standard => true,
-            Self::Lite => false,
-        }
+        true
     }
 
     /// Display label for status bar.
@@ -107,100 +76,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_strong_models() {
-        let p = ProviderType::Anthropic;
-        assert_eq!(
-            ModelTier::from_model_name("claude-opus-4-6", &p),
-            ModelTier::Strong
-        );
-        assert_eq!(
-            ModelTier::from_model_name("claude-sonnet-4-6", &p),
-            ModelTier::Strong
-        );
-
-        let p = ProviderType::OpenAI;
-        assert_eq!(ModelTier::from_model_name("gpt-4o", &p), ModelTier::Strong);
-        assert_eq!(
-            ModelTier::from_model_name("gpt-4o-mini", &p),
-            ModelTier::Strong
-        );
-        assert_eq!(ModelTier::from_model_name("o3-mini", &p), ModelTier::Strong);
-        assert_eq!(ModelTier::from_model_name("o1", &p), ModelTier::Strong);
-        assert_eq!(ModelTier::from_model_name("gpt-4.1", &p), ModelTier::Strong);
-
-        let p = ProviderType::Gemini;
-        assert_eq!(
-            ModelTier::from_model_name("gemini-2.5-pro", &p),
-            ModelTier::Strong
-        );
-
-        let p = ProviderType::Grok;
-        assert_eq!(ModelTier::from_model_name("grok-3", &p), ModelTier::Strong);
+    fn all_models_default_to_standard() {
+        // Name-based detection is removed; everything starts Standard.
+        let cases = vec![
+            ("claude-opus-4-6", ProviderType::Anthropic),
+            ("gpt-4o", ProviderType::OpenAI),
+            ("gemini-2.5-flash", ProviderType::Gemini),
+            ("llama-3-8b", ProviderType::Groq),
+            ("auto-detect", ProviderType::LMStudio),
+            ("qwen-2.5-7b", ProviderType::Ollama),
+        ];
+        for (model, provider) in cases {
+            assert_eq!(
+                ModelTier::from_model_name(model, &provider),
+                ModelTier::Standard,
+                "Expected Standard for {model} on {provider:?}"
+            );
+        }
     }
 
     #[test]
-    fn test_standard_models() {
-        assert_eq!(
-            ModelTier::from_model_name("gemini-2.5-flash", &ProviderType::Gemini),
-            ModelTier::Standard
-        );
-        assert_eq!(
-            ModelTier::from_model_name("gemini-2.0-flash", &ProviderType::Gemini),
-            ModelTier::Standard
-        );
-        assert_eq!(
-            ModelTier::from_model_name("deepseek-chat", &ProviderType::DeepSeek),
-            ModelTier::Standard
-        );
-        assert_eq!(
-            ModelTier::from_model_name("mistral-large-latest", &ProviderType::Mistral),
-            ModelTier::Standard
-        );
-        assert_eq!(
-            ModelTier::from_model_name("llama-3.3-70b-versatile", &ProviderType::Groq),
-            ModelTier::Standard
-        );
-    }
-
-    #[test]
-    fn test_lite_models() {
-        assert_eq!(
-            ModelTier::from_model_name("auto-detect", &ProviderType::LMStudio),
-            ModelTier::Lite
-        );
-        assert_eq!(
-            ModelTier::from_model_name("auto-detect", &ProviderType::Ollama),
-            ModelTier::Lite
-        );
-        assert_eq!(
-            ModelTier::from_model_name("llama-3-8b", &ProviderType::Groq),
-            ModelTier::Lite
-        );
-        assert_eq!(
-            ModelTier::from_model_name("gemini-flash-lite", &ProviderType::Gemini),
-            ModelTier::Lite
-        );
-        assert_eq!(
-            ModelTier::from_model_name("qwen-2.5-7b", &ProviderType::Ollama),
-            ModelTier::Lite
-        );
-    }
-
-    #[test]
-    fn test_tier_defaults() {
+    fn resource_limits_are_tier_independent() {
+        // All tiers get the same resource limits (decoupled from prompt strategy).
         assert_eq!(ModelTier::Strong.default_max_iterations(), 200);
         assert_eq!(ModelTier::Standard.default_max_iterations(), 200);
-        assert_eq!(ModelTier::Lite.default_max_iterations(), 50);
+        assert_eq!(ModelTier::Lite.default_max_iterations(), 200);
 
-        assert_eq!(ModelTier::Strong.default_auto_compact_threshold(), 90);
-        assert_eq!(ModelTier::Lite.default_auto_compact_threshold(), 70);
+        assert_eq!(ModelTier::Strong.default_auto_compact_threshold(), 85);
+        assert_eq!(ModelTier::Standard.default_auto_compact_threshold(), 85);
+        assert_eq!(ModelTier::Lite.default_auto_compact_threshold(), 85);
 
         assert!(ModelTier::Strong.allows_parallel_tools());
-        assert!(!ModelTier::Lite.allows_parallel_tools());
+        assert!(ModelTier::Standard.allows_parallel_tools());
+        assert!(ModelTier::Lite.allows_parallel_tools());
     }
 
     #[test]
-    fn test_display() {
+    fn display() {
         assert_eq!(format!("{}", ModelTier::Strong), "Strong");
         assert_eq!(format!("{}", ModelTier::Standard), "Standard");
         assert_eq!(format!("{}", ModelTier::Lite), "Lite");

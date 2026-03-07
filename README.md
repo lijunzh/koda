@@ -42,7 +42,7 @@ On first run, an onboarding wizard guides you through provider and API key setup
 ```bash
 koda                              # Interactive REPL (auto-detects LM Studio)
 koda --provider anthropic         # Use a cloud provider
-koda --model-tier strong          # Override auto-detected tier
+koda --model-tier strong          # Force a specific tier (usually auto-adapts)
 koda -p "fix the bug in auth.rs"  # Headless one-shot
 echo "explain this" | koda        # Piped input
 ```
@@ -53,9 +53,9 @@ echo "explain this" | koda        # Piped input
 - **MCP support** — connect to any [MCP server](https://modelcontextprotocol.io) via `.mcp.json` (same format as Claude Code / Cursor)
 - **14 LLM providers** — LM Studio, OpenAI, Anthropic, Gemini, Groq, Grok, Ollama, DeepSeek, Mistral, MiniMax, OpenRouter, Together, Fireworks, vLLM
 - **6 built-in agents** — default, test writer, release engineer, codebase scout, planner, verifier
-- **Model-adaptive** — auto-detects model tier (Strong/Standard/Lite) and adjusts prompts, tool loading, and parameters
+- **Model-adaptive** — starts all models at Standard tier, then promotes to Strong or demotes to Lite based on observed tool-use quality
 - **Lazy tool loading** — Strong models get 9 core tools; discover more on demand via `DiscoverTools`
-- **Smart context** — auto-detects context window (200K for Opus, 1M for Gemini), rate limit retry with backoff, auto-compact
+- **Smart context** — queries context window from provider API at startup (falls back to lookup table), rate limit retry with backoff, auto-compact
 - **Approval modes** — plan (read-only) / normal (smart confirm) / yolo (auto-approve) via `/trust`
 - **Diff preview** — see exactly what changes before approving Edit, Write, Delete
 - **Loop detection** — catches repeated tool calls with configurable iteration caps
@@ -153,24 +153,28 @@ Koda auto-detects your model's capabilities and adapts its behavior:
 
 | Tier | Models | Behavior |
 |------|--------|----------|
-| **Strong** | Opus, Sonnet, GPT-4o, o-series, Gemini 2.5 Pro | Minimal prompts, lazy tool loading, parallel execution |
-| **Standard** | Flash, DeepSeek, Mistral Large, Llama 70B | Full prompts, all tools, balanced |
-| **Lite** | Local models, 7B/8B, Flash Lite | Verbose prompts, sequential execution, lower loop caps |
+| **Strong** | Promoted at runtime after 3 successful tool-use turns | Minimal prompts, lazy tool loading, parallel execution |
+| **Standard** | Default for all models | Full prompts, all tools, balanced |
+| **Lite** | Demoted at runtime after 2+ hallucinated/malformed tool calls | Verbose prompts, step-by-step guidance |
 
-Override with `--model-tier strong|standard|lite` or `"model_tier": "strong"` in agent config.
+Tier is observed at runtime, not guessed from model names. Override with `--model-tier strong|standard|lite` or `"model_tier": "strong"` in agent config.
 
 ## Getting the Most Out of Koda
 
-### Use the right model tier
+### Model tiers adapt automatically
 
-Koda auto-detects your model's tier, but you can override it:
+Koda starts every model at Standard and adapts based on observed behavior:
+- **Promotion to Strong** — after 3 turns of valid tool calls (correct names, parseable JSON)
+- **Demotion to Lite** — if 2+ tool calls hallucinate names or send malformed JSON
+
+You can force a tier if needed:
 
 ```bash
 koda --model-tier strong    # Minimal prompts, lazy tools (saves ~57% token overhead)
 koda --model-tier lite      # Verbose prompts, step-by-step guidance for small models
 ```
 
-The status bar shows your current tier: `claude-sonnet-4-6 [Strong]`
+The status bar shows your current tier: `claude-sonnet-4-6 [Standard]` (then `[Strong]` after promotion)
 
 ### Delegate with sub-agents
 
