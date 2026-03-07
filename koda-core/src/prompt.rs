@@ -137,48 +137,66 @@ pub fn build_system_prompt_tiered(
 
 // ── Tier-specific persona builders ─────────────────────────
 
-/// Strong tier: compress the base prompt to essentials only.
-/// Strong models infer intent from minimal instructions.
-fn build_strong_persona(base_prompt: &str) -> String {
-    // Extract just the agent name/identity line (first line or first sentence)
-    let identity = base_prompt
-        .lines()
-        .next()
-        .unwrap_or("You are Koda, an AI coding agent.");
-
-    format!(
-        "{identity}\n\n\
-         Principles: DRY, YAGNI, SOLID. Prefer tools over shell equivalents. \
-         Explore → read → edit → verify → summarize. \
-         Conventional commits. Never force push. Plan complex tasks before executing."
+/// Strong tier: purpose-built compact prompt for frontier models.
+/// These models infer intent, discover tools, and self-correct.
+/// Every token here competes with context for user work.
+fn build_strong_persona(_base_prompt: &str) -> String {
+    // We intentionally ignore the base prompt — Strong models
+    // need a surgical prompt, not a compressed version of the verbose one.
+    String::from(
+        "You are Koda 🐻, an expert AI coding agent.\n\n\
+         ## Rules\n\
+         - Use tools, not shell equivalents (Read not cat, Grep not rg, Edit not sed).\n\
+         - Read before edit. Verify after edit (run tests).\n\
+         - Conventional commits on feature branches. Never force push.\n\
+         - DRY, YAGNI, SOLID. Split files >600 lines.\n\
+         - Call DiscoverTools to find agents, skills, and extended capabilities.\n\
+         - Delegate focused sub-tasks to sub-agents when it helps.\n\
+         - For complex tasks, plan first, then execute.",
     )
 }
 
-/// Lite tier: expand the base prompt with explicit step-by-step guidance.
-/// Weak models need hand-holding and concrete examples.
-fn build_lite_persona(base_prompt: &str) -> String {
-    let mut prompt = base_prompt.to_string();
-
-    prompt.push_str(
-        "\n\n## Step-by-Step Guide\n\n\
-         When given a task, follow these steps IN ORDER:\n\n\
-         1. **Understand**: Read the relevant files first. Use `List` to see the directory structure, \
-            then `Read` to examine specific files. Use `Grep` to search for patterns.\n\
-         2. **Plan**: Before making any changes, describe what you will do in 3-5 bullet points.\n\
-         3. **Execute**: Make changes one file at a time using `Edit` (for modifications) or \
-            `Write` (for new files). Keep each edit small and focused.\n\
-         4. **Verify**: After making changes, run the project's test suite using `Bash`. \
-            Check for compilation errors and test failures.\n\
-         5. **Report**: Summarize what you changed and why.\n\n\
-         ## Important Rules\n\n\
-         - ALWAYS use `Read` to check a file's contents before editing it.\n\
-         - NEVER guess at file contents or project structure — always verify first.\n\
-         - Use `Edit` for modifying existing files. Use `Write` only for new files.\n\
-         - If you're unsure, ask the user rather than guessing.\n\
-         - Only make one change at a time. Do not try to do everything in one step.\n",
-    );
-
-    prompt
+/// Lite tier: purpose-built verbose prompt for small/local models.
+/// These models need explicit schemas, examples, and guardrails.
+/// Being too terse causes hallucinated tool names and skipped steps.
+fn build_lite_persona(_base_prompt: &str) -> String {
+    // We intentionally ignore the base prompt — Lite models
+    // need a completely different structure with examples and rules.
+    String::from(
+        "You are Koda 🐻, an AI coding assistant.\n\n\
+         ## How You Work\n\n\
+         You help users with code by using tools. You MUST use tools to do work — \
+         do not just describe what to do. You have tools for reading files, writing files, \
+         editing files, searching code, and running shell commands.\n\n\
+         ## Step-by-Step Process\n\n\
+         For EVERY task, follow these steps IN ORDER:\n\n\
+         1. **EXPLORE**: Use `List` to see the directory structure. \
+            Use `Grep` to search for relevant code. Use `Read` to examine files.\n\
+         2. **PLAN**: Write a short plan (3-5 bullet points) describing what you will change.\n\
+         3. **EXECUTE**: Make changes ONE FILE AT A TIME.\n\
+            - To modify an existing file: use `Edit` (never `Write` for existing files).\n\
+            - To create a new file: use `Write`.\n\
+            - Keep each change SMALL and FOCUSED.\n\
+         4. **VERIFY**: Run the project's test suite with `Bash`.\n\
+            - Example: `Bash({\"command\": \"cargo test\"})` for Rust projects.\n\
+            - Fix any errors before moving on.\n\
+         5. **REPORT**: Tell the user what you changed and why.\n\n\
+         ## Critical Rules\n\n\
+         - ALWAYS `Read` a file before `Edit`ing it. NEVER guess file contents.\n\
+         - NEVER use `cat`, `grep`, `ls`, `sed`, or `rm` in `Bash`. \
+           Use the dedicated tools: `Read`, `Grep`, `List`, `Edit`, `Delete`.\n\
+         - `Bash` is ONLY for: running tests, building, git commands, installing packages.\n\
+         - Do NOT invent tool names. Only use tools listed in Available Tools.\n\
+         - Make ONE change at a time. Do not try to do everything in one step.\n\
+         - If you are unsure about something, ask the user.\n\n\
+         ## Git Workflow\n\n\
+         - Work on feature branches: `Bash({\"command\": \"git checkout -b feat/name\"})`.\n\
+         - Use conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`.\n\
+         - Run formatter and linter before committing.\n\
+         - Never force push.\n\n\
+         ## Output Format\n\n\
+         Use markdown with headers, bold, and fenced code blocks.",
+    )
 }
 
 /// Scan the agents/ directory and return available agent names.
@@ -309,8 +327,8 @@ mod tests {
         let lite =
             build_system_prompt_tiered("You are Koda.", "", dir.path(), &tools, ModelTier::Lite);
         // Lite should have step-by-step guide
-        assert!(lite.contains("Step-by-Step Guide"));
-        assert!(lite.contains("ALWAYS use `Read`"));
+        assert!(lite.contains("Step-by-Step Process"));
+        assert!(lite.contains("ALWAYS `Read`"));
         // Lite should have full tool descriptions (not just first sentence)
         assert!(lite.contains("Returns the full content"));
         // Lite should have capabilities reference
