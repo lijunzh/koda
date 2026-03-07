@@ -7,6 +7,9 @@ use crate::approval::{ApprovalMode, Settings};
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent};
+use crate::inference_helpers::{
+    PREFLIGHT_COMPACT_THRESHOLD, assemble_messages, estimate_tokens, is_context_overflow_error,
+};
 use crate::loop_guard::LoopDetector;
 use crate::providers::{ChatMessage, ImageData, LlmProvider, StreamChunk, ToolCall};
 use crate::tool_dispatch::{can_parallelize, execute_tools_parallel, execute_tools_sequential};
@@ -89,22 +92,7 @@ pub async fn inference_loop(
 
         // Assemble context with sliding window
         let history = db.load_context(session_id, available).await?;
-        let mut messages = vec![system_message.clone()];
-
-        for msg in &history {
-            let tool_calls: Option<Vec<ToolCall>> = msg
-                .tool_calls
-                .as_deref()
-                .and_then(|tc| serde_json::from_str(tc).ok());
-
-            messages.push(ChatMessage {
-                role: msg.role.clone(),
-                content: msg.content.clone(),
-                tool_calls,
-                tool_call_id: msg.tool_call_id.clone(),
-                images: None,
-            });
-        }
+        let mut messages = assemble_messages(&system_message, &history);
 
         // Attach pending images to the last user message (first iteration only)
         if iteration == 0
@@ -116,34 +104,148 @@ pub async fn inference_loop(
         }
 
         // Track context window usage
-        let context_used: usize = messages
-            .iter()
-            .map(|m| {
-                let content_len = m.content.as_deref().map_or(0, |c| c.len());
-                let tc_len = m
-                    .tool_calls
-                    .as_ref()
-                    .map_or(0, |tc| serde_json::to_string(tc).map_or(0, |s| s.len()));
-                (content_len + tc_len) / 4 + 10
-            })
-            .sum();
+        let context_used = estimate_tokens(&messages);
         crate::context::update(context_used, config.max_context_tokens);
+
+        // Pre-flight budget check: if context is critically high, compact first
+        let ctx_pct = crate::context::percentage();
+        if ctx_pct >= PREFLIGHT_COMPACT_THRESHOLD {
+            tracing::warn!("Pre-flight: context at {ctx_pct}%, attempting auto-compact");
+            sink.emit(EngineEvent::Info {
+                message: format!(
+                    "\u{1f4e6} Context at {ctx_pct}% \u{2014} compacting before sending..."
+                ),
+            });
+            match crate::compact::compact_session_with_provider(
+                db,
+                session_id,
+                config.max_context_tokens,
+                &config.model_settings,
+                provider,
+            )
+            .await
+            {
+                Ok(Ok(result)) => {
+                    sink.emit(EngineEvent::Info {
+                        message: format!(
+                            "\u{2705} Compacted {} messages (~{} token summary)",
+                            result.deleted, result.summary_tokens
+                        ),
+                    });
+                    // Re-assemble with compacted history
+                    let history = db.load_context(session_id, available).await?;
+                    messages = assemble_messages(&system_message, &history);
+                    // Re-attach images if first iteration
+                    if iteration == 0
+                        && let Some(ref imgs) = pending_images
+                        && !imgs.is_empty()
+                        && let Some(last_user) =
+                            messages.iter_mut().rev().find(|m| m.role == "user")
+                    {
+                        last_user.images = Some(imgs.clone());
+                    }
+                    let new_used = estimate_tokens(&messages);
+                    crate::context::update(new_used, config.max_context_tokens);
+                }
+                Ok(Err(skip)) => {
+                    tracing::info!("Pre-flight compact skipped: {skip:?}");
+                }
+                Err(e) => {
+                    tracing::warn!("Pre-flight compact failed: {e:#}");
+                    sink.emit(EngineEvent::Warn {
+                        message: format!("Compact failed: {e:#}. Continuing anyway..."),
+                    });
+                }
+            }
+        }
 
         // Stream the response
         sink.emit(EngineEvent::SpinnerStart {
             message: "Thinking...".into(),
         });
 
-        let mut rx = tokio::select! {
-            result = provider.chat_stream(&messages, tool_defs, &config.model_settings) => {
-                result.context("LLM inference failed")?
-            }
+        let stream_result = tokio::select! {
+            result = provider.chat_stream(&messages, tool_defs, &config.model_settings) => result,
             _ = cancel.cancelled() => {
                 sink.emit(EngineEvent::SpinnerStop);
                 sink.emit(EngineEvent::Warn {
                     message: "Interrupted".into(),
                 });
                 return Ok(());
+            }
+        };
+
+        // Graceful recovery: if the provider returns a context-overflow error,
+        // compact and retry once before giving up.
+        let mut rx = match stream_result {
+            Ok(rx) => rx,
+            Err(e) if is_context_overflow_error(&e) => {
+                sink.emit(EngineEvent::SpinnerStop);
+                sink.emit(EngineEvent::Warn {
+                    message:
+                        "\u{26a0}\u{fe0f} Provider rejected request (context overflow). Compacting and retrying..."
+                            .to_string(),
+                });
+                tracing::warn!("Context overflow from provider: {e:#}");
+
+                // Try to compact
+                match crate::compact::compact_session_with_provider(
+                    db,
+                    session_id,
+                    config.max_context_tokens,
+                    &config.model_settings,
+                    provider,
+                )
+                .await
+                {
+                    Ok(Ok(result)) => {
+                        sink.emit(EngineEvent::Info {
+                            message: format!(
+                                "\u{2705} Compacted {} messages. Retrying...",
+                                result.deleted
+                            ),
+                        });
+                    }
+                    _ => {
+                        // Compaction failed or was skipped — can't recover
+                        return Err(e).context(
+                            "LLM inference failed (context overflow, compaction unsuccessful)",
+                        );
+                    }
+                }
+
+                // Re-assemble messages with compacted history
+                let history = db.load_context(session_id, available).await?;
+                messages = assemble_messages(&system_message, &history);
+                if iteration == 0
+                    && let Some(ref imgs) = pending_images
+                    && !imgs.is_empty()
+                    && let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user")
+                {
+                    last_user.images = Some(imgs.clone());
+                }
+                let new_used = estimate_tokens(&messages);
+                crate::context::update(new_used, config.max_context_tokens);
+
+                // Retry once
+                sink.emit(EngineEvent::SpinnerStart {
+                    message: "Retrying...".into(),
+                });
+                tokio::select! {
+                    result = provider.chat_stream(&messages, tool_defs, &config.model_settings) => {
+                        result.context("LLM inference failed after compaction retry")?
+                    }
+                    _ = cancel.cancelled() => {
+                        sink.emit(EngineEvent::SpinnerStop);
+                        sink.emit(EngineEvent::Warn {
+                            message: "Interrupted".into(),
+                        });
+                        return Ok(());
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(e).context("LLM inference failed");
             }
         };
 
@@ -398,50 +500,5 @@ pub async fn inference_loop(
         }
 
         iteration += 1;
-    }
-}
-
-// ── Parallel tool execution ───────────────────────────────────
-
-/// Check if all tool calls in a batch can safely run in parallel.
-/// Returns true when NONE of them need user confirmation.
-pub fn format_token_count(tokens: i64) -> String {
-    if tokens >= 1000 {
-        format!("{:.1}k", tokens as f64 / 1000.0)
-    } else {
-        format!("{tokens}")
-    }
-}
-
-/// Format a duration as human-readable: "5.2s", "1m 23s".
-pub fn format_duration(d: std::time::Duration) -> String {
-    let secs = d.as_secs();
-    if secs < 60 {
-        format!("{:.1}s", d.as_secs_f64())
-    } else {
-        let mins = secs / 60;
-        let remaining = secs % 60;
-        format!("{mins}m {remaining}s")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    #[test]
-    fn test_format_duration_seconds() {
-        assert_eq!(format_duration(Duration::from_secs_f64(0.5)), "0.5s");
-        assert_eq!(format_duration(Duration::from_secs_f64(5.23)), "5.2s");
-        assert_eq!(format_duration(Duration::from_secs_f64(59.9)), "59.9s");
-    }
-
-    #[test]
-    fn test_format_duration_minutes() {
-        assert_eq!(format_duration(Duration::from_secs(60)), "1m 0s");
-        assert_eq!(format_duration(Duration::from_secs(83)), "1m 23s");
-        assert_eq!(format_duration(Duration::from_secs(125)), "2m 5s");
-        assert_eq!(format_duration(Duration::from_secs(600)), "10m 0s");
     }
 }

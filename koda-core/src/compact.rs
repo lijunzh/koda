@@ -39,6 +39,21 @@ pub async fn compact_session(
     model_settings: &crate::config::ModelSettings,
     provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
 ) -> Result<std::result::Result<CompactResult, CompactSkip>> {
+    let prov = provider.read().await;
+    compact_session_with_provider(db, session_id, max_context_tokens, model_settings, &**prov).await
+}
+
+/// Core compaction logic — accepts `&dyn LlmProvider` directly.
+///
+/// Used by the inference loop for pre-flight compaction (where we already
+/// have a `&dyn LlmProvider` and don't need the Arc<RwLock<>> wrapper).
+pub async fn compact_session_with_provider(
+    db: &Database,
+    session_id: &str,
+    max_context_tokens: usize,
+    model_settings: &crate::config::ModelSettings,
+    provider: &dyn LlmProvider,
+) -> Result<std::result::Result<CompactResult, CompactSkip>> {
     // Check preconditions
     if db.has_pending_tool_calls(session_id).await.unwrap_or(false) {
         return Ok(Err(CompactSkip::PendingToolCalls));
@@ -72,8 +87,7 @@ pub async fn compact_session(
     );
 
     let messages = vec![ChatMessage::text("user", &summary_prompt)];
-    let prov = provider.read().await;
-    let response = prov.chat(&messages, &[], model_settings).await?;
+    let response = provider.chat(&messages, &[], model_settings).await?;
 
     let summary = match response.content {
         Some(text) if !text.trim().is_empty() => text,
