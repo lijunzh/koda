@@ -1,7 +1,7 @@
 # Koda Design Decisions
 
 This document captures architectural decisions and their rationale.
-For the TUI migration plan (v0.1.2), see [#57](https://github.com/lijunzh/koda/issues/57).
+For the TUI architecture (v0.1.2), see [#70](https://github.com/lijunzh/koda/issues/70).
 For workspace structure and developer docs, see [CLAUDE.md](CLAUDE.md).
 
 ## Vision
