@@ -142,15 +142,33 @@ type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 
 fn init_terminal(height: u16) -> Result<Term> {
     crossterm::terminal::enable_raw_mode()?;
-    let stdout = std::io::stdout();
-    let backend = CrosstermBackend::new(stdout);
-    let terminal = Terminal::with_options(
-        backend,
-        TerminalOptions {
-            viewport: Viewport::Inline(height),
-        },
-    )?;
-    Ok(terminal)
+    // Flush pending output before the cursor-position query
+    // that Viewport::Inline triggers internally.
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+
+    // Retry up to 3 times — the DSR cursor-position query can
+    // time out if a prior EventStream wake thread is still draining.
+    let mut last_err = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let stdout = std::io::stdout();
+        let backend = CrosstermBackend::new(stdout);
+        match Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(height),
+            },
+        ) {
+            Ok(t) => return Ok(t),
+            Err(e) => {
+                tracing::debug!("init_terminal attempt {}: {e}", attempt + 1);
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap().into())
 }
 
 fn restore_terminal(terminal: &mut Term, height: u16) {
@@ -409,8 +427,13 @@ pub async fn run(
                                 // Re-init terminal to resync viewport with cursor
                                 // position after crossterm direct writes.
                                 viewport_height = MIN_VIEWPORT_HEIGHT;
-                                terminal = init_terminal(viewport_height)?;
+                                // Drop the old EventStream BEFORE init_terminal.
+                                // EventStream spawns a background wake thread that
+                                // reads from stdin; if it's still active it can
+                                // consume the DSR response that Viewport::Inline's
+                                // cursor-position query needs, causing a timeout.
                                 crossterm_events = EventStream::new();
+                                terminal = init_terminal(viewport_height)?;
                                 // Refresh model name cache (provider may have changed)
                                 let prov = provider.read().await;
                                 if let Ok(models) = prov.list_models().await {
@@ -906,9 +929,10 @@ pub async fn run(
                                         textarea.cut();
                                         textarea.insert_str(&replacement);
                                     }
-                                    // Reinit terminal after select_inline
-                                    terminal = init_terminal(viewport_height)?;
+                                    // Reinit terminal after select_inline.
+                                    // Drop EventStream first (same race fix as slash commands).
                                     crossterm_events = EventStream::new();
+                                    terminal = init_terminal(viewport_height)?;
                                 } else {
                                     // Single match — just insert it
                                     textarea.select_all();
