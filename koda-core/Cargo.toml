@@ -55,6 +55,7 @@ futures-util = "0.3"
 
 # Error handling
 anyhow = "1"
+which = "7"
 
 # Async trait support
 async-trait = "0.1"
@@ -62,14 +63,6 @@ async-trait = "0.1"
 # MCP (Model Context Protocol) client
 rmcp = { version = "1.1", features = ["client", "transport-child-process"] }
 tokio-util = { version = "0.7", features = ["codec", "rt"] }
-
-# AST analysis
-tree-sitter = "0.26.6"
-petgraph = "0.8.3"
-tree-sitter-rust = "0.24.0"
-tree-sitter-python = "0.25.0"
-tree-sitter-javascript = "0.25.0"
-tree-sitter-typescript = "0.23.2"
 
 [features]
 test-support = []
