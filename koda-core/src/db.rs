@@ -130,6 +130,8 @@ impl Database {
 
         let options = SqliteConnectOptions::from_str(&db_url)?
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Incremental)
+            .foreign_keys(true)
             .create_if_missing(true);
 
         let pool = SqlitePoolOptions::new()
@@ -185,6 +187,12 @@ impl Database {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);")
             .execute(pool)
             .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_messages_role_id ON messages(role, id DESC);",
+        )
+        .execute(pool)
+        .await?;
 
         // Additive migrations for new token tracking columns (idempotent).
         for col in &[
@@ -484,11 +492,16 @@ impl Database {
         Ok(row.map(|r| r.0).unwrap_or_default())
     }
 
-    /// Delete a session and all its messages atomically.
+    /// Delete a session and all its messages/metadata atomically.
     pub async fn delete_session(&self, session_id: &str) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
 
         sqlx::query("DELETE FROM messages WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("DELETE FROM session_metadata WHERE session_id = ?")
             .bind(session_id)
             .execute(&mut *tx)
             .await?;
@@ -499,6 +512,11 @@ impl Database {
             .await?;
 
         tx.commit().await?;
+
+        // Reclaim freed pages from the deletion.
+        sqlx::query("PRAGMA incremental_vacuum")
+            .execute(&self.pool)
+            .await?;
 
         Ok(result.rows_affected() > 0)
     }
@@ -578,6 +596,11 @@ impl Database {
         .await?;
 
         tx.commit().await?;
+
+        // Reclaim freed pages from the bulk deletion.
+        sqlx::query("PRAGMA incremental_vacuum")
+            .execute(&self.pool)
+            .await?;
 
         Ok(deleted_count)
     }
