@@ -380,7 +380,13 @@ pub(crate) async fn execute_sub_agent(
 
     let sub_config = crate::config::KodaConfig::load(project_root, agent_name)
         .with_context(|| format!("Failed to load sub-agent: {agent_name}"))?;
-    let sub_config = sub_config.with_overrides(Some(parent_config.base_url.clone()), None, None);
+    // Only inherit parent's base_url if the sub-agent doesn't have its own
+    // provider/model explicitly configured (respect agent-level routing).
+    let sub_config = if sub_config.provider_type == parent_config.provider_type {
+        sub_config.with_overrides(Some(parent_config.base_url.clone()), None, None)
+    } else {
+        sub_config
+    };
 
     let sub_session = match session_id {
         Some(id) => id,
