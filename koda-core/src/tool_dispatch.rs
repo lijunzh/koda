@@ -19,6 +19,27 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// Maximum tool result size stored in conversation history.
+/// Larger results are truncated to keep context usage bounded.
+const MAX_TOOL_RESULT_CHARS: usize = 10_000;
+
+/// Truncate a tool result for storage in conversation history.
+fn truncate_for_history(output: &str) -> String {
+    if output.len() <= MAX_TOOL_RESULT_CHARS {
+        return output.to_string();
+    }
+    // Find a safe char boundary
+    let mut end = MAX_TOOL_RESULT_CHARS;
+    while end > 0 && !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n\n[...truncated {} chars. Re-read the file if you need the full content.]",
+        &output[..end],
+        output.len() - end
+    )
+}
+
 pub(crate) fn can_parallelize(
     tool_calls: &[ToolCall],
     mode: ApprovalMode,
@@ -133,10 +154,11 @@ pub(crate) async fn execute_tools_parallel(
             name: tool_calls[i].function_name.clone(),
             output: result.clone(),
         });
+        let stored = truncate_for_history(&result);
         db.insert_message(
             session_id,
             &Role::Tool,
-            Some(&result),
+            Some(&stored),
             None,
             Some(&tc_id),
             None,
@@ -314,10 +336,11 @@ pub(crate) async fn execute_tools_sequential(
             output: result.clone(),
         });
 
+        let stored = truncate_for_history(&result);
         db.insert_message(
             session_id,
             &Role::Tool,
-            Some(&result),
+            Some(&stored),
             None,
             Some(&tc.id),
             None,
