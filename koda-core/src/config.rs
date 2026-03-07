@@ -406,7 +406,9 @@ impl KodaConfig {
         }
         if let Some(m) = model {
             self.model = m.clone();
-            self.model_settings.model = m;
+            self.model_settings.model = m.clone();
+            // Recalculate context window and tier for the new model
+            self.recalculate_model_derived();
         }
         self
     }
@@ -444,6 +446,20 @@ impl KodaConfig {
             };
         }
         self
+    }
+
+    /// Recalculate model-derived settings (context window, tier, iteration limits).
+    ///
+    /// Call this whenever `self.model` or `self.provider_type` changes to keep
+    /// context window, tier, and iteration defaults in sync with the new model.
+    pub fn recalculate_model_derived(&mut self) {
+        let new_ctx = crate::model_context::context_window_for_model(&self.model);
+        self.max_context_tokens = new_ctx;
+        self.model_settings.max_context_tokens = new_ctx;
+
+        self.model_tier = ModelTier::from_model_name(&self.model, &self.provider_type);
+        self.max_iterations = self.model_tier.default_max_iterations();
+        self.auto_compact_threshold = self.model_tier.default_auto_compact_threshold();
     }
 
     /// Built-in agent configs, embedded at compile time.
@@ -692,5 +708,37 @@ mod tests {
             KodaConfig::default_for_testing(ProviderType::Gemini).with_overrides(None, None, None);
         assert_eq!(config.provider_type, ProviderType::Gemini);
         assert_eq!(config.model, "gemini-2.0-flash");
+    }
+
+    // ── recalculate_model_derived ──────────────────────────────
+
+    #[test]
+    fn test_recalculate_updates_context_window() {
+        // Start with LMStudio auto-detect (4096 tokens)
+        let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        assert_eq!(config.max_context_tokens, 4_096); // MIN_CONTEXT for auto-detect
+        assert_eq!(config.model_tier, ModelTier::Lite);
+
+        // Switch to Claude Sonnet
+        config.model = "claude-sonnet-4-6".to_string();
+        config.model_settings.model = config.model.clone();
+        config.provider_type = ProviderType::Anthropic;
+        config.recalculate_model_derived();
+
+        assert_eq!(config.max_context_tokens, 200_000);
+        assert_eq!(config.model_settings.max_context_tokens, 200_000);
+        assert_eq!(config.model_tier, ModelTier::Strong);
+        assert_eq!(config.max_iterations, 200); // Strong tier default
+    }
+
+    #[test]
+    fn test_with_overrides_model_recalculates() {
+        let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        assert_eq!(config.max_context_tokens, 4_096);
+
+        let config = config.with_overrides(None, Some("gpt-4o".into()), Some("openai".into()));
+        assert_eq!(config.model, "gpt-4o");
+        assert_eq!(config.max_context_tokens, 128_000);
+        assert_eq!(config.model_tier, ModelTier::Strong);
     }
 }
