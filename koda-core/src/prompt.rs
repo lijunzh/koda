@@ -43,6 +43,9 @@ pub fn build_system_prompt_tiered(
     if tier != ModelTier::Strong {
         prompt.push_str("\n\n");
         prompt.push_str(include_str!("capabilities.md"));
+    } else {
+        // Strong tier gets compact category hints instead
+        prompt.push_str(&crate::tools::discover::category_hints());
     }
 
     // Auto-generate tool reference from definitions

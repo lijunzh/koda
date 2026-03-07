@@ -27,6 +27,7 @@ pub fn normalize_tool_name(name: &str) -> String {
         "listskills" | "list_skills" => "ListSkills".to_string(),
         "activateskill" | "activate_skill" => "ActivateSkill".to_string(),
         "astanalysis" | "ast_analysis" => "AstAnalysis".to_string(),
+        "discovertools" | "discover_tools" | "discover" => "DiscoverTools".to_string(),
         "emailread" | "email_read" => "EmailRead".to_string(),
         "emailsend" | "email_send" => "EmailSend".to_string(),
         "emailsearch" | "email_search" => "EmailSearch".to_string(),
@@ -35,6 +36,7 @@ pub fn normalize_tool_name(name: &str) -> String {
 }
 
 pub mod agent;
+pub mod discover;
 pub mod file_tools;
 pub mod glob_tool;
 pub mod grep;
@@ -102,6 +104,9 @@ impl ToolRegistry {
         for def in skill_tools::definitions() {
             definitions.insert(def.name.clone(), def);
         }
+        // DiscoverTools — lazy loading for Strong tier
+        let discover_def = discover::definition();
+        definitions.insert(discover_def.name.clone(), discover_def);
         // Auto-provisionable MCP tools (registered so the LLM knows they exist)
         for def in crate::mcp::capability_registry::tool_definitions() {
             definitions.insert(def.name.clone(), def);
@@ -139,16 +144,40 @@ impl ToolRegistry {
     /// Get tool definitions, optionally filtered by an allow-list.
     /// Includes MCP tools merged with built-in tools.
     pub fn get_definitions(&self, allowed: &[String]) -> Vec<ToolDefinition> {
-        let mut defs: Vec<ToolDefinition> = if allowed.is_empty() {
-            self.definitions.values().cloned().collect()
-        } else {
+        self.get_definitions_tiered(allowed, crate::model_tier::ModelTier::Standard)
+    }
+
+    /// Get tool definitions with tier-aware filtering.
+    ///
+    /// - **Strong**: core tools + DiscoverTools only (~850 tokens)
+    /// - **Standard**: all tools (~2K tokens, current behavior)
+    /// - **Lite**: all tools (~2K tokens)
+    pub fn get_definitions_tiered(
+        &self,
+        allowed: &[String],
+        tier: crate::model_tier::ModelTier,
+    ) -> Vec<ToolDefinition> {
+        let mut defs: Vec<ToolDefinition> = if !allowed.is_empty() {
+            // Explicit allow-list always wins
             allowed
                 .iter()
                 .filter_map(|name| self.definitions.get(name).cloned())
                 .collect()
+        } else if tier == crate::model_tier::ModelTier::Strong {
+            // Strong tier: core tools + DiscoverTools only
+            self.definitions
+                .values()
+                .filter(|d| {
+                    discover::CORE_TOOLS.contains(&d.name.as_str()) || d.name == "DiscoverTools"
+                })
+                .cloned()
+                .collect()
+        } else {
+            // Standard/Lite: all tools
+            self.definitions.values().cloned().collect()
         };
 
-        // Merge MCP tool definitions (always included, not filtered by allow-list)
+        // Merge MCP tool definitions (always included)
         if let Some(ref mcp) = self.mcp_registry
             && let Ok(registry) = mcp.try_read()
         {
@@ -253,6 +282,12 @@ impl ToolRegistry {
             // Skill tools
             "ListSkills" => Ok(skill_tools::list_skills(&self.skill_registry, &args)),
             "ActivateSkill" => Ok(skill_tools::activate_skill(&self.skill_registry, &args)),
+
+            // Discovery tool
+            "DiscoverTools" => {
+                let all_defs: Vec<ToolDefinition> = self.definitions.values().cloned().collect();
+                Ok(discover::discover(&all_defs, &args))
+            }
 
             "InvokeAgent" => {
                 // Handled externally by the event loop (needs access to config/db).
