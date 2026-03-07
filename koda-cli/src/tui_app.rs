@@ -295,6 +295,7 @@ pub async fn run(
     let mut inference_start: Option<std::time::Instant> = None;
     let mut history: Vec<String> = load_history();
     let mut history_idx: Option<usize> = None; // None = not browsing history
+    let mut completer = crate::completer::SlashCompleter::new();
 
     // Crossterm event stream for async key capture
     let mut crossterm_events = EventStream::new();
@@ -784,8 +785,17 @@ pub async fn run(
                         (KeyCode::BackTab, _) => {
                             approval::cycle_mode(&shared_mode);
                         }
+                        (KeyCode::Tab, KeyModifiers::NONE) => {
+                            let current = textarea.lines().join("\n");
+                            if let Some(completed) = completer.complete(&current) {
+                                textarea.select_all();
+                                textarea.cut();
+                                textarea.insert_str(completed);
+                            }
+                        }
                         _ => {
                             history_idx = None;
+                            completer.reset();
                             textarea.input(Event::Key(key));
                         }
                     }
