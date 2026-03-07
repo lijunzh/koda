@@ -34,7 +34,8 @@ pub fn build_system_prompt(
     if !available_agents.is_empty() {
         prompt.push_str("\n\n## Available Sub-Agents\n");
         prompt.push_str(
-            "You can delegate tasks to these agents using the InvokeAgent tool. \
+            "Use InvokeAgent for autonomous multi-step workflows that create/modify \
+             files and need iteration (test generation, releases). \
              Do NOT invent agent names that are not listed here.\n",
         );
         for name in &available_agents {
@@ -46,6 +47,14 @@ pub fn build_system_prompt(
              Do not use the InvokeAgent tool.\n",
         );
     }
+
+    prompt.push_str(
+        "\n## Skills\n\
+         Use ActivateSkill for analysis, review, conventions, and checklists. \
+         Skills inject expert instructions into your context \u{2014} zero cost, instant. \
+         Use ListSkills to see what\u{2019}s available. \
+         Prefer skills over sub-agents for read-only analysis tasks.\n",
+    );
 
     if !semantic_memory.is_empty() {
         prompt.push_str(&format!(
