@@ -571,7 +571,18 @@ pub async fn run(
                                                 (KeyCode::BackTab, _) => {
                                                     approval::cycle_mode(&shared_mode);
                                                 }
+                                                (KeyCode::Tab, KeyModifiers::NONE) => {
+                                                    // Silent Tab completion during inference
+                                                    // (no dropdown — would block the event loop)
+                                                    let current = textarea.lines().join("\n");
+                                                    if let Some(completed) = completer.complete(&current) {
+                                                        textarea.select_all();
+                                                        textarea.cut();
+                                                        textarea.insert_str(&completed);
+                                                    }
+                                                }
                                                 _ => {
+                                                    completer.reset();
                                                     textarea.input(Event::Key(key));
                                                 }
                                             }
