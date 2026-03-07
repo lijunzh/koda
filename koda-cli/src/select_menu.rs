@@ -82,9 +82,11 @@ pub fn select_inline(
                 KeyCode::Up => {
                     selected = selected.saturating_sub(1);
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Tab => {
                     if selected + 1 < options.len() {
                         selected += 1;
+                    } else {
+                        selected = 0; // wrap around
                     }
                 }
                 KeyCode::Enter => {
