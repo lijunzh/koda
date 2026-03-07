@@ -751,24 +751,43 @@ pub async fn run(
                             textarea.insert_newline();
                         }
                         (KeyCode::Enter, KeyModifiers::NONE) => {
-                            let text = textarea.lines().join("\n");
-                            if !text.trim().is_empty() {
-                                textarea.select_all();
-                                textarea.cut();
-                                history.push(text.clone());
-                                save_history(&history);
-                                history_idx = None;
-                                let mode = approval::read_mode(&shared_mode);
-                                let icon = match mode {
-                                    ApprovalMode::Plan => "\u{1f4cb}",
-                                    ApprovalMode::Normal => "\u{1f43b}",
-                                    ApprovalMode::Yolo => "\u{26a1}",
-                                };
-                                emit_above(&mut terminal, Line::from(vec![
-                                    Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
-                                    Span::raw(text.clone()),
-                                ]));
-                                pending_command = Some(text);
+                            // Paste detection: peek ahead for more input.
+                            // If characters arrive within 30ms, it's a paste —
+                            // insert newline instead of submitting.
+                            let is_paste = tokio::time::timeout(
+                                std::time::Duration::from_millis(30),
+                                crossterm_events.next(),
+                            )
+                            .await;
+
+                            match is_paste {
+                                Ok(Some(Ok(Event::Key(next_key)))) => {
+                                    // More input arrived quickly — it's a paste
+                                    textarea.insert_newline();
+                                    textarea.input(Event::Key(next_key));
+                                }
+                                _ => {
+                                    // Timeout or no event — real Enter, submit
+                                    let text = textarea.lines().join("\n");
+                                    if !text.trim().is_empty() {
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        history.push(text.clone());
+                                        save_history(&history);
+                                        history_idx = None;
+                                        let mode = approval::read_mode(&shared_mode);
+                                        let icon = match mode {
+                                            ApprovalMode::Plan => "\u{1f4cb}",
+                                            ApprovalMode::Normal => "\u{1f43b}",
+                                            ApprovalMode::Yolo => "\u{26a1}",
+                                        };
+                                        emit_above(&mut terminal, Line::from(vec![
+                                            Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
+                                            Span::raw(text.clone()),
+                                        ]));
+                                        pending_command = Some(text);
+                                    }
+                                }
                             }
                         }
                         (KeyCode::Up, KeyModifiers::NONE) => {
