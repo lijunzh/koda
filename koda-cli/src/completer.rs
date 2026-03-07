@@ -36,6 +36,8 @@ pub struct InputCompleter {
     token: String,
     /// Project root for @file path resolution.
     project_root: PathBuf,
+    /// Cached model names for `/model` completion.
+    model_names: Vec<String>,
 }
 
 impl InputCompleter {
@@ -45,7 +47,13 @@ impl InputCompleter {
             idx: 0,
             token: String::new(),
             project_root,
+            model_names: Vec::new(),
         }
+    }
+
+    /// Update the cached model names (call after provider switch or model list fetch).
+    pub fn set_model_names(&mut self, names: Vec<String>) {
+        self.model_names = names;
     }
 
     /// Attempt to complete the current input text.
@@ -58,6 +66,10 @@ impl InputCompleter {
 
         // Slash command completion: input starts with /
         if trimmed.starts_with('/') {
+            // /model <partial> → complete model names
+            if let Some(partial) = trimmed.strip_prefix("/model ") {
+                return self.complete_model(partial);
+            }
             return self.complete_slash(trimmed);
         }
 
@@ -89,6 +101,31 @@ impl InputCompleter {
                 .iter()
                 .filter(|cmd| cmd.starts_with(trimmed) && **cmd != trimmed)
                 .map(|s| s.to_string())
+                .collect();
+            self.idx = 0;
+        }
+
+        if self.matches.is_empty() {
+            return None;
+        }
+
+        let result = self.matches[self.idx].clone();
+        self.idx = (self.idx + 1) % self.matches.len();
+        Some(result)
+    }
+
+    // ── /model name completion ──────────────────────────────
+
+    fn complete_model(&mut self, partial: &str) -> Option<String> {
+        let token_key = format!("/model {partial}");
+
+        if token_key != self.token {
+            self.token = token_key;
+            self.matches = self
+                .model_names
+                .iter()
+                .filter(|name| name.contains(partial) && name.as_str() != partial)
+                .map(|name| format!("/model {name}"))
                 .collect();
             self.idx = 0;
         }
@@ -324,6 +361,52 @@ mod tests {
         let mut c = InputCompleter::new(tmp.path().to_path_buf());
         let result = c.complete("review this @c");
         assert_eq!(result, Some("review this @config.toml".to_string()));
+    }
+
+    // ── /model completion tests ──────────────────────────────
+
+    #[test]
+    fn test_model_complete() {
+        let tmp = tempdir().unwrap();
+        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        c.set_model_names(vec![
+            "gpt-4o".into(),
+            "gpt-4o-mini".into(),
+            "gpt-3.5-turbo".into(),
+        ]);
+        let result = c.complete("/model gpt-4");
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(text.starts_with("/model gpt-4"), "got: {text}");
+    }
+
+    #[test]
+    fn test_model_complete_cycles() {
+        let tmp = tempdir().unwrap();
+        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        c.set_model_names(vec!["gpt-4o".into(), "gpt-4o-mini".into()]);
+        let a = c.complete("/model gpt");
+        let b = c.complete("/model gpt");
+        assert!(a.is_some());
+        assert!(b.is_some());
+        assert_ne!(a, b, "should cycle through models");
+    }
+
+    #[test]
+    fn test_model_no_names_returns_none() {
+        let tmp = tempdir().unwrap();
+        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        // No model names set
+        assert!(c.complete("/model gpt").is_none());
+    }
+
+    #[test]
+    fn test_model_substring_match() {
+        let tmp = tempdir().unwrap();
+        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        c.set_model_names(vec!["claude-3-sonnet".into(), "claude-3-opus".into()]);
+        let result = c.complete("/model opus");
+        assert_eq!(result, Some("/model claude-3-opus".to_string()));
     }
 
     // ── Helper tests ────────────────────────────────────────
