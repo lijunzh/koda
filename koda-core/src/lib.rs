@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod bash_safety;
 pub mod compact;
 pub mod config;
 pub mod context;
