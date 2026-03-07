@@ -12,6 +12,7 @@ use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
+use std::collections::HashMap;
 
 type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 
@@ -37,6 +38,9 @@ pub struct TuiRenderer {
     response_started: bool,
     /// Streaming markdown renderer.
     md: crate::md_render::MarkdownRenderer,
+    /// Pending tool call args: maps tool_call_id → (tool_name, args_json).
+    /// Used to extract file paths for syntax highlighting Read/Grep results.
+    pending_tool_args: HashMap<String, (String, String)>,
 }
 
 impl TuiRenderer {
@@ -52,6 +56,7 @@ impl TuiRenderer {
             has_emitted_text: false,
             response_started: false,
             md: crate::md_render::MarkdownRenderer::new(),
+            pending_tool_args: HashMap::new(),
         }
     }
 
@@ -124,11 +129,14 @@ impl TuiRenderer {
                 tui_output::emit_line(terminal, Line::styled("  \u{2500}\u{2500}\u{2500}", DIM));
             }
             EngineEvent::ToolCallStart {
-                id: _,
+                id,
                 name,
                 args,
                 is_sub_agent,
             } => {
+                // Track args for syntax highlighting in ToolCallResult
+                self.pending_tool_args
+                    .insert(id.clone(), (name.clone(), args.to_string()));
                 let indent = if is_sub_agent { "  " } else { "" };
                 let (dot_style, detail) = tool_call_styles(&name, &args);
                 tui_output::emit_line(
@@ -142,11 +150,13 @@ impl TuiRenderer {
                     ]),
                 );
             }
-            EngineEvent::ToolCallResult {
-                id: _,
-                name,
-                output,
-            } => {
+            EngineEvent::ToolCallResult { id, name, output } => {
+                // Extract file path from pending args for syntax highlighting
+                let file_ext = self
+                    .pending_tool_args
+                    .remove(&id)
+                    .and_then(|(_, args)| extract_file_extension(&args));
+
                 self.tool_history.push(&name, &output);
                 let is_diff_tool =
                     matches!(name.as_str(), "Write" | "Edit" | "Delete" | "MemoryWrite");
@@ -161,7 +171,7 @@ impl TuiRenderer {
                         ]),
                     );
                 } else {
-                    render_tool_output(terminal, &name, &output, self.verbose);
+                    render_tool_output(terminal, &name, &output, self.verbose, file_ext.as_deref());
                 }
                 self.preview_shown = false;
             }
@@ -305,7 +315,22 @@ fn tool_call_styles(name: &str, args: &serde_json::Value) -> (Style, String) {
 }
 
 /// Render tool output with collapsing for long outputs.
-fn render_tool_output(terminal: &mut Term, _name: &str, output: &str, verbose: bool) {
+/// Extract file extension from tool call args JSON.
+/// Works for Read ("path") and Grep ("path") tool args.
+fn extract_file_extension(args_json: &str) -> Option<String> {
+    let args: serde_json::Value = serde_json::from_str(args_json).ok()?;
+    let path = args["path"].as_str()?;
+    let ext = std::path::Path::new(path).extension()?.to_str()?;
+    Some(ext.to_string())
+}
+
+fn render_tool_output(
+    terminal: &mut Term,
+    name: &str,
+    output: &str,
+    verbose: bool,
+    file_ext: Option<&str>,
+) {
     if output.is_empty() {
         return;
     }
@@ -313,16 +338,32 @@ fn render_tool_output(terminal: &mut Term, _name: &str, output: &str, verbose: b
     let lines: Vec<&str> = output.lines().collect();
     let total = lines.len();
     let max_lines = if verbose { total } else { 4 };
-
     let show = total.min(max_lines);
+
+    // Syntax highlighting for Read tool output
+    let use_highlight = matches!(name, "Read" | "Grep") && file_ext.is_some();
+    let mut highlighter = if use_highlight {
+        Some(crate::highlight::CodeHighlighter::new(file_ext.unwrap()))
+    } else {
+        None
+    };
+
     for line in &lines[..show] {
-        tui_output::emit_line(
-            terminal,
-            Line::from(vec![
-                Span::styled("  \u{2502} ", DIM),
-                Span::raw(line.to_string()),
-            ]),
-        );
+        if name == "Grep" {
+            render_grep_line(terminal, line);
+        } else if let Some(ref mut hl) = highlighter {
+            let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
+            spans.extend(hl.highlight_spans(line));
+            tui_output::emit_line(terminal, Line::from(spans));
+        } else {
+            tui_output::emit_line(
+                terminal,
+                Line::from(vec![
+                    Span::styled("  \u{2502} ", DIM),
+                    Span::raw(line.to_string()),
+                ]),
+            );
+        }
     }
     if total > show {
         tui_output::emit_line(
@@ -331,6 +372,37 @@ fn render_tool_output(terminal: &mut Term, _name: &str, output: &str, verbose: b
                 format!("  \u{2502} ... ({} more lines)", total - show),
                 DIM,
             )]),
+        );
+    }
+}
+
+/// Render a single grep result line with the file path highlighted.
+///
+/// Grep output format: `file_path:line_number:content`
+/// We highlight the file path in cyan and the line number in yellow.
+fn render_grep_line(terminal: &mut Term, line: &str) {
+    // Parse file:line:content format
+    if let Some((file_and_line, content)) = line.split_once(':').and_then(|(file, rest)| {
+        rest.split_once(':')
+            .map(|(lineno, content)| (format!("{file}:{lineno}"), content))
+    }) {
+        tui_output::emit_line(
+            terminal,
+            Line::from(vec![
+                Span::styled("  \u{2502} ", DIM),
+                Span::styled(file_and_line, Style::default().fg(Color::Cyan)),
+                Span::styled(":", DIM),
+                Span::raw(content.to_string()),
+            ]),
+        );
+    } else {
+        // Fallback: render as-is
+        tui_output::emit_line(
+            terminal,
+            Line::from(vec![
+                Span::styled("  \u{2502} ", DIM),
+                Span::raw(line.to_string()),
+            ]),
         );
     }
 }
