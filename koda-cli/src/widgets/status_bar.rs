@@ -24,9 +24,15 @@ pub struct StatusBar<'a> {
 /// Stats from the most recent inference turn.
 #[derive(Debug, Clone, Default)]
 pub struct TurnStats {
+    #[allow(dead_code)]
+    pub tokens_in: i64,
     pub tokens_out: i64,
+    #[allow(dead_code)]
+    pub cache_read: i64,
     pub elapsed_ms: u64,
     pub rate: f64,
+    /// Estimated cost in USD (None if model pricing unknown).
+    pub cost_usd: Option<f64>,
 }
 
 impl<'a> StatusBar<'a> {
@@ -133,10 +139,17 @@ impl Widget for StatusBar<'_> {
             } else {
                 format!("{}ms", stats.elapsed_ms)
             };
+
+            let cost_str = match stats.cost_usd {
+                Some(c) if c < 0.01 => " · <$0.01".to_string(),
+                Some(c) => format!(" · ${c:.2}"),
+                None => String::new(),
+            };
+
             spans.push(Span::styled(
                 format!(
-                    " {} tok \u{00b7} {} \u{00b7} {:.0} t/s ",
-                    stats.tokens_out, time, stats.rate
+                    " {} tok · {} · {:.0} t/s{} ",
+                    stats.tokens_out, time, stats.rate, cost_str
                 ),
                 Style::default().fg(Color::DarkGray),
             ));

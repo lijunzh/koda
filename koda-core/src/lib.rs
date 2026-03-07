@@ -26,4 +26,5 @@ pub mod runtime_env;
 pub mod session;
 pub mod tool_dispatch;
 pub mod tools;
+pub mod undo;
 pub mod version;
