@@ -74,9 +74,9 @@ pub struct ToolRegistry {
     /// Discovered skills.
     pub skill_registry: crate::skills::SkillRegistry,
     /// Database handle for tools that need session access (RecallContext).
-    db: Option<std::sync::Arc<crate::db::Database>>,
+    db: std::sync::RwLock<Option<std::sync::Arc<crate::db::Database>>>,
     /// Current session ID (for RecallContext).
-    session_id: Option<String>,
+    session_id: std::sync::RwLock<Option<String>>,
 }
 
 impl ToolRegistry {
@@ -130,8 +130,8 @@ impl ToolRegistry {
             mcp_registry: None,
             undo: std::sync::Mutex::new(crate::undo::UndoStack::new()),
             skill_registry,
-            db: None,
-            session_id: None,
+            db: std::sync::RwLock::new(None),
+            session_id: std::sync::RwLock::new(None),
         }
     }
 
@@ -145,14 +145,13 @@ impl ToolRegistry {
     }
 
     /// Attach database + session for tools that need history access.
-    pub fn with_session(
-        mut self,
-        db: std::sync::Arc<crate::db::Database>,
-        session_id: String,
-    ) -> Self {
-        self.db = Some(db);
-        self.session_id = Some(session_id);
-        self
+    pub fn set_session(&self, db: std::sync::Arc<crate::db::Database>, session_id: String) {
+        if let Ok(mut guard) = self.db.write() {
+            *guard = Some(db);
+        }
+        if let Ok(mut guard) = self.session_id.write() {
+            *guard = Some(session_id);
+        }
     }
 
     /// Get all built-in tool names (excludes MCP tools).
@@ -313,8 +312,10 @@ impl ToolRegistry {
 
             // Recall context tool
             "RecallContext" => {
-                if let (Some(db), Some(sid)) = (&self.db, &self.session_id) {
-                    Ok(recall::recall_context(db, sid, &args).await)
+                let db_opt = self.db.read().ok().and_then(|g| g.clone());
+                let sid_opt = self.session_id.read().ok().and_then(|g| g.clone());
+                if let (Some(db), Some(sid)) = (db_opt, sid_opt) {
+                    Ok(recall::recall_context(&db, &sid, &args).await)
                 } else {
                     Ok("RecallContext requires an active session.".to_string())
                 }

@@ -56,6 +56,7 @@ pub async fn inference_loop(
 
     // Pre-build the base system message (avoids re-cloning 4-8KB per iteration)
     let base_system_prompt = system_prompt.to_string();
+    let mut recent_tool_names: Vec<String> = Vec::new();
 
     loop {
         if iteration >= hard_cap {
@@ -89,7 +90,10 @@ pub async fn inference_loop(
             hard_cap += extra;
         }
 
-        let system_message = ChatMessage::text("system", &base_system_prompt);
+        // Inject task phase hint into system prompt
+        let phase = crate::task_phase::TaskPhase::detect(&recent_tool_names);
+        let phase_prompt = format!("{base_system_prompt}\n\n{}", phase.prompt_hint());
+        let system_message = ChatMessage::text("system", &phase_prompt);
 
         // Assemble context with sliding window
         let history = db.load_context(session_id, available).await?;
@@ -518,6 +522,11 @@ pub async fn inference_loop(
                 cmd_rx,
             )
             .await?;
+        }
+
+        // Track tool names for task phase detection
+        for tc in &tool_calls {
+            recent_tool_names.push(tc.function_name.clone());
         }
 
         // Loop detection: same tool+args repeated REPEAT_THRESHOLD times → stop immediately.
