@@ -56,7 +56,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             description: "Create a new sub-agent for RECURRING specialized tasks. \
                 BEFORE calling this tool, you MUST: \
                 1) Call ListAgents to check if a similar agent already exists. \
-                2) Read an existing agent (e.g., agents/reviewer.json) to use as a quality template. \
+                2) Read an existing agent (e.g., agents/testgen.json) to use as a quality template. \
                 3) Confirm with the user that they want a new agent. \
                 Do NOT create agents for one-off tasks you can handle directly."
                 .to_string(),
@@ -334,14 +334,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let result = list_agents(dir.path());
         let names: Vec<&str> = result.iter().map(|(n, _, _)| n.as_str()).collect();
-        assert!(
-            names.contains(&"reviewer"),
-            "Should include built-in reviewer"
-        );
-        assert!(
-            names.contains(&"security"),
-            "Should include built-in security"
-        );
+        // reviewer and security are now skills, not sub-agents
         assert!(
             names.contains(&"testgen"),
             "Should include built-in testgen"
@@ -387,13 +380,11 @@ mod tests {
         let builtins: Vec<_> = agents.iter().filter(|a| a.source == "built-in").collect();
         assert_eq!(
             builtins.len(),
-            4,
-            "Expected 4 built-in agents, got {}",
+            2,
+            "Expected 2 built-in agents (testgen, releaser), got {}",
             builtins.len()
         );
         let names: Vec<_> = builtins.iter().map(|a| a.name.as_str()).collect();
-        assert!(names.contains(&"reviewer"));
-        assert!(names.contains(&"security"));
         assert!(names.contains(&"testgen"));
         assert!(names.contains(&"releaser"));
     }
@@ -402,9 +393,9 @@ mod tests {
     fn test_list_agents_detail_shows_prompts() {
         let dir = TempDir::new().unwrap();
         let result = list_agents_detail(dir.path());
-        assert!(result.contains("## reviewer [built-in]"));
-        assert!(result.contains("## security [built-in]"));
-        assert!(result.contains("You are a senior code reviewer"));
+        assert!(result.contains("## testgen [built-in]"));
+        assert!(result.contains("## releaser [built-in]"));
+        assert!(result.contains("You are a QA engineer"));
     }
 
     #[test]
@@ -460,7 +451,7 @@ mod tests {
     #[test]
     fn test_create_agent_rejects_existing_builtin() {
         let dir = TempDir::new().unwrap();
-        let args = json!({"name": "reviewer", "system_prompt": "x".repeat(60)});
+        let args = json!({"name": "testgen", "system_prompt": "x".repeat(60)});
         let result = create_agent(dir.path(), &args);
         assert!(
             result.contains("already exists"),

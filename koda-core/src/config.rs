@@ -421,8 +421,6 @@ impl KodaConfig {
     /// These are always available regardless of disk state.
     const BUILTIN_AGENTS: &[(&str, &str)] = &[
         ("default", include_str!("../agents/default.json")),
-        ("reviewer", include_str!("../agents/reviewer.json")),
-        ("security", include_str!("../agents/security.json")),
         ("testgen", include_str!("../agents/testgen.json")),
         ("releaser", include_str!("../agents/releaser.json")),
     ];
