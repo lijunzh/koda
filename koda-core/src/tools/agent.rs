@@ -38,15 +38,14 @@ pub fn definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "ListAgents".to_string(),
-            description: "List all available sub-agents (built-in, user, and project). \
-                Use detail=true to see full system prompts (useful as templates before CreateAgent)."
+            description: "List available sub-agents. Use detail=true to see system prompts."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "detail": {
                         "type": "boolean",
-                        "description": "If true, show full system prompts for each agent (use as templates for CreateAgent)"
+                        "description": "Show full system prompts"
                     }
                 }
             }),
@@ -69,12 +68,12 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     },
                     "system_prompt": {
                         "type": "string",
-                        "description": "The agent's system prompt. Should include: identity/mindset, process steps, output format with severity dots, scope limits, and what NOT to do."
+                        "description": "Full system prompt for the agent"
                     },
                     "allowed_tools": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Tools this agent can use. Read-only agents: [Read,List,Grep,Glob]. Agents that modify code: add Write,Edit,Bash. Empty [] means all tools."
+                        "description": "Tools this agent can use. Empty [] = all tools."
                     }
                 },
                 "required": ["name", "system_prompt"]

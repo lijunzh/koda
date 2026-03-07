@@ -11,9 +11,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "ListSkills".to_string(),
-            description: "List available skills (curated expertise modules). \
-                Skills inject specialized knowledge into your context — \
-                use them for reviews, audits, and domain-specific tasks."
+            description: "List available skills (expertise modules for reviews, audits, etc.)."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -28,9 +26,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "ActivateSkill".to_string(),
-            description: "Activate a skill to get expert instructions for a specific task. \
-                Use this for code review, security audit, and other structured analyses. \
-                The skill's instructions will guide your approach — follow them carefully."
+            description: "Activate a skill for expert instructions. Follow the returned guidance."
                 .to_string(),
             parameters: json!({
                 "type": "object",
