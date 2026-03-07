@@ -78,11 +78,15 @@ pub fn write_line(line: &Line<'_>) {
     use crossterm::{
         execute,
         style::{Attribute, Print, ResetColor, SetAttribute, SetForegroundColor},
+        terminal::{Clear, ClearType},
     };
     use std::io::Write;
 
     let mut stdout = std::io::stdout();
-    execute!(stdout, Print("\r")).ok();
+    // Clear the current line first — prevents stale viewport content
+    // (e.g. the status bar) from showing through when slash commands
+    // write over the old viewport area.
+    execute!(stdout, Clear(ClearType::CurrentLine), Print("\r")).ok();
     for span in &line.spans {
         // Apply foreground color
         if let Some(cc) = span.style.fg.and_then(ratatui_to_crossterm_color) {
@@ -104,9 +108,13 @@ pub fn write_line(line: &Line<'_>) {
 
 /// Write a blank line directly to stdout.
 pub fn write_blank() {
-    use crossterm::{execute, style::Print};
+    use crossterm::{
+        execute,
+        style::Print,
+        terminal::{Clear, ClearType},
+    };
     let mut stdout = std::io::stdout();
-    execute!(stdout, Print("\r\n")).ok();
+    execute!(stdout, Clear(ClearType::CurrentLine), Print("\r\n")).ok();
 }
 
 fn ratatui_to_crossterm_color(c: Color) -> Option<crossterm::style::Color> {
