@@ -16,10 +16,8 @@ const MAX_MATCHES: usize = 100;
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         name: "Grep".to_string(),
-        description: "Recursively search for a text pattern across files. \
-            Respects .gitignore. Returns matching file paths, line numbers, and content. \
-            Results are capped at 100 matches. If too many results, narrow the search \
-            pattern or scope to a subdirectory."
+        description: "Recursively search for text across files (respects .gitignore). \
+            Capped at 100 matches."
             .to_string(),
         parameters: json!({
             "type": "object",
