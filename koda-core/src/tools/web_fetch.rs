@@ -14,9 +14,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 15;
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         name: "WebFetch".to_string(),
-        description: "Fetch content from a URL. Returns the page text with HTML tags stripped. \
-            Useful for reading documentation, APIs, or any public web page."
-            .to_string(),
+        description: "Fetch content from a URL (HTML stripped to text).".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {

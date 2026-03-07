@@ -13,9 +13,7 @@ use std::path::Path;
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         name: "Glob".to_string(),
-        description: "Find files by glob pattern (e.g. '**/*.rs', 'src/**/*.test.ts'). \
-            Returns matching file paths relative to the project root. \
-            Use this to discover files by extension or naming convention."
+        description: "Find files by glob pattern (e.g. '**/*.rs'). Returns relative paths."
             .to_string(),
         parameters: json!({
             "type": "object",
