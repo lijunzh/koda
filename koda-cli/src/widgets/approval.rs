@@ -57,6 +57,22 @@ pub fn prompt_approval(
         options.push(("\u{1f513} Always allow", "Auto-approve from now on"));
     }
 
+    // Scroll terminal to make room for the options menu.
+    // After emit_line()/insert_before(), the cursor sits inside the ratatui
+    // viewport (the status/input bar at the bottom). We print newlines to
+    // push the viewport down, then move the cursor back up so the crossterm
+    // options render in the space we just created — immediately above the
+    // viewport rather than overlapping it.
+    {
+        let total_lines = (options.len() + 2) as u16; // title + options + hint
+        let mut stdout = std::io::stdout();
+        for _ in 0..total_lines {
+            crossterm::execute!(stdout, crossterm::style::Print("\n")).ok();
+        }
+        crossterm::execute!(stdout, crossterm::cursor::MoveUp(total_lines)).ok();
+        stdout.flush().ok();
+    }
+
     // Render options and run selection loop
     let mut selected: usize = 0;
     render_options(terminal, &options, selected);
