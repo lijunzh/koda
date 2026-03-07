@@ -6,7 +6,6 @@ use super::safe_resolve_path;
 use crate::providers::ToolDefinition;
 use anyhow::Result;
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -141,7 +140,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
 pub async fn read_file(
     project_root: &Path,
     args: &Value,
-    cache: &std::sync::Mutex<HashMap<String, (u64, SystemTime)>>,
+    cache: &super::FileReadCache,
 ) -> Result<String> {
     let path_str = args["path"]
         .as_str()

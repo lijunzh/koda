@@ -58,6 +58,7 @@ pub async fn handle_slash_command(
         ReplAction::SwitchModel(model) => {
             config.model = model.clone();
             config.model_settings.model = model.clone();
+            config.recalculate_model_derived();
             crate::tui_wizards::save_provider(config);
             ok_msg(format!("Model set to: {model}"));
             SlashAction::Continue
@@ -210,6 +211,7 @@ async fn handle_pick_model(
                 Ok(Some(idx)) => {
                     config.model = models[idx].id.clone();
                     config.model_settings.model = config.model.clone();
+                    config.recalculate_model_derived();
                     crate::tui_wizards::save_provider(config);
                     ok_msg(format!("Model set to: {}", config.model));
                 }
