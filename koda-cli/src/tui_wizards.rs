@@ -142,6 +142,10 @@ pub(crate) async fn handle_setup_provider(
                 config.model_settings.model = config.model.clone();
                 config.recalculate_model_derived();
             }
+            // Query actual capabilities from the API
+            if let Ok(caps) = prov.model_capabilities(&config.model).await {
+                config.apply_provider_capabilities(&caps);
+            }
             ok_msg("Connection verified! Available models:".into());
             for m in &models {
                 let marker = if m.id == config.model {
