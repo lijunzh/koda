@@ -13,7 +13,6 @@ use koda_core::session::KodaSession;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 use std::sync::Arc;
@@ -21,34 +20,10 @@ use tokio::sync::RwLock;
 
 type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 
-const DIM: Style = Style::new().fg(Color::DarkGray);
-const ERR: Style = Style::new().fg(Color::Red);
-const OK: Style = Style::new().fg(Color::Green);
-const CYAN: Style = Style::new().fg(Color::Cyan);
-const WARN: Style = Style::new().fg(Color::Yellow);
-const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
+use tui_output::{dim_msg, err_msg, ok_msg, warn_msg};
 
-fn ok_msg(msg: String) {
-    tui_output::write_line(&Line::from(vec![
-        Span::styled("  \u{2713} ", OK),
-        Span::raw(msg),
-    ]));
-}
-fn err_msg(msg: String) {
-    tui_output::write_line(&Line::from(vec![
-        Span::styled("  \u{2717} ", ERR),
-        Span::styled(msg, ERR),
-    ]));
-}
-fn dim_msg(msg: String) {
-    tui_output::write_line(&Line::styled(format!("  {msg}"), DIM));
-}
-fn warn_msg(msg: String) {
-    tui_output::write_line(&Line::from(vec![
-        Span::styled("  \u{26a0} ", WARN),
-        Span::styled(msg, WARN),
-    ]));
-}
+// Re-export style constants from tui_output for inline use
+use tui_output::{BOLD, CYAN, DIM, GREEN as OK};
 
 // ── Provider (native TUI) ───────────────────────────────────
 
