@@ -20,6 +20,20 @@ pub struct GeminiProvider {
     client: reqwest::Client,
     base_url: String,
     api_key: String,
+    /// Cached content name for context caching (e.g. "cachedContents/abc123").
+    /// Created on first request, reused until TTL expires.
+    cached_content: std::sync::Mutex<Option<CachedContentState>>,
+}
+
+/// State for Gemini explicit context caching.
+#[derive(Debug, Clone)]
+struct CachedContentState {
+    /// The cache resource name from the API.
+    name: String,
+    /// Fingerprint of what was cached (model + system prompt hash).
+    fingerprint: String,
+    /// When the cache expires.
+    expires_at: std::time::Instant,
 }
 
 impl GeminiProvider {
@@ -31,7 +45,84 @@ impl GeminiProvider {
                 .trim_end_matches('/')
                 .to_string(),
             api_key,
+            cached_content: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Create or reuse a cached content resource for the system prompt + tools.
+    /// Returns the cache name if successful, None if caching isn't available.
+    async fn ensure_cached_content(
+        &self,
+        model: &str,
+        system_instruction: Option<&serde_json::Value>,
+        tools: &[GeminiToolConfig],
+    ) -> Option<String> {
+        // Build a fingerprint from model + system prompt + tool count
+        let sys_text = system_instruction
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let fingerprint = format!(
+            "{}:{}:{}",
+            model,
+            &sys_text[..sys_text.len().min(100)],
+            tools.len()
+        );
+
+        // Check if existing cache is still valid
+        if let Ok(guard) = self.cached_content.lock()
+            && let Some(ref state) = *guard
+            && state.fingerprint == fingerprint
+            && state.expires_at > std::time::Instant::now()
+        {
+            return Some(state.name.clone());
+        }
+
+        // Need system instruction to cache anything meaningful
+        let sys = system_instruction?;
+
+        // Create cached content via the API
+        let mut cache_body = serde_json::json!({
+            "model": format!("models/{model}"),
+            "systemInstruction": sys,
+            "ttl": "300s"  // 5 minutes, refreshed on use
+        });
+        if !tools.is_empty() {
+            cache_body["tools"] = serde_json::to_value(tools).unwrap_or_default();
+        }
+
+        let resp = self
+            .client
+            .post(format!(
+                "{}/v1beta/cachedContents?key={}",
+                self.base_url, self.api_key
+            ))
+            .json(&cache_body)
+            .send()
+            .await
+            .ok()?;
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            tracing::debug!("Gemini cache creation failed: {body}");
+            return None;
+        }
+
+        let result: serde_json::Value = resp.json().await.ok()?;
+        let cache_name = result["name"].as_str()?.to_string();
+
+        tracing::info!("Gemini: created context cache '{cache_name}'");
+
+        let state = CachedContentState {
+            name: cache_name.clone(),
+            fingerprint,
+            expires_at: std::time::Instant::now() + std::time::Duration::from_secs(280),
+        };
+
+        if let Ok(mut guard) = self.cached_content.lock() {
+            *guard = Some(state);
+        }
+
+        Some(cache_name)
     }
 }
 
@@ -178,11 +269,17 @@ impl LlmProvider for GeminiProvider {
         let (contents, system_instruction) = self.convert_messages(messages);
         let api_tools = Self::build_tools(tools);
 
-        let body = self.build_request_body(
+        // Try to use cached content for system prompt + tools
+        let cache_name = self
+            .ensure_cached_content(model, system_instruction.as_ref(), &api_tools)
+            .await;
+
+        let body = self.build_request_body_with_cache(
             &contents,
             system_instruction.as_ref(),
             &api_tools,
             Some(settings),
+            cache_name.as_deref(),
         );
 
         let resp = self
@@ -500,6 +597,18 @@ impl GeminiProvider {
         tools: &[GeminiToolConfig],
         settings: Option<&crate::config::ModelSettings>,
     ) -> serde_json::Value {
+        self.build_request_body_with_cache(contents, system_instruction, tools, settings, None)
+    }
+
+    /// Build the request body, optionally referencing cached content.
+    fn build_request_body_with_cache(
+        &self,
+        contents: &[serde_json::Value],
+        system_instruction: Option<&serde_json::Value>,
+        tools: &[GeminiToolConfig],
+        settings: Option<&crate::config::ModelSettings>,
+        cached_content_name: Option<&str>,
+    ) -> serde_json::Value {
         let max_output = settings.and_then(|s| s.max_tokens).unwrap_or(8192);
         let mut gen_config = serde_json::json!({ "maxOutputTokens": max_output });
         if let Some(temp) = settings.and_then(|s| s.temperature) {
@@ -515,11 +624,19 @@ impl GeminiProvider {
             "contents": contents,
             "generationConfig": gen_config,
         });
-        if let Some(sys) = system_instruction {
-            body["systemInstruction"] = sys.clone();
-        }
-        if !tools.is_empty() {
-            body["tools"] = serde_json::to_value(tools).unwrap_or_default();
+
+        // If we have a cached content reference, use it instead of
+        // re-sending system instruction + tools (saves tokens + latency)
+        if let Some(cache_name) = cached_content_name {
+            body["cachedContent"] = serde_json::json!(cache_name);
+            // Don't re-send system instruction or tools — they're in the cache
+        } else {
+            if let Some(sys) = system_instruction {
+                body["systemInstruction"] = sys.clone();
+            }
+            if !tools.is_empty() {
+                body["tools"] = serde_json::to_value(tools).unwrap_or_default();
+            }
         }
         body
     }
