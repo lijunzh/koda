@@ -164,10 +164,18 @@ pub(crate) async fn execute_tools_parallel(
             None,
         )
         .await?;
+        // Track progress for file mutations and test results
+        crate::progress::track_progress(
+            db,
+            session_id,
+            &tool_calls[i].function_name,
+            &tool_calls[i].arguments,
+            &result,
+        )
+        .await;
     }
     Ok(())
 }
-
 /// Run tool calls one at a time (when confirmation is needed, or single call).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_tools_sequential(
@@ -346,6 +354,9 @@ pub(crate) async fn execute_tools_sequential(
             None,
         )
         .await?;
+        // Track progress for file mutations and test results
+        crate::progress::track_progress(db, session_id, &tc.function_name, &tc.arguments, &result)
+            .await;
     }
     Ok(())
 }

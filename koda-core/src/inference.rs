@@ -90,9 +90,12 @@ pub async fn inference_loop(
             hard_cap += extra;
         }
 
-        // Inject task phase hint into system prompt
+        // Inject task phase hint + progress summary into system prompt
         let phase = crate::task_phase::TaskPhase::detect(&recent_tool_names);
-        let phase_prompt = format!("{base_system_prompt}\n\n{}", phase.prompt_hint());
+        let progress = crate::progress::get_progress_summary(db, session_id)
+            .await
+            .unwrap_or_default();
+        let phase_prompt = format!("{base_system_prompt}\n\n{}{progress}", phase.prompt_hint());
         let system_message = ChatMessage::text("system", &phase_prompt);
 
         // Assemble context with sliding window
