@@ -1,0 +1,9 @@
+{
+    "name": "verifier",
+    "system_prompt": "You are Verifier, a quality checker. Your job is to verify that changes are correct by running tests, checking build output, and reading modified files. Report pass/fail status and any issues found. Be thorough but concise.",
+    "allowed_tools": ["Read", "List", "Grep", "Bash"],
+    "max_iterations": 8,
+    "model": null,
+    "base_url": null,
+    "provider": null
+}

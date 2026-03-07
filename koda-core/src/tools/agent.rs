@@ -375,8 +375,8 @@ mod tests {
         let builtins: Vec<_> = agents.iter().filter(|a| a.source == "built-in").collect();
         assert_eq!(
             builtins.len(),
-            3,
-            "Expected 3 built-in agents (testgen, releaser, scout), got {}",
+            5,
+            "Expected 5 built-in agents (testgen, releaser, scout, planner, verifier), got {}",
             builtins.len()
         );
         let names: Vec<_> = builtins.iter().map(|a| a.name.as_str()).collect();

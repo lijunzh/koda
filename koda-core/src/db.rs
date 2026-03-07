@@ -368,6 +368,26 @@ impl Database {
         }
     }
 
+    /// Load ALL messages for a session (for RecallContext search).
+    /// Returns messages in chronological order, no truncation.
+    pub async fn load_all_messages(&self, session_id: &str) -> Result<Vec<Message>> {
+        let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
+            "SELECT id, session_id, role, content, tool_calls, tool_call_id,
+                    prompt_tokens, completion_tokens,
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens
+             FROM messages
+             WHERE session_id = ?
+             ORDER BY id ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|r| r.into())
+        .collect();
+        Ok(rows)
+    }
+
     /// Load recent user messages across all sessions (for the startup banner).
     /// Returns up to `limit` messages, newest first.
     pub async fn recent_user_messages(&self, limit: i64) -> Result<Vec<String>> {

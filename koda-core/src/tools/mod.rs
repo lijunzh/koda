@@ -28,6 +28,7 @@ pub fn normalize_tool_name(name: &str) -> String {
         "activateskill" | "activate_skill" => "ActivateSkill".to_string(),
         "astanalysis" | "ast_analysis" => "AstAnalysis".to_string(),
         "discovertools" | "discover_tools" | "discover" => "DiscoverTools".to_string(),
+        "recallcontext" | "recall_context" | "recall" => "RecallContext".to_string(),
         "emailread" | "email_read" => "EmailRead".to_string(),
         "emailsend" | "email_send" => "EmailSend".to_string(),
         "emailsearch" | "email_search" => "EmailSearch".to_string(),
@@ -41,6 +42,7 @@ pub mod file_tools;
 pub mod glob_tool;
 pub mod grep;
 pub mod memory;
+pub mod recall;
 pub mod shell;
 pub mod skill_tools;
 pub mod web_fetch;
@@ -71,6 +73,10 @@ pub struct ToolRegistry {
     pub undo: std::sync::Mutex<crate::undo::UndoStack>,
     /// Discovered skills.
     pub skill_registry: crate::skills::SkillRegistry,
+    /// Database handle for tools that need session access (RecallContext).
+    db: Option<std::sync::Arc<crate::db::Database>>,
+    /// Current session ID (for RecallContext).
+    session_id: Option<String>,
 }
 
 impl ToolRegistry {
@@ -107,6 +113,9 @@ impl ToolRegistry {
         // DiscoverTools — lazy loading for Strong tier
         let discover_def = discover::definition();
         definitions.insert(discover_def.name.clone(), discover_def);
+        // RecallContext — on-demand history retrieval
+        let recall_def = recall::definition();
+        definitions.insert(recall_def.name.clone(), recall_def);
         // Auto-provisionable MCP tools (registered so the LLM knows they exist)
         for def in crate::mcp::capability_registry::tool_definitions() {
             definitions.insert(def.name.clone(), def);
@@ -121,6 +130,8 @@ impl ToolRegistry {
             mcp_registry: None,
             undo: std::sync::Mutex::new(crate::undo::UndoStack::new()),
             skill_registry,
+            db: None,
+            session_id: None,
         }
     }
 
@@ -130,6 +141,17 @@ impl ToolRegistry {
         registry: std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpRegistry>>,
     ) -> Self {
         self.mcp_registry = Some(registry);
+        self
+    }
+
+    /// Attach database + session for tools that need history access.
+    pub fn with_session(
+        mut self,
+        db: std::sync::Arc<crate::db::Database>,
+        session_id: String,
+    ) -> Self {
+        self.db = Some(db);
+        self.session_id = Some(session_id);
         self
     }
 
@@ -287,6 +309,15 @@ impl ToolRegistry {
             "DiscoverTools" => {
                 let all_defs: Vec<ToolDefinition> = self.definitions.values().cloned().collect();
                 Ok(discover::discover(&all_defs, &args))
+            }
+
+            // Recall context tool
+            "RecallContext" => {
+                if let (Some(db), Some(sid)) = (&self.db, &self.session_id) {
+                    Ok(recall::recall_context(db, sid, &args).await)
+                } else {
+                    Ok("RecallContext requires an active session.".to_string())
+                }
             }
 
             "InvokeAgent" => {
