@@ -295,7 +295,7 @@ pub async fn run(
     let mut inference_start: Option<std::time::Instant> = None;
     let mut history: Vec<String> = load_history();
     let mut history_idx: Option<usize> = None; // None = not browsing history
-    let mut completer = crate::completer::SlashCompleter::new();
+    let mut completer = crate::completer::InputCompleter::new(project_root.clone());
 
     // Crossterm event stream for async key capture
     let mut crossterm_events = EventStream::new();
