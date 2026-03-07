@@ -27,6 +27,8 @@ pub fn normalize_tool_name(name: &str) -> String {
         "createagent" | "create_agent" => "CreateAgent".to_string(),
         "invokeagent" | "invoke_agent" => "InvokeAgent".to_string(),
         "astanalysis" | "ast_analysis" => "AstAnalysis".to_string(),
+        "listskills" | "list_skills" => "ListSkills".to_string(),
+        "activateskill" | "activate_skill" => "ActivateSkill".to_string(),
         _ => name.to_string(), // pass through unknown names (e.g., MCP tools)
     }
 }
@@ -38,6 +40,7 @@ pub mod glob_tool;
 pub mod grep;
 pub mod memory;
 pub mod shell;
+pub mod skill_tools;
 pub mod todo;
 pub mod web_fetch;
 
@@ -65,6 +68,8 @@ pub struct ToolRegistry {
     mcp_registry: Option<std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpRegistry>>>,
     /// Undo stack for file mutations.
     pub undo: std::sync::Mutex<crate::undo::UndoStack>,
+    /// Discovered skills.
+    pub skill_registry: crate::skills::SkillRegistry,
 }
 
 impl ToolRegistry {
@@ -100,6 +105,11 @@ impl ToolRegistry {
         for def in todo::definitions() {
             definitions.insert(def.name.clone(), def);
         }
+        for def in skill_tools::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
+
+        let skill_registry = crate::skills::SkillRegistry::discover(&project_root);
 
         Self {
             project_root,
@@ -107,6 +117,7 @@ impl ToolRegistry {
             read_cache: std::sync::Mutex::new(HashMap::new()),
             mcp_registry: None,
             undo: std::sync::Mutex::new(crate::undo::UndoStack::new()),
+            skill_registry,
         }
     }
 
@@ -241,6 +252,11 @@ impl ToolRegistry {
                 }
             }
             "CreateAgent" => Ok(agent::create_agent(&self.project_root, &args)),
+
+            // Skill tools
+            "ListSkills" => Ok(skill_tools::list_skills(&self.skill_registry, &args)),
+            "ActivateSkill" => Ok(skill_tools::activate_skill(&self.skill_registry, &args)),
+
             "InvokeAgent" => {
                 // Handled externally by the event loop (needs access to config/db).
                 return ToolResult {
