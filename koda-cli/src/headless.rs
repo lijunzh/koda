@@ -22,7 +22,9 @@ pub async fn run_headless(
 ) -> Result<i32> {
     // Query actual model capabilities from the provider API before building agent.
     let tmp_provider = koda_core::providers::create_provider(&config);
-    config.query_and_apply_capabilities(tmp_provider.as_ref()).await;
+    config
+        .query_and_apply_capabilities(tmp_provider.as_ref())
+        .await;
 
     let agent = Arc::new(KodaAgent::new(&config, project_root.clone()).await?);
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<koda_core::engine::EngineCommand>(32);

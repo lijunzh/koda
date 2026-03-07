@@ -49,6 +49,11 @@ pub async fn inference_loop(
     let mut iteration = 0u32;
     let mut made_tool_calls = false;
     let mut loop_detector = LoopDetector::new();
+    let mut tier_observer = crate::tier_observer::TierObserver::new(
+        config.model_tier,
+        // Tier is explicitly set if it came from agent config (not auto-detected)
+        false,
+    );
     let mut total_prompt_tokens: i64 = 0;
     let mut total_completion_tokens: i64 = 0;
     let mut total_cache_read_tokens: i64 = 0;
@@ -530,9 +535,25 @@ pub async fn inference_loop(
         }
 
         // Track tool names for task phase detection
+        // and observe tool call quality for tier adaptation.
         for tc in &tool_calls {
             recent_tool_names.push(tc.function_name.clone());
+
+            // Observe: is the tool name known?
+            let name_valid = tools.has_tool(&tc.function_name);
+            // Observe: do the arguments parse as valid JSON?
+            let args_valid = serde_json::from_str::<serde_json::Value>(&tc.arguments).is_ok();
+
+            let outcome = if !name_valid {
+                crate::tier_observer::ToolCallOutcome::UnknownTool
+            } else if !args_valid {
+                crate::tier_observer::ToolCallOutcome::MalformedArgs
+            } else {
+                crate::tier_observer::ToolCallOutcome::Valid
+            };
+            tier_observer.record_tool_call(outcome);
         }
+        tier_observer.end_turn();
 
         // Loop detection: same tool+args repeated REPEAT_THRESHOLD times → stop immediately.
         if let Some(fp) = loop_detector.record(&tool_calls) {

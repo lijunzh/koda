@@ -51,7 +51,9 @@ pub async fn run_stdio_server(project_root: PathBuf, mut config: KodaConfig) -> 
 
     // Query actual model capabilities before building agent
     let tmp_provider = koda_core::providers::create_provider(&config);
-    config.query_and_apply_capabilities(tmp_provider.as_ref()).await;
+    config
+        .query_and_apply_capabilities(tmp_provider.as_ref())
+        .await;
 
     // Build agent (tools, MCP, system prompt)
     let agent = Arc::new(KodaAgent::new(&config, project_root.clone()).await?);

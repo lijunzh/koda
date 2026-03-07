@@ -184,6 +184,11 @@ impl ToolRegistry {
         names
     }
 
+    /// Check whether a tool name is known (built-in or MCP).
+    pub fn has_tool(&self, name: &str) -> bool {
+        self.definitions.contains_key(name)
+    }
+
     /// Get tool definitions, optionally filtered by an allow-list.
     /// Includes MCP tools merged with built-in tools.
     pub fn get_definitions(&self, allowed: &[String]) -> Vec<ToolDefinition> {
