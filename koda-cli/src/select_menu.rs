@@ -34,11 +34,20 @@ impl SelectOption {
 /// Show a selection menu, managing raw mode internally.
 ///
 /// For use OUTSIDE the TUI (onboarding, commands).
+/// RAII guard that restores terminal from raw mode on drop.
+/// Ensures raw mode is disabled even if the select loop panics.
+struct RawModeGuard;
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
 pub fn select(title: &str, options: &[SelectOption], initial: usize) -> io::Result<Option<usize>> {
     terminal::enable_raw_mode()?;
-    let result = run_select_loop(title, options, initial);
-    terminal::disable_raw_mode()?;
-    result
+    let _guard = RawModeGuard;
+    run_select_loop(title, options, initial)
 }
 
 /// Show a selection menu inline above the ratatui viewport.

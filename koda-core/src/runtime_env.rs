@@ -18,7 +18,7 @@ fn env_map() -> &'static RwLock<HashMap<String, String>> {
 pub fn set(key: impl Into<String>, value: impl Into<String>) {
     env_map()
         .write()
-        .expect("runtime env lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(key.into(), value.into());
 }
 
@@ -27,7 +27,7 @@ pub fn set(key: impl Into<String>, value: impl Into<String>) {
 pub fn get(key: &str) -> Option<String> {
     if let Some(val) = env_map()
         .read()
-        .expect("runtime env lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(key)
     {
         return Some(val.clone());

@@ -635,8 +635,8 @@ pub async fn run(
                                                     .send(EngineCommand::LoopDecision { action })
                                                     .await;
                                             }
-                                            UiEvent::Engine(ref event) => {
-                                                renderer.render_to_terminal(event.clone(), &mut terminal);
+                                            UiEvent::Engine(event) => {
+                                                renderer.render_to_terminal(event, &mut terminal);
                                             }
                                         }
                                     }
