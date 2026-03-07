@@ -323,6 +323,22 @@ async fn handle_cost(_terminal: &mut Term, session: &KodaSession, config: &KodaC
             tui_output::write_blank();
             dim_msg(format!("Model: {}", config.model));
             dim_msg(format!("Provider: {}", config.provider_type));
+
+            // Per-agent breakdown (if multiple agents used)
+            if let Ok(agent_usage) = session.db.session_usage_by_agent(&session.id).await
+                && agent_usage.len() > 1
+            {
+                tui_output::write_blank();
+                tui_output::write_line(&Line::styled("  \u{1f4ca} By Agent", BOLD));
+                tui_output::write_blank();
+                for (agent, au) in &agent_usage {
+                    let total = au.prompt_tokens + au.completion_tokens;
+                    tui_output::write_line(&Line::from(vec![
+                        Span::raw(format!("  {agent:<16}")),
+                        Span::styled(format!("{total:>8} tok  ({} calls)", au.api_calls), DIM),
+                    ]));
+                }
+            }
         }
         Err(e) => err_msg(format!("Error: {e}")),
     }
