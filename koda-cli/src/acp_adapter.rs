@@ -98,15 +98,6 @@ pub fn engine_event_to_acp(
             ))
         }
 
-        EngineEvent::SubAgentEnd { agent_name } => {
-            let fields = acp::ToolCallUpdateFields::new().status(acp::ToolCallStatus::Completed);
-            let update = acp::ToolCallUpdate::new(agent_name.clone(), fields);
-            Some(acp::SessionNotification::new(
-                session_id.to_string(),
-                acp::SessionUpdate::ToolCallUpdate(update),
-            ))
-        }
-
         // Handled specially by AcpSink (bidirectional permission flow)
         EngineEvent::ApprovalRequest { .. } => None,
 
@@ -385,20 +376,6 @@ mod tests {
                 assert_eq!(tc.kind, acp::ToolKind::Other);
             }
             _ => panic!("Expected ToolCall"),
-        }
-    }
-
-    #[test]
-    fn test_sub_agent_end() {
-        let event = EngineEvent::SubAgentEnd {
-            agent_name: "reviewer".into(),
-        };
-        let acp = engine_event_to_acp(&event, "s1").unwrap();
-        match acp.update {
-            acp::SessionUpdate::ToolCallUpdate(update) => {
-                assert_eq!(update.fields.status, Some(acp::ToolCallStatus::Completed));
-            }
-            _ => panic!("Expected ToolCallUpdate"),
         }
     }
 

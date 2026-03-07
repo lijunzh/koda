@@ -171,7 +171,6 @@ impl TuiRenderer {
                     ]),
                 );
             }
-            EngineEvent::SubAgentEnd { .. } => {}
             EngineEvent::ApprovalRequest { .. }
             | EngineEvent::StatusUpdate { .. }
             | EngineEvent::TurnStart { .. }
