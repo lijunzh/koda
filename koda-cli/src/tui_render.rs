@@ -33,6 +33,8 @@ pub struct TuiRenderer {
     has_emitted_text: bool,
     /// Whether we've emitted the response banner for this turn.
     response_started: bool,
+    /// Streaming markdown renderer.
+    md: crate::md_render::MarkdownRenderer,
 }
 
 impl TuiRenderer {
@@ -46,6 +48,7 @@ impl TuiRenderer {
             preview_shown: false,
             has_emitted_text: false,
             response_started: false,
+            md: crate::md_render::MarkdownRenderer::new(),
         }
     }
 
@@ -63,17 +66,19 @@ impl TuiRenderer {
                         continue;
                     }
                     self.has_emitted_text = true;
-                    tui_output::emit_line(terminal, Line::raw(&line_text));
+                    tui_output::emit_line(terminal, self.md.render_line(&line_text));
                 }
             }
             EngineEvent::TextDone => {
                 // Flush remaining partial line
                 if !self.text_buf.is_empty() {
                     let remaining = std::mem::take(&mut self.text_buf);
-                    tui_output::emit_line(terminal, Line::raw(&remaining));
+                    tui_output::emit_line(terminal, self.md.render_line(&remaining));
                 }
                 self.response_started = false;
                 self.has_emitted_text = false;
+                // Reset markdown state for the next response
+                self.md = crate::md_render::MarkdownRenderer::new();
             }
             EngineEvent::ThinkingStart => {
                 self.think_buf.clear();
