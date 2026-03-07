@@ -581,7 +581,11 @@ pub async fn run(
                                         break;
                                     }
                                     Some(Ok(ev)) = crossterm_events.next() => {
-                                        if let Event::Key(key) = ev {
+                                        if let Event::Resize(_, _) = ev {
+                                            // Terminal resized during inference — reinit viewport
+                                            // to prevent ghost prompt lines.
+                                            terminal = init_terminal(viewport_height)?;
+                                        } else if let Event::Key(key) = ev {
                                             match (key.code, key.modifiers) {
                                                 (KeyCode::Enter, KeyModifiers::NONE) => {
                                                     let text = textarea.lines().join("\n");
@@ -815,7 +819,10 @@ pub async fn run(
 
         tokio::select! {
             Some(Ok(ev)) = crossterm_events.next() => {
-                if let Event::Key(key) = ev {
+                if let Event::Resize(_, _) = ev {
+                    // Terminal resized while idle — reinit viewport.
+                    terminal = init_terminal(viewport_height)?;
+                } else if let Event::Key(key) = ev {
                     match (key.code, key.modifiers) {
                         // Shift+Enter or Alt+Enter → insert newline
                         // Note: Shift+Enter only works on terminals with kitty
