@@ -332,6 +332,7 @@ pub async fn run(
     // ── State ────────────────────────────────────────────────
 
     let mut renderer = TuiRenderer::new();
+    renderer.model = config.model.clone();
     let mut tui_state = TuiState::Idle;
     let mut input_queue: VecDeque<String> = VecDeque::new();
     let mut pending_command: Option<String> = None;
@@ -441,6 +442,8 @@ pub async fn run(
                                         models.iter().map(|m| m.id.clone()).collect(),
                                     );
                                 }
+                                // Sync model name for cost estimation
+                                renderer.model = config.model.clone();
                             }
                             SlashAction::Quit => {
                                 tui_output::emit_line(
