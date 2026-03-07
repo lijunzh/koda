@@ -98,6 +98,15 @@ pub struct ModelInfo {
     pub owned_by: Option<String>,
 }
 
+/// Model capabilities queried from the provider API.
+#[derive(Debug, Clone, Default)]
+pub struct ModelCapabilities {
+    /// Maximum context window in tokens (input + output).
+    pub context_window: Option<usize>,
+    /// Maximum output tokens the model supports.
+    pub max_output_tokens: Option<usize>,
+}
+
 /// Build a reqwest client with proper proxy configuration.
 ///
 /// - Reads HTTPS_PROXY / HTTP_PROXY from env
@@ -188,6 +197,15 @@ pub trait LlmProvider: Send + Sync {
 
     /// List available models from the provider.
     async fn list_models(&self) -> Result<Vec<ModelInfo>>;
+
+    /// Query model capabilities (context window, max output tokens) from the API.
+    ///
+    /// Returns `Ok(caps)` with whatever the provider reports. Fields are `None`
+    /// when the API doesn't expose them. Callers should fall back to the
+    /// hardcoded lookup table for any `None` fields.
+    async fn model_capabilities(&self, _model: &str) -> Result<ModelCapabilities> {
+        Ok(ModelCapabilities::default())
+    }
 
     /// Provider display name (for UI).
     fn provider_name(&self) -> &str;
