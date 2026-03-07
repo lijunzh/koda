@@ -52,14 +52,11 @@ Koda needs. Adopting ACP gives us Zed integration for free.
 search, web fetch, memory, agents). Domain-specific capabilities (AST analysis,
 email, calendar, browser) are delivered as MCP servers, auto-installed on demand.
 
-**Principle evolution**:
-- **v0.1.x**: Single binary, everything compiled in.
-- **v0.2.x**: Thin core + auto-provisioned capabilities.
-
-"Everything just works" no longer means "everything compiled into one binary."
-It means "everything auto-provisioned with zero user config." The user
-experience is identical — zero friction — but the implementation scales to
-domains beyond coding.
+**Principle evolution**: Early v0.1.x compiled everything into one binary.
+As the vision expanded beyond coding, we realized "everything just works"
+doesn't require "everything compiled in" — it requires "everything
+auto-provisioned with zero user config." The user experience is identical —
+zero friction — but the implementation scales to domains beyond coding.
 
 **How it works**: When the LLM calls a tool that isn't built-in, koda checks
 an MCP capability registry, auto-installs the matching server, connects it,
