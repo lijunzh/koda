@@ -29,7 +29,7 @@ const REGISTRY: &[CapabilityEntry] = &[CapabilityEntry {
     command: "koda-ast",
     tools: &["AstAnalysis"],
     description: "Tree-sitter AST analysis for Rust, Python, JS, TS",
-    install_hint: "cargo install koda-ast",
+    install_hint: "brew install koda (includes koda-ast) or cargo install koda-ast",
     tool_definitions: &[(
         "AstAnalysis",
         "Read-only AST code analysis. Supports .rs, .py, .js, .ts. \
