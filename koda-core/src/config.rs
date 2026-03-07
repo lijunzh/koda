@@ -452,6 +452,7 @@ impl KodaConfig {
         ("default", include_str!("../agents/default.json")),
         ("testgen", include_str!("../agents/testgen.json")),
         ("releaser", include_str!("../agents/releaser.json")),
+        ("scout", include_str!("../agents/scout.json")),
     ];
 
     /// Try to load a built-in (embedded) agent by name.

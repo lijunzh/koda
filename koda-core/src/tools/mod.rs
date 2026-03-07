@@ -290,9 +290,10 @@ impl ToolRegistry {
             }
 
             "InvokeAgent" => {
-                // Handled externally by the event loop (needs access to config/db).
+                // Handled by tool_dispatch.rs before reaching here.
+                // This branch should not be reached in normal flow.
                 return ToolResult {
-                    output: "__INVOKE_AGENT__".to_string(),
+                    output: "InvokeAgent is handled by the inference loop.".to_string(),
                 };
             }
 
