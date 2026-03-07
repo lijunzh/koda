@@ -78,31 +78,28 @@ pub fn select_inline(
             code, modifiers, ..
         }) = event::read()?
         {
-            match code {
-                KeyCode::Up => {
-                    selected = selected.saturating_sub(1);
+            let is_up = code == KeyCode::Up
+                || (code == KeyCode::Char('k') && modifiers.contains(KeyModifiers::CONTROL));
+            let is_down = code == KeyCode::Down
+                || code == KeyCode::Tab
+                || (code == KeyCode::Char('j') && modifiers.contains(KeyModifiers::CONTROL));
+
+            if is_up {
+                selected = selected.saturating_sub(1);
+            } else if is_down {
+                if selected + 1 < options.len() {
+                    selected += 1;
+                } else {
+                    selected = 0; // wrap around
                 }
-                KeyCode::Down | KeyCode::Tab => {
-                    if selected + 1 < options.len() {
-                        selected += 1;
-                    } else {
-                        selected = 0; // wrap around
-                    }
-                }
-                KeyCode::Enter => {
-                    // Move cursor past menu — content stays in scrollback
-                    move_past_menu(&mut stdout, title, options, selected, total_lines)?;
-                    return Ok(Some(selected));
-                }
-                KeyCode::Esc => {
-                    move_past_menu(&mut stdout, title, options, selected, total_lines)?;
-                    return Ok(None);
-                }
-                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    move_past_menu(&mut stdout, title, options, selected, total_lines)?;
-                    return Ok(None);
-                }
-                _ => {}
+            } else if code == KeyCode::Enter {
+                move_past_menu(&mut stdout, title, options, selected, total_lines)?;
+                return Ok(Some(selected));
+            } else if code == KeyCode::Esc
+                || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL))
+            {
+                move_past_menu(&mut stdout, title, options, selected, total_lines)?;
+                return Ok(None);
             }
 
             render_inline(&mut stdout, title, options, selected)?;
@@ -126,28 +123,25 @@ fn run_select_loop(
             code, modifiers, ..
         }) = event::read()?
         {
-            match code {
-                KeyCode::Up => {
-                    selected = selected.saturating_sub(1);
+            let is_up = code == KeyCode::Up
+                || (code == KeyCode::Char('k') && modifiers.contains(KeyModifiers::CONTROL));
+            let is_down = code == KeyCode::Down
+                || (code == KeyCode::Char('j') && modifiers.contains(KeyModifiers::CONTROL));
+
+            if is_up {
+                selected = selected.saturating_sub(1);
+            } else if is_down {
+                if selected + 1 < options.len() {
+                    selected += 1;
                 }
-                KeyCode::Down => {
-                    if selected + 1 < options.len() {
-                        selected += 1;
-                    }
-                }
-                KeyCode::Enter => {
-                    clear_lines(&mut stdout, lines_drawn)?;
-                    return Ok(Some(selected));
-                }
-                KeyCode::Esc => {
-                    clear_lines(&mut stdout, lines_drawn)?;
-                    return Ok(None);
-                }
-                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    clear_lines(&mut stdout, lines_drawn)?;
-                    return Ok(None);
-                }
-                _ => {}
+            } else if code == KeyCode::Enter {
+                clear_lines(&mut stdout, lines_drawn)?;
+                return Ok(Some(selected));
+            } else if code == KeyCode::Esc
+                || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL))
+            {
+                clear_lines(&mut stdout, lines_drawn)?;
+                return Ok(None);
             }
 
             clear_lines(&mut stdout, lines_drawn)?;
@@ -187,7 +181,7 @@ fn render_standalone(
         stdout,
         Print("\r\n  "),
         SetForegroundColor(Color::DarkGrey),
-        Print("\u{2191}/\u{2193} navigate  enter select  esc cancel"),
+        Print("\u{2191}/\u{2193}/ctrl-j/k navigate  enter select  esc cancel"),
         ResetColor,
         Print("\r\n"),
     )?;
@@ -258,7 +252,7 @@ fn render_inline(
         Clear(ClearType::CurrentLine),
         Print("\r  "),
         SetForegroundColor(Color::DarkGrey),
-        Print("\u{2191}/\u{2193} navigate  enter select  esc cancel"),
+        Print("\u{2191}/\u{2193}/ctrl-j/k navigate  enter select  esc cancel"),
         ResetColor,
     )?;
 
