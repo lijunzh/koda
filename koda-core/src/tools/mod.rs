@@ -27,6 +27,9 @@ pub fn normalize_tool_name(name: &str) -> String {
         "listskills" | "list_skills" => "ListSkills".to_string(),
         "activateskill" | "activate_skill" => "ActivateSkill".to_string(),
         "astanalysis" | "ast_analysis" => "AstAnalysis".to_string(),
+        "emailread" | "email_read" => "EmailRead".to_string(),
+        "emailsend" | "email_send" => "EmailSend".to_string(),
+        "emailsearch" | "email_search" => "EmailSearch".to_string(),
         _ => name.to_string(), // pass through unknown names (e.g., MCP tools)
     }
 }

@@ -14,11 +14,13 @@ struct ModelPrice {
 /// Estimate cost for a single turn.
 ///
 /// Returns None if the model isn't in our pricing table.
+/// `thinking_tokens` are billed at the output token rate (Anthropic/OpenAI).
 pub fn estimate_turn_cost(
     model: &str,
     prompt_tokens: i64,
     completion_tokens: i64,
     cache_read_tokens: i64,
+    thinking_tokens: i64,
 ) -> Option<f64> {
     let price = lookup_price(model)?;
 
@@ -28,8 +30,10 @@ pub fn estimate_turn_cost(
     let input_cost = billable_input as f64 * price.input / 1_000_000.0;
     let cache_cost = cached as f64 * price.input * price.cache_read / 1_000_000.0;
     let output_cost = completion_tokens as f64 * price.output / 1_000_000.0;
+    // Thinking/reasoning tokens are billed at output rate
+    let thinking_cost = thinking_tokens.max(0) as f64 * price.output / 1_000_000.0;
 
-    Some(input_cost + cache_cost + output_cost)
+    Some(input_cost + cache_cost + output_cost + thinking_cost)
 }
 
 fn lookup_price(model: &str) -> Option<ModelPrice> {
@@ -171,14 +175,14 @@ mod tests {
 
     #[test]
     fn test_claude_sonnet_cost() {
-        let cost = estimate_turn_cost("claude-sonnet-4-6", 1000, 500, 0).unwrap();
+        let cost = estimate_turn_cost("claude-sonnet-4-6", 1000, 500, 0, 0).unwrap();
         // 1000 * 3.0/1M + 500 * 15.0/1M = 0.003 + 0.0075 = 0.0105
         assert!((cost - 0.0105).abs() < 0.0001);
     }
 
     #[test]
     fn test_cache_discount() {
-        let cost = estimate_turn_cost("claude-sonnet-4-6", 1000, 500, 800).unwrap();
+        let cost = estimate_turn_cost("claude-sonnet-4-6", 1000, 500, 800, 0).unwrap();
         // billable_input = 200, cached = 800
         // 200 * 3.0/1M + 800 * 3.0 * 0.1/1M + 500 * 15.0/1M
         // = 0.0006 + 0.00024 + 0.0075 = 0.00834
@@ -187,19 +191,29 @@ mod tests {
 
     #[test]
     fn test_unknown_model() {
-        assert!(estimate_turn_cost("unknown-model-42", 1000, 500, 0).is_none());
+        assert!(estimate_turn_cost("unknown-model-42", 1000, 500, 0, 0).is_none());
     }
 
     #[test]
     fn test_local_model_free() {
-        let cost = estimate_turn_cost("auto-detect", 10000, 5000, 0).unwrap();
+        let cost = estimate_turn_cost("auto-detect", 10000, 5000, 0, 0).unwrap();
         assert_eq!(cost, 0.0);
     }
 
     #[test]
     fn test_gpt4o_cost() {
-        let cost = estimate_turn_cost("gpt-4o", 10000, 1000, 0).unwrap();
+        let cost = estimate_turn_cost("gpt-4o", 10000, 1000, 0, 0).unwrap();
         // 10000 * 2.5/1M + 1000 * 10.0/1M = 0.025 + 0.01 = 0.035
         assert!((cost - 0.035).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_thinking_tokens_billed_at_output_rate() {
+        // With thinking: completion=500, thinking=1000
+        let cost_with = estimate_turn_cost("claude-opus-4-6", 1000, 500, 0, 1000).unwrap();
+        let cost_without = estimate_turn_cost("claude-opus-4-6", 1000, 500, 0, 0).unwrap();
+        // thinking adds 1000 * 75.0/1M = 0.075
+        let thinking_cost = 1000.0 * 75.0 / 1_000_000.0;
+        assert!((cost_with - cost_without - thinking_cost).abs() < 0.0001);
     }
 }

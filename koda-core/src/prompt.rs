@@ -12,6 +12,15 @@ pub fn build_system_prompt(
 ) -> String {
     let mut prompt = base_prompt.to_string();
 
+    // Planning and self-review instructions (#156 P0)
+    prompt.push_str(
+        "\n\n## Planning\n\
+         For complex tasks (>3 steps), outline your plan before executing. \
+         Review feasibility before proceeding.\n\
+         Before executing a multi-step plan, briefly verify each step is \
+         feasible with the information you have.\n",
+    );
+
     // Embed the capabilities reference (REPL features, not tools)
     prompt.push_str("\n\n");
     prompt.push_str(include_str!("capabilities.md"));
