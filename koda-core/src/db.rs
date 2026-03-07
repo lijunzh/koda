@@ -188,11 +188,9 @@ impl Database {
             .execute(pool)
             .await?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_messages_role_id ON messages(role, id DESC);",
-        )
-        .execute(pool)
-        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_role_id ON messages(role, id DESC);")
+            .execute(pool)
+            .await?;
 
         // Additive migrations for new token tracking columns (idempotent).
         for col in &[
