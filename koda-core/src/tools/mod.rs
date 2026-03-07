@@ -26,6 +26,7 @@ pub fn normalize_tool_name(name: &str) -> String {
         "invokeagent" | "invoke_agent" => "InvokeAgent".to_string(),
         "listskills" | "list_skills" => "ListSkills".to_string(),
         "activateskill" | "activate_skill" => "ActivateSkill".to_string(),
+        "astanalysis" | "ast_analysis" => "AstAnalysis".to_string(),
         _ => name.to_string(), // pass through unknown names (e.g., MCP tools)
     }
 }
@@ -96,6 +97,10 @@ impl ToolRegistry {
             definitions.insert(def.name.clone(), def);
         }
         for def in skill_tools::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
+        // Auto-provisionable MCP tools (registered so the LLM knows they exist)
+        for def in crate::mcp::capability_registry::tool_definitions() {
             definitions.insert(def.name.clone(), def);
         }
 
@@ -252,18 +257,6 @@ impl ToolRegistry {
                     output: "__INVOKE_AGENT__".to_string(),
                 };
             }
-            "TodoWrite" => {
-                // Handled externally by the event loop (needs access to db/session_id).
-                return ToolResult {
-                    output: "__TODO_WRITE__".to_string(),
-                };
-            }
-            "TodoRead" => {
-                // Handled externally by the event loop (needs access to db/session_id).
-                return ToolResult {
-                    output: "__TODO_READ__".to_string(),
-                };
-            }
 
             other => {
                 // Auto-provision: check capability registry for MCP servers
@@ -321,6 +314,15 @@ impl ToolRegistry {
                                 ),
                             };
                         }
+                    } else {
+                        // MCP registry not available (e.g., test mode)
+                        return ToolResult {
+                            output: format!(
+                                "Tool '{}' is available via the '{}' MCP server.\n\
+                                 Install: {}",
+                                other, entry.server_name, entry.install_hint
+                            ),
+                        };
                     }
                 }
                 Err(anyhow::anyhow!("Unknown tool: {other}"))

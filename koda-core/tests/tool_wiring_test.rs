@@ -12,8 +12,9 @@ fn all_tool_names() -> Vec<String> {
 }
 
 /// Every tool must be routable in the dispatcher.
-/// Tools handled externally (InvokeAgent, TodoWrite, TodoRead) return
-/// sentinel strings; all others return real results or errors.
+/// Tools handled externally (InvokeAgent) return sentinel strings.
+/// Auto-provisioned tools (from capability registry) return install hints
+/// when the server binary isn't available.
 /// None should return "Unknown tool".
 #[tokio::test]
 async fn test_all_tools_routable_in_dispatcher() {
