@@ -31,6 +31,7 @@ pub mod runtime_env;
 pub mod session;
 pub mod skills;
 pub mod task_phase;
+pub mod tier_observer;
 pub mod tool_dispatch;
 pub mod tools;
 pub mod undo;

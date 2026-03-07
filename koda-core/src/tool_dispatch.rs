@@ -432,7 +432,9 @@ pub(crate) async fn execute_sub_agent(
         &tool_defs,
     );
 
-    let system_tokens = (system_prompt.len() as f64 / 3.5) as usize + 100;
+    let system_tokens = (system_prompt.len() as f64 / crate::inference_helpers::CHARS_PER_TOKEN)
+        as usize
+        + crate::inference_helpers::SYSTEM_PROMPT_OVERHEAD;
     let available = sub_config.max_context_tokens.saturating_sub(system_tokens);
 
     for _ in 0..loop_guard::MAX_SUB_AGENT_ITERATIONS {

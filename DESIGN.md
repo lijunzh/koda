@@ -127,38 +127,45 @@ RecallContext uses an optional `db` + `session_id` on the ToolRegistry, set via
 locations per tool (definitions, match arm, module import) is a bottleneck,
 convert to a `Tool` trait + `ToolContext`. Do both together, not piecemeal.
 
-### 8. Model-Adaptive Architecture (v0.1.3)
+### 8. Model-Adaptive Architecture (v0.1.3 → v0.1.4)
 
-**Decision**: Koda classifies models into three tiers (Strong/Standard/Lite)
-and adapts system prompts, tool loading, loop limits, and parallel execution
-accordingly.
+**Decision**: Koda uses three prompt tiers (Strong/Standard/Lite) and adapts
+them at runtime based on **observed tool-use quality**, not model names.
 
-**Rationale**: One-size-fits-all wastes tokens on strong models (verbose prompts
-they don't need) and confuses weak models (terse instructions they can't follow).
-Competitor analysis showed Claude Code, Goose, and Aider all adapt behavior to
-model capability, but none do it as explicitly as a tiered system.
+**Rationale**: Name-based detection was fundamentally broken — a 122B MoE model
+on LM Studio would get Lite tier, GPT-4o-mini would get Strong, and any new
+model would be wrong until the hardcoded list was updated. No metadata signal
+(name, param count, context size, provider) reliably predicts tool-use ability.
 
 **How it works**:
-- `ModelTier::from_model_name()` auto-detects from model name + provider
-- `build_system_prompt_tiered()` adjusts verbosity per tier
-- `get_definitions_tiered()` loads core-only tools for Strong (+ DiscoverTools)
-- `ModelTier::allows_parallel_tools()` gates parallel execution
-- CLI `--model-tier` flag and agent JSON `"model_tier"` field for overrides
+- All models start at **Standard** tier
+- `TierObserver` tracks tool call outcomes (valid / unknown name / malformed args)
+- After 3 successful turns → **promote to Strong** (terse prompt, lazy tools)
+- After 2+ hallucinated names or malformed args → **demote to Lite** (verbose prompt)
+- Tier transitions are applied at compaction boundaries (prompt is rebuilt anyway)
+- CLI `--model-tier` flag and agent JSON `"model_tier"` override the observer
 
-**Key constraint**: The system prompt must be stable within a session to preserve
-Anthropic prompt cache hit rates. Tier is determined at session start, not per-turn.
+**Resource limits are decoupled from tiers**: iteration cap (200), parallel tools
+(always on), and auto-compact threshold (85%) are the same for all tiers. Tiers
+only control **prompt strategy** (verbosity + tool loading).
 
-### 9. Context Window Auto-Detection (v0.1.3)
+**Key constraint**: System prompt must be stable within a session for Anthropic
+prompt cache hit rates. Tier changes are queued and applied at compaction.
 
-**Decision**: `model_context.rs` maps model names to context window sizes.
-No API call required — pure lookup table.
+### 9. Context Window Auto-Detection (v0.1.3 → v0.1.4)
 
-**Rationale**: The previous hardcoded 32K default meant Opus users were using
-16% of their available context, triggering premature compaction that lost
-information. Auto-detection is the single highest-impact change in v0.1.3.
+**Decision**: Context windows are queried from the **provider API** at startup.
+The hardcoded lookup table (`model_context.rs`) is the fallback.
 
-**Fallback**: Unknown models get 128K (generous but safe). Local models
-("auto-detect") get 4K (conservative). Agent config can always override.
+**Rationale**: Hardcoded values go stale and are wrong for local models where
+the user controls context size. LM Studio’s `/api/v0/models` reports
+`max_context_length`; Gemini’s `/v1beta/models/{id}` reports `inputTokenLimit`
+and `outputTokenLimit`.
+
+**Precedence**: API value > hardcoded lookup > MIN_CONTEXT (4096).
+
+**Called everywhere**: `query_and_apply_capabilities()` runs in all entry
+points (TUI, headless, ACP server, model switch, provider setup).
 
 ### 10. Lazy Tool Loading with DiscoverTools (v0.1.3)
 
