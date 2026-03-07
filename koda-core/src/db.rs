@@ -471,6 +471,19 @@ impl Database {
         Ok(row.map(|r| r.0).unwrap_or_default())
     }
 
+    /// Get the last user message in a session.
+    pub async fn last_user_message(&self, session_id: &str) -> Result<String> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT content FROM messages
+             WHERE session_id = ? AND role = 'user' AND content IS NOT NULL
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.0).unwrap_or_default())
+    }
+
     /// Delete a session and all its messages atomically.
     pub async fn delete_session(&self, session_id: &str) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
