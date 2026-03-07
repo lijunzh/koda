@@ -25,10 +25,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "TodoWrite".to_string(),
-            description: "Write or update your task checklist. Replaces the entire todo list. \
-            Use markdown checkboxes: `- [x]` for done, `- [ ]` for pending. \
-            Call this BEFORE starting multi-step work to create the plan, then call again \
-            after EACH step to mark it done. The todo is shown to the user after every turn."
+            description: "Write or update a progress checklist. Only use for complex \
+            multi-step tasks (10+ steps). Use markdown checkboxes: \
+            `- [x]` done, `- [ ]` pending. Most tasks do not need this."
                 .to_string(),
             parameters: json!({
                 "type": "object",
