@@ -14,12 +14,16 @@ use std::sync::Arc;
 /// Run a single prompt and exit. Returns process exit code (0 = success).
 pub async fn run_headless(
     project_root: PathBuf,
-    config: KodaConfig,
+    mut config: KodaConfig,
     db: Database,
     session_id: String,
     prompt: String,
     output_format: &str,
 ) -> Result<i32> {
+    // Query actual model capabilities from the provider API before building agent.
+    let tmp_provider = koda_core::providers::create_provider(&config);
+    config.query_and_apply_capabilities(tmp_provider.as_ref()).await;
+
     let agent = Arc::new(KodaAgent::new(&config, project_root.clone()).await?);
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<koda_core::engine::EngineCommand>(32);
     let mut session = KodaSession::new(session_id, agent, db, &config, ApprovalMode::Yolo);

@@ -484,6 +484,32 @@ impl KodaConfig {
         }
     }
 
+    /// Query the provider API for model capabilities and apply them.
+    ///
+    /// Convenience wrapper: queries `model_capabilities()` on the provider
+    /// and applies the result. Logs a debug message if the API doesn't
+    /// report capabilities (falls back to hardcoded lookup).
+    pub async fn query_and_apply_capabilities(
+        &mut self,
+        provider: &dyn crate::providers::LlmProvider,
+    ) {
+        match provider.model_capabilities(&self.model).await {
+            Ok(caps) if caps.context_window.is_some() || caps.max_output_tokens.is_some() => {
+                self.apply_provider_capabilities(&caps);
+            }
+            Ok(_) => {
+                tracing::debug!(
+                    "Provider did not report capabilities for {}; using lookup table ({}k tokens)",
+                    self.model,
+                    self.max_context_tokens / 1000
+                );
+            }
+            Err(e) => {
+                tracing::debug!("Could not query model capabilities: {e:#}");
+            }
+        }
+    }
+
     /// Built-in agent configs, embedded at compile time.
     /// These are always available regardless of disk state.
     const BUILTIN_AGENTS: &[(&str, &str)] = &[
