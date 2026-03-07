@@ -12,37 +12,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [0.1.3] - 2026-03-06
 
 ### Added
-- **Model-adaptive architecture** — `ModelTier` enum (Strong/Standard/Lite) auto-detected from model name + provider ([#158](https://github.com/lijunzh/koda/issues/158))
+- **Model-adaptive architecture** — `ModelTier` enum (Strong/Standard/Lite) auto-detected from model name + provider
   - Strong: minimal prompts, lazy tool loading, parallel execution, 90% auto-compact
   - Standard: full prompts, all tools, 80% auto-compact (backward compatible)
   - Lite: verbose prompts, sequential execution, 70% auto-compact, 50 iteration cap
   - CLI override: `--model-tier strong|standard|lite`
   - Agent config: `"model_tier": "strong"` in JSON
   - Displayed in status bar: `claude-sonnet-4-6 [Strong]`
-- **Context window auto-detection** — maps model name to actual context size ([#149](https://github.com/lijunzh/koda/issues/149))
+- **Context window auto-detection** — maps model name to actual context size
   - Opus: 32K → 200K, Gemini 2.5: 32K → 1M, GPT-4o: 32K → 128K
   - Eliminates premature compaction (Opus was using 16% of available context)
 - **Rate limit retry** — exponential backoff (2/4/8/16/32s) for 429 errors, up to 5 retries
-- **DiscoverTools** tool — on-demand tool schema injection by category ([#154](https://github.com/lijunzh/koda/issues/154))
+- **DiscoverTools** tool — on-demand tool schema injection by category (agents, skills, web, memory, ast, email)
   - Strong tier loads 9 core tools + DiscoverTools (~850 tokens vs ~2000)
   - 57% reduction in per-turn tool overhead for Strong tier
-- **RecallContext** tool — search or recall older conversation turns from history
-- **Task phase state machine** — auto-detects Understanding → Planning → Executing → Verifying → Reporting ([#156](https://github.com/lijunzh/koda/issues/156))
+- **RecallContext** tool — search or recall older conversation turns that scrolled out of the sliding window
+- **Task phase state machine** — auto-detects Understanding → Planning → Executing → Verifying → Reporting
 - **Intent classifier** — rule-based task classification with agent/skill suggestions (zero LLM cost)
+  - "write tests" → testgen, "find all uses" → scout, "review" → review skill
 - **Built-in scout agent** — read-only codebase explorer (Read, List, Grep, Glob), max 10 iterations
 - **Built-in planner agent** — strategic task decomposition (read-only), max 5 iterations
 - **Built-in verifier agent** — quality verification (Bash, Read, Grep), max 8 iterations
-- **Sub-agent model routing** — sub-agents respect their own provider/model when explicitly set ([#159](https://github.com/lijunzh/koda/issues/159))
+- **Sub-agent model routing** — sub-agents respect their own provider/model when explicitly set
 - **Plan-before-execute** — system prompt instructs planning for >3-step tasks
+- **Self-review instruction** — verify feasibility before executing multi-step plans
 - **koda-email MCP server** — email read/send/search via IMAP/SMTP (any provider)
 
 ### Fixed
-- **Thinking tokens in cost** — now included at output rate (Opus was underreporting by 2-3x)
-- **Token estimation** — calibrated chars/3.5 heuristic (was chars/4)
-- **`__INVOKE_AGENT__` sentinel removed** — no more magic strings ([#122](https://github.com/lijunzh/koda/issues/122))
+- **Thinking tokens in cost** — `estimate_turn_cost()` now includes thinking tokens at output rate. Opus with extended thinking budget no longer underreports cost by 2-3x.
+- **Token estimation calibration** — chars/3.5 heuristic (was chars/4) for better accuracy with code
+- **`__INVOKE_AGENT__` sentinel removed** — InvokeAgent handled at dispatch level, no more magic strings
+- **Email tool normalizer mappings** — EmailRead/Send/Search properly normalized from lowercase
 
 ### Testing
 - 489 tests across 4 crates (up from 284 in v0.1.2)
+- New: model tier tests, context window tests, rate limit tests, DiscoverTools tests, RecallContext tests, task phase tests, intent classifier tests, email MCP integration tests
 
 ## [0.1.2] - 2026-03-06
 
