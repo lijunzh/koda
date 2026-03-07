@@ -117,3 +117,89 @@ fn build_conversation_text(history: &[crate::db::Message]) -> String {
     }
     text
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Message;
+
+    fn make_msg(role: &str, content: Option<&str>, tool_calls: Option<&str>) -> Message {
+        Message {
+            id: 0,
+            session_id: String::new(),
+            role: role.to_string(),
+            content: content.map(String::from),
+            tool_calls: tool_calls.map(String::from),
+            tool_call_id: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            thinking_tokens: None,
+        }
+    }
+
+    #[test]
+    fn test_empty_history() {
+        assert_eq!(build_conversation_text(&[]), "");
+    }
+
+    #[test]
+    fn test_basic_conversation() {
+        let msgs = vec![
+            make_msg("user", Some("hello"), None),
+            make_msg("assistant", Some("hi"), None),
+        ];
+        let text = build_conversation_text(&msgs);
+        assert!(text.contains("[user]: hello"));
+        assert!(text.contains("[assistant]: hi"));
+    }
+
+    #[test]
+    fn test_truncates_long_content_per_message() {
+        let long = "x".repeat(3000);
+        let msgs = vec![make_msg("user", Some(&long), None)];
+        let text = build_conversation_text(&msgs);
+        // Each msg content capped at 2000 chars
+        assert!(text.len() < 2100);
+    }
+
+    #[test]
+    fn test_truncates_total_over_20k() {
+        // 50 messages × 500 chars each = 25K chars
+        let content = "y".repeat(500);
+        let msgs: Vec<_> = (0..50)
+            .map(|_| make_msg("user", Some(&content), None))
+            .collect();
+        let text = build_conversation_text(&msgs);
+        assert!(text.len() <= 20_100); // 20K + truncation message
+        assert!(text.contains("[...truncated for summarization...]"));
+    }
+
+    #[test]
+    fn test_multibyte_boundary_safe() {
+        // Put emoji right at the 2000-char boundary
+        let mut content = "a".repeat(1999);
+        content.push('\u{1f43b}'); // bear emoji (4 bytes)
+        content.push_str("after");
+        let msgs = vec![make_msg("user", Some(&content), None)];
+        let text = build_conversation_text(&msgs);
+        // Should not panic on char boundary
+        assert!(text.contains("\u{1f43b}") || !text.contains("after"));
+    }
+
+    #[test]
+    fn test_tool_calls_included() {
+        let msgs = vec![make_msg("assistant", None, Some("{\"name\": \"Read\"}"))];
+        let text = build_conversation_text(&msgs);
+        assert!(text.contains("tool_calls"));
+        assert!(text.contains("Read"));
+    }
+
+    #[test]
+    fn test_none_content_skipped() {
+        let msgs = vec![make_msg("tool", None, None)];
+        let text = build_conversation_text(&msgs);
+        assert_eq!(text, "");
+    }
+}

@@ -172,7 +172,7 @@ fn render_options(_terminal: &mut Term, options: &[(&str, &str)], selected: usiz
     stdout.flush().ok();
 }
 
-fn clear_options(terminal: &mut Term, options: &[(&str, &str)]) {
+fn clear_options(_terminal: &mut Term, options: &[(&str, &str)]) {
     use crossterm::{
         cursor, execute,
         terminal::{Clear, ClearType},
@@ -184,7 +184,9 @@ fn clear_options(terminal: &mut Term, options: &[(&str, &str)]) {
     }
     execute!(stdout, cursor::MoveUp(total_lines as u16)).ok();
     stdout.flush().ok();
-    tui_output::emit_blank(terminal);
+    // Use write_blank (crossterm) not emit_blank (ratatui) since we're
+    // in the crossterm rendering path for the options menu.
+    tui_output::write_blank();
 }
 
 /// Read feedback text inline (in raw mode).
