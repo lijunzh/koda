@@ -65,7 +65,23 @@ client. The engine emits `EngineEvent::ApprovalRequest` and awaits
 `EngineCommand::ApprovalResponse` — works identically over in-process
 channels or network transport.
 
-### 5. Database Evolution
+### 5. Database as a Monolithic Module
+
+**Decision**: `db.rs` (~1,300 lines) stays as a single file. Do not split
+into sub-modules by domain (sessions, messages, compaction, metadata).
+
+**Rationale**: Attempted and reverted in v0.1.2. The code is tightly cohesive:
+one `Database` struct, one `SqlitePool`, one `impl` block. Splitting into
+`db/sessions.rs`, `db/messages.rs`, etc. added `use super::{Database, MessageRow,
+Role, ...}` boilerplate to every sub-file for zero behavior change. The types,
+queries, and row conversions are coupled by design (SQLite access patterns).
+
+**Future trigger**: If v0.2.x adds genuinely new persistence domains (vector
+embeddings, knowledge graph, email/calendar), those should be *new files*
+alongside `db.rs` (e.g. `vector_store.rs`), not splits of the existing module.
+Split by domain divergence, not by line count.
+
+### 6. Database Backend Evolution
 
 **Decision**: Keep SQLite for now. Introduce a `Persistence` trait so the
 backend can be swapped later.
@@ -74,6 +90,25 @@ backend can be swapped later.
 But email, calendar, documents, and knowledge graphs may require full-text
 search (FTS5), vector embeddings, graph relationships, or multi-device sync.
 The trait boundary lets us evolve without rewriting.
+
+### 7. Tool Dispatch: Match Statement, Not Trait Registry
+
+**Decision**: Tools are dispatched via a `match` statement in `ToolRegistry::execute()`,
+not via a `Tool` trait with dynamic dispatch.
+
+**Rationale**: Rust's exhaustive matching catches missing tool handlers at compile
+time — adding a tool without a match arm is a compile error. A `HashMap<String, Box<dyn Tool>>`
+would move this to a runtime error. The match statement works well at the current
+scale (~15 tools).
+
+**Known tech debt**: Three tools (`InvokeAgent`, `TodoWrite`, `TodoRead`) return
+sentinel strings (`"__INVOKE_AGENT__"`) because they need DB/session access that
+the registry doesn't have. A `ToolContext` struct would fix this. Tracked in
+[#122](https://github.com/lijunzh/koda/issues/122).
+
+**Future trigger**: When tool additions become frequent enough that editing 3
+locations per tool (definitions, match arm, module import) is a bottleneck,
+convert to a `Tool` trait + `ToolContext`. Do both together, not piecemeal.
 
 ## References
 
