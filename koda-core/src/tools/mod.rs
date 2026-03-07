@@ -26,7 +26,6 @@ pub fn normalize_tool_name(name: &str) -> String {
         "listagents" | "list_agents" => "ListAgents".to_string(),
         "createagent" | "create_agent" => "CreateAgent".to_string(),
         "invokeagent" | "invoke_agent" => "InvokeAgent".to_string(),
-        "astanalysis" | "ast_analysis" => "AstAnalysis".to_string(),
         "listskills" | "list_skills" => "ListSkills".to_string(),
         "activateskill" | "activate_skill" => "ActivateSkill".to_string(),
         _ => name.to_string(), // pass through unknown names (e.g., MCP tools)
@@ -34,7 +33,6 @@ pub fn normalize_tool_name(name: &str) -> String {
 }
 
 pub mod agent;
-pub mod ast;
 pub mod file_tools;
 pub mod glob_tool;
 pub mod grep;
@@ -81,9 +79,7 @@ impl ToolRegistry {
         for def in file_tools::definitions() {
             definitions.insert(def.name.clone(), def);
         }
-        for def in ast::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
+
         for def in grep::definitions() {
             definitions.insert(def.name.clone(), def);
         }
@@ -215,7 +211,6 @@ impl ToolRegistry {
             // Search tools
             "Grep" => grep::grep(&self.project_root, &args).await,
             "Glob" => glob_tool::glob_search(&self.project_root, &args).await,
-            "AstAnalysis" => ast::ast_analysis(&self.project_root, &args).await,
 
             // Shell
             "Bash" => shell::run_shell_command(&self.project_root, &args).await,
@@ -276,7 +271,66 @@ impl ToolRegistry {
                 };
             }
 
-            other => Err(anyhow::anyhow!("Unknown tool: {other}")),
+            other => {
+                // Auto-provision: check capability registry for MCP servers
+                // that provide this tool
+                if let Some(entry) = crate::mcp::capability_registry::find_server_for_tool(other) {
+                    // Try to auto-connect the MCP server
+                    if let Some(ref mcp) = self.mcp_registry {
+                        if crate::mcp::capability_registry::binary_exists(entry.command) {
+                            let config = crate::mcp::capability_registry::to_mcp_config(entry);
+                            let mut registry = mcp.write().await;
+                            match registry
+                                .add_server(entry.server_name.to_string(), config)
+                                .await
+                            {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        "Auto-provisioned MCP server '{}' for tool '{}'",
+                                        entry.server_name,
+                                        other
+                                    );
+                                    // Retry the tool call through the now-connected MCP server
+                                    let namespaced = format!("{}.{}", entry.server_name, other);
+                                    drop(registry);
+                                    let registry = mcp.read().await;
+                                    return match registry.call_tool(&namespaced, arguments).await {
+                                        Ok(output) => ToolResult { output },
+                                        Err(e) => ToolResult {
+                                            output: format!("MCP Error: {e}"),
+                                        },
+                                    };
+                                }
+                                Err(e) => {
+                                    return ToolResult {
+                                        output: format!(
+                                            "Failed to start MCP server '{}': {e}\n\
+                                             Install: {}",
+                                            entry.server_name, entry.install_hint
+                                        ),
+                                    };
+                                }
+                            }
+                        } else {
+                            return ToolResult {
+                                output: format!(
+                                    "Tool '{}' is available via the '{}' MCP server, \
+                                     but '{}' is not installed.\n\
+                                     Description: {}\n\
+                                     Install: {}\n\
+                                     Then restart koda to use it.",
+                                    other,
+                                    entry.server_name,
+                                    entry.command,
+                                    entry.description,
+                                    entry.install_hint
+                                ),
+                            };
+                        }
+                    }
+                }
+                Err(anyhow::anyhow!("Unknown tool: {other}"))
+            }
         };
 
         match result {
