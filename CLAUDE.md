@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Koda is a high-performance AI coding agent built in Rust (edition 2024). Two-crate workspace:
 - `koda-core` (library) — pure engine with zero terminal deps
-- `koda-cli` (binary `koda`) — CLI frontend
+- `koda-cli` (binary `koda`) — CLI frontend with ratatui TUI
 
-See [DESIGN.md](DESIGN.md) for architectural decisions. See [#57](https://github.com/lijunzh/koda/issues/57) for the TUI migration plan (v0.1.2).
+See [DESIGN.md](DESIGN.md) for architectural decisions. See [#70](https://github.com/lijunzh/koda/issues/70) for the TUI design.
 
 ## Build & Development Commands
 
@@ -32,12 +32,13 @@ cargo doc --workspace --no-deps          # Build docs
 ```
 koda/
 ├── Cargo.toml              # Workspace root
-├── koda-core/              # Engine library
+├── koda-core/              # Engine library (zero terminal deps)
 │   ├── src/
 │   │   ├── lib.rs          # Crate root
 │   │   ├── agent.rs        # KodaAgent (shared config: tools, prompt, MCP)
 │   │   ├── session.rs      # KodaSession (per-conversation: DB, provider, settings)
 │   │   ├── inference.rs    # Streaming inference loop + tool execution
+│   │   ├── compact.rs      # Session compaction (summarize old messages)
 │   │   ├── approval.rs     # Approval modes + bash command safety classification
 │   │   ├── context.rs      # Context window token tracking
 │   │   ├── keystore.rs     # Secure API key storage (~/.config/koda/keys.toml, 0600)
@@ -47,38 +48,53 @@ koda/
 │   │   ├── runtime_env.rs  # Thread-safe runtime env for API keys
 │   │   ├── version.rs      # Background version checker (queries crates.io)
 │   │   ├── engine/         # EngineEvent, EngineCommand, EngineSink trait
-│   │   ├── providers/      # LLM providers (Anthropic, Gemini, OpenAI-compat)
+│   │   ├── providers/      # LLM providers (Anthropic, Gemini, OpenAI-compat, mock)
 │   │   ├── tools/          # Built-in tools (Bash, Read, Write, Edit, etc.)
-│   │   ├── mcp/            # MCP client
-│   │   ├── db.rs           # SQLite persistence
+│   │   ├── mcp/            # MCP client (registry, config, stdio transport)
+│   │   ├── db.rs           # SQLite persistence (WAL mode, parameterized queries)
 │   │   └── config.rs       # Agent/provider config
 │   └── tests/              # Engine integration tests
 ├── koda-cli/               # CLI binary
 │   ├── src/
-│   │   ├── lib.rs          # Crate root (exports acp_adapter)
 │   │   ├── main.rs         # CLI entry point (clap)
-│   │   ├── app.rs          # Application entry points (REPL + headless dispatch)
-│   │   ├── server.rs       # ACP server over stdio JSON-RPC (koda server --stdio)
-│   │   ├── acp_adapter.rs  # ACP protocol adapter (EngineEvent → ACP messages, approval flow)
-│   │   ├── headless.rs     # Single-prompt headless mode
-│   │   ├── repl.rs         # Slash command handling (/model, /provider, /help, /quit)
-│   │   ├── commands.rs     # /compact, /mcp, /provider, /trust handlers
-│   │   ├── confirm.rs      # User confirmation UI for dangerous operations
-│   │   ├── input.rs        # rustyline Helper: slash-command + @file completions
-│   │   ├── interrupt.rs    # Ctrl+C double-tap graceful cancellation
-│   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
-│   │   ├── tui.rs          # Arrow-key interactive selection menus (approval, /model, /help)
-│   │   ├── sink.rs         # CliSink (EngineEvent → terminal rendering, inline spinner)
-│   │   ├── display.rs      # Terminal output formatting
+│   │   ├── tui_app.rs      # Main TUI event loop (ratatui Viewport::Inline)
+│   │   ├── tui_render.rs   # EngineEvent → ratatui Line/Span rendering
+│   │   ├── tui_commands.rs # Slash command dispatch (/help, /model, /sessions, etc.)
+│   │   ├── tui_wizards.rs  # Interactive wizards (/provider, /compact, /mcp, /agent)
+│   │   ├── tui_output.rs   # Output bridge: emit_line (ratatui) + write_line (crossterm)
+│   │   ├── md_render.rs    # Streaming markdown → ratatui renderer
+│   │   ├── completer.rs    # Tab completion (/commands, @files, /model names)
+│   │   ├── diff_render.rs  # Diff preview → ratatui renderer (syntax highlighted)
 │   │   ├── highlight.rs    # Syntax highlighting via syntect
-│   │   └── markdown.rs     # Streaming markdown renderer
+│   │   ├── select_menu.rs  # Arrow-key selection menus (standalone + inline)
+│   │   ├── commands.rs     # Provider factory (create_provider)
+│   │   ├── repl.rs         # Slash command parsing + provider/model lists
+│   │   ├── input.rs        # @file reference processing + image loading
+│   │   ├── headless.rs     # Single-prompt headless mode
+│   │   ├── headless_sink.rs# HeadlessSink (println-based, auto-approve)
+│   │   ├── sink.rs         # CliSink (channel forwarding for TUI)
+│   │   ├── server.rs       # ACP server over stdio JSON-RPC
+│   │   ├── acp_adapter.rs  # ACP protocol adapter
+│   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
+│   │   ├── interrupt.rs    # Ctrl+C double-tap graceful cancellation
+│   │   ├── tool_history.rs # Tool output history for /expand
+│   │   ├── lib.rs          # Crate root (exports acp_adapter)
+│   │   └── widgets/        # TUI widgets
+│   │       ├── approval.rs # Inline approval prompt (approve/reject/feedback)
+│   │       ├── status_bar.rs# Model, mode, context meter, elapsed time
+│   │       └── text_input.rs# Inline text input (masked for API keys)
 │   └── tests/              # CLI integration tests
 └── DESIGN.md               # Architecture decisions
 ```
 
 ### Core Event Loop
 
-`main.rs` → `app.rs` (REPL) → `KodaSession::run_turn()` → `inference_loop()` (streaming LLM + tools)
+`main.rs` → `tui_app.rs` (TUI event loop) → `KodaSession::run_turn()` → `inference_loop()` (streaming LLM + tools)
+
+The TUI uses `ratatui::Viewport::Inline` for a persistent input bar + status bar at the bottom.
+Engine output is rendered above the viewport via `insert_before()`. Slash commands use
+crossterm direct writes (`write_line()`). These two rendering paths must never be mixed
+within a single operation.
 
 The engine communicates through `EngineEvent` (output) and `EngineCommand` (input) enums.
 Approval flows through async channels: engine emits `ApprovalRequest`, client sends `ApprovalResponse`.
@@ -88,7 +104,7 @@ Approval flows through async channels: engine emits `ApprovalRequest`, client se
 - **`KodaAgent`** — Shared resources (tools, system prompt, MCP). `Arc`-shareable.
 - **`KodaSession`** — Per-conversation state (DB, provider, settings). Has `run_turn()`.
 - **`EngineSink`** — Trait with single method: `fn emit(&self, event: EngineEvent)`.
-- **`CliSink`** — CLI implementation. Renders events to terminal + sends approval responses via channel.
+- **`CliSink`** — Channel-forwarding sink. Sends events to the TUI event loop via `UiEvent`.
 
 ### Provider System (`koda-core/src/providers/`)
 
@@ -103,7 +119,10 @@ Tools use PascalCase names. `mod.rs` has the registry, dispatcher, and `safe_res
 - Error handling: `anyhow::Result<T>` with `.context()`
 - All I/O is async (`tokio`)
 - Tool names: PascalCase; module names: snake_case
-- `koda-core` has zero terminal deps (no crossterm, no rustyline)
+- `koda-core` has zero terminal deps (no crossterm, no ratatui)
+- Two rendering paths in koda-cli (never mix within one operation):
+  - `emit_line()` / `emit_above()` — ratatui `insert_before()` for engine output
+  - `write_line()` — crossterm direct writes for slash commands
 - Engine → client: `EngineSink::emit(EngineEvent)`
 - Client → engine: `mpsc::Receiver<EngineCommand>`
 - Cancellation: `tokio_util::sync::CancellationToken`
