@@ -120,7 +120,6 @@ pub fn engine_event_to_acp(
         EngineEvent::Footer { .. } => None,
         EngineEvent::SpinnerStart { .. } => None,
         EngineEvent::SpinnerStop => None,
-        EngineEvent::TodoDisplay { .. } => None,
         EngineEvent::TurnStart { .. } => None,
         EngineEvent::TurnEnd { .. } => None,
         EngineEvent::LoopCapReached { .. } => None,
