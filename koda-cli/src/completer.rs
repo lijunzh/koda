@@ -196,8 +196,8 @@ pub fn find_last_at_token(text: &str) -> Option<usize> {
 
 /// List filesystem paths matching a partial path relative to project_root.
 ///
-/// Given partial `"src/m"`, lists files in `project_root/src/` starting with `m`.
-/// Given partial `"src/"`, lists all files in `project_root/src/`.
+/// Uses fuzzy subsequence matching: `@mrs` matches `main.rs`, `@ctml` matches `Cargo.toml`.
+/// Prefix matches rank higher than fuzzy matches.
 /// Directories get a trailing `/` to encourage further completion.
 fn list_path_matches(project_root: &Path, partial: &str) -> Vec<String> {
     let (dir_part, file_prefix) = match partial.rfind('/') {
@@ -220,18 +220,15 @@ fn list_path_matches(project_root: &Path, partial: &str) -> Vec<String> {
         Err(_) => return Vec::new(),
     };
 
-    let mut matches: Vec<String> = entries
+    let lower_prefix = file_prefix.to_lowercase();
+
+    let mut scored: Vec<(i32, String)> = entries
         .filter_map(|e| e.ok())
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
 
             // Skip hidden files and common noise
             if name.starts_with('.') {
-                return None;
-            }
-
-            let lower_prefix = file_prefix.to_lowercase();
-            if !name.to_lowercase().starts_with(&lower_prefix) {
                 return None;
             }
 
@@ -247,17 +244,74 @@ fn list_path_matches(project_root: &Path, partial: &str) -> Vec<String> {
                 return None;
             }
 
+            let lower_name = name.to_lowercase();
+            let score = fuzzy_score(&lower_prefix, &lower_name)?;
+
             let path = if is_dir {
                 format!("{dir_part}{name}/")
             } else {
                 format!("{dir_part}{name}")
             };
-            Some(path)
+            Some((score, path))
         })
         .collect();
 
-    matches.sort();
-    matches
+    // Sort by score (higher = better match), then alphabetically
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, path)| path).collect()
+}
+
+/// Fuzzy subsequence scoring.
+///
+/// Returns `Some(score)` if all chars of `query` appear in `target` in order.
+/// Higher score = better match.
+///
+/// Scoring:
+/// - Prefix match: +100
+/// - Consecutive chars: +10 each
+/// - Char after separator (`_`, `-`, `.`, `/`): +5
+/// - Base: +1 per matched char
+fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
+    if query.is_empty() {
+        return Some(0);
+    }
+
+    let query_chars: Vec<char> = query.chars().collect();
+    let target_chars: Vec<char> = target.chars().collect();
+
+    let mut qi = 0;
+    let mut score: i32 = 0;
+    let mut prev_match_pos: Option<usize> = None;
+
+    for (ti, &tc) in target_chars.iter().enumerate() {
+        if qi < query_chars.len() && tc == query_chars[qi] {
+            score += 1;
+
+            // Bonus: prefix match
+            if qi == 0 && ti == 0 {
+                score += 100;
+            }
+
+            // Bonus: consecutive match
+            if prev_match_pos == Some(ti - 1) {
+                score += 10;
+            }
+
+            // Bonus: after separator
+            if ti > 0 && matches!(target_chars[ti - 1], '_' | '-' | '.' | '/') {
+                score += 5;
+            }
+
+            prev_match_pos = Some(ti);
+            qi += 1;
+        }
+    }
+
+    if qi == query_chars.len() {
+        Some(score)
+    } else {
+        None // Not all query chars matched
+    }
 }
 
 #[cfg(test)]
@@ -483,5 +537,61 @@ mod tests {
         // Attempt path traversal — should return no matches
         let result = c.complete("@../../etc/");
         assert!(result.is_none(), "traversal should be blocked");
+    }
+
+    // ── Fuzzy matching tests ────────────────────────────────
+
+    #[test]
+    fn test_fuzzy_score_basic() {
+        // Exact prefix → high score
+        assert!(fuzzy_score("main", "main.rs").unwrap() > 100);
+        // Subsequence match
+        assert!(fuzzy_score("mrs", "main.rs").is_some());
+        // No match
+        assert!(fuzzy_score("xyz", "main.rs").is_none());
+    }
+
+    #[test]
+    fn test_fuzzy_score_prefix_wins() {
+        let prefix = fuzzy_score("ma", "main.rs").unwrap();
+        let fuzzy = fuzzy_score("ma", "format.rs").unwrap();
+        assert!(prefix > fuzzy, "prefix {prefix} should beat fuzzy {fuzzy}");
+    }
+
+    #[test]
+    fn test_fuzzy_at_file() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("main.rs"), "").unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        fs::write(tmp.path().join("config.rs"), "").unwrap();
+
+        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        // "mrs" → should fuzzy-match main.rs (m...r.s)
+        let result = c.complete("@mrs");
+        assert_eq!(result, Some("@main.rs".to_string()));
+    }
+
+    #[test]
+    fn test_fuzzy_cargo_toml() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        fs::write(tmp.path().join("config.rs"), "").unwrap();
+
+        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        // "ctml" → fuzzy-match Cargo.toml (c...t..m.l)
+        let result = c.complete("@ctml");
+        assert_eq!(result, Some("@Cargo.toml".to_string()));
+    }
+
+    #[test]
+    fn test_fuzzy_prefix_ranked_first() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("main.rs"), "").unwrap();
+        fs::write(tmp.path().join("format.rs"), "").unwrap();
+
+        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        // "m" → main.rs should come before format.rs (prefix match wins)
+        let result = c.complete("@m");
+        assert_eq!(result, Some("@main.rs".to_string()));
     }
 }
