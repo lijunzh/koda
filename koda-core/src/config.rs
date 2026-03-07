@@ -1,6 +1,15 @@
 //! Configuration loading for agents and global settings.
 
 use anyhow::{Context, Result};
+
+/// Metadata for a provider — single source of truth.
+pub struct ProviderMeta {
+    pub name: &'static str,
+    pub url: &'static str,
+    pub model: &'static str,
+    pub env_key: &'static str,
+    pub api_key: bool,
+}
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -25,9 +34,121 @@ pub enum ProviderType {
 }
 
 impl ProviderType {
-    /// Returns true if this provider requires an API key to function.
+    /// Consolidated provider metadata.
+    pub fn meta(&self) -> ProviderMeta {
+        match self {
+            Self::OpenAI => ProviderMeta {
+                name: "openai",
+                url: "https://api.openai.com/v1",
+                model: "gpt-4o",
+                env_key: "OPENAI_API_KEY",
+                api_key: true,
+            },
+            Self::Anthropic => ProviderMeta {
+                name: "anthropic",
+                url: "https://api.anthropic.com",
+                model: "claude-sonnet-4-6",
+                env_key: "ANTHROPIC_API_KEY",
+                api_key: true,
+            },
+            Self::LMStudio => ProviderMeta {
+                name: "lm-studio",
+                url: "http://localhost:1234/v1",
+                model: "auto-detect",
+                env_key: "KODA_API_KEY",
+                api_key: false,
+            },
+            Self::Gemini => ProviderMeta {
+                name: "gemini",
+                url: "https://generativelanguage.googleapis.com",
+                model: "gemini-2.0-flash",
+                env_key: "GEMINI_API_KEY",
+                api_key: true,
+            },
+            Self::Groq => ProviderMeta {
+                name: "groq",
+                url: "https://api.groq.com/openai/v1",
+                model: "llama-3.3-70b-versatile",
+                env_key: "GROQ_API_KEY",
+                api_key: true,
+            },
+            Self::Grok => ProviderMeta {
+                name: "grok",
+                url: "https://api.x.ai/v1",
+                model: "grok-3",
+                env_key: "XAI_API_KEY",
+                api_key: true,
+            },
+            Self::Ollama => ProviderMeta {
+                name: "ollama",
+                url: "http://localhost:11434/v1",
+                model: "auto-detect",
+                env_key: "KODA_API_KEY",
+                api_key: false,
+            },
+            Self::DeepSeek => ProviderMeta {
+                name: "deepseek",
+                url: "https://api.deepseek.com/v1",
+                model: "deepseek-chat",
+                env_key: "DEEPSEEK_API_KEY",
+                api_key: true,
+            },
+            Self::Mistral => ProviderMeta {
+                name: "mistral",
+                url: "https://api.mistral.ai/v1",
+                model: "mistral-large-latest",
+                env_key: "MISTRAL_API_KEY",
+                api_key: true,
+            },
+            Self::MiniMax => ProviderMeta {
+                name: "minimax",
+                url: "https://api.minimax.chat/v1",
+                model: "minimax-text-01",
+                env_key: "MINIMAX_API_KEY",
+                api_key: true,
+            },
+            Self::OpenRouter => ProviderMeta {
+                name: "openrouter",
+                url: "https://openrouter.ai/api/v1",
+                model: "anthropic/claude-3.5-sonnet",
+                env_key: "OPENROUTER_API_KEY",
+                api_key: true,
+            },
+            Self::Together => ProviderMeta {
+                name: "together",
+                url: "https://api.together.xyz/v1",
+                model: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                env_key: "TOGETHER_API_KEY",
+                api_key: true,
+            },
+            Self::Fireworks => ProviderMeta {
+                name: "fireworks",
+                url: "https://api.fireworks.ai/inference/v1",
+                model: "accounts/fireworks/models/llama-v3p3-70b-instruct",
+                env_key: "FIREWORKS_API_KEY",
+                api_key: true,
+            },
+            Self::Vllm => ProviderMeta {
+                name: "vllm",
+                url: "http://localhost:8000/v1",
+                model: "auto-detect",
+                env_key: "KODA_API_KEY",
+                api_key: false,
+            },
+        }
+    }
+
     pub fn requires_api_key(&self) -> bool {
-        !matches!(self, Self::LMStudio | Self::Ollama | Self::Vllm)
+        self.meta().api_key
+    }
+    pub fn default_base_url(&self) -> &str {
+        self.meta().url
+    }
+    pub fn default_model(&self) -> &str {
+        self.meta().model
+    }
+    pub fn env_key_name(&self) -> &str {
+        self.meta().env_key
     }
 
     /// Detect provider type from a base URL or explicit name.
@@ -82,83 +203,11 @@ impl ProviderType {
             Self::OpenAI
         }
     }
-
-    pub fn default_base_url(&self) -> &str {
-        match self {
-            Self::OpenAI => "https://api.openai.com/v1",
-            Self::Anthropic => "https://api.anthropic.com",
-            Self::LMStudio => "http://localhost:1234/v1",
-            Self::Gemini => "https://generativelanguage.googleapis.com",
-            Self::Groq => "https://api.groq.com/openai/v1",
-            Self::Grok => "https://api.x.ai/v1",
-            Self::Ollama => "http://localhost:11434/v1",
-            Self::DeepSeek => "https://api.deepseek.com/v1",
-            Self::Mistral => "https://api.mistral.ai/v1",
-            Self::MiniMax => "https://api.minimax.chat/v1",
-            Self::OpenRouter => "https://openrouter.ai/api/v1",
-            Self::Together => "https://api.together.xyz/v1",
-            Self::Fireworks => "https://api.fireworks.ai/inference/v1",
-            Self::Vllm => "http://localhost:8000/v1",
-        }
-    }
-
-    pub fn default_model(&self) -> &str {
-        match self {
-            Self::OpenAI => "gpt-4o",
-            Self::Anthropic => "claude-sonnet-4-6",
-            Self::LMStudio => "auto-detect",
-            Self::Gemini => "gemini-2.0-flash",
-            Self::Groq => "llama-3.3-70b-versatile",
-            Self::Grok => "grok-3",
-            Self::Ollama => "auto-detect",
-            Self::DeepSeek => "deepseek-chat",
-            Self::Mistral => "mistral-large-latest",
-            Self::MiniMax => "minimax-text-01",
-            Self::OpenRouter => "anthropic/claude-3.5-sonnet",
-            Self::Together => "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-            Self::Fireworks => "accounts/fireworks/models/llama-v3p3-70b-instruct",
-            Self::Vllm => "auto-detect",
-        }
-    }
-
-    pub fn env_key_name(&self) -> &str {
-        match self {
-            Self::OpenAI => "OPENAI_API_KEY",
-            Self::Anthropic => "ANTHROPIC_API_KEY",
-            Self::LMStudio => "KODA_API_KEY",
-            Self::Gemini => "GEMINI_API_KEY",
-            Self::Groq => "GROQ_API_KEY",
-            Self::Grok => "XAI_API_KEY",
-            Self::Ollama => "KODA_API_KEY",
-            Self::DeepSeek => "DEEPSEEK_API_KEY",
-            Self::Mistral => "MISTRAL_API_KEY",
-            Self::MiniMax => "MINIMAX_API_KEY",
-            Self::OpenRouter => "OPENROUTER_API_KEY",
-            Self::Together => "TOGETHER_API_KEY",
-            Self::Fireworks => "FIREWORKS_API_KEY",
-            Self::Vllm => "KODA_API_KEY",
-        }
-    }
 }
 
 impl std::fmt::Display for ProviderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::OpenAI => write!(f, "openai"),
-            Self::Anthropic => write!(f, "anthropic"),
-            Self::LMStudio => write!(f, "lm-studio"),
-            Self::Gemini => write!(f, "gemini"),
-            Self::Groq => write!(f, "groq"),
-            Self::Grok => write!(f, "grok"),
-            Self::Ollama => write!(f, "ollama"),
-            Self::DeepSeek => write!(f, "deepseek"),
-            Self::Mistral => write!(f, "mistral"),
-            Self::MiniMax => write!(f, "minimax"),
-            Self::OpenRouter => write!(f, "openrouter"),
-            Self::Together => write!(f, "together"),
-            Self::Fireworks => write!(f, "fireworks"),
-            Self::Vllm => write!(f, "vllm"),
-        }
+        write!(f, "{}", self.meta().name)
     }
 }
 

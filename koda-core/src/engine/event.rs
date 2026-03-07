@@ -72,7 +72,6 @@ pub enum EngineEvent {
     SubAgentStart { agent_name: String },
 
     /// A sub-agent finished.
-    SubAgentEnd { agent_name: String },
 
     // ── Approval flow ─────────────────────────────────────────────────
     /// The engine needs user approval before executing a tool.

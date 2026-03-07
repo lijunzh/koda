@@ -62,7 +62,6 @@ impl EngineSink for HeadlessSink {
             EngineEvent::SubAgentStart { agent_name } => {
                 eprintln!("\x1b[35m  \u{1f916} {agent_name}\x1b[0m");
             }
-            EngineEvent::SubAgentEnd { .. } => {}
 
             // ── Blocked actions ──────────────────────────────────
             EngineEvent::ActionBlocked {
