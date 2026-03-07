@@ -852,7 +852,8 @@ pub async fn run(
                                 }
                             }
                         }
-                        (KeyCode::Up, KeyModifiers::NONE) => {
+                        (KeyCode::Up, KeyModifiers::NONE)
+                        | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
                             if !history.is_empty() {
                                 let idx = match history_idx {
                                     None => history.len() - 1,
@@ -864,7 +865,8 @@ pub async fn run(
                                 textarea.insert_str(&history[idx]);
                             }
                         }
-                        (KeyCode::Down, KeyModifiers::NONE) => {
+                        (KeyCode::Down, KeyModifiers::NONE)
+                        | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
                             if let Some(idx) = history_idx {
                                 if idx + 1 < history.len() {
                                     history_idx = Some(idx + 1);
