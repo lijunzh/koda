@@ -119,11 +119,13 @@ const READ_ONLY_TOOLS: &[&str] = &[
     "Glob",
     "MemoryRead",
     "ListAgents",
-    "InvokeAgent", // sub-agents inherit parent's approval mode
-    "WebFetch",    // GET-only URL fetch
-    "TodoWrite",   // internal checklist, no file changes
-    "TodoRead",    // read-only checklist access
-    "AstAnalysis", // read-only AST parsing, no file modifications
+    "InvokeAgent",   // sub-agents inherit parent's approval mode
+    "WebFetch",      // GET-only URL fetch
+    "TodoWrite",     // internal checklist, no file changes
+    "TodoRead",      // read-only checklist access
+    "AstAnalysis",   // read-only AST parsing, no file modifications
+    "ListSkills",    // read-only skill listing
+    "ActivateSkill", // read-only skill activation (context injection)
 ];
 
 /// Decide whether a tool call should be auto-approved, confirmed, or blocked.
