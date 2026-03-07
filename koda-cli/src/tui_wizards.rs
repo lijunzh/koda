@@ -196,7 +196,7 @@ pub(crate) async fn handle_compact(
                 "Conversation is too short to compact ({n} messages)."
             ));
         }
-        Err(e) => err_msg(format!("Compact failed: {e}")),
+        Err(e) => err_msg(format!("Compact failed: {e:#}")),
     }
 }
 

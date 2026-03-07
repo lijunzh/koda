@@ -559,7 +559,7 @@ pub async fn run(
                                                 Line::from(vec![
                                                     ratatui::text::Span::raw("  "),
                                                     ratatui::text::Span::styled(
-                                                        format!("\u{2717} Turn failed: {e}"),
+                                                        format!("\u{2717} Turn failed: {e:#}"),
                                                         Style::default().fg(Color::Red),
                                                     ),
                                                 ]),
@@ -760,7 +760,9 @@ pub async fn run(
                                             emit_above(
                                                 &mut terminal,
                                                 Line::styled(
-                                                    format!("  \u{2717} Auto-compact failed: {e}"),
+                                                    format!(
+                                                        "  \u{2717} Auto-compact failed: {e:#}"
+                                                    ),
                                                     Style::default().fg(Color::Red),
                                                 ),
                                             );
