@@ -863,25 +863,8 @@ pub async fn run(
                             }
                         }
                         (KeyCode::BackTab, _) => {
-                            let new_mode = approval::cycle_mode(&shared_mode);
-                            let (icon, desc) = match new_mode {
-                                ApprovalMode::Plan => ("\u{1f4cb}", "read-only"),
-                                ApprovalMode::Normal => ("\u{1f43b}", "confirm dangerous"),
-                                ApprovalMode::Yolo => ("\u{26a1}", "auto-approve all"),
-                            };
-                            emit_above(
-                                &mut terminal,
-                                Line::from(vec![
-                                    Span::styled(
-                                        format!("  {icon} Mode: {} ", new_mode.label()),
-                                        Style::default().fg(Color::Cyan),
-                                    ),
-                                    Span::styled(
-                                        format!("\u{2014} {desc}"),
-                                        Style::default().fg(Color::DarkGray),
-                                    ),
-                                ]),
-                            );
+                            approval::cycle_mode(&shared_mode);
+                            // Status bar updates on next draw — no scrollback noise
                         }
                         (KeyCode::Tab, KeyModifiers::NONE) => {
                             let current = textarea.lines().join("\n");
