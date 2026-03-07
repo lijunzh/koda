@@ -29,6 +29,8 @@ impl CliSink {
 
 impl EngineSink for CliSink {
     fn emit(&self, event: EngineEvent) {
-        let _ = self.ui_tx.try_send(UiEvent::Engine(event));
+        if let Err(e) = self.ui_tx.try_send(UiEvent::Engine(event)) {
+            tracing::warn!("UI channel full, event dropped: {e}");
+        }
     }
 }
