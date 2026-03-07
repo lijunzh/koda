@@ -21,8 +21,6 @@ pub fn normalize_tool_name(name: &str) -> String {
         "webfetch" | "web_fetch" | "fetch" => "WebFetch".to_string(),
         "memoryread" | "memory_read" => "MemoryRead".to_string(),
         "memorywrite" | "memory_write" => "MemoryWrite".to_string(),
-        "todowrite" | "todo_write" | "todo" => "TodoWrite".to_string(),
-        "todoread" | "todo_read" => "TodoRead".to_string(),
         "listagents" | "list_agents" => "ListAgents".to_string(),
         "createagent" | "create_agent" => "CreateAgent".to_string(),
         "invokeagent" | "invoke_agent" => "InvokeAgent".to_string(),
@@ -39,7 +37,6 @@ pub mod grep;
 pub mod memory;
 pub mod shell;
 pub mod skill_tools;
-pub mod todo;
 pub mod web_fetch;
 
 use anyhow::Result;
@@ -96,9 +93,6 @@ impl ToolRegistry {
             definitions.insert(def.name.clone(), def);
         }
         for def in memory::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-        for def in todo::definitions() {
             definitions.insert(def.name.clone(), def);
         }
         for def in skill_tools::definitions() {

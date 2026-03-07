@@ -337,14 +337,6 @@ pub async fn inference_loop(
 
             let context = crate::context::format_footer();
 
-            // Show todo at end only if no tool calls were made this turn
-            // (if tools ran, TodoWrite already rendered inline when called)
-            if !made_tool_calls && let Ok(Some(todo_content)) = db.get_todo(session_id).await {
-                sink.emit(EngineEvent::TodoDisplay {
-                    content: todo_content,
-                });
-            }
-
             sink.emit(EngineEvent::Footer {
                 prompt_tokens: total_prompt_tokens,
                 completion_tokens: total_completion_tokens,
