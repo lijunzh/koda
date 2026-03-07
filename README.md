@@ -6,19 +6,22 @@ Single compiled binary. Multi-provider LLM support. Zero runtime dependencies.
 
 ## Philosophy
 
-**Koda is a personal coding agent.** It's built for a single developer at a keyboard,
-not for enterprise teams or platform integrations. This focus drives every design decision:
+**Koda is a personal AI assistant.** Coding is the starting point, but the platform
+will expand to support email, calendar, knowledge management, and more — all
+powered by the same engine. This focus drives every design decision:
 
-- **Single binary, zero runtime deps.** `cargo install koda-cli` and you're done.
-  No Node.js, no Python, no Docker. Works offline with local models (LM Studio)
-  or online with cloud providers.
-- **Built-in tools for the core coding loop.** File ops, search, shell, web fetch,
-  memory, and agents are compiled in — always available, zero latency, zero config.
-- **MCP for everything else.** Need GitHub API, databases, Slack? Connect external
-  MCP servers via `.mcp.json`. Koda stays lean; the ecosystem handles the long tail.
-- **Ask Koda what it can do.** Just ask — "what can you do?" or "what tools do you
-  have?" Koda's capabilities are embedded in its system prompt, so it can always
-  describe its own tools, commands, and features accurately.
+- **Everything just works.** `cargo install koda-cli` and you're done.
+  No Node.js, no Python, no Docker. Core tools (file ops, search, shell, web
+  fetch, memory, agents) are compiled in — always available, zero config.
+- **Auto-provisioned capabilities.** Beyond the core, koda auto-installs
+  MCP servers on demand. Ask about your email? Koda installs the email
+  integration transparently. You never configure plumbing.
+- **MCP is the extension model.** Need GitHub API, databases, Slack? Connect
+  external MCP servers via `.mcp.json`, or let koda auto-discover them.
+  Koda stays lean; the ecosystem handles the long tail.
+- **Ask Koda what it can do.** Just ask — "what can you do?" Koda's
+  capabilities are embedded in its system prompt, so it can always describe
+  its own tools, commands, and features accurately.
 
 ## Install
 
