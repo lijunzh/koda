@@ -210,7 +210,8 @@ fn list_path_matches(project_root: &Path, partial: &str) -> Vec<String> {
                 return None;
             }
 
-            if !name.starts_with(file_prefix) {
+            let lower_prefix = file_prefix.to_lowercase();
+            if !name.to_lowercase().starts_with(&lower_prefix) {
                 return None;
             }
 
@@ -351,6 +352,21 @@ mod tests {
         let mut c = InputCompleter::new(tmp.path().to_path_buf());
         let result = c.complete("@");
         assert_eq!(result, Some("@visible.rs".to_string()));
+    }
+
+    #[test]
+    fn test_at_file_case_insensitive() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("Makefile"), "").unwrap();
+        fs::write(tmp.path().join("README.md"), "").unwrap();
+
+        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        let result = c.complete("@make");
+        assert_eq!(result, Some("@Makefile".to_string()));
+
+        c.reset();
+        let result = c.complete("@read");
+        assert_eq!(result, Some("@README.md".to_string()));
     }
 
     #[test]
