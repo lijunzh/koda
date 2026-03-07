@@ -41,6 +41,7 @@ jobs:
           CORE_VER=$(grep '^version' koda-core/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           CLI_VER=$(grep '^version' koda-cli/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           AST_VER=$(grep '^version' koda-ast/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          EMAIL_VER=$(grep '^version' koda-email/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           if [ "$TAG" != "$CORE_VER" ]; then
             echo "::error::Tag v$TAG does not match koda-core version $CORE_VER"
             exit 1
@@ -53,7 +54,11 @@ jobs:
             echo "::error::Tag v$TAG does not match koda-ast version $AST_VER"
             exit 1
           fi
-          echo "✅ Tag v$TAG matches koda-core ($CORE_VER), koda-cli ($CLI_VER), and koda-ast ($AST_VER)"
+          if [ "$TAG" != "$EMAIL_VER" ]; then
+            echo "::error::Tag v$TAG does not match koda-email version $EMAIL_VER"
+            exit 1
+          fi
+          echo "✅ Tag v$TAG matches koda-core ($CORE_VER), koda-cli ($CLI_VER), koda-ast ($AST_VER), and koda-email ($EMAIL_VER)"
 
   build:
     name: Build ${{ matrix.target }}
@@ -86,6 +91,7 @@ jobs:
         run: |
           cargo build --release --target ${{ matrix.target }} -p koda-cli
           cargo build --release --target ${{ matrix.target }} -p koda-ast
+          cargo build --release --target ${{ matrix.target }} -p koda-email
 
       - name: Package (unix)
         if: runner.os != 'Windows'
@@ -93,6 +99,7 @@ jobs:
           mkdir koda-${{ matrix.target }}
           cp target/${{ matrix.target }}/release/koda koda-${{ matrix.target }}/
           cp target/${{ matrix.target }}/release/koda-ast koda-${{ matrix.target }}/
+          cp target/${{ matrix.target }}/release/koda-email koda-${{ matrix.target }}/
           cp README.md LICENSE koda-${{ matrix.target }}/
           tar czf koda-${{ matrix.target }}.tar.gz koda-${{ matrix.target }}
 
@@ -103,6 +110,7 @@ jobs:
           mkdir koda-${{ matrix.target }}
           cp target/${{ matrix.target }}/release/koda.exe koda-${{ matrix.target }}/
           cp target/${{ matrix.target }}/release/koda-ast.exe koda-${{ matrix.target }}/
+          cp target/${{ matrix.target }}/release/koda-email.exe koda-${{ matrix.target }}/
           cp README.md LICENSE koda-${{ matrix.target }}/
           7z a koda-${{ matrix.target }}.zip koda-${{ matrix.target }}/
 
@@ -135,6 +143,10 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: Publish koda-ast
         run: cargo publish -p koda-ast
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish koda-email
+        run: cargo publish -p koda-email
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -231,6 +243,7 @@ jobs:
             def install
               bin.install "koda"
               bin.install "koda-ast"
+              bin.install "koda-email"
             end
 
             test do
