@@ -142,15 +142,6 @@ type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 
 fn init_terminal(height: u16) -> Result<Term> {
     crossterm::terminal::enable_raw_mode()?;
-    // Enable kitty keyboard protocol for Shift+Enter detection.
-    // Gracefully ignored by terminals that don't support it.
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::event::PushKeyboardEnhancementFlags(
-            crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
-        )
-    );
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::with_options(
@@ -164,10 +155,6 @@ fn init_terminal(height: u16) -> Result<Term> {
 
 fn restore_terminal(terminal: &mut Term, height: u16) {
     let _ = terminal.clear();
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::event::PopKeyboardEnhancementFlags
-    );
     let _ = crossterm::terminal::disable_raw_mode();
     // Erase leftover viewport lines
     print!("\x1b[{}A\x1b[J", height);
@@ -774,7 +761,9 @@ pub async fn run(
             Some(Ok(ev)) = crossterm_events.next() => {
                 if let Event::Key(key) = ev {
                     match (key.code, key.modifiers) {
-                        // Shift+Enter → insert newline (multi-line input)
+                        // Shift+Enter or Alt+Enter → insert newline
+                        // Note: Shift+Enter only works on terminals with kitty
+                        // keyboard protocol. Alt+Enter works everywhere.
                         (KeyCode::Enter, m)
                             if m.contains(KeyModifiers::SHIFT)
                                 || m.contains(KeyModifiers::ALT) =>
@@ -868,50 +857,53 @@ pub async fn run(
                         (KeyCode::Tab, KeyModifiers::NONE) => {
                             let current = textarea.lines().join("\n");
                             if let Some(completed) = completer.complete(&current) {
-                                textarea.select_all();
-                                textarea.cut();
-                                textarea.insert_str(&completed);
-
-                                // Show candidates above viewport if multiple matches
                                 let candidates = completer.candidates();
                                 if candidates.len() > 1 {
-                                    let selected = completer.selected_idx();
-                                    let spans: Vec<Span> = candidates
-                                        .iter()
-                                        .enumerate()
-                                        .flat_map(|(i, c)| {
-                                            let style = if i == selected {
-                                                Style::default()
-                                                    .fg(Color::Cyan)
-                                                    .add_modifier(Modifier::BOLD)
-                                            } else {
-                                                Style::default().fg(Color::DarkGray)
-                                            };
-                                            // Extract just the display name
-                                            let name = c
-                                                .rsplit('/')
-                                                .next()
-                                                .unwrap_or(c)
-                                                .trim_start_matches("/model ")
-                                                .to_string();
-                                            let sep = if i + 1 < candidates.len() {
-                                                "  "
-                                            } else {
-                                                ""
-                                            };
-                                            vec![
-                                                Span::styled(name, style),
-                                                Span::raw(sep.to_string()),
-                                            ]
-                                        })
-                                        .collect();
-                                    let mut line_spans = vec![Span::styled(
-                                        "  Tab: ",
-                                        Style::default().fg(Color::DarkGray),
-                                    )];
-                                    line_spans.extend(spans);
-                                    emit_above(&mut terminal, Line::from(line_spans));
+                                    // Multiple matches — open dropdown select menu
+                                    let options: Vec<crate::select_menu::SelectOption> =
+                                        candidates
+                                            .iter()
+                                            .map(|c| {
+                                                crate::select_menu::SelectOption::new(c, "")
+                                            })
+                                            .collect();
+                                    let initial = completer.selected_idx();
+                                    if let Ok(Some(idx)) =
+                                        crate::select_menu::select_inline(
+                                            &mut terminal,
+                                            "\u{1f4c2} Select",
+                                            &options,
+                                            initial,
+                                        )
+                                    {
+                                        // Reconstruct the full text with the selected match
+                                        let selected = &candidates[idx];
+                                        // Rerun completion logic to build the full text
+                                        let trimmed = current.trim_end();
+                                        let replacement = if trimmed.starts_with('/') {
+                                            selected.clone()
+                                        } else if let Some(at_pos) =
+                                            crate::completer::find_last_at_token(trimmed)
+                                        {
+                                            let prefix = &trimmed[..at_pos];
+                                            format!("{prefix}@{selected}")
+                                        } else {
+                                            selected.clone()
+                                        };
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(&replacement);
+                                    }
+                                    // Reinit terminal after select_inline
+                                    terminal = init_terminal(viewport_height)?;
+                                    crossterm_events = EventStream::new();
+                                } else {
+                                    // Single match — just insert it
+                                    textarea.select_all();
+                                    textarea.cut();
+                                    textarea.insert_str(&completed);
                                 }
+                                completer.reset();
                             }
                         }
                         _ => {

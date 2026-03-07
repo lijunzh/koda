@@ -185,7 +185,7 @@ impl InputCompleter {
 ///
 /// An `@` counts as a file reference if it's preceded by whitespace
 /// or is at the start of the input (not an email address).
-fn find_last_at_token(text: &str) -> Option<usize> {
+pub fn find_last_at_token(text: &str) -> Option<usize> {
     for (i, c) in text.char_indices().rev() {
         if c == '@' && (i == 0 || matches!(text.as_bytes()[i - 1], b' ' | b'\n')) {
             return Some(i);
