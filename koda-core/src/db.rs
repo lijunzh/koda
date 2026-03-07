@@ -130,6 +130,8 @@ impl Database {
 
         let options = SqliteConnectOptions::from_str(&db_url)?
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Incremental)
+            .foreign_keys(true)
             .create_if_missing(true);
 
         let pool = SqlitePoolOptions::new()
@@ -186,6 +188,10 @@ impl Database {
             .execute(pool)
             .await?;
 
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_role_id ON messages(role, id DESC);")
+            .execute(pool)
+            .await?;
+
         // Additive migrations for new token tracking columns (idempotent).
         for col in &[
             "cache_read_tokens",
@@ -194,6 +200,17 @@ impl Database {
         ] {
             let sql = format!("ALTER TABLE messages ADD COLUMN {col} INTEGER");
             // Ignore "duplicate column name" errors — column already exists.
+            if let Err(e) = sqlx::query(&sql).execute(pool).await {
+                let msg = e.to_string();
+                if !msg.contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
+        }
+
+        // Text column migrations
+        for (col, col_type) in &[("agent_name", "TEXT")] {
+            let sql = format!("ALTER TABLE messages ADD COLUMN {col} {col_type}");
             if let Err(e) = sqlx::query(&sql).execute(pool).await {
                 let msg = e.to_string();
                 if !msg.contains("duplicate column name") {
@@ -252,10 +269,35 @@ impl Database {
         tool_call_id: Option<&str>,
         usage: Option<&crate::providers::TokenUsage>,
     ) -> Result<i64> {
+        self.insert_message_with_agent(
+            session_id,
+            role,
+            content,
+            tool_calls,
+            tool_call_id,
+            usage,
+            None,
+        )
+        .await
+    }
+
+    /// Insert a message with an optional agent name for cost tracking.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_message_with_agent(
+        &self,
+        session_id: &str,
+        role: &Role,
+        content: Option<&str>,
+        tool_calls: Option<&str>,
+        tool_call_id: Option<&str>,
+        usage: Option<&crate::providers::TokenUsage>,
+        agent_name: Option<&str>,
+    ) -> Result<i64> {
         let result = sqlx::query(
             "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, \
-             prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens, \
+             thinking_tokens, agent_name)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session_id)
         .bind(role.as_str())
@@ -267,6 +309,7 @@ impl Database {
         .bind(usage.map(|u| u.cache_read_tokens))
         .bind(usage.map(|u| u.cache_creation_tokens))
         .bind(usage.map(|u| u.thinking_tokens))
+        .bind(agent_name)
         .execute(&self.pool)
         .await?;
 
@@ -293,30 +336,47 @@ impl Database {
         .collect();
 
         // Sliding window: accumulate tokens from newest to oldest.
-        // Tool results older than the most recent 4 messages get truncated
-        // to save tokens — the LLM already processed them.
+        // Messages are prioritized: user/assistant messages kept before
+        // old tool results, which get aggressively truncated.
         let mut budget = max_tokens;
         let mut window = Vec::new();
         let recency_threshold = 4; // keep full content for this many recent messages
 
         for (idx, mut msg) in rows.into_iter().enumerate() {
-            // Truncate old tool results to save context tokens
-            if idx >= recency_threshold
-                && msg.role == "tool"
-                && let Some(ref content) = msg.content
-                && content.len() > 500
-            {
-                // Snap to a valid char boundary at or before 300 bytes
-                let mut end = 300.min(content.len());
-                while end > 0 && !content.is_char_boundary(end) {
-                    end -= 1;
+            // Priority-based truncation:
+            // - Recent messages (< threshold): full content always
+            // - Old tool results: aggressive truncation (200 chars)
+            // - Old assistant text: moderate truncation (1000 chars)
+            // - User messages: keep full (they're the source of intent)
+            if idx >= recency_threshold {
+                if msg.role == "tool"
+                    && let Some(ref content) = msg.content
+                    && content.len() > 200
+                {
+                    let mut end = 200.min(content.len());
+                    while end > 0 && !content.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    msg.content = Some(format!(
+                        "{}\n[truncated — {} chars. Re-read if needed.]",
+                        &content[..end],
+                        content.len()
+                    ));
+                } else if msg.role == "assistant"
+                    && let Some(ref content) = msg.content
+                    && content.len() > 1000
+                {
+                    let mut end = 1000.min(content.len());
+                    while end > 0 && !content.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    msg.content = Some(format!(
+                        "{}\n[truncated — {} chars]",
+                        &content[..end],
+                        content.len()
+                    ));
                 }
-                let truncated = format!(
-                    "{}\n\n[Previous tool output truncated — {} chars. Re-read if needed.]",
-                    &content[..end],
-                    content.len()
-                );
-                msg.content = Some(truncated);
+                // User messages: never truncated (they carry intent)
             }
 
             let estimated = Self::estimate_tokens(&msg);
@@ -437,6 +497,47 @@ impl Database {
         })
     }
 
+    /// Get token usage broken down by agent name.
+    pub async fn session_usage_by_agent(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<(String, SessionUsage)>> {
+        let rows: Vec<(String, i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
+            "SELECT
+                COALESCE(agent_name, 'main'),
+                COALESCE(SUM(prompt_tokens), 0),
+                COALESCE(SUM(completion_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(cache_creation_tokens), 0),
+                COALESCE(SUM(thinking_tokens), 0),
+                COUNT(*)
+             FROM messages
+             WHERE session_id = ?
+               AND (prompt_tokens IS NOT NULL OR completion_tokens IS NOT NULL)
+             GROUP BY COALESCE(agent_name, 'main')
+             ORDER BY COALESCE(SUM(prompt_tokens), 0) + COALESCE(SUM(completion_tokens), 0) DESC",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.0,
+                    SessionUsage {
+                        prompt_tokens: r.1,
+                        completion_tokens: r.2,
+                        cache_read_tokens: r.3,
+                        cache_creation_tokens: r.4,
+                        thinking_tokens: r.5,
+                        api_calls: r.6,
+                    },
+                )
+            })
+            .collect())
+    }
+
     /// List recent sessions for a specific project.
     pub async fn list_sessions(&self, limit: i64, project_root: &Path) -> Result<Vec<SessionInfo>> {
         let root = project_root.to_string_lossy().to_string();
@@ -484,11 +585,16 @@ impl Database {
         Ok(row.map(|r| r.0).unwrap_or_default())
     }
 
-    /// Delete a session and all its messages atomically.
+    /// Delete a session and all its messages/metadata atomically.
     pub async fn delete_session(&self, session_id: &str) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
 
         sqlx::query("DELETE FROM messages WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("DELETE FROM session_metadata WHERE session_id = ?")
             .bind(session_id)
             .execute(&mut *tx)
             .await?;
@@ -499,6 +605,11 @@ impl Database {
             .await?;
 
         tx.commit().await?;
+
+        // Reclaim freed pages from the deletion.
+        sqlx::query("PRAGMA incremental_vacuum")
+            .execute(&self.pool)
+            .await?;
 
         Ok(result.rows_affected() > 0)
     }
@@ -578,6 +689,11 @@ impl Database {
         .await?;
 
         tx.commit().await?;
+
+        // Reclaim freed pages from the bulk deletion.
+        sqlx::query("PRAGMA incremental_vacuum")
+            .execute(&self.pool)
+            .await?;
 
         Ok(deleted_count)
     }
