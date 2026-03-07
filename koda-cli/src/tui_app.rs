@@ -324,6 +324,14 @@ pub async fn run(
     let mut history_idx: Option<usize> = None; // None = not browsing history
     let mut completer = crate::completer::InputCompleter::new(project_root.clone());
 
+    // Cache model names for /model Tab completion
+    {
+        let prov = provider.read().await;
+        if let Ok(models) = prov.list_models().await {
+            completer.set_model_names(models.iter().map(|m| m.id.clone()).collect());
+        }
+    }
+
     // Crossterm event stream for async key capture
     let mut crossterm_events = EventStream::new();
 
@@ -403,6 +411,13 @@ pub async fn run(
                                 viewport_height = MIN_VIEWPORT_HEIGHT;
                                 terminal = init_terminal(viewport_height)?;
                                 crossterm_events = EventStream::new();
+                                // Refresh model name cache (provider may have changed)
+                                let prov = provider.read().await;
+                                if let Ok(models) = prov.list_models().await {
+                                    completer.set_model_names(
+                                        models.iter().map(|m| m.id.clone()).collect(),
+                                    );
+                                }
                             }
                             SlashAction::Quit => {
                                 tui_output::emit_line(
