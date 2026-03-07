@@ -116,7 +116,6 @@ const READ_ONLY_TOOLS: &[&str] = &[
     "Glob",
     "MemoryRead",
     "ListAgents",
-    "ShareReasoning",
     "InvokeAgent", // sub-agents inherit parent's approval mode
     "WebFetch",    // GET-only URL fetch
     "TodoWrite",   // internal checklist, no file changes
