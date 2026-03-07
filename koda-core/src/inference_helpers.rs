@@ -7,11 +7,21 @@ use crate::providers::{ChatMessage, ToolCall};
 /// If context usage exceeds this before calling the provider, auto-compact first.
 pub const PREFLIGHT_COMPACT_THRESHOLD: usize = 90;
 
+/// Characters-per-token ratio for heuristic estimation.
+/// 3.5 aligns better with provider-reported counts for code-heavy sessions
+/// than the naive 4.0 estimate.
+pub const CHARS_PER_TOKEN: f64 = 3.5;
+
+/// Per-message overhead in tokens (accounts for role, separators, etc.).
+pub const PER_MESSAGE_OVERHEAD: usize = 10;
+
+/// Overhead for the system prompt beyond its character content
+/// (tool schemas, message framing, etc.).
+pub const SYSTEM_PROMPT_OVERHEAD: usize = 100;
+
 /// Estimate token count for a set of messages.
 ///
-/// Uses a calibrated heuristic: `chars / 3.5 + 10` per message.
-/// (The original `chars / 4` consistently under-estimated; 3.5 aligns
-/// better with provider-reported token counts for code-heavy sessions.)
+/// Uses a calibrated heuristic: `chars / CHARS_PER_TOKEN + PER_MESSAGE_OVERHEAD`.
 pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
     messages
         .iter()
@@ -21,7 +31,7 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                 .tool_calls
                 .as_ref()
                 .map_or(0, |tc| serde_json::to_string(tc).map_or(0, |s| s.len()));
-            ((content_len + tc_len) as f64 / 3.5) as usize + 10
+            ((content_len + tc_len) as f64 / CHARS_PER_TOKEN) as usize + PER_MESSAGE_OVERHEAD
         })
         .sum()
 }

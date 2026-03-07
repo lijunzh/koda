@@ -45,9 +45,15 @@ struct ServerState {
 ///
 /// Reads newline-delimited JSON-RPC from stdin, dispatches to handlers,
 /// and writes JSON-RPC responses/notifications to stdout.
-pub async fn run_stdio_server(project_root: PathBuf, config: KodaConfig) -> Result<()> {
+pub async fn run_stdio_server(project_root: PathBuf, mut config: KodaConfig) -> Result<()> {
     // Initialize database
     let db = Database::init(&project_root, &koda_core::db::config_dir()?).await?;
+
+    // Query actual model capabilities before building agent
+    let tmp_provider = koda_core::providers::create_provider(&config);
+    config
+        .query_and_apply_capabilities(tmp_provider.as_ref())
+        .await;
 
     // Build agent (tools, MCP, system prompt)
     let agent = Arc::new(KodaAgent::new(&config, project_root.clone()).await?);

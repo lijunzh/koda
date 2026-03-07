@@ -484,6 +484,32 @@ impl KodaConfig {
         }
     }
 
+    /// Query the provider API for model capabilities and apply them.
+    ///
+    /// Convenience wrapper: queries `model_capabilities()` on the provider
+    /// and applies the result. Logs a debug message if the API doesn't
+    /// report capabilities (falls back to hardcoded lookup).
+    pub async fn query_and_apply_capabilities(
+        &mut self,
+        provider: &dyn crate::providers::LlmProvider,
+    ) {
+        match provider.model_capabilities(&self.model).await {
+            Ok(caps) if caps.context_window.is_some() || caps.max_output_tokens.is_some() => {
+                self.apply_provider_capabilities(&caps);
+            }
+            Ok(_) => {
+                tracing::debug!(
+                    "Provider did not report capabilities for {}; using lookup table ({}k tokens)",
+                    self.model,
+                    self.max_context_tokens / 1000
+                );
+            }
+            Err(e) => {
+                tracing::debug!("Could not query model capabilities: {e:#}");
+            }
+        }
+    }
+
     /// Built-in agent configs, embedded at compile time.
     /// These are always available regardless of disk state.
     const BUILTIN_AGENTS: &[(&str, &str)] = &[
@@ -739,7 +765,7 @@ mod tests {
         // Start with LMStudio auto-detect (4096 tokens)
         let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
         assert_eq!(config.max_context_tokens, 4_096); // MIN_CONTEXT for auto-detect
-        assert_eq!(config.model_tier, ModelTier::Lite);
+        assert_eq!(config.model_tier, ModelTier::Standard);
 
         // Switch to Claude Sonnet
         config.model = "claude-sonnet-4-6".to_string();
@@ -749,8 +775,8 @@ mod tests {
 
         assert_eq!(config.max_context_tokens, 200_000);
         assert_eq!(config.model_settings.max_context_tokens, 200_000);
-        assert_eq!(config.model_tier, ModelTier::Strong);
-        assert_eq!(config.max_iterations, 200); // Strong tier default
+        assert_eq!(config.model_tier, ModelTier::Standard); // All models start Standard
+        assert_eq!(config.max_iterations, 200);
     }
 
     #[test]
@@ -761,6 +787,6 @@ mod tests {
         let config = config.with_overrides(None, Some("gpt-4o".into()), Some("openai".into()));
         assert_eq!(config.model, "gpt-4o");
         assert_eq!(config.max_context_tokens, 128_000);
-        assert_eq!(config.model_tier, ModelTier::Strong);
+        assert_eq!(config.model_tier, ModelTier::Standard); // All start Standard
     }
 }
