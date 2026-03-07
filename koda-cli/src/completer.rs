@@ -208,13 +208,11 @@ fn list_path_matches(project_root: &Path, partial: &str) -> Vec<String> {
     let search_dir = if dir_part.is_empty() {
         project_root.to_path_buf()
     } else {
-        let joined = project_root.join(dir_part);
-        // Security: prevent traversal outside project root
-        let cleaned = joined.components().collect::<std::path::PathBuf>();
-        if !cleaned.starts_with(project_root) {
+        // Security: reject paths with traversal components
+        if dir_part.contains("..") {
             return Vec::new();
         }
-        cleaned
+        project_root.join(dir_part)
     };
 
     let entries = match std::fs::read_dir(&search_dir) {
