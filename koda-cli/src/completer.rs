@@ -23,6 +23,7 @@ const SLASH_COMMANDS: &[&str] = &[
     "/provider",
     "/sessions",
     "/trust",
+    "/undo",
     "/verbose",
 ];
 
@@ -293,7 +294,7 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
             }
 
             // Bonus: consecutive match
-            if prev_match_pos == Some(ti - 1) {
+            if ti > 0 && prev_match_pos == Some(ti - 1) {
                 score += 10;
             }
 

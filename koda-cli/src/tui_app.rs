@@ -687,6 +687,11 @@ pub async fn run(
                         crate::interrupt::reset();
                         session.cancel = tokio_util::sync::CancellationToken::new();
 
+                        // Commit undo snapshots for this turn
+                        if let Ok(mut undo) = agent.tools.undo.lock() {
+                            undo.commit_turn();
+                        }
+
                         // Drain remaining UI events
                         while let Ok(UiEvent::Engine(e)) = ui_rx.try_recv() {
                             renderer.render_to_terminal(e, &mut terminal);
