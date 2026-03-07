@@ -23,6 +23,8 @@ pub struct TuiRenderer {
     pub verbose: bool,
     /// Last turn stats for status bar display.
     pub last_turn_stats: Option<TurnStats>,
+    /// Current model name (for cost estimation).
+    pub model: String,
     /// Buffer for streaming text deltas (flushed line-by-line).
     text_buf: String,
     /// Buffer for streaming thinking deltas.
@@ -43,6 +45,7 @@ impl TuiRenderer {
             tool_history: crate::tool_history::ToolOutputHistory::new(),
             verbose: false,
             last_turn_stats: None,
+            model: String::new(),
             text_buf: String::new(),
             think_buf: String::new(),
             preview_shown: false,
@@ -196,7 +199,9 @@ impl TuiRenderer {
                 }
             }
             EngineEvent::Footer {
+                prompt_tokens,
                 completion_tokens,
+                cache_read_tokens,
                 total_chars,
                 elapsed_ms,
                 rate,
@@ -207,10 +212,19 @@ impl TuiRenderer {
                 } else {
                     (total_chars / 4) as i64
                 };
+                let cost_usd = crate::cost::estimate_turn_cost(
+                    &self.model,
+                    prompt_tokens,
+                    completion_tokens,
+                    cache_read_tokens,
+                );
                 self.last_turn_stats = Some(TurnStats {
+                    tokens_in: prompt_tokens,
                     tokens_out,
+                    cache_read: cache_read_tokens,
                     elapsed_ms,
                     rate,
+                    cost_usd,
                 });
             }
             EngineEvent::SpinnerStart { .. } | EngineEvent::SpinnerStop => {
