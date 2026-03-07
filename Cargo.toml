@@ -1,5 +1,5 @@
 [workspace]
-members = ["koda-core", "koda-cli", "koda-ast"]
+members = ["koda-core", "koda-cli", "koda-ast", "koda-email"]
 resolver = "3"
 default-members = ["koda-cli"]
 
