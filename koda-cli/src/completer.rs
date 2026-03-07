@@ -158,11 +158,11 @@ impl InputCompleter {
     // ── @file path completion ────────────────────────────────
 
     fn complete_file(&mut self, prefix: &str, partial: &str) -> Option<String> {
-        let token_key = format!("@{partial}");
+        // Check if the partial is already one of our matches (user is cycling)
+        let is_cycling = !self.matches.is_empty() && self.matches.iter().any(|m| m == partial);
 
-        // Rebuild matches if the partial path changed
-        if token_key != self.token && !self.matches.iter().any(|m| m == &token_key) {
-            self.token = token_key;
+        if !is_cycling {
+            self.token = format!("@{partial}");
             self.matches = list_path_matches(&self.project_root, partial);
             self.idx = 0;
         }
@@ -187,7 +187,7 @@ impl InputCompleter {
 /// or is at the start of the input (not an email address).
 fn find_last_at_token(text: &str) -> Option<usize> {
     for (i, c) in text.char_indices().rev() {
-        if c == '@' && (i == 0 || text.as_bytes()[i - 1] == b' ') {
+        if c == '@' && (i == 0 || matches!(text.as_bytes()[i - 1], b' ' | b'\n')) {
             return Some(i);
         }
     }
@@ -352,11 +352,15 @@ mod tests {
         fs::write(tmp.path().join("beta.rs"), "").unwrap();
 
         let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        let a = c.complete("@");
-        let b = c.complete("@");
-        assert!(a.is_some());
-        assert!(b.is_some());
+        // First Tab: input is "@" → returns first match
+        let a = c.complete("@").unwrap();
+        // Second Tab: input is now the completed text (e.g., "@alpha.rs")
+        let b = c.complete(&a).unwrap();
         assert_ne!(a, b, "should cycle through different files");
+        // Third Tab: should cycle back
+        let c_result = c.complete(&b).unwrap();
+        assert_eq!(c_result, a, "should cycle back to first");
+        assert_eq!(c_result, a, "should cycle back to first");
     }
 
     #[test]
@@ -450,5 +454,19 @@ mod tests {
         assert_eq!(find_last_at_token("email@domain"), None); // no space before @
         assert_eq!(find_last_at_token("a @b @c"), Some(5)); // last @
         assert_eq!(find_last_at_token("no at here"), None);
+        // @ after newline (multi-line input via Shift+Enter)
+        assert_eq!(find_last_at_token("line1\n@file"), Some(6));
+        assert_eq!(find_last_at_token("a\nb\n@c"), Some(4));
+    }
+
+    #[test]
+    fn test_at_file_after_newline() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("config.toml"), "").unwrap();
+
+        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        // Simulate multi-line input: first line + newline + @partial
+        let result = c.complete("explain this\n@c");
+        assert_eq!(result, Some("explain this\n@config.toml".to_string()));
     }
 }
