@@ -132,3 +132,35 @@ fn ratatui_to_crossterm_color(c: Color) -> Option<crossterm::style::Color> {
         _ => return None,
     })
 }
+
+// ── Shared message helpers (crossterm path) ──────────────
+// Used by tui_commands.rs and tui_wizards.rs for consistent output.
+
+/// Print a success message: " ✓ {msg}"
+pub fn ok_msg(msg: String) {
+    write_line(&Line::from(vec![
+        Span::styled("  \u{2713} ", GREEN),
+        Span::raw(msg),
+    ]));
+}
+
+/// Print an error message: " ✗ {msg}"
+pub fn err_msg(msg: String) {
+    write_line(&Line::from(vec![
+        Span::styled("  \u{2717} ", RED),
+        Span::styled(msg, RED),
+    ]));
+}
+
+/// Print a dim message: "  {msg}"
+pub fn dim_msg(msg: String) {
+    write_line(&Line::styled(format!("  {msg}"), DIM));
+}
+
+/// Print a warning message: " ⚠ {msg}"
+pub fn warn_msg(msg: String) {
+    write_line(&Line::from(vec![
+        Span::styled("  \u{26a0} ", YELLOW),
+        Span::styled(msg, YELLOW),
+    ]));
+}
