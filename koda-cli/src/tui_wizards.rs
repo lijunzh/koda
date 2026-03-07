@@ -84,6 +84,8 @@ pub(crate) async fn handle_setup_provider(
     config.base_url = base_url;
     config.model = ptype.default_model().to_string();
     config.model_settings.model = config.model.clone();
+    // Recalculate context window and tier for the new provider's default model
+    config.recalculate_model_derived();
 
     if key_missing || (is_same_provider && ptype.requires_api_key()) {
         let prompt = if is_same_provider {
@@ -138,6 +140,7 @@ pub(crate) async fn handle_setup_provider(
             if let Some(first) = models.first() {
                 config.model = first.id.clone();
                 config.model_settings.model = config.model.clone();
+                config.recalculate_model_derived();
             }
             ok_msg("Connection verified! Available models:".into());
             for m in &models {

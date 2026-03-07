@@ -467,7 +467,9 @@ impl Database {
     fn estimate_tokens(msg: &Message) -> usize {
         let content_len = msg.content.as_deref().map_or(0, |c| c.len());
         let tool_len = msg.tool_calls.as_deref().map_or(0, |c| c.len());
-        (content_len + tool_len) / 4 + 10 // +10 for role/metadata overhead
+        // Use the same formula as inference_helpers::estimate_tokens
+        // to avoid budget mismatch between load_context and inference_loop.
+        ((content_len + tool_len) as f64 / 3.5) as usize + 10
     }
 
     /// Get token usage totals for a session.

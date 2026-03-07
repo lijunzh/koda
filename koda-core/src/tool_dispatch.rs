@@ -85,6 +85,7 @@ pub(crate) async fn execute_one_tool(
             cancel.clone(),
             // Sub-agents get a fresh command channel (they auto-approve in all modes)
             &mut mpsc::channel(1).1,
+            Some(tools.file_read_cache()),
         )
         .await
         {
@@ -364,6 +365,9 @@ pub(crate) async fn execute_tools_sequential(
 // ── Sub-agent execution ───────────────────────────────────────
 
 /// Execute a sub-agent in its own isolated event loop.
+///
+/// When `parent_cache` is provided, the sub-agent shares the parent's
+/// file-read cache so reads by one agent benefit all others.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_sub_agent(
     project_root: &Path,
@@ -375,6 +379,7 @@ pub(crate) async fn execute_sub_agent(
     sink: &dyn crate::engine::EngineSink,
     _cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
+    parent_cache: Option<crate::tools::FileReadCache>,
 ) -> Result<String> {
     let args: serde_json::Value = serde_json::from_str(arguments)?;
     let agent_name = args["agent_name"]
@@ -411,7 +416,13 @@ pub(crate) async fn execute_sub_agent(
         .await?;
 
     let provider = crate::providers::create_provider(&sub_config);
-    let tools = ToolRegistry::new(project_root.to_path_buf());
+    let tools = {
+        let registry = ToolRegistry::new(project_root.to_path_buf());
+        match parent_cache {
+            Some(cache) => registry.with_shared_cache(cache),
+            None => registry,
+        }
+    };
     let tool_defs = tools.get_definitions(&sub_config.allowed_tools);
     let semantic_memory = memory::load(project_root)?;
     let system_prompt = build_system_prompt(
@@ -421,7 +432,7 @@ pub(crate) async fn execute_sub_agent(
         &tool_defs,
     );
 
-    let system_tokens = system_prompt.len() / 4 + 100;
+    let system_tokens = (system_prompt.len() as f64 / 3.5) as usize + 100;
     let available = sub_config.max_context_tokens.saturating_sub(system_tokens);
 
     for _ in 0..loop_guard::MAX_SUB_AGENT_ITERATIONS {
