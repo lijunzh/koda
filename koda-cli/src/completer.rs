@@ -208,7 +208,13 @@ fn list_path_matches(project_root: &Path, partial: &str) -> Vec<String> {
     let search_dir = if dir_part.is_empty() {
         project_root.to_path_buf()
     } else {
-        project_root.join(dir_part)
+        let joined = project_root.join(dir_part);
+        // Security: prevent traversal outside project root
+        let cleaned = joined.components().collect::<std::path::PathBuf>();
+        if !cleaned.starts_with(project_root) {
+            return Vec::new();
+        }
+        cleaned
     };
 
     let entries = match std::fs::read_dir(&search_dir) {
@@ -468,5 +474,16 @@ mod tests {
         // Simulate multi-line input: first line + newline + @partial
         let result = c.complete("explain this\n@c");
         assert_eq!(result, Some("explain this\n@config.toml".to_string()));
+    }
+
+    #[test]
+    fn test_at_file_traversal_blocked() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("safe.rs"), "").unwrap();
+
+        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        // Attempt path traversal — should return no matches
+        let result = c.complete("@../../etc/");
+        assert!(result.is_none(), "traversal should be blocked");
     }
 }

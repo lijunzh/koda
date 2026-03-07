@@ -131,7 +131,17 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
                 continue;
             }
 
-            let full_path = project_root.join(raw_path);
+            let raw_path = strip_quotes(raw_path);
+
+            // Security: reject paths that escape the project root
+            let full_path = match koda_core::tools::safe_resolve_path(project_root, raw_path) {
+                Ok(p) => p,
+                Err(_) => {
+                    tracing::warn!("@file path escapes project root: {raw_path}");
+                    prompt_parts.push(token.to_string());
+                    continue;
+                }
+            };
 
             // Image files → base64 encode for multi-modal
             if is_image_file(raw_path) {
@@ -474,5 +484,20 @@ mod tests {
         assert!(resolved.is_some());
         // Should be resolved to an absolute path via cwd
         assert!(resolved.unwrap().is_absolute());
+    }
+
+    #[test]
+    fn test_at_file_traversal_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("safe.rs"), "fn main() {}").unwrap();
+
+        let result = process_input("read @../../etc/passwd", dir.path());
+        // Traversal path should be rejected — no context files loaded
+        assert!(
+            result.context_files.is_empty(),
+            "traversal should not load files outside project root"
+        );
+        // The @ref should remain in the prompt as-is
+        assert!(result.prompt.contains("@../../etc/passwd"));
     }
 }

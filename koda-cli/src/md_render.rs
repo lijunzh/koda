@@ -356,4 +356,34 @@ mod tests {
         r.render_line("```");
         assert!(!r.in_code_block);
     }
+
+    #[test]
+    fn test_unclosed_bold() {
+        let spans = render_inline("**unclosed bold", Style::default());
+        // Should fall back to plain text, not panic
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "**unclosed bold");
+    }
+
+    #[test]
+    fn test_unclosed_backtick() {
+        let spans = render_inline("`unclosed code", Style::default());
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "`unclosed code");
+    }
+
+    #[test]
+    fn test_unclosed_italic() {
+        let spans = render_inline("*unclosed italic", Style::default());
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "*unclosed italic");
+    }
+
+    #[test]
+    fn test_empty_line() {
+        let mut r = MarkdownRenderer::new();
+        let line = r.render_line("");
+        // Should not panic, returns indented empty line
+        assert!(!line.spans.is_empty());
+    }
 }
