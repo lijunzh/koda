@@ -88,9 +88,6 @@ impl EngineSink for HeadlessSink {
             EngineEvent::StatusUpdate { .. } => {}
             EngineEvent::TurnStart { .. } => {}
             EngineEvent::TurnEnd { .. } => {}
-            EngineEvent::TodoDisplay { content } => {
-                eprintln!("{content}");
-            }
             EngineEvent::Footer {
                 completion_tokens,
                 total_chars,
