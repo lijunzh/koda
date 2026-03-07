@@ -48,7 +48,7 @@ impl KodaAgent {
         }
 
         let tools = ToolRegistry::new(project_root.clone()).with_mcp_registry(mcp_registry.clone());
-        let tool_defs = tools.get_definitions(&config.allowed_tools);
+        let tool_defs = tools.get_definitions_tiered(&config.allowed_tools, config.model_tier);
 
         let semantic_memory = memory::load(&project_root)?;
         let system_prompt = crate::prompt::build_system_prompt_tiered(
