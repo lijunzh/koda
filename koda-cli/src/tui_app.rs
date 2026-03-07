@@ -142,6 +142,15 @@ type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 
 fn init_terminal(height: u16) -> Result<Term> {
     crossterm::terminal::enable_raw_mode()?;
+    // Enable kitty keyboard protocol for Shift+Enter detection.
+    // Gracefully ignored by terminals that don't support it.
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+        )
+    );
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::with_options(
@@ -155,6 +164,10 @@ fn init_terminal(height: u16) -> Result<Term> {
 
 fn restore_terminal(terminal: &mut Term, height: u16) {
     let _ = terminal.clear();
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::PopKeyboardEnhancementFlags
+    );
     let _ = crossterm::terminal::disable_raw_mode();
     // Erase leftover viewport lines
     print!("\x1b[{}A\x1b[J", height);
@@ -857,7 +870,48 @@ pub async fn run(
                             if let Some(completed) = completer.complete(&current) {
                                 textarea.select_all();
                                 textarea.cut();
-                                textarea.insert_str(completed);
+                                textarea.insert_str(&completed);
+
+                                // Show candidates above viewport if multiple matches
+                                let candidates = completer.candidates();
+                                if candidates.len() > 1 {
+                                    let selected = completer.selected_idx();
+                                    let spans: Vec<Span> = candidates
+                                        .iter()
+                                        .enumerate()
+                                        .flat_map(|(i, c)| {
+                                            let style = if i == selected {
+                                                Style::default()
+                                                    .fg(Color::Cyan)
+                                                    .add_modifier(Modifier::BOLD)
+                                            } else {
+                                                Style::default().fg(Color::DarkGray)
+                                            };
+                                            // Extract just the display name
+                                            let name = c
+                                                .rsplit('/')
+                                                .next()
+                                                .unwrap_or(c)
+                                                .trim_start_matches("/model ")
+                                                .to_string();
+                                            let sep = if i + 1 < candidates.len() {
+                                                "  "
+                                            } else {
+                                                ""
+                                            };
+                                            vec![
+                                                Span::styled(name, style),
+                                                Span::raw(sep.to_string()),
+                                            ]
+                                        })
+                                        .collect();
+                                    let mut line_spans = vec![Span::styled(
+                                        "  Tab: ",
+                                        Style::default().fg(Color::DarkGray),
+                                    )];
+                                    line_spans.extend(spans);
+                                    emit_above(&mut terminal, Line::from(line_spans));
+                                }
                             }
                         }
                         _ => {
