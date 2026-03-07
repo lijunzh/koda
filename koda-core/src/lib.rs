@@ -24,6 +24,7 @@ pub mod memory;
 pub mod model_context;
 pub mod model_tier;
 pub mod preview;
+pub mod progress;
 pub mod prompt;
 pub mod providers;
 pub mod runtime_env;

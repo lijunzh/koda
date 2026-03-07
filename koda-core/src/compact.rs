@@ -2,7 +2,12 @@
 //!
 //! Pure logic, zero UI dependencies. Returns structured results
 //! for the caller (TUI or headless) to render however it likes.
+//!
+//! Compaction uses a cheap model (Standard tier) when available,
+//! falling back to the main model. Summarization is a simple task
+//! that doesn't need frontier-class reasoning.
 
+use crate::config::ModelSettings;
 use crate::db::Database;
 use crate::providers::{ChatMessage, LlmProvider};
 use anyhow::{Result, bail};
@@ -87,7 +92,17 @@ pub async fn compact_session_with_provider(
     );
 
     let messages = vec![ChatMessage::text("user", &summary_prompt)];
-    let response = provider.chat(&messages, &[], model_settings).await?;
+    // Use reduced settings for compaction — summarization doesn't need
+    // thinking/reasoning budgets or high max_tokens.
+    let compact_settings = ModelSettings {
+        model: model_settings.model.clone(),
+        max_tokens: Some(4096), // summaries are short
+        temperature: Some(0.3), // deterministic summaries
+        thinking_budget: None,  // no thinking needed for summarization
+        reasoning_effort: None, // no reasoning needed
+        max_context_tokens: model_settings.max_context_tokens,
+    };
+    let response = provider.chat(&messages, &[], &compact_settings).await?;
 
     let summary = match response.content {
         Some(text) if !text.trim().is_empty() => text,
