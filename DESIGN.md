@@ -46,14 +46,34 @@ mode is optional for external clients.
 messages, tool calls with permissions, and status updates — exactly what
 Koda needs. Adopting ACP gives us Zed integration for free.
 
-### 3. Single Binary Philosophy
+### 3. Extensibility: Thin Core + Auto-Provisioned MCP
 
-**Decision**: `cargo install koda-cli` gives you everything. No separate
-server process required for normal usage.
+**Decision**: The core binary contains only essential tools (file ops, shell,
+search, web fetch, memory, agents). Domain-specific capabilities (AST analysis,
+email, calendar, browser) are delivered as MCP servers, auto-installed on demand.
 
-**Rationale**: Koda's core value is zero-config simplicity. The CLI client
-talks to the engine via in-process `tokio::mpsc` channels. Server mode is
-opt-in (`koda server`) for external clients.
+**Principle evolution**:
+- **v0.1.x**: Single binary, everything compiled in.
+- **v0.2.x**: Thin core + auto-provisioned capabilities.
+
+"Everything just works" no longer means "everything compiled into one binary."
+It means "everything auto-provisioned with zero user config." The user
+experience is identical — zero friction — but the implementation scales to
+domains beyond coding.
+
+**How it works**: When the LLM calls a tool that isn't built-in, koda checks
+an MCP capability registry, auto-installs the matching server, connects it,
+and retries — transparently. The user sees a brief spinner on first use;
+subsequent calls are instant.
+
+**Rationale**: As koda expands to email, calendar, and knowledge management,
+compiling every integration into one binary creates bloat. The MCP protocol
+is the contract; the implementation language and deployment model are details.
+AST analysis is the pilot for this pattern (see [#113](https://github.com/lijunzh/koda/issues/113)).
+
+**MCP server language**: Default to Rust (`cargo binstall`) for koda-maintained
+servers. Use Node/Python when critical libraries only exist in those ecosystems.
+See [#123](https://github.com/lijunzh/koda/issues/123) for tradeoff analysis.
 
 ### 4. Async Approval Flow
 
