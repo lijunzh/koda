@@ -180,6 +180,20 @@ fn restore_terminal(terminal: &mut Term, height: u16) {
     let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
+/// Reinitialize the viewport after a terminal resize.
+///
+/// Drops the old terminal, erases the stale viewport area, and creates
+/// a fresh terminal with the same height. Without this cleanup the old
+/// viewport lines remain in the scrollback as ghost content.
+fn reinit_viewport(terminal: Term, height: u16) -> Result<Term> {
+    drop(terminal);
+    let _ = crossterm::terminal::disable_raw_mode();
+    // Move cursor up past old viewport and erase to end of screen
+    print!("\x1b[{}A\x1b[J", height);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    init_terminal(height)
+}
+
 /// Resize the viewport if the textarea line count changed.
 ///
 /// Returns the (possibly new) terminal and updated height.
@@ -194,13 +208,7 @@ fn maybe_resize_viewport(
     if desired == current_height {
         return Ok((terminal, current_height));
     }
-    // Erase old viewport, reinit with new height
-    drop(terminal);
-    let _ = crossterm::terminal::disable_raw_mode();
-    // Move cursor up past old viewport and clear
-    print!("\x1b[{}A\x1b[J", current_height);
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-    let new_term = init_terminal(desired)?;
+    let new_term = reinit_viewport(terminal, current_height)?;
     Ok((new_term, desired))
 }
 
@@ -582,9 +590,9 @@ pub async fn run(
                                     }
                                     Some(Ok(ev)) = crossterm_events.next() => {
                                         if let Event::Resize(_, _) = ev {
-                                            // Terminal resized during inference — reinit viewport
-                                            // to prevent ghost prompt lines.
-                                            terminal = init_terminal(viewport_height)?;
+                                            // Terminal resized during inference — erase stale
+                                            // viewport and reinit to prevent ghost prompt lines.
+                                            terminal = reinit_viewport(terminal, viewport_height)?;
                                         } else if let Event::Key(key) = ev {
                                             match (key.code, key.modifiers) {
                                                 (KeyCode::Enter, KeyModifiers::NONE) => {
@@ -820,8 +828,8 @@ pub async fn run(
         tokio::select! {
             Some(Ok(ev)) = crossterm_events.next() => {
                 if let Event::Resize(_, _) = ev {
-                    // Terminal resized while idle — reinit viewport.
-                    terminal = init_terminal(viewport_height)?;
+                    // Terminal resized while idle — erase stale viewport and reinit.
+                    terminal = reinit_viewport(terminal, viewport_height)?;
                 } else if let Event::Key(key) = ev {
                     match (key.code, key.modifiers) {
                         // Shift+Enter or Alt+Enter → insert newline
