@@ -332,6 +332,7 @@ pub async fn run(
     // ── State ────────────────────────────────────────────────
 
     let mut renderer = TuiRenderer::new();
+    renderer.model = config.model.clone();
     let mut tui_state = TuiState::Idle;
     let mut input_queue: VecDeque<String> = VecDeque::new();
     let mut pending_command: Option<String> = None;
@@ -441,6 +442,8 @@ pub async fn run(
                                         models.iter().map(|m| m.id.clone()).collect(),
                                     );
                                 }
+                                // Sync model name for cost estimation
+                                renderer.model = config.model.clone();
                             }
                             SlashAction::Quit => {
                                 tui_output::emit_line(
@@ -683,6 +686,11 @@ pub async fn run(
                         inference_start = None;
                         crate::interrupt::reset();
                         session.cancel = tokio_util::sync::CancellationToken::new();
+
+                        // Commit undo snapshots for this turn
+                        if let Ok(mut undo) = agent.tools.undo.lock() {
+                            undo.commit_turn();
+                        }
 
                         // Drain remaining UI events
                         while let Ok(UiEvent::Engine(e)) = ui_rx.try_recv() {

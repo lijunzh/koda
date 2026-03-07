@@ -4,6 +4,7 @@
 
 mod commands;
 mod completer;
+mod cost;
 mod diff_render;
 mod headless;
 mod headless_sink;
