@@ -201,15 +201,13 @@ pub(crate) async fn execute_tools_split_batch(
     sub_agent_cache: &SubAgentCache,
 ) -> Result<()> {
     // Partition into parallelizable vs sequential
-    let (parallel, sequential): (Vec<_>, Vec<_>) =
-        tool_calls.iter().partition(|tc| {
-            let args: serde_json::Value =
-                serde_json::from_str(&tc.arguments).unwrap_or_default();
-            matches!(
-                approval::check_tool(&tc.function_name, &args, mode),
-                ToolApproval::AutoApprove
-            )
-        });
+    let (parallel, sequential): (Vec<_>, Vec<_>) = tool_calls.iter().partition(|tc| {
+        let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+        matches!(
+            approval::check_tool(&tc.function_name, &args, mode),
+            ToolApproval::AutoApprove
+        )
+    });
 
     // Run parallelizable tools concurrently (if more than one)
     if parallel.len() > 1 {
@@ -229,8 +227,16 @@ pub(crate) async fn execute_tools_split_batch(
             .iter()
             .map(|tc| {
                 execute_one_tool(
-                    tc, project_root, config, db, session_id, tools, mode, sink,
-                    cancel.clone(), sub_agent_cache,
+                    tc,
+                    project_root,
+                    config,
+                    db,
+                    session_id,
+                    tools,
+                    mode,
+                    sink,
+                    cancel.clone(),
+                    sub_agent_cache,
                 )
             })
             .collect();
@@ -243,20 +249,43 @@ pub(crate) async fn execute_tools_split_batch(
                 output: result.clone(),
             });
             let stored = truncate_for_history(&result, tools.caps.tool_result_chars);
-            db.insert_message(session_id, &Role::Tool, Some(&stored), None, Some(&tc_id), None)
-                .await?;
+            db.insert_message(
+                session_id,
+                &Role::Tool,
+                Some(&stored),
+                None,
+                Some(&tc_id),
+                None,
+            )
+            .await?;
             crate::progress::track_progress(
-                db, session_id, &parallel[j].function_name, &parallel[j].arguments, &result,
-            ).await;
+                db,
+                session_id,
+                &parallel[j].function_name,
+                &parallel[j].arguments,
+                &result,
+            )
+            .await;
         }
     } else {
         // 0–1 parallelizable tools — just run sequentially
         for tc in &parallel {
             let calls = std::slice::from_ref(*tc);
             execute_tools_sequential(
-                calls, project_root, config, db, session_id, tools, mode,
-                settings, sink, cancel.clone(), cmd_rx, sub_agent_cache,
-            ).await?;
+                calls,
+                project_root,
+                config,
+                db,
+                session_id,
+                tools,
+                mode,
+                settings,
+                sink,
+                cancel.clone(),
+                cmd_rx,
+                sub_agent_cache,
+            )
+            .await?;
         }
     }
 
@@ -264,9 +293,20 @@ pub(crate) async fn execute_tools_split_batch(
     if !sequential.is_empty() {
         let seq_calls: Vec<ToolCall> = sequential.into_iter().cloned().collect();
         execute_tools_sequential(
-            &seq_calls, project_root, config, db, session_id, tools, mode,
-            settings, sink, cancel.clone(), cmd_rx, sub_agent_cache,
-        ).await?;
+            &seq_calls,
+            project_root,
+            config,
+            db,
+            session_id,
+            tools,
+            mode,
+            settings,
+            sink,
+            cancel.clone(),
+            cmd_rx,
+            sub_agent_cache,
+        )
+        .await?;
     }
 
     Ok(())
@@ -454,13 +494,13 @@ pub(crate) async fn execute_sub_agent(
 
     // Check result cache (only for stateless calls without a session_id,
     // since session continuations need fresh execution).
-    if session_id.is_none() {
-        if let Some(cached) = sub_agent_cache.get(agent_name, prompt) {
-            sink.emit(EngineEvent::Info {
-                message: format!("  \u{26a1} {agent_name}: cache hit, skipping LLM call"),
-            });
-            return Ok(cached);
-        }
+    if session_id.is_none()
+        && let Some(cached) = sub_agent_cache.get(agent_name, prompt)
+    {
+        sink.emit(EngineEvent::Info {
+            message: format!("  \u{26a1} {agent_name}: cache hit, skipping LLM call"),
+        });
+        return Ok(cached);
     }
 
     sink.emit(EngineEvent::SubAgentStart {

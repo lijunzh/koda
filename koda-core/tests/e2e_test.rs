@@ -464,13 +464,15 @@ async fn test_sub_agent_invocation_e2e() {
 
     // Clean up env var
     // SAFETY: test cleanup; no concurrent readers.
-    unsafe { std::env::remove_var("KODA_MOCK_RESPONSES"); }
+    unsafe {
+        std::env::remove_var("KODA_MOCK_RESPONSES");
+    }
 
     // Should have SubAgentStart event
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, EngineEvent::SubAgentStart { agent_name } if agent_name == "echo-agent")),
+        events.iter().any(
+            |e| matches!(e, EngineEvent::SubAgentStart { agent_name } if agent_name == "echo-agent")
+        ),
         "expected SubAgentStart for echo-agent, got: {events:?}"
     );
 
@@ -488,7 +490,9 @@ async fn test_sub_agent_invocation_e2e() {
         "expected InvokeAgent tool result, got: {events:?}"
     );
     assert!(
-        tool_result.unwrap().contains("Echo: review the auth module"),
+        tool_result
+            .unwrap()
+            .contains("Echo: review the auth module"),
         "sub-agent result should contain echoed prompt"
     );
 
@@ -529,10 +533,7 @@ async fn test_sub_agent_cache_hit_skips_llm() {
     // the mock again and get an empty text (exhausted), or error.
     // SAFETY: test runs sequentially; no other thread reads this env var concurrently.
     unsafe {
-        std::env::set_var(
-            "KODA_MOCK_RESPONSES",
-            r#"[{"text": "cached result"}]"#,
-        );
+        std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"text": "cached result"}]"#);
     }
     env.insert_user_message("call the agent twice").await;
 
@@ -551,12 +552,14 @@ async fn test_sub_agent_cache_hit_skips_llm() {
     ]);
     let events = env.run_inference(&provider).await;
     // SAFETY: test cleanup; no concurrent readers.
-    unsafe { std::env::remove_var("KODA_MOCK_RESPONSES"); }
+    unsafe {
+        std::env::remove_var("KODA_MOCK_RESPONSES");
+    }
 
     // Should have cache hit info event on the second invocation
-    let cache_hit = events.iter().any(|e| {
-        matches!(e, EngineEvent::Info { message } if message.contains("cache hit"))
-    });
+    let cache_hit = events
+        .iter()
+        .any(|e| matches!(e, EngineEvent::Info { message } if message.contains("cache hit")));
     assert!(cache_hit, "expected cache hit event, got: {events:?}");
 
     // Should still produce final response

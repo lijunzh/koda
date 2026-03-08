@@ -182,9 +182,6 @@ mod tests {
         let cache = SubAgentCache::new();
         let clone = cache.clone();
         cache.put("agent", "prompt", "result");
-        assert_eq!(
-            clone.get("agent", "prompt"),
-            Some("result".to_string())
-        );
+        assert_eq!(clone.get("agent", "prompt"), Some("result".to_string()));
     }
 }

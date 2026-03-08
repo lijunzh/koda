@@ -14,8 +14,7 @@ use crate::inference_helpers::{
 use crate::loop_guard::LoopDetector;
 use crate::providers::{ChatMessage, ImageData, LlmProvider, StreamChunk, ToolCall};
 use crate::tool_dispatch::{
-    can_parallelize, execute_tools_parallel, execute_tools_sequential,
-    execute_tools_split_batch,
+    can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
 };
 use crate::tools::{self, ToolRegistry};
 
