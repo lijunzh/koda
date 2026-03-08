@@ -59,6 +59,14 @@ pub const MAGENTA: Style = Style::new().fg(Color::Magenta);
 pub const ORANGE: Style = Style::new().fg(Color::Rgb(255, 165, 0));
 pub const AMBER: Style = Style::new().fg(Color::Rgb(255, 191, 0));
 
+// Warm palette — earthy tones for koda's bear identity.
+pub const WARM_TITLE: Style = Style::new()
+    .fg(Color::Rgb(229, 192, 123)) // soft gold #e5c07b
+    .add_modifier(Modifier::BOLD);
+pub const WARM_ACCENT: Style = Style::new().fg(Color::Rgb(209, 154, 102)); // amber #d19a66
+pub const WARM_MUTED: Style = Style::new().fg(Color::Rgb(124, 111, 100)); // brown #7c6f64
+pub const WARM_INFO: Style = Style::new().fg(Color::Rgb(198, 165, 106)); // soft gold #c6a56a
+
 // ── Direct crossterm output (for slash commands) ───────────────
 //
 // Slash commands use these instead of `emit_line()` to avoid mixing

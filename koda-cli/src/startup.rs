@@ -4,114 +4,56 @@
 //! All builder functions return `Vec<Line>` for testability; thin
 //! `print_*` wrappers handle the actual output.
 
-use crate::tui_output::{self, BOLD, CYAN, DIM};
+use crate::tui_output::{self, DIM, WARM_ACCENT, WARM_INFO, WARM_MUTED, WARM_TITLE};
 use koda_core::config::KodaConfig;
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
 };
 
-// ── Style constants (local) ────────────────────────────────
-const BORDER: Style = Style::new().fg(Color::Cyan);
-const INFO: Style = Style::new().fg(Color::Blue);
-const TITLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-
-// ── Column geometry ─────────────────────────────────────
-const LEFT_W: usize = 34;
-const RIGHT_W: usize = 56;
-const TOTAL_W: usize = LEFT_W + 3 + RIGHT_W; // 3 = " │ "
-
 // ── Banner ───────────────────────────────────────────────
 
-/// Build the two-column banner as a `Vec<Line>` (testable).
+/// Build the compact 3-line header (replaces the old boxed banner).
+///
+/// ```text
+///  ʕ·ᴥ·ʔ  Koda v0.1.3
+///          gpt-4o · openai
+///          ~/repo/koda
+/// ```
 pub fn build_banner_lines(
     model: &str,
     provider: &str,
     cwd: &str,
-    recent_activity: &[String],
+    _recent_activity: &[String],
 ) -> Vec<Line<'static>> {
     let ver = env!("CARGO_PKG_VERSION");
-    let mut lines = Vec::new();
+    let bear = "ʕ·ᴥ·ʔ";
+    // Indent to align with the bear face width + spacing
+    let indent = " ".repeat(bear.len() + 3); // "ʕ·ᴥ·ʔ" + "  "
 
-    // Top border with embedded title
-    let title_text = format!(" \u{1f43b} Koda v{ver} ");
-    let remaining = (TOTAL_W + 2).saturating_sub(title_text.chars().count() + 2);
-    lines.push(Line::from(vec![
-        Span::styled("  ╭──", BORDER),
-        Span::styled(title_text, TITLE),
-        Span::styled(format!("{}╮", "─".repeat(remaining)), BORDER),
-    ]));
-
-    // Left column
-    let left: Vec<Vec<Span>> = vec![
-        vec![],
-        vec![Span::styled("   Welcome back!", BOLD)],
-        vec![],
-        vec![Span::styled(format!("   {model}"), CYAN)],
-        vec![Span::styled(format!("   {provider}"), CYAN)],
-        vec![Span::styled(format!("   {cwd}"), INFO)],
-    ];
-
-    // Right column
-    let sep = "─".repeat(RIGHT_W);
-    let mut right: Vec<Vec<Span>> = vec![
-        vec![Span::styled("Tips for getting started", TITLE)],
-        vec![Span::styled("/model", DIM), Span::raw("      pick a model")],
-        vec![
-            Span::styled("/provider", DIM),
-            Span::raw("   switch provider"),
-        ],
-        vec![Span::styled("/help", DIM), Span::raw("       all commands")],
-        vec![
-            Span::styled("Shift+Tab", DIM),
-            Span::raw("  cycle mode: auto → strict → safe"),
-        ],
-        vec![Span::styled(sep, DIM)],
-    ];
-
-    right.push(vec![Span::styled("Recent activity", TITLE)]);
-    if recent_activity.is_empty() {
-        right.push(vec![Span::styled("No recent activity", DIM)]);
-    } else {
-        for msg in recent_activity.iter().take(3) {
-            let text = msg.lines().next().unwrap_or("");
-            let truncated = truncate(text, 52);
-            right.push(vec![Span::styled("• ", DIM), Span::raw(truncated)]);
-        }
-    }
-
-    // Render rows
-    let rows = left.len().max(right.len());
-    let empty: Vec<Span> = vec![];
-
-    for i in 0..rows {
-        let l_spans = left.get(i).unwrap_or(&empty);
-        let r_spans = right.get(i).unwrap_or(&empty);
-        let l_len: usize = l_spans.iter().map(|s| span_width(s)).sum();
-        let r_len: usize = r_spans.iter().map(|s| span_width(s)).sum();
-
-        let mut spans = Vec::with_capacity(l_spans.len() + r_spans.len() + 5);
-        spans.push(Span::styled("  │ ", BORDER));
-        spans.extend(l_spans.iter().cloned());
-        spans.push(Span::raw(" ".repeat(LEFT_W.saturating_sub(l_len))));
-        spans.push(Span::styled(" │ ", DIM));
-        spans.extend(r_spans.iter().cloned());
-        spans.push(Span::raw(" ".repeat(RIGHT_W.saturating_sub(r_len))));
-        spans.push(Span::styled(" │", BORDER));
-
-        lines.push(Line::from(spans));
-    }
-
-    // Bottom border
-    lines.push(Line::from(vec![Span::styled(
-        format!("  ╰{}╯", "─".repeat(TOTAL_W + 2)),
-        BORDER,
-    )]));
-
-    lines
+    vec![
+        // Line 1: bear face + name + version
+        Line::from(vec![
+            Span::styled(format!(" {bear}"), WARM_ACCENT),
+            Span::raw("  "),
+            Span::styled(format!("Koda v{ver}"), WARM_TITLE),
+        ]),
+        // Line 2: model · provider
+        Line::from(vec![
+            Span::raw(format!(" {indent}")),
+            Span::styled(model.to_string(), WARM_INFO),
+            Span::styled(" · ", WARM_MUTED),
+            Span::styled(provider.to_string(), WARM_MUTED),
+        ]),
+        // Line 3: cwd
+        Line::from(vec![
+            Span::raw(format!(" {indent}")),
+            Span::styled(cwd.to_string(), DIM),
+        ]),
+    ]
 }
 
-/// Print the two-column startup banner.
+/// Print the compact startup header.
 pub fn print_banner(config: &KodaConfig, recent_activity: &[String]) {
     let cwd = pretty_cwd();
     let lines = build_banner_lines(
@@ -153,7 +95,7 @@ pub fn print_update_notice(current: &str, latest: &str) {
     let crate_name = koda_core::version::crate_name();
     tui_output::write_line(&Line::from(vec![
         Span::styled("  \u{2728} Update available: ", DIM),
-        Span::styled(current, CYAN),
+        Span::styled(current, WARM_ACCENT),
         Span::styled(" → ", DIM),
         Span::styled(latest, Style::new().fg(Color::Green)),
         Span::styled(format!("  (cargo install {crate_name})"), DIM),
@@ -171,7 +113,7 @@ pub fn print_mcp_status(statuses: &[(String, Result<usize, String>)]) {
             "  \u{1f50c} Connecting to {} MCP server(s)...",
             statuses.len()
         ),
-        CYAN,
+        WARM_ACCENT,
     )]));
     for (name, result) in statuses {
         match result {
@@ -203,7 +145,8 @@ pub fn print_resume_hint(session_id: &str) {
 // ── Helpers ─────────────────────────────────────────────────
 
 /// Visible character width of a Span (emoji = 2, ASCII = 1).
-pub(crate) fn span_width(span: &Span) -> usize {
+#[cfg(test)]
+fn span_width(span: &Span) -> usize {
     span.content
         .chars()
         .map(|c| if c > '\u{FFFF}' { 2 } else { 1 })
@@ -211,7 +154,8 @@ pub(crate) fn span_width(span: &Span) -> usize {
 }
 
 /// Truncate a string to `max` visible characters, appending "…" if needed.
-pub(crate) fn truncate(s: &str, max: usize) -> String {
+#[cfg(test)]
+fn truncate(s: &str, max: usize) -> String {
     let mut visible = 0;
     for (i, c) in s.char_indices() {
         let w = if c > '\u{FFFF}' { 2 } else { 1 };
@@ -285,38 +229,36 @@ mod tests {
     }
 
     #[test]
-    fn banner_shows_recent_activity() {
-        let recent = vec!["Fixed bug in auth".into(), "Added tests".into()];
-        let lines = build_banner_lines("m", "p", "~", &recent);
+    fn banner_contains_bear_face() {
+        let lines = build_banner_lines("m", "p", "~", &[]);
         let text = lines_to_text(&lines);
-        assert!(text.contains("Fixed bug"));
-        assert!(text.contains("Added tests"));
+        assert!(text.contains("ʕ·ᴥ·ʔ"), "Banner should contain bear face");
     }
 
     #[test]
-    fn banner_no_activity_placeholder() {
-        let lines = build_banner_lines("m", "p", "~", &[]);
-        let text = lines_to_text(&lines);
-        assert!(text.contains("No recent activity"));
+    fn banner_is_compact() {
+        let lines = build_banner_lines("gpt-4o", "openai", "~/repo", &[]);
+        assert_eq!(lines.len(), 3, "Compact banner should be exactly 3 lines");
     }
 
     #[test]
-    fn banner_contains_tips() {
-        let lines = build_banner_lines("m", "p", "~", &[]);
+    fn banner_model_dot_provider_format() {
+        let lines = build_banner_lines("gpt-4o", "openai", "~", &[]);
         let text = lines_to_text(&lines);
-        assert!(text.contains("/model"));
-        assert!(text.contains("/help"));
-        assert!(text.contains("Shift+Tab"));
+        assert!(text.contains("gpt-4o"));
+        assert!(text.contains(" · "));
+        assert!(text.contains("openai"));
     }
 
     #[test]
-    fn banner_has_box_borders() {
+    fn banner_no_box_borders() {
         let lines = build_banner_lines("m", "p", "~", &[]);
         let text = lines_to_text(&lines);
-        assert!(text.contains('\u{256d}'), "Top-left corner");
-        assert!(text.contains('\u{256e}'), "Top-right corner");
-        assert!(text.contains('\u{2570}'), "Bottom-left corner");
-        assert!(text.contains('\u{256f}'), "Bottom-right corner");
+        assert!(!text.contains('╭'), "No top-left corner");
+        assert!(!text.contains('╮'), "No top-right corner");
+        assert!(!text.contains('╰'), "No bottom-left corner");
+        assert!(!text.contains('╯'), "No bottom-right corner");
+        assert!(!text.contains('│'), "No vertical borders");
     }
 
     #[test]
@@ -327,7 +269,7 @@ mod tests {
     #[test]
     fn truncate_long_adds_ellipsis() {
         let result = truncate("a very long string that exceeds", 10);
-        assert!(result.ends_with('\u{2026}'));
+        assert!(result.ends_with('…'));
     }
 
     #[test]
@@ -338,17 +280,5 @@ mod tests {
     #[test]
     fn span_width_emoji() {
         assert_eq!(span_width(&Span::raw("\u{1f43b}")), 2); // bear
-    }
-
-    #[test]
-    fn banner_recent_truncates_long_messages() {
-        let long_msg = "x".repeat(200);
-        let lines = build_banner_lines("m", "p", "~", &[long_msg]);
-        let text = lines_to_text(&lines);
-        // Should contain truncated version with ellipsis, not the full 200 chars
-        assert!(
-            text.contains('\u{2026}'),
-            "Long messages should be truncated"
-        );
     }
 }
