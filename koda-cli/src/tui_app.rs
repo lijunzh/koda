@@ -90,6 +90,24 @@ enum TuiState {
 
 type SlashDropdown =
     crate::widgets::dropdown::DropdownState<crate::widgets::slash_menu::SlashCommand>;
+type ModelDropdown = crate::widgets::dropdown::DropdownState<crate::widgets::model_menu::ModelItem>;
+
+/// What's currently shown in the `menu_area` below the status bar.
+/// Only one menu can be active at a time.
+enum MenuContent {
+    /// Nothing — menu_area is empty.
+    None,
+    /// Slash command dropdown (auto-appears on `/`).
+    Slash(SlashDropdown),
+    /// Model picker dropdown (`/model` with no args).
+    Model(ModelDropdown),
+}
+
+impl MenuContent {
+    fn is_none(&self) -> bool {
+        matches!(self, MenuContent::None)
+    }
+}
 
 // ── Viewport drawing ─────────────────────────────────────────
 
@@ -105,10 +123,9 @@ fn draw_viewport(
     queue_len: usize,
     elapsed_secs: u64,
     last_turn: Option<&crate::widgets::status_bar::TurnStats>,
-    slash_menu: Option<&SlashDropdown>,
+    menu: &MenuContent,
 ) {
     let area = frame.area();
-
     // Layout: separator → input → bottom_sep → status → [menu/empty]
     // Input + status bar form a fixed "center of mass" panel at top.
     // Remaining space below is empty (looks like terminal) or shows menu.
@@ -133,11 +150,17 @@ fn draw_viewport(
     ]);
     frame.render_widget(separator, sep_row);
 
-    // Slash command menu overlay (below input, above status bar)
-    if let Some(menu) = slash_menu {
-        let menu_lines = crate::widgets::slash_menu::build_menu_lines(menu);
-        let menu_widget = Paragraph::new(menu_lines);
-        frame.render_widget(menu_widget, menu_area);
+    // Menu overlay (below status bar)
+    match menu {
+        MenuContent::Slash(dd) => {
+            let lines = crate::widgets::slash_menu::build_menu_lines(dd);
+            frame.render_widget(Paragraph::new(lines), menu_area);
+        }
+        MenuContent::Model(dd) => {
+            let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
+            frame.render_widget(Paragraph::new(lines), menu_area);
+        }
+        MenuContent::None => {}
     }
 
     // Prompt icon + textarea
@@ -372,7 +395,7 @@ pub async fn run(
     let mut pending_command: Option<String> = None;
     let mut silent_compact_deferred = false;
     let mut should_quit = false;
-    let mut slash_menu: Option<SlashDropdown> = None;
+    let mut menu = MenuContent::None;
     let mut inference_start: Option<std::time::Instant> = None;
     let mut history: Vec<String> = load_history();
     let mut history_idx: Option<usize> = None; // None = not browsing history
@@ -406,7 +429,7 @@ pub async fn run(
             input_queue.len(),
             inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
             renderer.last_turn_stats.as_ref(),
-            slash_menu.as_ref(),
+            &menu,
         );
     })?;
 
@@ -446,6 +469,57 @@ pub async fn run(
                 if !input.is_empty() {
                     // Try slash commands first
                     if input.starts_with('/') {
+                        // Intercept /model (no args) — open inline dropdown
+                        // instead of the blocking select_inline modal.
+                        if input.trim() == "/model" {
+                            let prov = provider.read().await;
+                            match prov.list_models().await {
+                                Ok(models) if !models.is_empty() => {
+                                    let items: Vec<crate::widgets::model_menu::ModelItem> = models
+                                        .iter()
+                                        .map(|m| crate::widgets::model_menu::ModelItem {
+                                            id: m.id.clone(),
+                                            is_current: m.id == config.model,
+                                        })
+                                        .collect();
+                                    let mut dd = crate::widgets::dropdown::DropdownState::new(
+                                        items,
+                                        "\u{1f43b} Select a model",
+                                    );
+                                    // Pre-select current model
+                                    if let Some(idx) = dd.filtered.iter().position(|m| m.is_current)
+                                    {
+                                        dd.selected = idx;
+                                        // Adjust scroll so current model is visible
+                                        let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
+                                        if idx >= max_vis {
+                                            dd.scroll_offset = idx + 1 - max_vis;
+                                        }
+                                    }
+                                    menu = MenuContent::Model(dd);
+                                }
+                                Ok(_) => {
+                                    emit_above(
+                                        &mut terminal,
+                                        Line::styled(
+                                            "  \u{26a0} No models available",
+                                            Style::default().fg(Color::Yellow),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    emit_above(
+                                        &mut terminal,
+                                        Line::styled(
+                                            format!("  \u{2717} Failed to list models: {e}"),
+                                            Style::default().fg(Color::Red),
+                                        ),
+                                    );
+                                }
+                            }
+                            continue;
+                        }
+
                         let action = tui_commands::handle_slash_command(
                             &mut terminal,
                             &input,
@@ -497,7 +571,7 @@ pub async fn run(
                                         input_queue.len(),
                                         0,
                                         renderer.last_turn_stats.as_ref(),
-                                        slash_menu.as_ref(),
+                                        &menu,
                                     );
                                 })?;
                             }
@@ -605,7 +679,7 @@ pub async fn run(
                                         input_queue.len(),
                                         inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
                                         renderer.last_turn_stats.as_ref(),
-                                        slash_menu.as_ref(),
+                                        &menu,
                                     );
                                 })?;
 
@@ -855,7 +929,7 @@ pub async fn run(
                 input_queue.len(),
                 inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
                 renderer.last_turn_stats.as_ref(),
-                slash_menu.as_ref(),
+                &menu,
             );
         })?;
 
@@ -868,42 +942,69 @@ pub async fn run(
                     terminal = reinit_viewport(terminal, viewport_height, viewport_height)?;
                 } else if let Event::Key(key) = ev {
                     // ── Slash menu key interception ───────────
-                    // When the menu is active, intercept navigation
+                    // When a menu is active, intercept navigation
                     // and selection keys before normal handling.
-                    if slash_menu.is_some() {
+                    if !menu.is_none() {
                         match key.code {
                             KeyCode::Up => {
-                                if let Some(ref mut menu) = slash_menu {
-                                    menu.up();
+                                match &mut menu {
+                                    MenuContent::Slash(dd) => dd.up(),
+                                    MenuContent::Model(dd) => dd.up(),
+                                    MenuContent::None => {}
                                 }
                                 continue;
                             }
                             KeyCode::Down | KeyCode::Tab => {
-                                if let Some(ref mut menu) = slash_menu {
-                                    menu.down();
+                                match &mut menu {
+                                    MenuContent::Slash(dd) => dd.down(),
+                                    MenuContent::Model(dd) => dd.down(),
+                                    MenuContent::None => {}
                                 }
                                 continue;
                             }
                             KeyCode::Enter => {
-                                if let Some(ref menu) = slash_menu
-                                    && let Some(item) = menu.selected_item()
-                                {
-                                    let cmd = item.command.to_string();
-                                    textarea.select_all();
-                                    textarea.cut();
-                                    textarea.insert_str(&cmd);
+                                match &menu {
+                                    MenuContent::Slash(dd) => {
+                                        if let Some(item) = dd.selected_item() {
+                                            let cmd = item.command.to_string();
+                                            textarea.select_all();
+                                            textarea.cut();
+                                            textarea.insert_str(&cmd);
+                                        }
+                                    }
+                                    MenuContent::Model(dd) => {
+                                        if let Some(item) = dd.selected_item() {
+                                            let model_id = item.id.clone();
+                                            config.model = model_id.clone();
+                                            config.model_settings.model = model_id.clone();
+                                            config.recalculate_model_derived();
+                                            {
+                                                let prov = provider.read().await;
+                                                config.query_and_apply_capabilities(prov.as_ref()).await;
+                                            }
+                                            crate::tui_wizards::save_provider(&config);
+                                            emit_above(
+                                                &mut terminal,
+                                                Line::styled(
+                                                    format!("  \u{2714} Model set to: {model_id}"),
+                                                    Style::default().fg(Color::Green),
+                                                ),
+                                            );
+                                            renderer.model = model_id;
+                                        }
+                                    }
+                                    MenuContent::None => {}
                                 }
-                                slash_menu = None;
+                                menu = MenuContent::None;
                                 continue;
                             }
                             KeyCode::Esc => {
-                                slash_menu = None;
+                                menu = MenuContent::None;
                                 continue;
                             }
                             _ => {
                                 // Fall through — let normal handlers process
-                                // (e.g. Char, Backspace update textarea, then
-                                //  the _ arm updates slash_menu state)
+                                // (typing filters the slash menu via the _ arm)
                             }
                         }
                     }
@@ -1066,14 +1167,19 @@ pub async fn run(
                             let after_input = textarea.lines().join("\n");
                             let trimmed_after = after_input.trim_end();
                             if trimmed_after.starts_with('/') && !trimmed_after.contains(' ') {
-                                slash_menu = crate::widgets::slash_menu::from_input(
+                                if let Some(dd) = crate::widgets::slash_menu::from_input(
                                     crate::completer::SLASH_COMMANDS,
                                     trimmed_after,
-                                );
-                                // Viewport resize handled by maybe_resize_viewport
-                                // at the top of the loop
+                                ) {
+                                    menu = MenuContent::Slash(dd);
+                                } else {
+                                    menu = MenuContent::None;
+                                }
                             } else {
-                                slash_menu = None;
+                                // Only clear if it was a slash menu (don't dismiss model picker)
+                                if matches!(menu, MenuContent::Slash(_)) {
+                                    menu = MenuContent::None;
+                                }
                             }
                         }
                     }
