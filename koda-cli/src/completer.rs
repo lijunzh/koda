@@ -82,22 +82,6 @@ impl InputCompleter {
         None
     }
 
-    /// Get the current completion candidates (for display in the TUI).
-    /// Returns the raw match values (without the `/model ` or `@` prefix context).
-    pub fn candidates(&self) -> &[String] {
-        &self.matches
-    }
-
-    /// Get the index of the currently selected candidate.
-    pub fn selected_idx(&self) -> usize {
-        // idx points to the *next* one, so the current selection is idx - 1
-        if self.idx == 0 && !self.matches.is_empty() {
-            self.matches.len() - 1
-        } else {
-            self.idx.saturating_sub(1)
-        }
-    }
-
     /// Reset completion state (call on non-Tab keystrokes).
     pub fn reset(&mut self) {
         self.matches.clear();
