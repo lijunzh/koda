@@ -375,13 +375,12 @@ fn count_dir_entries(path: &Path) -> usize {
 }
 
 /// List files in a directory, respecting .gitignore.
-/// Results are capped at 200 entries to protect the context window.
-pub async fn list_files(project_root: &Path, args: &Value) -> Result<String> {
+/// Entry cap is set by `OutputCaps` (context-scaled).
+pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -> Result<String> {
     let path_str = args["path"].as_str().unwrap_or(".");
     let recursive = args["recursive"].as_bool().unwrap_or(true);
     let resolved = safe_resolve_path(project_root, path_str)?;
 
-    const MAX_ENTRIES: usize = 200;
     let mut entries = Vec::new();
     let mut total_count: usize = 0;
 
@@ -418,7 +417,7 @@ pub async fn list_files(project_root: &Path, args: &Value) -> Result<String> {
             let prefix = if path.is_dir() { "d " } else { "  " };
             entries.push(format!("{prefix}{}", relative.display()));
             total_count += 1;
-            if entries.len() >= MAX_ENTRIES {
+            if entries.len() >= max_entries {
                 break;
             }
         }
@@ -429,7 +428,7 @@ pub async fn list_files(project_root: &Path, args: &Value) -> Result<String> {
             let prefix = if ft.is_dir() { "d " } else { "  " };
             entries.push(format!("{prefix}{}", entry.file_name().to_string_lossy()));
             total_count += 1;
-            if entries.len() >= MAX_ENTRIES {
+            if entries.len() >= max_entries {
                 break;
             }
         }
@@ -437,9 +436,9 @@ pub async fn list_files(project_root: &Path, args: &Value) -> Result<String> {
 
     if entries.is_empty() {
         Ok("(empty directory)".to_string())
-    } else if total_count > MAX_ENTRIES {
+    } else if total_count > max_entries {
         Ok(format!(
-            "{}\n\n... [CAPPED at {MAX_ENTRIES} entries. Use a subdirectory path to narrow results.]",
+            "{}\n\n... [CAPPED at {max_entries} entries. Use a subdirectory path to narrow results.]",
             entries.join("\n")
         ))
     } else {

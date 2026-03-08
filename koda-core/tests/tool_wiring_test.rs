@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 /// Get all built-in tool names from the registry.
 fn all_tool_names() -> Vec<String> {
-    let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"));
+    let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"), 100_000);
     registry.all_builtin_tool_names()
 }
 
@@ -18,7 +18,7 @@ fn all_tool_names() -> Vec<String> {
 /// None should return "Unknown tool".
 #[tokio::test]
 async fn test_all_tools_routable_in_dispatcher() {
-    let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"));
+    let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"), 100_000);
     for name in all_tool_names() {
         let result = registry.execute(&name, "{}").await;
         assert!(

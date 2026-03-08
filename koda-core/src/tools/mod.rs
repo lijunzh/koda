@@ -55,6 +55,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use crate::output_caps::OutputCaps;
 use crate::providers::ToolDefinition;
 
 /// Shared file-read cache: tracks (size, mtime) per cache key so we can
@@ -85,11 +86,15 @@ pub struct ToolRegistry {
     db: std::sync::RwLock<Option<std::sync::Arc<crate::db::Database>>>,
     /// Current session ID (for RecallContext).
     session_id: std::sync::RwLock<Option<String>>,
+    /// Context-scaled output caps for all tools.
+    pub caps: OutputCaps,
 }
 
 impl ToolRegistry {
     /// Create a new registry with all built-in tools.
-    pub fn new(project_root: PathBuf) -> Self {
+    ///
+    /// `max_context_tokens` scales all output caps (see `OutputCaps`).
+    pub fn new(project_root: PathBuf, max_context_tokens: usize) -> Self {
         let mut definitions = HashMap::new();
 
         // Register all built-in tools
@@ -140,6 +145,7 @@ impl ToolRegistry {
             skill_registry,
             db: std::sync::RwLock::new(None),
             session_id: std::sync::RwLock::new(None),
+            caps: OutputCaps::for_context(max_context_tokens),
         }
     }
 
@@ -285,17 +291,24 @@ impl ToolRegistry {
             "Write" => file_tools::write_file(&self.project_root, &args).await,
             "Edit" => file_tools::edit_file(&self.project_root, &args).await,
             "Delete" => file_tools::delete_file(&self.project_root, &args).await,
-            "List" => file_tools::list_files(&self.project_root, &args).await,
+            "List" => {
+                file_tools::list_files(&self.project_root, &args, self.caps.list_entries).await
+            }
 
             // Search tools
-            "Grep" => grep::grep(&self.project_root, &args).await,
-            "Glob" => glob_tool::glob_search(&self.project_root, &args).await,
+            "Grep" => grep::grep(&self.project_root, &args, self.caps.grep_matches).await,
+            "Glob" => {
+                glob_tool::glob_search(&self.project_root, &args, self.caps.glob_results).await
+            }
 
             // Shell
-            "Bash" => shell::run_shell_command(&self.project_root, &args).await,
+            "Bash" => {
+                shell::run_shell_command(&self.project_root, &args, self.caps.shell_output_lines)
+                    .await
+            }
 
             // Web
-            "WebFetch" => web_fetch::web_fetch(&args).await,
+            "WebFetch" => web_fetch::web_fetch(&args, self.caps.web_body_chars).await,
 
             // Memory
             "MemoryRead" => memory::memory_read(&self.project_root).await,

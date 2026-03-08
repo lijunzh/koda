@@ -1,13 +1,13 @@
 //! WebFetch tool: retrieve content from a URL.
 //!
 //! Fetches a web page and returns the textual content,
-//! stripping HTML tags for readability.
+//! stripping HTML tags for readability. Body cap is set by
+//! `OutputCaps` (context-scaled).
 
 use crate::providers::ToolDefinition;
 use anyhow::Result;
 use serde_json::{Value, json};
 
-const MAX_BODY_CHARS: usize = 15_000;
 const DEFAULT_TIMEOUT_SECS: u64 = 15;
 
 /// Return tool definitions for the LLM.
@@ -33,7 +33,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
 }
 
 /// Fetch a URL and return its content.
-pub async fn web_fetch(args: &Value) -> Result<String> {
+pub async fn web_fetch(args: &Value, max_body_chars: usize) -> Result<String> {
     let url = args["url"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'url' argument"))?;
@@ -78,11 +78,11 @@ pub async fn web_fetch(args: &Value) -> Result<String> {
 
     let content = if raw { body } else { strip_html(&body) };
 
-    if content.len() > MAX_BODY_CHARS {
+    if content.len() > max_body_chars {
         Ok(format!(
             "{}\n\n[TRUNCATED: response was {} chars. \
              Consider fetching a more specific URL.]",
-            &content[..MAX_BODY_CHARS],
+            &content[..max_body_chars],
             content.len()
         ))
     } else {
@@ -310,7 +310,7 @@ mod tests {
     #[tokio::test]
     async fn test_web_fetch_bad_url() {
         let args = json!({ "url": "not-a-url" });
-        let result = web_fetch(&args).await;
+        let result = web_fetch(&args, 15_000).await;
         assert!(result.is_err());
     }
 
@@ -359,7 +359,7 @@ mod tests {
     #[tokio::test]
     async fn test_web_fetch_blocks_ssrf() {
         let args = json!({ "url": "http://169.254.169.254/latest/meta-data/" });
-        let result = web_fetch(&args).await;
+        let result = web_fetch(&args, 15_000).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("blocked"));
     }
@@ -367,7 +367,7 @@ mod tests {
     #[tokio::test]
     async fn test_web_fetch_missing_url() {
         let args = json!({});
-        let result = web_fetch(&args).await;
+        let result = web_fetch(&args, 15_000).await;
         assert!(result.is_err());
     }
 }
