@@ -13,7 +13,6 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "/model",
     "/provider",
     "/sessions",
-    "/trust",
     "/exit",
 ];
 

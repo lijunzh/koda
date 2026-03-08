@@ -27,7 +27,6 @@ pub fn prompt_approval(
     _tool_name: &str,
     detail: &str,
     preview: Option<&DiffPreview>,
-    whitelist_hint: Option<&str>,
 ) -> ApprovalDecision {
     // Show detail via crossterm (not ratatui insert_before)
     tui_output::write_line(&Line::from(vec![
@@ -46,14 +45,11 @@ pub fn prompt_approval(
     tui_output::write_blank();
 
     // Build options
-    let mut options = vec![
+    let options = vec![
         ("\u{2713} Approve", "Execute this action"),
         ("\u{2717} Reject", "Skip this action"),
         ("\u{1f4ac} Feedback", "Reject and tell koda what to change"),
     ];
-    if whitelist_hint.is_some() {
-        options.push(("\u{1f513} Always allow", "Auto-approve from now on"));
-    }
 
     // Scroll terminal to make room for the options menu.
     // The cursor is at a known position after write_line(). We print
@@ -100,7 +96,6 @@ pub fn prompt_approval(
                                 ApprovalDecision::RejectWithFeedback { feedback }
                             }
                         }
-                        3 => ApprovalDecision::AlwaysAllow,
                         _ => ApprovalDecision::Reject,
                     };
                 }

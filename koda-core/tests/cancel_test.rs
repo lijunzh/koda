@@ -94,7 +94,7 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
         &tools,
         &tool_defs,
         None,
-        koda_core::approval::ApprovalMode::Yolo,
+        koda_core::approval::ApprovalMode::Auto,
         &mut settings,
         &sink,
         cancel,

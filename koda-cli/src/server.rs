@@ -273,7 +273,7 @@ async fn handle_new_session(
         state.agent.clone(),
         state.db.clone(),
         &state.config,
-        ApprovalMode::Normal,
+        ApprovalMode::Auto,
     );
 
     state.active = Some(ActiveSession {

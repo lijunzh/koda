@@ -19,8 +19,6 @@ mod repl_commands {
             "/provider" => "PickProvider",
             "/help" => "ShowHelp",
             "/cost" => "ShowCost",
-            "/trust" if !arg.is_empty() => "SetTrust",
-            "/trust" => "PickTrust",
             "/diff" if !arg.is_empty() => "InjectPrompt_or_Handled",
             "/diff" => "Handled",
             "/sessions" if arg.starts_with("delete ") => "DeleteSession",
@@ -57,8 +55,6 @@ mod repl_commands {
         assert_eq!(dispatch("/provider openai"), "SetupProvider");
         assert_eq!(dispatch("/help"), "ShowHelp");
         assert_eq!(dispatch("/cost"), "ShowCost");
-        assert_eq!(dispatch("/trust"), "PickTrust");
-        assert_eq!(dispatch("/trust yolo"), "SetTrust");
         assert_eq!(dispatch("/diff"), "Handled");
         assert_eq!(dispatch("/diff review"), "InjectPrompt_or_Handled");
         assert_eq!(dispatch("/diff commit"), "InjectPrompt_or_Handled");
@@ -185,7 +181,6 @@ mod completions {
         "/help",
         "/mcp",
         "/memory",
-        "/trust",
         "/model",
         "/provider",
         "/sessions",
@@ -196,7 +191,7 @@ mod completions {
 
     #[test]
     fn test_expected_commands_present() {
-        assert_eq!(EXPECTED_COMMANDS.len(), 11, "Expected 11 slash commands");
+        assert_eq!(EXPECTED_COMMANDS.len(), 10, "Expected 10 slash commands");
         for cmd in EXPECTED_COMMANDS {
             assert!(
                 EXPECTED_COMMANDS.contains(cmd),

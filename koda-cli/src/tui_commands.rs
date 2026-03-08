@@ -9,7 +9,7 @@ use crate::tui_output;
 use crate::tui_render::TuiRenderer;
 
 use koda_core::agent::KodaAgent;
-use koda_core::approval::{self, ApprovalMode};
+use koda_core::approval;
 use koda_core::config::KodaConfig;
 use koda_core::providers::LlmProvider;
 use koda_core::session::KodaSession;
@@ -138,10 +138,6 @@ pub async fn handle_slash_command(
             crate::tui_wizards::handle_mcp(terminal, args, &agent.mcp_registry, project_root).await;
             SlashAction::Continue
         }
-        ReplAction::SetTrust(mode_name) => {
-            handle_trust(terminal, mode_name, shared_mode);
-            SlashAction::Continue
-        }
 
         ReplAction::Expand(n) => {
             handle_expand(terminal, renderer, n);
@@ -265,7 +261,6 @@ fn handle_help(terminal: &mut Term, pending_command: &mut Option<String>) {
         ("/model", "Pick a model interactively"),
         ("/provider", "Switch LLM provider"),
         ("/sessions", "List/resume/delete sessions"),
-        ("/trust", "Set approval mode (always / auto / never)"),
         ("/undo", "Undo last turn's file changes"),
         ("/verbose", "Toggle full tool output (on/off)"),
         ("/exit", "Quit the session"),
@@ -486,32 +481,6 @@ async fn handle_resume_session(
             }
             Err(e) => err_msg(format!("Error: {e}")),
         }
-    }
-}
-
-#[allow(unused_variables)]
-fn handle_trust(
-    terminal: &mut Term,
-    mode_name: Option<String>,
-    shared_mode: &approval::SharedMode,
-) {
-    let new_mode = if let Some(ref name) = mode_name {
-        ApprovalMode::parse(name)
-    } else {
-        crate::tui_wizards::pick_trust_inline(terminal, approval::read_mode(shared_mode))
-    };
-    if let Some(m) = new_mode {
-        approval::set_mode(shared_mode, m);
-        tui_output::write_line(&Line::from(vec![
-            Span::styled("  \u{2713} ", OK),
-            Span::raw("Trust: "),
-            Span::styled(m.label(), BOLD),
-            Span::raw(format!(" \u{2014} {}", m.description())),
-        ]));
-    } else if let Some(ref name) = mode_name {
-        err_msg(format!(
-            "Unknown trust level '{name}'. Use: plan, normal, yolo"
-        ));
     }
 }
 
