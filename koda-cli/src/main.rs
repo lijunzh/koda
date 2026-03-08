@@ -13,7 +13,6 @@ mod interrupt;
 mod md_render;
 mod onboarding;
 mod repl;
-mod select_menu;
 mod server;
 mod sink;
 mod startup;
@@ -216,22 +215,13 @@ async fn main() -> Result<()> {
     // Interactive mode: full REPL experience
     let version_check = koda_core::version::spawn_version_check();
 
-    // First-run onboarding
-    let onboarding_provider = if onboarding::is_first_run() {
-        onboarding::run_wizard()
-    } else {
-        None
-    };
+    // Detect first run (onboarding happens inside the TUI now)
+    let first_run = onboarding::is_first_run();
 
     // Load configuration
     let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
     let config = config
-        .with_overrides(
-            cli.base_url,
-            cli.model,
-            cli.provider
-                .or_else(|| onboarding_provider.map(|p| p.to_string())),
-        )
+        .with_overrides(cli.base_url, cli.model, cli.provider)
         .with_model_overrides(
             cli.max_tokens,
             cli.temperature,
@@ -250,7 +240,15 @@ async fn main() -> Result<()> {
     };
 
     // Run the main event loop
-    tui_app::run(project_root, config, db, session_id, version_check).await
+    tui_app::run(
+        project_root,
+        config,
+        db,
+        session_id,
+        version_check,
+        first_run,
+    )
+    .await
 }
 
 /// Resolve the headless prompt from -p flag, positional arg, or stdin pipe.
