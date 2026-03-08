@@ -1,16 +1,14 @@
 //! Grep tool: recursive text search across files.
 //!
 //! Uses the `ignore` crate to walk directories (respecting .gitignore)
-//! and searches for text patterns. Results are capped at 100 matches
-//! to protect the context window.
+//! and searches for text patterns. Match cap is set by `OutputCaps`
+//! (context-scaled).
 
 use super::safe_resolve_path;
 use crate::providers::ToolDefinition;
 use anyhow::Result;
 use serde_json::{Value, json};
 use std::path::Path;
-
-const MAX_MATCHES: usize = 100;
 
 /// Return tool definitions for the LLM.
 pub fn definitions() -> Vec<ToolDefinition> {
@@ -41,7 +39,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
 }
 
 /// Search for a text pattern across files in a directory.
-pub async fn grep(project_root: &Path, args: &Value) -> Result<String> {
+pub async fn grep(project_root: &Path, args: &Value, max_matches: usize) -> Result<String> {
     let pattern = args["pattern"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' argument"))?
@@ -54,7 +52,13 @@ pub async fn grep(project_root: &Path, args: &Value) -> Result<String> {
 
     // Run blocking file I/O off the tokio thread pool
     tokio::task::spawn_blocking(move || {
-        grep_blocking(&project_root, &search_root, &pattern, case_insensitive)
+        grep_blocking(
+            &project_root,
+            &search_root,
+            &pattern,
+            case_insensitive,
+            max_matches,
+        )
     })
     .await?
 }
@@ -65,6 +69,7 @@ fn grep_blocking(
     search_root: &Path,
     pattern: &str,
     case_insensitive: bool,
+    max_matches: usize,
 ) -> Result<String> {
     let regex = if case_insensitive {
         regex::RegexBuilder::new(&regex::escape(pattern))
@@ -109,9 +114,9 @@ fn grep_blocking(
                     truncate_line(line, 200)
                 ));
 
-                if matches.len() >= MAX_MATCHES {
+                if matches.len() >= max_matches {
                     matches.push(format!(
-                        "\n... [CAPPED at {MAX_MATCHES} matches. \
+                        "\n... [CAPPED at {max_matches} matches. \
                          Narrow your search pattern.]"
                     ));
                     return Ok(format_output(&matches, files_searched));
@@ -187,7 +192,7 @@ mod tests {
     async fn test_grep_finds_matches() {
         let tmp = setup_test_dir();
         let args = json!({ "pattern": "hello" });
-        let result = grep(tmp.path(), &args).await.unwrap();
+        let result = grep(tmp.path(), &args, 100).await.unwrap();
         assert!(result.contains("hello.rs"));
         assert!(result.contains("lib.rs"));
     }
@@ -196,7 +201,7 @@ mod tests {
     async fn test_grep_no_matches() {
         let tmp = setup_test_dir();
         let args = json!({ "pattern": "zzzznotfound" });
-        let result = grep(tmp.path(), &args).await.unwrap();
+        let result = grep(tmp.path(), &args, 100).await.unwrap();
         assert!(result.contains("No matches"));
     }
 
@@ -204,7 +209,7 @@ mod tests {
     async fn test_grep_case_insensitive() {
         let tmp = setup_test_dir();
         let args = json!({ "pattern": "HELLO", "case_insensitive": true });
-        let result = grep(tmp.path(), &args).await.unwrap();
+        let result = grep(tmp.path(), &args, 100).await.unwrap();
         assert!(result.contains("hello.rs"));
     }
 
@@ -243,7 +248,7 @@ mod tests {
     async fn test_grep_scoped_to_subdirectory() {
         let tmp = setup_test_dir();
         let args = json!({ "pattern": "nope", "path": "nested" });
-        let result = grep(tmp.path(), &args).await.unwrap();
+        let result = grep(tmp.path(), &args, 100).await.unwrap();
         assert!(result.contains("deep.rs"));
     }
 }

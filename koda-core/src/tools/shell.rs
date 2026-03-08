@@ -1,7 +1,7 @@
 //! Shell command execution tool.
 //!
 //! Runs commands as child processes with timeout protection.
-//! Output is capped at 150 lines to protect the context window.
+//! Output line cap is set by `OutputCaps` (context-scaled).
 
 use crate::providers::ToolDefinition;
 use anyhow::Result;
@@ -9,7 +9,6 @@ use serde_json::{Value, json};
 use std::path::Path;
 use tokio::process::Command;
 
-const MAX_OUTPUT_LINES: usize = 256;
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 
 /// Return tool definitions for the LLM.
@@ -39,7 +38,11 @@ pub fn definitions() -> Vec<ToolDefinition> {
 }
 
 /// Execute a shell command with timeout and output capping.
-pub async fn run_shell_command(project_root: &Path, args: &Value) -> Result<String> {
+pub async fn run_shell_command(
+    project_root: &Path,
+    args: &Value,
+    max_output_lines: usize,
+) -> Result<String> {
     let command = args["command"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
@@ -63,8 +66,8 @@ pub async fn run_shell_command(project_root: &Path, args: &Value) -> Result<Stri
             let stderr = String::from_utf8_lossy(&output.stderr);
             let exit_code = output.status.code().unwrap_or(-1);
 
-            let stdout_capped = cap_output(&stdout);
-            let stderr_capped = cap_output(&stderr);
+            let stdout_capped = cap_output(&stdout, max_output_lines);
+            let stderr_capped = cap_output(&stderr, max_output_lines);
 
             let mut response = format!("Exit code: {exit_code}\n");
             if !stdout_capped.is_empty() {
@@ -84,13 +87,13 @@ pub async fn run_shell_command(project_root: &Path, args: &Value) -> Result<Stri
 }
 
 /// Cap output to the last N lines to protect the context window.
-fn cap_output(output: &str) -> String {
+fn cap_output(output: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = output.lines().collect();
-    if lines.len() > MAX_OUTPUT_LINES {
-        let skipped = lines.len() - MAX_OUTPUT_LINES;
+    if lines.len() > max_lines {
+        let skipped = lines.len() - max_lines;
         format!(
             "[... {skipped} lines truncated ...]\n{}",
-            lines[lines.len() - MAX_OUTPUT_LINES..].join("\n")
+            lines[lines.len() - max_lines..].join("\n")
         )
     } else {
         output.to_string()
@@ -104,14 +107,14 @@ mod tests {
     #[test]
     fn test_cap_output_short() {
         let input = "line1\nline2\nline3";
-        assert_eq!(cap_output(input), input);
+        assert_eq!(cap_output(input, 256), input);
     }
 
     #[test]
     fn test_cap_output_long() {
         let lines: Vec<String> = (0..500).map(|i| format!("line {i}")).collect();
         let input = lines.join("\n");
-        let capped = cap_output(&input);
+        let capped = cap_output(&input, 256);
 
         // Should contain the truncation notice
         assert!(capped.contains("truncated"));
@@ -123,9 +126,9 @@ mod tests {
 
     #[test]
     fn test_cap_output_exactly_at_limit() {
-        let lines: Vec<String> = (0..MAX_OUTPUT_LINES).map(|i| format!("line {i}")).collect();
+        let lines: Vec<String> = (0..256).map(|i| format!("line {i}")).collect();
         let input = lines.join("\n");
-        let capped = cap_output(&input);
+        let capped = cap_output(&input, 256);
         // Exactly at limit, no truncation
         assert!(!capped.contains("truncated"));
     }
