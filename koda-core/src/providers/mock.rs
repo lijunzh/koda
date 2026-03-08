@@ -58,12 +58,37 @@ impl MockProvider {
         }
     }
 
+    /// Create from `KODA_MOCK_RESPONSES` env var (JSON array).
+    ///
+    /// Format: `[{"text":"hello"}, {"tool":"Read","args":{"path":"f.txt"}}, {"error":"boom"}]`
+    pub fn from_env() -> Self {
+        let json = std::env::var("KODA_MOCK_RESPONSES").unwrap_or_else(|_| "[]".into());
+        let raw: Vec<serde_json::Value> =
+            serde_json::from_str(&json).expect("KODA_MOCK_RESPONSES must be a JSON array");
+        let responses = raw
+            .into_iter()
+            .map(|v| {
+                if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
+                    MockResponse::Text(text.to_string())
+                } else if let Some(tool) = v.get("tool").and_then(|t| t.as_str()) {
+                    let args = v.get("args").cloned().unwrap_or(serde_json::json!({}));
+                    MockResponse::tool_call(tool, args)
+                } else if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+                    MockResponse::Error(err.to_string())
+                } else {
+                    MockResponse::Text(v.to_string())
+                }
+            })
+            .collect();
+        Self::new(responses)
+    }
+
     fn next_response(&self) -> MockResponse {
         let mut responses = self.responses.lock().unwrap();
-        assert!(
-            !responses.is_empty(),
-            "MockProvider: no more scripted responses"
-        );
+        if responses.is_empty() {
+            // Graceful fallback: return empty text (model is "done").
+            return MockResponse::Text(String::new());
+        }
         responses.remove(0)
     }
 }
