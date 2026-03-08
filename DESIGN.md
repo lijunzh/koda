@@ -224,6 +224,69 @@ compatible with Claude Code. Teams using both tools get one file, not two.
 approval mode) remains a valid future feature but is orthogonal to project
 rules and should be tracked separately.
 
+### 14. Interaction System — Inline, Never Fullscreen (v0.1.4)
+
+**Decision**: All interactive UI (dropdowns, approvals, wizards) renders in a
+fixed `menu_area` below the status bar inside the ratatui viewport. The
+conversation is always visible. No fullscreen takeover, ever.
+
+**Principle**: *The conversation is the primary surface. Interactions happen
+within it, not on top of it.* This is the common thread across Claude Code
+and Codex. Goose's stepped wizards and Code Puppy's fullscreen forms violate
+this — users find them tedious and disorienting.
+
+**Viewport layout** (established in [#229](https://github.com/lijunzh/koda/pull/229)):
+```
+[LLM output in terminal scrollback]   ← always visible
+─── 🐻 ─
+⚡> input                              ← fixed, never moves
+────────────────────────────────
+model │ auto │ 0%                      ← fixed, hugs input
+  [menu_area]                          ← dropdown / approval / wizard
+  [empty when inactive]                ← looks like terminal bottom
+```
+
+Input + status bar form a fixed “center of mass” panel. The 12-line viewport
+never resizes for menus. Menu content appears below the status bar and
+disappears on dismiss.
+
+**Three interaction patterns**, all sharing `menu_area`:
+
+| Pattern | Widget | Examples |
+|---------|--------|----------|
+| 1a. Select | `DropdownState<T>` with type-to-filter, scroll | `/model`, `/provider`, `/` commands, `@file` |
+| 1b. Confirm | Compact approval + optional diff preview | Tool approval, file edits |
+| 2. Multi-step | Sequential inline prompts with compact trail | `/provider` setup, `/mcp add`, onboarding |
+
+**Key architectural decisions**:
+- Per-command state machine enums (`ProviderWizard`, `McpAddWizard`), not a
+  generic wizard framework — only 3 commands need multi-step flows (YAGNI)
+- Shared `WizardView { trail, active_widget }` for rendering; command-specific
+  logic in typed enums with exhaustive `match`
+- Power-user escape hatch: positional args skip the wizard entirely
+  (`/provider anthropic sk-ant-xxx` → zero prompts)
+- Keystore eliminates repeat wizards — most provider switches are instant
+- Shared `validate_and_build` between wizard completion and positional parser (DRY)
+- No “go back” in v0.2 — Esc to cancel and restart is fine for 2–4 step flows
+
+**Competitive analysis and detailed design**: [#230](https://github.com/lijunzh/koda/issues/230)
+**Implementation (slash dropdown)**: [#229](https://github.com/lijunzh/koda/pull/229)
+
+### 15. No `?` Help Overlay — The Dropdown Is Help (v0.1.4)
+
+**Decision**: Removed the `?` keyboard shortcut overlay and `/help` command.
+The slash dropdown with descriptions IS the help system.
+
+**Rationale**: Three overlapping discovery mechanisms (`?` overlay, `/help`
+modal, `/` auto-dropdown) created redundant complexity and viewport resize
+bugs. The auto-dropdown on `/` shows all commands with descriptions — that
+is help. Keyboard shortcuts moved to the startup banner header.
+
+**Code removed**: `widgets/help_overlay.rs` (96 lines), `handle_help()`,
+`show_help` state, and all associated viewport resize logic.
+
+**Implementation**: [#229](https://github.com/lijunzh/koda/pull/229)
+
 ## References
 
 - [ACP (Agent Client Protocol)](https://www.npmjs.com/package/@agentclientprotocol/sdk)
