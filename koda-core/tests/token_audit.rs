@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 #[test]
 fn dump_tool_definitions_for_audit() {
-    let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("."));
+    let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("."), 100_000);
     let defs = registry.get_definitions(&[]); // empty = all tools
 
     let mut total_chars = 0;

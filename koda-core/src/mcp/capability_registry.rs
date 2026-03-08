@@ -154,7 +154,7 @@ mod tests {
     async fn test_auto_provision_returns_install_hint() {
         // When koda-ast is not on PATH and MCP registry is None,
         // executing AstAnalysis should return an install hint, not "Unknown tool"
-        let registry = crate::tools::ToolRegistry::new(std::path::PathBuf::from("/tmp/test"));
+        let registry = crate::tools::ToolRegistry::new(std::path::PathBuf::from("/tmp/test"), 100_000);
         let result = registry.execute("AstAnalysis", "{}").await;
         assert!(
             !result.output.contains("Unknown tool"),

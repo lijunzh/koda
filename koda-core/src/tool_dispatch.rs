@@ -19,17 +19,14 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-/// Maximum tool result size stored in conversation history.
-/// Larger results are truncated to keep context usage bounded.
-const MAX_TOOL_RESULT_CHARS: usize = 10_000;
-
 /// Truncate a tool result for storage in conversation history.
-fn truncate_for_history(output: &str) -> String {
-    if output.len() <= MAX_TOOL_RESULT_CHARS {
+/// The `max_chars` limit is set by `OutputCaps::tool_result_chars`.
+fn truncate_for_history(output: &str, max_chars: usize) -> String {
+    if output.len() <= max_chars {
         return output.to_string();
     }
     // Find a safe char boundary
-    let mut end = MAX_TOOL_RESULT_CHARS;
+    let mut end = max_chars;
     while end > 0 && !output.is_char_boundary(end) {
         end -= 1;
     }
@@ -145,7 +142,7 @@ pub(crate) async fn execute_tools_parallel(
             name: tool_calls[i].function_name.clone(),
             output: result.clone(),
         });
-        let stored = truncate_for_history(&result);
+        let stored = truncate_for_history(&result, tools.caps.tool_result_chars);
         db.insert_message(
             session_id,
             &Role::Tool,
@@ -296,7 +293,7 @@ pub(crate) async fn execute_tools_sequential(
             output: result.clone(),
         });
 
-        let stored = truncate_for_history(&result);
+        let stored = truncate_for_history(&result, tools.caps.tool_result_chars);
         db.insert_message(
             session_id,
             &Role::Tool,
@@ -368,7 +365,7 @@ pub(crate) async fn execute_sub_agent(
 
     let provider = crate::providers::create_provider(&sub_config);
     let tools = {
-        let registry = ToolRegistry::new(project_root.to_path_buf());
+        let registry = ToolRegistry::new(project_root.to_path_buf(), sub_config.max_context_tokens);
         match parent_cache {
             Some(cache) => registry.with_shared_cache(cache),
             None => registry,
