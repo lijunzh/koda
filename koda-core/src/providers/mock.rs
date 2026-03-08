@@ -26,6 +26,10 @@ pub enum MockResponse {
     ToolCalls(Vec<ToolCall>),
     /// Simulate a provider error.
     Error(String),
+    /// Simulate a rate limit (429) error.
+    RateLimit,
+    /// Simulate a context overflow error.
+    ContextOverflow,
 }
 
 impl MockResponse {
@@ -75,6 +79,10 @@ impl MockProvider {
                     MockResponse::tool_call(tool, args)
                 } else if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
                     MockResponse::Error(err.to_string())
+                } else if v.get("rate_limit").is_some() {
+                    MockResponse::RateLimit
+                } else if v.get("context_overflow").is_some() {
+                    MockResponse::ContextOverflow
                 } else {
                     MockResponse::Text(v.to_string())
                 }
@@ -113,6 +121,12 @@ impl LlmProvider for MockProvider {
                 usage: TokenUsage::default(),
             }),
             MockResponse::Error(msg) => Err(anyhow::anyhow!(msg)),
+            MockResponse::RateLimit => {
+                Err(anyhow::anyhow!("LLM API returned 429: Too Many Requests"))
+            }
+            MockResponse::ContextOverflow => Err(anyhow::anyhow!(
+                "LLM API returned 400: prompt is too long, maximum context length exceeded"
+            )),
         }
     }
 
@@ -125,8 +139,17 @@ impl LlmProvider for MockProvider {
         let response = self.next_response();
 
         // Error responses fail at the call site, not inside the stream.
-        if let MockResponse::Error(msg) = response {
-            return Err(anyhow::anyhow!(msg));
+        match &response {
+            MockResponse::Error(msg) => return Err(anyhow::anyhow!("{msg}")),
+            MockResponse::RateLimit => {
+                return Err(anyhow::anyhow!("LLM API returned 429: Too Many Requests"));
+            }
+            MockResponse::ContextOverflow => {
+                return Err(anyhow::anyhow!(
+                    "LLM API returned 400: prompt is too long, maximum context length exceeded"
+                ));
+            }
+            _ => {}
         }
 
         let (tx, rx) = mpsc::channel(32);
@@ -157,7 +180,9 @@ impl LlmProvider for MockProvider {
                         }))
                         .await;
                 }
-                MockResponse::Error(_) => unreachable!(),
+                MockResponse::Error(_)
+                | MockResponse::RateLimit
+                | MockResponse::ContextOverflow => unreachable!(),
             }
         });
 
