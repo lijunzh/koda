@@ -70,9 +70,8 @@ pub async fn handle_slash_command(
             // Handled inline by tui_app.rs MenuContent::Model dropdown
             SlashAction::Continue
         }
-        ReplAction::SetupProvider(ptype, base_url) => {
-            crate::tui_wizards::handle_setup_provider(terminal, config, provider, ptype, base_url)
-                .await;
+        ReplAction::SetupProvider(_ptype, _base_url) => {
+            // Handled inline by tui_app.rs ProviderWizard
             SlashAction::Continue
         }
         ReplAction::PickProvider => {
