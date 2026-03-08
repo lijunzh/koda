@@ -56,7 +56,7 @@ echo "explain this" | koda        # Piped input
 - **Model-adaptive** — starts all models at Standard tier, then promotes to Strong or demotes to Lite based on observed tool-use quality
 - **Lazy tool loading** — Strong models get 9 core tools; discover more on demand via `DiscoverTools`
 - **Smart context** — queries context window from provider API at startup (falls back to lookup table), rate limit retry with backoff, auto-compact
-- **Approval modes** — plan (read-only) / normal (smart confirm) / yolo (auto-approve) via `/trust`
+- **Approval modes** — auto (default) / strict (confirm writes) / safe (read-only) via `Shift+Tab`
 - **Diff preview** — see exactly what changes before approving Edit, Write, Delete
 - **Loop detection** — catches repeated tool calls with configurable iteration caps
 - **Parallel execution** — concurrent tool calls and sub-agent orchestration
@@ -87,10 +87,9 @@ Koda natively understands the structure of your codebase using embedded `tree-si
 | `/model` | Pick a model (↑↓ arrow keys) |
 | `/provider` | Switch LLM provider |
 | `/sessions` | List, resume, or delete sessions |
-| `/trust` | Switch approval mode (plan/normal/yolo) |
 | `/exit` | Quit Koda |
 
-**Tips:** `@file` to attach context · Tab to autocomplete · `Shift+Tab` to cycle trust mode · `Alt+Enter` for multi-line
+**Tips:** `@file` to attach context · Tab to autocomplete · `Shift+Tab` to cycle mode · `Alt+Enter` for multi-line
 
 ### Keyboard Shortcuts
 
@@ -102,7 +101,7 @@ Koda natively understands the structure of your codebase using embedded `tree-si
 | **Ctrl+C ×2** | During inference | Force quit Koda |
 | **Ctrl+C** | At prompt (with text) | Clear the line |
 | **Esc** | At prompt | Clear the line |
-| **Shift+Tab** | At prompt | Cycle trust mode (plan → normal → yolo) |
+| **Shift+Tab** | At prompt | Cycle mode (auto → strict → safe) |
 | **Ctrl+D** | At prompt (empty) | Exit Koda |
 | **↑/↓** | At prompt | Browse command history |
 

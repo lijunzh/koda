@@ -17,6 +17,7 @@ mod repl;
 mod select_menu;
 mod server;
 mod sink;
+mod startup;
 mod tool_history;
 mod tui_app;
 mod tui_commands;
