@@ -1036,9 +1036,11 @@ pub async fn run(
                                     }
                                     Err(_) => {}
                                 }
-                                // Reinit terminal after crossterm direct writes
+                                // Reinit terminal after crossterm direct writes.
+                                // Must use reinit_viewport (not init_terminal) to
+                                // erase the old viewport — otherwise ghost prompt lines.
                                 crossterm_events = EventStream::new();
-                                terminal = init_terminal(viewport_height)?;
+                                terminal = reinit_viewport(terminal, viewport_height)?;
                             }
                         }
                     }
