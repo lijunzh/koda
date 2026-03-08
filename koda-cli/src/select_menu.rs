@@ -312,10 +312,13 @@ pub enum FilterResult {
 
 /// Show a filterable dropdown that accepts continued typing.
 ///
-/// Unlike `select_inline`, this doesn't block input — characters typed
-/// while the menu is open update the filter and narrow the options.
-/// The menu auto-dismisses when no options match or the user backspaces
-/// past the trigger character.
+/// Characters typed while the menu is open filter the options live.
+/// Auto-dismisses when no options match or user backspaces past `/`.
+///
+/// Uses the same scroll-once + render-in-place pattern as `select_inline`:
+/// allocate vertical space once (for the max menu size), re-render within
+/// that fixed area, and on exit move past the content so `init_terminal`
+/// creates a new viewport below without ghost lines.
 pub fn select_inline_filterable(
     _terminal: &mut Term,
     title: &str,
@@ -326,14 +329,21 @@ pub fn select_inline_filterable(
     let mut selected: usize = 0;
     let mut stdout = io::stdout();
 
-    // Initial filter + render
+    // Initial filter
     let mut filtered = filter_commands(commands, &current_input);
     if filtered.is_empty() {
         return Ok(FilterResult::Dismissed(current_input));
     }
 
-    let mut prev_height = 0;
-    render_filterable(&mut stdout, title, &filtered, selected, &mut prev_height)?;
+    // Allocate space ONCE for the maximum possible menu height.
+    // This avoids repeated scrolling that eats scrollback lines.
+    let reserved_height = commands.len() + 2; // title + all commands + hint
+    for _ in 0..reserved_height {
+        execute!(stdout, Print("\n"))?;
+    }
+    execute!(stdout, cursor::MoveUp(reserved_height as u16))?;
+
+    render_filterable_fixed(&mut stdout, title, &filtered, selected, reserved_height)?;
 
     loop {
         if let Event::Key(KeyEvent {
@@ -342,16 +352,16 @@ pub fn select_inline_filterable(
         {
             match code {
                 KeyCode::Enter => {
-                    if !filtered.is_empty() {
-                        let result = filtered[selected].0.to_string();
-                        clear_filterable(&mut stdout, prev_height)?;
-                        return Ok(FilterResult::Selected(result));
-                    }
-                    clear_filterable(&mut stdout, prev_height)?;
-                    return Ok(FilterResult::Dismissed(current_input));
+                    let result = if !filtered.is_empty() {
+                        FilterResult::Selected(filtered[selected].0.to_string())
+                    } else {
+                        FilterResult::Dismissed(current_input)
+                    };
+                    move_past_fixed(&mut stdout, reserved_height)?;
+                    return Ok(result);
                 }
                 KeyCode::Esc => {
-                    clear_filterable(&mut stdout, prev_height)?;
+                    move_past_fixed(&mut stdout, reserved_height)?;
                     return Ok(FilterResult::Dismissed(current_input));
                 }
                 KeyCode::Up => {
@@ -367,28 +377,26 @@ pub fn select_inline_filterable(
                 KeyCode::Backspace => {
                     current_input.pop();
                     if current_input.is_empty() || !current_input.starts_with('/') {
-                        clear_filterable(&mut stdout, prev_height)?;
+                        move_past_fixed(&mut stdout, reserved_height)?;
                         return Ok(FilterResult::Dismissed(current_input));
                     }
                     filtered = filter_commands(commands, &current_input);
                     if filtered.is_empty() {
-                        clear_filterable(&mut stdout, prev_height)?;
+                        move_past_fixed(&mut stdout, reserved_height)?;
                         return Ok(FilterResult::Dismissed(current_input));
                     }
                     selected = selected.min(filtered.len().saturating_sub(1));
                 }
                 KeyCode::Char(c) => {
-                    // Ctrl+C → dismiss
                     if modifiers.contains(KeyModifiers::CONTROL) && c == 'c' {
-                        clear_filterable(&mut stdout, prev_height)?;
+                        move_past_fixed(&mut stdout, reserved_height)?;
                         return Ok(FilterResult::Dismissed(current_input));
                     }
                     current_input.push(c);
                     filtered = filter_commands(commands, &current_input);
                     if filtered.is_empty() {
-                        // Check if input matches an exact command (user finished typing)
                         let exact = commands.iter().any(|(cmd, _)| *cmd == current_input);
-                        clear_filterable(&mut stdout, prev_height)?;
+                        move_past_fixed(&mut stdout, reserved_height)?;
                         if exact {
                             return Ok(FilterResult::Selected(current_input));
                         }
@@ -399,7 +407,7 @@ pub fn select_inline_filterable(
                 _ => {}
             }
 
-            render_filterable(&mut stdout, title, &filtered, selected, &mut prev_height)?;
+            render_filterable_fixed(&mut stdout, title, &filtered, selected, reserved_height)?;
         }
     }
 }
@@ -413,28 +421,18 @@ fn filter_commands<'a>(commands: &'a [(&'a str, &'a str)], input: &str) -> Vec<(
         .collect()
 }
 
-/// Render the filterable dropdown. Tracks height for cleanup.
-fn render_filterable(
+/// Render the filtered menu into a fixed-height area.
+///
+/// Cursor starts at the top of the reserved area. We render title +
+/// filtered options + hint, then clear any remaining lines (from
+/// previous renders with more options), then move cursor back to top.
+fn render_filterable_fixed(
     stdout: &mut io::Stdout,
     title: &str,
     filtered: &[(&str, &str)],
     selected: usize,
-    prev_height: &mut usize,
+    reserved_height: usize,
 ) -> io::Result<()> {
-    // Clear previous render
-    if *prev_height > 0 {
-        clear_filterable(stdout, *prev_height)?;
-    }
-
-    let total_lines = filtered.len() + 2; // title + options + hint
-    *prev_height = total_lines;
-
-    // Scroll terminal to make room
-    for _ in 0..total_lines {
-        execute!(stdout, Print("\n"))?;
-    }
-    execute!(stdout, cursor::MoveUp(total_lines as u16))?;
-
     // Title
     execute!(
         stdout,
@@ -485,25 +483,29 @@ fn render_filterable(
             "type to filter \u{00b7} \u{2191}/\u{2193} navigate \u{00b7} enter select \u{00b7} esc cancel"
         ),
         ResetColor,
+        cursor::MoveDown(1),
     )?;
 
-    // Move cursor back to top
-    execute!(stdout, cursor::MoveUp(total_lines as u16 - 1))?;
+    let used = filtered.len() + 2; // title + options + hint
+
+    // Clear remaining lines from previous wider renders
+    for _ in used..reserved_height {
+        execute!(stdout, Clear(ClearType::CurrentLine), cursor::MoveDown(1))?;
+    }
+
+    // Move cursor back to top of reserved area
+    execute!(stdout, cursor::MoveUp(reserved_height as u16))?;
     stdout.flush()?;
     Ok(())
 }
 
-/// Clear the filterable dropdown from the terminal.
-fn clear_filterable(stdout: &mut io::Stdout, height: usize) -> io::Result<()> {
-    for _ in 0..height {
-        execute!(stdout, Clear(ClearType::CurrentLine), cursor::MoveDown(1))?;
-    }
-    // Move back up and clear from cursor down
-    execute!(
-        stdout,
-        cursor::MoveUp(height as u16),
-        Clear(ClearType::FromCursorDown),
-    )?;
+/// Move cursor past the reserved area and clear leftover lines.
+/// This positions the cursor for `init_terminal` to create a new
+/// viewport below — same pattern as `move_past_menu` in `select_inline`.
+fn move_past_fixed(stdout: &mut io::Stdout, reserved_height: usize) -> io::Result<()> {
+    execute!(stdout, cursor::MoveDown(reserved_height as u16))?;
+    execute!(stdout, Print("\r\n"))?;
+    execute!(stdout, Clear(ClearType::FromCursorDown))?;
     stdout.flush()?;
     Ok(())
 }
