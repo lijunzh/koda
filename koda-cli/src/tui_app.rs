@@ -945,23 +945,31 @@ pub async fn run(
                     // When a menu is active, intercept navigation
                     // and selection keys before normal handling.
                     if !menu.is_none() {
+                        let is_up = key.code == KeyCode::Up
+                            || (key.code == KeyCode::Char('k')
+                                && key.modifiers.contains(KeyModifiers::CONTROL));
+                        let is_down = key.code == KeyCode::Down
+                            || key.code == KeyCode::Tab
+                            || (key.code == KeyCode::Char('j')
+                                && key.modifiers.contains(KeyModifiers::CONTROL));
+
+                        if is_up {
+                            match &mut menu {
+                                MenuContent::Slash(dd) => dd.up(),
+                                MenuContent::Model(dd) => dd.up(),
+                                MenuContent::None => {}
+                            }
+                            continue;
+                        } else if is_down {
+                            match &mut menu {
+                                MenuContent::Slash(dd) => dd.down(),
+                                MenuContent::Model(dd) => dd.down(),
+                                MenuContent::None => {}
+                            }
+                            continue;
+                        }
+
                         match key.code {
-                            KeyCode::Up => {
-                                match &mut menu {
-                                    MenuContent::Slash(dd) => dd.up(),
-                                    MenuContent::Model(dd) => dd.up(),
-                                    MenuContent::None => {}
-                                }
-                                continue;
-                            }
-                            KeyCode::Down | KeyCode::Tab => {
-                                match &mut menu {
-                                    MenuContent::Slash(dd) => dd.down(),
-                                    MenuContent::Model(dd) => dd.down(),
-                                    MenuContent::None => {}
-                                }
-                                continue;
-                            }
                             KeyCode::Enter => {
                                 match &menu {
                                     MenuContent::Slash(dd) => {
