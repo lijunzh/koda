@@ -1,5 +1,6 @@
 pub mod approval;
 pub mod dropdown;
+pub mod file_menu;
 pub mod model_menu;
 pub mod provider_menu;
 pub mod session_menu;
