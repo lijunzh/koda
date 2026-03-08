@@ -69,10 +69,11 @@ use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tui_textarea::TextArea;
 
-/// Minimum viewport height (1 top separator + 1 input + 1 bottom separator + 1 status bar).
-const MIN_VIEWPORT_HEIGHT: u16 = 4;
+/// Minimum viewport height — large enough to fit the slash menu overlay.
+/// separator(1) + input(1) + menu(8) + bottom_sep(1) + status(1) = 12
+const MIN_VIEWPORT_HEIGHT: u16 = 12;
 /// Maximum viewport height to avoid taking over the terminal.
-const MAX_VIEWPORT_HEIGHT: u16 = 10;
+const MAX_VIEWPORT_HEIGHT: u16 = 16;
 
 // ── Session state ────────────────────────────────────────────
 
@@ -103,27 +104,31 @@ fn draw_viewport(
 ) {
     let area = frame.area();
     let menu_height: u16 = slash_menu.map_or(0, |m| m.height());
-    let [menu_area, sep_row, input_rows, bot_sep_row, status_row] = Layout::vertical([
-        Constraint::Length(menu_height),
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
+
+    // Layout: separator → input → [menu overlay] → bottom_sep → status
+    // Input area shrinks to make room for the menu below it.
+    // Prompt stays at a fixed position; menu grows downward.
+    let [sep_row, input_rows, menu_area, bot_sep_row, status_row] = Layout::vertical([
+        Constraint::Length(1),           // top separator
+        Constraint::Min(1),              // input (expands to fill, shrinks for menu)
+        Constraint::Length(menu_height), // menu overlay (0 when inactive)
+        Constraint::Length(1),           // bottom separator
+        Constraint::Length(1),           // status bar
     ])
     .areas(area);
 
     // Separator line: ──────────── 🐻 ─
-    let sep_width = sep_row.width.saturating_sub(5) as usize; // 5 = " 🐻 ─"
+    let sep_width = sep_row.width.saturating_sub(5) as usize;
     let separator = Line::from(vec![
         Span::styled(
             "─".repeat(sep_width),
-            Style::default().fg(Color::Rgb(124, 111, 100)), // WARM_MUTED
+            Style::default().fg(Color::Rgb(124, 111, 100)),
         ),
         Span::styled(" 🐻 ─", Style::default().fg(Color::Rgb(124, 111, 100))),
     ]);
     frame.render_widget(separator, sep_row);
 
-    // Slash command menu (shown when input starts with /)
+    // Slash command menu overlay (below input, above status bar)
     if let Some(menu) = slash_menu {
         let menu_lines = crate::widgets::slash_menu::build_menu_lines(menu);
         let menu_widget = Paragraph::new(menu_lines);
@@ -132,7 +137,7 @@ fn draw_viewport(
 
     // Prompt icon + textarea
     let (icon, color) = match (state, mode) {
-        (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray), // ⏳ during inference
+        (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray),
         (_, ApprovalMode::Safe) => ("🔍", Color::Yellow),
         (_, ApprovalMode::Strict) => ("🔒", Color::Cyan),
         (_, ApprovalMode::Auto) => ("⚡", Color::Green),
@@ -237,11 +242,9 @@ fn maybe_resize_viewport(
     terminal: Term,
     textarea: &TextArea,
     current_height: u16,
-    extra_height: u16, // slash menu, etc.
 ) -> Result<(Term, u16)> {
     let input_lines = textarea.lines().len().max(1) as u16;
-    let base = (input_lines + 1).clamp(MIN_VIEWPORT_HEIGHT, MAX_VIEWPORT_HEIGHT);
-    let desired = base + extra_height;
+    let desired = (input_lines + 1).clamp(MIN_VIEWPORT_HEIGHT, MAX_VIEWPORT_HEIGHT);
     if desired == current_height {
         return Ok((terminal, current_height));
     }
@@ -385,7 +388,7 @@ pub async fn run(
 
     let mode = approval::read_mode(&shared_mode);
     let ctx = koda_core::context::percentage() as u32;
-    (terminal, viewport_height) = maybe_resize_viewport(terminal, &textarea, viewport_height, 0)?;
+    (terminal, viewport_height) = maybe_resize_viewport(terminal, &textarea, viewport_height)?;
     terminal.draw(|f| {
         draw_viewport(
             f,
@@ -834,9 +837,7 @@ pub async fn run(
         // Redraw viewport (resize if textarea grew/shrank)
         let mode = approval::read_mode(&shared_mode);
         let ctx = koda_core::context::percentage() as u32;
-        let menu_extra = slash_menu.as_ref().map_or(0, |m| m.height());
-        (terminal, viewport_height) =
-            maybe_resize_viewport(terminal, &textarea, viewport_height, menu_extra)?;
+        (terminal, viewport_height) = maybe_resize_viewport(terminal, &textarea, viewport_height)?;
         terminal.draw(|f| {
             draw_viewport(
                 f,
@@ -886,15 +887,10 @@ pub async fn run(
                                     textarea.insert_str(&cmd);
                                 }
                                 slash_menu = None;
-                                // Shrink viewport back to normal
-                                terminal = reinit_viewport(terminal, viewport_height, MIN_VIEWPORT_HEIGHT)?;
-                                viewport_height = MIN_VIEWPORT_HEIGHT;
                                 continue;
                             }
                             KeyCode::Esc => {
                                 slash_menu = None;
-                                terminal = reinit_viewport(terminal, viewport_height, MIN_VIEWPORT_HEIGHT)?;
-                                viewport_height = MIN_VIEWPORT_HEIGHT;
                                 continue;
                             }
                             _ => {
