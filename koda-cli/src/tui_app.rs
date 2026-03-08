@@ -99,9 +99,12 @@ fn draw_viewport(
     queue_len: usize,
     elapsed_secs: u64,
     last_turn: Option<&crate::widgets::status_bar::TurnStats>,
+    show_help: bool,
 ) {
     let area = frame.area();
-    let [sep_row, input_rows, status_row] = Layout::vertical([
+    let help_height: u16 = if show_help { 4 } else { 0 }; // 1 title + 3 rows
+    let [help_area, sep_row, input_rows, status_row] = Layout::vertical([
+        Constraint::Length(help_height),
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(1),
@@ -118,6 +121,13 @@ fn draw_viewport(
         Span::styled(" 🐻 ─", Style::default().fg(Color::Rgb(124, 111, 100))),
     ]);
     frame.render_widget(separator, sep_row);
+
+    // Help overlay (ephemeral, shown when ? is pressed)
+    if show_help {
+        let help_lines = crate::widgets::help_overlay::build_help_lines();
+        let help_widget = Paragraph::new(help_lines);
+        frame.render_widget(help_widget, help_area);
+    }
 
     // Prompt icon + textarea
     let (icon, color) = match (state, mode) {
@@ -341,6 +351,7 @@ pub async fn run(
     let mut pending_command: Option<String> = None;
     let mut silent_compact_deferred = false;
     let mut should_quit = false;
+    let mut show_help = false;
     let mut inference_start: Option<std::time::Instant> = None;
     let mut history: Vec<String> = load_history();
     let mut history_idx: Option<usize> = None; // None = not browsing history
@@ -374,6 +385,7 @@ pub async fn run(
             input_queue.len(),
             inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
             renderer.last_turn_stats.as_ref(),
+            show_help,
         );
     })?;
 
@@ -553,6 +565,7 @@ pub async fn run(
                                         input_queue.len(),
                                         inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
                                         renderer.last_turn_stats.as_ref(),
+                                        show_help,
                                     );
                                 })?;
 
@@ -802,6 +815,7 @@ pub async fn run(
                 input_queue.len(),
                 inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
                 renderer.last_turn_stats.as_ref(),
+                show_help,
             );
         })?;
 
@@ -964,6 +978,26 @@ pub async fn run(
                             }
                         }
                         _ => {
+                            // Dismiss help overlay on any key
+                            if show_help {
+                                show_help = false;
+                                // Don't pass the dismissing key to textarea
+                                continue;
+                            }
+                            // Toggle help with ? when input is empty
+                            if key.code == KeyCode::Char('?')
+                                && textarea.lines().join("").trim().is_empty()
+                            {
+                                show_help = true;
+                                // Grow viewport to fit help (4 lines)
+                                let needed = MIN_VIEWPORT_HEIGHT + 4;
+                                if viewport_height < needed {
+                                    terminal =
+                                        reinit_viewport(terminal, needed)?;
+                                    viewport_height = needed;
+                                }
+                                continue;
+                            }
                             history_idx = None;
                             completer.reset();
                             textarea.input(Event::Key(key));
