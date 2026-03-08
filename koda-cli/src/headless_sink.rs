@@ -67,7 +67,7 @@ impl EngineSink for HeadlessSink {
             EngineEvent::ActionBlocked {
                 detail, preview, ..
             } => {
-                eprintln!("\x1b[33m  \u{1f4cb} Would execute: {detail}\x1b[0m");
+                eprintln!("\x1b[33m  \u{1f50d} Would execute: {detail}\x1b[0m");
                 if let Some(ref p) = preview {
                     let rendered = crate::diff_render::render(p);
                     for line in rendered.lines() {
