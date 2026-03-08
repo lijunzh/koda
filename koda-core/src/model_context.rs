@@ -17,8 +17,34 @@ const MIN_CONTEXT: usize = 4_096;
 pub fn context_window_for_model(model: &str) -> usize {
     let m = model.to_lowercase();
 
-    // ── Anthropic ─────────────────────────────────────────
+    // ── Anthropic ─────────────────────────────────────
+    // All current Claude models (3.x, 4.x) have 200K context.
+    // When Anthropic changes this, add specific prefixes ABOVE
+    // the catch-all so they match first.
+    //
+    // NOTE: Anthropic's API does not expose context_window today.
+    // If they add it, `model_capabilities()` in anthropic.rs will
+    // return it and this table will be bypassed automatically.
+    if m.starts_with("claude-opus-4")
+        || m.starts_with("claude-sonnet-4")
+        || m.starts_with("claude-haiku-4")
+    {
+        return 200_000;
+    }
+    if m.starts_with("claude-3.5") || m.starts_with("claude-3-5") {
+        return 200_000;
+    }
+    if m.starts_with("claude-3") {
+        return 200_000;
+    }
+    // Catch-all for future Claude models we haven't seen yet.
+    // Log a warning so we notice when this fires.
     if m.contains("claude") {
+        tracing::warn!(
+            "Unknown Claude model '{}' — assuming 200K context. \
+             Update model_context.rs if this model has a different context window.",
+            model
+        );
         return 200_000;
     }
 
