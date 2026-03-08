@@ -124,6 +124,8 @@ enum MenuContent {
         tool_name: String,
         detail: String,
     },
+    /// Loop cap hotkey bar — continue or stop after iteration limit.
+    LoopCap,
 }
 
 impl MenuContent {
@@ -271,6 +273,24 @@ fn draw_viewport(
                     Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("[a]", Style::default().fg(Color::Rgb(124, 111, 100))),
                     Span::styled(" always", Style::default().fg(Color::DarkGray)),
+                ]),
+            ];
+            frame.render_widget(Paragraph::new(lines), menu_area);
+        }
+        MenuContent::LoopCap => {
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled("  \u{26a0} ", Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        "Hard cap reached. Continue?",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("  [y]", Style::default().fg(Color::Green)),
+                    Span::styled(" continue  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[n]", Style::default().fg(Color::Red)),
+                    Span::styled(" stop", Style::default().fg(Color::DarkGray)),
                 ]),
             ];
             frame.render_widget(Paragraph::new(lines), menu_area);
@@ -706,6 +726,88 @@ pub async fn run(
                             continue;
                         }
 
+                        // Intercept /provider <name> — skip dropdown, start wizard at API key step
+                        if input.trim().starts_with("/provider ") {
+                            let name = input.trim().strip_prefix("/provider ").unwrap().trim();
+                            let ptype =
+                                koda_core::config::ProviderType::from_url_or_name("", Some(name));
+                            let base_url = ptype.default_base_url().to_string();
+                            let provider_name = ptype.to_string();
+
+                            if ptype.requires_api_key() {
+                                let env_name = ptype.env_key_name().to_string();
+                                // Check if key already exists in keystore
+                                if koda_core::runtime_env::is_set(&env_name) {
+                                    // Key exists — just switch provider, no wizard
+                                    config.provider_type = ptype.clone();
+                                    config.base_url = base_url;
+                                    config.model = ptype.default_model().to_string();
+                                    config.model_settings.model = config.model.clone();
+                                    config.recalculate_model_derived();
+                                    *provider.write().await =
+                                        koda_core::providers::create_provider(&config);
+                                    crate::tui_wizards::save_provider(&config);
+                                    let prov = provider.read().await;
+                                    if let Ok(models) = prov.list_models().await {
+                                        if let Some(first) = models.first() {
+                                            config.model = first.id.clone();
+                                            config.model_settings.model = config.model.clone();
+                                            config.recalculate_model_derived();
+                                        }
+                                        config.query_and_apply_capabilities(prov.as_ref()).await;
+                                        completer.set_model_names(
+                                            models.iter().map(|m| m.id.clone()).collect(),
+                                        );
+                                    }
+                                    renderer.model = config.model.clone();
+                                    emit_above(
+                                        &mut terminal,
+                                        Line::styled(
+                                            format!(
+                                                "  \u{2714} Provider: {} ({})",
+                                                config.provider_type, config.model
+                                            ),
+                                            Style::default().fg(Color::Green),
+                                        ),
+                                    );
+                                } else {
+                                    // Need API key — start wizard at step 2
+                                    menu = MenuContent::WizardTrail(vec![(
+                                        "Provider".into(),
+                                        provider_name,
+                                    )]);
+                                    prompt_mode = PromptMode::WizardInput {
+                                        label: format!("API key for {}", ptype),
+                                        masked: true,
+                                    };
+                                    provider_wizard = Some(ProviderWizard::NeedApiKey {
+                                        provider_type: ptype,
+                                        base_url,
+                                        env_name,
+                                    });
+                                    textarea.select_all();
+                                    textarea.cut();
+                                }
+                            } else {
+                                // Local provider — start wizard at URL step
+                                menu = MenuContent::WizardTrail(vec![(
+                                    "Provider".into(),
+                                    provider_name,
+                                )]);
+                                prompt_mode = PromptMode::WizardInput {
+                                    label: format!("{} URL", ptype),
+                                    masked: false,
+                                };
+                                provider_wizard = Some(ProviderWizard::NeedUrl {
+                                    provider_type: ptype,
+                                });
+                                textarea.select_all();
+                                textarea.cut();
+                                textarea.insert_str(&base_url);
+                            }
+                            continue;
+                        }
+
                         // Intercept /sessions (no args) — open inline dropdown
                         if input.trim() == "/sessions" {
                             match session.db.list_sessions(10, &project_root).await {
@@ -993,6 +1095,26 @@ pub async fn run(
                                                 continue;
                                             }
 
+                                            // LoopCap hotkeys
+                                            if matches!(menu, MenuContent::LoopCap) {
+                                                let action = match key.code {
+                                                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                                        Some(koda_core::loop_guard::LoopContinuation::Continue200)
+                                                    }
+                                                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                                        Some(koda_core::loop_guard::LoopContinuation::Stop)
+                                                    }
+                                                    _ => None,
+                                                };
+                                                if let Some(a) = action {
+                                                    menu = MenuContent::None;
+                                                    let _ = cmd_tx
+                                                        .send(EngineCommand::LoopDecision { action: a })
+                                                        .await;
+                                                }
+                                                continue;
+                                            }
+
                                             // Feedback text input during inference
                                             if matches!(prompt_mode, PromptMode::WizardInput { .. })
                                                 && pending_approval_id.is_some()
@@ -1112,9 +1234,8 @@ pub async fn run(
                                                 // branch above — no blocking, no terminal reinit
                                             }
                                             UiEvent::Engine(EngineEvent::LoopCapReached { cap, recent_tools }) => {
-                                                // Show cap info via crossterm (matches approval widget path)
-                                                tui_output::write_blank();
-                                                tui_output::write_line(&Line::from(vec![
+                                                // Emit cap info above the viewport
+                                                emit_above(&mut terminal, Line::from(vec![
                                                     Span::raw("  "),
                                                     Span::styled(
                                                         format!("\u{26a0} Hard cap reached ({cap} iterations)"),
@@ -1122,28 +1243,13 @@ pub async fn run(
                                                     ),
                                                 ]));
                                                 for name in &recent_tools {
-                                                    tui_output::write_line(&Line::from(vec![
+                                                    emit_above(&mut terminal, Line::from(vec![
                                                         Span::raw("    "),
                                                         Span::styled(format!("\u{25cf} {name}"), Style::default().fg(Color::DarkGray)),
                                                     ]));
                                                 }
-                                                // TODO: convert LoopCap to menu_area pattern
-                                                // (rare interaction, keeping crossterm for now)
-                                                let decision = crate::widgets::approval::prompt_approval(
-                                                    "LoopCap",
-                                                    "Continue running?",
-                                                    None,
-                                                );
-                                                // Resync ratatui viewport after crossterm writes
-                                                crossterm_events = EventStream::new();
-                                                terminal = init_terminal(viewport_height)?;
-                                                let action = match decision {
-                                                    ApprovalDecision::Approve => koda_core::loop_guard::LoopContinuation::Continue200,
-                                                    _ => koda_core::loop_guard::LoopContinuation::Stop,
-                                                };
-                                                let _ = cmd_tx
-                                                    .send(EngineCommand::LoopDecision { action })
-                                                    .await;
+                                                // Show hotkey bar in menu_area
+                                                menu = MenuContent::LoopCap;
                                             }
                                             UiEvent::Engine(event) => {
                                                 renderer.render_to_terminal(event, &mut terminal);
@@ -1302,7 +1408,7 @@ pub async fn run(
                                 MenuContent::Provider(dd) => dd.up(),
                                 MenuContent::Session(dd) => dd.up(),
                                 MenuContent::File { dropdown: dd, .. } => dd.up(),
-                                MenuContent::Approval { .. } | MenuContent::WizardTrail(_) | MenuContent::None => {}
+                                MenuContent::Approval { .. } | MenuContent::LoopCap | MenuContent::WizardTrail(_) | MenuContent::None => {}
                             }
                             continue;
                         } else if is_down {
@@ -1312,7 +1418,7 @@ pub async fn run(
                                 MenuContent::Provider(dd) => dd.down(),
                                 MenuContent::Session(dd) => dd.down(),
                                 MenuContent::File { dropdown: dd, .. } => dd.down(),
-                                MenuContent::Approval { .. } | MenuContent::WizardTrail(_) | MenuContent::None => {}
+                                MenuContent::Approval { .. } | MenuContent::LoopCap | MenuContent::WizardTrail(_) | MenuContent::None => {}
                             }
                             continue;
                         }
@@ -1437,6 +1543,7 @@ pub async fn run(
                                         }
                                     }
                                     MenuContent::Approval { .. }
+                                    | MenuContent::LoopCap
                                     | MenuContent::WizardTrail(_)
                                     | MenuContent::None => {}
                                 }
