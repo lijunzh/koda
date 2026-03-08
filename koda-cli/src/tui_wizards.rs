@@ -3,7 +3,6 @@
 //! Extracted from tui_commands.rs to keep files under 600 lines.
 //! All output rendered through tui_output::write_line(&).
 
-use crate::select_menu::{self, SelectOption};
 use crate::tui_output;
 
 use koda_core::config::KodaConfig;
@@ -25,47 +24,6 @@ use tui_output::{dim_msg, err_msg, ok_msg, warn_msg};
 use tui_output::{BOLD, CYAN, DIM, GREEN as OK};
 
 // ── Provider (native TUI) ───────────────────────────────────
-
-#[allow(unused_variables)]
-pub(crate) async fn handle_pick_provider(
-    terminal: &mut Term,
-    config: &mut KodaConfig,
-    provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
-) {
-    let providers = crate::repl::PROVIDERS;
-    let current_idx = providers
-        .iter()
-        .position(|(key, _, _)| {
-            koda_core::config::ProviderType::from_url_or_name("", Some(key)) == config.provider_type
-        })
-        .unwrap_or(0);
-    let options: Vec<SelectOption> = providers
-        .iter()
-        .map(|(_, name, url)| SelectOption::new(*name, *url))
-        .collect();
-
-    let idx = match select_menu::select_inline(
-        terminal,
-        "\u{1f43b} Select a provider",
-        &options,
-        current_idx,
-    ) {
-        Ok(Some(idx)) => idx,
-        Ok(None) => {
-            dim_msg("Cancelled.".into());
-            return;
-        }
-        Err(e) => {
-            err_msg(format!("TUI error: {e}"));
-            return;
-        }
-    };
-
-    let (key, _, _) = providers[idx];
-    let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
-    let base_url = ptype.default_base_url().to_string();
-    handle_setup_provider(terminal, config, provider, ptype, base_url).await;
-}
 
 #[allow(unused_variables)]
 pub(crate) async fn handle_setup_provider(
