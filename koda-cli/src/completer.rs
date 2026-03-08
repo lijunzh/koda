@@ -7,17 +7,14 @@
 use std::path::{Path, PathBuf};
 
 /// All known slash commands with descriptions.
-/// Single source of truth — used by completer, help menu, and auto-dropdown.
+/// Single source of truth — used by completer and auto-dropdown.
 pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/agent", "List available sub-agents"),
     ("/compact", "Summarize conversation to reclaim context"),
     ("/cost", "Show token usage for this session"),
-    ("/diff", "Show git diff"),
-    ("/diff commit", "Generate commit message from diff"),
-    ("/diff review", "Review current diff"),
+    ("/diff", "Show git diff (review, commit)"),
     ("/exit", "Quit the session"),
     ("/expand", "Show full output of last tool call"),
-    ("/help", "Show available commands"),
     ("/mcp", "MCP servers: status / add / remove"),
     ("/memory", "View/save project & global memory"),
     ("/model", "Pick a model interactively"),

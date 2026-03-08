@@ -81,23 +81,9 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
         ReplAction::ShowHelp => {
-            handle_help(terminal, pending_command);
-            // If /help selected a command, execute it right away
-            if let Some(cmd) = pending_command.take() {
-                return Box::pin(handle_slash_command(
-                    terminal,
-                    &cmd,
-                    config,
-                    provider,
-                    session,
-                    shared_mode,
-                    renderer,
-                    project_root,
-                    agent,
-                    pending_command,
-                ))
-                .await;
-            }
+            // /help is now handled by the auto-dropdown on /
+            // Just show the tips line for backward compatibility
+            tui_output::write_line(&Line::styled("  Type / to see available commands", DIM));
             SlashAction::Continue
         }
         ReplAction::ShowCost => {
@@ -224,40 +210,6 @@ async fn handle_pick_model(
             }
         }
         Err(e) => err_msg(format!("Failed to list models: {e}")),
-    }
-}
-
-#[allow(unused_variables)]
-fn handle_help(terminal: &mut Term, pending_command: &mut Option<String>) {
-    // Emit tips via crossterm (same rendering system as select_inline)
-    // so cursor math stays consistent — no insert_before here.
-    {
-        use crossterm::{
-            execute,
-            style::{Color, Print, ResetColor, SetForegroundColor},
-        };
-        let mut stdout = std::io::stdout();
-        execute!(
-            stdout,
-            Print("\r\n  "),
-            SetForegroundColor(Color::DarkGrey),
-            Print(
-                "Tips: @file to attach context \u{00b7} Alt+Enter for newline \u{00b7} Shift+Tab to cycle mode \u{00b7} Ctrl+C to cancel"
-            ),
-            ResetColor,
-            Print("\r\n"),
-        )
-        .ok();
-    }
-
-    let commands = crate::completer::SLASH_COMMANDS;
-    let options: Vec<SelectOption> = commands
-        .iter()
-        .map(|(cmd, desc)| SelectOption::new(*cmd, *desc))
-        .collect();
-    if let Ok(Some(idx)) = select_menu::select_inline(terminal, "\u{1f43b} Commands", &options, 0) {
-        let (cmd, _) = commands[idx];
-        *pending_command = Some(cmd.to_string());
     }
 }
 

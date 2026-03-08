@@ -16,6 +16,9 @@ const UNSELECTED_CMD: Style = Style::new().fg(Color::Rgb(124, 111, 100));
 const DESC: Style = Style::new().fg(Color::Rgb(198, 165, 106));
 const HINT: Style = Style::new().fg(Color::Rgb(124, 111, 100));
 
+/// Max visible items in the dropdown (scroll for more).
+const MAX_VISIBLE: usize = 6;
+
 /// State for the active slash command menu.
 #[derive(Clone)]
 pub struct SlashMenuState {
@@ -23,6 +26,8 @@ pub struct SlashMenuState {
     pub filtered: Vec<(&'static str, &'static str)>,
     /// Index of the highlighted option.
     pub selected: usize,
+    /// Scroll offset for the visible window.
+    pub scroll_offset: usize,
 }
 
 impl SlashMenuState {
@@ -43,6 +48,7 @@ impl SlashMenuState {
             Some(Self {
                 filtered,
                 selected: 0,
+                scroll_offset: 0,
             })
         }
     }
@@ -50,6 +56,10 @@ impl SlashMenuState {
     /// Move selection up.
     pub fn up(&mut self) {
         self.selected = self.selected.saturating_sub(1);
+        // Keep selected in visible window
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        }
     }
 
     /// Move selection down (wraps around).
@@ -58,6 +68,12 @@ impl SlashMenuState {
             self.selected += 1;
         } else {
             self.selected = 0;
+            self.scroll_offset = 0;
+        }
+        // Keep selected in visible window
+        let visible = MAX_VISIBLE.min(self.filtered.len());
+        if self.selected >= self.scroll_offset + visible {
+            self.scroll_offset = self.selected + 1 - visible;
         }
     }
 
@@ -66,22 +82,35 @@ impl SlashMenuState {
         self.filtered[self.selected].0
     }
 
-    /// Number of lines this menu will occupy (title + options + hint).
+    /// Number of lines this menu will occupy (title + visible items + hint).
     pub fn height(&self) -> u16 {
-        (self.filtered.len() + 2) as u16 // title + items + hint
+        let visible = MAX_VISIBLE.min(self.filtered.len());
+        (visible + 2) as u16 // title + items + hint
     }
 }
 
 /// Build the slash menu as `Vec<Line>` for rendering in the viewport.
 pub fn build_menu_lines(state: &SlashMenuState) -> Vec<Line<'static>> {
-    let mut lines = Vec::with_capacity(state.filtered.len() + 2);
+    let visible = MAX_VISIBLE.min(state.filtered.len());
+    let end = (state.scroll_offset + visible).min(state.filtered.len());
+    let window = &state.filtered[state.scroll_offset..end];
+    let has_above = state.scroll_offset > 0;
+    let has_below = end < state.filtered.len();
 
-    // Title
-    lines.push(Line::from(Span::styled("  \u{1f43b} Commands", DIM)));
+    let mut lines = Vec::with_capacity(visible + 2);
 
-    // Options
-    for (i, (cmd, desc)) in state.filtered.iter().enumerate() {
-        let is_selected = i == state.selected;
+    // Title with scroll indicator
+    let title = if has_above {
+        "  \u{1f43b} Commands  \u{25b2} more"
+    } else {
+        "  \u{1f43b} Commands"
+    };
+    lines.push(Line::from(Span::styled(title, DIM)));
+
+    // Visible options
+    for (i, (cmd, desc)) in window.iter().enumerate() {
+        let absolute_idx = state.scroll_offset + i;
+        let is_selected = absolute_idx == state.selected;
         let mut spans = Vec::with_capacity(4);
 
         if is_selected {
@@ -99,11 +128,13 @@ pub fn build_menu_lines(state: &SlashMenuState) -> Vec<Line<'static>> {
         lines.push(Line::from(spans));
     }
 
-    // Hint
-    lines.push(Line::from(Span::styled(
-        "  \u{2191}/\u{2193} navigate \u{00b7} enter select \u{00b7} esc cancel",
-        HINT,
-    )));
+    // Hint with scroll indicator
+    let hint = if has_below {
+        "  \u{2191}/\u{2193} navigate \u{00b7} enter select \u{00b7} esc cancel  \u{25bc} more"
+    } else {
+        "  \u{2191}/\u{2193} navigate \u{00b7} enter select \u{00b7} esc cancel"
+    };
+    lines.push(Line::from(Span::styled(hint, HINT)));
 
     lines
 }
@@ -113,23 +144,28 @@ mod tests {
     use super::*;
 
     const TEST_COMMANDS: &[(&str, &str)] = &[
-        ("/help", "Show help"),
-        ("/model", "Pick model"),
+        ("/agent", "Agents"),
+        ("/compact", "Compact"),
+        ("/cost", "Cost"),
+        ("/diff", "Diff"),
         ("/exit", "Quit"),
+        ("/expand", "Expand"),
+        ("/mcp", "MCP"),
+        ("/model", "Pick model"),
     ];
 
     #[test]
     fn from_input_all() {
         let state = SlashMenuState::from_input(TEST_COMMANDS, "/").unwrap();
-        assert_eq!(state.filtered.len(), 3);
+        assert_eq!(state.filtered.len(), 8);
         assert_eq!(state.selected, 0);
     }
 
     #[test]
     fn from_input_filtered() {
         let state = SlashMenuState::from_input(TEST_COMMANDS, "/m").unwrap();
-        assert_eq!(state.filtered.len(), 1);
-        assert_eq!(state.filtered[0].0, "/model");
+        assert_eq!(state.filtered.len(), 2); // /mcp, /model
+        assert_eq!(state.filtered[0].0, "/mcp");
     }
 
     #[test]
@@ -140,28 +176,57 @@ mod tests {
     #[test]
     fn navigation() {
         let mut state = SlashMenuState::from_input(TEST_COMMANDS, "/").unwrap();
-        assert_eq!(state.selected_command(), "/help");
+        assert_eq!(state.selected_command(), "/agent");
         state.down();
+        assert_eq!(state.selected_command(), "/compact");
+        // Go to end
+        for _ in 0..6 {
+            state.down();
+        }
         assert_eq!(state.selected_command(), "/model");
-        state.down();
-        assert_eq!(state.selected_command(), "/exit");
         state.down(); // wraps
-        assert_eq!(state.selected_command(), "/help");
+        assert_eq!(state.selected_command(), "/agent");
         state.up(); // saturates at 0
-        assert_eq!(state.selected_command(), "/help");
+        assert_eq!(state.selected_command(), "/agent");
     }
 
     #[test]
-    fn height_includes_chrome() {
+    fn height_capped() {
         let state = SlashMenuState::from_input(TEST_COMMANDS, "/").unwrap();
-        assert_eq!(state.height(), 5); // title + 3 items + hint
+        // 8 items but capped at MAX_VISIBLE(6) + 2 chrome = 8
+        assert_eq!(state.height(), 8);
     }
 
     #[test]
-    fn build_lines_count() {
+    fn height_small_list() {
+        let state = SlashMenuState::from_input(TEST_COMMANDS, "/e").unwrap();
+        // 2 items (/exit, /expand) + 2 chrome = 4
+        assert_eq!(state.height(), 4);
+    }
+
+    #[test]
+    fn scroll_indicator() {
         let state = SlashMenuState::from_input(TEST_COMMANDS, "/").unwrap();
         let lines = build_menu_lines(&state);
-        assert_eq!(lines.len(), 5);
+        // 8 items, 6 visible → should have ▼ more on hint
+        let hint: String = lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            hint.contains('\u{25bc}'),
+            "should show scroll-down indicator: {hint}"
+        );
+    }
+
+    #[test]
+    fn build_lines_count_capped() {
+        let state = SlashMenuState::from_input(TEST_COMMANDS, "/").unwrap();
+        let lines = build_menu_lines(&state);
+        assert_eq!(lines.len(), 8); // title + 6 visible + hint
     }
 
     #[test]
