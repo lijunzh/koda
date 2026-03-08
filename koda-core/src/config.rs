@@ -32,6 +32,8 @@ pub enum ProviderType {
     Together,
     Fireworks,
     Vllm,
+    /// Mock provider for testing (reads KODA_MOCK_RESPONSES env var).
+    Mock,
 }
 
 impl ProviderType {
@@ -136,6 +138,13 @@ impl ProviderType {
                 env_key: "KODA_API_KEY",
                 api_key: false,
             },
+            Self::Mock => ProviderMeta {
+                name: "mock",
+                url: "http://localhost:0",
+                model: "mock-model",
+                env_key: "KODA_API_KEY",
+                api_key: false,
+            },
         }
     }
 
@@ -169,6 +178,7 @@ impl ProviderType {
                 "together" => Self::Together,
                 "fireworks" => Self::Fireworks,
                 "vllm" => Self::Vllm,
+                "mock" => Self::Mock,
                 _ => Self::OpenAI,
             };
         }
@@ -673,6 +683,7 @@ mod tests {
             ProviderType::Gemini,
             ProviderType::Groq,
             ProviderType::Grok,
+            ProviderType::Mock,
         ];
         for p in providers {
             assert!(!p.default_base_url().is_empty());
