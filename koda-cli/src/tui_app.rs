@@ -105,15 +105,15 @@ fn draw_viewport(
     let area = frame.area();
     let menu_height: u16 = slash_menu.map_or(0, |m| m.height());
 
-    // Layout: separator → input → [menu overlay] → bottom_sep → status
-    // Input area shrinks to make room for the menu below it.
-    // Prompt stays at a fixed position; menu grows downward.
-    let [sep_row, input_rows, menu_area, bot_sep_row, status_row] = Layout::vertical([
+    // Layout: separator → input → bottom_sep → status → [menu overlay]
+    // Input + status bar form a fixed "center of mass" panel.
+    // Menu fills the space below — looks like empty terminal when inactive.
+    let [sep_row, input_rows, bot_sep_row, status_row, menu_area] = Layout::vertical([
         Constraint::Length(1),           // top separator
-        Constraint::Min(1),              // input (expands to fill, shrinks for menu)
-        Constraint::Length(menu_height), // menu overlay (0 when inactive)
+        Constraint::Min(1),              // input (expands to fill)
         Constraint::Length(1),           // bottom separator
         Constraint::Length(1),           // status bar
+        Constraint::Length(menu_height), // menu overlay (0 when inactive)
     ])
     .areas(area);
 
