@@ -69,8 +69,8 @@ use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tui_textarea::TextArea;
 
-/// Minimum viewport height (1 separator + 1 input line + 1 status bar).
-const MIN_VIEWPORT_HEIGHT: u16 = 3;
+/// Minimum viewport height (1 top separator + 1 input + 1 bottom separator + 1 status bar).
+const MIN_VIEWPORT_HEIGHT: u16 = 4;
 /// Maximum viewport height to avoid taking over the terminal.
 const MAX_VIEWPORT_HEIGHT: u16 = 10;
 
@@ -103,10 +103,11 @@ fn draw_viewport(
 ) {
     let area = frame.area();
     let help_height: u16 = if show_help { 4 } else { 0 }; // 1 title + 3 rows
-    let [help_area, sep_row, input_rows, status_row] = Layout::vertical([
+    let [help_area, sep_row, input_rows, bot_sep_row, status_row] = Layout::vertical([
         Constraint::Length(help_height),
         Constraint::Length(1),
         Constraint::Min(1),
+        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -146,6 +147,16 @@ fn draw_viewport(
         prompt_area,
     );
     frame.render_widget(textarea, text_area);
+
+    // Bottom separator between input and status bar
+    let bot_width = bot_sep_row.width as usize;
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(bot_width),
+            Style::default().fg(Color::Rgb(124, 111, 100)),
+        ))),
+        bot_sep_row,
+    );
 
     // Status bar
     let mut sb = StatusBar::new(model, tier_label, mode.label(), context_pct);
