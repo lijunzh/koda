@@ -14,7 +14,7 @@
 //!
 //! `/model`, `/help`, `/provider`, etc. render via `tui_output::write_line()`
 //! which writes styled content directly to stdout with `\r\n` line endings.
-//! Interactive select menus (`select_inline`) use crossterm cursor movement
+//! Interactive menus render in `menu_area` via ratatui (see DESIGN.md §14).
 //! for in-place arrow-key navigation.
 //!
 //! ## Bridge: `init_terminal()` resync
@@ -28,7 +28,7 @@
 //! ┌─ scrollback ────────────────────────────────────────────┐
 //! │ Engine output via insert_before() (ratatui Line/Span)   │
 //! │ Slash command output via write_line() (crossterm)       │
-//! │ Select menus via select_inline() (crossterm)            │
+//! │ Menu area via ratatui (dropdown / approval / wizard)     │
 //! ├─────────────────────────────────────────────────────────┤
 //! │ ← init_terminal() resyncs viewport here →              │
 //! ├─ ratatui Viewport::Inline(2) ──────────────────────────┤
@@ -417,6 +417,7 @@ pub async fn run(
     db: Database,
     session_id: String,
     version_check: tokio::task::JoinHandle<Option<String>>,
+    first_run: bool,
 ) -> Result<()> {
     // ── Setup (same as before) ───────────────────────────────
 
@@ -520,6 +521,33 @@ pub async fn run(
     let mut prompt_mode = PromptMode::Chat;
     let mut provider_wizard: Option<ProviderWizard> = None;
     let mut pending_approval_id: Option<String> = None;
+
+    // First-run onboarding: auto-open provider dropdown
+    if first_run {
+        emit_above(
+            &mut terminal,
+            Line::styled(
+                "  \u{1f43b} Welcome to Koda! Let's pick your LLM provider.",
+                Style::default().fg(Color::Cyan),
+            ),
+        );
+        let providers = crate::repl::PROVIDERS;
+        let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
+            .iter()
+            .map(
+                |(key, name, desc)| crate::widgets::provider_menu::ProviderItem {
+                    key,
+                    name,
+                    description: desc,
+                    is_current: false,
+                },
+            )
+            .collect();
+        menu = MenuContent::Provider(crate::widgets::dropdown::DropdownState::new(
+            items,
+            "\u{1f43b} Choose your LLM provider",
+        ));
+    }
     let mut inference_start: Option<std::time::Instant> = None;
     let mut history: Vec<String> = load_history();
     let mut history_idx: Option<usize> = None; // None = not browsing history
@@ -594,8 +622,7 @@ pub async fn run(
                 if !input.is_empty() {
                     // Try slash commands first
                     if input.starts_with('/') {
-                        // Intercept /model (no args) — open inline dropdown
-                        // instead of the blocking select_inline modal.
+                        // Intercept /model (no args) — open inline dropdown.
                         if input.trim() == "/model" {
                             let prov = provider.read().await;
                             match prov.list_models().await {
@@ -1663,55 +1690,14 @@ pub async fn run(
                             // Status bar updates on next draw — no scrollback noise
                         }
                         (KeyCode::Tab, KeyModifiers::NONE) => {
+                            // Tab cycles through completions (single insertion).
+                            // Multi-match dropdowns are now handled by the
+                            // auto-dropdowns on / and @ in the _ handler.
                             let current = textarea.lines().join("\n");
                             if let Some(completed) = completer.complete(&current) {
-                                let candidates = completer.candidates();
-                                if candidates.len() > 1 {
-                                    // Multiple matches — open dropdown select menu
-                                    let options: Vec<crate::select_menu::SelectOption> =
-                                        candidates
-                                            .iter()
-                                            .map(|c| {
-                                                crate::select_menu::SelectOption::new(c, "")
-                                            })
-                                            .collect();
-                                    let initial = completer.selected_idx();
-                                    if let Ok(Some(idx)) =
-                                        crate::select_menu::select_inline(
-                                            &mut terminal,
-                                            "\u{1f4c2} Select",
-                                            &options,
-                                            initial,
-                                        )
-                                    {
-                                        // Reconstruct the full text with the selected match
-                                        let selected = &candidates[idx];
-                                        // Rerun completion logic to build the full text
-                                        let trimmed = current.trim_end();
-                                        let replacement = if trimmed.starts_with('/') {
-                                            selected.clone()
-                                        } else if let Some(at_pos) =
-                                            crate::completer::find_last_at_token(trimmed)
-                                        {
-                                            let prefix = &trimmed[..at_pos];
-                                            format!("{prefix}@{selected}")
-                                        } else {
-                                            selected.clone()
-                                        };
-                                        textarea.select_all();
-                                        textarea.cut();
-                                        textarea.insert_str(&replacement);
-                                    }
-                                    // Reinit terminal after select_inline.
-                                    // Drop EventStream first (same race fix as slash commands).
-                                    crossterm_events = EventStream::new();
-                                    terminal = init_terminal(viewport_height)?;
-                                } else {
-                                    // Single match — just insert it
-                                    textarea.select_all();
-                                    textarea.cut();
-                                    textarea.insert_str(&completed);
-                                }
+                                textarea.select_all();
+                                textarea.cut();
+                                textarea.insert_str(&completed);
                                 completer.reset();
                             }
                         }

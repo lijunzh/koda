@@ -4,7 +4,6 @@
 //! ratatui `Line`/`Span` styling. Stays in raw mode.
 
 use crate::repl::ReplAction;
-use crate::select_menu::{self, SelectOption};
 use crate::tui_output;
 use crate::tui_render::TuiRenderer;
 
@@ -68,7 +67,7 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
         ReplAction::PickModel => {
-            handle_pick_model(terminal, config, provider).await;
+            // Handled inline by tui_app.rs MenuContent::Model dropdown
             SlashAction::Continue
         }
         ReplAction::SetupProvider(ptype, base_url) => {
@@ -77,7 +76,7 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
         ReplAction::PickProvider => {
-            crate::tui_wizards::handle_pick_provider(terminal, config, provider).await;
+            // Handled inline by tui_app.rs MenuContent::Provider dropdown
             SlashAction::Continue
         }
         ReplAction::ShowHelp => {
@@ -101,7 +100,7 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
         ReplAction::ListSessions => {
-            handle_list_sessions(terminal, session, project_root).await;
+            // Handled inline by tui_app.rs MenuContent::Session dropdown
             SlashAction::Continue
         }
         ReplAction::DeleteSession(ref id) => {
@@ -159,59 +158,6 @@ pub async fn handle_slash_command(
 }
 
 // ── Sub-handlers ───────────────────────────────────────────
-
-#[allow(unused_variables)]
-async fn handle_pick_model(
-    terminal: &mut Term,
-    config: &mut KodaConfig,
-    provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
-) {
-    let prov = provider.read().await;
-    match prov.list_models().await {
-        Ok(models) if models.is_empty() => {
-            warn_msg(format!("No models available from {}", prov.provider_name()));
-        }
-        Ok(models) => {
-            drop(prov);
-            let current_idx = models
-                .iter()
-                .position(|m| m.id == config.model)
-                .unwrap_or(0);
-            let options: Vec<SelectOption> = models
-                .iter()
-                .map(|m| {
-                    let desc = if m.id == config.model {
-                        "\u{25c0} current".to_string()
-                    } else {
-                        String::new()
-                    };
-                    SelectOption::new(&m.id, desc)
-                })
-                .collect();
-            match select_menu::select_inline(
-                terminal,
-                "\u{1f43b} Select a model",
-                &options,
-                current_idx,
-            ) {
-                Ok(Some(idx)) => {
-                    config.model = models[idx].id.clone();
-                    config.model_settings.model = config.model.clone();
-                    config.recalculate_model_derived();
-                    {
-                        let prov = provider.read().await;
-                        config.query_and_apply_capabilities(prov.as_ref()).await;
-                    }
-                    crate::tui_wizards::save_provider(config);
-                    ok_msg(format!("Model set to: {}", config.model));
-                }
-                Ok(None) => dim_msg("Cancelled.".into()),
-                Err(e) => err_msg(format!("TUI error: {e}")),
-            }
-        }
-        Err(e) => err_msg(format!("Failed to list models: {e}")),
-    }
-}
 
 #[allow(unused_variables)]
 async fn handle_cost(_terminal: &mut Term, session: &KodaSession, config: &KodaConfig) {
@@ -282,70 +228,6 @@ async fn handle_cost(_terminal: &mut Term, session: &KodaSession, config: &KodaC
                     ]));
                 }
             }
-        }
-        Err(e) => err_msg(format!("Error: {e}")),
-    }
-}
-
-#[allow(unused_variables)]
-async fn handle_list_sessions(
-    terminal: &mut Term,
-    session: &mut KodaSession,
-    project_root: &std::path::Path,
-) {
-    match session.db.list_sessions(10, project_root).await {
-        Ok(sessions) if sessions.is_empty() => {
-            dim_msg("No other sessions found.".into());
-        }
-        Ok(sessions) => {
-            let current_idx = sessions
-                .iter()
-                .position(|s| s.id == session.id)
-                .unwrap_or(0);
-            let options: Vec<SelectOption> = sessions
-                .iter()
-                .map(|s| {
-                    let desc = if s.id == session.id {
-                        format!(
-                            "{}  {} msgs  {}k tokens  \u{25c0} current",
-                            s.created_at,
-                            s.message_count,
-                            s.total_tokens / 1000
-                        )
-                    } else {
-                        format!(
-                            "{}  {} msgs  {}k tokens",
-                            s.created_at,
-                            s.message_count,
-                            s.total_tokens / 1000
-                        )
-                    };
-                    SelectOption::new(&s.id[..8], desc)
-                })
-                .collect();
-            match select_menu::select_inline(terminal, "\u{1f43b} Sessions", &options, current_idx)
-            {
-                Ok(Some(idx)) => {
-                    let target = &sessions[idx];
-                    if target.id == session.id {
-                        dim_msg("Already in this session.".into());
-                    } else {
-                        session.id = target.id.clone();
-                        tui_output::write_line(&Line::from(vec![
-                            Span::styled("  \u{2713} ", OK),
-                            Span::raw("Resumed session "),
-                            Span::styled(&target.id[..8], CYAN),
-                            Span::styled(
-                                format!("  {}  {} msgs", target.created_at, target.message_count),
-                                DIM,
-                            ),
-                        ]));
-                    }
-                }
-                Ok(None) => dim_msg("Cancelled.".into()),
-                Err(e) => err_msg(format!("TUI error: {e}")),
-            }
-            dim_msg("Delete: /sessions delete <id>".into());
         }
         Err(e) => err_msg(format!("Error: {e}")),
     }
