@@ -235,9 +235,15 @@ mod tests {
     fn banner_contains_bear_face() {
         let lines = build_banner_lines("m", "p", "~", &[]);
         let text = lines_to_text(&lines);
-        assert!(text.contains("▞▀▚"), "Banner should contain block-art bear ears");
+        assert!(
+            text.contains("▞▀▚"),
+            "Banner should contain block-art bear ears"
+        );
         // Block-art bear line 3: chin
-        assert!(text.contains("▀▄▄▄▄▄▄▀"), "Banner should contain block-art bear chin");
+        assert!(
+            text.contains("▀▄▄▄▄▄▄▀"),
+            "Banner should contain block-art bear chin"
+        );
     }
 
     #[test]
