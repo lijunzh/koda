@@ -10,6 +10,21 @@ Koda is a personal AI assistant. Coding is the starting point, but the platform
 will expand to support email, messaging, calendar, reminders, documentation,
 and knowledge management — all powered by the same engine.
 
+## Design Principles
+
+**Adapt to behavior, not configuration.** AI should learn human intention from
+historical interaction patterns, not from config files or mode flags. The system
+observes how the user intervenes (or doesn't) at each decision point and adjusts
+autonomy accordingly. Configuration is a confession that the system can't figure
+it out — a personal AI tool should learn how you work by working with you.
+
+This principle drives several architectural choices:
+- `TierObserver` learns model capability from tool-use quality, not model names.
+- `InterventionObserver` ([#242](https://github.com/lijunzh/koda/issues/242))
+  will learn human oversight preferences from phase-gate override patterns.
+- No `DepthMode` enum or `--autonomy` flag — autonomy is a continuous variable
+  that emerges from data, not a discrete setting the user picks.
+
 ## Execution Modes
 
 ```bash
