@@ -53,7 +53,7 @@ pub async fn web_fetch(args: &Value, max_body_chars: usize) -> Result<String> {
 
     static HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     let client = HTTP_CLIENT
-        .get_or_init(crate::providers::build_http_client)
+        .get_or_init(|| crate::providers::build_http_client(None))
         .clone();
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS),

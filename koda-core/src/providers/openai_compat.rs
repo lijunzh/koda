@@ -22,7 +22,7 @@ pub struct OpenAiCompatProvider {
 impl OpenAiCompatProvider {
     pub fn new(base_url: &str, api_key: Option<String>) -> Self {
         Self {
-            client: super::build_http_client(),
+            client: super::build_http_client(Some(base_url)),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
         }
