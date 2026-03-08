@@ -69,10 +69,11 @@ use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tui_textarea::TextArea;
 
-/// Minimum viewport height (1 top separator + 1 input + 1 bottom separator + 1 status bar).
-const MIN_VIEWPORT_HEIGHT: u16 = 4;
+/// Minimum viewport height — large enough to fit the slash menu overlay.
+/// separator(1) + input(1) + menu(8) + bottom_sep(1) + status(1) = 12
+const MIN_VIEWPORT_HEIGHT: u16 = 12;
 /// Maximum viewport height to avoid taking over the terminal.
-const MAX_VIEWPORT_HEIGHT: u16 = 10;
+const MAX_VIEWPORT_HEIGHT: u16 = 16;
 
 // ── Session state ────────────────────────────────────────────
 
@@ -99,40 +100,44 @@ fn draw_viewport(
     queue_len: usize,
     elapsed_secs: u64,
     last_turn: Option<&crate::widgets::status_bar::TurnStats>,
-    show_help: bool,
+    slash_menu: Option<&crate::widgets::slash_menu::SlashMenuState>,
 ) {
     let area = frame.area();
-    let help_height: u16 = if show_help { 4 } else { 0 }; // 1 title + 3 rows
-    let [help_area, sep_row, input_rows, bot_sep_row, status_row] = Layout::vertical([
-        Constraint::Length(help_height),
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
+
+    // Layout: separator → input → bottom_sep → status → [menu/empty]
+    // Input + status bar form a fixed "center of mass" panel at top.
+    // Remaining space below is empty (looks like terminal) or shows menu.
+    let input_height = textarea.lines().len().max(1) as u16;
+    let [sep_row, input_rows, bot_sep_row, status_row, menu_area] = Layout::vertical([
+        Constraint::Length(1),            // top separator
+        Constraint::Length(input_height), // input (sized to content)
+        Constraint::Length(1),            // bottom separator
+        Constraint::Length(1),            // status bar
+        Constraint::Min(0),               // menu overlay / empty space
     ])
     .areas(area);
 
     // Separator line: ──────────── 🐻 ─
-    let sep_width = sep_row.width.saturating_sub(5) as usize; // 5 = " 🐻 ─"
+    let sep_width = sep_row.width.saturating_sub(5) as usize;
     let separator = Line::from(vec![
         Span::styled(
             "─".repeat(sep_width),
-            Style::default().fg(Color::Rgb(124, 111, 100)), // WARM_MUTED
+            Style::default().fg(Color::Rgb(124, 111, 100)),
         ),
         Span::styled(" 🐻 ─", Style::default().fg(Color::Rgb(124, 111, 100))),
     ]);
     frame.render_widget(separator, sep_row);
 
-    // Help overlay (ephemeral, shown when ? is pressed)
-    if show_help {
-        let help_lines = crate::widgets::help_overlay::build_help_lines();
-        let help_widget = Paragraph::new(help_lines);
-        frame.render_widget(help_widget, help_area);
+    // Slash command menu overlay (below input, above status bar)
+    if let Some(menu) = slash_menu {
+        let menu_lines = crate::widgets::slash_menu::build_menu_lines(menu);
+        let menu_widget = Paragraph::new(menu_lines);
+        frame.render_widget(menu_widget, menu_area);
     }
 
     // Prompt icon + textarea
     let (icon, color) = match (state, mode) {
-        (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray), // ⏳ during inference
+        (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray),
         (_, ApprovalMode::Safe) => ("🔍", Color::Yellow),
         (_, ApprovalMode::Strict) => ("🔒", Color::Cyan),
         (_, ApprovalMode::Auto) => ("⚡", Color::Green),
@@ -215,18 +220,18 @@ fn restore_terminal(terminal: &mut Term, height: u16) {
     let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
-/// Reinitialize the viewport after a terminal resize.
+/// Reinitialize the viewport with a new height.
 ///
-/// Drops the old terminal, erases the stale viewport area, and creates
-/// a fresh terminal with the same height. Without this cleanup the old
-/// viewport lines remain in the scrollback as ghost content.
-fn reinit_viewport(terminal: Term, height: u16) -> Result<Term> {
+/// Drops the old terminal, erases the stale viewport area using the
+/// **old** height (to avoid overshooting into scrollback), and creates
+/// a fresh terminal with the new height.
+fn reinit_viewport(terminal: Term, old_height: u16, new_height: u16) -> Result<Term> {
     drop(terminal);
     let _ = crossterm::terminal::disable_raw_mode();
-    // Move cursor up past old viewport and erase to end of screen
-    print!("\x1b[{}A\x1b[J", height);
+    // Move cursor up past the OLD viewport and erase to end of screen
+    print!("\x1b[{}A\x1b[J", old_height);
     let _ = std::io::Write::flush(&mut std::io::stdout());
-    init_terminal(height)
+    init_terminal(new_height)
 }
 
 /// Resize the viewport if the textarea line count changed.
@@ -243,7 +248,7 @@ fn maybe_resize_viewport(
     if desired == current_height {
         return Ok((terminal, current_height));
     }
-    let new_term = reinit_viewport(terminal, current_height)?;
+    let new_term = reinit_viewport(terminal, current_height, desired)?;
     Ok((new_term, desired))
 }
 
@@ -362,7 +367,7 @@ pub async fn run(
     let mut pending_command: Option<String> = None;
     let mut silent_compact_deferred = false;
     let mut should_quit = false;
-    let mut show_help = false;
+    let mut slash_menu: Option<crate::widgets::slash_menu::SlashMenuState> = None;
     let mut inference_start: Option<std::time::Instant> = None;
     let mut history: Vec<String> = load_history();
     let mut history_idx: Option<usize> = None; // None = not browsing history
@@ -396,7 +401,7 @@ pub async fn run(
             input_queue.len(),
             inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
             renderer.last_turn_stats.as_ref(),
-            show_help,
+            slash_menu.as_ref(),
         );
     })?;
 
@@ -471,6 +476,25 @@ pub async fn run(
                                 }
                                 // Sync model name for cost estimation
                                 renderer.model = config.model.clone();
+                                // Force immediate redraw so the prompt is visible
+                                // after slash command output (don't wait for next event).
+                                let mode = approval::read_mode(&shared_mode);
+                                let ctx = koda_core::context::percentage() as u32;
+                                terminal.draw(|f| {
+                                    draw_viewport(
+                                        f,
+                                        &textarea,
+                                        &config.model,
+                                        config.model_tier.label(),
+                                        mode,
+                                        ctx,
+                                        tui_state,
+                                        input_queue.len(),
+                                        0,
+                                        renderer.last_turn_stats.as_ref(),
+                                        slash_menu.as_ref(),
+                                    );
+                                })?;
                             }
                             SlashAction::Quit => {
                                 tui_output::emit_line(
@@ -576,7 +600,7 @@ pub async fn run(
                                         input_queue.len(),
                                         inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
                                         renderer.last_turn_stats.as_ref(),
-                                        show_help,
+                                        slash_menu.as_ref(),
                                     );
                                 })?;
 
@@ -600,7 +624,7 @@ pub async fn run(
                                         if let Event::Resize(_, _) = ev {
                                             // Terminal resized during inference — erase stale
                                             // viewport and reinit to prevent ghost prompt lines.
-                                            terminal = reinit_viewport(terminal, viewport_height)?;
+                                            terminal = reinit_viewport(terminal, viewport_height, viewport_height)?;
                                         } else if let Event::Key(key) = ev {
                                             match (key.code, key.modifiers) {
                                                 (KeyCode::Enter, KeyModifiers::NONE) => {
@@ -826,7 +850,7 @@ pub async fn run(
                 input_queue.len(),
                 inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
                 renderer.last_turn_stats.as_ref(),
-                show_help,
+                slash_menu.as_ref(),
             );
         })?;
 
@@ -836,8 +860,46 @@ pub async fn run(
             Some(Ok(ev)) = crossterm_events.next() => {
                 if let Event::Resize(_, _) = ev {
                     // Terminal resized while idle — erase stale viewport and reinit.
-                    terminal = reinit_viewport(terminal, viewport_height)?;
+                    terminal = reinit_viewport(terminal, viewport_height, viewport_height)?;
                 } else if let Event::Key(key) = ev {
+                    // ── Slash menu key interception ───────────
+                    // When the menu is active, intercept navigation
+                    // and selection keys before normal handling.
+                    if slash_menu.is_some() {
+                        match key.code {
+                            KeyCode::Up => {
+                                if let Some(ref mut menu) = slash_menu {
+                                    menu.up();
+                                }
+                                continue;
+                            }
+                            KeyCode::Down | KeyCode::Tab => {
+                                if let Some(ref mut menu) = slash_menu {
+                                    menu.down();
+                                }
+                                continue;
+                            }
+                            KeyCode::Enter => {
+                                if let Some(ref menu) = slash_menu {
+                                    let cmd = menu.selected_command().to_string();
+                                    textarea.select_all();
+                                    textarea.cut();
+                                    textarea.insert_str(&cmd);
+                                }
+                                slash_menu = None;
+                                continue;
+                            }
+                            KeyCode::Esc => {
+                                slash_menu = None;
+                                continue;
+                            }
+                            _ => {
+                                // Fall through — let normal handlers process
+                                // (e.g. Char, Backspace update textarea, then
+                                //  the _ arm updates slash_menu state)
+                            }
+                        }
+                    }
                     match (key.code, key.modifiers) {
                         // Shift+Enter or Alt+Enter → insert newline
                         // Note: Shift+Enter only works on terminals with kitty
@@ -989,29 +1051,23 @@ pub async fn run(
                             }
                         }
                         _ => {
-                            // Dismiss help overlay on any key
-                            if show_help {
-                                show_help = false;
-                                // Don't pass the dismissing key to textarea
-                                continue;
-                            }
-                            // Toggle help with ? when input is empty
-                            if key.code == KeyCode::Char('?')
-                                && textarea.lines().join("").trim().is_empty()
-                            {
-                                show_help = true;
-                                // Grow viewport to fit help (4 lines)
-                                let needed = MIN_VIEWPORT_HEIGHT + 4;
-                                if viewport_height < needed {
-                                    terminal =
-                                        reinit_viewport(terminal, needed)?;
-                                    viewport_height = needed;
-                                }
-                                continue;
-                            }
                             history_idx = None;
                             completer.reset();
                             textarea.input(Event::Key(key));
+
+                            // Update slash menu state reactively
+                            let after_input = textarea.lines().join("\n");
+                            let trimmed_after = after_input.trim_end();
+                            if trimmed_after.starts_with('/') && !trimmed_after.contains(' ') {
+                                slash_menu = crate::widgets::slash_menu::SlashMenuState::from_input(
+                                    crate::completer::SLASH_COMMANDS,
+                                    trimmed_after,
+                                );
+                                // Viewport resize handled by maybe_resize_viewport
+                                // at the top of the loop
+                            } else {
+                                slash_menu = None;
+                            }
                         }
                     }
                 }

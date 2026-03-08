@@ -6,24 +6,22 @@
 
 use std::path::{Path, PathBuf};
 
-/// All known slash commands.
-const SLASH_COMMANDS: &[&str] = &[
-    "/agent",
-    "/compact",
-    "/cost",
-    "/diff",
-    "/diff commit",
-    "/diff review",
-    "/exit",
-    "/expand",
-    "/help",
-    "/mcp",
-    "/memory",
-    "/model",
-    "/provider",
-    "/sessions",
-    "/undo",
-    "/verbose",
+/// All known slash commands with descriptions.
+/// Single source of truth — used by completer and auto-dropdown.
+pub const SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/agent", "List available sub-agents"),
+    ("/compact", "Summarize conversation to reclaim context"),
+    ("/cost", "Show token usage for this session"),
+    ("/diff", "Show git diff (review, commit)"),
+    ("/exit", "Quit the session"),
+    ("/expand", "Show full output of last tool call"),
+    ("/mcp", "MCP servers: status / add / remove"),
+    ("/memory", "View/save project & global memory"),
+    ("/model", "Pick a model interactively"),
+    ("/provider", "Switch LLM provider"),
+    ("/sessions", "List/resume/delete sessions"),
+    ("/undo", "Undo last turn's file changes"),
+    ("/verbose", "Toggle full tool output"),
 ];
 
 /// Unified Tab-completion for slash commands and @file paths.
@@ -115,8 +113,8 @@ impl InputCompleter {
             self.token = trimmed.to_string();
             self.matches = SLASH_COMMANDS
                 .iter()
-                .filter(|cmd| cmd.starts_with(trimmed) && **cmd != trimmed)
-                .map(|s| s.to_string())
+                .filter(|(cmd, _)| cmd.starts_with(trimmed) && *cmd != trimmed)
+                .map(|(cmd, _)| cmd.to_string())
                 .collect();
             self.idx = 0;
         }
