@@ -16,6 +16,62 @@ use serde::{Deserialize, Serialize};
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const ANTHROPIC_BETA_FEATURES: &str = "prompt-caching-2024-07-31";
 
+/// Beta header value for 1M extended context.
+/// See: https://docs.anthropic.com/en/docs/about-claude/models#extended-context
+const EXTENDED_CONTEXT_BETA: &str = "context-1m-2025-08-07";
+
+/// Virtual model name suffix that opts into 1M extended context.
+const EXTENDED_CONTEXT_SUFFIX: &str = "-1m";
+
+/// Models eligible for 1M extended context (per Anthropic docs).
+/// Only Claude 4.6 family and Sonnet 4.5/4.0 support the beta header.
+const EXTENDED_CONTEXT_ELIGIBLE: &[&str] = &[
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-2", // dated variant
+    "claude-sonnet-4",
+];
+
+/// Check whether a base model ID (without `-1m` suffix) is eligible
+/// for 1M extended context.
+fn is_extended_context_eligible(base_model: &str) -> bool {
+    let m = base_model.to_lowercase();
+    EXTENDED_CONTEXT_ELIGIBLE
+        .iter()
+        .any(|prefix| m.starts_with(prefix))
+}
+
+/// Strip the `-1m` suffix from a virtual model name, returning the
+/// real API model ID and whether extended context was requested.
+/// Returns an error message if the model isn't eligible for 1M.
+fn resolve_model(model: &str) -> (&str, bool) {
+    if let Some(base) = model.strip_suffix(EXTENDED_CONTEXT_SUFFIX) {
+        if is_extended_context_eligible(base) {
+            (base, true)
+        } else {
+            tracing::warn!(
+                "Model '{}' does not support 1M extended context. \
+                 Using standard 200K context.",
+                model
+            );
+            (base, false)
+        }
+    } else {
+        (model, false)
+    }
+}
+
+/// Build the `anthropic-beta` header value, appending the extended
+/// context beta flag when requested.
+fn beta_header(extended_context: bool) -> String {
+    if extended_context {
+        format!("{ANTHROPIC_BETA_FEATURES},{EXTENDED_CONTEXT_BETA}")
+    } else {
+        ANTHROPIC_BETA_FEATURES.to_string()
+    }
+}
+
 pub struct AnthropicProvider {
     client: reqwest::Client,
     base_url: String,
@@ -233,7 +289,7 @@ impl LlmProvider for AnthropicProvider {
         tools: &[ToolDefinition],
         settings: &crate::config::ModelSettings,
     ) -> Result<LlmResponse> {
-        let model = &settings.model;
+        let (api_model, extended_ctx) = resolve_model(&settings.model);
         // Extract system prompt (Anthropic puts it at the top level)
         let system = messages
             .iter()
@@ -246,7 +302,7 @@ impl LlmProvider for AnthropicProvider {
         let api_tools = Self::build_cached_tools(tools);
 
         let request = MessagesRequest {
-            model: model.to_string(),
+            model: api_model.to_string(),
             max_tokens: settings.max_tokens.unwrap_or(16384),
             system,
             messages: api_messages,
@@ -258,7 +314,7 @@ impl LlmProvider for AnthropicProvider {
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_API_VERSION)
-            .header("anthropic-beta", ANTHROPIC_BETA_FEATURES)
+            .header("anthropic-beta", beta_header(extended_ctx))
             .json(&request)
             .send()
             .await
@@ -340,14 +396,27 @@ impl LlmProvider for AnthropicProvider {
             .await
             .context("Failed to parse Anthropic models response")?;
 
-        Ok(list_resp
+        let mut models: Vec<ModelInfo> = list_resp
             .data
             .into_iter()
             .map(|m| ModelInfo {
                 id: m.id,
                 owned_by: Some("anthropic".to_string()),
             })
-            .collect())
+            .collect();
+
+        // Append virtual "-1m" variants for eligible models
+        let extended: Vec<ModelInfo> = models
+            .iter()
+            .filter(|m| is_extended_context_eligible(&m.id))
+            .map(|m| ModelInfo {
+                id: format!("{}-1m", m.id),
+                owned_by: m.owned_by.clone(),
+            })
+            .collect();
+        models.extend(extended);
+
+        Ok(models)
     }
 
     fn provider_name(&self) -> &str {
@@ -397,7 +466,7 @@ impl LlmProvider for AnthropicProvider {
         tools: &[ToolDefinition],
         settings: &crate::config::ModelSettings,
     ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
-        let model = &settings.model;
+        let (api_model, extended_ctx) = resolve_model(&settings.model);
         let system = messages
             .iter()
             .find(|m| m.role == "system")
@@ -411,7 +480,7 @@ impl LlmProvider for AnthropicProvider {
 
         // Build request body with stream: true
         let mut body = serde_json::json!({
-            "model": model,
+            "model": api_model,
             "max_tokens": max_tokens,
             "stream": true,
             "messages": serde_json::to_value(&api_messages)?,
@@ -447,7 +516,7 @@ impl LlmProvider for AnthropicProvider {
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_API_VERSION)
-            .header("anthropic-beta", ANTHROPIC_BETA_FEATURES)
+            .header("anthropic-beta", beta_header(extended_ctx))
             .json(&body)
             .send()
             .await
@@ -925,5 +994,71 @@ mod tests {
         assert_eq!(cached.len(), 1);
         // Single tool should have cache_control (it's both first and last)
         assert_eq!(cached[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    // ── Extended context (1M) tests ────────────────────────
+
+    #[test]
+    fn test_resolve_model_standard() {
+        let (model, ext) = resolve_model("claude-sonnet-4-6");
+        assert_eq!(model, "claude-sonnet-4-6");
+        assert!(!ext);
+    }
+
+    #[test]
+    fn test_resolve_model_1m_eligible() {
+        let (model, ext) = resolve_model("claude-sonnet-4-6-1m");
+        assert_eq!(model, "claude-sonnet-4-6");
+        assert!(ext);
+
+        let (model, ext) = resolve_model("claude-opus-4-6-1m");
+        assert_eq!(model, "claude-opus-4-6");
+        assert!(ext);
+
+        let (model, ext) = resolve_model("claude-sonnet-4-5-20250929-1m");
+        assert_eq!(model, "claude-sonnet-4-5-20250929");
+        assert!(ext);
+
+        let (model, ext) = resolve_model("claude-sonnet-4-20250514-1m");
+        assert_eq!(model, "claude-sonnet-4-20250514");
+        assert!(ext);
+    }
+
+    #[test]
+    fn test_resolve_model_1m_ineligible() {
+        // Opus 4.5, Haiku — not eligible, should get ext=false
+        let (model, ext) = resolve_model("claude-opus-4-5-20251101-1m");
+        assert_eq!(model, "claude-opus-4-5-20251101");
+        assert!(!ext);
+
+        let (model, ext) = resolve_model("claude-haiku-4-5-20251001-1m");
+        assert_eq!(model, "claude-haiku-4-5-20251001");
+        assert!(!ext);
+    }
+
+    #[test]
+    fn test_is_eligible() {
+        assert!(is_extended_context_eligible("claude-sonnet-4-6"));
+        assert!(is_extended_context_eligible("claude-opus-4-6"));
+        assert!(is_extended_context_eligible("claude-sonnet-4-5-20250929"));
+        assert!(is_extended_context_eligible("claude-sonnet-4-20250514"));
+
+        assert!(!is_extended_context_eligible("claude-opus-4-5-20251101"));
+        assert!(!is_extended_context_eligible("claude-haiku-4-5-20251001"));
+        assert!(!is_extended_context_eligible("claude-3-opus-20240229"));
+    }
+
+    #[test]
+    fn test_beta_header_standard() {
+        let header = beta_header(false);
+        assert_eq!(header, ANTHROPIC_BETA_FEATURES);
+        assert!(!header.contains("context-1m"));
+    }
+
+    #[test]
+    fn test_beta_header_extended() {
+        let header = beta_header(true);
+        assert!(header.contains(ANTHROPIC_BETA_FEATURES));
+        assert!(header.contains(EXTENDED_CONTEXT_BETA));
     }
 }
