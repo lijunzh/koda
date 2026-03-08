@@ -28,7 +28,7 @@ pub async fn run_headless(
 
     let agent = Arc::new(KodaAgent::new(&config, project_root.clone()).await?);
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<koda_core::engine::EngineCommand>(32);
-    let mut session = KodaSession::new(session_id, agent, db, &config, ApprovalMode::Yolo);
+    let mut session = KodaSession::new(session_id, agent, db, &config, ApprovalMode::Auto);
 
     // Process @file references and images
     let processed = input::process_input(&prompt, &project_root);

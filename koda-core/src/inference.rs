@@ -504,7 +504,7 @@ pub async fn inference_loop(
         // (Lite tier models must use sequential to avoid confusion)
         if tool_calls.len() > 1
             && config.model_tier.allows_parallel_tools()
-            && can_parallelize(&tool_calls, mode, &settings.approval.allowed_commands)
+            && can_parallelize(&tool_calls, mode)
         {
             execute_tools_parallel(
                 &tool_calls,
@@ -514,7 +514,6 @@ pub async fn inference_loop(
                 session_id,
                 tools,
                 mode,
-                &settings.approval.allowed_commands,
                 sink,
                 cancel.clone(),
             )
