@@ -1012,6 +1012,34 @@ pub async fn run(
                             history_idx = None;
                             completer.reset();
                             textarea.input(Event::Key(key));
+
+                            // Auto-show slash command dropdown when input starts with /
+                            let after_input = textarea.lines().join("\n");
+                            let trimmed_after = after_input.trim_end();
+                            if trimmed_after.starts_with('/') && !trimmed_after.contains(' ') {
+                                use crate::select_menu::{FilterResult, select_inline_filterable};
+                                match select_inline_filterable(
+                                    &mut terminal,
+                                    "\u{1f43b} Commands",
+                                    crate::completer::SLASH_COMMANDS,
+                                    trimmed_after,
+                                ) {
+                                    Ok(FilterResult::Selected(cmd)) => {
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(&cmd);
+                                    }
+                                    Ok(FilterResult::Dismissed(text)) => {
+                                        textarea.select_all();
+                                        textarea.cut();
+                                        textarea.insert_str(&text);
+                                    }
+                                    Err(_) => {}
+                                }
+                                // Reinit terminal after crossterm direct writes
+                                crossterm_events = EventStream::new();
+                                terminal = init_terminal(viewport_height)?;
+                            }
                         }
                     }
                 }

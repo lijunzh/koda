@@ -299,6 +299,215 @@ fn menu_height(options: &[SelectOption]) -> usize {
     options.len() + 2 // title + options + hint
 }
 
+// ── Filterable inline dropdown ────────────────────────────
+
+/// Result of a filterable inline selection.
+pub enum FilterResult {
+    /// User selected an option (Enter). Contains the full command string.
+    Selected(String),
+    /// User dismissed (Esc, no matches, backspaced past `/`).
+    /// Contains whatever text the user had typed.
+    Dismissed(String),
+}
+
+/// Show a filterable dropdown that accepts continued typing.
+///
+/// Unlike `select_inline`, this doesn't block input — characters typed
+/// while the menu is open update the filter and narrow the options.
+/// The menu auto-dismisses when no options match or the user backspaces
+/// past the trigger character.
+pub fn select_inline_filterable(
+    _terminal: &mut Term,
+    title: &str,
+    commands: &[(&str, &str)], // (command, description)
+    initial_input: &str,       // current text, e.g. "/"
+) -> io::Result<FilterResult> {
+    let mut current_input = initial_input.to_string();
+    let mut selected: usize = 0;
+    let mut stdout = io::stdout();
+
+    // Initial filter + render
+    let mut filtered = filter_commands(commands, &current_input);
+    if filtered.is_empty() {
+        return Ok(FilterResult::Dismissed(current_input));
+    }
+
+    let mut prev_height = 0;
+    render_filterable(&mut stdout, title, &filtered, selected, &mut prev_height)?;
+
+    loop {
+        if let Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) = event::read()?
+        {
+            match code {
+                KeyCode::Enter => {
+                    if !filtered.is_empty() {
+                        let result = filtered[selected].0.to_string();
+                        clear_filterable(&mut stdout, prev_height)?;
+                        return Ok(FilterResult::Selected(result));
+                    }
+                    clear_filterable(&mut stdout, prev_height)?;
+                    return Ok(FilterResult::Dismissed(current_input));
+                }
+                KeyCode::Esc => {
+                    clear_filterable(&mut stdout, prev_height)?;
+                    return Ok(FilterResult::Dismissed(current_input));
+                }
+                KeyCode::Up => {
+                    selected = selected.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Tab => {
+                    if !filtered.is_empty() && selected + 1 < filtered.len() {
+                        selected += 1;
+                    } else {
+                        selected = 0;
+                    }
+                }
+                KeyCode::Backspace => {
+                    current_input.pop();
+                    if current_input.is_empty() || !current_input.starts_with('/') {
+                        clear_filterable(&mut stdout, prev_height)?;
+                        return Ok(FilterResult::Dismissed(current_input));
+                    }
+                    filtered = filter_commands(commands, &current_input);
+                    if filtered.is_empty() {
+                        clear_filterable(&mut stdout, prev_height)?;
+                        return Ok(FilterResult::Dismissed(current_input));
+                    }
+                    selected = selected.min(filtered.len().saturating_sub(1));
+                }
+                KeyCode::Char(c) => {
+                    // Ctrl+C → dismiss
+                    if modifiers.contains(KeyModifiers::CONTROL) && c == 'c' {
+                        clear_filterable(&mut stdout, prev_height)?;
+                        return Ok(FilterResult::Dismissed(current_input));
+                    }
+                    current_input.push(c);
+                    filtered = filter_commands(commands, &current_input);
+                    if filtered.is_empty() {
+                        // Check if input matches an exact command (user finished typing)
+                        let exact = commands.iter().any(|(cmd, _)| *cmd == current_input);
+                        clear_filterable(&mut stdout, prev_height)?;
+                        if exact {
+                            return Ok(FilterResult::Selected(current_input));
+                        }
+                        return Ok(FilterResult::Dismissed(current_input));
+                    }
+                    selected = selected.min(filtered.len().saturating_sub(1));
+                }
+                _ => {}
+            }
+
+            render_filterable(&mut stdout, title, &filtered, selected, &mut prev_height)?;
+        }
+    }
+}
+
+/// Filter commands by prefix match against current input.
+fn filter_commands<'a>(commands: &'a [(&'a str, &'a str)], input: &str) -> Vec<(&'a str, &'a str)> {
+    commands
+        .iter()
+        .filter(|(cmd, _)| cmd.starts_with(input))
+        .copied()
+        .collect()
+}
+
+/// Render the filterable dropdown. Tracks height for cleanup.
+fn render_filterable(
+    stdout: &mut io::Stdout,
+    title: &str,
+    filtered: &[(&str, &str)],
+    selected: usize,
+    prev_height: &mut usize,
+) -> io::Result<()> {
+    // Clear previous render
+    if *prev_height > 0 {
+        clear_filterable(stdout, *prev_height)?;
+    }
+
+    let total_lines = filtered.len() + 2; // title + options + hint
+    *prev_height = total_lines;
+
+    // Scroll terminal to make room
+    for _ in 0..total_lines {
+        execute!(stdout, Print("\n"))?;
+    }
+    execute!(stdout, cursor::MoveUp(total_lines as u16))?;
+
+    // Title
+    execute!(
+        stdout,
+        Clear(ClearType::CurrentLine),
+        Print("\r  "),
+        SetForegroundColor(Color::Cyan),
+        SetAttribute(Attribute::Bold),
+        Print(title),
+        SetAttribute(Attribute::Reset),
+        cursor::MoveDown(1),
+    )?;
+
+    // Options
+    for (i, (cmd, desc)) in filtered.iter().enumerate() {
+        execute!(stdout, Clear(ClearType::CurrentLine))?;
+        if i == selected {
+            execute!(
+                stdout,
+                Print("\r  "),
+                SetForegroundColor(Color::Cyan),
+                Print("\u{203a} "),
+                SetAttribute(Attribute::Bold),
+                Print(cmd),
+                SetAttribute(Attribute::NoBold),
+                Print(format!("  {desc}")),
+                ResetColor,
+            )?;
+        } else {
+            execute!(
+                stdout,
+                Print("\r    "),
+                SetForegroundColor(Color::DarkGrey),
+                Print(cmd),
+                Print(format!("  {desc}")),
+                ResetColor,
+            )?;
+        }
+        execute!(stdout, cursor::MoveDown(1))?;
+    }
+
+    // Hint
+    execute!(
+        stdout,
+        Clear(ClearType::CurrentLine),
+        Print("\r  "),
+        SetForegroundColor(Color::DarkGrey),
+        Print(
+            "type to filter \u{00b7} \u{2191}/\u{2193} navigate \u{00b7} enter select \u{00b7} esc cancel"
+        ),
+        ResetColor,
+    )?;
+
+    // Move cursor back to top
+    execute!(stdout, cursor::MoveUp(total_lines as u16 - 1))?;
+    stdout.flush()?;
+    Ok(())
+}
+
+/// Clear the filterable dropdown from the terminal.
+fn clear_filterable(stdout: &mut io::Stdout, height: usize) -> io::Result<()> {
+    for _ in 0..height {
+        execute!(stdout, Clear(ClearType::CurrentLine), cursor::MoveDown(1))?;
+    }
+    // Move back up and clear from cursor down
+    execute!(
+        stdout,
+        cursor::MoveUp(height as u16),
+        Clear(ClearType::FromCursorDown),
+    )?;
+    stdout.flush()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +523,44 @@ mod tests {
     fn test_menu_height() {
         let opts = vec![SelectOption::new("a", ""), SelectOption::new("b", "")];
         assert_eq!(menu_height(&opts), 4); // title + 2 opts + hint
+    }
+
+    #[test]
+    fn test_filter_commands_all() {
+        let cmds = [
+            ("/help", "Show help"),
+            ("/exit", "Quit"),
+            ("/model", "Pick model"),
+        ];
+        let filtered = filter_commands(&cmds, "/");
+        assert_eq!(filtered.len(), 3);
+    }
+
+    #[test]
+    fn test_filter_commands_narrows() {
+        let cmds = [
+            ("/help", "Show help"),
+            ("/exit", "Quit"),
+            ("/model", "Pick model"),
+        ];
+        let filtered = filter_commands(&cmds, "/m");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].0, "/model");
+    }
+
+    #[test]
+    fn test_filter_commands_no_match() {
+        let cmds = [("/help", "Show help"), ("/exit", "Quit")];
+        let filtered = filter_commands(&cmds, "/z");
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_filter_commands_exact() {
+        let cmds = [("/help", "Show help"), ("/exit", "Quit")];
+        let filtered = filter_commands(&cmds, "/help");
+        // Exact match still shows (prefix match includes exact)
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].0, "/help");
     }
 }

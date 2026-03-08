@@ -250,21 +250,7 @@ fn handle_help(terminal: &mut Term, pending_command: &mut Option<String>) {
         .ok();
     }
 
-    let commands = [
-        ("/agent", "List available sub-agents"),
-        ("/compact", "Summarize conversation to reclaim context"),
-        ("/cost", "Show token usage for this session"),
-        ("/diff", "Show git diff / review / commit message"),
-        ("/expand", "Show full output of last tool call (/expand N)"),
-        ("/mcp", "MCP servers: status / add / remove / restart"),
-        ("/memory", "View/save project & global memory"),
-        ("/model", "Pick a model interactively"),
-        ("/provider", "Switch LLM provider"),
-        ("/sessions", "List/resume/delete sessions"),
-        ("/undo", "Undo last turn's file changes"),
-        ("/verbose", "Toggle full tool output (on/off)"),
-        ("/exit", "Quit the session"),
-    ];
+    let commands = crate::completer::SLASH_COMMANDS;
     let options: Vec<SelectOption> = commands
         .iter()
         .map(|(cmd, desc)| SelectOption::new(*cmd, *desc))
