@@ -86,6 +86,11 @@ enum TuiState {
     Inferring,
 }
 
+// ── Type aliases ─────────────────────────────────────────
+
+type SlashDropdown =
+    crate::widgets::dropdown::DropdownState<crate::widgets::slash_menu::SlashCommand>;
+
 // ── Viewport drawing ─────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -100,7 +105,7 @@ fn draw_viewport(
     queue_len: usize,
     elapsed_secs: u64,
     last_turn: Option<&crate::widgets::status_bar::TurnStats>,
-    slash_menu: Option<&crate::widgets::slash_menu::SlashMenuState>,
+    slash_menu: Option<&SlashDropdown>,
 ) {
     let area = frame.area();
 
@@ -367,7 +372,7 @@ pub async fn run(
     let mut pending_command: Option<String> = None;
     let mut silent_compact_deferred = false;
     let mut should_quit = false;
-    let mut slash_menu: Option<crate::widgets::slash_menu::SlashMenuState> = None;
+    let mut slash_menu: Option<SlashDropdown> = None;
     let mut inference_start: Option<std::time::Instant> = None;
     let mut history: Vec<String> = load_history();
     let mut history_idx: Option<usize> = None; // None = not browsing history
@@ -880,8 +885,10 @@ pub async fn run(
                                 continue;
                             }
                             KeyCode::Enter => {
-                                if let Some(ref menu) = slash_menu {
-                                    let cmd = menu.selected_command().to_string();
+                                if let Some(ref menu) = slash_menu
+                                    && let Some(item) = menu.selected_item()
+                                {
+                                    let cmd = item.command.to_string();
                                     textarea.select_all();
                                     textarea.cut();
                                     textarea.insert_str(&cmd);
@@ -1059,7 +1066,7 @@ pub async fn run(
                             let after_input = textarea.lines().join("\n");
                             let trimmed_after = after_input.trim_end();
                             if trimmed_after.starts_with('/') && !trimmed_after.contains(' ') {
-                                slash_menu = crate::widgets::slash_menu::SlashMenuState::from_input(
+                                slash_menu = crate::widgets::slash_menu::from_input(
                                     crate::completer::SLASH_COMMANDS,
                                     trimmed_after,
                                 );
