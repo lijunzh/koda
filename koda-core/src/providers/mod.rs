@@ -5,6 +5,8 @@
 pub mod anthropic;
 pub mod gemini;
 pub mod openai_compat;
+pub mod stream_tag_filter;
+/// Deprecated: use `stream_tag_filter` instead.
 pub mod think_tag_filter;
 
 pub mod mock;
