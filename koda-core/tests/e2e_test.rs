@@ -415,6 +415,165 @@ async fn test_glob_tool_in_sandbox() {
     assert!(output.contains("lib.rs"), "Glob should find lib.rs");
 }
 
+// ── Sub-agent E2E ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_sub_agent_invocation_e2e() {
+    let env = Env::new().await;
+
+    // Create a project-level agent config that uses the Mock provider.
+    let agents_dir = env.root.join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("echo-agent.json"),
+        serde_json::json!({
+            "name": "echo-agent",
+            "system_prompt": "You are a simple echo agent. Repeat back the user's prompt verbatim.",
+            "allowed_tools": [],
+            "provider": "mock",
+            "base_url": "http://localhost:0"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // Set mock responses for the sub-agent (read by MockProvider::from_env).
+    // The sub-agent will receive the prompt and return this response.
+    // SAFETY: test runs sequentially; no other thread reads this env var concurrently.
+    unsafe {
+        std::env::set_var(
+            "KODA_MOCK_RESPONSES",
+            r#"[{"text": "Echo: review the auth module"}]"#,
+        );
+    }
+
+    env.insert_user_message("delegate to echo-agent").await;
+
+    // Parent mock: first returns InvokeAgent tool call, then final text.
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({
+                "agent_name": "echo-agent",
+                "prompt": "review the auth module"
+            }),
+        ),
+        MockResponse::Text("Sub-agent says: Echo: review the auth module".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    // Clean up env var
+    // SAFETY: test cleanup; no concurrent readers.
+    unsafe {
+        std::env::remove_var("KODA_MOCK_RESPONSES");
+    }
+
+    // Should have SubAgentStart event
+    assert!(
+        events.iter().any(
+            |e| matches!(e, EngineEvent::SubAgentStart { agent_name } if agent_name == "echo-agent")
+        ),
+        "expected SubAgentStart for echo-agent, got: {events:?}"
+    );
+
+    // Should have tool result containing the sub-agent's output
+    let tool_result = events.iter().find_map(|e| {
+        if let EngineEvent::ToolCallResult { output, name, .. } = e
+            && name == "InvokeAgent"
+        {
+            return Some(output.clone());
+        }
+        None
+    });
+    assert!(
+        tool_result.is_some(),
+        "expected InvokeAgent tool result, got: {events:?}"
+    );
+    assert!(
+        tool_result
+            .unwrap()
+            .contains("Echo: review the auth module"),
+        "sub-agent result should contain echoed prompt"
+    );
+
+    // Should end with final text response
+    let last = env
+        .db
+        .last_assistant_message(&env.session_id)
+        .await
+        .unwrap();
+    assert!(
+        last.contains("Sub-agent says"),
+        "final response should reference sub-agent output: {last}"
+    );
+}
+
+#[tokio::test]
+async fn test_sub_agent_cache_hit_skips_llm() {
+    let env = Env::new().await;
+
+    // Create the same echo-agent
+    let agents_dir = env.root.join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("echo-agent.json"),
+        serde_json::json!({
+            "name": "echo-agent",
+            "system_prompt": "You are a simple echo agent.",
+            "allowed_tools": [],
+            "provider": "mock",
+            "base_url": "http://localhost:0"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // Sub-agent mock: only ONE response available.
+    // If the cache doesn't work, the second InvokeAgent call will hit
+    // the mock again and get an empty text (exhausted), or error.
+    // SAFETY: test runs sequentially; no other thread reads this env var concurrently.
+    unsafe {
+        std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"text": "cached result"}]"#);
+    }
+    env.insert_user_message("call the agent twice").await;
+
+    // Parent mock: calls the SAME sub-agent with the SAME prompt twice,
+    // then returns final text. The second call should hit the cache.
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({"agent_name": "echo-agent", "prompt": "do the thing"}),
+        ),
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({"agent_name": "echo-agent", "prompt": "do the thing"}),
+        ),
+        MockResponse::Text("Done with both calls.".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+    // SAFETY: test cleanup; no concurrent readers.
+    unsafe {
+        std::env::remove_var("KODA_MOCK_RESPONSES");
+    }
+
+    // Should have cache hit info event on the second invocation
+    let cache_hit = events
+        .iter()
+        .any(|e| matches!(e, EngineEvent::Info { message } if message.contains("cache hit")));
+    assert!(cache_hit, "expected cache hit event, got: {events:?}");
+
+    // Should still produce final response
+    let last = env
+        .db
+        .last_assistant_message(&env.session_id)
+        .await
+        .unwrap();
+    assert!(
+        last.contains("Done with both calls"),
+        "should complete with final response: {last}"
+    );
+}
+
 // ── Compaction E2E ────────────────────────────────────────────
 
 #[tokio::test]
