@@ -95,6 +95,7 @@ type ProviderDropdown =
     crate::widgets::dropdown::DropdownState<crate::widgets::provider_menu::ProviderItem>;
 type SessionDropdown =
     crate::widgets::dropdown::DropdownState<crate::widgets::session_menu::SessionItem>;
+type FileDropdown = crate::widgets::dropdown::DropdownState<crate::widgets::file_menu::FileItem>;
 
 /// What's currently shown in the `menu_area` below the status bar.
 /// Only one menu can be active at a time.
@@ -109,6 +110,12 @@ enum MenuContent {
     Provider(ProviderDropdown),
     /// Session picker dropdown (`/sessions` with no args).
     Session(SessionDropdown),
+    /// File picker dropdown (auto-appears on `@`).
+    File {
+        dropdown: FileDropdown,
+        /// Text before the `@` token (to reconstruct the full input).
+        prefix: String,
+    },
     /// Wizard trail — completed steps shown dimmed during multi-step flow.
     WizardTrail(Vec<(String, String)>),
     /// Approval hotkey bar — shown during inference when engine requests approval.
@@ -212,6 +219,10 @@ fn draw_viewport(
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
         MenuContent::Session(dd) => {
+            let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
+            frame.render_widget(Paragraph::new(lines), menu_area);
+        }
+        MenuContent::File { dropdown: dd, .. } => {
             let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
@@ -1263,6 +1274,7 @@ pub async fn run(
                                 MenuContent::Model(dd) => dd.up(),
                                 MenuContent::Provider(dd) => dd.up(),
                                 MenuContent::Session(dd) => dd.up(),
+                                MenuContent::File { dropdown: dd, .. } => dd.up(),
                                 MenuContent::Approval { .. } | MenuContent::WizardTrail(_) | MenuContent::None => {}
                             }
                             continue;
@@ -1272,6 +1284,7 @@ pub async fn run(
                                 MenuContent::Model(dd) => dd.down(),
                                 MenuContent::Provider(dd) => dd.down(),
                                 MenuContent::Session(dd) => dd.down(),
+                                MenuContent::File { dropdown: dd, .. } => dd.down(),
                                 MenuContent::Approval { .. } | MenuContent::WizardTrail(_) | MenuContent::None => {}
                             }
                             continue;
@@ -1384,7 +1397,21 @@ pub async fn run(
                                             }
                                         }
                                     }
-                                    MenuContent::Approval { .. } | MenuContent::WizardTrail(_) | MenuContent::None => {}
+                                    MenuContent::File {
+                                        dropdown,
+                                        prefix,
+                                    } => {
+                                        if let Some(item) = dropdown.selected_item() {
+                                            let replacement =
+                                                format!("{prefix}@{}", item.path);
+                                            textarea.select_all();
+                                            textarea.cut();
+                                            textarea.insert_str(&replacement);
+                                        }
+                                    }
+                                    MenuContent::Approval { .. }
+                                    | MenuContent::WizardTrail(_)
+                                    | MenuContent::None => {}
                                 }
                                 menu = MenuContent::None;
                                 continue;
@@ -1693,21 +1720,53 @@ pub async fn run(
                             completer.reset();
                             textarea.input(Event::Key(key));
 
-                            // Update slash menu state reactively
+                            // Update menu state reactively based on input
                             let after_input = textarea.lines().join("\n");
                             let trimmed_after = after_input.trim_end();
+
                             if trimmed_after.starts_with('/') && !trimmed_after.contains(' ') {
+                                // Slash command dropdown
                                 if let Some(dd) = crate::widgets::slash_menu::from_input(
                                     crate::completer::SLASH_COMMANDS,
                                     trimmed_after,
                                 ) {
                                     menu = MenuContent::Slash(dd);
-                                } else {
+                                } else if matches!(menu, MenuContent::Slash(_)) {
+                                    menu = MenuContent::None;
+                                }
+                            } else if let Some(at_pos) =
+                                crate::completer::find_last_at_token(trimmed_after)
+                            {
+                                // @file dropdown
+                                let partial = &trimmed_after[at_pos + 1..];
+                                let prefix = &trimmed_after[..at_pos];
+                                let matches =
+                                    crate::completer::list_path_matches_public(
+                                        &project_root,
+                                        partial,
+                                    );
+                                if !matches.is_empty() {
+                                    let items: Vec<crate::widgets::file_menu::FileItem> = matches
+                                        .iter()
+                                        .map(|p| crate::widgets::file_menu::FileItem {
+                                            path: p.clone(),
+                                            is_dir: p.ends_with('/'),
+                                        })
+                                        .collect();
+                                    let dd = crate::widgets::dropdown::DropdownState::new(
+                                        items,
+                                        "\u{1f4c2} Files",
+                                    );
+                                    menu = MenuContent::File {
+                                        dropdown: dd,
+                                        prefix: prefix.to_string(),
+                                    };
+                                } else if matches!(menu, MenuContent::File { .. }) {
                                     menu = MenuContent::None;
                                 }
                             } else {
-                                // Only clear if it was a slash menu (don't dismiss model picker)
-                                if matches!(menu, MenuContent::Slash(_)) {
+                                // Clear menu if it was a slash or file menu
+                                if matches!(menu, MenuContent::Slash(_) | MenuContent::File { .. }) {
                                     menu = MenuContent::None;
                                 }
                             }

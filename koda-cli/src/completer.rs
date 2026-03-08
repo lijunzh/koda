@@ -193,6 +193,12 @@ pub fn find_last_at_token(text: &str) -> Option<usize> {
 }
 
 /// List filesystem paths matching a partial path relative to project_root.
+/// Public wrapper for the `@` auto-dropdown in `tui_app.rs`.
+pub fn list_path_matches_public(project_root: &Path, partial: &str) -> Vec<String> {
+    list_path_matches(project_root, partial)
+}
+
+/// List filesystem paths matching a partial path relative to project_root.
 ///
 /// Uses fuzzy subsequence matching: `@mrs` matches `main.rs`, `@ctml` matches `Cargo.toml`.
 /// Prefix matches rank higher than fuzzy matches.
