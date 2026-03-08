@@ -12,6 +12,7 @@ use crate::memory;
 use crate::preview;
 use crate::prompt::build_system_prompt;
 use crate::providers::{ChatMessage, ToolCall};
+use crate::sub_agent_cache::SubAgentCache;
 use crate::tools::{self, ToolRegistry};
 
 use anyhow::{Context, Result};
@@ -59,6 +60,7 @@ pub(crate) async fn execute_one_tool(
     mode: ApprovalMode,
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
+    sub_agent_cache: &SubAgentCache,
 ) -> (String, String) {
     let result = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
@@ -75,6 +77,7 @@ pub(crate) async fn execute_one_tool(
             // Sub-agents get a fresh command channel (they auto-approve in all modes)
             &mut mpsc::channel(1).1,
             Some(tools.file_read_cache()),
+            sub_agent_cache,
         )
         .await
         {
@@ -82,10 +85,19 @@ pub(crate) async fn execute_one_tool(
             Err(e) => format!("Error invoking sub-agent: {e}"),
         }
     } else {
+        // Invalidate sub-agent cache on file mutations
+        if is_mutating_tool(&tc.function_name) {
+            sub_agent_cache.invalidate();
+        }
         let r = tools.execute(&tc.function_name, &tc.arguments).await;
         r.output
     };
     (tc.id.clone(), result)
+}
+
+/// Tools that mutate files/state — trigger sub-agent cache invalidation.
+fn is_mutating_tool(name: &str) -> bool {
+    matches!(name, "Write" | "Edit" | "Delete" | "Bash" | "MemoryWrite")
 }
 
 /// Run multiple tool calls concurrently and store results.
@@ -100,6 +112,7 @@ pub(crate) async fn execute_tools_parallel(
     mode: ApprovalMode,
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
+    sub_agent_cache: &SubAgentCache,
 ) -> Result<()> {
     // Print all tool call banners upfront
     for tc in tool_calls {
@@ -130,6 +143,7 @@ pub(crate) async fn execute_tools_parallel(
                 mode,
                 sink,
                 cancel.clone(),
+                sub_agent_cache,
             )
         })
         .collect();
@@ -164,6 +178,100 @@ pub(crate) async fn execute_tools_parallel(
     }
     Ok(())
 }
+
+/// Split a mixed batch: run parallelizable tools concurrently, then
+/// execute remaining tools sequentially.
+///
+/// This is the key optimization for mixed batches like
+/// `[InvokeAgent, InvokeAgent, Write]` — the two sub-agents run in
+/// parallel while the Write waits for confirmation.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_tools_split_batch(
+    tool_calls: &[ToolCall],
+    project_root: &Path,
+    config: &KodaConfig,
+    db: &Database,
+    session_id: &str,
+    tools: &crate::tools::ToolRegistry,
+    mode: ApprovalMode,
+    settings: &mut Settings,
+    sink: &dyn crate::engine::EngineSink,
+    cancel: CancellationToken,
+    cmd_rx: &mut mpsc::Receiver<EngineCommand>,
+    sub_agent_cache: &SubAgentCache,
+) -> Result<()> {
+    // Partition into parallelizable vs sequential
+    let (parallel, sequential): (Vec<_>, Vec<_>) =
+        tool_calls.iter().partition(|tc| {
+            let args: serde_json::Value =
+                serde_json::from_str(&tc.arguments).unwrap_or_default();
+            matches!(
+                approval::check_tool(&tc.function_name, &args, mode),
+                ToolApproval::AutoApprove
+            )
+        });
+
+    // Run parallelizable tools concurrently (if more than one)
+    if parallel.len() > 1 {
+        for tc in &parallel {
+            sink.emit(EngineEvent::ToolCallStart {
+                id: tc.id.clone(),
+                name: tc.function_name.clone(),
+                args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
+                is_sub_agent: false,
+            });
+        }
+        sink.emit(EngineEvent::Info {
+            message: format!("Running {} tools in parallel...", parallel.len()),
+        });
+
+        let futures: Vec<_> = parallel
+            .iter()
+            .map(|tc| {
+                execute_one_tool(
+                    tc, project_root, config, db, session_id, tools, mode, sink,
+                    cancel.clone(), sub_agent_cache,
+                )
+            })
+            .collect();
+        let results = futures_util::future::join_all(futures).await;
+
+        for (j, (tc_id, result)) in results.into_iter().enumerate() {
+            sink.emit(EngineEvent::ToolCallResult {
+                id: tc_id.clone(),
+                name: parallel[j].function_name.clone(),
+                output: result.clone(),
+            });
+            let stored = truncate_for_history(&result, tools.caps.tool_result_chars);
+            db.insert_message(session_id, &Role::Tool, Some(&stored), None, Some(&tc_id), None)
+                .await?;
+            crate::progress::track_progress(
+                db, session_id, &parallel[j].function_name, &parallel[j].arguments, &result,
+            ).await;
+        }
+    } else {
+        // 0–1 parallelizable tools — just run sequentially
+        for tc in &parallel {
+            let calls = std::slice::from_ref(*tc);
+            execute_tools_sequential(
+                calls, project_root, config, db, session_id, tools, mode,
+                settings, sink, cancel.clone(), cmd_rx, sub_agent_cache,
+            ).await?;
+        }
+    }
+
+    // Run non-parallelizable tools sequentially
+    if !sequential.is_empty() {
+        let seq_calls: Vec<ToolCall> = sequential.into_iter().cloned().collect();
+        execute_tools_sequential(
+            &seq_calls, project_root, config, db, session_id, tools, mode,
+            settings, sink, cancel.clone(), cmd_rx, sub_agent_cache,
+        ).await?;
+    }
+
+    Ok(())
+}
+
 /// Run tool calls one at a time (when confirmation is needed, or single call).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_tools_sequential(
@@ -178,6 +286,7 @@ pub(crate) async fn execute_tools_sequential(
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
+    sub_agent_cache: &SubAgentCache,
 ) -> Result<()> {
     for tc in tool_calls {
         // Check for interrupt before each tool
@@ -285,6 +394,7 @@ pub(crate) async fn execute_tools_sequential(
             mode,
             sink,
             cancel.clone(),
+            sub_agent_cache,
         )
         .await;
         sink.emit(EngineEvent::ToolCallResult {
@@ -316,6 +426,9 @@ pub(crate) async fn execute_tools_sequential(
 ///
 /// When `parent_cache` is provided, the sub-agent shares the parent's
 /// file-read cache so reads by one agent benefit all others.
+///
+/// Results are cached in `sub_agent_cache` keyed by `(agent_name, prompt_hash)`.
+/// On cache hit, returns immediately without any LLM calls.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_sub_agent(
     project_root: &Path,
@@ -328,6 +441,7 @@ pub(crate) async fn execute_sub_agent(
     _cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     parent_cache: Option<crate::tools::FileReadCache>,
+    sub_agent_cache: &SubAgentCache,
 ) -> Result<String> {
     let args: serde_json::Value = serde_json::from_str(arguments)?;
     let agent_name = args["agent_name"]
@@ -337,6 +451,17 @@ pub(crate) async fn execute_sub_agent(
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'prompt'"))?;
     let session_id = args["session_id"].as_str().map(|s| s.to_string());
+
+    // Check result cache (only for stateless calls without a session_id,
+    // since session continuations need fresh execution).
+    if session_id.is_none() {
+        if let Some(cached) = sub_agent_cache.get(agent_name, prompt) {
+            sink.emit(EngineEvent::Info {
+                message: format!("  \u{26a1} {agent_name}: cache hit, skipping LLM call"),
+            });
+            return Ok(cached);
+        }
+    }
 
     sink.emit(EngineEvent::SubAgentStart {
         agent_name: agent_name.to_string(),
@@ -427,9 +552,12 @@ pub(crate) async fn execute_sub_agent(
         .await?;
 
         if response.tool_calls.is_empty() {
-            return Ok(response
+            let result = response
                 .content
-                .unwrap_or_else(|| "(no output)".to_string()));
+                .unwrap_or_else(|| "(no output)".to_string());
+            // Cache the result for future identical calls
+            sub_agent_cache.put(agent_name, prompt, &result);
+            return Ok(result);
         }
 
         for tc in &response.tool_calls {
@@ -587,5 +715,29 @@ mod tests {
     fn test_can_parallelize_agents() {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("InvokeAgent")];
         assert!(can_parallelize(&calls, ApprovalMode::Strict));
+    }
+
+    #[test]
+    fn test_is_mutating_tool() {
+        assert!(is_mutating_tool("Write"));
+        assert!(is_mutating_tool("Edit"));
+        assert!(is_mutating_tool("Delete"));
+        assert!(is_mutating_tool("Bash"));
+        assert!(is_mutating_tool("MemoryWrite"));
+        assert!(!is_mutating_tool("Read"));
+        assert!(!is_mutating_tool("List"));
+        assert!(!is_mutating_tool("InvokeAgent"));
+    }
+
+    #[test]
+    fn test_mixed_batch_not_fully_parallelizable() {
+        let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("Write")];
+        assert!(!can_parallelize(&calls, ApprovalMode::Strict));
+    }
+
+    #[test]
+    fn test_mixed_batch_fully_parallelizable_in_auto() {
+        let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("Write")];
+        assert!(can_parallelize(&calls, ApprovalMode::Auto));
     }
 }
