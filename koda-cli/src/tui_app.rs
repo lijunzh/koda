@@ -109,12 +109,44 @@ enum MenuContent {
     Provider(ProviderDropdown),
     /// Session picker dropdown (`/sessions` with no args).
     Session(SessionDropdown),
+    /// Wizard trail — completed steps shown dimmed during multi-step flow.
+    WizardTrail(Vec<(String, String)>),
 }
 
 impl MenuContent {
     fn is_none(&self) -> bool {
         matches!(self, MenuContent::None)
     }
+}
+
+/// What the prompt input area is currently doing.
+/// Normally it's chat input. During wizard flows, it's repurposed
+/// for text input (API key, URL, etc.).
+#[derive(Clone)]
+enum PromptMode {
+    /// Normal chat input: ⚡> █
+    Chat,
+    /// Wizard text input: label: █ (or label: ••••█ when masked)
+    WizardInput {
+        label: String,
+        #[allow(dead_code)] // TODO: implement textarea masking for API keys
+        masked: bool,
+    },
+}
+
+/// Provider setup wizard state machine.
+/// Each variant holds the data collected so far.
+enum ProviderWizard {
+    /// Step 1: provider selected, now need API key (or URL for local providers).
+    NeedApiKey {
+        provider_type: koda_core::config::ProviderType,
+        base_url: String,
+        env_name: String,
+    },
+    /// Step 1 (local): provider selected, now need URL.
+    NeedUrl {
+        provider_type: koda_core::config::ProviderType,
+    },
 }
 
 // ── Viewport drawing ─────────────────────────────────────────
@@ -128,6 +160,7 @@ fn draw_viewport(
     mode: ApprovalMode,
     context_pct: u32,
     state: TuiState,
+    prompt_mode: &PromptMode,
     queue_len: usize,
     elapsed_secs: u64,
     last_turn: Option<&crate::widgets::status_bar::TurnStats>,
@@ -176,23 +209,51 @@ fn draw_viewport(
             let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
+        MenuContent::WizardTrail(trail) => {
+            let mut lines: Vec<Line> = trail
+                .iter()
+                .map(|(label, value)| {
+                    Line::from(vec![
+                        Span::styled(
+                            format!("  {label}: "),
+                            Style::default().fg(Color::Rgb(124, 111, 100)),
+                        ),
+                        Span::styled(
+                            value.clone(),
+                            Style::default().fg(Color::Rgb(198, 165, 106)),
+                        ),
+                    ])
+                })
+                .collect();
+            lines.push(Line::from(Span::styled(
+                "  enter to confirm \u{00b7} esc to cancel",
+                Style::default().fg(Color::Rgb(124, 111, 100)),
+            )));
+            frame.render_widget(Paragraph::new(lines), menu_area);
+        }
         MenuContent::None => {}
     }
 
     // Prompt icon + textarea
-    let (icon, color) = match (state, mode) {
-        (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray),
-        (_, ApprovalMode::Safe) => ("🔍", Color::Yellow),
-        (_, ApprovalMode::Strict) => ("🔒", Color::Cyan),
-        (_, ApprovalMode::Auto) => ("⚡", Color::Green),
+    let (prompt_text, color) = match prompt_mode {
+        PromptMode::WizardInput { label, .. } => (format!("{label}: "), Color::Cyan),
+        PromptMode::Chat => {
+            let (icon, c) = match (state, mode) {
+                (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray),
+                (_, ApprovalMode::Safe) => ("\u{1f50d}", Color::Yellow),
+                (_, ApprovalMode::Strict) => ("\u{1f512}", Color::Cyan),
+                (_, ApprovalMode::Auto) => ("\u{26a1}", Color::Green),
+            };
+            (format!("{icon}> "), c)
+        }
     };
-    let prompt_width: u16 = 4;
+    let prompt_width: u16 = prompt_text.len().min(30) as u16;
     let [prompt_area, text_area] =
         Layout::horizontal([Constraint::Length(prompt_width), Constraint::Fill(1)])
             .areas(input_rows);
 
     frame.render_widget(
-        Paragraph::new(format!("{icon}> ")).style(Style::default().fg(color)),
+        Paragraph::new(prompt_text).style(Style::default().fg(color)),
         prompt_area,
     );
     frame.render_widget(textarea, text_area);
@@ -412,6 +473,8 @@ pub async fn run(
     let mut silent_compact_deferred = false;
     let mut should_quit = false;
     let mut menu = MenuContent::None;
+    let mut prompt_mode = PromptMode::Chat;
+    let mut provider_wizard: Option<ProviderWizard> = None;
     let mut inference_start: Option<std::time::Instant> = None;
     let mut history: Vec<String> = load_history();
     let mut history_idx: Option<usize> = None; // None = not browsing history
@@ -442,6 +505,7 @@ pub async fn run(
             mode,
             ctx,
             tui_state,
+            &prompt_mode,
             input_queue.len(),
             inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
             renderer.last_turn_stats.as_ref(),
@@ -671,6 +735,7 @@ pub async fn run(
                                         mode,
                                         ctx,
                                         tui_state,
+                                        &prompt_mode,
                                         input_queue.len(),
                                         0,
                                         renderer.last_turn_stats.as_ref(),
@@ -779,6 +844,7 @@ pub async fn run(
                                         mode,
                                         ctx,
                                         tui_state,
+                                        &prompt_mode,
                                         input_queue.len(),
                                         inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
                                         renderer.last_turn_stats.as_ref(),
@@ -1029,6 +1095,7 @@ pub async fn run(
                 mode,
                 ctx,
                 tui_state,
+                &prompt_mode,
                 input_queue.len(),
                 inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
                 renderer.last_turn_stats.as_ref(),
@@ -1062,7 +1129,7 @@ pub async fn run(
                                 MenuContent::Model(dd) => dd.up(),
                                 MenuContent::Provider(dd) => dd.up(),
                                 MenuContent::Session(dd) => dd.up(),
-                                MenuContent::None => {}
+                                MenuContent::WizardTrail(_) | MenuContent::None => {}
                             }
                             continue;
                         } else if is_down {
@@ -1071,7 +1138,7 @@ pub async fn run(
                                 MenuContent::Model(dd) => dd.down(),
                                 MenuContent::Provider(dd) => dd.down(),
                                 MenuContent::Session(dd) => dd.down(),
-                                MenuContent::None => {}
+                                MenuContent::WizardTrail(_) | MenuContent::None => {}
                             }
                             continue;
                         }
@@ -1113,29 +1180,42 @@ pub async fn run(
                                             let key = item.key;
                                             let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
                                             let base_url = ptype.default_base_url().to_string();
-                                            // Close the dropdown first
-                                            menu = MenuContent::None;
-                                            // Delegate to the existing setup flow
-                                            // (handles API key prompt, connection verify, etc.)
-                                            crate::tui_wizards::handle_setup_provider(
-                                                &mut terminal,
-                                                &mut config,
-                                                &provider,
-                                                ptype,
-                                                base_url,
-                                            )
-                                            .await;
-                                            // Refresh after provider change
-                                            renderer.model = config.model.clone();
-                                            let prov = provider.read().await;
-                                            if let Ok(models) = prov.list_models().await {
-                                                completer.set_model_names(
-                                                    models.iter().map(|m| m.id.clone()).collect(),
-                                                );
+                                            let provider_name = item.name.to_string();
+
+                                            if ptype.requires_api_key() {
+                                                // Start wizard: need API key
+                                                let env_name = ptype.env_key_name().to_string();
+                                                menu = MenuContent::WizardTrail(vec![
+                                                    ("Provider".into(), provider_name),
+                                                ]);
+                                                prompt_mode = PromptMode::WizardInput {
+                                                    label: format!("API key for {}", ptype),
+                                                    masked: true,
+                                                };
+                                                provider_wizard = Some(ProviderWizard::NeedApiKey {
+                                                    provider_type: ptype,
+                                                    base_url,
+                                                    env_name,
+                                                });
+                                                textarea.select_all();
+                                                textarea.cut();
+                                            } else {
+                                                // Local provider: need URL
+                                                menu = MenuContent::WizardTrail(vec![
+                                                    ("Provider".into(), provider_name),
+                                                ]);
+                                                prompt_mode = PromptMode::WizardInput {
+                                                    label: format!("{} URL", ptype),
+                                                    masked: false,
+                                                };
+                                                provider_wizard = Some(ProviderWizard::NeedUrl {
+                                                    provider_type: ptype,
+                                                });
+                                                textarea.select_all();
+                                                textarea.cut();
+                                                // Pre-fill with default URL
+                                                textarea.insert_str(&base_url);
                                             }
-                                            // Reinit terminal after crossterm writes from setup
-                                            crossterm_events = EventStream::new();
-                                            terminal = init_terminal(viewport_height)?;
                                         }
                                         continue;
                                     }
@@ -1170,13 +1250,20 @@ pub async fn run(
                                             }
                                         }
                                     }
-                                    MenuContent::None => {}
+                                    MenuContent::WizardTrail(_) | MenuContent::None => {}
                                 }
                                 menu = MenuContent::None;
                                 continue;
                             }
                             KeyCode::Esc => {
                                 menu = MenuContent::None;
+                                // Cancel wizard if active
+                                if matches!(prompt_mode, PromptMode::WizardInput { .. }) {
+                                    prompt_mode = PromptMode::Chat;
+                                    provider_wizard = None;
+                                    textarea.select_all();
+                                    textarea.cut();
+                                }
                                 continue;
                             }
                             _ => {
@@ -1196,6 +1283,138 @@ pub async fn run(
                             textarea.insert_newline();
                         }
                         (KeyCode::Enter, KeyModifiers::NONE) => {
+                            // Wizard input mode: submit value to wizard
+                            if matches!(prompt_mode, PromptMode::WizardInput { .. }) {
+                                let value = textarea.lines().join("");
+                                textarea.select_all();
+                                textarea.cut();
+
+                                if let Some(wizard) = provider_wizard.take() {
+                                    match wizard {
+                                        ProviderWizard::NeedApiKey {
+                                            provider_type,
+                                            base_url,
+                                            env_name,
+                                        } => {
+                                            if !value.is_empty() {
+                                                koda_core::runtime_env::set(&env_name, &value);
+                                                // Persist to keystore
+                                                if let Ok(mut store) =
+                                                    koda_core::keystore::KeyStore::load()
+                                                {
+                                                    store.set(&env_name, &value);
+                                                    let _ = store.save();
+                                                }
+                                                let masked =
+                                                    koda_core::keystore::mask_key(&value);
+                                                emit_above(
+                                                    &mut terminal,
+                                                    Line::styled(
+                                                        format!(
+                                                            "  \u{2714} {env_name} set to {masked}"
+                                                        ),
+                                                        Style::default().fg(Color::Green),
+                                                    ),
+                                                );
+                                            }
+                                            // Apply provider config
+                                            config.provider_type = provider_type.clone();
+                                            config.base_url = base_url;
+                                            config.model =
+                                                provider_type.default_model().to_string();
+                                            config.model_settings.model = config.model.clone();
+                                            config.recalculate_model_derived();
+                                            *provider.write().await =
+                                                koda_core::providers::create_provider(&config);
+                                            crate::tui_wizards::save_provider(&config);
+                                            // Verify connection + auto-select model
+                                            let prov = provider.read().await;
+                                            if let Ok(models) = prov.list_models().await {
+                                                if let Some(first) = models.first() {
+                                                    config.model = first.id.clone();
+                                                    config.model_settings.model =
+                                                        config.model.clone();
+                                                    config.recalculate_model_derived();
+                                                }
+                                                config
+                                                    .query_and_apply_capabilities(prov.as_ref())
+                                                    .await;
+                                                completer.set_model_names(
+                                                    models
+                                                        .iter()
+                                                        .map(|m| m.id.clone())
+                                                        .collect(),
+                                                );
+                                            }
+                                            renderer.model = config.model.clone();
+                                            emit_above(
+                                                &mut terminal,
+                                                Line::styled(
+                                                    format!(
+                                                        "  \u{2714} Provider: {} ({})",
+                                                        config.provider_type, config.model
+                                                    ),
+                                                    Style::default().fg(Color::Green),
+                                                ),
+                                            );
+                                        }
+                                        ProviderWizard::NeedUrl { provider_type } => {
+                                            let url = if value.is_empty() {
+                                                provider_type
+                                                    .default_base_url()
+                                                    .to_string()
+                                            } else {
+                                                value
+                                            };
+                                            config.provider_type = provider_type;
+                                            config.base_url = url.clone();
+                                            config.model = config
+                                                .provider_type
+                                                .default_model()
+                                                .to_string();
+                                            config.model_settings.model = config.model.clone();
+                                            config.recalculate_model_derived();
+                                            *provider.write().await =
+                                                koda_core::providers::create_provider(&config);
+                                            crate::tui_wizards::save_provider(&config);
+                                            let prov = provider.read().await;
+                                            if let Ok(models) = prov.list_models().await {
+                                                if let Some(first) = models.first() {
+                                                    config.model = first.id.clone();
+                                                    config.model_settings.model =
+                                                        config.model.clone();
+                                                    config.recalculate_model_derived();
+                                                }
+                                                config
+                                                    .query_and_apply_capabilities(prov.as_ref())
+                                                    .await;
+                                                completer.set_model_names(
+                                                    models
+                                                        .iter()
+                                                        .map(|m| m.id.clone())
+                                                        .collect(),
+                                                );
+                                            }
+                                            renderer.model = config.model.clone();
+                                            emit_above(
+                                                &mut terminal,
+                                                Line::styled(
+                                                    format!(
+                                                        "  \u{2714} Provider: {} at {}",
+                                                        config.provider_type, url
+                                                    ),
+                                                    Style::default().fg(Color::Green),
+                                                ),
+                                            );
+                                        }
+                                    }
+                                }
+                                // Reset wizard state
+                                prompt_mode = PromptMode::Chat;
+                                menu = MenuContent::None;
+                                continue;
+                            }
+
                             // Paste detection: peek ahead for more input.
                             // If characters arrive within 30ms, it's a paste —
                             // insert newline instead of submitting.
