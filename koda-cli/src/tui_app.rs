@@ -108,8 +108,8 @@ fn draw_viewport(
     // Prompt icon + textarea
     let (icon, color) = match (state, mode) {
         (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray), // ⏳ during inference
-        (_, ApprovalMode::Safe) => ("📋", Color::Yellow),
-        (_, ApprovalMode::Strict) => ("🐻", Color::Cyan),
+        (_, ApprovalMode::Safe) => ("🔍", Color::Yellow),
+        (_, ApprovalMode::Strict) => ("🔒", Color::Cyan),
         (_, ApprovalMode::Auto) => ("⚡", Color::Green),
     };
     let prompt_width: u16 = 4;
@@ -408,8 +408,8 @@ pub async fn run(
                 // Echo queued input above viewport
                 let mode = approval::read_mode(&shared_mode);
                 let icon = match mode {
-                    ApprovalMode::Safe => "📋",
-                    ApprovalMode::Strict => "🐻",
+                    ApprovalMode::Safe => "🔍",
+                    ApprovalMode::Strict => "🔒",
                     ApprovalMode::Auto => "⚡",
                 };
                 emit_above(
@@ -866,8 +866,8 @@ pub async fn run(
                                         history_idx = None;
                                         let mode = approval::read_mode(&shared_mode);
                                         let icon = match mode {
-                                            ApprovalMode::Safe => "📋",
-                                            ApprovalMode::Strict => "🐻",
+                                            ApprovalMode::Safe => "🔍",
+                                            ApprovalMode::Strict => "🔒",
                                             ApprovalMode::Auto => "⚡",
                                         };
                                         emit_above(&mut terminal, Line::from(vec![
