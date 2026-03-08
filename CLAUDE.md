@@ -111,6 +111,7 @@ koda/
 │   │   ├── lib.rs          # Crate root (exports acp_adapter)
 │   │   └── widgets/        # TUI widgets
 │   │       ├── approval.rs # Inline approval prompt (approve/reject/feedback)
+│   │       ├── slash_menu.rs# Slash command dropdown (ratatui-native, see DESIGN.md §14)
 │   │       ├── status_bar.rs# Model, mode, context meter, elapsed time
 │   │       └── text_input.rs# Inline text input (masked for API keys)
 │   └── tests/              # CLI integration tests
@@ -133,10 +134,23 @@ koda/
 
 `main.rs` → `tui_app.rs` (TUI event loop) → `KodaSession::run_turn()` → `inference_loop()` (streaming LLM + tools)
 
-The TUI uses `ratatui::Viewport::Inline` for a persistent input bar + status bar at the bottom.
+The TUI uses `ratatui::Viewport::Inline` with a fixed 12-line viewport.
 Engine output is rendered above the viewport via `insert_before()`. Slash commands use
 crossterm direct writes (`write_line()`). These two rendering paths must never be mixed
 within a single operation.
+
+**Viewport layout** (see DESIGN.md §14):
+```
+[output scrollback]          ← insert_before()
+─── 🐻 ─                        ← separator
+⚡> input                      ← fixed position, sized to content
+──────────────────────────────
+model │ auto │ 0%               ← status bar (hugs input)
+[menu_area]                    ← dropdown / approval / wizard (Min(0))
+```
+
+All interactive UI renders in `menu_area`. The prompt and status bar never move.
+See DESIGN.md §14 for the interaction system design and competitive analysis.
 
 The engine communicates through `EngineEvent` (output) and `EngineCommand` (input) enums.
 Approval flows through async channels: engine emits `ApprovalRequest`, client sends `ApprovalResponse`.

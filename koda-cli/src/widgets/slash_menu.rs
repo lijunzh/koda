@@ -9,7 +9,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
-// Warm palette (matches help_overlay and separator)
+// Warm palette (matches separator)
 const DIM: Style = Style::new().fg(Color::Rgb(124, 111, 100));
 const SELECTED_CMD: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 const UNSELECTED_CMD: Style = Style::new().fg(Color::Rgb(124, 111, 100));
