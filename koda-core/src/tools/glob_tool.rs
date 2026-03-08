@@ -32,10 +32,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
     }]
 }
 
-const MAX_RESULTS: usize = 200;
-
 /// Execute a glob search from the given base directory.
-pub async fn glob_search(project_root: &Path, args: &Value) -> Result<String> {
+pub async fn glob_search(project_root: &Path, args: &Value, max_results: usize) -> Result<String> {
     let pattern = args["pattern"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' argument"))?;
@@ -61,7 +59,7 @@ pub async fn glob_search(project_root: &Path, args: &Value) -> Result<String> {
                 }
                 let relative = path.strip_prefix(project_root).unwrap_or(&path);
                 matches.push(relative.display().to_string());
-                if matches.len() >= MAX_RESULTS {
+                if matches.len() >= max_results {
                     break;
                 }
             }
@@ -73,8 +71,8 @@ pub async fn glob_search(project_root: &Path, args: &Value) -> Result<String> {
         Ok(format!("No files matched pattern: {pattern}"))
     } else {
         let count = matches.len();
-        let capped = if count >= MAX_RESULTS {
-            format!("\n\n[Capped at {MAX_RESULTS} results]")
+        let capped = if count >= max_results {
+            format!("\n\n[Capped at {max_results} results]")
         } else {
             String::new()
         };
@@ -105,7 +103,7 @@ mod tests {
     async fn test_glob_rust_files() {
         let tmp = setup();
         let args = json!({ "pattern": "**/*.rs" });
-        let result = glob_search(tmp.path(), &args).await.unwrap();
+        let result = glob_search(tmp.path(), &args, 200).await.unwrap();
         assert!(result.contains("main.rs"));
         assert!(result.contains("lib.rs"));
     }
@@ -114,7 +112,7 @@ mod tests {
     async fn test_glob_toml() {
         let tmp = setup();
         let args = json!({ "pattern": "*.toml" });
-        let result = glob_search(tmp.path(), &args).await.unwrap();
+        let result = glob_search(tmp.path(), &args, 200).await.unwrap();
         assert!(result.contains("Cargo.toml"));
     }
 
@@ -122,7 +120,7 @@ mod tests {
     async fn test_glob_no_match() {
         let tmp = setup();
         let args = json!({ "pattern": "**/*.xyz" });
-        let result = glob_search(tmp.path(), &args).await.unwrap();
+        let result = glob_search(tmp.path(), &args, 200).await.unwrap();
         assert!(result.contains("No files matched"));
     }
 
@@ -130,7 +128,7 @@ mod tests {
     async fn test_glob_scoped_path() {
         let tmp = setup();
         let args = json!({ "pattern": "*.rs", "path": "src/tools" });
-        let result = glob_search(tmp.path(), &args).await.unwrap();
+        let result = glob_search(tmp.path(), &args, 200).await.unwrap();
         assert!(result.contains("mod.rs"));
         assert!(!result.contains("main.rs")); // Not in src/tools
     }

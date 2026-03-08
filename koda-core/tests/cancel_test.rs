@@ -68,7 +68,7 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
 
     let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
     let provider = SlowProvider;
-    let tools = ToolRegistry::new(PathBuf::from("."));
+    let tools = ToolRegistry::new(PathBuf::from("."), 100_000);
     let tool_defs: Vec<ToolDefinition> = vec![];
     let sink = TestSink::new();
     let cancel = CancellationToken::new();

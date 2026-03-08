@@ -39,7 +39,7 @@ impl Env {
         let db = Database::init(&root, &root).await.unwrap();
         let session_id = db.create_session("test-agent", &root).await.unwrap();
         let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
-        let tools = ToolRegistry::new(root.clone());
+        let tools = ToolRegistry::new(root.clone(), config.max_context_tokens);
         Self {
             _tmp: tmp,
             root,
