@@ -356,7 +356,7 @@ impl LlmProvider for OpenAiCompatProvider {
             let mut buffer = String::new();
             let mut tool_calls: Vec<(String, String, String)> = Vec::new(); // (id, name, args)
             let mut final_usage = TokenUsage::default();
-            let mut think_filter = super::think_tag_filter::ThinkTagFilter::new();
+            let mut think_filter = super::stream_tag_filter::StreamTagFilter::new();
 
             while let Some(chunk_result) = byte_stream.next().await {
                 let Ok(bytes) = chunk_result else { break };
