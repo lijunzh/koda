@@ -167,6 +167,24 @@ struct ModelsListEntry {
     id: String,
 }
 
+/// Single model detail from `GET /v1/models/{model_id}`.
+///
+/// Anthropic's API currently returns `id`, `display_name`, `created_at`, `type`.
+/// We also optimistically parse `context_window` and `max_output_tokens` —
+/// if Anthropic adds those fields in the future, we'll pick them up
+/// automatically without a code change.
+#[derive(Deserialize)]
+struct ModelDetailResponse {
+    #[allow(dead_code)]
+    id: String,
+    /// Not currently in the API, but future-proofed.
+    #[serde(default)]
+    context_window: Option<usize>,
+    /// Not currently in the API, but future-proofed.
+    #[serde(default)]
+    max_output_tokens: Option<usize>,
+}
+
 // ── SSE Streaming types ──────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -334,6 +352,42 @@ impl LlmProvider for AnthropicProvider {
 
     fn provider_name(&self) -> &str {
         "anthropic"
+    }
+
+    /// Query Anthropic's models API for context window and max output tokens.
+    ///
+    /// Anthropic's `/v1/models/{id}` doesn't currently return these fields,
+    /// but we optimistically try to parse them. If/when Anthropic adds them,
+    /// this will automatically start working without a code change.
+    async fn model_capabilities(&self, model: &str) -> Result<super::ModelCapabilities> {
+        let resp = self
+            .client
+            .get(format!("{}/v1/models/{}", self.base_url, model))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_API_VERSION)
+            .send()
+            .await;
+
+        let resp = match resp {
+            Ok(r) if r.status().is_success() => r,
+            _ => {
+                tracing::debug!(
+                    "Anthropic models API did not return info for {model}; \
+                     using lookup table"
+                );
+                return Ok(super::ModelCapabilities::default());
+            }
+        };
+
+        let detail: ModelDetailResponse = match resp.json().await {
+            Ok(d) => d,
+            Err(_) => return Ok(super::ModelCapabilities::default()),
+        };
+
+        Ok(super::ModelCapabilities {
+            context_window: detail.context_window,
+            max_output_tokens: detail.max_output_tokens,
+        })
     }
 
     /// Real SSE streaming via Anthropic's Messages API.

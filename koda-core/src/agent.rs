@@ -47,7 +47,8 @@ impl KodaAgent {
             mcp_statuses = mcp.start_from_config(&project_root).await;
         }
 
-        let tools = ToolRegistry::new(project_root.clone()).with_mcp_registry(mcp_registry.clone());
+        let tools = ToolRegistry::new(project_root.clone(), config.max_context_tokens)
+            .with_mcp_registry(mcp_registry.clone());
         let tool_defs = tools.get_definitions_tiered(&config.allowed_tools, config.model_tier);
 
         let semantic_memory = memory::load(&project_root)?;
