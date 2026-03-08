@@ -93,6 +93,8 @@ type SlashDropdown =
 type ModelDropdown = crate::widgets::dropdown::DropdownState<crate::widgets::model_menu::ModelItem>;
 type ProviderDropdown =
     crate::widgets::dropdown::DropdownState<crate::widgets::provider_menu::ProviderItem>;
+type SessionDropdown =
+    crate::widgets::dropdown::DropdownState<crate::widgets::session_menu::SessionItem>;
 
 /// What's currently shown in the `menu_area` below the status bar.
 /// Only one menu can be active at a time.
@@ -105,6 +107,8 @@ enum MenuContent {
     Model(ModelDropdown),
     /// Provider picker dropdown (`/provider` with no args).
     Provider(ProviderDropdown),
+    /// Session picker dropdown (`/sessions` with no args).
+    Session(SessionDropdown),
 }
 
 impl MenuContent {
@@ -165,6 +169,10 @@ fn draw_viewport(
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
         MenuContent::Provider(dd) => {
+            let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
+            frame.render_widget(Paragraph::new(lines), menu_area);
+        }
+        MenuContent::Session(dd) => {
             let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
@@ -559,6 +567,59 @@ pub async fn run(
                                 }
                             }
                             menu = MenuContent::Provider(dd);
+                            continue;
+                        }
+
+                        // Intercept /sessions (no args) — open inline dropdown
+                        if input.trim() == "/sessions" {
+                            match session.db.list_sessions(10, &project_root).await {
+                                Ok(sessions) if !sessions.is_empty() => {
+                                    let items: Vec<crate::widgets::session_menu::SessionItem> =
+                                        sessions
+                                            .iter()
+                                            .map(|s| crate::widgets::session_menu::SessionItem {
+                                                id: s.id.clone(),
+                                                short_id: s.id[..8.min(s.id.len())].to_string(),
+                                                created_at: s.created_at.clone(),
+                                                message_count: s.message_count,
+                                                total_tokens: s.total_tokens,
+                                                is_current: s.id == session.id,
+                                            })
+                                            .collect();
+                                    let mut dd = crate::widgets::dropdown::DropdownState::new(
+                                        items,
+                                        "\u{1f43b} Sessions",
+                                    );
+                                    // Pre-select current session
+                                    if let Some(idx) = dd.filtered.iter().position(|s| s.is_current)
+                                    {
+                                        dd.selected = idx;
+                                        let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
+                                        if idx >= max_vis {
+                                            dd.scroll_offset = idx + 1 - max_vis;
+                                        }
+                                    }
+                                    menu = MenuContent::Session(dd);
+                                }
+                                Ok(_) => {
+                                    emit_above(
+                                        &mut terminal,
+                                        Line::styled(
+                                            "  No other sessions found.",
+                                            Style::default().fg(Color::DarkGray),
+                                        ),
+                                    );
+                                }
+                                Err(e) => {
+                                    emit_above(
+                                        &mut terminal,
+                                        Line::styled(
+                                            format!("  \u{2717} Error: {e}"),
+                                            Style::default().fg(Color::Red),
+                                        ),
+                                    );
+                                }
+                            }
                             continue;
                         }
 
@@ -1000,6 +1061,7 @@ pub async fn run(
                                 MenuContent::Slash(dd) => dd.up(),
                                 MenuContent::Model(dd) => dd.up(),
                                 MenuContent::Provider(dd) => dd.up(),
+                                MenuContent::Session(dd) => dd.up(),
                                 MenuContent::None => {}
                             }
                             continue;
@@ -1008,6 +1070,7 @@ pub async fn run(
                                 MenuContent::Slash(dd) => dd.down(),
                                 MenuContent::Model(dd) => dd.down(),
                                 MenuContent::Provider(dd) => dd.down(),
+                                MenuContent::Session(dd) => dd.down(),
                                 MenuContent::None => {}
                             }
                             continue;
@@ -1075,6 +1138,37 @@ pub async fn run(
                                             terminal = init_terminal(viewport_height)?;
                                         }
                                         continue;
+                                    }
+                                    MenuContent::Session(dd) => {
+                                        if let Some(item) = dd.selected_item() {
+                                            if item.is_current {
+                                                emit_above(
+                                                    &mut terminal,
+                                                    Line::styled(
+                                                        "  Already in this session.",
+                                                        Style::default().fg(Color::DarkGray),
+                                                    ),
+                                                );
+                                            } else {
+                                                let target_id = item.id.clone();
+                                                let short = &item.short_id;
+                                                session.id = target_id;
+                                                emit_above(
+                                                    &mut terminal,
+                                                    Line::from(vec![
+                                                        Span::styled(
+                                                            "  \u{2714} ",
+                                                            Style::default().fg(Color::Green),
+                                                        ),
+                                                        Span::raw("Resumed session "),
+                                                        Span::styled(
+                                                            short.to_string(),
+                                                            Style::default().fg(Color::Cyan),
+                                                        ),
+                                                    ]),
+                                                );
+                                            }
+                                        }
                                     }
                                     MenuContent::None => {}
                                 }
