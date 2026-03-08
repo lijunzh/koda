@@ -17,7 +17,7 @@
 //! ## Design
 //!
 //! The filter is a stateful streaming parser that buffers incoming text to
-//! handle tags spanning chunk boundaries. It holds back up to [`MAX_TAG_LEN`]
+//! handle tags spanning chunk boundaries. It holds back up to `MAX_TAG_LEN`
 //! bytes at the end of the buffer to avoid splitting a tag across calls.
 //!
 //! See issue #214 for the full tag taxonomy.
@@ -46,14 +46,42 @@ struct TagPair {
 /// matches take priority (e.g. `<thinking>` before `<think>`).
 const TAG_PAIRS: &[TagPair] = &[
     // Thinking tags → ThinkingDelta
-    TagPair { open: "<reflection>", close: "</reflection>", action: TagAction::Thinking },
-    TagPair { open: "<reasoning>", close: "</reasoning>", action: TagAction::Thinking },
-    TagPair { open: "<thinking>", close: "</thinking>", action: TagAction::Thinking },
-    TagPair { open: "<think>", close: "</think>", action: TagAction::Thinking },
+    TagPair {
+        open: "<reflection>",
+        close: "</reflection>",
+        action: TagAction::Thinking,
+    },
+    TagPair {
+        open: "<reasoning>",
+        close: "</reasoning>",
+        action: TagAction::Thinking,
+    },
+    TagPair {
+        open: "<thinking>",
+        close: "</thinking>",
+        action: TagAction::Thinking,
+    },
+    TagPair {
+        open: "<think>",
+        close: "</think>",
+        action: TagAction::Thinking,
+    },
     // Tool call tags → suppress
-    TagPair { open: "<function_call>", close: "</function_call>", action: TagAction::Suppress },
-    TagPair { open: "<tool_call>", close: "</tool_call>", action: TagAction::Suppress },
-    TagPair { open: "<tool_use>", close: "</tool_use>", action: TagAction::Suppress },
+    TagPair {
+        open: "<function_call>",
+        close: "</function_call>",
+        action: TagAction::Suppress,
+    },
+    TagPair {
+        open: "<tool_call>",
+        close: "</tool_call>",
+        action: TagAction::Suppress,
+    },
+    TagPair {
+        open: "<tool_use>",
+        close: "</tool_use>",
+        action: TagAction::Suppress,
+    },
 ];
 
 /// Special tokens to strip (standalone, not paired).
@@ -121,7 +149,10 @@ fn find_earliest_match(buffer: &str) -> EarliestMatch {
             && pos < best_pos
         {
             best_pos = pos;
-            best = EarliestMatch::StaleClose { pos, close_len: pair.close.len() };
+            best = EarliestMatch::StaleClose {
+                pos,
+                close_len: pair.close.len(),
+            };
         }
     }
 
@@ -131,7 +162,10 @@ fn find_earliest_match(buffer: &str) -> EarliestMatch {
             && pos < best_pos
         {
             best_pos = pos;
-            best = EarliestMatch::SpecialToken { pos, token_len: token.len() };
+            best = EarliestMatch::SpecialToken {
+                pos,
+                token_len: token.len(),
+            };
         }
     }
 
@@ -187,10 +221,16 @@ impl StreamTagFilter {
         }
         let remaining = std::mem::take(&mut self.buffer);
         match self.state {
-            FilterState::InBlock { action: TagAction::Thinking, .. } => {
+            FilterState::InBlock {
+                action: TagAction::Thinking,
+                ..
+            } => {
                 vec![StreamChunk::ThinkingDelta(remaining)]
             }
-            FilterState::InBlock { action: TagAction::Suppress, .. } => {
+            FilterState::InBlock {
+                action: TagAction::Suppress,
+                ..
+            } => {
                 // Drop suppressed content
                 vec![]
             }
