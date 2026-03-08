@@ -111,6 +111,12 @@ enum MenuContent {
     Session(SessionDropdown),
     /// Wizard trail — completed steps shown dimmed during multi-step flow.
     WizardTrail(Vec<(String, String)>),
+    /// Approval hotkey bar — shown during inference when engine requests approval.
+    Approval {
+        id: String,
+        tool_name: String,
+        detail: String,
+    },
 }
 
 impl MenuContent {
@@ -229,6 +235,33 @@ fn draw_viewport(
                 "  enter to confirm \u{00b7} esc to cancel",
                 Style::default().fg(Color::Rgb(124, 111, 100)),
             )));
+            frame.render_widget(Paragraph::new(lines), menu_area);
+        }
+        MenuContent::Approval {
+            tool_name, detail, ..
+        } => {
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled(
+                        tool_name.clone(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(ratatui::style::Modifier::BOLD),
+                    ),
+                    Span::styled(format!("  {detail}"), Style::default().fg(Color::DarkGray)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  [y]", Style::default().fg(Color::Green)),
+                    Span::styled(" approve  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[n]", Style::default().fg(Color::Red)),
+                    Span::styled(" reject  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[f]", Style::default().fg(Color::Yellow)),
+                    Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[a]", Style::default().fg(Color::Rgb(124, 111, 100))),
+                    Span::styled(" always", Style::default().fg(Color::DarkGray)),
+                ]),
+            ];
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
         MenuContent::None => {}
@@ -475,6 +508,7 @@ pub async fn run(
     let mut menu = MenuContent::None;
     let mut prompt_mode = PromptMode::Chat;
     let mut provider_wizard: Option<ProviderWizard> = None;
+    let mut pending_approval_id: Option<String> = None;
     let mut inference_start: Option<std::time::Instant> = None;
     let mut history: Vec<String> = load_history();
     let mut history_idx: Option<usize> = None; // None = not browsing history
@@ -874,6 +908,102 @@ pub async fn run(
                                             // viewport and reinit to prevent ghost prompt lines.
                                             terminal = reinit_viewport(terminal, viewport_height, viewport_height)?;
                                         } else if let Event::Key(key) = ev {
+                                            // Approval hotkeys during inference
+                                            if let MenuContent::Approval { id, .. } = &menu {
+                                                let approval_id = id.clone();
+                                                let decision = match key.code {
+                                                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                                        Some(ApprovalDecision::Approve)
+                                                    }
+                                                    KeyCode::Char('n') | KeyCode::Char('N') => {
+                                                        Some(ApprovalDecision::Reject)
+                                                    }
+                                                    KeyCode::Char('a') | KeyCode::Char('A') => {
+                                                        // "Always allow" = approve + switch to Auto mode
+                                                        approval::set_mode(&shared_mode, ApprovalMode::Auto);
+                                                        Some(ApprovalDecision::Approve)
+                                                    }
+                                                    KeyCode::Char('f') | KeyCode::Char('F') => {
+                                                        // Switch prompt to feedback input
+                                                        prompt_mode = PromptMode::WizardInput {
+                                                            label: "Feedback".into(),
+                                                            masked: false,
+                                                        };
+                                                        menu = MenuContent::WizardTrail(vec![
+                                                            ("Action".into(), "Rejected with feedback".into()),
+                                                        ]);
+                                                        // Store approval ID for when feedback is submitted
+                                                        pending_approval_id = Some(approval_id.clone());
+                                                        textarea.select_all();
+                                                        textarea.cut();
+                                                        None // Don't send response yet
+                                                    }
+                                                    KeyCode::Esc => {
+                                                        Some(ApprovalDecision::Reject)
+                                                    }
+                                                    _ => None,
+                                                };
+                                                if let Some(d) = decision {
+                                                    menu = MenuContent::None;
+                                                    let _ = cmd_tx
+                                                        .send(EngineCommand::ApprovalResponse {
+                                                            id: approval_id,
+                                                            decision: d,
+                                                        })
+                                                        .await;
+                                                }
+                                                continue;
+                                            }
+
+                                            // Feedback text input during inference
+                                            if matches!(prompt_mode, PromptMode::WizardInput { .. })
+                                                && pending_approval_id.is_some()
+                                            {
+                                                match key.code {
+                                                    KeyCode::Enter => {
+                                                        let feedback = textarea.lines().join("\n");
+                                                        textarea.select_all();
+                                                        textarea.cut();
+                                                        prompt_mode = PromptMode::Chat;
+                                                        menu = MenuContent::None;
+                                                        if let Some(aid) = pending_approval_id.take() {
+                                                            let decision = if feedback.trim().is_empty() {
+                                                                ApprovalDecision::Reject
+                                                            } else {
+                                                                ApprovalDecision::RejectWithFeedback { feedback }
+                                                            };
+                                                            let _ = cmd_tx
+                                                                .send(EngineCommand::ApprovalResponse {
+                                                                    id: aid,
+                                                                    decision,
+                                                                })
+                                                                .await;
+                                                        }
+                                                        continue;
+                                                    }
+                                                    KeyCode::Esc => {
+                                                        textarea.select_all();
+                                                        textarea.cut();
+                                                        prompt_mode = PromptMode::Chat;
+                                                        menu = MenuContent::None;
+                                                        if let Some(aid) = pending_approval_id.take() {
+                                                            let _ = cmd_tx
+                                                                .send(EngineCommand::ApprovalResponse {
+                                                                    id: aid,
+                                                                    decision: ApprovalDecision::Reject,
+                                                                })
+                                                                .await;
+                                                        }
+                                                        continue;
+                                                    }
+                                                    _ => {
+                                                        // Let textarea handle the key
+                                                        textarea.input(Event::Key(key));
+                                                        continue;
+                                                    }
+                                                }
+                                            }
+
                                             match (key.code, key.modifiers) {
                                                 (KeyCode::Enter, KeyModifiers::NONE) => {
                                                     let text = textarea.lines().join("\n");
@@ -927,18 +1057,21 @@ pub async fn run(
                                                 if preview.is_some() {
                                                     renderer.preview_shown = true;
                                                 }
-                                                // Inline approval — uses crossterm direct writes
-                                                let decision = crate::widgets::approval::prompt_approval(
-                                                    &tool_name,
-                                                    &detail,
-                                                    preview.as_ref(),
-                                                );
-                                                // Resync ratatui viewport after crossterm writes
-                                                crossterm_events = EventStream::new();
-                                                terminal = init_terminal(viewport_height)?;
-                                                let _ = cmd_tx
-                                                    .send(EngineCommand::ApprovalResponse { id, decision })
-                                                    .await;
+                                                // Emit diff preview above the viewport
+                                                if let Some(ref prev) = preview {
+                                                    let diff_lines = crate::diff_render::render_lines(prev);
+                                                    for line in &diff_lines {
+                                                        emit_above(&mut terminal, line.clone());
+                                                    }
+                                                }
+                                                // Show approval hotkey bar in menu_area
+                                                menu = MenuContent::Approval {
+                                                    id,
+                                                    tool_name,
+                                                    detail,
+                                                };
+                                                // Hotkey handling is in the crossterm_events
+                                                // branch above — no blocking, no terminal reinit
                                             }
                                             UiEvent::Engine(EngineEvent::LoopCapReached { cap, recent_tools }) => {
                                                 // Show cap info via crossterm (matches approval widget path)
@@ -956,7 +1089,8 @@ pub async fn run(
                                                         Span::styled(format!("\u{25cf} {name}"), Style::default().fg(Color::DarkGray)),
                                                     ]));
                                                 }
-                                                // Use approval widget for continue/stop
+                                                // TODO: convert LoopCap to menu_area pattern
+                                                // (rare interaction, keeping crossterm for now)
                                                 let decision = crate::widgets::approval::prompt_approval(
                                                     "LoopCap",
                                                     "Continue running?",
@@ -1129,7 +1263,7 @@ pub async fn run(
                                 MenuContent::Model(dd) => dd.up(),
                                 MenuContent::Provider(dd) => dd.up(),
                                 MenuContent::Session(dd) => dd.up(),
-                                MenuContent::WizardTrail(_) | MenuContent::None => {}
+                                MenuContent::Approval { .. } | MenuContent::WizardTrail(_) | MenuContent::None => {}
                             }
                             continue;
                         } else if is_down {
@@ -1138,7 +1272,7 @@ pub async fn run(
                                 MenuContent::Model(dd) => dd.down(),
                                 MenuContent::Provider(dd) => dd.down(),
                                 MenuContent::Session(dd) => dd.down(),
-                                MenuContent::WizardTrail(_) | MenuContent::None => {}
+                                MenuContent::Approval { .. } | MenuContent::WizardTrail(_) | MenuContent::None => {}
                             }
                             continue;
                         }
@@ -1250,7 +1384,7 @@ pub async fn run(
                                             }
                                         }
                                     }
-                                    MenuContent::WizardTrail(_) | MenuContent::None => {}
+                                    MenuContent::Approval { .. } | MenuContent::WizardTrail(_) | MenuContent::None => {}
                                 }
                                 menu = MenuContent::None;
                                 continue;
