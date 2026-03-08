@@ -6,7 +6,6 @@
 use crate::select_menu::{self, SelectOption};
 use crate::tui_output;
 
-use koda_core::approval::ApprovalMode;
 use koda_core::config::KodaConfig;
 use koda_core::providers::LlmProvider;
 use koda_core::session::KodaSession;
@@ -493,32 +492,6 @@ pub(crate) fn handle_memory(
                 "Tip: the LLM can also call MemoryWrite to save insights automatically.".into(),
             );
         }
-    }
-}
-
-// ── Trust picker (native TUI) ───────────────────────────────
-
-pub(crate) fn pick_trust_inline(
-    terminal: &mut Term,
-    current: ApprovalMode,
-) -> Option<ApprovalMode> {
-    use ApprovalMode::*;
-    let modes = [Plan, Normal, Yolo];
-    let options: Vec<SelectOption> = modes
-        .iter()
-        .map(|m| {
-            let label = match m {
-                Plan => "\u{1f4cb} plan",
-                Normal => "\u{1f43b} normal",
-                Yolo => "\u{26a1} yolo",
-            };
-            SelectOption::new(label, m.description())
-        })
-        .collect();
-    let initial = modes.iter().position(|m| *m == current).unwrap_or(1);
-    match select_menu::select_inline(terminal, "\u{1f43b} Trust level", &options, initial) {
-        Ok(Some(idx)) => Some(modes[idx]),
-        _ => None,
     }
 }
 

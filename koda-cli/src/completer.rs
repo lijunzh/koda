@@ -22,7 +22,6 @@ const SLASH_COMMANDS: &[&str] = &[
     "/model",
     "/provider",
     "/sessions",
-    "/trust",
     "/undo",
     "/verbose",
 ];

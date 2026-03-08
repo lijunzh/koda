@@ -108,9 +108,9 @@ fn draw_viewport(
     // Prompt icon + textarea
     let (icon, color) = match (state, mode) {
         (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray), // ⏳ during inference
-        (_, ApprovalMode::Plan) => ("\u{1f4cb}", Color::Yellow),
-        (_, ApprovalMode::Normal) => ("\u{1f43b}", Color::Cyan),
-        (_, ApprovalMode::Yolo) => ("\u{26a1}", Color::Red),
+        (_, ApprovalMode::Safe) => ("📋", Color::Yellow),
+        (_, ApprovalMode::Strict) => ("🐻", Color::Cyan),
+        (_, ApprovalMode::Auto) => ("⚡", Color::Green),
     };
     let prompt_width: u16 = 4;
     let [prompt_area, text_area] =
@@ -323,10 +323,10 @@ pub async fn run(
         agent.clone(),
         db,
         &config,
-        ApprovalMode::Normal,
+        ApprovalMode::Auto,
     );
 
-    let shared_mode = approval::new_shared_mode(ApprovalMode::Normal);
+    let shared_mode = approval::new_shared_mode(ApprovalMode::Auto);
 
     // ── Initialize persistent terminal ───────────────────────
 
@@ -408,9 +408,9 @@ pub async fn run(
                 // Echo queued input above viewport
                 let mode = approval::read_mode(&shared_mode);
                 let icon = match mode {
-                    ApprovalMode::Plan => "\u{1f4cb}",
-                    ApprovalMode::Normal => "\u{1f43b}",
-                    ApprovalMode::Yolo => "\u{26a1}",
+                    ApprovalMode::Safe => "📋",
+                    ApprovalMode::Strict => "🐻",
+                    ApprovalMode::Auto => "⚡",
                 };
                 emit_above(
                     &mut terminal,
@@ -642,7 +642,7 @@ pub async fn run(
                                     Some(ui_event) = ui_rx.recv() => {
                                         match ui_event {
                                             UiEvent::Engine(EngineEvent::ApprovalRequest {
-                                                id, tool_name, detail, preview, whitelist_hint,
+                                                id, tool_name, detail, preview,
                                             }) => {
                                                 if preview.is_some() {
                                                     renderer.preview_shown = true;
@@ -652,7 +652,6 @@ pub async fn run(
                                                     &tool_name,
                                                     &detail,
                                                     preview.as_ref(),
-                                                    whitelist_hint.as_deref(),
                                                 );
                                                 // Resync ratatui viewport after crossterm writes
                                                 crossterm_events = EventStream::new();
@@ -681,7 +680,6 @@ pub async fn run(
                                                 let decision = crate::widgets::approval::prompt_approval(
                                                     "LoopCap",
                                                     "Continue running?",
-                                                    None,
                                                     None,
                                                 );
                                                 // Resync ratatui viewport after crossterm writes
@@ -868,9 +866,9 @@ pub async fn run(
                                         history_idx = None;
                                         let mode = approval::read_mode(&shared_mode);
                                         let icon = match mode {
-                                            ApprovalMode::Plan => "\u{1f4cb}",
-                                            ApprovalMode::Normal => "\u{1f43b}",
-                                            ApprovalMode::Yolo => "\u{26a1}",
+                                            ApprovalMode::Safe => "📋",
+                                            ApprovalMode::Strict => "🐻",
+                                            ApprovalMode::Auto => "⚡",
                                         };
                                         emit_above(&mut terminal, Line::from(vec![
                                             Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),

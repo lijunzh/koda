@@ -8,7 +8,7 @@ Refer to this when the user asks "what can you do?" or about features.
 /cost — token usage & cost | /diff — git diff/review/commit | /expand — show full tool output
 /mcp — MCP server management | /memory — persistent memory | /model — switch model
 /provider — switch provider | /sessions — resume/delete sessions (interactive picker)
-/trust — plan/normal/yolo | /verbose — toggle full tool output | /exit — quit
+Shift+Tab — cycle mode (auto/strict/safe) | /verbose — toggle full tool output | /exit — quit
 
 ### Input
 
