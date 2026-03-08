@@ -23,15 +23,26 @@ pub fn context_window_for_model(model: &str) -> usize {
     // Claude 4.x models (opus-4-6, sonnet-4-6, sonnet-4-5, sonnet-4)
     // support 1M context via opt-in beta header:
     //   anthropic-beta: context-1m-2025-08-07
-    // Without the header, the API caps at 200K. Premium pricing (2×
-    // input, 1.5× output) applies for tokens beyond 200K.
-    //
-    // TODO: Add a config flag (e.g. `extended_context = true`) that
-    // sends the beta header and sets context window to 1M.
-    //
-    // NOTE: Anthropic's API does not expose context_window today.
-    // If they add it, `model_capabilities()` in anthropic.rs will
-    // return it and this table will be bypassed automatically.
+    // Virtual "-1m" suffix (e.g. claude-sonnet-4-6-1m) selects the
+    // extended context variant. Only eligible models get 1M;
+    // ineligible models with -1m fall through to their normal 200K.
+    if m.ends_with("-1m") && m.contains("claude") {
+        let base = &m[..m.len() - 3]; // strip "-1m"
+        if base.starts_with("claude-opus-4-6")
+            || base.starts_with("claude-sonnet-4-6")
+            || base.starts_with("claude-sonnet-4-5")
+            || base.starts_with("claude-sonnet-4-2")
+            || base.starts_with("claude-sonnet-4")
+        {
+            return 1_000_000;
+        }
+        // Ineligible model with -1m suffix — fall through to 200K
+        tracing::warn!(
+            "Model '{}' does not support 1M extended context; using 200K.",
+            model
+        );
+        return 200_000;
+    }
     if m.starts_with("claude-opus-4")
         || m.starts_with("claude-sonnet-4")
         || m.starts_with("claude-haiku-4")
@@ -176,6 +187,38 @@ mod tests {
         assert_eq!(context_window_for_model("claude-3-haiku-20240307"), 200_000);
         assert_eq!(
             context_window_for_model("claude-3-5-sonnet-20240620"),
+            200_000
+        );
+    }
+
+    #[test]
+    fn test_claude_1m_virtual_models() {
+        // Eligible models with -1m suffix get 1M
+        assert_eq!(context_window_for_model("claude-sonnet-4-6-1m"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-opus-4-6-1m"), 1_000_000);
+        assert_eq!(
+            context_window_for_model("claude-sonnet-4-5-20250929-1m"),
+            1_000_000
+        );
+        assert_eq!(
+            context_window_for_model("claude-sonnet-4-20250514-1m"),
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn test_claude_1m_ineligible_models() {
+        // Ineligible models with -1m suffix stay at 200K
+        assert_eq!(
+            context_window_for_model("claude-opus-4-5-20251101-1m"),
+            200_000
+        );
+        assert_eq!(
+            context_window_for_model("claude-haiku-4-5-20251001-1m"),
+            200_000
+        );
+        assert_eq!(
+            context_window_for_model("claude-3-opus-20240229-1m"),
             200_000
         );
     }
