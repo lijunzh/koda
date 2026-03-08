@@ -215,11 +215,20 @@ fn restore_terminal(terminal: &mut Term, height: u16) {
     let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
-/// Reinitialize the viewport after a terminal resize.
+/// Reinitialize the viewport after a terminal resize or crossterm writes
+/// that restore the cursor to its original position.
 ///
 /// Drops the old terminal, erases the stale viewport area, and creates
 /// a fresh terminal with the same height. Without this cleanup the old
 /// viewport lines remain in the scrollback as ghost content.
+///
+/// **When to use `reinit_viewport` vs `init_terminal`:**
+/// - Use `init_terminal` when the crossterm widget leaves the cursor
+///   **below** its content (e.g. `select_inline`, approval widget).
+///   The old viewport is already scrolled out of view.
+/// - Use `reinit_viewport` when the widget **erases itself** and returns
+///   the cursor to the original position (e.g. `select_inline_filterable`).
+///   The old viewport is still visible and must be explicitly erased.
 fn reinit_viewport(terminal: Term, height: u16) -> Result<Term> {
     drop(terminal);
     let _ = crossterm::terminal::disable_raw_mode();
