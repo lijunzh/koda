@@ -473,6 +473,25 @@ pub async fn run(
                                 }
                                 // Sync model name for cost estimation
                                 renderer.model = config.model.clone();
+                                // Force immediate redraw so the prompt is visible
+                                // after slash command output (don't wait for next event).
+                                let mode = approval::read_mode(&shared_mode);
+                                let ctx = koda_core::context::percentage() as u32;
+                                terminal.draw(|f| {
+                                    draw_viewport(
+                                        f,
+                                        &textarea,
+                                        &config.model,
+                                        config.model_tier.label(),
+                                        mode,
+                                        ctx,
+                                        tui_state,
+                                        input_queue.len(),
+                                        0,
+                                        renderer.last_turn_stats.as_ref(),
+                                        slash_menu.as_ref(),
+                                    );
+                                })?;
                             }
                             SlashAction::Quit => {
                                 tui_output::emit_line(
