@@ -69,8 +69,8 @@ use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tui_textarea::TextArea;
 
-/// Minimum viewport height (1 input line + 1 status bar).
-const MIN_VIEWPORT_HEIGHT: u16 = 2;
+/// Minimum viewport height (1 separator + 1 input line + 1 status bar).
+const MIN_VIEWPORT_HEIGHT: u16 = 3;
 /// Maximum viewport height to avoid taking over the terminal.
 const MAX_VIEWPORT_HEIGHT: u16 = 10;
 
@@ -101,8 +101,23 @@ fn draw_viewport(
     last_turn: Option<&crate::widgets::status_bar::TurnStats>,
 ) {
     let area = frame.area();
-    let [input_rows, status_row] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    let [sep_row, input_rows, status_row] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+
+    // Separator line: ──────────── 🐻 ─
+    let sep_width = sep_row.width.saturating_sub(5) as usize; // 5 = " 🐻 ─"
+    let separator = Line::from(vec![
+        Span::styled(
+            "─".repeat(sep_width),
+            Style::default().fg(Color::Rgb(124, 111, 100)), // WARM_MUTED
+        ),
+        Span::styled(" 🐻 ─", Style::default().fg(Color::Rgb(124, 111, 100))),
+    ]);
+    frame.render_widget(separator, sep_row);
 
     // Prompt icon + textarea
     let (icon, color) = match (state, mode) {
