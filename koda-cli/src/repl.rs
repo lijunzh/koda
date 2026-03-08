@@ -281,8 +281,8 @@ pub fn format_prompt(model: &str, mode: koda_core::approval::ApprovalMode) -> St
     };
     // Mode embedded in logo: [Koda 🐻] / [Koda 📋] / [Koda ⚡]
     let (logo_icon, logo_color) = match mode {
-        koda_core::approval::ApprovalMode::Safe => ("\u{1f4cb}", "\x1b[33m"),
-        koda_core::approval::ApprovalMode::Strict => ("\u{1f43b}", "\x1b[36m"),
+        koda_core::approval::ApprovalMode::Safe => ("\u{1f50d}", "\x1b[33m"),
+        koda_core::approval::ApprovalMode::Strict => ("\u{1f512}", "\x1b[36m"),
         koda_core::approval::ApprovalMode::Auto => ("\u{26a1}", "\x1b[32m"),
     };
     let mode_label = mode.label();
