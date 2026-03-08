@@ -200,6 +200,30 @@ grunt. A scout on Gemini Flash costs 1/20th of Opus for codebase exploration.
 The parent's Anthropic prompt cache is unaffected because sub-agents make
 independent API calls to potentially different providers.
 
+### 13. No `.koda.md` — Use `CLAUDE.md` (v0.1.4)
+
+**Decision**: Koda will NOT introduce a `.koda.md` project rules file.
+User-authored project instructions go in `CLAUDE.md`.
+
+**Context**: Issue #219 proposed a `.koda.md` file for user-authored project
+rules, separate from the LLM-authored `MEMORY.md`. The idea was borrowed from
+`.cursorrules` and Claude Cowork's per-folder instructions.
+
+**Why not**: Koda already reads `CLAUDE.md` via the `memory.rs` fallback chain
+(`MEMORY.md` → `CLAUDE.md` → `AGENTS.md`). Adding `.koda.md` would:
+- Create a redundant magic filename with confusing priority semantics
+- Force users to maintain two files (`CLAUDE.md` for Claude Code, `.koda.md`
+  for Koda) with overlapping content
+- Violate DRY at the ecosystem level — one file should serve both tools
+
+**What to do instead**: Put project rules in `CLAUDE.md`. It's already
+loaded into the system prompt, already version-controlled, and already
+compatible with Claude Code. Teams using both tools get one file, not two.
+
+**Global config** (`~/.koda/config.toml` for default provider, model,
+approval mode) remains a valid future feature but is orthogonal to project
+rules and should be tracked separately.
+
 ## References
 
 - [ACP (Agent Client Protocol)](https://www.npmjs.com/package/@agentclientprotocol/sdk)
