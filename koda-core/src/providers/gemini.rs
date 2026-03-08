@@ -39,7 +39,7 @@ struct CachedContentState {
 impl GeminiProvider {
     pub fn new(api_key: String, base_url: Option<&str>) -> Self {
         Self {
-            client: super::build_http_client(),
+            client: super::build_http_client(base_url),
             base_url: base_url
                 .unwrap_or("https://generativelanguage.googleapis.com")
                 .trim_end_matches('/')

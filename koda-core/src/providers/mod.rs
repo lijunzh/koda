@@ -108,13 +108,19 @@ pub struct ModelCapabilities {
     pub max_output_tokens: Option<usize>,
 }
 
+/// Is this URL pointing to a local address?
+fn is_localhost_url(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    lower.contains("://localhost") || lower.contains("://127.0.0.1") || lower.contains("://[::1]")
+}
+
 /// Build a reqwest client with proper proxy configuration.
 ///
 /// - Reads HTTPS_PROXY / HTTP_PROXY from env
 /// - Supports proxy auth via URL (http://user:pass@proxy:port)
 /// - Supports separate PROXY_USER / PROXY_PASS env vars
 /// - Bypasses proxy for localhost (LM Studio)
-pub fn build_http_client() -> reqwest::Client {
+pub fn build_http_client(base_url: Option<&str>) -> reqwest::Client {
     let mut builder = reqwest::Client::builder();
 
     let proxy_url = crate::runtime_env::get("HTTPS_PROXY")
@@ -149,16 +155,21 @@ pub fn build_http_client() -> reqwest::Client {
         }
     }
 
-    // Accept self-signed certs if needed
-    let accept_invalid_certs = crate::runtime_env::get("KODA_ACCEPT_INVALID_CERTS")
+    // Accept self-signed certs only for localhost (LM Studio, Ollama, vLLM).
+    // The env var is still required, but it's now scoped to local addresses.
+    let wants_skip_tls = crate::runtime_env::get("KODA_ACCEPT_INVALID_CERTS")
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
-    if accept_invalid_certs {
+    let is_local = base_url.is_some_and(is_localhost_url);
+    if wants_skip_tls && is_local {
+        tracing::info!("TLS certificate validation disabled for local provider.");
+        builder = builder.danger_accept_invalid_certs(true);
+    } else if wants_skip_tls {
         tracing::warn!(
-            "TLS certificate validation disabled! API keys and conversation data may be intercepted."
+            "KODA_ACCEPT_INVALID_CERTS is set but provider URL is not localhost — ignoring. \
+             TLS bypass is only allowed for local providers (localhost/127.0.0.1)."
         );
     }
-    builder = builder.danger_accept_invalid_certs(accept_invalid_certs);
 
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
