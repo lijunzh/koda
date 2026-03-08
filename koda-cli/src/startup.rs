@@ -13,12 +13,12 @@ use ratatui::{
 
 // ── Banner ───────────────────────────────────────────────
 
-/// Build the compact 3-line header (replaces the old boxed banner).
+/// Build the compact 3-line header with block-art bear.
 ///
 /// ```text
-///  ʕ·ᴥ·ʔ  Koda v0.1.3
-///          gpt-4o · openai
-///          ~/repo/koda
+///  ▞▀▚▄▄▞▀▚  Koda v0.1.3
+///  ▌·▐▀▌·▐   gpt-4o · openai
+///  ▀▄▄▄▄▄▄▀  ~/repo/koda
 /// ```
 pub fn build_banner_lines(
     model: &str,
@@ -27,27 +27,30 @@ pub fn build_banner_lines(
     _recent_activity: &[String],
 ) -> Vec<Line<'static>> {
     let ver = env!("CARGO_PKG_VERSION");
-    let bear = "ʕ·ᴥ·ʔ";
-    // Indent to align with the bear face width + spacing
-    let indent = " ".repeat(bear.len() + 3); // "ʕ·ᴥ·ʔ" + "  "
+
+    // 3-line block-art bear (quadrant style).
+    // Each line is 8 visual columns wide.
+    const BEAR: [&str; 3] = ["▞▀▚▄▄▞▀▚", "▌·▐▀▌·▐ ", "▀▄▄▄▄▄▄▀"];
 
     vec![
-        // Line 1: bear face + name + version
+        // Line 1: bear ears + name + version
         Line::from(vec![
-            Span::styled(format!(" {bear}"), WARM_ACCENT),
+            Span::styled(format!(" {}", BEAR[0]), WARM_ACCENT),
             Span::raw("  "),
             Span::styled(format!("Koda v{ver}"), WARM_TITLE),
         ]),
-        // Line 2: model · provider
+        // Line 2: bear face + model · provider
         Line::from(vec![
-            Span::raw(format!(" {indent}")),
+            Span::styled(format!(" {}", BEAR[1]), WARM_ACCENT),
+            Span::raw("  "),
             Span::styled(model.to_string(), WARM_INFO),
             Span::styled(" · ", WARM_MUTED),
             Span::styled(provider.to_string(), WARM_MUTED),
         ]),
-        // Line 3: cwd
+        // Line 3: bear chin + cwd
         Line::from(vec![
-            Span::raw(format!(" {indent}")),
+            Span::styled(format!(" {}", BEAR[2]), WARM_ACCENT),
+            Span::raw("  "),
             Span::styled(cwd.to_string(), DIM),
         ]),
     ]
@@ -232,7 +235,9 @@ mod tests {
     fn banner_contains_bear_face() {
         let lines = build_banner_lines("m", "p", "~", &[]);
         let text = lines_to_text(&lines);
-        assert!(text.contains("ʕ·ᴥ·ʔ"), "Banner should contain bear face");
+        assert!(text.contains("▞▀▚"), "Banner should contain block-art bear ears");
+        // Block-art bear line 3: chin
+        assert!(text.contains("▀▄▄▄▄▄▄▀"), "Banner should contain block-art bear chin");
     }
 
     #[test]
