@@ -18,9 +18,16 @@ pub fn context_window_for_model(model: &str) -> usize {
     let m = model.to_lowercase();
 
     // ── Anthropic ─────────────────────────────────────
-    // All current Claude models (3.x, 4.x) have 200K context.
-    // When Anthropic changes this, add specific prefixes ABOVE
-    // the catch-all so they match first.
+    // Default context window for all Claude models is 200K tokens.
+    //
+    // Claude 4.x models (opus-4-6, sonnet-4-6, sonnet-4-5, sonnet-4)
+    // support 1M context via opt-in beta header:
+    //   anthropic-beta: context-1m-2025-08-07
+    // Without the header, the API caps at 200K. Premium pricing (2×
+    // input, 1.5× output) applies for tokens beyond 200K.
+    //
+    // TODO: Add a config flag (e.g. `extended_context = true`) that
+    // sends the beta header and sets context window to 1M.
     //
     // NOTE: Anthropic's API does not expose context_window today.
     // If they add it, `model_capabilities()` in anthropic.rs will
@@ -38,7 +45,6 @@ pub fn context_window_for_model(model: &str) -> usize {
         return 200_000;
     }
     // Catch-all for future Claude models we haven't seen yet.
-    // Log a warning so we notice when this fires.
     if m.contains("claude") {
         tracing::warn!(
             "Unknown Claude model '{}' — assuming 200K context. \
@@ -145,9 +151,33 @@ mod tests {
 
     #[test]
     fn test_claude_models() {
+        // Claude 4.x: 200K default (1M available via beta header opt-in)
         assert_eq!(context_window_for_model("claude-sonnet-4-6"), 200_000);
+        assert_eq!(context_window_for_model("claude-opus-4-6"), 200_000);
+        assert_eq!(
+            context_window_for_model("claude-opus-4-5-20251101"),
+            200_000
+        );
+        assert_eq!(
+            context_window_for_model("claude-haiku-4-5-20251001"),
+            200_000
+        );
+        assert_eq!(
+            context_window_for_model("claude-sonnet-4-5-20250929"),
+            200_000
+        );
+        assert_eq!(context_window_for_model("claude-opus-4-20250514"), 200_000);
+        assert_eq!(
+            context_window_for_model("claude-sonnet-4-20250514"),
+            200_000
+        );
+        // Claude 3.x: 200K context
         assert_eq!(context_window_for_model("claude-3-opus-20240229"), 200_000);
         assert_eq!(context_window_for_model("claude-3-haiku-20240307"), 200_000);
+        assert_eq!(
+            context_window_for_model("claude-3-5-sonnet-20240620"),
+            200_000
+        );
     }
 
     #[test]
