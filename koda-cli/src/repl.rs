@@ -25,7 +25,6 @@ pub enum ReplAction {
     /// Compact the conversation by summarizing history
     Compact,
     /// Switch approval mode (with optional name, or interactive picker)
-    SetTrust(Option<String>),
     /// MCP server management command
     McpCommand(String),
     /// Expand Nth most recent tool output (1 = last)
@@ -75,11 +74,6 @@ pub async fn handle_command(
         "/help" => ReplAction::ShowHelp,
 
         "/cost" => ReplAction::ShowCost,
-
-        "/trust" => match arg {
-            Some(mode_name) => ReplAction::SetTrust(Some(mode_name.to_string())),
-            None => ReplAction::SetTrust(None),
-        },
 
         "/diff" => match arg {
             Some("review") => {
@@ -197,7 +191,7 @@ pub fn print_banner(config: &KodaConfig, _session_id: &str, recent_activity: &[S
         "  \x1b[90m/model\x1b[0m      pick a model".to_string(),
         "  \x1b[90m/provider\x1b[0m   switch provider".to_string(),
         "  \x1b[90m/help\x1b[0m       all commands".to_string(),
-        "  \x1b[90m/trust\x1b[0m      plan \x1b[90m\u{2192}\x1b[0m normal \x1b[90m\u{2192}\x1b[0m yolo".to_string(),
+        "  \x1b[90mShift+Tab\x1b[0m  cycle mode: auto \x1b[90m\u{2192}\x1b[0m strict \x1b[90m\u{2192}\x1b[0m safe".to_string(),
         sep_line,
     ];
 
@@ -287,9 +281,9 @@ pub fn format_prompt(model: &str, mode: koda_core::approval::ApprovalMode) -> St
     };
     // Mode embedded in logo: [Koda 🐻] / [Koda 📋] / [Koda ⚡]
     let (logo_icon, logo_color) = match mode {
-        koda_core::approval::ApprovalMode::Plan => ("\u{1f4cb}", "\x1b[33m"),
-        koda_core::approval::ApprovalMode::Normal => ("\u{1f43b}", "\x1b[36m"),
-        koda_core::approval::ApprovalMode::Yolo => ("\u{26a1}", "\x1b[31m"),
+        koda_core::approval::ApprovalMode::Safe => ("\u{1f4cb}", "\x1b[33m"),
+        koda_core::approval::ApprovalMode::Strict => ("\u{1f43b}", "\x1b[36m"),
+        koda_core::approval::ApprovalMode::Auto => ("\u{26a1}", "\x1b[32m"),
     };
     let mode_label = mode.label();
     format!(

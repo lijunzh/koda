@@ -87,11 +87,9 @@ pub enum EngineEvent {
         detail: String,
         /// Structured diff preview (rendered by the client).
         preview: Option<crate::preview::DiffPreview>,
-        /// If set, the client can offer an "Always allow" option for this pattern.
-        whitelist_hint: Option<String>,
     },
 
-    /// An action was blocked by plan mode (shown but not executed).
+    /// An action was blocked by safe mode (shown but not executed).
     ActionBlocked {
         tool_name: String,
         detail: String,
@@ -254,8 +252,6 @@ pub enum ApprovalDecision {
     Reject,
     /// Reject with feedback (tells the LLM what to change).
     RejectWithFeedback { feedback: String },
-    /// Approve AND whitelist this command pattern for future auto-approval.
-    AlwaysAllow,
 }
 
 /// Slash commands that the client can send to the engine.
@@ -324,7 +320,6 @@ mod tests {
             tool_name: "Bash".into(),
             detail: "rm -rf node_modules".into(),
             preview: None,
-            whitelist_hint: Some("rm".into()),
         };
         let json = serde_json::to_string(&event).unwrap();
         let deserialized: EngineEvent = serde_json::from_str(&json).unwrap();
@@ -444,7 +439,6 @@ mod tests {
             ApprovalDecision::RejectWithFeedback {
                 feedback: "try again".into(),
             },
-            ApprovalDecision::AlwaysAllow,
         ];
         for d in decisions {
             let json = serde_json::to_string(&d).unwrap();

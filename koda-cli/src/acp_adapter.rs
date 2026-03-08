@@ -269,7 +269,6 @@ pub fn resolve_permission_response(
             acp::RequestPermissionOutcome::Selected(selected) => {
                 match selected.option_id.0.as_ref() {
                     "approve" => ApprovalDecision::Approve,
-                    "always_allow" => ApprovalDecision::AlwaysAllow,
                     _ => ApprovalDecision::Reject,
                 }
             }
@@ -440,7 +439,6 @@ mod tests {
                 tool_name: "Bash".into(),
                 detail: "cmd".into(),
                 preview: None,
-                whitelist_hint: None,
             },
             EngineEvent::StatusUpdate {
                 model: "m".into(),

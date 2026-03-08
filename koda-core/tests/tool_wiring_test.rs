@@ -56,7 +56,7 @@ fn test_all_tools_handled_by_approval() {
     let empty_args = serde_json::json!({});
     for name in all_tool_names() {
         // Should not panic in any mode
-        let result = check_tool(&name, &empty_args, ApprovalMode::Normal, &[]);
+        let result = check_tool(&name, &empty_args, ApprovalMode::Strict);
         // Verify it returns a valid variant (not a crash)
         match result {
             ToolApproval::AutoApprove | ToolApproval::NeedsConfirmation | ToolApproval::Blocked => {

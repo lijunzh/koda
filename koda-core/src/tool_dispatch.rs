@@ -40,15 +40,11 @@ fn truncate_for_history(output: &str) -> String {
     )
 }
 
-pub(crate) fn can_parallelize(
-    tool_calls: &[ToolCall],
-    mode: ApprovalMode,
-    user_whitelist: &[String],
-) -> bool {
+pub(crate) fn can_parallelize(tool_calls: &[ToolCall], mode: ApprovalMode) -> bool {
     !tool_calls.iter().any(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            approval::check_tool(&tc.function_name, &args, mode, user_whitelist),
+            approval::check_tool(&tc.function_name, &args, mode),
             ToolApproval::NeedsConfirmation | ToolApproval::Blocked
         )
     })
@@ -64,16 +60,12 @@ pub(crate) async fn execute_one_tool(
     _session_id: &str,
     tools: &crate::tools::ToolRegistry,
     mode: ApprovalMode,
-    allowed_commands: &[String],
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
 ) -> (String, String) {
     let result = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
-        // We pass a clone of allowed_commands since parallel sub-agents
-        // can't mutate the shared settings.
         let mut sub_settings = Settings::default();
-        sub_settings.approval.allowed_commands = allowed_commands.to_vec();
         match execute_sub_agent(
             project_root,
             config,
@@ -109,7 +101,6 @@ pub(crate) async fn execute_tools_parallel(
     session_id: &str,
     tools: &crate::tools::ToolRegistry,
     mode: ApprovalMode,
-    allowed_commands: &[String],
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
 ) -> Result<()> {
@@ -140,7 +131,6 @@ pub(crate) async fn execute_tools_parallel(
                 session_id,
                 tools,
                 mode,
-                allowed_commands,
                 sink,
                 cancel.clone(),
             )
@@ -187,7 +177,7 @@ pub(crate) async fn execute_tools_sequential(
     session_id: &str,
     tools: &crate::tools::ToolRegistry,
     mode: ApprovalMode,
-    settings: &mut Settings,
+    _settings: &mut Settings,
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
@@ -212,12 +202,7 @@ pub(crate) async fn execute_tools_sequential(
         });
 
         // Check approval for this tool call
-        let approval = approval::check_tool(
-            &tc.function_name,
-            &parsed_args,
-            mode,
-            &settings.approval.allowed_commands,
-        );
+        let approval = approval::check_tool(&tc.function_name, &parsed_args, mode);
 
         match approval {
             ToolApproval::AutoApprove => {
@@ -236,7 +221,7 @@ pub(crate) async fn execute_tools_sequential(
                 db.insert_message(
                     session_id,
                     &Role::Tool,
-                    Some("[plan mode] Action described but not executed. Switch to normal or yolo mode to execute."),
+                    Some("[safe mode] Action blocked. You are in read-only mode. DO NOT retry this command. Describe what you would do instead. The user must press Shift+Tab to switch to auto or strict mode."),
                     None,
                     Some(&tc.id),
                     None,
@@ -249,23 +234,6 @@ pub(crate) async fn execute_tools_sequential(
                 let diff_preview =
                     preview::compute(&tc.function_name, &parsed_args, project_root).await;
 
-                // For Bash: offer "Always allow" with extracted pattern
-                let whitelist_hint = if tc.function_name == "Bash" {
-                    let cmd = parsed_args
-                        .get("command")
-                        .or(parsed_args.get("cmd"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let pattern = approval::extract_whitelist_pattern(cmd);
-                    if pattern.is_empty() {
-                        None
-                    } else {
-                        Some(pattern)
-                    }
-                } else {
-                    None
-                };
-
                 match request_approval(
                     sink,
                     cmd_rx,
@@ -273,26 +241,10 @@ pub(crate) async fn execute_tools_sequential(
                     &tc.function_name,
                     &detail,
                     diff_preview,
-                    whitelist_hint.as_deref(),
                 )
                 .await
                 {
                     Some(ApprovalDecision::Approve) => {}
-                    Some(ApprovalDecision::AlwaysAllow) => {
-                        // Add to whitelist and persist
-                        if let Some(ref pattern) = whitelist_hint {
-                            if let Err(e) = settings.add_allowed_command(pattern) {
-                                tracing::warn!("Failed to save whitelist: {e}");
-                            } else {
-                                sink.emit(EngineEvent::Info {
-                                    message: format!(
-                                        "Added '{pattern}' to always-allowed commands"
-                                    ),
-                                });
-                            }
-                        }
-                        // Fall through to execute
-                    }
                     Some(ApprovalDecision::Reject) => {
                         db.insert_message(
                             session_id,
@@ -334,7 +286,6 @@ pub(crate) async fn execute_tools_sequential(
             session_id,
             tools,
             mode,
-            &settings.approval.allowed_commands,
             sink,
             cancel.clone(),
         )
@@ -375,7 +326,7 @@ pub(crate) async fn execute_sub_agent(
     db: &Database,
     arguments: &str,
     mode: ApprovalMode,
-    settings: &mut Settings,
+    _settings: &mut Settings,
     sink: &dyn crate::engine::EngineSink,
     _cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
@@ -495,12 +446,7 @@ pub(crate) async fn execute_sub_agent(
             // Sub-agents inherit the parent's approval mode
             let parsed_args: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or_default();
-            let approval = approval::check_tool(
-                &tc.function_name,
-                &parsed_args,
-                mode,
-                &settings.approval.allowed_commands,
-            );
+            let approval = approval::check_tool(&tc.function_name, &parsed_args, mode);
 
             let output = match approval {
                 ToolApproval::AutoApprove => {
@@ -515,27 +461,12 @@ pub(crate) async fn execute_sub_agent(
                         detail,
                         preview: diff_preview,
                     });
-                    "[plan mode] Action described but not executed.".to_string()
+                    "[safe mode] Action blocked.".to_string()
                 }
                 ToolApproval::NeedsConfirmation => {
                     let detail = tools::describe_action(&tc.function_name, &parsed_args);
                     let diff_preview =
                         preview::compute(&tc.function_name, &parsed_args, project_root).await;
-                    let whitelist_hint = if tc.function_name == "Bash" {
-                        let cmd = parsed_args
-                            .get("command")
-                            .or(parsed_args.get("cmd"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let pattern = approval::extract_whitelist_pattern(cmd);
-                        if pattern.is_empty() {
-                            None
-                        } else {
-                            Some(pattern)
-                        }
-                    } else {
-                        None
-                    };
                     let sub_cancel = CancellationToken::new();
                     match request_approval(
                         sink,
@@ -544,17 +475,10 @@ pub(crate) async fn execute_sub_agent(
                         &tc.function_name,
                         &detail,
                         diff_preview,
-                        whitelist_hint.as_deref(),
                     )
                     .await
                     {
                         Some(ApprovalDecision::Approve) => {
-                            tools.execute(&tc.function_name, &tc.arguments).await.output
-                        }
-                        Some(ApprovalDecision::AlwaysAllow) => {
-                            if let Some(ref pattern) = whitelist_hint {
-                                let _ = settings.add_allowed_command(pattern);
-                            }
                             tools.execute(&tc.function_name, &tc.arguments).await.output
                         }
                         Some(ApprovalDecision::Reject) => "[rejected by user]".to_string(),
@@ -594,7 +518,6 @@ pub(crate) async fn request_approval(
     tool_name: &str,
     detail: &str,
     preview: Option<crate::preview::DiffPreview>,
-    whitelist_hint: Option<&str>,
 ) -> Option<ApprovalDecision> {
     let approval_id = uuid::Uuid::new_v4().to_string();
     sink.emit(EngineEvent::ApprovalRequest {
@@ -602,7 +525,6 @@ pub(crate) async fn request_approval(
         tool_name: tool_name.to_string(),
         detail: detail.to_string(),
         preview,
-        whitelist_hint: whitelist_hint.map(|s| s.to_string()),
     });
 
     loop {
@@ -640,13 +562,13 @@ mod tests {
     #[test]
     fn test_can_parallelize_read_only() {
         let calls = vec![make_tool_call("Read"), make_tool_call("Grep")];
-        assert!(can_parallelize(&calls, ApprovalMode::Normal, &[]));
+        assert!(can_parallelize(&calls, ApprovalMode::Strict));
     }
 
     #[test]
     fn test_cannot_parallelize_writes() {
         let calls = vec![make_tool_call("Read"), make_tool_call("Write")];
-        assert!(!can_parallelize(&calls, ApprovalMode::Normal, &[]));
+        assert!(!can_parallelize(&calls, ApprovalMode::Strict));
     }
 
     #[test]
@@ -661,12 +583,12 @@ mod tests {
                 thought_signature: None,
             },
         ];
-        assert!(!can_parallelize(&calls, ApprovalMode::Normal, &[]));
+        assert!(!can_parallelize(&calls, ApprovalMode::Strict));
     }
 
     #[test]
     fn test_can_parallelize_agents() {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("InvokeAgent")];
-        assert!(can_parallelize(&calls, ApprovalMode::Normal, &[]));
+        assert!(can_parallelize(&calls, ApprovalMode::Strict));
     }
 }

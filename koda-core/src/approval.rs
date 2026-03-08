@@ -1,65 +1,63 @@
-//! Approval modes and bash command safety classification.
+//! Approval modes and tool confirmation.
 //!
 //! Three modes control how Koda handles tool confirmations:
-//! - **Plan**: Read-only. Write tools show what would happen but don't execute.
-//! - **Normal**: Smart confirmation. Safe bash auto-approves, dangerous confirms.
-//! - **Yolo**: Auto-approve everything. Full trust in the model.
+//! - **Auto** (default): Auto-approve everything. Full trust in the model.
+//! - **Strict**: Every non-read action requires explicit confirmation.
+//! - **Safe**: Read-only. Mutations blocked, safe bash allowed.
 //!
 //! Bash commands are classified by parsing pipelines and checking each segment
-//! against a built-in safe list + user-configurable whitelist.
+//! against a built-in safe list.
 
 use crate::bash_safety::is_command_safe;
-// Re-export for use by inference.rs and other consumers
-pub use crate::bash_safety::extract_whitelist_pattern;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-// ── Approval Mode ─────────────────────────────────────────────
+// ── Approval Mode ─────────────────────────────────────────
 
-/// The three approval modes, matching Claude Code's plan/normal/yolo.
+/// The three approval modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ApprovalMode {
-    /// Read-only: describe actions without executing writes.
-    Plan = 0,
-    /// Smart: auto-approve safe ops, confirm dangerous ones.
-    Normal = 1,
+    /// Read-only: safe bash allowed, mutations blocked.
+    Safe = 0,
+    /// Every non-read action needs explicit confirmation.
+    Strict = 1,
     /// Full auto: approve everything without confirmation.
-    Yolo = 2,
+    Auto = 2,
 }
 
 impl ApprovalMode {
-    /// Cycle to the next mode: Plan → Normal → Yolo → Plan.
+    /// Cycle to the next mode: Auto → Strict → Safe → Auto.
     pub fn next(self) -> Self {
         match self {
-            Self::Plan => Self::Normal,
-            Self::Normal => Self::Yolo,
-            Self::Yolo => Self::Plan,
+            Self::Auto => Self::Strict,
+            Self::Strict => Self::Safe,
+            Self::Safe => Self::Auto,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Plan => "plan",
-            Self::Normal => "normal",
-            Self::Yolo => "yolo",
+            Self::Safe => "safe",
+            Self::Strict => "strict",
+            Self::Auto => "auto",
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Plan => "read-only, describe actions without executing",
-            Self::Normal => "confirm dangerous actions, auto-approve safe ones",
-            Self::Yolo => "auto-approve everything",
+            Self::Safe => "read-only, mutations blocked",
+            Self::Strict => "confirm every non-read action",
+            Self::Auto => "auto-approve everything",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "plan" => Some(Self::Plan),
-            "normal" => Some(Self::Normal),
-            "yolo" | "auto" | "accept" => Some(Self::Yolo),
+            "auto" | "yolo" | "accept" => Some(Self::Auto),
+            "strict" | "normal" => Some(Self::Strict),
+            "safe" | "plan" | "readonly" => Some(Self::Safe),
             _ => None,
         }
     }
@@ -68,9 +66,9 @@ impl ApprovalMode {
 impl From<u8> for ApprovalMode {
     fn from(v: u8) -> Self {
         match v {
-            0 => Self::Plan,
-            2 => Self::Yolo,
-            _ => Self::Normal,
+            0 => Self::Safe,
+            1 => Self::Strict,
+            _ => Self::Auto, // default is now Auto
         }
     }
 }
@@ -97,7 +95,7 @@ pub fn cycle_mode(shared: &SharedMode) -> ApprovalMode {
     next
 }
 
-// ── Tool Approval Decision ────────────────────────────────────
+// ── Tool Approval Decision ──────────────────────────────────
 
 /// What the approval system decides for a given tool call.
 #[derive(Debug, Clone, PartialEq)]
@@ -106,11 +104,11 @@ pub enum ToolApproval {
     AutoApprove,
     /// Show confirmation dialog.
     NeedsConfirmation,
-    /// Plan mode: show what would happen, don't execute.
+    /// Safe mode: show what would happen, don't execute.
     Blocked,
 }
 
-/// Read-only tools that auto-approve in all modes (including Plan).
+/// Read-only tools that auto-approve in all modes (including Safe).
 /// These never modify the filesystem or have destructive side effects.
 const READ_ONLY_TOOLS: &[&str] = &[
     "Read",
@@ -126,70 +124,57 @@ const READ_ONLY_TOOLS: &[&str] = &[
 ];
 
 /// Decide whether a tool call should be auto-approved, confirmed, or blocked.
-///
-/// Plan mode is read-only: all analysis tools work (read, grep, sub-agents,
-/// safe bash) but write tools are blocked. This lets the agent build a
-/// comprehensive plan by actually reading code and running checks.
-pub fn check_tool(
-    tool_name: &str,
-    args: &serde_json::Value,
-    mode: ApprovalMode,
-    user_whitelist: &[String],
-) -> ToolApproval {
+pub fn check_tool(tool_name: &str, args: &serde_json::Value, mode: ApprovalMode) -> ToolApproval {
     // Read-only tools always execute in every mode
     if READ_ONLY_TOOLS.contains(&tool_name) {
         return ToolApproval::AutoApprove;
     }
 
     match mode {
-        ApprovalMode::Yolo => ToolApproval::AutoApprove,
+        ApprovalMode::Auto => ToolApproval::AutoApprove,
 
-        ApprovalMode::Plan => {
-            // Plan mode: write tools are blocked, bash uses safety classification
+        ApprovalMode::Safe => {
+            // Safe mode: write tools blocked, bash uses safety classification
             if tool_name == "Bash" {
                 let command = args
                     .get("command")
                     .or(args.get("cmd"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                if is_command_safe(command, user_whitelist) {
+                if is_command_safe(command) {
                     ToolApproval::AutoApprove
                 } else {
                     ToolApproval::Blocked
                 }
             } else {
-                // Write, Edit, Delete, CreateAgent, MemoryWrite, unknown
                 ToolApproval::Blocked
             }
         }
 
-        ApprovalMode::Normal => {
+        ApprovalMode::Strict => {
             if tool_name == "Bash" {
                 let command = args
                     .get("command")
                     .or(args.get("cmd"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                if is_command_safe(command, user_whitelist) {
+                if is_command_safe(command) {
                     ToolApproval::AutoApprove
                 } else {
                     ToolApproval::NeedsConfirmation
                 }
             } else {
-                // Write, Edit, Delete, CreateAgent, MemoryWrite, unknown
                 ToolApproval::NeedsConfirmation
             }
         }
     }
 }
 
-// ── Settings persistence ──────────────────────────────────────
+// ── Settings persistence ──────────────────────────────────
 
 /// User settings stored in `~/.config/koda/settings.toml`.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
-    #[serde(default)]
-    pub approval: ApprovalSettings,
     /// Last-used provider/model, restored on next startup.
     #[serde(default)]
     pub last_provider: Option<LastProvider>,
@@ -200,13 +185,6 @@ pub struct LastProvider {
     pub provider_type: String,
     pub base_url: String,
     pub model: String,
-}
-
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct ApprovalSettings {
-    /// User-defined bash commands to auto-approve.
-    #[serde(default)]
-    pub allowed_commands: Vec<String>,
 }
 
 impl Settings {
@@ -227,16 +205,6 @@ impl Settings {
         }
         let content = toml::to_string_pretty(self)?;
         std::fs::write(&path, content)?;
-        Ok(())
-    }
-
-    /// Add a command pattern to the whitelist and persist.
-    pub fn add_allowed_command(&mut self, pattern: &str) -> anyhow::Result<()> {
-        let pattern = pattern.trim().to_string();
-        if !self.approval.allowed_commands.contains(&pattern) {
-            self.approval.allowed_commands.push(pattern);
-            self.save()?;
-        }
         Ok(())
     }
 
@@ -268,7 +236,7 @@ impl Settings {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────
+// ── Tests ─────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -278,35 +246,41 @@ mod tests {
 
     #[test]
     fn test_mode_cycle() {
-        assert_eq!(ApprovalMode::Plan.next(), ApprovalMode::Normal);
-        assert_eq!(ApprovalMode::Normal.next(), ApprovalMode::Yolo);
-        assert_eq!(ApprovalMode::Yolo.next(), ApprovalMode::Plan);
+        assert_eq!(ApprovalMode::Auto.next(), ApprovalMode::Strict);
+        assert_eq!(ApprovalMode::Strict.next(), ApprovalMode::Safe);
+        assert_eq!(ApprovalMode::Safe.next(), ApprovalMode::Auto);
     }
 
     #[test]
     fn test_mode_from_str() {
-        assert_eq!(ApprovalMode::parse("plan"), Some(ApprovalMode::Plan));
-        assert_eq!(ApprovalMode::parse("YOLO"), Some(ApprovalMode::Yolo));
-        assert_eq!(ApprovalMode::parse("auto"), Some(ApprovalMode::Yolo));
-        assert_eq!(ApprovalMode::parse("accept"), Some(ApprovalMode::Yolo));
+        // New names
+        assert_eq!(ApprovalMode::parse("auto"), Some(ApprovalMode::Auto));
+        assert_eq!(ApprovalMode::parse("strict"), Some(ApprovalMode::Strict));
+        assert_eq!(ApprovalMode::parse("safe"), Some(ApprovalMode::Safe));
+        // Legacy aliases
+        assert_eq!(ApprovalMode::parse("yolo"), Some(ApprovalMode::Auto));
+        assert_eq!(ApprovalMode::parse("normal"), Some(ApprovalMode::Strict));
+        assert_eq!(ApprovalMode::parse("plan"), Some(ApprovalMode::Safe));
+        assert_eq!(ApprovalMode::parse("readonly"), Some(ApprovalMode::Safe));
+        assert_eq!(ApprovalMode::parse("accept"), Some(ApprovalMode::Auto));
         assert_eq!(ApprovalMode::parse("nope"), None);
     }
 
     #[test]
     fn test_mode_from_u8() {
-        assert_eq!(ApprovalMode::from(0), ApprovalMode::Plan);
-        assert_eq!(ApprovalMode::from(1), ApprovalMode::Normal);
-        assert_eq!(ApprovalMode::from(2), ApprovalMode::Yolo);
-        assert_eq!(ApprovalMode::from(99), ApprovalMode::Normal); // fallback
+        assert_eq!(ApprovalMode::from(0), ApprovalMode::Safe);
+        assert_eq!(ApprovalMode::from(1), ApprovalMode::Strict);
+        assert_eq!(ApprovalMode::from(2), ApprovalMode::Auto);
+        assert_eq!(ApprovalMode::from(99), ApprovalMode::Auto); // default is Auto
     }
 
     #[test]
     fn test_shared_mode_cycle() {
-        let shared = new_shared_mode(ApprovalMode::Normal);
-        assert_eq!(read_mode(&shared), ApprovalMode::Normal);
+        let shared = new_shared_mode(ApprovalMode::Auto);
+        assert_eq!(read_mode(&shared), ApprovalMode::Auto);
         let next = cycle_mode(&shared);
-        assert_eq!(next, ApprovalMode::Yolo);
-        assert_eq!(read_mode(&shared), ApprovalMode::Yolo);
+        assert_eq!(next, ApprovalMode::Strict);
+        assert_eq!(read_mode(&shared), ApprovalMode::Strict);
     }
 
     // ── Tool approval tests ──
@@ -315,149 +289,95 @@ mod tests {
     fn test_read_tools_always_approved() {
         for tool in READ_ONLY_TOOLS {
             assert_eq!(
-                check_tool(tool, &serde_json::json!({}), ApprovalMode::Plan, &[]),
+                check_tool(tool, &serde_json::json!({}), ApprovalMode::Safe),
                 ToolApproval::AutoApprove,
-                "{tool} should auto-approve even in Plan mode"
+                "{tool} should auto-approve even in Safe mode"
             );
         }
     }
 
     #[test]
-    fn test_write_tools_blocked_in_plan() {
+    fn test_write_tools_blocked_in_safe() {
         for tool in ["Write", "Edit", "Delete", "CreateAgent", "MemoryWrite"] {
             assert_eq!(
-                check_tool(tool, &serde_json::json!({}), ApprovalMode::Plan, &[]),
+                check_tool(tool, &serde_json::json!({}), ApprovalMode::Safe),
                 ToolApproval::Blocked,
-                "{tool} should be blocked in Plan mode"
+                "{tool} should be blocked in Safe mode"
             );
         }
     }
 
     #[test]
-    fn test_yolo_approves_everything() {
+    fn test_auto_approves_everything() {
         for tool in ["Write", "Edit", "Delete", "Bash", "WebFetch"] {
             assert_eq!(
-                check_tool(tool, &serde_json::json!({}), ApprovalMode::Yolo, &[]),
+                check_tool(tool, &serde_json::json!({}), ApprovalMode::Auto),
                 ToolApproval::AutoApprove,
             );
         }
     }
 
     #[test]
-    fn test_safe_bash_auto_approved_in_normal() {
+    fn test_safe_bash_auto_approved_in_strict() {
         let args = serde_json::json!({"command": "cargo test --release"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Normal, &[]),
+            check_tool("Bash", &args, ApprovalMode::Strict),
             ToolApproval::AutoApprove,
         );
     }
 
     #[test]
-    fn test_dangerous_bash_needs_confirmation() {
+    fn test_dangerous_bash_needs_confirmation_in_strict() {
         let args = serde_json::json!({"command": "rm -rf target/"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Normal, &[]),
+            check_tool("Bash", &args, ApprovalMode::Strict),
             ToolApproval::NeedsConfirmation,
         );
     }
 
     #[test]
-    fn test_write_needs_confirmation_in_normal() {
+    fn test_write_needs_confirmation_in_strict() {
         assert_eq!(
-            check_tool("Write", &serde_json::json!({}), ApprovalMode::Normal, &[]),
+            check_tool("Write", &serde_json::json!({}), ApprovalMode::Strict),
             ToolApproval::NeedsConfirmation,
         );
     }
 
     #[test]
-    fn test_invoke_agent_auto_approved_in_normal() {
+    fn test_invoke_agent_auto_approved() {
         let args = serde_json::json!({"agent_name": "reviewer", "prompt": "review this"});
-        assert_eq!(
-            check_tool("InvokeAgent", &args, ApprovalMode::Normal, &[]),
-            ToolApproval::AutoApprove,
-        );
+        for mode in [ApprovalMode::Auto, ApprovalMode::Strict, ApprovalMode::Safe] {
+            assert_eq!(
+                check_tool("InvokeAgent", &args, mode),
+                ToolApproval::AutoApprove,
+            );
+        }
     }
 
     #[test]
-    fn test_invoke_agent_auto_approved_in_yolo() {
-        let args = serde_json::json!({"agent_name": "reviewer", "prompt": "review this"});
-        assert_eq!(
-            check_tool("InvokeAgent", &args, ApprovalMode::Yolo, &[]),
-            ToolApproval::AutoApprove,
-        );
-    }
-
-    #[test]
-    fn test_invoke_agent_blocked_in_plan() {
-        // InvokeAgent is read-only — sub-agents inherit Plan mode
-        // so they can read but not write. No need to block invocation.
-        let args = serde_json::json!({"agent_name": "reviewer", "prompt": "review this"});
-        assert_eq!(
-            check_tool("InvokeAgent", &args, ApprovalMode::Plan, &[]),
-            ToolApproval::AutoApprove,
-        );
-    }
-
-    #[test]
-    fn test_plan_mode_allows_safe_bash() {
+    fn test_safe_mode_allows_safe_bash() {
         let args = serde_json::json!({"command": "cargo test --release"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Plan, &[]),
+            check_tool("Bash", &args, ApprovalMode::Safe),
             ToolApproval::AutoApprove,
         );
     }
 
     #[test]
-    fn test_plan_mode_blocks_dangerous_bash() {
+    fn test_safe_mode_blocks_dangerous_bash() {
         let args = serde_json::json!({"command": "rm -rf target/"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Plan, &[]),
+            check_tool("Bash", &args, ApprovalMode::Safe),
             ToolApproval::Blocked,
         );
     }
 
     #[test]
-    fn test_plan_mode_blocks_write_tools() {
-        assert_eq!(
-            check_tool("Write", &serde_json::json!({}), ApprovalMode::Plan, &[]),
-            ToolApproval::Blocked,
-        );
-        assert_eq!(
-            check_tool("Edit", &serde_json::json!({}), ApprovalMode::Plan, &[]),
-            ToolApproval::Blocked,
-        );
-        assert_eq!(
-            check_tool("Delete", &serde_json::json!({}), ApprovalMode::Plan, &[]),
-            ToolApproval::Blocked,
-        );
-    }
-
-    #[test]
-    fn test_plan_mode_allows_web_fetch() {
+    fn test_safe_mode_allows_web_fetch() {
         let args = serde_json::json!({"url": "https://example.com"});
         assert_eq!(
-            check_tool("WebFetch", &args, ApprovalMode::Plan, &[]),
+            check_tool("WebFetch", &args, ApprovalMode::Safe),
             ToolApproval::AutoApprove,
         );
-    }
-
-    // ── Bash classifier tests ──
-
-    // ── Settings tests ──
-
-    #[test]
-    fn test_settings_default() {
-        let s = Settings::default();
-        assert!(s.approval.allowed_commands.is_empty());
-    }
-
-    #[test]
-    fn test_settings_roundtrip() {
-        let mut s = Settings::default();
-        s.approval.allowed_commands.push("docker compose up".into());
-        let toml_str = toml::to_string_pretty(&s).unwrap();
-        let parsed: Settings = toml::from_str(&toml_str).unwrap();
-        assert_eq!(parsed.approval.allowed_commands.len(), 1);
-        assert_eq!(parsed.approval.allowed_commands[0], "docker compose up");
     }
 }
