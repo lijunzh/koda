@@ -128,7 +128,7 @@ pub(crate) async fn handle_setup_provider(
         ok_msg(format!("URL set to {}", config.base_url));
     }
 
-    *provider.write().await = crate::commands::create_provider(config);
+    *provider.write().await = koda_core::providers::create_provider(config);
     ok_msg(format!("Provider: {}", config.provider_type));
     save_provider(config);
 
