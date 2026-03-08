@@ -200,7 +200,7 @@ impl TuiRenderer {
                     terminal,
                     Line::from(vec![
                         Span::raw("  "),
-                        Span::styled(format!("\u{1f4cb} Would execute: {detail}"), YELLOW),
+                        Span::styled(format!("\u{1f50d} Would execute: {detail}"), YELLOW),
                     ]),
                 );
                 if let Some(preview) = preview {
