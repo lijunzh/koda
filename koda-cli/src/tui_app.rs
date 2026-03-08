@@ -237,9 +237,11 @@ fn maybe_resize_viewport(
     terminal: Term,
     textarea: &TextArea,
     current_height: u16,
+    extra_height: u16, // slash menu, etc.
 ) -> Result<(Term, u16)> {
     let input_lines = textarea.lines().len().max(1) as u16;
-    let desired = (input_lines + 1).clamp(MIN_VIEWPORT_HEIGHT, MAX_VIEWPORT_HEIGHT);
+    let base = (input_lines + 1).clamp(MIN_VIEWPORT_HEIGHT, MAX_VIEWPORT_HEIGHT);
+    let desired = base + extra_height;
     if desired == current_height {
         return Ok((terminal, current_height));
     }
@@ -383,7 +385,7 @@ pub async fn run(
 
     let mode = approval::read_mode(&shared_mode);
     let ctx = koda_core::context::percentage() as u32;
-    (terminal, viewport_height) = maybe_resize_viewport(terminal, &textarea, viewport_height)?;
+    (terminal, viewport_height) = maybe_resize_viewport(terminal, &textarea, viewport_height, 0)?;
     terminal.draw(|f| {
         draw_viewport(
             f,
@@ -813,7 +815,9 @@ pub async fn run(
         // Redraw viewport (resize if textarea grew/shrank)
         let mode = approval::read_mode(&shared_mode);
         let ctx = koda_core::context::percentage() as u32;
-        (terminal, viewport_height) = maybe_resize_viewport(terminal, &textarea, viewport_height)?;
+        let menu_extra = slash_menu.as_ref().map_or(0, |m| m.height());
+        (terminal, viewport_height) =
+            maybe_resize_viewport(terminal, &textarea, viewport_height, menu_extra)?;
         terminal.draw(|f| {
             draw_viewport(
                 f,
@@ -1044,14 +1048,8 @@ pub async fn run(
                                     crate::completer::SLASH_COMMANDS,
                                     trimmed_after,
                                 );
-                                // Grow viewport to fit menu
-                                if let Some(ref menu) = slash_menu {
-                                    let needed = MIN_VIEWPORT_HEIGHT + menu.height();
-                                    if viewport_height < needed {
-                                        terminal = reinit_viewport(terminal, viewport_height, needed)?;
-                                        viewport_height = needed;
-                                    }
-                                }
+                                // Viewport resize handled by maybe_resize_viewport
+                                // at the top of the loop
                             } else {
                                 slash_menu = None;
                             }

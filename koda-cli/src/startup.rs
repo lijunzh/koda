@@ -69,6 +69,17 @@ pub fn print_banner(config: &KodaConfig, recent_activity: &[String]) {
     for line in &lines {
         tui_output::write_line(line);
     }
+    // Keyboard tips (replaces the old ? overlay)
+    tui_output::write_line(&Line::from(vec![
+        Span::styled("  /", WARM_ACCENT),
+        Span::styled("commands", DIM),
+        Span::styled("  @", WARM_ACCENT),
+        Span::styled("file", DIM),
+        Span::styled("  Shift+Tab ", WARM_ACCENT),
+        Span::styled("mode", DIM),
+        Span::styled("  Ctrl+C ", WARM_ACCENT),
+        Span::styled("cancel", DIM),
+    ]));
     tui_output::write_blank();
 }
 
