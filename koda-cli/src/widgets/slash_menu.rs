@@ -82,14 +82,16 @@ impl SlashMenuState {
         self.filtered[self.selected].0
     }
 
-    /// Number of lines this menu will occupy (title + visible items + hint).
+    /// Fixed number of lines this menu occupies (title + 6 slots + hint).
+    /// Always the same height regardless of how many items match,
+    /// preventing viewport resize jitter.
     pub fn height(&self) -> u16 {
-        let visible = MAX_VISIBLE.min(self.filtered.len());
-        (visible + 2) as u16 // title + items + hint
+        (MAX_VISIBLE + 2) as u16
     }
 }
 
 /// Build the slash menu as `Vec<Line>` for rendering in the viewport.
+/// Always returns exactly `MAX_VISIBLE + 2` lines (fixed height).
 pub fn build_menu_lines(state: &SlashMenuState) -> Vec<Line<'static>> {
     let visible = MAX_VISIBLE.min(state.filtered.len());
     let end = (state.scroll_offset + visible).min(state.filtered.len());
@@ -97,7 +99,7 @@ pub fn build_menu_lines(state: &SlashMenuState) -> Vec<Line<'static>> {
     let has_above = state.scroll_offset > 0;
     let has_below = end < state.filtered.len();
 
-    let mut lines = Vec::with_capacity(visible + 2);
+    let mut lines = Vec::with_capacity(MAX_VISIBLE + 2);
 
     // Title with scroll indicator
     let title = if has_above {
@@ -126,6 +128,11 @@ pub fn build_menu_lines(state: &SlashMenuState) -> Vec<Line<'static>> {
         spans.push(Span::styled(format!("  {desc}"), DESC));
 
         lines.push(Line::from(spans));
+    }
+
+    // Pad empty slots to maintain fixed height
+    for _ in visible..MAX_VISIBLE {
+        lines.push(Line::from(""));
     }
 
     // Hint with scroll indicator
@@ -191,17 +198,13 @@ mod tests {
     }
 
     #[test]
-    fn height_capped() {
+    fn height_always_fixed() {
+        // Full list: always 8 (title + 6 slots + hint)
         let state = SlashMenuState::from_input(TEST_COMMANDS, "/").unwrap();
-        // 8 items but capped at MAX_VISIBLE(6) + 2 chrome = 8
         assert_eq!(state.height(), 8);
-    }
-
-    #[test]
-    fn height_small_list() {
+        // Filtered list: still 8
         let state = SlashMenuState::from_input(TEST_COMMANDS, "/e").unwrap();
-        // 2 items (/exit, /expand) + 2 chrome = 4
-        assert_eq!(state.height(), 4);
+        assert_eq!(state.height(), 8);
     }
 
     #[test]
@@ -223,10 +226,15 @@ mod tests {
     }
 
     #[test]
-    fn build_lines_count_capped() {
+    fn build_lines_count_always_fixed() {
+        // Full list
         let state = SlashMenuState::from_input(TEST_COMMANDS, "/").unwrap();
         let lines = build_menu_lines(&state);
-        assert_eq!(lines.len(), 8); // title + 6 visible + hint
+        assert_eq!(lines.len(), 8); // title + 6 slots + hint
+        // Filtered to 2 items — still 8 lines (4 blank padding)
+        let state = SlashMenuState::from_input(TEST_COMMANDS, "/e").unwrap();
+        let lines = build_menu_lines(&state);
+        assert_eq!(lines.len(), 8);
     }
 
     #[test]
