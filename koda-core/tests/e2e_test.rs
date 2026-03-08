@@ -21,6 +21,12 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// Mutex to serialize tests that share process-global env vars
+/// (KODA_MOCK_RESPONSES). `#[tokio::test]` runs tests concurrently
+/// within the same process, so unsynchronized set_var/remove_var
+/// on the same env var is a data race.
+static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 // ── Test harness ──────────────────────────────────────────────
 
 struct Env {
@@ -419,6 +425,7 @@ async fn test_glob_tool_in_sandbox() {
 
 #[tokio::test]
 async fn test_sub_agent_invocation_e2e() {
+    let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
 
     // Create a project-level agent config that uses the Mock provider.
@@ -438,8 +445,7 @@ async fn test_sub_agent_invocation_e2e() {
     .unwrap();
 
     // Set mock responses for the sub-agent (read by MockProvider::from_env).
-    // The sub-agent will receive the prompt and return this response.
-    // SAFETY: test runs sequentially; no other thread reads this env var concurrently.
+    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
     unsafe {
         std::env::set_var(
             "KODA_MOCK_RESPONSES",
@@ -463,7 +469,7 @@ async fn test_sub_agent_invocation_e2e() {
     let events = env.run_inference(&provider).await;
 
     // Clean up env var
-    // SAFETY: test cleanup; no concurrent readers.
+    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
     unsafe {
         std::env::remove_var("KODA_MOCK_RESPONSES");
     }
@@ -510,6 +516,7 @@ async fn test_sub_agent_invocation_e2e() {
 
 #[tokio::test]
 async fn test_sub_agent_cache_hit_skips_llm() {
+    let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
 
     // Create the same echo-agent
@@ -531,7 +538,7 @@ async fn test_sub_agent_cache_hit_skips_llm() {
     // Sub-agent mock: only ONE response available.
     // If the cache doesn't work, the second InvokeAgent call will hit
     // the mock again and get an empty text (exhausted), or error.
-    // SAFETY: test runs sequentially; no other thread reads this env var concurrently.
+    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
     unsafe {
         std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"text": "cached result"}]"#);
     }
@@ -551,7 +558,7 @@ async fn test_sub_agent_cache_hit_skips_llm() {
         MockResponse::Text("Done with both calls.".into()),
     ]);
     let events = env.run_inference(&provider).await;
-    // SAFETY: test cleanup; no concurrent readers.
+    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
     unsafe {
         std::env::remove_var("KODA_MOCK_RESPONSES");
     }

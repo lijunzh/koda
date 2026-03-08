@@ -2,7 +2,6 @@
 //!
 //! CLI entry point. The binary is named `koda` for ergonomics.
 
-mod commands;
 mod completer;
 mod cost;
 mod diff_render;
