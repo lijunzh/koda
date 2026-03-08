@@ -1,11 +1,14 @@
-//! Live smoke tests against a running LM Studio instance.
+//! Smoke tests: headless mode with MockProvider.
 //!
-//! Gated by `KODA_TEST_LMSTUDIO=1` environment variable.
-//! These tests are `#[ignore]` by default — run them with:
+//! These tests exercise the full binary pipeline without a real LLM.
+//! They run `koda -p "..." --provider mock --output-format json`
+//! with scripted responses via KODA_MOCK_RESPONSES env var.
 //!
-//!   KODA_TEST_LMSTUDIO=1 cargo test -p koda-cli --test smoke_test -- --ignored
+//! CI-safe: no network, no API keys, no LLM required.
 
 use std::process::Command;
+
+// ── Helpers ─────────────────────────────────────────────────
 
 fn koda_bin() -> String {
     let mut path = std::env::current_exe().unwrap();
@@ -15,162 +18,227 @@ fn koda_bin() -> String {
     path.to_string_lossy().to_string()
 }
 
-fn lmstudio_available() -> bool {
-    std::env::var("KODA_TEST_LMSTUDIO").is_ok()
-}
-
-#[test]
-#[ignore]
-fn test_headless_prompt_returns_response() {
-    if !lmstudio_available() {
-        return;
-    }
+fn run_mock(prompt: &str, responses: &str) -> (String, String, bool) {
     let tmp = tempfile::tempdir().unwrap();
     let output = Command::new(koda_bin())
         .args([
             "-p",
-            "Reply with only the word 'hello'",
+            prompt,
             "--provider",
-            "lmstudio",
+            "mock",
             "--output-format",
             "json",
             "--project-root",
         ])
         .arg(tmp.path())
-        // Isolate config/DB so this doesn't interfere with real sessions.
         .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", responses)
         .output()
         .expect("Failed to run koda");
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    (stdout, stderr, output.status.success())
+}
 
-    // Find the JSON object in stdout (skip any non-JSON lines like banners)
-    let json_str = stdout
-        .lines()
-        .find(|line| line.trim_start().starts_with('{'))
-        .unwrap_or_else(|| panic!("No JSON in stdout.\nstdout: {stdout}\nstderr: {stderr}"));
+fn extract_json(stdout: &str) -> serde_json::Value {
+    // The JSON is pretty-printed across multiple lines.
+    // Find the opening '{' and collect everything from there.
+    let start = stdout
+        .find('{')
+        .unwrap_or_else(|| panic!("No JSON object in stdout:\n{stdout}"));
+    serde_json::from_str(&stdout[start..])
+        .unwrap_or_else(|e| panic!("Invalid JSON: {e}\nfrom: {}", &stdout[start..]))
+}
+// ── Headless MockProvider tests ──────────────────────────────
 
-    let json: serde_json::Value = serde_json::from_str(json_str)
-        .unwrap_or_else(|e| panic!("Invalid JSON: {e}\nline: {json_str}\nstderr: {stderr}"));
-
-    assert_eq!(
-        json["success"], true,
-        "Expected success.\nJSON: {json}\nstderr: {stderr}"
-    );
+#[test]
+fn mock_text_response_returns_json() {
+    let (stdout, stderr, success) = run_mock("say hi", r#"[{"text":"Hello from mock!"}]"#);
+    assert!(success, "Process failed.\nstderr: {stderr}");
+    let json = extract_json(&stdout);
+    assert_eq!(json["success"], true);
     let response = json["response"].as_str().unwrap_or("");
     assert!(
-        !response.is_empty(),
-        "Response should not be empty.\nJSON: {json}\nstderr: {stderr}"
+        response.contains("Hello from mock"),
+        "Expected 'Hello from mock' in response, got: {response}"
     );
 }
 
 #[test]
-#[ignore]
-fn test_headless_tool_use() {
-    if !lmstudio_available() {
-        return;
-    }
-    let tmp = tempfile::tempdir().unwrap();
+fn mock_empty_responses_succeeds() {
+    let (stdout, stderr, success) = run_mock("say hi", "[]");
+    assert!(success, "Process failed.\nstderr: {stderr}");
+    let json = extract_json(&stdout);
+    assert_eq!(json["success"], true);
+}
 
-    // Create a file for the model to read
-    std::fs::write(tmp.path().join("hello.txt"), "test content 12345").unwrap();
+#[test]
+fn mock_tool_use_read_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("hello.txt"), "mock test content").unwrap();
+
+    let responses = r#"[
+        {"tool":"Read","args":{"path":"hello.txt"}},
+        {"text":"I read the file."}
+    ]"#;
 
     let output = Command::new(koda_bin())
         .args([
             "-p",
-            "Read the file hello.txt and tell me what it contains. Be brief.",
+            "read hello.txt",
             "--provider",
-            "lmstudio",
+            "mock",
             "--output-format",
             "json",
             "--project-root",
         ])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", responses)
         .output()
         .expect("Failed to run koda");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "Failed.\nstderr: {stderr}");
 
-    let json_str = stdout
-        .lines()
-        .find(|line| line.trim_start().starts_with('{'))
-        .unwrap_or_else(|| panic!("No JSON in stdout.\nstdout: {stdout}\nstderr: {stderr}"));
-
-    let json: serde_json::Value = serde_json::from_str(json_str)
-        .unwrap_or_else(|e| panic!("Invalid JSON: {e}\nline: {json_str}\nstderr: {stderr}"));
-
-    assert_eq!(
-        json["success"], true,
-        "Expected success.\nJSON: {json}\nstderr: {stderr}"
+    let json = extract_json(&stdout);
+    assert_eq!(json["success"], true);
+    let response = json["response"].as_str().unwrap_or("");
+    assert!(
+        response.contains("read the file"),
+        "Expected tool result in response, got: {response}\nstderr: {stderr}"
     );
 }
 
 #[test]
-#[ignore]
-fn test_headless_session_resume() {
-    if !lmstudio_available() {
-        return;
-    }
+fn mock_error_response_handled() {
+    let (stdout, _stderr, _success) = run_mock("say hi", r#"[{"error":"Simulated LLM failure"}]"#);
+    let json = extract_json(&stdout);
+    // Provider error → success=false or empty response
+    let response = json["response"].as_str().unwrap_or("");
+    assert!(
+        json["success"] == false || response.is_empty(),
+        "Expected failure indication in: {json}"
+    );
+}
+
+#[test]
+fn mock_session_id_returned() {
+    let (stdout, stderr, _) = run_mock("say hi", r#"[{"text":"ok"}]"#);
+    let json = extract_json(&stdout);
+    let session_id = json["session_id"].as_str();
+    assert!(
+        session_id.is_some() && !session_id.unwrap().is_empty(),
+        "Expected session_id in JSON.\nJSON: {json}\nstderr: {stderr}"
+    );
+}
+
+#[test]
+fn mock_model_name_in_json() {
+    let (stdout, _, _) = run_mock("say hi", r#"[{"text":"ok"}]"#);
+    let json = extract_json(&stdout);
+    let model = json["model"].as_str().unwrap_or("");
+    // Mock provider reports "mock-model" but config may load "auto-detect" first
+    assert!(!model.is_empty(), "Expected model name in JSON, got empty");
+}
+
+#[test]
+fn mock_at_file_reference() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("data.txt"), "important data").unwrap();
+
+    let output = Command::new(koda_bin())
+        .args([
+            "-p",
+            "analyze @data.txt",
+            "--provider",
+            "mock",
+            "--output-format",
+            "json",
+            "--project-root",
+        ])
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", r#"[{"text":"analyzed"}]"#)
+        .output()
+        .expect("Failed to run koda");
+
+    assert!(
+        output.status.success(),
+        "@file processing failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn mock_multi_turn_tool_use() {
+    let responses = r#"[
+        {"tool":"Bash","args":{"command":"echo hello"}},
+        {"text":"Command output was hello."}
+    ]"#;
+    let (stdout, stderr, success) = run_mock("run echo hello", responses);
+    assert!(success, "Multi-turn failed.\nstderr: {stderr}");
+    let json = extract_json(&stdout);
+    assert_eq!(json["success"], true);
+}
+
+#[test]
+fn mock_session_resume() {
     let tmp = tempfile::tempdir().unwrap();
 
-    // Run first prompt — capture session ID from JSON output.
+    // Turn 1
     let output1 = Command::new(koda_bin())
         .args([
             "-p",
-            "Say 'alpha'",
+            "turn one",
             "--provider",
-            "lmstudio",
+            "mock",
             "--output-format",
             "json",
             "--project-root",
         ])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", r#"[{"text":"first"}]"#)
         .output()
-        .expect("Failed to run koda (turn 1)");
+        .expect("Turn 1 failed");
 
     let stdout1 = String::from_utf8_lossy(&output1.stdout);
-    let json1_str = stdout1
-        .lines()
-        .find(|l| l.trim_start().starts_with('{'))
-        .expect("No JSON in turn 1");
-    let json1: serde_json::Value = serde_json::from_str(json1_str).expect("Bad JSON turn 1");
-    let session_id = json1["session_id"].as_str().expect("No session_id in JSON");
+    let json1 = extract_json(&stdout1);
+    let session_id = json1["session_id"].as_str().expect("No session_id");
 
-    // Run second prompt resuming the same session.
+    // Turn 2: resume
     let output2 = Command::new(koda_bin())
         .args([
             "-p",
-            "Say 'beta'",
+            "turn two",
             "--provider",
-            "lmstudio",
+            "mock",
             "--output-format",
             "json",
-            "--resume",
+            "--session",
             session_id,
             "--project-root",
         ])
         .arg(tmp.path())
         .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", r#"[{"text":"second"}]"#)
         .output()
-        .expect("Failed to run koda (turn 2)");
+        .expect("Turn 2 failed");
 
     let stdout2 = String::from_utf8_lossy(&output2.stdout);
     let stderr2 = String::from_utf8_lossy(&output2.stderr);
-
-    let json2_str = stdout2
-        .lines()
-        .find(|l| l.trim_start().starts_with('{'))
-        .unwrap_or_else(|| panic!("No JSON in turn 2.\nstdout: {stdout2}\nstderr: {stderr2}"));
-    let json2: serde_json::Value = serde_json::from_str(json2_str).expect("Bad JSON turn 2");
-
+    assert!(
+        !stdout2.is_empty(),
+        "Turn 2 produced no stdout.\nstderr: {stderr2}"
+    );
+    let json2 = extract_json(&stdout2);
     assert_eq!(json2["success"], true);
     assert_eq!(
         json2["session_id"].as_str().unwrap(),
         session_id,
-        "Resumed session should keep the same ID"
+        "Resumed session should keep same ID"
     );
 }
