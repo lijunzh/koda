@@ -31,6 +31,7 @@ pub mod providers;
 pub mod runtime_env;
 pub mod session;
 pub mod skills;
+pub mod sub_agent_cache;
 pub mod task_phase;
 pub mod tier_observer;
 pub mod tool_dispatch;

@@ -13,7 +13,9 @@ use crate::inference_helpers::{
 };
 use crate::loop_guard::LoopDetector;
 use crate::providers::{ChatMessage, ImageData, LlmProvider, StreamChunk, ToolCall};
-use crate::tool_dispatch::{can_parallelize, execute_tools_parallel, execute_tools_sequential};
+use crate::tool_dispatch::{
+    can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
+};
 use crate::tools::{self, ToolRegistry};
 
 use anyhow::{Context, Result};
@@ -51,6 +53,7 @@ pub async fn inference_loop(
     let mut iteration = 0u32;
     let mut made_tool_calls = false;
     let mut loop_detector = LoopDetector::new();
+    let sub_agent_cache = crate::sub_agent_cache::SubAgentCache::new();
     let mut tier_observer = crate::tier_observer::TierObserver::new(
         config.model_tier,
         // Tier is explicitly set if it came from agent config (not auto-detected)
@@ -516,6 +519,25 @@ pub async fn inference_loop(
                 mode,
                 sink,
                 cancel.clone(),
+                &sub_agent_cache,
+            )
+            .await?;
+        } else if tool_calls.len() > 1 && config.model_tier.allows_parallel_tools() {
+            // Mixed batch: some tools need confirmation, but parallelizable
+            // ones (like InvokeAgent) can still run concurrently.
+            execute_tools_split_batch(
+                &tool_calls,
+                project_root,
+                config,
+                db,
+                session_id,
+                tools,
+                mode,
+                settings,
+                sink,
+                cancel.clone(),
+                cmd_rx,
+                &sub_agent_cache,
             )
             .await?;
         } else {
@@ -531,6 +553,7 @@ pub async fn inference_loop(
                 sink,
                 cancel.clone(),
                 cmd_rx,
+                &sub_agent_cache,
             )
             .await?;
         }
