@@ -383,7 +383,60 @@ mod tests {
     fn test_empty_line() {
         let mut r = MarkdownRenderer::new();
         let line = r.render_line("");
-        // Should not panic, returns indented empty line
+        assert!(!line.spans.is_empty());
+    }
+
+    #[test]
+    fn test_heading_is_bold() {
+        let mut r = MarkdownRenderer::new();
+        let line = r.render_line("# Hello World");
+        assert!(
+            line.spans
+                .iter()
+                .any(|s| s.style.add_modifier.contains(Modifier::BOLD)),
+            "Heading should have bold span"
+        );
+    }
+
+    #[test]
+    fn test_heading_levels() {
+        let mut r = MarkdownRenderer::new();
+        for h in ["# H1", "## H2", "### H3"] {
+            let line = r.render_line(h);
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(!text.is_empty(), "Heading '{h}' should render");
+        }
+    }
+
+    #[test]
+    fn test_list_item_renders() {
+        let mut r = MarkdownRenderer::new();
+        let line = r.render_line("- item one");
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("item one"));
+    }
+
+    #[test]
+    fn test_blockquote_renders() {
+        let mut r = MarkdownRenderer::new();
+        let line = r.render_line("> quoted text");
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("quoted text"));
+    }
+
+    #[test]
+    fn test_plain_text_passthrough() {
+        let mut r = MarkdownRenderer::new();
+        let line = r.render_line("Just plain text here");
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("Just plain text here"));
+    }
+
+    #[test]
+    fn test_hr_renders() {
+        let mut r = MarkdownRenderer::new();
+        let line = r.render_line("---");
+        // HR should produce a styled line
         assert!(!line.spans.is_empty());
     }
 }
