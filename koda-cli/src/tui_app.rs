@@ -38,7 +38,6 @@
 //! ```
 
 use crate::input;
-use crate::repl;
 use crate::sink::UiEvent;
 use crate::tui_commands::{self, SlashAction};
 use crate::tui_output;
@@ -258,20 +257,10 @@ pub async fn run(
             Ok(_) => {
                 config.model = "(no model loaded)".to_string();
                 config.model_settings.model = config.model.clone();
-                // Print to stderr (before raw mode)
-                eprintln!(
-                    "  \x1b[33m\u{26a0} No model loaded in {}.\x1b[0m",
-                    config.provider_type
-                );
-                eprintln!("    Load a model, then use \x1b[36m/model\x1b[0m to select it.");
             }
             Err(e) => {
                 config.model = "(connection failed)".to_string();
                 config.model_settings.model = config.model.clone();
-                eprintln!(
-                    "  \x1b[31m\u{2717} Could not connect to {} at {}\x1b[0m",
-                    config.provider_type, config.base_url
-                );
                 tracing::warn!("Auto-detect failed: {e}");
             }
         }
@@ -284,39 +273,19 @@ pub async fn run(
         config.query_and_apply_capabilities(prov.as_ref()).await;
     }
 
-    // Print banner BEFORE entering raw mode
+    // Print startup UI BEFORE entering raw mode
     let recent = db.recent_user_messages(3).await.unwrap_or_default();
-    repl::print_banner(&config, &session_id, &recent);
+    crate::startup::print_banner(&config, &recent);
+    crate::startup::print_model_warning(&config);
 
     if let Ok(Some(latest)) = version_check.await
         && let Some((current, latest)) = koda_core::version::update_available(&latest)
     {
-        let crate_name = koda_core::version::crate_name();
-        println!(
-            "  \x1b[90m\u{2728} Update available: \x1b[0m\x1b[36m{current}\x1b[0m\x1b[90m \u{2192} \x1b[0m\x1b[32m{latest}\x1b[0m\x1b[90m  (cargo install {crate_name})\x1b[0m"
-        );
-        println!();
+        crate::startup::print_update_notice(current, &latest);
     }
 
     let agent = Arc::new(KodaAgent::new(&config, project_root.clone()).await?);
-
-    if !agent.mcp_statuses.is_empty() {
-        println!(
-            "  \x1b[36m\u{1f50c} Connecting to {} MCP server(s)...\x1b[0m",
-            agent.mcp_statuses.len()
-        );
-        for (name, result) in &agent.mcp_statuses {
-            match result {
-                Ok(tool_count) => {
-                    println!("  \x1b[32m\u{2713}\x1b[0m {name} — {tool_count} tool(s)");
-                }
-                Err(msg) => {
-                    println!("  \x1b[31m\u{2717}\x1b[0m {name} — {msg}");
-                }
-            }
-        }
-        println!();
-    }
+    crate::startup::print_mcp_status(&agent.mcp_statuses);
 
     let mut session = KodaSession::new(
         session_id.clone(),
@@ -614,7 +583,7 @@ pub async fn run(
                                                 {
                                                     if crate::interrupt::handle_sigint() {
                                                         restore_terminal(&mut terminal, viewport_height);
-                                                        eprintln!("\x1b[31mForce quit.\x1b[0m");
+                                                        tui_output::err_msg("Force quit.".into());
                                                         std::process::exit(130);
                                                     }
                                                     cancel_token.cancel();
@@ -998,10 +967,7 @@ pub async fn run(
         mcp.shutdown();
     }
 
-    println!(
-        "\n\x1b[90mResume this session with:\n  koda --resume {}\x1b[0m",
-        session.id
-    );
+    crate::startup::print_resume_hint(&session.id);
 
     Ok(())
 }
