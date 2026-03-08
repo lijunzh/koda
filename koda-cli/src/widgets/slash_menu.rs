@@ -81,13 +81,6 @@ impl SlashMenuState {
     pub fn selected_command(&self) -> &'static str {
         self.filtered[self.selected].0
     }
-
-    /// Fixed number of lines this menu occupies (title + 6 slots + hint).
-    /// Always the same height regardless of how many items match,
-    /// preventing viewport resize jitter.
-    pub fn height(&self) -> u16 {
-        (MAX_VISIBLE + 2) as u16
-    }
 }
 
 /// Build the slash menu as `Vec<Line>` for rendering in the viewport.
@@ -195,16 +188,6 @@ mod tests {
         assert_eq!(state.selected_command(), "/agent");
         state.up(); // saturates at 0
         assert_eq!(state.selected_command(), "/agent");
-    }
-
-    #[test]
-    fn height_always_fixed() {
-        // Full list: always 8 (title + 6 slots + hint)
-        let state = SlashMenuState::from_input(TEST_COMMANDS, "/").unwrap();
-        assert_eq!(state.height(), 8);
-        // Filtered list: still 8
-        let state = SlashMenuState::from_input(TEST_COMMANDS, "/e").unwrap();
-        assert_eq!(state.height(), 8);
     }
 
     #[test]

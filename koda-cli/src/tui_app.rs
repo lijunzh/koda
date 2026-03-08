@@ -103,17 +103,17 @@ fn draw_viewport(
     slash_menu: Option<&crate::widgets::slash_menu::SlashMenuState>,
 ) {
     let area = frame.area();
-    let menu_height: u16 = slash_menu.map_or(0, |m| m.height());
 
-    // Layout: separator → input → bottom_sep → status → [menu overlay]
-    // Input + status bar form a fixed "center of mass" panel.
-    // Menu fills the space below — looks like empty terminal when inactive.
+    // Layout: separator → input → bottom_sep → status → [menu/empty]
+    // Input + status bar form a fixed "center of mass" panel at top.
+    // Remaining space below is empty (looks like terminal) or shows menu.
+    let input_height = textarea.lines().len().max(1) as u16;
     let [sep_row, input_rows, bot_sep_row, status_row, menu_area] = Layout::vertical([
-        Constraint::Length(1),           // top separator
-        Constraint::Min(1),              // input (expands to fill)
-        Constraint::Length(1),           // bottom separator
-        Constraint::Length(1),           // status bar
-        Constraint::Length(menu_height), // menu overlay (0 when inactive)
+        Constraint::Length(1),            // top separator
+        Constraint::Length(input_height), // input (sized to content)
+        Constraint::Length(1),            // bottom separator
+        Constraint::Length(1),            // status bar
+        Constraint::Min(0),               // menu overlay / empty space
     ])
     .areas(area);
 
