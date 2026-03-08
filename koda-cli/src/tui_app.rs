@@ -100,10 +100,20 @@ fn draw_viewport(
     elapsed_secs: u64,
     last_turn: Option<&crate::widgets::status_bar::TurnStats>,
     show_help: bool,
+    slash_menu: Option<&crate::widgets::slash_menu::SlashMenuState>,
 ) {
     let area = frame.area();
-    let help_height: u16 = if show_help { 4 } else { 0 }; // 1 title + 3 rows
-    let [help_area, sep_row, input_rows, bot_sep_row, status_row] = Layout::vertical([
+    let help_height: u16 = if show_help { 4 } else { 0 };
+    let menu_height: u16 = slash_menu.map_or(0, |m| m.height());
+    let [
+        menu_area,
+        help_area,
+        sep_row,
+        input_rows,
+        bot_sep_row,
+        status_row,
+    ] = Layout::vertical([
+        Constraint::Length(menu_height),
         Constraint::Length(help_height),
         Constraint::Length(1),
         Constraint::Min(1),
@@ -128,6 +138,13 @@ fn draw_viewport(
         let help_lines = crate::widgets::help_overlay::build_help_lines();
         let help_widget = Paragraph::new(help_lines);
         frame.render_widget(help_widget, help_area);
+    }
+
+    // Slash command menu (shown when input starts with /)
+    if let Some(menu) = slash_menu {
+        let menu_lines = crate::widgets::slash_menu::build_menu_lines(menu);
+        let menu_widget = Paragraph::new(menu_lines);
+        frame.render_widget(menu_widget, menu_area);
     }
 
     // Prompt icon + textarea
@@ -363,6 +380,7 @@ pub async fn run(
     let mut silent_compact_deferred = false;
     let mut should_quit = false;
     let mut show_help = false;
+    let mut slash_menu: Option<crate::widgets::slash_menu::SlashMenuState> = None;
     let mut inference_start: Option<std::time::Instant> = None;
     let mut history: Vec<String> = load_history();
     let mut history_idx: Option<usize> = None; // None = not browsing history
@@ -397,6 +415,7 @@ pub async fn run(
             inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
             renderer.last_turn_stats.as_ref(),
             show_help,
+            slash_menu.as_ref(),
         );
     })?;
 
@@ -577,6 +596,7 @@ pub async fn run(
                                         inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
                                         renderer.last_turn_stats.as_ref(),
                                         show_help,
+                                        slash_menu.as_ref(),
                                     );
                                 })?;
 
@@ -827,6 +847,7 @@ pub async fn run(
                 inference_start.map(|s| s.elapsed().as_secs()).unwrap_or(0),
                 renderer.last_turn_stats.as_ref(),
                 show_help,
+                slash_menu.as_ref(),
             );
         })?;
 
@@ -838,6 +859,49 @@ pub async fn run(
                     // Terminal resized while idle — erase stale viewport and reinit.
                     terminal = reinit_viewport(terminal, viewport_height)?;
                 } else if let Event::Key(key) = ev {
+                    // ── Slash menu key interception ───────────
+                    // When the menu is active, intercept navigation
+                    // and selection keys before normal handling.
+                    if slash_menu.is_some() {
+                        match key.code {
+                            KeyCode::Up => {
+                                if let Some(ref mut menu) = slash_menu {
+                                    menu.up();
+                                }
+                                continue;
+                            }
+                            KeyCode::Down | KeyCode::Tab => {
+                                if let Some(ref mut menu) = slash_menu {
+                                    menu.down();
+                                }
+                                continue;
+                            }
+                            KeyCode::Enter => {
+                                if let Some(ref menu) = slash_menu {
+                                    let cmd = menu.selected_command().to_string();
+                                    textarea.select_all();
+                                    textarea.cut();
+                                    textarea.insert_str(&cmd);
+                                }
+                                slash_menu = None;
+                                // Shrink viewport back to normal
+                                terminal = reinit_viewport(terminal, MIN_VIEWPORT_HEIGHT)?;
+                                viewport_height = MIN_VIEWPORT_HEIGHT;
+                                continue;
+                            }
+                            KeyCode::Esc => {
+                                slash_menu = None;
+                                terminal = reinit_viewport(terminal, MIN_VIEWPORT_HEIGHT)?;
+                                viewport_height = MIN_VIEWPORT_HEIGHT;
+                                continue;
+                            }
+                            _ => {
+                                // Fall through — let normal handlers process
+                                // (e.g. Char, Backspace update textarea, then
+                                //  the _ arm updates slash_menu state)
+                            }
+                        }
+                    }
                     match (key.code, key.modifiers) {
                         // Shift+Enter or Alt+Enter → insert newline
                         // Note: Shift+Enter only works on terminals with kitty
@@ -1013,34 +1077,24 @@ pub async fn run(
                             completer.reset();
                             textarea.input(Event::Key(key));
 
-                            // Auto-show slash command dropdown when input starts with /
+                            // Update slash menu state reactively
                             let after_input = textarea.lines().join("\n");
                             let trimmed_after = after_input.trim_end();
                             if trimmed_after.starts_with('/') && !trimmed_after.contains(' ') {
-                                use crate::select_menu::{FilterResult, select_inline_filterable};
-                                match select_inline_filterable(
-                                    &mut terminal,
-                                    "\u{1f43b} Commands",
+                                slash_menu = crate::widgets::slash_menu::SlashMenuState::from_input(
                                     crate::completer::SLASH_COMMANDS,
                                     trimmed_after,
-                                ) {
-                                    Ok(FilterResult::Selected(cmd)) => {
-                                        textarea.select_all();
-                                        textarea.cut();
-                                        textarea.insert_str(&cmd);
+                                );
+                                // Grow viewport to fit menu
+                                if let Some(ref menu) = slash_menu {
+                                    let needed = MIN_VIEWPORT_HEIGHT + menu.height();
+                                    if viewport_height < needed {
+                                        terminal = reinit_viewport(terminal, needed)?;
+                                        viewport_height = needed;
                                     }
-                                    Ok(FilterResult::Dismissed(text)) => {
-                                        textarea.select_all();
-                                        textarea.cut();
-                                        textarea.insert_str(&text);
-                                    }
-                                    Err(_) => {}
                                 }
-                                // Reinit terminal — cursor is below the menu
-                                // (move_past_fixed pattern), so init_terminal
-                                // creates a new viewport below without ghost lines.
-                                crossterm_events = EventStream::new();
-                                terminal = init_terminal(viewport_height)?;
+                            } else {
+                                slash_menu = None;
                             }
                         }
                     }
