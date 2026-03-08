@@ -279,7 +279,7 @@ pub async fn run(
     }
 
     let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
-        Arc::new(RwLock::new(crate::commands::create_provider(&config)));
+        Arc::new(RwLock::new(koda_core::providers::create_provider(&config)));
 
     if config.model == "auto-detect" {
         let prov = provider.read().await;

@@ -95,31 +95,9 @@ pub fn is_context_overflow_error(err: &anyhow::Error) -> bool {
         || (msg.contains("413") && msg.contains("too large"))
 }
 
-/// Format a token count for display: "1.2k" or "500".
-pub fn format_token_count(tokens: i64) -> String {
-    if tokens >= 1000 {
-        format!("{:.1}k", tokens as f64 / 1000.0)
-    } else {
-        format!("{tokens}")
-    }
-}
-
-/// Format a duration as human-readable: "5.2s", "1m 23s".
-pub fn format_duration(d: std::time::Duration) -> String {
-    let secs = d.as_secs();
-    if secs < 60 {
-        format!("{:.1}s", d.as_secs_f64())
-    } else {
-        let mins = secs / 60;
-        let remaining = secs % 60;
-        format!("{mins}m {remaining}s")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn test_is_context_overflow_error() {
@@ -179,20 +157,5 @@ mod tests {
         // "You are helpful." = 16 chars / 3.5 + 10 ≈ 14
         // "Hello world" = 11 chars / 3.5 + 10 ≈ 13
         assert!(tokens > 20 && tokens < 40, "tokens={tokens}");
-    }
-
-    #[test]
-    fn test_format_duration_seconds() {
-        assert_eq!(format_duration(Duration::from_secs_f64(0.5)), "0.5s");
-        assert_eq!(format_duration(Duration::from_secs_f64(5.23)), "5.2s");
-        assert_eq!(format_duration(Duration::from_secs_f64(59.9)), "59.9s");
-    }
-
-    #[test]
-    fn test_format_duration_minutes() {
-        assert_eq!(format_duration(Duration::from_secs(60)), "1m 0s");
-        assert_eq!(format_duration(Duration::from_secs(83)), "1m 23s");
-        assert_eq!(format_duration(Duration::from_secs(125)), "2m 5s");
-        assert_eq!(format_duration(Duration::from_secs(600)), "10m 0s");
     }
 }
