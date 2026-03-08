@@ -91,6 +91,8 @@ enum TuiState {
 type SlashDropdown =
     crate::widgets::dropdown::DropdownState<crate::widgets::slash_menu::SlashCommand>;
 type ModelDropdown = crate::widgets::dropdown::DropdownState<crate::widgets::model_menu::ModelItem>;
+type ProviderDropdown =
+    crate::widgets::dropdown::DropdownState<crate::widgets::provider_menu::ProviderItem>;
 
 /// What's currently shown in the `menu_area` below the status bar.
 /// Only one menu can be active at a time.
@@ -101,6 +103,8 @@ enum MenuContent {
     Slash(SlashDropdown),
     /// Model picker dropdown (`/model` with no args).
     Model(ModelDropdown),
+    /// Provider picker dropdown (`/provider` with no args).
+    Provider(ProviderDropdown),
 }
 
 impl MenuContent {
@@ -157,6 +161,10 @@ fn draw_viewport(
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
         MenuContent::Model(dd) => {
+            let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
+            frame.render_widget(Paragraph::new(lines), menu_area);
+        }
+        MenuContent::Provider(dd) => {
             let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
@@ -517,6 +525,40 @@ pub async fn run(
                                     );
                                 }
                             }
+                            continue;
+                        }
+
+                        // Intercept /provider (no args) — open inline dropdown
+                        if input.trim() == "/provider" {
+                            let providers = crate::repl::PROVIDERS;
+                            let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
+                                .iter()
+                                .map(|(key, name, desc)| {
+                                    crate::widgets::provider_menu::ProviderItem {
+                                        key,
+                                        name,
+                                        description: desc,
+                                        is_current:
+                                            koda_core::config::ProviderType::from_url_or_name(
+                                                "",
+                                                Some(key),
+                                            ) == config.provider_type,
+                                    }
+                                })
+                                .collect();
+                            let mut dd = crate::widgets::dropdown::DropdownState::new(
+                                items,
+                                "\u{1f43b} Select a provider",
+                            );
+                            // Pre-select current provider
+                            if let Some(idx) = dd.filtered.iter().position(|p| p.is_current) {
+                                dd.selected = idx;
+                                let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
+                                if idx >= max_vis {
+                                    dd.scroll_offset = idx + 1 - max_vis;
+                                }
+                            }
+                            menu = MenuContent::Provider(dd);
                             continue;
                         }
 
@@ -957,6 +999,7 @@ pub async fn run(
                             match &mut menu {
                                 MenuContent::Slash(dd) => dd.up(),
                                 MenuContent::Model(dd) => dd.up(),
+                                MenuContent::Provider(dd) => dd.up(),
                                 MenuContent::None => {}
                             }
                             continue;
@@ -964,6 +1007,7 @@ pub async fn run(
                             match &mut menu {
                                 MenuContent::Slash(dd) => dd.down(),
                                 MenuContent::Model(dd) => dd.down(),
+                                MenuContent::Provider(dd) => dd.down(),
                                 MenuContent::None => {}
                             }
                             continue;
@@ -1000,6 +1044,37 @@ pub async fn run(
                                             );
                                             renderer.model = model_id;
                                         }
+                                    }
+                                    MenuContent::Provider(dd) => {
+                                        if let Some(item) = dd.selected_item() {
+                                            let key = item.key;
+                                            let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
+                                            let base_url = ptype.default_base_url().to_string();
+                                            // Close the dropdown first
+                                            menu = MenuContent::None;
+                                            // Delegate to the existing setup flow
+                                            // (handles API key prompt, connection verify, etc.)
+                                            crate::tui_wizards::handle_setup_provider(
+                                                &mut terminal,
+                                                &mut config,
+                                                &provider,
+                                                ptype,
+                                                base_url,
+                                            )
+                                            .await;
+                                            // Refresh after provider change
+                                            renderer.model = config.model.clone();
+                                            let prov = provider.read().await;
+                                            if let Ok(models) = prov.list_models().await {
+                                                completer.set_model_names(
+                                                    models.iter().map(|m| m.id.clone()).collect(),
+                                                );
+                                            }
+                                            // Reinit terminal after crossterm writes from setup
+                                            crossterm_events = EventStream::new();
+                                            terminal = init_terminal(viewport_height)?;
+                                        }
+                                        continue;
                                     }
                                     MenuContent::None => {}
                                 }
