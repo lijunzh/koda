@@ -40,13 +40,27 @@ impl std::fmt::Display for Role {
     }
 }
 
+impl std::str::FromStr for Role {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "system" => Ok(Self::System),
+            "user" => Ok(Self::User),
+            "assistant" => Ok(Self::Assistant),
+            "tool" => Ok(Self::Tool),
+            "phase" => Ok(Self::Phase),
+            other => Err(format!("unknown role: {other}")),
+        }
+    }
+}
+
 /// A stored message row.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Message {
     pub id: i64,
     pub session_id: String,
-    pub role: String,
+    pub role: Role,
     pub content: Option<String>,
     pub tool_calls: Option<String>,
     pub tool_call_id: Option<String>,
@@ -355,7 +369,7 @@ impl Database {
             // - Old assistant text: moderate truncation (1000 chars)
             // - User messages: keep full (they're the source of intent)
             if idx >= recency_threshold {
-                if msg.role == "phase" {
+                if msg.role == Role::Phase {
                     // Phase messages: keep only the human-readable summary when old.
                     // Strip the JSON metadata to save tokens.
                     if let Some(ref content) = msg.content
@@ -363,7 +377,7 @@ impl Database {
                     {
                         msg.content = Some(content[..nl].to_string());
                     }
-                } else if msg.role == "tool"
+                } else if msg.role == Role::Tool
                     && let Some(ref content) = msg.content
                     && content.len() > 200
                 {
@@ -376,7 +390,7 @@ impl Database {
                         &content[..end],
                         content.len()
                     ));
-                } else if msg.role == "assistant"
+                } else if msg.role == Role::Assistant
                     && let Some(ref content) = msg.content
                     && content.len() > 1000
                 {
@@ -427,16 +441,16 @@ impl Database {
         let mut i = len;
         while i > 0 {
             i -= 1;
-            if messages[i].role == "assistant" && messages[i].tool_calls.is_some() {
+            if messages[i].role == Role::Assistant && messages[i].tool_calls.is_some() {
                 // Check if the next message is a tool result
-                let has_result = i + 1 < len && messages[i + 1].role == "tool";
+                let has_result = i + 1 < len && messages[i + 1].role == Role::Tool;
                 if !has_result {
                     messages[i].tool_calls = None;
                 }
                 break; // only need to fix the trailing orphan
             }
             // If we hit a non-tool, non-assistant message going backwards, stop
-            if messages[i].role != "tool" {
+            if messages[i].role != Role::Tool {
                 break;
             }
         }
@@ -915,7 +929,7 @@ impl From<MessageRow> for Message {
         Self {
             id: r.id,
             session_id: r.session_id,
-            role: r.role,
+            role: r.role.parse().unwrap_or(Role::User),
             content: r.content,
             tool_calls: r.tool_calls,
             tool_call_id: r.tool_call_id,
@@ -968,8 +982,8 @@ mod tests {
 
         let msgs = db.load_context(&session, 100_000).await.unwrap();
         assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].role, "user");
-        assert_eq!(msgs[1].role, "assistant");
+        assert_eq!(msgs[0].role, Role::User);
+        assert_eq!(msgs[1].role, Role::Assistant);
     }
 
     #[tokio::test]
@@ -1128,7 +1142,7 @@ mod tests {
         assert_eq!(msgs.len(), 4);
 
         // Check that the summary is a system message
-        let system_msgs: Vec<_> = msgs.iter().filter(|m| m.role == "system").collect();
+        let system_msgs: Vec<_> = msgs.iter().filter(|m| m.role == Role::System).collect();
         assert_eq!(system_msgs.len(), 1);
         assert!(
             system_msgs[0]
@@ -1139,7 +1153,7 @@ mod tests {
         );
 
         // Check that there's a continuation hint as assistant
-        let assistant_msgs: Vec<_> = msgs.iter().filter(|m| m.role == "assistant").collect();
+        let assistant_msgs: Vec<_> = msgs.iter().filter(|m| m.role == Role::Assistant).collect();
         assert!(
             assistant_msgs
                 .iter()
@@ -1180,8 +1194,8 @@ mod tests {
 
         let msgs = db.load_context(&session, 100_000).await.unwrap();
         assert_eq!(msgs.len(), 2); // summary + continuation
-        assert_eq!(msgs.iter().filter(|m| m.role == "system").count(), 1);
-        assert_eq!(msgs.iter().filter(|m| m.role == "assistant").count(), 1);
+        assert_eq!(msgs.iter().filter(|m| m.role == Role::System).count(), 1);
+        assert_eq!(msgs.iter().filter(|m| m.role == Role::Assistant).count(), 1);
     }
 
     #[tokio::test]
@@ -1301,7 +1315,7 @@ mod tests {
             Message {
                 id: 0,
                 session_id: String::new(),
-                role: role.into(),
+                role: role.parse().unwrap_or(Role::User),
                 content: content.map(Into::into),
                 tool_calls: tool_calls.map(Into::into),
                 tool_call_id: tool_call_id.map(Into::into),
