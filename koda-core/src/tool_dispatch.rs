@@ -824,8 +824,8 @@ mod tests {
         assert!(crate::tools::is_mutating_tool("MemoryWrite"));
         assert!(!crate::tools::is_mutating_tool("Read"));
         assert!(!crate::tools::is_mutating_tool("List"));
-        // InvokeAgent is mutating in the canonical function (CreateAgent/InvokeAgent included)
-        assert!(crate::tools::is_mutating_tool("InvokeAgent"));
+        // InvokeAgent is ReadOnly (sub-agents inherit parent's approval mode)
+        assert!(!crate::tools::is_mutating_tool("InvokeAgent"));
     }
 
     #[test]
