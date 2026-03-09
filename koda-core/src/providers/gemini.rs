@@ -525,6 +525,12 @@ impl GeminiProvider {
                 continue;
             }
 
+            // Skip internal metadata roles (phase transitions, etc.)
+            // Gemini only accepts "user" and "model" as content roles.
+            if msg.role == "phase" {
+                continue;
+            }
+
             let role = match msg.role.as_str() {
                 "assistant" => "model",
                 "tool" => "function",
