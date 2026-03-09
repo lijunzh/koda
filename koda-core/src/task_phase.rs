@@ -223,37 +223,6 @@ pub struct PhaseTracker {
     expect_full_progression: bool,
 }
 
-/// Record of a phase transition, for logging as `Role::Phase` messages.
-#[derive(Debug, Clone)]
-pub struct PhaseTransition {
-    pub from: TaskPhase,
-    pub to: TaskPhase,
-    pub trigger: &'static str,
-}
-
-impl PhaseTransition {
-    /// Human-readable summary (stored as message content, visible to LLM).
-    pub fn summary(&self) -> String {
-        format!("Phase: {} → {} ({})", self.from, self.to, self.trigger)
-    }
-
-    /// Structured JSON metadata (stored alongside summary, parsed by InterventionObserver).
-    pub fn metadata_json(&self) -> String {
-        serde_json::json!({
-            "from": self.from.to_string(),
-            "to": self.to.to_string(),
-            "trigger": self.trigger,
-        })
-        .to_string()
-    }
-
-    /// Combined content for storage: human-readable summary + JSON metadata.
-    /// The LLM sees the summary; the InterventionObserver parses the JSON.
-    pub fn as_message_content(&self) -> String {
-        format!("{}\n{}", self.summary(), self.metadata_json())
-    }
-}
-
 impl PhaseTracker {
     /// Create a new tracker with intent-based initial expectations.
     pub fn new(intent: &TaskIntent) -> Self {
@@ -293,8 +262,7 @@ impl PhaseTracker {
     ///
     /// Returns the new phase (which may be unchanged).
     /// See #242 decision tree for the full specification.
-    pub fn advance(&mut self, signal: &TurnSignal) -> Option<PhaseTransition> {
-        let old_phase = self.current;
+    pub fn advance(&mut self, signal: &TurnSignal) -> TaskPhase {
         let new_phase = match (self.current, signal.has_tool_calls, signal.tool_type) {
             // Understanding: exploring the codebase
             (TaskPhase::Understanding, true, ToolType::HasWrites) => {
@@ -379,28 +347,7 @@ impl PhaseTracker {
             self.high_water = new_phase;
         }
 
-        // Return transition record if phase actually changed
-        if old_phase != new_phase {
-            let trigger = match (old_phase, new_phase) {
-                (TaskPhase::Understanding, TaskPhase::Planning) => "text_only_after_reads",
-                (TaskPhase::Understanding, TaskPhase::Executing) => "simple_task_shortcut",
-                (TaskPhase::Planning, TaskPhase::Reviewing) => "plan_complete",
-                (TaskPhase::Reviewing, TaskPhase::Executing) => "review_passed",
-                (TaskPhase::Reviewing, TaskPhase::Planning) => "封驳",
-                (TaskPhase::Executing, TaskPhase::Verifying) => "tests_after_bash",
-                (TaskPhase::Executing, TaskPhase::Understanding) => "escalation",
-                (TaskPhase::Verifying, TaskPhase::Reporting) => "summarizing",
-                (TaskPhase::Verifying, TaskPhase::Executing) => "fixing_test_failures",
-                _ => "transition",
-            };
-            Some(PhaseTransition {
-                from: old_phase,
-                to: new_phase,
-                trigger,
-            })
-        } else {
-            None
-        }
+        new_phase
     }
 
     /// Force an escalation (Executing → Understanding) on tool failure
@@ -549,16 +496,14 @@ mod tests {
     fn test_understanding_to_planning_on_text() {
         let mut t = PhaseTracker::new(&TaskIntent::Modify);
         let s = signal(false, ToolType::ReadOnly, false);
-        t.advance(&s);
-        assert_eq!(t.current(), TaskPhase::Planning);
+        assert_eq!(t.advance(&s), TaskPhase::Planning);
     }
 
     #[test]
     fn test_understanding_to_executing_shortcut() {
         let mut t = PhaseTracker::new(&TaskIntent::Modify);
         let s = signal(true, ToolType::HasWrites, false);
-        t.advance(&s);
-        assert_eq!(t.current(), TaskPhase::Executing);
+        assert_eq!(t.advance(&s), TaskPhase::Executing);
         assert!(t.plan_approved()); // shortcut grants approval
         assert!(t.review_result().is_none()); // Reviewing never entered
     }
@@ -567,16 +512,17 @@ mod tests {
     fn test_understanding_stays_on_reads() {
         let mut t = PhaseTracker::new(&TaskIntent::Modify);
         let s = signal(true, ToolType::ReadOnly, false);
-        t.advance(&s);
-        assert_eq!(t.current(), TaskPhase::Understanding);
+        assert_eq!(t.advance(&s), TaskPhase::Understanding);
     }
 
     #[test]
     fn test_planning_to_reviewing_on_text() {
         let mut t = PhaseTracker::new(&TaskIntent::Modify);
         t.advance(&signal(false, ToolType::ReadOnly, false)); // → Planning
-        t.advance(&signal(false, ToolType::ReadOnly, false));
-        assert_eq!(t.current(), TaskPhase::Reviewing);
+        assert_eq!(
+            t.advance(&signal(false, ToolType::ReadOnly, false)),
+            TaskPhase::Reviewing
+        );
     }
 
     #[test]
@@ -584,8 +530,10 @@ mod tests {
         let mut t = PhaseTracker::new(&TaskIntent::Modify);
         t.advance(&signal(false, ToolType::ReadOnly, false)); // → Planning
         // LLM tries to write during Planning → forced to Reviewing
-        t.advance(&signal(true, ToolType::HasWrites, false));
-        assert_eq!(t.current(), TaskPhase::Reviewing);
+        assert_eq!(
+            t.advance(&signal(true, ToolType::HasWrites, false)),
+            TaskPhase::Reviewing
+        );
         assert!(!t.plan_approved()); // not yet approved
     }
 
@@ -594,8 +542,10 @@ mod tests {
         let mut t = PhaseTracker::new(&TaskIntent::Modify);
         t.advance(&signal(false, ToolType::ReadOnly, false)); // → Planning
         t.advance(&signal(false, ToolType::ReadOnly, false)); // → Reviewing
-        t.advance(&signal(true, ToolType::HasWrites, false));
-        assert_eq!(t.current(), TaskPhase::Executing);
+        assert_eq!(
+            t.advance(&signal(true, ToolType::HasWrites, false)),
+            TaskPhase::Executing
+        );
         assert!(t.plan_approved());
         assert_eq!(t.review_result(), Some(ReviewResult::RulePassed));
     }
@@ -606,8 +556,10 @@ mod tests {
         let mut t = PhaseTracker::new(&TaskIntent::Modify);
         t.advance(&signal(false, ToolType::ReadOnly, false)); // → Planning
         t.advance(&signal(false, ToolType::ReadOnly, false)); // → Reviewing
-        t.advance(&signal(true, ToolType::ReadOnly, false));
-        assert_eq!(t.current(), TaskPhase::Planning);
+        assert_eq!(
+            t.advance(&signal(true, ToolType::ReadOnly, false)),
+            TaskPhase::Planning
+        );
         assert!(!t.plan_approved());
     }
 
@@ -615,16 +567,20 @@ mod tests {
     fn test_executing_stays_on_tools() {
         let mut t = PhaseTracker::new(&TaskIntent::Modify);
         t.advance(&signal(true, ToolType::HasWrites, false)); // shortcut → Executing
-        t.advance(&signal(true, ToolType::HasWrites, false));
-        assert_eq!(t.current(), TaskPhase::Executing);
+        assert_eq!(
+            t.advance(&signal(true, ToolType::HasWrites, false)),
+            TaskPhase::Executing
+        );
     }
 
     #[test]
     fn test_executing_to_verifying_after_bash() {
         let mut t = PhaseTracker::new(&TaskIntent::Modify);
         t.advance(&signal(true, ToolType::HasWrites, false)); // → Executing
-        t.advance(&signal(false, ToolType::ReadOnly, true));
-        assert_eq!(t.current(), TaskPhase::Verifying);
+        assert_eq!(
+            t.advance(&signal(false, ToolType::ReadOnly, true)),
+            TaskPhase::Verifying
+        );
     }
 
     #[test]
@@ -632,8 +588,10 @@ mod tests {
         let mut t = PhaseTracker::new(&TaskIntent::Modify);
         t.advance(&signal(true, ToolType::HasWrites, false)); // → Executing
         // Mid-execution explanation (no bash) → stays Executing
-        t.advance(&signal(false, ToolType::ReadOnly, false));
-        assert_eq!(t.current(), TaskPhase::Executing);
+        assert_eq!(
+            t.advance(&signal(false, ToolType::ReadOnly, false)),
+            TaskPhase::Executing
+        );
     }
 
     #[test]
@@ -641,8 +599,10 @@ mod tests {
         let mut t = PhaseTracker::new(&TaskIntent::Modify);
         t.advance(&signal(true, ToolType::HasWrites, false)); // → Executing
         t.advance(&signal(false, ToolType::ReadOnly, true)); // → Verifying
-        t.advance(&signal(false, ToolType::ReadOnly, false));
-        assert_eq!(t.current(), TaskPhase::Reporting);
+        assert_eq!(
+            t.advance(&signal(false, ToolType::ReadOnly, false)),
+            TaskPhase::Reporting
+        );
     }
 
     #[test]
@@ -651,8 +611,10 @@ mod tests {
         t.advance(&signal(true, ToolType::HasWrites, false)); // → Executing
         t.advance(&signal(false, ToolType::ReadOnly, true)); // → Verifying
         // Fixing test failures → back to Executing
-        t.advance(&signal(true, ToolType::HasWrites, false));
-        assert_eq!(t.current(), TaskPhase::Executing);
+        assert_eq!(
+            t.advance(&signal(true, ToolType::HasWrites, false)),
+            TaskPhase::Executing
+        );
     }
 
     #[test]
@@ -661,8 +623,10 @@ mod tests {
         t.advance(&signal(true, ToolType::HasWrites, false)); // → Executing
         t.advance(&signal(false, ToolType::ReadOnly, true)); // → Verifying
         t.advance(&signal(false, ToolType::ReadOnly, false)); // → Reporting
-        t.advance(&signal(true, ToolType::HasWrites, false));
-        assert_eq!(t.current(), TaskPhase::Reporting);
+        assert_eq!(
+            t.advance(&signal(true, ToolType::HasWrites, false)),
+            TaskPhase::Reporting
+        );
     }
 
     // ── High-water mark ──────────────────────────────────────
@@ -736,8 +700,10 @@ mod tests {
     fn test_scenario_simple_task() {
         // "fix the typo" → Understanding → Executing shortcut
         let mut t = PhaseTracker::new(&TaskIntent::Modify);
-        t.advance(&signal(true, ToolType::HasWrites, false));
-        assert_eq!(t.current(), TaskPhase::Executing);
+        assert_eq!(
+            t.advance(&signal(true, ToolType::HasWrites, false)),
+            TaskPhase::Executing
+        );
         assert!(t.plan_approved());
         assert!(t.review_result().is_none()); // never reviewed
     }
@@ -793,54 +759,5 @@ mod tests {
         t.advance(&signal(false, ToolType::ReadOnly, false)); // → Reviewing
         t.advance(&signal(true, ToolType::HasWrites, false)); // → Executing
         assert!(t.plan_approved());
-    }
-
-    // ── PhaseTransition tests ─────────────────────────────────
-
-    #[test]
-    fn test_advance_returns_transition_on_change() {
-        let mut t = PhaseTracker::new(&TaskIntent::Modify);
-        let transition = t.advance(&signal(false, ToolType::ReadOnly, false));
-        assert!(transition.is_some());
-        let tr = transition.unwrap();
-        assert_eq!(tr.from, TaskPhase::Understanding);
-        assert_eq!(tr.to, TaskPhase::Planning);
-        assert_eq!(tr.trigger, "text_only_after_reads");
-    }
-
-    #[test]
-    fn test_advance_returns_none_on_no_change() {
-        let mut t = PhaseTracker::new(&TaskIntent::Modify);
-        // Read tools during Understanding → stays Understanding
-        let transition = t.advance(&signal(true, ToolType::ReadOnly, false));
-        assert!(transition.is_none());
-    }
-
-    #[test]
-    fn test_transition_message_content() {
-        let mut t = PhaseTracker::new(&TaskIntent::Modify);
-        let tr = t
-            .advance(&signal(false, ToolType::ReadOnly, false))
-            .unwrap();
-        let content = tr.as_message_content();
-        assert!(content.contains("Phase: Understanding → Planning"));
-        assert!(content.contains("text_only_after_reads"));
-        // Second line should be JSON
-        let lines: Vec<&str> = content.lines().collect();
-        assert!(lines.len() >= 2);
-        let meta: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(meta["from"], "Understanding");
-        assert_eq!(meta["to"], "Planning");
-    }
-
-    #[test]
-    fn test_fengbo_transition_trigger() {
-        let mut t = PhaseTracker::new(&TaskIntent::Modify);
-        t.advance(&signal(false, ToolType::ReadOnly, false)); // → Planning
-        t.advance(&signal(false, ToolType::ReadOnly, false)); // → Reviewing
-        let tr = t.advance(&signal(true, ToolType::ReadOnly, false)).unwrap(); // 封驳
-        assert_eq!(tr.trigger, "封驳");
-        assert_eq!(tr.from, TaskPhase::Reviewing);
-        assert_eq!(tr.to, TaskPhase::Planning);
     }
 }
