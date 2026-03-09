@@ -547,7 +547,7 @@ pub async fn inference_loop(
         let pi = PhaseInfo::from(&phase_tracker);
         if tool_calls.len() > 1
             && config.model_tier.allows_parallel_tools()
-            && can_parallelize(&tool_calls, mode, pi)
+            && can_parallelize(&tool_calls, mode, pi, project_root)
         {
             execute_tools_parallel(
                 &tool_calls,
