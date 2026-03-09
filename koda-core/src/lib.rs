@@ -11,6 +11,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod bash_path_lint;
 pub mod bash_safety;
 pub mod compact;
 pub mod config;

@@ -36,12 +36,63 @@ pub fn normalize_tool_name(name: &str) -> String {
     }
 }
 
+/// Effect classification for tool calls.
+///
+/// Two-axis model: what does the tool touch (local vs. remote)
+/// and how severe are its effects (read vs. mutate vs. destroy)?
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolEffect {
+    /// No side-effects: file reads, grep, git status.
+    ReadOnly,
+    /// Side-effects on remote services only: GitHub API, WebFetch POST, MCP remote tools.
+    RemoteAction,
+    /// Mutates local filesystem or state: Write, Edit, Delete, MemoryWrite.
+    LocalMutation,
+    /// Irreversible or high-blast-radius: rm -rf, git push --force, DROP TABLE.
+    Destructive,
+}
+
+/// Classify a built-in tool by name.
+///
+/// For `Bash`, this returns the *default* classification (`LocalMutation`);
+/// the actual effect depends on the command string and must be refined
+/// via [`crate::bash_safety::classify_bash_command`].
+pub fn classify_tool(name: &str) -> ToolEffect {
+    match name {
+        // Pure reads — zero side-effects
+        "Read" | "List" | "Grep" | "Glob" | "MemoryRead" | "ListAgents" | "ListSkills"
+        | "ActivateSkill" | "DiscoverTools" | "RecallContext" | "AstAnalysis" => {
+            ToolEffect::ReadOnly
+        }
+
+        // Remote actions — side-effects on remote services only
+        "WebFetch" => ToolEffect::ReadOnly,    // GET-only fetch
+        "InvokeAgent" => ToolEffect::ReadOnly, // sub-agents inherit parent's mode
+
+        // Local mutations — write to filesystem or local state
+        "Write" | "Edit" | "MemoryWrite" | "CreateAgent" => ToolEffect::LocalMutation,
+
+        // Bash — default to LocalMutation; refined by classify_bash_command()
+        "Bash" => ToolEffect::LocalMutation,
+
+        // Delete is destructive (irreversible without undo)
+        "Delete" => ToolEffect::Destructive,
+
+        // Email tools
+        "EmailRead" | "EmailSearch" => ToolEffect::ReadOnly,
+        "EmailSend" => ToolEffect::RemoteAction,
+
+        // Unknown tools (including MCP) — default to LocalMutation (conservative)
+        _ => ToolEffect::LocalMutation,
+    }
+}
+
 /// Returns true if the tool performs a mutating operation.
+///
+/// Convenience wrapper over [`classify_tool`] for call sites that only
+/// need a bool (e.g., loop guard, phase tracker).
 pub fn is_mutating_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "Write" | "Edit" | "Delete" | "Bash" | "MemoryWrite" | "CreateAgent" | "InvokeAgent"
-    )
+    !matches!(classify_tool(name), ToolEffect::ReadOnly)
 }
 
 pub mod agent;
