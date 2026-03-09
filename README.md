@@ -73,6 +73,7 @@ echo "explain this" | koda        # Piped input
 ### 🌳 AST Code Analysis
 
 Koda natively understands the structure of your codebase using embedded `tree-sitter` parsers.
+- **Auto-provisioned:** just ask koda to analyze code structure — no setup needed.
 - **Built-in languages:** Rust, Python, JavaScript, TypeScript — instant function/class extraction and call graphs.
 - **Extending with MCP:** Need Go, C++, or Java? Connect a community Tree-sitter MCP server via `.mcp.json`.
 
