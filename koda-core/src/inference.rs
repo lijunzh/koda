@@ -72,12 +72,19 @@ pub async fn inference_loop(
     let mut recent_tool_names: Vec<String> = Vec::new();
 
     // Phase tracker: structural detection of task progression.
-    // Created fresh per-turn (per inference_loop invocation) — phase state
-    // is transient within a turn, not persisted across turns.
-    // Session-level phase history will be tracked via Role::Phase flow log
-    // (step 3, v0.1.5) for the InterventionObserver's learning.
-    // Defaults to Modify intent (adapts structurally regardless).
-    let mut phase_tracker = PhaseTracker::new(&crate::intent::TaskIntent::Modify);
+    // Classify intent from the last user message for phase expectations.
+    let intent = {
+        let history = db.load_context(session_id, available).await?;
+        history
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .and_then(|m| m.content.as_deref())
+            .map(crate::intent::classify_intent)
+            .map(|s| s.intent)
+            .unwrap_or(crate::intent::TaskIntent::Modify)
+    };
+    let mut phase_tracker = PhaseTracker::new(&intent);
 
     loop {
         if iteration >= hard_cap {
