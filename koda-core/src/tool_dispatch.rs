@@ -511,7 +511,7 @@ pub(crate) async fn execute_sub_agent(
     mode: ApprovalMode,
     _settings: &mut Settings,
     sink: &dyn crate::engine::EngineSink,
-    _cancel: CancellationToken,
+    cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     parent_cache: Option<crate::tools::FileReadCache>,
     sub_agent_cache: &SubAgentCache,
@@ -585,6 +585,10 @@ pub(crate) async fn execute_sub_agent(
     let available = sub_config.max_context_tokens.saturating_sub(system_tokens);
 
     for _ in 0..loop_guard::MAX_SUB_AGENT_ITERATIONS {
+        // Respect parent cancellation (#286)
+        if cancel.is_cancelled() {
+            return Ok("[cancelled by parent]".to_string());
+        }
         let history = db.load_context(&sub_session, available).await?;
         let mut messages = vec![ChatMessage::text("system", &system_prompt)];
         for msg in &history {
@@ -672,11 +676,10 @@ pub(crate) async fn execute_sub_agent(
                     let detail = tools::describe_action(&tc.function_name, &parsed_args);
                     let diff_preview =
                         preview::compute(&tc.function_name, &parsed_args, project_root).await;
-                    let sub_cancel = CancellationToken::new();
                     match request_approval(
                         sink,
                         cmd_rx,
-                        &sub_cancel,
+                        &cancel,
                         &tc.function_name,
                         &detail,
                         diff_preview,
