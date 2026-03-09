@@ -155,13 +155,30 @@ pub fn check_tool(
     mut phase_info: crate::task_phase::PhaseInfo,
     project_root: Option<&Path>,
     mcp_effect: Option<ToolEffect>,
+    delegation: Option<&crate::delegation::DelegationScope>,
 ) -> ToolApproval {
+    // Delegation scope: tool allowlist check
+    if let Some(scope) = delegation
+        && !scope.is_tool_allowed(tool_name)
+    {
+        return ToolApproval::Blocked;
+    }
+
     // Classify the tool's effect (MCP override takes precedence)
     let effect = mcp_effect.unwrap_or_else(|| resolve_effect(tool_name, args));
 
     // Read-only tools always auto-approve in every mode
     if effect == ToolEffect::ReadOnly {
         return ToolApproval::AutoApprove;
+    }
+
+    // Delegation scope: filesystem write check
+    if let (Some(scope), Some(root)) = (delegation, project_root)
+        && matches!(effect, ToolEffect::LocalMutation | ToolEffect::Destructive)
+        && let Some(p) = extract_write_path(tool_name, args)
+        && !scope.can_write(Path::new(p), root)
+    {
+        return ToolApproval::Blocked;
     }
 
     // Hardcoded floor: writes outside project root always need confirmation (#218)
@@ -250,6 +267,17 @@ fn auto_phase_gate(phase_info: crate::task_phase::PhaseInfo) -> ToolApproval {
         TaskPhase::Executing => ToolApproval::Notify,
         // Verifying/Reporting: auto-approve (checking results)
         TaskPhase::Verifying | TaskPhase::Reporting => ToolApproval::AutoApprove,
+    }
+}
+
+/// Extract the file path that a write tool targets.
+fn extract_write_path<'a>(tool_name: &str, args: &'a serde_json::Value) -> Option<&'a str> {
+    match tool_name {
+        "Write" | "Edit" | "Delete" => args
+            .get("path")
+            .or(args.get("file_path"))
+            .and_then(|v| v.as_str()),
+        _ => None,
     }
 }
 
@@ -348,6 +376,7 @@ mod tests {
                     crate::task_phase::PhaseInfo::delegated(),
                     None,
                     None,
+                    None,
                 ),
                 ToolApproval::AutoApprove,
                 "{tool} should auto-approve even in Safe mode"
@@ -364,6 +393,7 @@ mod tests {
                     &serde_json::json!({}),
                     ApprovalMode::Safe,
                     crate::task_phase::PhaseInfo::delegated(),
+                    None,
                     None,
                     None,
                 ),
@@ -386,6 +416,7 @@ mod tests {
                     crate::task_phase::PhaseInfo::delegated(),
                     None,
                     None,
+                    None,
                 ),
                 ToolApproval::AutoApprove,
             );
@@ -401,6 +432,7 @@ mod tests {
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
                 crate::task_phase::PhaseInfo::delegated(),
+                None,
                 None,
                 None,
             ),
@@ -425,6 +457,7 @@ mod tests {
                 phase,
                 None,
                 None,
+                None,
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -447,6 +480,7 @@ mod tests {
                 phase,
                 None,
                 None,
+                None,
             ),
             ToolApproval::Notify,
         );
@@ -462,6 +496,7 @@ mod tests {
                 &args,
                 ApprovalMode::Strict,
                 crate::task_phase::PhaseInfo::delegated(),
+                None,
                 None,
                 None,
             ),
@@ -481,6 +516,7 @@ mod tests {
                 crate::task_phase::PhaseInfo::delegated(),
                 None,
                 None,
+                None,
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -498,6 +534,7 @@ mod tests {
                 crate::task_phase::PhaseInfo::delegated(),
                 None,
                 None,
+                None,
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -511,6 +548,7 @@ mod tests {
                 &serde_json::json!({}),
                 ApprovalMode::Strict,
                 crate::task_phase::PhaseInfo::delegated(),
+                None,
                 None,
                 None,
             ),
@@ -528,6 +566,7 @@ mod tests {
                     &args,
                     mode,
                     crate::task_phase::PhaseInfo::delegated(),
+                    None,
                     None,
                     None,
                 ),
@@ -548,6 +587,7 @@ mod tests {
                 crate::task_phase::PhaseInfo::delegated(),
                 None,
                 None,
+                None,
             ),
             ToolApproval::AutoApprove,
         );
@@ -563,6 +603,7 @@ mod tests {
                 &args,
                 ApprovalMode::Safe,
                 crate::task_phase::PhaseInfo::delegated(),
+                None,
                 None,
                 None,
             ),
@@ -582,6 +623,7 @@ mod tests {
                 crate::task_phase::PhaseInfo::delegated(),
                 None,
                 None,
+                None,
             ),
             ToolApproval::Blocked,
         );
@@ -599,6 +641,7 @@ mod tests {
                 crate::task_phase::PhaseInfo::delegated(),
                 None,
                 None,
+                None,
             ),
             ToolApproval::Blocked,
         );
@@ -613,6 +656,7 @@ mod tests {
                 &args,
                 ApprovalMode::Safe,
                 crate::task_phase::PhaseInfo::delegated(),
+                None,
                 None,
                 None,
             ),
@@ -634,6 +678,7 @@ mod tests {
                 crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
                 None,
+                None,
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -650,6 +695,7 @@ mod tests {
                 ApprovalMode::Auto,
                 crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
+                None,
                 None,
             ),
             ToolApproval::AutoApprove,
@@ -668,6 +714,7 @@ mod tests {
                 crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
                 None,
+                None,
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -684,6 +731,7 @@ mod tests {
                 ApprovalMode::Auto,
                 crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
+                None,
                 None,
             ),
             ToolApproval::NeedsConfirmation,
@@ -702,6 +750,7 @@ mod tests {
                 crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
                 None,
+                None,
             ),
             ToolApproval::AutoApprove,
         );
@@ -716,6 +765,7 @@ mod tests {
                 &args,
                 ApprovalMode::Auto,
                 crate::task_phase::PhaseInfo::delegated(),
+                None,
                 None,
                 None,
             ),
@@ -739,6 +789,7 @@ mod tests {
                 phase,
                 None,
                 None,
+                None,
             ),
             ToolApproval::AutoApprove,
         );
@@ -755,6 +806,7 @@ mod tests {
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
                 phase,
+                None,
                 None,
                 None,
             ),
@@ -775,6 +827,7 @@ mod tests {
                 phase,
                 None,
                 None,
+                None,
             ),
             ToolApproval::AutoApprove,
         );
@@ -791,6 +844,7 @@ mod tests {
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
                 phase,
+                None,
                 None,
                 None,
             ),

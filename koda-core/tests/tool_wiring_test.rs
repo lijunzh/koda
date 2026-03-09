@@ -63,6 +63,7 @@ fn test_all_tools_handled_by_approval() {
             koda_core::task_phase::PhaseInfo::delegated(),
             None,
             None,
+            None,
         );
         // Verify it returns a valid variant (not a crash)
         match result {
