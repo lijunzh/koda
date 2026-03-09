@@ -19,8 +19,11 @@ mod startup;
 mod tool_history;
 mod tui_app;
 mod tui_commands;
+mod tui_history;
 mod tui_output;
 mod tui_render;
+mod tui_types;
+mod tui_viewport;
 mod tui_wizards;
 mod widgets;
 
