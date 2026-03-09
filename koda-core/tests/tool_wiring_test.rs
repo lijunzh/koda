@@ -60,7 +60,7 @@ fn test_all_tools_handled_by_approval() {
             &name,
             &empty_args,
             ApprovalMode::Strict,
-            koda_core::task_phase::PhaseInfo::legacy(),
+            koda_core::task_phase::PhaseInfo::delegated(),
             None,
         );
         // Verify it returns a valid variant (not a crash)
@@ -68,7 +68,8 @@ fn test_all_tools_handled_by_approval() {
             ToolApproval::AutoApprove
             | ToolApproval::Notify
             | ToolApproval::NeedsConfirmation
-            | ToolApproval::Blocked => {}
+            | ToolApproval::Blocked
+            | ToolApproval::PlanRequired => {}
         }
     }
 }
