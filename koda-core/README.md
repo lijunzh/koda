@@ -14,16 +14,30 @@ Pure logic with zero terminal dependencies — communicates exclusively through
 - **SQLite persistence** — sessions, messages, compaction, phase flow log
 - **MCP client** — connects to external MCP servers for extensibility
 
+**Rust edition:** 2024
+
 ## Usage
 
-```rust
-use koda_core::{agent::KodaAgent, db::Database, inference::inference_loop};
+koda-core is a channel-driven engine. Create async channels, spawn the
+inference loop, and drive the engine through `EngineCommand`/`EngineEvent` pairs:
 
-// koda-core is a library — see koda-cli for the full CLI application.
-// The engine communicates through EngineEvent/EngineCommand channels.
+```rust
+use koda_core::engine::{EngineCommand, EngineEvent};
+use tokio::sync::mpsc;
+
+// The engine communicates exclusively through async channels.
+// EngineEvents flow out (streaming text, tool calls, approvals).
+// EngineCommands flow in (approval responses, cancellation).
+let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(64);
+let (evt_tx, mut evt_rx) = mpsc::channel::<EngineEvent>(64);
+
+// Spawn the inference loop, then select over evt_rx for streaming
+// output and cmd_tx to send approval decisions back.
+// See koda-cli for a complete implementation.
 ```
 
-See [DESIGN.md](../DESIGN.md) for architectural decisions.
+See [DESIGN.md](https://github.com/lijunzh/koda/blob/main/DESIGN.md) for
+architectural decisions.
 
 ## License
 

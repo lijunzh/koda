@@ -31,7 +31,7 @@ Cycle with `Shift+Tab`:
 | **Strict** | Every non-read action requires confirmation |
 | **Safe** | Read-only: safe bash allowed, mutations blocked |
 
-See the [root README](../README.md) for full documentation.
+See the [README](https://github.com/lijunzh/koda) for full documentation.
 
 ## License
 
