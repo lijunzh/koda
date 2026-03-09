@@ -174,6 +174,7 @@ impl OpenAiCompatProvider {
     ) -> ChatRequest {
         let api_messages: Vec<ApiMessage> = messages
             .iter()
+            .filter(|m| m.role != "phase") // skip internal metadata roles
             .map(|m| {
                 // Build content: if images are attached, use multi-part array format
                 let content = if let Some(images) = &m.images {
