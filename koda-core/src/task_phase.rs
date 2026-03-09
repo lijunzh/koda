@@ -120,6 +120,33 @@ impl std::fmt::Display for TaskPhase {
     }
 }
 
+/// Compact phase info for threading through tool dispatch.
+/// Avoids passing the full `PhaseTracker` (which is mutable).
+#[derive(Debug, Clone, Copy)]
+pub struct PhaseInfo {
+    pub phase: TaskPhase,
+    pub plan_approved: bool,
+}
+
+impl PhaseInfo {
+    /// Default for legacy callers: Executing + approved (preserves old Auto behavior).
+    pub fn legacy() -> Self {
+        Self {
+            phase: TaskPhase::Executing,
+            plan_approved: true,
+        }
+    }
+}
+
+impl From<&PhaseTracker> for PhaseInfo {
+    fn from(tracker: &PhaseTracker) -> Self {
+        Self {
+            phase: tracker.current(),
+            plan_approved: tracker.plan_approved(),
+        }
+    }
+}
+
 // ── Review result ───────────────────────────────────────────
 
 /// What kind of review happened (or didn't).
