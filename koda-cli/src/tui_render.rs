@@ -333,14 +333,11 @@ fn render_tool_output(
     verbose: bool,
     file_ext: Option<&str>,
 ) {
+    use koda_core::truncate::{Truncated, truncate_for_display};
+
     if output.is_empty() {
         return;
     }
-
-    let lines: Vec<&str> = output.lines().collect();
-    let total = lines.len();
-    let max_lines = if verbose { total } else { 4 };
-    let show = total.min(max_lines);
 
     // Syntax highlighting for Read tool output
     let use_highlight = name == "Read" && file_ext.is_some();
@@ -350,33 +347,61 @@ fn render_tool_output(
         None
     };
 
-    for line in &lines[..show] {
-        if name == "Grep" {
-            render_grep_line(terminal, line);
-        } else if name == "List" {
-            render_list_line(terminal, line);
-        } else if let Some(ref mut hl) = highlighter {
-            let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
-            spans.extend(hl.highlight_spans(line));
-            tui_output::emit_line(terminal, Line::from(spans));
-        } else {
+    let render_line =
+        |terminal: &mut Term, line: &str, hl: &mut Option<crate::highlight::CodeHighlighter>| {
+            if name == "Grep" {
+                render_grep_line(terminal, line);
+            } else if name == "List" {
+                render_list_line(terminal, line);
+            } else if let Some(h) = hl.as_mut() {
+                let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
+                spans.extend(h.highlight_spans(line));
+                tui_output::emit_line(terminal, Line::from(spans));
+            } else {
+                tui_output::emit_line(
+                    terminal,
+                    Line::from(vec![
+                        Span::styled("  \u{2502} ", DIM),
+                        Span::raw(line.to_string()),
+                    ]),
+                );
+            }
+        };
+
+    if verbose {
+        // Show everything in verbose mode
+        for line in output.lines() {
+            render_line(terminal, line, &mut highlighter);
+        }
+        return;
+    }
+
+    match truncate_for_display(output) {
+        Truncated::Full(_) => {
+            for line in output.lines() {
+                render_line(terminal, line, &mut highlighter);
+            }
+        }
+        Truncated::Split {
+            head,
+            tail,
+            hidden,
+            total,
+        } => {
+            for line in &head {
+                render_line(terminal, line, &mut highlighter);
+            }
             tui_output::emit_line(
                 terminal,
-                Line::from(vec![
-                    Span::styled("  \u{2502} ", DIM),
-                    Span::raw(line.to_string()),
-                ]),
+                Line::from(vec![Span::styled(
+                    koda_core::truncate::separator(hidden, total),
+                    DIM,
+                )]),
             );
+            for line in &tail {
+                render_line(terminal, line, &mut highlighter);
+            }
         }
-    }
-    if total > show {
-        tui_output::emit_line(
-            terminal,
-            Line::from(vec![Span::styled(
-                format!("  \u{2502} ... ({} more lines)", total - show),
-                DIM,
-            )]),
-        );
     }
 }
 
