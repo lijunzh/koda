@@ -265,26 +265,32 @@ pub(crate) fn restore_terminal(terminal: &mut Term, height: u16) {
     let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
-pub(crate) fn reinit_viewport(terminal: Term, old_height: u16, new_height: u16) -> Result<Term> {
-    drop(terminal);
+pub(crate) fn reinit_viewport_in_place(
+    terminal: &mut Term,
+    old_height: u16,
+    new_height: u16,
+) -> Result<()> {
+    let _ = terminal.clear();
     let _ = crossterm::terminal::disable_raw_mode();
     print!("\x1b[{}A\x1b[J", old_height);
     let _ = std::io::Write::flush(&mut std::io::stdout());
-    init_terminal(new_height)
+    *terminal = init_terminal(new_height)?;
+    Ok(())
 }
 
 pub(crate) fn maybe_resize_viewport(
-    terminal: Term,
+    terminal: &mut Term,
     textarea: &TextArea,
-    current_height: u16,
-) -> Result<(Term, u16)> {
+    current_height: &mut u16,
+) -> Result<()> {
     let input_lines = textarea.lines().len().max(1) as u16;
     let desired = (input_lines + 1).clamp(MIN_VIEWPORT_HEIGHT, MAX_VIEWPORT_HEIGHT);
-    if desired == current_height {
-        return Ok((terminal, current_height));
+    if desired == *current_height {
+        return Ok(());
     }
-    let new_term = reinit_viewport(terminal, current_height, desired)?;
-    Ok((new_term, desired))
+    reinit_viewport_in_place(terminal, *current_height, desired)?;
+    *current_height = desired;
+    Ok(())
 }
 
 // ── Output helper ───────────────────────────────────────────
