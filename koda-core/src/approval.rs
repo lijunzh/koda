@@ -154,9 +154,10 @@ pub fn check_tool(
     mode: ApprovalMode,
     mut phase_info: crate::task_phase::PhaseInfo,
     project_root: Option<&Path>,
+    mcp_effect: Option<ToolEffect>,
 ) -> ToolApproval {
-    // Classify the tool's effect
-    let effect = resolve_effect(tool_name, args);
+    // Classify the tool's effect (MCP override takes precedence)
+    let effect = mcp_effect.unwrap_or_else(|| resolve_effect(tool_name, args));
 
     // Read-only tools always auto-approve in every mode
     if effect == ToolEffect::ReadOnly {
@@ -345,7 +346,8 @@ mod tests {
                     &serde_json::json!({}),
                     ApprovalMode::Safe,
                     crate::task_phase::PhaseInfo::delegated(),
-                    None
+                    None,
+                    None,
                 ),
                 ToolApproval::AutoApprove,
                 "{tool} should auto-approve even in Safe mode"
@@ -362,7 +364,8 @@ mod tests {
                     &serde_json::json!({}),
                     ApprovalMode::Safe,
                     crate::task_phase::PhaseInfo::delegated(),
-                    None
+                    None,
+                    None,
                 ),
                 ToolApproval::Blocked,
                 "{tool} should be blocked in Safe mode"
@@ -381,7 +384,8 @@ mod tests {
                     &serde_json::json!({}),
                     ApprovalMode::Auto,
                     crate::task_phase::PhaseInfo::delegated(),
-                    None
+                    None,
+                    None,
                 ),
                 ToolApproval::AutoApprove,
             );
@@ -397,7 +401,8 @@ mod tests {
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
                 crate::task_phase::PhaseInfo::delegated(),
-                None
+                None,
+                None,
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -418,7 +423,8 @@ mod tests {
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
                 phase,
-                None
+                None,
+                None,
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -439,7 +445,8 @@ mod tests {
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
                 phase,
-                None
+                None,
+                None,
             ),
             ToolApproval::Notify,
         );
@@ -455,7 +462,8 @@ mod tests {
                 &args,
                 ApprovalMode::Strict,
                 crate::task_phase::PhaseInfo::delegated(),
-                None
+                None,
+                None,
             ),
             ToolApproval::AutoApprove,
         );
@@ -471,7 +479,8 @@ mod tests {
                 &args,
                 ApprovalMode::Strict,
                 crate::task_phase::PhaseInfo::delegated(),
-                None
+                None,
+                None,
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -487,7 +496,8 @@ mod tests {
                 &args,
                 ApprovalMode::Strict,
                 crate::task_phase::PhaseInfo::delegated(),
-                None
+                None,
+                None,
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -501,7 +511,8 @@ mod tests {
                 &serde_json::json!({}),
                 ApprovalMode::Strict,
                 crate::task_phase::PhaseInfo::delegated(),
-                None
+                None,
+                None,
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -517,7 +528,8 @@ mod tests {
                     &args,
                     mode,
                     crate::task_phase::PhaseInfo::delegated(),
-                    None
+                    None,
+                    None,
                 ),
                 ToolApproval::AutoApprove,
             );
@@ -534,7 +546,8 @@ mod tests {
                 &args,
                 ApprovalMode::Safe,
                 crate::task_phase::PhaseInfo::delegated(),
-                None
+                None,
+                None,
             ),
             ToolApproval::AutoApprove,
         );
@@ -550,7 +563,8 @@ mod tests {
                 &args,
                 ApprovalMode::Safe,
                 crate::task_phase::PhaseInfo::delegated(),
-                None
+                None,
+                None,
             ),
             ToolApproval::AutoApprove,
         );
@@ -566,7 +580,8 @@ mod tests {
                 &args,
                 ApprovalMode::Safe,
                 crate::task_phase::PhaseInfo::delegated(),
-                None
+                None,
+                None,
             ),
             ToolApproval::Blocked,
         );
@@ -582,7 +597,8 @@ mod tests {
                 &args,
                 ApprovalMode::Safe,
                 crate::task_phase::PhaseInfo::delegated(),
-                None
+                None,
+                None,
             ),
             ToolApproval::Blocked,
         );
@@ -597,7 +613,8 @@ mod tests {
                 &args,
                 ApprovalMode::Safe,
                 crate::task_phase::PhaseInfo::delegated(),
-                None
+                None,
+                None,
             ),
             ToolApproval::AutoApprove,
         );
@@ -616,6 +633,7 @@ mod tests {
                 ApprovalMode::Auto,
                 crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
+                None,
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -632,6 +650,7 @@ mod tests {
                 ApprovalMode::Auto,
                 crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
+                None,
             ),
             ToolApproval::AutoApprove,
         );
@@ -648,6 +667,7 @@ mod tests {
                 ApprovalMode::Auto,
                 crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
+                None,
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -664,6 +684,7 @@ mod tests {
                 ApprovalMode::Auto,
                 crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
+                None,
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -680,6 +701,7 @@ mod tests {
                 ApprovalMode::Auto,
                 crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
+                None,
             ),
             ToolApproval::AutoApprove,
         );
@@ -694,6 +716,7 @@ mod tests {
                 &args,
                 ApprovalMode::Auto,
                 crate::task_phase::PhaseInfo::delegated(),
+                None,
                 None,
             ),
             ToolApproval::AutoApprove,
@@ -714,7 +737,8 @@ mod tests {
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
                 phase,
-                None
+                None,
+                None,
             ),
             ToolApproval::AutoApprove,
         );
@@ -731,7 +755,8 @@ mod tests {
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
                 phase,
-                None
+                None,
+                None,
             ),
             ToolApproval::PlanRequired,
         );
@@ -748,7 +773,8 @@ mod tests {
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
                 phase,
-                None
+                None,
+                None,
             ),
             ToolApproval::AutoApprove,
         );
@@ -765,7 +791,8 @@ mod tests {
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
                 phase,
-                None
+                None,
+                None,
             ),
             ToolApproval::AutoApprove,
         );
