@@ -155,11 +155,21 @@ const SAFE_PREFIXES: &[&str] = &[
     "gh release ",
     "gh run ",
     "gh workflow ",
-    // ── Cloud CLIs (read-only) ──
-    "gcloud ",
-    "bq ",
-    "aws ",
-    "az ",
+    // ── Cloud CLIs (read-only subcommands only) ──
+    "gcloud projects list",
+    "gcloud compute instances list",
+    "gcloud config ",
+    "gcloud auth ",
+    "gcloud info",
+    "bq ls",
+    "bq show",
+    "bq query ",
+    "bq head ",
+    "aws sts ",
+    "aws s3 ls",
+    "aws s3api list",
+    "az account ",
+    "az group list",
     // ── Misc dev tools ──
     "brew ",
     "open ",
@@ -205,6 +215,11 @@ const DANGEROUS_PATTERNS: &[&str] = &[
     "git push --force",
     "git reset --hard",
     "git clean -fd",
+    // Safe-command escalation: safe prefixes that become dangerous with certain args
+    "sed -i",
+    "sed -i ",
+    "sed -i'",
+    "sed --in-place",
     // System control
     "reboot",
     "shutdown",
@@ -608,6 +623,20 @@ mod tests {
         assert!(is_command_safe("bq query 'SELECT 1'"));
         assert!(is_command_safe("aws s3 ls"));
         assert!(is_command_safe("az account list"));
+    }
+
+    #[test]
+    fn test_cloud_cli_destructive_not_safe() {
+        assert!(!is_command_safe("gcloud compute instances delete my-vm"));
+        assert!(!is_command_safe("aws s3 rm s3://bucket/key"));
+        assert!(!is_command_safe("bq rm dataset.table"));
+    }
+
+    #[test]
+    fn test_sed_in_place_not_safe() {
+        assert!(!is_command_safe("sed -i 's/foo/bar/g' file.txt"));
+        assert!(!is_command_safe("sed --in-place 's/foo/bar/' file.txt"));
+        assert!(is_command_safe("sed 's/foo/bar/g' file.txt")); // read-only sed is fine
     }
 
     #[test]

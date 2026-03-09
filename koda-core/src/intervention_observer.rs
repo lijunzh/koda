@@ -129,14 +129,24 @@ impl InterventionObserver {
         }
     }
 
-    /// Save to disk.
+    /// Save to disk. Logs a warning if persistence fails.
     pub fn save(&self) {
         let path = Self::storage_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(&path, json);
+        match serde_json::to_string_pretty(self) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    tracing::warn!(
+                        "Failed to save intervention priors to {}: {e}",
+                        path.display()
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to serialize intervention priors: {e}");
+            }
         }
     }
 
