@@ -22,7 +22,7 @@ use crate::tui_output;
 use crate::tui_render::TuiRenderer;
 use crate::tui_types::{MIN_VIEWPORT_HEIGHT, MenuContent, PromptMode, ProviderWizard, TuiState};
 use crate::tui_viewport::{
-    draw_viewport, emit_above, init_terminal, maybe_resize_viewport, reinit_viewport,
+    draw_viewport, emit_above, init_terminal, maybe_resize_viewport, reinit_viewport_in_place,
     restore_terminal,
 };
 
@@ -207,7 +207,7 @@ pub async fn run(
 
     let mode = approval::read_mode(&shared_mode);
     let ctx = koda_core::context::percentage() as u32;
-    (terminal, viewport_height) = maybe_resize_viewport(terminal, &textarea, viewport_height)?;
+    maybe_resize_viewport(&mut terminal, &textarea, &mut viewport_height)?;
     terminal.draw(|f| {
         draw_viewport(
             f,
@@ -665,7 +665,7 @@ pub async fn run(
                                         if let Event::Resize(_, _) = ev {
                                             // Terminal resized during inference — erase stale
                                             // viewport and reinit to prevent ghost prompt lines.
-                                            terminal = reinit_viewport(terminal, viewport_height, viewport_height)?;
+                                            reinit_viewport_in_place(&mut terminal, viewport_height, viewport_height)?;
                                         } else if let Event::Key(key) = ev {
                                             // Approval hotkeys during inference
                                             if let MenuContent::Approval { id, .. } = &menu {
@@ -982,7 +982,7 @@ pub async fn run(
         // Redraw viewport (resize if textarea grew/shrank)
         let mode = approval::read_mode(&shared_mode);
         let ctx = koda_core::context::percentage() as u32;
-        (terminal, viewport_height) = maybe_resize_viewport(terminal, &textarea, viewport_height)?;
+        maybe_resize_viewport(&mut terminal, &textarea, &mut viewport_height)?;
         terminal.draw(|f| {
             draw_viewport(
                 f,
@@ -1006,7 +1006,7 @@ pub async fn run(
             Some(Ok(ev)) = crossterm_events.next() => {
                 if let Event::Resize(_, _) = ev {
                     // Terminal resized while idle — erase stale viewport and reinit.
-                    terminal = reinit_viewport(terminal, viewport_height, viewport_height)?;
+                    reinit_viewport_in_place(&mut terminal, viewport_height, viewport_height)?;
                 } else if let Event::Key(key) = ev {
                     // ── Slash menu key interception ───────────
                     // When a menu is active, intercept navigation
