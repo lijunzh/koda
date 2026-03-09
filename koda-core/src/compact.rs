@@ -159,7 +159,7 @@ mod tests {
         Message {
             id: 0,
             session_id: String::new(),
-            role: role.to_string(),
+            role: role.parse().unwrap_or(crate::db::Role::User),
             content: content.map(String::from),
             tool_calls: tool_calls.map(String::from),
             tool_call_id: None,

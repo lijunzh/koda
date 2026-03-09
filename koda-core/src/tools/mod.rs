@@ -36,6 +36,14 @@ pub fn normalize_tool_name(name: &str) -> String {
     }
 }
 
+/// Returns true if the tool performs a mutating operation.
+pub fn is_mutating_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "Write" | "Edit" | "Delete" | "Bash" | "MemoryWrite" | "CreateAgent" | "InvokeAgent"
+    )
+}
+
 pub mod agent;
 pub mod discover;
 pub mod file_tools;

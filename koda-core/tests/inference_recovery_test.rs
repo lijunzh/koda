@@ -4,12 +4,13 @@
 //! recovery (overflow → compact → retry → success).
 
 use koda_core::{
-    approval::{ApprovalMode, Settings},
+    approval::ApprovalMode,
     config::{KodaConfig, ProviderType},
     db::{Database, Role},
     engine::{EngineCommand, EngineEvent, sink::TestSink},
-    inference,
+    inference::{self, InferenceContext},
     providers::mock::{MockProvider, MockResponse},
+    settings::Settings,
     tools::ToolRegistry,
 };
 use std::path::PathBuf;
@@ -63,22 +64,22 @@ impl Env {
         let mut settings = Settings::load();
         let tool_defs = self.tool_defs();
 
-        let result = inference::inference_loop(
-            &self.root,
-            &self.config,
-            &self.db,
-            &self.session_id,
-            "You are a test assistant.",
+        let result = inference::inference_loop(InferenceContext {
+            project_root: &self.root,
+            config: &self.config,
+            db: &self.db,
+            session_id: &self.session_id,
+            system_prompt: "You are a test assistant.",
             provider,
-            &self.tools,
-            &tool_defs,
-            None,
-            ApprovalMode::Auto,
-            &mut settings,
-            &sink,
-            CancellationToken::new(),
-            &mut cmd_rx,
-        )
+            tools: &self.tools,
+            tool_defs: &tool_defs,
+            pending_images: None,
+            mode: ApprovalMode::Auto,
+            settings: &mut settings,
+            sink: &sink,
+            cancel: CancellationToken::new(),
+            cmd_rx: &mut cmd_rx,
+        })
         .await;
 
         (result, sink.events())
