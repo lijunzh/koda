@@ -134,6 +134,17 @@ pub fn classify_intent(msg: &str) -> IntentSuggestion {
         };
     }
 
+    // File-specificity heuristic: naming specific files is a simplicity signal.
+    // "fix the typo in README.md" is targeted; "refactor the codebase" is open-ended.
+    let has_file_ref = words.iter().any(|w| w.contains('.') && w.len() > 2);
+    if has_file_ref && words.len() < 15 {
+        return IntentSuggestion {
+            intent: TaskIntent::Modify,
+            suggestion: None,
+            reason: None,
+        };
+    }
+
     IntentSuggestion {
         intent: TaskIntent::Modify,
         suggestion: None,
@@ -193,5 +204,17 @@ mod tests {
         let msg = "I need you to ".to_string() + &"word ".repeat(30) + "and more";
         let r = classify_intent(&msg);
         assert_eq!(r.intent, TaskIntent::Complex);
+    }
+
+    #[test]
+    fn test_classify_file_specific_is_modify() {
+        let r = classify_intent("fix the typo in README.md");
+        assert_eq!(r.intent, TaskIntent::Modify);
+    }
+
+    #[test]
+    fn test_classify_file_specific_with_path() {
+        let r = classify_intent("update src/main.rs");
+        assert_eq!(r.intent, TaskIntent::Modify);
     }
 }
