@@ -6,6 +6,7 @@
 use crate::repl::ReplAction;
 use crate::tui_output;
 use crate::tui_render::TuiRenderer;
+use crate::tui_types::Term;
 
 use koda_core::agent::KodaAgent;
 use koda_core::approval;
@@ -13,15 +14,11 @@ use koda_core::config::KodaConfig;
 use koda_core::providers::LlmProvider;
 use koda_core::session::KodaSession;
 use ratatui::{
-    Terminal,
-    backend::CrosstermBackend,
     style::{Color, Style},
     text::{Line, Span},
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 
 pub enum SlashAction {
     Continue,
