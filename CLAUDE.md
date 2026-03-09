@@ -56,6 +56,22 @@ Koda tracks agent process via a six-phase state machine:
   - `lint_bash_paths()`: heuristic bash command analysis for cd/path escapes
   - Startup warning when project_root == $HOME
 
+## Documentation Rules
+
+**When to update docs with a PR:**
+- User-facing feature added/changed → update root README + relevant crate README
+- MCP tool added/changed → update the crate README's tool/protocol section
+- Architecture or design decision → add numbered entry to DESIGN.md with rationale
+- New crate → must ship with a README.md (required for crates.io)
+- Keep feature coverage symmetric — if AST and email have equivalent capabilities, they get equivalent documentation
+- Internal refactors don't require doc updates unless they change crate boundaries or public APIs
+
+**On release:**
+- Move CHANGELOG.md `[Unreleased]` to versioned section
+- Bump version in all 4 crate Cargo.toml files (koda-core, koda-cli, koda-ast, koda-email)
+- Verify README quick-start examples still work
+- Check that CHANGELOG entries match what's documented in README/DESIGN.md
+
 ## Build & Development Commands
 
 ```bash
