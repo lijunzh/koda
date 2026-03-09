@@ -381,6 +381,23 @@ pub(crate) async fn execute_tools_sequential(
             ToolApproval::AutoApprove | ToolApproval::Notify => {
                 // Execute without asking
             }
+            ToolApproval::PlanRequired => {
+                // Simple-task action budget exhausted — tell the LLM to plan
+                db.insert_message(
+                    session_id,
+                    &Role::Tool,
+                    Some(
+                        "[system] You have exceeded the simple-task action limit. \
+                          Please produce a plan for the remaining work before \
+                          continuing with more tool calls.",
+                    ),
+                    None,
+                    Some(&tc.id),
+                    None,
+                )
+                .await?;
+                continue;
+            }
             ToolApproval::Blocked => {
                 // Plan mode: emit ActionBlocked event, let the client render it
                 let detail = tools::describe_action(&tc.function_name, &parsed_args);
@@ -656,6 +673,9 @@ pub(crate) async fn execute_sub_agent(
                 ToolApproval::AutoApprove | ToolApproval::Notify => {
                     tools.execute(&tc.function_name, &tc.arguments).await.output
                 }
+                ToolApproval::PlanRequired => {
+                    "[system] Simple-task action budget exhausted. Produce a plan.".to_string()
+                }
                 ToolApproval::Blocked => {
                     let detail = tools::describe_action(&tc.function_name, &parsed_args);
                     let diff_preview =
@@ -768,7 +788,7 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::legacy(),
+            crate::task_phase::PhaseInfo::delegated(),
             Path::new("/test/project")
         ));
     }
@@ -779,7 +799,7 @@ mod tests {
         assert!(!can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::legacy(),
+            crate::task_phase::PhaseInfo::delegated(),
             Path::new("/test/project")
         ));
     }
@@ -799,7 +819,7 @@ mod tests {
         assert!(!can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::legacy(),
+            crate::task_phase::PhaseInfo::delegated(),
             Path::new("/test/project")
         ));
     }
@@ -810,7 +830,7 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::legacy(),
+            crate::task_phase::PhaseInfo::delegated(),
             Path::new("/test/project")
         ));
     }
@@ -834,7 +854,7 @@ mod tests {
         assert!(!can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::legacy(),
+            crate::task_phase::PhaseInfo::delegated(),
             Path::new("/test/project")
         ));
     }
@@ -845,7 +865,7 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             ApprovalMode::Auto,
-            crate::task_phase::PhaseInfo::legacy(),
+            crate::task_phase::PhaseInfo::delegated(),
             Path::new("/test/project")
         ));
     }
