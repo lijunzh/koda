@@ -1,6 +1,9 @@
 //! Koda Core — the engine library for the Koda AI coding agent.
 //!
 //! This crate contains the pure engine logic with zero terminal dependencies.
+
+// TODO(#295): enable once public API docs are written (~235 items)
+// #![warn(missing_docs)]
 //! It communicates exclusively through [`engine::EngineEvent`] (output) and
 //! [`engine::EngineCommand`] (input) enums.
 //!
