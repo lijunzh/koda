@@ -1,48 +1,30 @@
-//! TUI-based interactive event loop with persistent inline viewport.
+//! TUI main event loop.
 //!
-//! # Rendering Architecture
+//! The event loop that ties everything together: dispatches keyboard
+//! events, manages inference turns, handles slash commands, and
+//! coordinates the persistent inline viewport.
 //!
-//! Two rendering systems coexist, bridged by terminal re-initialization:
+//! Supporting modules:
+//! - `tui_types` — enums, type aliases, constants
+//! - `tui_viewport` — viewport drawing and terminal lifecycle
+//! - `tui_history` — command history persistence
+//! - `tui_commands` — slash command dispatch
+//! - `tui_render` — streaming inference output rendering
+//! - `tui_output` — low-level terminal output helpers
 //!
-//! ## 1. Engine output — ratatui `insert_before()`
-//!
-//! LLM streaming, tool calls, diffs, and approval prompts render as
-//! native `ratatui::text::Line`/`Span` via `tui_output::emit_line()`.
-//! Content scrolls into terminal scrollback above the viewport.
-//!
-//! ## 2. Slash commands — crossterm direct writes
-//!
-//! `/model`, `/help`, `/provider`, etc. render via `tui_output::write_line()`
-//! which writes styled content directly to stdout with `\r\n` line endings.
-//! Interactive menus render in `menu_area` via ratatui (see DESIGN.md §14).
-//! for in-place arrow-key navigation.
-//!
-//! ## Bridge: `init_terminal()` resync
-//!
-//! After every slash command, we create a fresh `Terminal` with
-//! `Viewport::Inline(2)`. This anchors the viewport at the current
-//! cursor position — wherever crossterm left it — eliminating stale
-//! cursor tracking. No raw mode toggle needed.
-//!
-//! ```text
-//! ┌─ scrollback ────────────────────────────────────────────┐
-//! │ Engine output via insert_before() (ratatui Line/Span)   │
-//! │ Slash command output via write_line() (crossterm)       │
-//! │ Menu area via ratatui (dropdown / approval / wizard)     │
-//! ├─────────────────────────────────────────────────────────┤
-//! │ ← init_terminal() resyncs viewport here →              │
-//! ├─ ratatui Viewport::Inline(2) ──────────────────────────┤
-//! │ \u{1f43b}> user types here even during inference_              │
-//! │ model │ normal │ ████░░ 5%                             │
-//! └─────────────────────────────────────────────────────────┘
-//! ```
+//! See #209 for the refactoring plan.
 
 use crate::input;
 use crate::sink::UiEvent;
 use crate::tui_commands::{self, SlashAction};
+use crate::tui_history;
 use crate::tui_output;
 use crate::tui_render::TuiRenderer;
-use crate::widgets::status_bar::StatusBar;
+use crate::tui_types::{MIN_VIEWPORT_HEIGHT, MenuContent, PromptMode, ProviderWizard, TuiState};
+use crate::tui_viewport::{
+    draw_viewport, emit_above, init_terminal, maybe_resize_viewport, reinit_viewport,
+    restore_terminal,
+};
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
@@ -55,12 +37,8 @@ use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent};
 use koda_core::providers::LlmProvider;
 use koda_core::session::KodaSession;
 use ratatui::{
-    Terminal, TerminalOptions, Viewport,
-    backend::CrosstermBackend,
-    layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
 };
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -68,365 +46,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tui_textarea::TextArea;
-
-/// Minimum viewport height — large enough to fit the slash menu overlay.
-/// separator(1) + input(1) + menu(8) + bottom_sep(1) + status(1) = 12
-const MIN_VIEWPORT_HEIGHT: u16 = 12;
-/// Maximum viewport height to avoid taking over the terminal.
-const MAX_VIEWPORT_HEIGHT: u16 = 16;
-
-// ── Session state ────────────────────────────────────────────
-
-/// What the TUI is currently doing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TuiState {
-    /// Waiting for user input (no inference running).
-    Idle,
-    /// An inference turn is running.
-    Inferring,
-}
-
-// ── Type aliases ─────────────────────────────────────────
-
-type SlashDropdown =
-    crate::widgets::dropdown::DropdownState<crate::widgets::slash_menu::SlashCommand>;
-type ModelDropdown = crate::widgets::dropdown::DropdownState<crate::widgets::model_menu::ModelItem>;
-type ProviderDropdown =
-    crate::widgets::dropdown::DropdownState<crate::widgets::provider_menu::ProviderItem>;
-type SessionDropdown =
-    crate::widgets::dropdown::DropdownState<crate::widgets::session_menu::SessionItem>;
-type FileDropdown = crate::widgets::dropdown::DropdownState<crate::widgets::file_menu::FileItem>;
-
-/// What's currently shown in the `menu_area` below the status bar.
-/// Only one menu can be active at a time.
-enum MenuContent {
-    /// Nothing — menu_area is empty.
-    None,
-    /// Slash command dropdown (auto-appears on `/`).
-    Slash(SlashDropdown),
-    /// Model picker dropdown (`/model` with no args).
-    Model(ModelDropdown),
-    /// Provider picker dropdown (`/provider` with no args).
-    Provider(ProviderDropdown),
-    /// Session picker dropdown (`/sessions` with no args).
-    Session(SessionDropdown),
-    /// File picker dropdown (auto-appears on `@`).
-    File {
-        dropdown: FileDropdown,
-        /// Text before the `@` token (to reconstruct the full input).
-        prefix: String,
-    },
-    /// Wizard trail — completed steps shown dimmed during multi-step flow.
-    WizardTrail(Vec<(String, String)>),
-    /// Approval hotkey bar — shown during inference when engine requests approval.
-    Approval {
-        id: String,
-        tool_name: String,
-        detail: String,
-    },
-    /// Loop cap hotkey bar — continue or stop after iteration limit.
-    LoopCap,
-}
-
-impl MenuContent {
-    fn is_none(&self) -> bool {
-        matches!(self, MenuContent::None)
-    }
-}
-
-/// What the prompt input area is currently doing.
-/// Normally it's chat input. During wizard flows, it's repurposed
-/// for text input (API key, URL, etc.).
-#[derive(Clone)]
-enum PromptMode {
-    /// Normal chat input: ⚡> █
-    Chat,
-    /// Wizard text input: label: █ (or label: ••••█ when masked)
-    WizardInput {
-        label: String,
-        #[allow(dead_code)] // TODO: implement textarea masking for API keys
-        masked: bool,
-    },
-}
-
-/// Provider setup wizard state machine.
-/// Each variant holds the data collected so far.
-enum ProviderWizard {
-    /// Step 1: provider selected, now need API key (or URL for local providers).
-    NeedApiKey {
-        provider_type: koda_core::config::ProviderType,
-        base_url: String,
-        env_name: String,
-    },
-    /// Step 1 (local): provider selected, now need URL.
-    NeedUrl {
-        provider_type: koda_core::config::ProviderType,
-    },
-}
-
-// ── Viewport drawing ─────────────────────────────────────────
-
-#[allow(clippy::too_many_arguments)]
-fn draw_viewport(
-    frame: &mut ratatui::Frame,
-    textarea: &TextArea,
-    model: &str,
-    tier_label: &str,
-    mode: ApprovalMode,
-    context_pct: u32,
-    state: TuiState,
-    prompt_mode: &PromptMode,
-    queue_len: usize,
-    elapsed_secs: u64,
-    last_turn: Option<&crate::widgets::status_bar::TurnStats>,
-    menu: &MenuContent,
-) {
-    let area = frame.area();
-    // Layout: separator → input → bottom_sep → status → [menu/empty]
-    // Input + status bar form a fixed "center of mass" panel at top.
-    // Remaining space below is empty (looks like terminal) or shows menu.
-    let input_height = textarea.lines().len().max(1) as u16;
-    let [sep_row, input_rows, bot_sep_row, status_row, menu_area] = Layout::vertical([
-        Constraint::Length(1),            // top separator
-        Constraint::Length(input_height), // input (sized to content)
-        Constraint::Length(1),            // bottom separator
-        Constraint::Length(1),            // status bar
-        Constraint::Min(0),               // menu overlay / empty space
-    ])
-    .areas(area);
-
-    // Separator line: ──────────── 🐻 ─
-    let sep_width = sep_row.width.saturating_sub(5) as usize;
-    let separator = Line::from(vec![
-        Span::styled(
-            "─".repeat(sep_width),
-            Style::default().fg(Color::Rgb(124, 111, 100)),
-        ),
-        Span::styled(" 🐻 ─", Style::default().fg(Color::Rgb(124, 111, 100))),
-    ]);
-    frame.render_widget(separator, sep_row);
-
-    // Menu overlay (below status bar)
-    match menu {
-        MenuContent::Slash(dd) => {
-            let lines = crate::widgets::slash_menu::build_menu_lines(dd);
-            frame.render_widget(Paragraph::new(lines), menu_area);
-        }
-        MenuContent::Model(dd) => {
-            let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
-            frame.render_widget(Paragraph::new(lines), menu_area);
-        }
-        MenuContent::Provider(dd) => {
-            let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
-            frame.render_widget(Paragraph::new(lines), menu_area);
-        }
-        MenuContent::Session(dd) => {
-            let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
-            frame.render_widget(Paragraph::new(lines), menu_area);
-        }
-        MenuContent::File { dropdown: dd, .. } => {
-            let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
-            frame.render_widget(Paragraph::new(lines), menu_area);
-        }
-        MenuContent::WizardTrail(trail) => {
-            let mut lines: Vec<Line> = trail
-                .iter()
-                .map(|(label, value)| {
-                    Line::from(vec![
-                        Span::styled(
-                            format!("  {label}: "),
-                            Style::default().fg(Color::Rgb(124, 111, 100)),
-                        ),
-                        Span::styled(
-                            value.clone(),
-                            Style::default().fg(Color::Rgb(198, 165, 106)),
-                        ),
-                    ])
-                })
-                .collect();
-            lines.push(Line::from(Span::styled(
-                "  enter to confirm \u{00b7} esc to cancel",
-                Style::default().fg(Color::Rgb(124, 111, 100)),
-            )));
-            frame.render_widget(Paragraph::new(lines), menu_area);
-        }
-        MenuContent::Approval {
-            tool_name, detail, ..
-        } => {
-            let lines = vec![
-                Line::from(vec![
-                    Span::styled("  ", Style::default()),
-                    Span::styled(
-                        tool_name.clone(),
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(ratatui::style::Modifier::BOLD),
-                    ),
-                    Span::styled(format!("  {detail}"), Style::default().fg(Color::DarkGray)),
-                ]),
-                Line::from(vec![
-                    Span::styled("  [y]", Style::default().fg(Color::Green)),
-                    Span::styled(" approve  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("[n]", Style::default().fg(Color::Red)),
-                    Span::styled(" reject  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("[f]", Style::default().fg(Color::Yellow)),
-                    Span::styled(" feedback  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("[a]", Style::default().fg(Color::Rgb(124, 111, 100))),
-                    Span::styled(" always", Style::default().fg(Color::DarkGray)),
-                ]),
-            ];
-            frame.render_widget(Paragraph::new(lines), menu_area);
-        }
-        MenuContent::LoopCap => {
-            let lines = vec![
-                Line::from(vec![
-                    Span::styled("  \u{26a0} ", Style::default().fg(Color::Yellow)),
-                    Span::styled(
-                        "Hard cap reached. Continue?",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled("  [y]", Style::default().fg(Color::Green)),
-                    Span::styled(" continue  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled("[n]", Style::default().fg(Color::Red)),
-                    Span::styled(" stop", Style::default().fg(Color::DarkGray)),
-                ]),
-            ];
-            frame.render_widget(Paragraph::new(lines), menu_area);
-        }
-        MenuContent::None => {}
-    }
-
-    // Prompt icon + textarea
-    let (prompt_text, color) = match prompt_mode {
-        PromptMode::WizardInput { label, .. } => (format!("{label}: "), Color::Cyan),
-        PromptMode::Chat => {
-            let (icon, c) = match (state, mode) {
-                (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray),
-                (_, ApprovalMode::Safe) => ("\u{1f50d}", Color::Yellow),
-                (_, ApprovalMode::Strict) => ("\u{1f512}", Color::Cyan),
-                (_, ApprovalMode::Auto) => ("\u{26a1}", Color::Green),
-            };
-            (format!("{icon}> "), c)
-        }
-    };
-    let prompt_width: u16 = prompt_text.len().min(30) as u16;
-    let [prompt_area, text_area] =
-        Layout::horizontal([Constraint::Length(prompt_width), Constraint::Fill(1)])
-            .areas(input_rows);
-
-    frame.render_widget(
-        Paragraph::new(prompt_text).style(Style::default().fg(color)),
-        prompt_area,
-    );
-    frame.render_widget(textarea, text_area);
-
-    // Bottom separator between input and status bar
-    let bot_width = bot_sep_row.width as usize;
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "─".repeat(bot_width),
-            Style::default().fg(Color::Rgb(124, 111, 100)),
-        ))),
-        bot_sep_row,
-    );
-
-    // Status bar
-    let mut sb = StatusBar::new(model, tier_label, mode.label(), context_pct);
-    if queue_len > 0 {
-        sb = sb.with_queue(queue_len);
-    }
-    if elapsed_secs > 0 {
-        sb = sb.with_elapsed(elapsed_secs);
-    }
-    if let Some(stats) = last_turn {
-        sb = sb.with_last_turn(stats);
-    }
-    frame.render_widget(sb, status_row);
-}
-
-// ── Terminal lifecycle helpers ────────────────────────────────
-
-type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
-
-fn init_terminal(height: u16) -> Result<Term> {
-    crossterm::terminal::enable_raw_mode()?;
-    // Flush pending output before the cursor-position query
-    // that Viewport::Inline triggers internally.
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-
-    // Retry up to 3 times — the DSR cursor-position query can
-    // time out if a prior EventStream wake thread is still draining.
-    let mut last_err = None;
-    for attempt in 0..3 {
-        if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        let stdout = std::io::stdout();
-        let backend = CrosstermBackend::new(stdout);
-        match Terminal::with_options(
-            backend,
-            TerminalOptions {
-                viewport: Viewport::Inline(height),
-            },
-        ) {
-            Ok(t) => return Ok(t),
-            Err(e) => {
-                tracing::debug!("init_terminal attempt {}: {e}", attempt + 1);
-                last_err = Some(e);
-            }
-        }
-    }
-    Err(last_err.unwrap().into())
-}
-
-fn restore_terminal(terminal: &mut Term, height: u16) {
-    let _ = terminal.clear();
-    let _ = crossterm::terminal::disable_raw_mode();
-    // Erase leftover viewport lines
-    print!("\x1b[{}A\x1b[J", height);
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-}
-
-/// Reinitialize the viewport with a new height.
-///
-/// Drops the old terminal, erases the stale viewport area using the
-/// **old** height (to avoid overshooting into scrollback), and creates
-/// a fresh terminal with the new height.
-fn reinit_viewport(terminal: Term, old_height: u16, new_height: u16) -> Result<Term> {
-    drop(terminal);
-    let _ = crossterm::terminal::disable_raw_mode();
-    // Move cursor up past the OLD viewport and erase to end of screen
-    print!("\x1b[{}A\x1b[J", old_height);
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-    init_terminal(new_height)
-}
-
-/// Resize the viewport if the textarea line count changed.
-///
-/// Returns the (possibly new) terminal and updated height.
-/// Reinitializes the terminal when the viewport needs to grow or shrink.
-fn maybe_resize_viewport(
-    terminal: Term,
-    textarea: &TextArea,
-    current_height: u16,
-) -> Result<(Term, u16)> {
-    let input_lines = textarea.lines().len().max(1) as u16;
-    let desired = (input_lines + 1).clamp(MIN_VIEWPORT_HEIGHT, MAX_VIEWPORT_HEIGHT);
-    if desired == current_height {
-        return Ok((terminal, current_height));
-    }
-    let new_term = reinit_viewport(terminal, current_height, desired)?;
-    Ok((new_term, desired))
-}
-
-// ── Output helper ────────────────────────────────────────────
-
-/// Write a message line above the viewport.
-fn emit_above(terminal: &mut Term, line: ratatui::text::Line<'_>) {
-    crate::tui_output::emit_line(terminal, line);
-}
 
 // ── Main event loop ──────────────────────────────────────────
 
@@ -569,7 +188,7 @@ pub async fn run(
         ));
     }
     let mut inference_start: Option<std::time::Instant> = None;
-    let mut history: Vec<String> = load_history();
+    let mut history: Vec<String> = tui_history::load_history();
     let mut history_idx: Option<usize> = None; // None = not browsing history
     let mut completer = crate::completer::InputCompleter::new(project_root.clone());
 
@@ -1171,7 +790,7 @@ pub async fn run(
                                                         textarea.select_all();
                                                         textarea.cut();
                                                         history.push(text.clone());
-                                                        save_history(&history);
+                                                        tui_history::save_history(&history);
                                                         history_idx = None;
                                                         input_queue.push_back(text);
                                                     }
@@ -1732,7 +1351,7 @@ pub async fn run(
                                         textarea.select_all();
                                         textarea.cut();
                                         history.push(text.clone());
-                                        save_history(&history);
+                                        tui_history::save_history(&history);
                                         history_idx = None;
                                         let mode = approval::read_mode(&shared_mode);
                                         let icon = match mode {
@@ -1881,39 +1500,4 @@ pub async fn run(
     crate::startup::print_resume_hint(&session.id);
 
     Ok(())
-}
-
-// ── History persistence ───────────────────────────────────────
-
-const MAX_HISTORY: usize = 500;
-
-fn history_file_path() -> PathBuf {
-    let config_dir = std::env::var("XDG_CONFIG_HOME")
-        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config")))
-        .or_else(|_| std::env::var("USERPROFILE").map(|h| format!("{h}/.config")))
-        .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(config_dir).join("koda").join("history")
-}
-
-fn load_history() -> Vec<String> {
-    let path = history_file_path();
-    match std::fs::read_to_string(&path) {
-        Ok(content) => content
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(String::from)
-            .collect(),
-        Err(_) => Vec::new(),
-    }
-}
-
-fn save_history(history: &[String]) {
-    let path = history_file_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    // Keep only the last MAX_HISTORY entries
-    let start = history.len().saturating_sub(MAX_HISTORY);
-    let content = history[start..].join("\n");
-    let _ = std::fs::write(&path, content);
 }
