@@ -28,7 +28,11 @@ pub fn emit_lines(terminal: &mut Term, lines: &[Line<'_>]) {
     if lines.is_empty() {
         return;
     }
-    let term_width = terminal.size().map(|s| s.width as usize).unwrap_or(80).max(1);
+    let term_width = terminal
+        .size()
+        .map(|s| s.width as usize)
+        .unwrap_or(80)
+        .max(1);
     // Each line may wrap to multiple rows — calculate the true height.
     let height: u16 = lines
         .iter()
@@ -37,7 +41,7 @@ pub fn emit_lines(terminal: &mut Term, lines: &[Line<'_>]) {
             if w == 0 {
                 1u16
             } else {
-                ((w + term_width - 1) / term_width) as u16 // ceil division
+                w.div_ceil(term_width) as u16
             }
         })
         .sum();
