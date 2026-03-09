@@ -180,6 +180,19 @@ async fn main() -> Result<()> {
 
     tracing::info!("Koda starting. Project root: {:?}", project_root);
 
+    // Footgun detection: warn if project_root is the home directory
+    if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+        let home_path = std::fs::canonicalize(home).unwrap_or_default();
+        if project_root == home_path {
+            eprintln!(
+                "\n\x1b[33m⚠️  Project root is your home directory ({}).\n   \
+                koda can modify any file in this tree.\n   \
+                Consider running from a project subdirectory.\x1b[0m\n",
+                project_root.display()
+            );
+        }
+    }
+
     // Load and inject stored API keys (env vars take precedence)
     match koda_core::keystore::KeyStore::load() {
         Ok(store) => store.inject_into_env(),
