@@ -19,6 +19,7 @@ use tokio::process::Command;
 
 use crate::mcp::config::McpServerConfig;
 use crate::providers::ToolDefinition;
+use crate::tools::ToolEffect;
 
 /// Default timeout for tool calls (seconds).
 const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 30;
@@ -51,6 +52,8 @@ pub struct McpClient {
     service: RunningService<RoleClient, KodaClientHandler>,
     /// Cached tool definitions (converted to Koda format).
     tools: Vec<ToolDefinition>,
+    /// Effect classification per namespaced tool name (from MCP annotations).
+    tool_effects: std::collections::HashMap<String, ToolEffect>,
     /// Timeout for tool calls.
     _timeout: Duration,
 }
@@ -99,6 +102,17 @@ impl McpClient {
             .map(|t| mcp_tool_to_definition(&name, t))
             .collect();
 
+        // Extract ToolEffect classification from MCP annotations
+        let tool_effects = tools_result
+            .tools
+            .iter()
+            .map(|t| {
+                let namespaced = format!("{name}.{}", t.name);
+                let effect = classify_mcp_annotations(t);
+                (namespaced, effect)
+            })
+            .collect();
+
         tracing::info!(
             "MCP server '{}' connected — {} tools available",
             name,
@@ -110,6 +124,7 @@ impl McpClient {
             config,
             service,
             tools,
+            tool_effects,
             _timeout: timeout,
         })
     }
@@ -117,6 +132,11 @@ impl McpClient {
     /// Get the namespaced tool definitions for this server.
     pub fn tool_definitions(&self) -> &[ToolDefinition] {
         &self.tools
+    }
+
+    /// Get the ToolEffect for a namespaced tool name.
+    pub fn tool_effect(&self, namespaced_name: &str) -> Option<ToolEffect> {
+        self.tool_effects.get(namespaced_name).copied()
     }
 
     /// Call a tool on this MCP server.
@@ -165,6 +185,28 @@ fn mcp_tool_to_definition(server_name: &str, tool: &McpTool) -> ToolDefinition {
     }
 }
 
+/// Classify an MCP tool's effect from its annotations.
+///
+/// MCP spec annotations (all optional hints):
+/// - `readOnlyHint: true`  → ReadOnly
+/// - `destructiveHint: true` → Destructive
+/// - Neither → LocalMutation (conservative default)
+fn classify_mcp_annotations(tool: &McpTool) -> ToolEffect {
+    match &tool.annotations {
+        Some(ann) => {
+            if ann.read_only_hint == Some(true) {
+                ToolEffect::ReadOnly
+            } else if ann.destructive_hint == Some(true) {
+                ToolEffect::Destructive
+            } else {
+                // No hints or readOnly=false → assume local mutation
+                ToolEffect::LocalMutation
+            }
+        }
+        None => ToolEffect::LocalMutation,
+    }
+}
+
 /// Format a CallToolResult into a human-readable string.
 fn format_call_result(result: &rmcp::model::CallToolResult) -> String {
     let mut output = String::new();
@@ -180,4 +222,62 @@ fn format_call_result(result: &rmcp::model::CallToolResult) -> String {
         output = "MCP tool returned an error with no details.".to_string();
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rmcp::model::ToolAnnotations;
+    use std::sync::Arc;
+
+    fn empty_schema() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        let mut map = serde_json::Map::new();
+        map.insert("type".to_string(), serde_json::json!("object"));
+        Arc::new(map)
+    }
+
+    fn make_tool(name: &str, annotations: Option<ToolAnnotations>) -> McpTool {
+        let mut tool = McpTool::new(name.to_string(), "", empty_schema());
+        tool.annotations = annotations;
+        tool
+    }
+
+    #[test]
+    fn test_classify_read_only_hint() {
+        let tool = make_tool(
+            "list_items",
+            Some(ToolAnnotations::default().read_only(true)),
+        );
+        assert_eq!(classify_mcp_annotations(&tool), ToolEffect::ReadOnly);
+    }
+
+    #[test]
+    fn test_classify_destructive_hint() {
+        let tool = make_tool(
+            "drop_table",
+            Some(ToolAnnotations::default().destructive(true)),
+        );
+        assert_eq!(classify_mcp_annotations(&tool), ToolEffect::Destructive);
+    }
+
+    #[test]
+    fn test_classify_no_annotations() {
+        let tool = make_tool("unknown", None);
+        assert_eq!(classify_mcp_annotations(&tool), ToolEffect::LocalMutation);
+    }
+
+    #[test]
+    fn test_classify_read_only_false() {
+        let tool = make_tool(
+            "write_file",
+            Some(ToolAnnotations::default().read_only(false)),
+        );
+        assert_eq!(classify_mcp_annotations(&tool), ToolEffect::LocalMutation);
+    }
+
+    #[test]
+    fn test_classify_destructive_trumps_when_not_readonly() {
+        let tool = make_tool("nuke", Some(ToolAnnotations::default().destructive(true)));
+        assert_eq!(classify_mcp_annotations(&tool), ToolEffect::Destructive);
+    }
 }

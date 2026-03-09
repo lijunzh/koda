@@ -40,7 +40,8 @@ pub fn normalize_tool_name(name: &str) -> String {
 ///
 /// Two-axis model: what does the tool touch (local vs. remote)
 /// and how severe are its effects (read vs. mutate vs. destroy)?
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub enum ToolEffect {
     /// No side-effects: file reads, grep, git status.
     ReadOnly,
