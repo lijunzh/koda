@@ -3,7 +3,7 @@
 //! Runs the streaming inference → tool execution → re-inference loop
 //! until the LLM produces a final text response.
 
-use crate::approval::{ApprovalMode, Settings};
+use crate::approval::ApprovalMode;
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent};
@@ -13,6 +13,7 @@ use crate::inference_helpers::{
 };
 use crate::loop_guard::LoopDetector;
 use crate::providers::{ChatMessage, ImageData, LlmProvider, StreamChunk, ToolCall};
+use crate::settings::Settings;
 use crate::task_phase::{PhaseInfo, PhaseTracker, ToolType, TurnSignal};
 use crate::tool_dispatch::{
     can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
@@ -25,24 +26,42 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// All parameters for the inference loop, bundled into a single struct.
+pub struct InferenceContext<'a> {
+    pub project_root: &'a Path,
+    pub config: &'a KodaConfig,
+    pub db: &'a Database,
+    pub session_id: &'a str,
+    pub system_prompt: &'a str,
+    pub provider: &'a dyn LlmProvider,
+    pub tools: &'a ToolRegistry,
+    pub tool_defs: &'a [crate::providers::ToolDefinition],
+    pub pending_images: Option<Vec<ImageData>>,
+    pub mode: ApprovalMode,
+    pub settings: &'a mut Settings,
+    pub sink: &'a dyn crate::engine::EngineSink,
+    pub cancel: CancellationToken,
+    pub cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
+}
+
 /// Run inference, executing tool calls until the LLM produces a text response.
-#[allow(clippy::too_many_arguments)]
-pub async fn inference_loop(
-    project_root: &Path,
-    config: &KodaConfig,
-    db: &Database,
-    session_id: &str,
-    system_prompt: &str,
-    provider: &dyn LlmProvider,
-    tools: &ToolRegistry,
-    tool_defs: &[crate::providers::ToolDefinition],
-    pending_images: Option<Vec<ImageData>>,
-    mode: ApprovalMode,
-    settings: &mut Settings,
-    sink: &dyn crate::engine::EngineSink,
-    cancel: CancellationToken,
-    cmd_rx: &mut mpsc::Receiver<EngineCommand>,
-) -> Result<()> {
+pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
+    let InferenceContext {
+        project_root,
+        config,
+        db,
+        session_id,
+        system_prompt,
+        provider,
+        tools,
+        tool_defs,
+        pending_images,
+        mode,
+        settings,
+        sink,
+        cancel,
+        cmd_rx,
+    } = ctx;
     // Use the same formula as estimate_tokens (chars/CHARS_PER_TOKEN + overhead)
     // to keep the budget calculation consistent with re-estimation later.
     let system_tokens = (system_prompt.len() as f64 / crate::inference_helpers::CHARS_PER_TOKEN)
@@ -78,7 +97,7 @@ pub async fn inference_loop(
         history
             .iter()
             .rev()
-            .find(|m| m.role == "user")
+            .find(|m| m.role == crate::db::Role::User)
             .and_then(|m| m.content.as_deref())
             .map(crate::intent::classify_intent)
             .map(|s| s.intent)

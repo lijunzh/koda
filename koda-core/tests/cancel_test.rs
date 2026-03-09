@@ -11,7 +11,7 @@ use koda_core::{
     config::{KodaConfig, ProviderType},
     db::{Database, Role},
     engine::{EngineCommand, EngineEvent, sink::TestSink},
-    inference,
+    inference::{self, InferenceContext},
     providers::{ChatMessage, LlmProvider, LlmResponse, ModelInfo, StreamChunk, ToolDefinition},
     tools::ToolRegistry,
 };
@@ -84,22 +84,22 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
 
     let start = std::time::Instant::now();
 
-    let result = inference::inference_loop(
-        &PathBuf::from("."),
-        &config,
-        &db,
-        &session_id,
-        "You are a test assistant.",
-        &provider,
-        &tools,
-        &tool_defs,
-        None,
-        koda_core::approval::ApprovalMode::Auto,
-        &mut settings,
-        &sink,
+    let result = inference::inference_loop(InferenceContext {
+        project_root: &PathBuf::from("."),
+        config: &config,
+        db: &db,
+        session_id: &session_id,
+        system_prompt: "You are a test assistant.",
+        provider: &provider,
+        tools: &tools,
+        tool_defs: &tool_defs,
+        pending_images: None,
+        mode: koda_core::approval::ApprovalMode::Auto,
+        settings: &mut settings,
+        sink: &sink,
         cancel,
-        &mut cmd_rx,
-    )
+        cmd_rx: &mut cmd_rx,
+    })
     .await;
 
     let elapsed = start.elapsed();
