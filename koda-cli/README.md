@@ -12,6 +12,8 @@ without ever leaving the terminal.
 cargo install koda-cli
 ```
 
+On first run, an onboarding wizard guides you through provider and API key setup.
+
 ## Quick start
 
 ```bash
