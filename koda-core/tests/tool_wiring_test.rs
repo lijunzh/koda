@@ -61,6 +61,7 @@ fn test_all_tools_handled_by_approval() {
             &empty_args,
             ApprovalMode::Strict,
             koda_core::task_phase::PhaseInfo::legacy(),
+            None,
         );
         // Verify it returns a valid variant (not a crash)
         match result {

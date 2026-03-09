@@ -9,6 +9,7 @@
 //! against a built-in safe list.
 
 use crate::bash_safety::is_command_safe;
+use path_clean::PathClean;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -133,15 +134,36 @@ const READ_ONLY_TOOLS: &[&str] = &[
 /// - Writes during `Executing` after `plan_approved` → auto-approved
 /// - Writes during `Understanding` (before any plan) → require confirmation in Auto mode
 /// - Destructive operations → hardcoded floor of NeedsConfirmation
+/// - Writes outside project root → hardcoded floor of NeedsConfirmation (#218)
 pub fn check_tool(
     tool_name: &str,
     args: &serde_json::Value,
     mode: ApprovalMode,
     phase_info: crate::task_phase::PhaseInfo,
+    project_root: Option<&Path>,
 ) -> ToolApproval {
     // Read-only tools always execute in every mode
     if READ_ONLY_TOOLS.contains(&tool_name) {
         return ToolApproval::AutoApprove;
+    }
+
+    // Hardcoded floor: writes outside project root always need confirmation (#218)
+    if let Some(root) = project_root {
+        if is_outside_project(tool_name, args, root) {
+            return ToolApproval::NeedsConfirmation;
+        }
+        // Bash path lint: check for cd/path escapes
+        if tool_name == "Bash" {
+            let command = args
+                .get("command")
+                .or(args.get("cmd"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let lint = crate::bash_safety::lint_bash_paths(command, root);
+            if lint.has_warnings() {
+                return ToolApproval::NeedsConfirmation;
+            }
+        }
     }
 
     match mode {
@@ -222,6 +244,27 @@ fn is_mutating(tool_name: &str) -> bool {
         tool_name,
         "Write" | "Edit" | "Delete" | "Bash" | "MemoryWrite"
     )
+}
+
+/// Whether a file tool targets a path outside the project root (#218).
+/// Hardcoded floor: always NeedsConfirmation regardless of mode or phase.
+fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &Path) -> bool {
+    let path_arg = match tool_name {
+        "Write" | "Edit" | "Delete" => args.get("file_path").and_then(|v| v.as_str()),
+        _ => None,
+    };
+    match path_arg {
+        Some(p) => {
+            let requested = Path::new(p);
+            let resolved = if requested.is_absolute() {
+                requested.to_path_buf().clean()
+            } else {
+                project_root.join(requested).clean()
+            };
+            !resolved.starts_with(project_root)
+        }
+        None => false,
+    }
 }
 
 /// Whether a tool call is destructive (force push, rm -rf, etc.).
@@ -372,7 +415,8 @@ mod tests {
                     tool,
                     &serde_json::json!({}),
                     ApprovalMode::Safe,
-                    crate::task_phase::PhaseInfo::legacy()
+                    crate::task_phase::PhaseInfo::legacy(),
+                    None
                 ),
                 ToolApproval::AutoApprove,
                 "{tool} should auto-approve even in Safe mode"
@@ -388,7 +432,8 @@ mod tests {
                     tool,
                     &serde_json::json!({}),
                     ApprovalMode::Safe,
-                    crate::task_phase::PhaseInfo::legacy()
+                    crate::task_phase::PhaseInfo::legacy(),
+                    None
                 ),
                 ToolApproval::Blocked,
                 "{tool} should be blocked in Safe mode"
@@ -406,7 +451,8 @@ mod tests {
                     tool,
                     &serde_json::json!({}),
                     ApprovalMode::Auto,
-                    crate::task_phase::PhaseInfo::legacy()
+                    crate::task_phase::PhaseInfo::legacy(),
+                    None
                 ),
                 ToolApproval::AutoApprove,
             );
@@ -421,7 +467,8 @@ mod tests {
                 "Delete",
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::legacy()
+                crate::task_phase::PhaseInfo::legacy(),
+                None
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -436,7 +483,13 @@ mod tests {
             plan_approved: false,
         };
         assert_eq!(
-            check_tool("Edit", &serde_json::json!({}), ApprovalMode::Auto, phase),
+            check_tool(
+                "Edit",
+                &serde_json::json!({}),
+                ApprovalMode::Auto,
+                phase,
+                None
+            ),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -450,7 +503,13 @@ mod tests {
             plan_approved: false,
         };
         assert_eq!(
-            check_tool("Edit", &serde_json::json!({}), ApprovalMode::Auto, phase),
+            check_tool(
+                "Edit",
+                &serde_json::json!({}),
+                ApprovalMode::Auto,
+                phase,
+                None
+            ),
             ToolApproval::Notify,
         );
     }
@@ -463,7 +522,8 @@ mod tests {
                 "Bash",
                 &args,
                 ApprovalMode::Strict,
-                crate::task_phase::PhaseInfo::legacy()
+                crate::task_phase::PhaseInfo::legacy(),
+                None
             ),
             ToolApproval::AutoApprove,
         );
@@ -477,7 +537,8 @@ mod tests {
                 "Bash",
                 &args,
                 ApprovalMode::Strict,
-                crate::task_phase::PhaseInfo::legacy()
+                crate::task_phase::PhaseInfo::legacy(),
+                None
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -490,7 +551,8 @@ mod tests {
                 "Write",
                 &serde_json::json!({}),
                 ApprovalMode::Strict,
-                crate::task_phase::PhaseInfo::legacy()
+                crate::task_phase::PhaseInfo::legacy(),
+                None
             ),
             ToolApproval::NeedsConfirmation,
         );
@@ -505,7 +567,8 @@ mod tests {
                     "InvokeAgent",
                     &args,
                     mode,
-                    crate::task_phase::PhaseInfo::legacy()
+                    crate::task_phase::PhaseInfo::legacy(),
+                    None
                 ),
                 ToolApproval::AutoApprove,
             );
@@ -520,7 +583,8 @@ mod tests {
                 "Bash",
                 &args,
                 ApprovalMode::Safe,
-                crate::task_phase::PhaseInfo::legacy()
+                crate::task_phase::PhaseInfo::legacy(),
+                None
             ),
             ToolApproval::AutoApprove,
         );
@@ -534,7 +598,8 @@ mod tests {
                 "Bash",
                 &args,
                 ApprovalMode::Safe,
-                crate::task_phase::PhaseInfo::legacy()
+                crate::task_phase::PhaseInfo::legacy(),
+                None
             ),
             ToolApproval::Blocked,
         );
@@ -548,7 +613,105 @@ mod tests {
                 "WebFetch",
                 &args,
                 ApprovalMode::Safe,
-                crate::task_phase::PhaseInfo::legacy()
+                crate::task_phase::PhaseInfo::legacy(),
+                None
+            ),
+            ToolApproval::AutoApprove,
+        );
+    }
+
+    // ── Path scoping tests (#218) ──────────────────────────
+
+    #[test]
+    fn test_write_outside_project_needs_confirmation() {
+        let root = Path::new("/home/user/project");
+        let args = serde_json::json!({"file_path": "/etc/hosts"});
+        assert_eq!(
+            check_tool(
+                "Write",
+                &args,
+                ApprovalMode::Auto,
+                crate::task_phase::PhaseInfo::legacy(),
+                Some(root),
+            ),
+            ToolApproval::NeedsConfirmation,
+        );
+    }
+
+    #[test]
+    fn test_write_inside_project_auto_approved() {
+        let root = Path::new("/home/user/project");
+        let args = serde_json::json!({"file_path": "src/main.rs"});
+        assert_eq!(
+            check_tool(
+                "Write",
+                &args,
+                ApprovalMode::Auto,
+                crate::task_phase::PhaseInfo::legacy(),
+                Some(root),
+            ),
+            ToolApproval::AutoApprove,
+        );
+    }
+
+    #[test]
+    fn test_edit_with_dotdot_escape_needs_confirmation() {
+        let root = Path::new("/home/user/project");
+        let args = serde_json::json!({"file_path": "../../../etc/passwd"});
+        assert_eq!(
+            check_tool(
+                "Edit",
+                &args,
+                ApprovalMode::Auto,
+                crate::task_phase::PhaseInfo::legacy(),
+                Some(root),
+            ),
+            ToolApproval::NeedsConfirmation,
+        );
+    }
+
+    #[test]
+    fn test_bash_cd_outside_needs_confirmation() {
+        let root = Path::new("/home/user/project");
+        let args = serde_json::json!({"command": "cd /tmp && ls"});
+        assert_eq!(
+            check_tool(
+                "Bash",
+                &args,
+                ApprovalMode::Auto,
+                crate::task_phase::PhaseInfo::legacy(),
+                Some(root),
+            ),
+            ToolApproval::NeedsConfirmation,
+        );
+    }
+
+    #[test]
+    fn test_bash_cd_inside_auto_approved() {
+        let root = Path::new("/home/user/project");
+        let args = serde_json::json!({"command": "cd src && ls"});
+        assert_eq!(
+            check_tool(
+                "Bash",
+                &args,
+                ApprovalMode::Auto,
+                crate::task_phase::PhaseInfo::legacy(),
+                Some(root),
+            ),
+            ToolApproval::AutoApprove,
+        );
+    }
+
+    #[test]
+    fn test_no_project_root_skips_path_check() {
+        let args = serde_json::json!({"file_path": "/etc/hosts"});
+        assert_eq!(
+            check_tool(
+                "Write",
+                &args,
+                ApprovalMode::Auto,
+                crate::task_phase::PhaseInfo::legacy(),
+                None,
             ),
             ToolApproval::AutoApprove,
         );
