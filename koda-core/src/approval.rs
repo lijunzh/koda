@@ -102,6 +102,9 @@ pub fn cycle_mode(shared: &SharedMode) -> ApprovalMode {
 pub enum ToolApproval {
     /// Execute without asking.
     AutoApprove,
+    /// Execute but display what's happening (de-escalation).
+    /// Agent continues automatically; user's next input is implicit consent.
+    Notify,
     /// Show confirmation dialog.
     NeedsConfirmation,
     /// Safe mode: show what would happen, don't execute.
@@ -124,17 +127,60 @@ const READ_ONLY_TOOLS: &[&str] = &[
 ];
 
 /// Decide whether a tool call should be auto-approved, confirmed, or blocked.
-pub fn check_tool(tool_name: &str, args: &serde_json::Value, mode: ApprovalMode) -> ToolApproval {
+///
+/// Phase-aware gating (#242 step 2):
+/// - Reads always auto-approved (unchanged)
+/// - Writes during `Executing` after `plan_approved` → auto-approved
+/// - Writes during `Understanding` (before any plan) → require confirmation in Auto mode
+/// - Destructive operations → hardcoded floor of NeedsConfirmation
+pub fn check_tool(
+    tool_name: &str,
+    args: &serde_json::Value,
+    mode: ApprovalMode,
+    phase_info: crate::task_phase::PhaseInfo,
+) -> ToolApproval {
     // Read-only tools always execute in every mode
     if READ_ONLY_TOOLS.contains(&tool_name) {
         return ToolApproval::AutoApprove;
     }
 
     match mode {
-        ApprovalMode::Auto => ToolApproval::AutoApprove,
+        ApprovalMode::Auto => {
+            // Phase-aware gating in Auto mode
+            use crate::task_phase::TaskPhase;
+
+            // Destructive operations always need confirmation
+            if is_destructive(tool_name, args) {
+                return ToolApproval::NeedsConfirmation;
+            }
+
+            match phase_info.phase {
+                // Before any plan: writes need confirmation
+                TaskPhase::Understanding | TaskPhase::Planning => {
+                    if is_mutating(tool_name) {
+                        ToolApproval::NeedsConfirmation
+                    } else {
+                        ToolApproval::AutoApprove
+                    }
+                }
+                // Reviewing: writes blocked (forced through review gate)
+                TaskPhase::Reviewing => {
+                    if is_mutating(tool_name) {
+                        ToolApproval::NeedsConfirmation
+                    } else {
+                        ToolApproval::AutoApprove
+                    }
+                }
+                // Executing with approved plan: auto-approve writes
+                TaskPhase::Executing if phase_info.plan_approved => ToolApproval::AutoApprove,
+                // Executing without approved plan (shortcut path): notify
+                TaskPhase::Executing => ToolApproval::Notify,
+                // Verifying/Reporting: auto-approve (checking results)
+                TaskPhase::Verifying | TaskPhase::Reporting => ToolApproval::AutoApprove,
+            }
+        }
 
         ApprovalMode::Safe => {
-            // Safe mode: write tools blocked, bash uses safety classification
             if tool_name == "Bash" {
                 let command = args
                     .get("command")
@@ -168,6 +214,39 @@ pub fn check_tool(tool_name: &str, args: &serde_json::Value, mode: ApprovalMode)
             }
         }
     }
+}
+
+/// Whether a tool is mutating (writes, edits, deletes, or runs commands).
+fn is_mutating(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "Write" | "Edit" | "Delete" | "Bash" | "MemoryWrite"
+    )
+}
+
+/// Whether a tool call is destructive (force push, rm -rf, etc.).
+/// These have a hardcoded floor of NeedsConfirmation regardless of phase.
+fn is_destructive(tool_name: &str, args: &serde_json::Value) -> bool {
+    if tool_name == "Delete" {
+        return true;
+    }
+    if tool_name == "Bash" {
+        let command = args
+            .get("command")
+            .or(args.get("cmd"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let lower = command.to_lowercase();
+        if lower.contains("rm -rf")
+            || lower.contains("git push -f")
+            || lower.contains("git push --force")
+            || lower.contains("drop table")
+            || lower.contains("drop database")
+        {
+            return true;
+        }
+    }
+    false
 }
 
 // ── Settings persistence ──────────────────────────────────
@@ -289,7 +368,12 @@ mod tests {
     fn test_read_tools_always_approved() {
         for tool in READ_ONLY_TOOLS {
             assert_eq!(
-                check_tool(tool, &serde_json::json!({}), ApprovalMode::Safe),
+                check_tool(
+                    tool,
+                    &serde_json::json!({}),
+                    ApprovalMode::Safe,
+                    crate::task_phase::PhaseInfo::legacy()
+                ),
                 ToolApproval::AutoApprove,
                 "{tool} should auto-approve even in Safe mode"
             );
@@ -300,7 +384,12 @@ mod tests {
     fn test_write_tools_blocked_in_safe() {
         for tool in ["Write", "Edit", "Delete", "CreateAgent", "MemoryWrite"] {
             assert_eq!(
-                check_tool(tool, &serde_json::json!({}), ApprovalMode::Safe),
+                check_tool(
+                    tool,
+                    &serde_json::json!({}),
+                    ApprovalMode::Safe,
+                    crate::task_phase::PhaseInfo::legacy()
+                ),
                 ToolApproval::Blocked,
                 "{tool} should be blocked in Safe mode"
             );
@@ -308,20 +397,74 @@ mod tests {
     }
 
     #[test]
-    fn test_auto_approves_everything() {
-        for tool in ["Write", "Edit", "Delete", "Bash", "WebFetch"] {
+    fn test_auto_approves_non_destructive_in_executing() {
+        // In Auto mode during Executing with plan_approved, non-destructive
+        // mutating tools are auto-approved.
+        for tool in ["Write", "Edit", "Bash", "WebFetch"] {
             assert_eq!(
-                check_tool(tool, &serde_json::json!({}), ApprovalMode::Auto),
+                check_tool(
+                    tool,
+                    &serde_json::json!({}),
+                    ApprovalMode::Auto,
+                    crate::task_phase::PhaseInfo::legacy()
+                ),
                 ToolApproval::AutoApprove,
             );
         }
     }
 
     #[test]
+    fn test_auto_confirms_destructive_ops() {
+        // Delete is always destructive → NeedsConfirmation even in Auto + Executing
+        assert_eq!(
+            check_tool(
+                "Delete",
+                &serde_json::json!({}),
+                ApprovalMode::Auto,
+                crate::task_phase::PhaseInfo::legacy()
+            ),
+            ToolApproval::NeedsConfirmation,
+        );
+    }
+
+    #[test]
+    fn test_auto_confirms_writes_before_plan() {
+        use crate::task_phase::{PhaseInfo, TaskPhase};
+        // In Auto mode during Understanding, writes need confirmation
+        let phase = PhaseInfo {
+            phase: TaskPhase::Understanding,
+            plan_approved: false,
+        };
+        assert_eq!(
+            check_tool("Edit", &serde_json::json!({}), ApprovalMode::Auto, phase),
+            ToolApproval::NeedsConfirmation,
+        );
+    }
+
+    #[test]
+    fn test_auto_notifies_executing_without_approval() {
+        use crate::task_phase::{PhaseInfo, TaskPhase};
+        // Executing without plan_approved → Notify
+        let phase = PhaseInfo {
+            phase: TaskPhase::Executing,
+            plan_approved: false,
+        };
+        assert_eq!(
+            check_tool("Edit", &serde_json::json!({}), ApprovalMode::Auto, phase),
+            ToolApproval::Notify,
+        );
+    }
+
+    #[test]
     fn test_safe_bash_auto_approved_in_strict() {
         let args = serde_json::json!({"command": "cargo test --release"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Strict),
+            check_tool(
+                "Bash",
+                &args,
+                ApprovalMode::Strict,
+                crate::task_phase::PhaseInfo::legacy()
+            ),
             ToolApproval::AutoApprove,
         );
     }
@@ -330,7 +473,12 @@ mod tests {
     fn test_dangerous_bash_needs_confirmation_in_strict() {
         let args = serde_json::json!({"command": "rm -rf target/"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Strict),
+            check_tool(
+                "Bash",
+                &args,
+                ApprovalMode::Strict,
+                crate::task_phase::PhaseInfo::legacy()
+            ),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -338,7 +486,12 @@ mod tests {
     #[test]
     fn test_write_needs_confirmation_in_strict() {
         assert_eq!(
-            check_tool("Write", &serde_json::json!({}), ApprovalMode::Strict),
+            check_tool(
+                "Write",
+                &serde_json::json!({}),
+                ApprovalMode::Strict,
+                crate::task_phase::PhaseInfo::legacy()
+            ),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -348,7 +501,12 @@ mod tests {
         let args = serde_json::json!({"agent_name": "reviewer", "prompt": "review this"});
         for mode in [ApprovalMode::Auto, ApprovalMode::Strict, ApprovalMode::Safe] {
             assert_eq!(
-                check_tool("InvokeAgent", &args, mode),
+                check_tool(
+                    "InvokeAgent",
+                    &args,
+                    mode,
+                    crate::task_phase::PhaseInfo::legacy()
+                ),
                 ToolApproval::AutoApprove,
             );
         }
@@ -358,7 +516,12 @@ mod tests {
     fn test_safe_mode_allows_safe_bash() {
         let args = serde_json::json!({"command": "cargo test --release"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Safe),
+            check_tool(
+                "Bash",
+                &args,
+                ApprovalMode::Safe,
+                crate::task_phase::PhaseInfo::legacy()
+            ),
             ToolApproval::AutoApprove,
         );
     }
@@ -367,7 +530,12 @@ mod tests {
     fn test_safe_mode_blocks_dangerous_bash() {
         let args = serde_json::json!({"command": "rm -rf target/"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Safe),
+            check_tool(
+                "Bash",
+                &args,
+                ApprovalMode::Safe,
+                crate::task_phase::PhaseInfo::legacy()
+            ),
             ToolApproval::Blocked,
         );
     }
@@ -376,7 +544,12 @@ mod tests {
     fn test_safe_mode_allows_web_fetch() {
         let args = serde_json::json!({"url": "https://example.com"});
         assert_eq!(
-            check_tool("WebFetch", &args, ApprovalMode::Safe),
+            check_tool(
+                "WebFetch",
+                &args,
+                ApprovalMode::Safe,
+                crate::task_phase::PhaseInfo::legacy()
+            ),
             ToolApproval::AutoApprove,
         );
     }
