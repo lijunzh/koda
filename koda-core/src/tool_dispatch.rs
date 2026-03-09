@@ -52,7 +52,8 @@ pub(crate) fn can_parallelize(
                 &args,
                 mode,
                 phase_info,
-                Some(project_root)
+                Some(project_root),
+                None,
             ),
             ToolApproval::NeedsConfirmation | ToolApproval::Blocked
         )
@@ -220,7 +221,8 @@ pub(crate) async fn execute_tools_split_batch(
                 &args,
                 mode,
                 phase_info,
-                Some(project_root)
+                Some(project_root),
+                None,
             ),
             ToolApproval::AutoApprove | ToolApproval::Notify
         )
@@ -375,6 +377,7 @@ pub(crate) async fn execute_tools_sequential(
             mode,
             phase_info,
             Some(project_root),
+            None,
         );
 
         match approval {
@@ -667,6 +670,7 @@ pub(crate) async fn execute_sub_agent(
                 mode,
                 phase_info,
                 Some(project_root),
+                None,
             );
 
             let output = match approval {

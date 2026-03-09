@@ -21,12 +21,19 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::tools::ToolEffect;
+
 /// Top-level `.mcp.json` file structure.
 #[derive(Debug, Deserialize, Default)]
 pub struct McpConfigFile {
     /// Server configurations keyed by name.
     #[serde(rename = "mcpServers", default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
+
+    /// Tool effect overrides keyed by namespaced tool name.
+    /// Example: `{ "github.create_issue": "RemoteAction" }`
+    #[serde(rename = "toolOverrides", default)]
+    pub tool_overrides: HashMap<String, ToolEffect>,
 }
 
 /// Configuration for a single MCP server.
@@ -49,27 +56,39 @@ pub struct McpServerConfig {
     pub timeout: Option<u64>,
 }
 
+/// Loaded MCP configuration: server configs + tool effect overrides.
+pub struct McpConfigs {
+    pub servers: HashMap<String, McpServerConfig>,
+    pub tool_overrides: HashMap<String, ToolEffect>,
+}
+
 /// Load MCP server configs from project-level and user-level config files.
 /// Project-level configs override user-level configs for the same server name.
-pub fn load_mcp_configs(project_root: &Path) -> HashMap<String, McpServerConfig> {
-    let mut configs = HashMap::new();
+pub fn load_mcp_configs(project_root: &Path) -> McpConfigs {
+    let mut servers = HashMap::new();
+    let mut tool_overrides = HashMap::new();
 
     // 1. User-level: ~/.config/koda/mcp.json
     if let Some(user_config) = load_user_config() {
-        configs.extend(user_config.mcp_servers);
+        servers.extend(user_config.mcp_servers);
+        tool_overrides.extend(user_config.tool_overrides);
     }
 
     // 2. Project-level: .mcp.json in project root (overrides user-level)
     if let Some(project_config) = load_project_config(project_root) {
-        configs.extend(project_config.mcp_servers);
+        servers.extend(project_config.mcp_servers);
+        tool_overrides.extend(project_config.tool_overrides);
     }
 
     // Expand environment variables in all configs
-    for config in configs.values_mut() {
+    for config in servers.values_mut() {
         expand_env_vars(config);
     }
 
-    configs
+    McpConfigs {
+        servers,
+        tool_overrides,
+    }
 }
 
 /// Load project-level `.mcp.json`.
@@ -202,8 +221,11 @@ pub fn remove_server_from_project(project_root: &Path, name: &str) -> Result<boo
 impl serde::Serialize for McpConfigFile {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(1))?;
+        let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("mcpServers", &self.mcp_servers)?;
+        if !self.tool_overrides.is_empty() {
+            map.serialize_entry("toolOverrides", &self.tool_overrides)?;
+        }
         map.end()
     }
 }
@@ -296,5 +318,39 @@ mod tests {
         let parsed: McpConfigFile = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.mcp_servers.len(), 1);
         assert_eq!(parsed.mcp_servers["test"].command, "echo");
+    }
+
+    #[test]
+    fn test_parse_tool_overrides() {
+        let json = r#"{
+            "mcpServers": {},
+            "toolOverrides": {
+                "github.create_issue": "RemoteAction",
+                "filesystem.write": "LocalMutation",
+                "dangerous.drop_db": "Destructive"
+            }
+        }"#;
+
+        let config: McpConfigFile = serde_json::from_str(json).unwrap();
+        assert_eq!(config.tool_overrides.len(), 3);
+        assert_eq!(
+            config.tool_overrides["github.create_issue"],
+            crate::tools::ToolEffect::RemoteAction
+        );
+        assert_eq!(
+            config.tool_overrides["filesystem.write"],
+            crate::tools::ToolEffect::LocalMutation
+        );
+        assert_eq!(
+            config.tool_overrides["dangerous.drop_db"],
+            crate::tools::ToolEffect::Destructive
+        );
+    }
+
+    #[test]
+    fn test_parse_config_without_overrides() {
+        let json = r#"{ "mcpServers": {} }"#;
+        let config: McpConfigFile = serde_json::from_str(json).unwrap();
+        assert!(config.tool_overrides.is_empty());
     }
 }
