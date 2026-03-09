@@ -17,6 +17,7 @@ pub mod compact;
 pub mod config;
 pub mod context;
 pub mod db;
+pub mod delegation;
 pub mod engine;
 pub mod inference;
 pub mod inference_helpers;
