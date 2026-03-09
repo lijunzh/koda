@@ -9,11 +9,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-03-09
+
+### Added
+- **Adaptive phase-gated agent loop** (#242) — six-phase state machine:
+  Understanding → Planning → Reviewing → Executing → Verifying → Reporting.
+  Structural detection via `(current_phase, has_tool_calls, tool_types)` decision tree.
+  - `PhaseTracker` with high-water mark, plan approval tracking, review results
+  - `TaskIntent`-based initial expectations (file-specificity heuristic)
+  - Tier-aware `prompt_hint()` — different guidance per phase per model tier
+  - Phase transitions: escalation (Executing → Understanding on tool failure),
+    封驳/rejection (Reviewing → Planning on review failure)
+- **Phase-aware tool approval** (#242 step 2) — `check_tool()` now consults
+  the current phase:
+  - Understanding/Planning: writes require confirmation even in Auto mode
+  - Executing with approved plan: writes auto-approved
+  - Destructive operations: hardcoded floor of NeedsConfirmation regardless of phase
+  - `ToolApproval::Notify` variant for de-escalation
+- **Phase flow log** (#242 step 3) — `Role::Phase` messages stored in the
+  existing messages table. Dual-consumer format: human-readable summary for
+  LLM self-awareness + JSON metadata for the InterventionObserver.
+  `PhaseTransition` struct with trigger labels (text_only_after_reads,
+  simple_task_shortcut, plan_complete, review_passed, 封驳, escalation, etc.)
+- **InterventionObserver** (#242 step 4) — per-phase override frequency tracker
+  that learns from user behavior. Records auto/override data points at phase
+  gates. Autonomy score (0.0–1.0) with configurable threshold. Persists to
+  `~/.config/koda/intervention_priors.json`. Cold start defaults to cautious.
+- **Folder-scoped permissions** (#218) — three safety layers:
+  - Startup warning when `project_root` equals `$HOME`
+  - `is_outside_project()`: file tool path args checked against project root
+    (hardcoded NeedsConfirmation floor)
+  - `lint_bash_paths()`: pre-execution heuristic analysis of bash commands for
+    `cd` escapes, absolute paths, and `../` traversals outside project root
+
 ### Changed
-- **Observe-and-adapt tier system** — all models start at Standard; `TierObserver` promotes to Strong after 3 successful tool-use turns, demotes to Lite after 2+ hallucinated names or malformed args. Name-based tier guessing removed.
-- **Context window from API** — `query_and_apply_capabilities()` queries the provider API for actual context window and max output tokens. Falls back to hardcoded lookup. Called in all entry points (TUI, headless, ACP server).
-- **Decoupled resource limits** — iteration cap (200), parallel tools (always on), and auto-compact threshold (85%) are now the same for all tiers. Local models are no longer capped at 50 iterations.
-- **Named constants** — `CHARS_PER_TOKEN`, `PER_MESSAGE_OVERHEAD`, `SYSTEM_PROMPT_OVERHEAD` replace magic numbers across 4 files.
+- **Observe-and-adapt tier system** — all models start at Standard; `TierObserver`
+  promotes to Strong after 3 successful tool-use turns, demotes to Lite after
+  2+ hallucinated names or malformed args. Name-based tier guessing removed.
+- **Context window from API** — `query_and_apply_capabilities()` queries the
+  provider API for actual context window and max output tokens. Falls back to
+  hardcoded lookup.
+- **Decoupled resource limits** — iteration cap (200), parallel tools (always on),
+  and auto-compact threshold (85%) are now the same for all tiers.
+- **Cloud CLI safe list narrowed** — `gcloud`, `bq`, `aws`, `az` restricted to
+  read-only subcommands. Destructive cloud ops now require approval.
+- **`sed -i` / `sed --in-place`** added to DANGEROUS_PATTERNS — in-place editing
+  via sed is now flagged as destructive.
+
+### Fixed
+- **Path scoping key mismatch** — `is_outside_project()` now checks `"path"` key
+  (matching actual tool schema) instead of `"file_path"` which never matched.
+- **`InterventionObserver::save()`** — logs errors via `tracing::warn` instead
+  of silently swallowing write failures.
+- **`inference_recovery_test.rs`** — added `required-features = ["test-support"]`
+  to Cargo.toml (was breaking bare `cargo test`).
+
+### Refactored
+- **`tui_app.rs` god function** (#209) — 1,456-line `run()` split into
+  `InputRouter`, `CommandDispatcher`, `ModelSwitcher`, `InferenceRunner`,
+  `SessionManager`, and `CompactionManager`. Main function reduced to 66 lines.
+
+### Testing
+- 432 tests across 4 crates (up from 489 in v0.1.3 — test consolidation)
+- New: 32 phase tracker tests, 10 intervention observer tests, 18 approval
+  path-scoping tests, 12 bash path lint tests, 3 integration tests
 
 ## [0.1.3] - 2026-03-06
 

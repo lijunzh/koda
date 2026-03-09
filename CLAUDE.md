@@ -27,10 +27,34 @@ Koda adapts behavior based on observed model quality:
   - Fallback: `model_context.rs` lookup table
 - **DiscoverTools** (`tools/discover.rs`): on-demand tool schema injection by category
 - **RecallContext** (`tools/recall.rs`): search/recall older conversation turns
-- **TaskPhase** (`task_phase.rs`): auto-detected phase (Understanding→Executing→Verifying)
 - **Intent classifier** (`intent.rs`): rule-based task routing to agents/skills
 - **Rate limit retry**: exponential backoff (2/4/8/16/32s) for 429 errors
 - **Built-in agents**: default, testgen, releaser, scout, planner, verifier
+
+### v0.1.4 Architecture (Phase-Gated Safety)
+
+Koda tracks agent process via a six-phase state machine:
+
+- **PhaseTracker** (`task_phase.rs`): Understanding → Planning → Reviewing → Executing → Verifying → Reporting
+  - Structural detection: `(current_phase, has_tool_calls, tool_type)` decision tree
+  - `PhaseTransition` records: from, to, trigger label
+  - Escalation: Executing → Understanding on tool failure
+  - 封驳 (rejection): Reviewing → Planning on review failure
+- **Phase-aware approval** (`approval.rs`): `check_tool()` consults `PhaseInfo`
+  - Understanding/Planning: writes need confirmation in Auto mode
+  - Executing + plan_approved: writes auto-approved
+  - Destructive ops + outside-project writes: hardcoded NeedsConfirmation floor
+- **Role::Phase** (`db.rs`): phase transitions logged as messages
+  - Line 1: human-readable summary (LLM sees for self-awareness)
+  - Line 2: JSON metadata (InterventionObserver parses)
+- **InterventionObserver** (`intervention_observer.rs`): per-phase autonomy learning
+  - Records auto/override data points at phase gates
+  - Persists to `~/.config/koda/intervention_priors.json`
+  - Not yet wired into inference loop (data structure + persistence only)
+- **Folder scoping** (`approval.rs`, `bash_safety.rs`):
+  - `is_outside_project()`: checks file tool paths against project_root
+  - `lint_bash_paths()`: heuristic bash command analysis for cd/path escapes
+  - Startup warning when project_root == $HOME
 
 ## Build & Development Commands
 
