@@ -38,16 +38,15 @@ fn truncate_for_history(output: &str, max_chars: usize) -> String {
     )
 }
 
-pub(crate) fn can_parallelize(tool_calls: &[ToolCall], mode: ApprovalMode) -> bool {
+pub(crate) fn can_parallelize(
+    tool_calls: &[ToolCall],
+    mode: ApprovalMode,
+    phase_info: crate::task_phase::PhaseInfo,
+) -> bool {
     !tool_calls.iter().any(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            approval::check_tool(
-                &tc.function_name,
-                &args,
-                mode,
-                crate::task_phase::PhaseInfo::legacy()
-            ),
+            approval::check_tool(&tc.function_name, &args, mode, phase_info),
             ToolApproval::NeedsConfirmation | ToolApproval::Blocked
         )
     })
@@ -66,6 +65,7 @@ pub(crate) async fn execute_one_tool(
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
+    phase_info: crate::task_phase::PhaseInfo,
 ) -> (String, String) {
     let result = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
@@ -83,6 +83,7 @@ pub(crate) async fn execute_one_tool(
             &mut mpsc::channel(1).1,
             Some(tools.file_read_cache()),
             sub_agent_cache,
+            phase_info,
         )
         .await
         {
@@ -118,6 +119,7 @@ pub(crate) async fn execute_tools_parallel(
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
+    phase_info: crate::task_phase::PhaseInfo,
 ) -> Result<()> {
     // Print all tool call banners upfront
     for tc in tool_calls {
@@ -149,6 +151,7 @@ pub(crate) async fn execute_tools_parallel(
                 sink,
                 cancel.clone(),
                 sub_agent_cache,
+                phase_info,
             )
         })
         .collect();
@@ -204,17 +207,13 @@ pub(crate) async fn execute_tools_split_batch(
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     sub_agent_cache: &SubAgentCache,
+    phase_info: crate::task_phase::PhaseInfo,
 ) -> Result<()> {
     // Partition into parallelizable vs sequential
     let (parallel, sequential): (Vec<_>, Vec<_>) = tool_calls.iter().partition(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            approval::check_tool(
-                &tc.function_name,
-                &args,
-                mode,
-                crate::task_phase::PhaseInfo::legacy()
-            ),
+            approval::check_tool(&tc.function_name, &args, mode, phase_info),
             ToolApproval::AutoApprove | ToolApproval::Notify
         )
     });
@@ -247,6 +246,7 @@ pub(crate) async fn execute_tools_split_batch(
                     sink,
                     cancel.clone(),
                     sub_agent_cache,
+                    phase_info,
                 )
             })
             .collect();
@@ -294,6 +294,7 @@ pub(crate) async fn execute_tools_split_batch(
                 cancel.clone(),
                 cmd_rx,
                 sub_agent_cache,
+                phase_info,
             )
             .await?;
         }
@@ -315,6 +316,7 @@ pub(crate) async fn execute_tools_split_batch(
             cancel.clone(),
             cmd_rx,
             sub_agent_cache,
+            phase_info,
         )
         .await?;
     }
@@ -337,6 +339,7 @@ pub(crate) async fn execute_tools_sequential(
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     sub_agent_cache: &SubAgentCache,
+    phase_info: crate::task_phase::PhaseInfo,
 ) -> Result<()> {
     for tc in tool_calls {
         // Check for interrupt before each tool
@@ -358,12 +361,7 @@ pub(crate) async fn execute_tools_sequential(
         });
 
         // Check approval for this tool call
-        let approval = approval::check_tool(
-            &tc.function_name,
-            &parsed_args,
-            mode,
-            crate::task_phase::PhaseInfo::legacy(),
-        );
+        let approval = approval::check_tool(&tc.function_name, &parsed_args, mode, phase_info);
 
         match approval {
             ToolApproval::AutoApprove | ToolApproval::Notify => {
@@ -450,6 +448,7 @@ pub(crate) async fn execute_tools_sequential(
             sink,
             cancel.clone(),
             sub_agent_cache,
+            phase_info,
         )
         .await;
         sink.emit(EngineEvent::ToolCallResult {
@@ -497,6 +496,7 @@ pub(crate) async fn execute_sub_agent(
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     parent_cache: Option<crate::tools::FileReadCache>,
     sub_agent_cache: &SubAgentCache,
+    phase_info: crate::task_phase::PhaseInfo,
 ) -> Result<String> {
     let args: serde_json::Value = serde_json::from_str(arguments)?;
     let agent_name = args["agent_name"]
@@ -626,12 +626,7 @@ pub(crate) async fn execute_sub_agent(
             // Sub-agents inherit the parent's approval mode
             let parsed_args: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or_default();
-            let approval = approval::check_tool(
-                &tc.function_name,
-                &parsed_args,
-                mode,
-                crate::task_phase::PhaseInfo::legacy(),
-            );
+            let approval = approval::check_tool(&tc.function_name, &parsed_args, mode, phase_info);
 
             let output = match approval {
                 ToolApproval::AutoApprove | ToolApproval::Notify => {
@@ -747,13 +742,21 @@ mod tests {
     #[test]
     fn test_can_parallelize_read_only() {
         let calls = vec![make_tool_call("Read"), make_tool_call("Grep")];
-        assert!(can_parallelize(&calls, ApprovalMode::Strict));
+        assert!(can_parallelize(
+            &calls,
+            ApprovalMode::Strict,
+            crate::task_phase::PhaseInfo::legacy()
+        ));
     }
 
     #[test]
     fn test_cannot_parallelize_writes() {
         let calls = vec![make_tool_call("Read"), make_tool_call("Write")];
-        assert!(!can_parallelize(&calls, ApprovalMode::Strict));
+        assert!(!can_parallelize(
+            &calls,
+            ApprovalMode::Strict,
+            crate::task_phase::PhaseInfo::legacy()
+        ));
     }
 
     #[test]
@@ -768,13 +771,21 @@ mod tests {
                 thought_signature: None,
             },
         ];
-        assert!(!can_parallelize(&calls, ApprovalMode::Strict));
+        assert!(!can_parallelize(
+            &calls,
+            ApprovalMode::Strict,
+            crate::task_phase::PhaseInfo::legacy()
+        ));
     }
 
     #[test]
     fn test_can_parallelize_agents() {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("InvokeAgent")];
-        assert!(can_parallelize(&calls, ApprovalMode::Strict));
+        assert!(can_parallelize(
+            &calls,
+            ApprovalMode::Strict,
+            crate::task_phase::PhaseInfo::legacy()
+        ));
     }
 
     #[test]
@@ -792,12 +803,20 @@ mod tests {
     #[test]
     fn test_mixed_batch_not_fully_parallelizable() {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("Write")];
-        assert!(!can_parallelize(&calls, ApprovalMode::Strict));
+        assert!(!can_parallelize(
+            &calls,
+            ApprovalMode::Strict,
+            crate::task_phase::PhaseInfo::legacy()
+        ));
     }
 
     #[test]
     fn test_mixed_batch_fully_parallelizable_in_auto() {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("Write")];
-        assert!(can_parallelize(&calls, ApprovalMode::Auto));
+        assert!(can_parallelize(
+            &calls,
+            ApprovalMode::Auto,
+            crate::task_phase::PhaseInfo::legacy()
+        ));
     }
 }
