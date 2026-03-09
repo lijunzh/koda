@@ -668,6 +668,11 @@ impl AnthropicProvider {
                 continue;
             }
 
+            // Skip internal metadata roles (phase transitions, etc.)
+            if msg.role == "phase" {
+                continue;
+            }
+
             if msg.role == "tool" {
                 // Tool results need to be wrapped in a content block
                 let tool_use_id = msg.tool_call_id.clone().unwrap_or_default();
