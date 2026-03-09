@@ -13,6 +13,7 @@ use crate::inference_helpers::{
 };
 use crate::loop_guard::LoopDetector;
 use crate::providers::{ChatMessage, ImageData, LlmProvider, StreamChunk, ToolCall};
+use crate::task_phase::{PhaseInfo, PhaseTracker, ToolType, TurnSignal};
 use crate::tool_dispatch::{
     can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
 };
@@ -70,6 +71,14 @@ pub async fn inference_loop(
     let base_system_prompt = system_prompt.to_string();
     let mut recent_tool_names: Vec<String> = Vec::new();
 
+    // Phase tracker: structural detection of task progression.
+    // Created fresh per-turn (per inference_loop invocation) — phase state
+    // is transient within a turn, not persisted across turns.
+    // Session-level phase history will be tracked via Role::Phase flow log
+    // (step 3, v0.1.5) for the InterventionObserver's learning.
+    // Defaults to Modify intent (adapts structurally regardless).
+    let mut phase_tracker = PhaseTracker::new(&crate::intent::TaskIntent::Modify);
+
     loop {
         if iteration >= hard_cap {
             let recent = loop_detector.recent_names();
@@ -103,7 +112,7 @@ pub async fn inference_loop(
         }
 
         // Inject task phase hint + progress summary into system prompt
-        let phase = crate::task_phase::PhaseTracker::detect_legacy(&recent_tool_names);
+        let phase = phase_tracker.current();
         let progress = crate::progress::get_progress_summary(db, session_id)
             .await
             .unwrap_or_default();
@@ -453,6 +462,21 @@ pub async fn inference_loop(
         )
         .await?;
 
+        // Advance phase tracker based on structural turn signal
+        {
+            let tool_names: Vec<&str> = tool_calls
+                .iter()
+                .map(|tc| tc.function_name.as_str())
+                .collect();
+            let after_bash = recent_tool_names.iter().rev().take(3).any(|n| n == "Bash");
+            let signal = TurnSignal {
+                has_tool_calls: !tool_calls.is_empty(),
+                tool_type: ToolType::classify(&tool_names),
+                after_bash,
+            };
+            phase_tracker.advance(&signal);
+        }
+
         // If no tool calls, we already streamed the response — done
         if tool_calls.is_empty() {
             if made_tool_calls && full_text.trim().is_empty() {
@@ -508,9 +532,10 @@ pub async fn inference_loop(
 
         // Execute tool calls — parallelize when possible
         // (Lite tier models must use sequential to avoid confusion)
+        let pi = PhaseInfo::from(&phase_tracker);
         if tool_calls.len() > 1
             && config.model_tier.allows_parallel_tools()
-            && can_parallelize(&tool_calls, mode)
+            && can_parallelize(&tool_calls, mode, pi)
         {
             execute_tools_parallel(
                 &tool_calls,
@@ -523,6 +548,7 @@ pub async fn inference_loop(
                 sink,
                 cancel.clone(),
                 &sub_agent_cache,
+                pi,
             )
             .await?;
         } else if tool_calls.len() > 1 && config.model_tier.allows_parallel_tools() {
@@ -541,6 +567,7 @@ pub async fn inference_loop(
                 cancel.clone(),
                 cmd_rx,
                 &sub_agent_cache,
+                pi,
             )
             .await?;
         } else {
@@ -557,6 +584,7 @@ pub async fn inference_loop(
                 cancel.clone(),
                 cmd_rx,
                 &sub_agent_cache,
+                pi,
             )
             .await?;
         }
