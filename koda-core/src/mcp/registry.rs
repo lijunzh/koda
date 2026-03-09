@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::mcp::client::McpClient;
 use crate::mcp::config::{self, McpServerConfig};
 use crate::providers::ToolDefinition;
+use crate::tools::ToolEffect;
 
 /// Separator between server name and tool name.
 pub const TOOL_NAME_SEP: char = '.';
@@ -18,6 +19,9 @@ pub const TOOL_NAME_SEP: char = '.';
 pub struct McpRegistry {
     /// Connected servers keyed by name.
     servers: HashMap<String, McpClient>,
+    /// Config-level tool effect overrides (from `.mcp.json` `toolOverrides`).
+    /// These take precedence over schema-declared annotations.
+    tool_overrides: HashMap<String, ToolEffect>,
 }
 
 impl McpRegistry {
@@ -25,6 +29,7 @@ impl McpRegistry {
     pub fn new() -> Self {
         Self {
             servers: HashMap::new(),
+            tool_overrides: HashMap::new(),
         }
     }
 
@@ -36,14 +41,16 @@ impl McpRegistry {
         &mut self,
         project_root: &Path,
     ) -> Vec<(String, Result<usize, String>)> {
-        let configs = config::load_mcp_configs(project_root);
-        if configs.is_empty() {
+        let mcp_configs = config::load_mcp_configs(project_root);
+        self.tool_overrides = mcp_configs.tool_overrides;
+
+        if mcp_configs.servers.is_empty() {
             return Vec::new();
         }
 
         let mut statuses = Vec::new();
 
-        for (name, server_config) in configs {
+        for (name, server_config) in mcp_configs.servers {
             match McpClient::connect(name.clone(), server_config).await {
                 Ok(client) => {
                     let tool_count = client.tool_definitions().len();
@@ -76,8 +83,9 @@ impl McpRegistry {
 
     /// Restart a server (remove + reconnect from config).
     pub async fn restart_server(&mut self, name: &str, project_root: &Path) -> Result<()> {
-        let configs = config::load_mcp_configs(project_root);
-        let config = configs
+        let mcp_configs = config::load_mcp_configs(project_root);
+        let config = mcp_configs
+            .servers
             .get(name)
             .ok_or_else(|| anyhow::anyhow!("No config found for MCP server '{name}'"))?;
         self.remove_server(name);
@@ -123,6 +131,22 @@ impl McpRegistry {
             && name
                 .split_once(TOOL_NAME_SEP)
                 .is_some_and(|(server, _)| self.servers.contains_key(server))
+    }
+
+    /// Get the ToolEffect classification for an MCP tool.
+    ///
+    /// Returns `None` if the tool isn't found. Config overrides
+    /// (from `.mcp.json` `toolOverrides`) take precedence over
+    /// schema-declared annotations.
+    pub fn tool_effect(&self, namespaced_name: &str) -> Option<ToolEffect> {
+        // Check config overrides first
+        if let Some(effect) = self.tool_overrides.get(namespaced_name) {
+            return Some(*effect);
+        }
+        // Fall back to schema-declared annotations
+        let (server_name, _) = namespaced_name.split_once(TOOL_NAME_SEP)?;
+        let client = self.servers.get(server_name)?;
+        client.tool_effect(namespaced_name)
     }
 
     /// Get info about all connected servers (for /mcp status display).
