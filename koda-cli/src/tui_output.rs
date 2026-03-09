@@ -14,17 +14,33 @@ use ratatui::{
     backend::CrosstermBackend,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Widget},
+    widgets::{Paragraph, Widget, Wrap},
 };
 
 type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 
 /// Write `Line`s above the inline viewport via `insert_before()`.
+///
+/// Long lines are soft-wrapped to the terminal width so content is
+/// never silently truncated. The `insert_before` height is calculated
+/// to account for the extra rows that wrapped lines occupy.
 pub fn emit_lines(terminal: &mut Term, lines: &[Line<'_>]) {
     if lines.is_empty() {
         return;
     }
-    let height = lines.len() as u16;
+    let term_width = terminal.size().map(|s| s.width as usize).unwrap_or(80).max(1);
+    // Each line may wrap to multiple rows — calculate the true height.
+    let height: u16 = lines
+        .iter()
+        .map(|l| {
+            let w = l.width();
+            if w == 0 {
+                1u16
+            } else {
+                ((w + term_width - 1) / term_width) as u16 // ceil division
+            }
+        })
+        .sum();
     let owned: Vec<Line<'static>> = lines
         .iter()
         .map(|l| {
@@ -37,7 +53,9 @@ pub fn emit_lines(terminal: &mut Term, lines: &[Line<'_>]) {
         })
         .collect();
     let _ = terminal.insert_before(height, |buf| {
-        Paragraph::new(owned).render(buf.area, buf);
+        Paragraph::new(owned)
+            .wrap(Wrap { trim: false })
+            .render(buf.area, buf);
     });
 }
 
