@@ -11,23 +11,32 @@ permissions:
   contents: write
 
 jobs:
-  # Gate: verify CI already passed on this commit (no re-run).
+  # Gate: wait for CI to pass on this commit (don't re-run, just watch).
   check-ci:
-    name: Verify CI Passed
+    name: Wait for CI
     runs-on: ubuntu-latest
     steps:
-      - name: Check CI status for this commit
+      - name: Wait for CI workflow to complete
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          COUNT=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${{ github.sha }}&status=success&per_page=1" \
-            --jq '.total_count')
-          if [ "$COUNT" -lt 1 ]; then
-            echo "::error::No successful CI run found for commit ${{ github.sha }}"
-            exit 1
-          fi
-          echo "CI passed for commit ${{ github.sha }}"
+          echo "Waiting for CI workflow on commit ${{ github.sha }}..."
+          # Poll until the CI run appears (it may take a few seconds to start)
+          for i in $(seq 1 30); do
+            RUN_ID=$(gh api \
+              "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${{ github.sha }}&per_page=1" \
+              --jq '.workflow_runs[0].id // empty')
+            if [ -n "$RUN_ID" ]; then
+              echo "Found CI run: $RUN_ID — watching..."
+              gh run watch "$RUN_ID" --repo "${{ github.repository }}" --exit-status
+              echo "✅ CI passed"
+              exit 0
+            fi
+            echo "CI run not started yet (attempt $i/30), waiting 10s..."
+            sleep 10
+          done
+          echo "::error::CI workflow never started for commit ${{ github.sha }}"
+          exit 1
 
   # Verify that the git tag matches the workspace version.
   verify-version:
