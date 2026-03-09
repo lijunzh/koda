@@ -250,7 +250,10 @@ fn is_mutating(tool_name: &str) -> bool {
 /// Hardcoded floor: always NeedsConfirmation regardless of mode or phase.
 fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &Path) -> bool {
     let path_arg = match tool_name {
-        "Write" | "Edit" | "Delete" => args.get("file_path").and_then(|v| v.as_str()),
+        "Write" | "Edit" | "Delete" => args
+            .get("path")
+            .or(args.get("file_path"))
+            .and_then(|v| v.as_str()),
         _ => None,
     };
     match path_arg {
@@ -625,7 +628,7 @@ mod tests {
     #[test]
     fn test_write_outside_project_needs_confirmation() {
         let root = Path::new("/home/user/project");
-        let args = serde_json::json!({"file_path": "/etc/hosts"});
+        let args = serde_json::json!({"path": "/etc/hosts"});
         assert_eq!(
             check_tool(
                 "Write",
@@ -641,7 +644,7 @@ mod tests {
     #[test]
     fn test_write_inside_project_auto_approved() {
         let root = Path::new("/home/user/project");
-        let args = serde_json::json!({"file_path": "src/main.rs"});
+        let args = serde_json::json!({"path": "src/main.rs"});
         assert_eq!(
             check_tool(
                 "Write",
@@ -657,7 +660,7 @@ mod tests {
     #[test]
     fn test_edit_with_dotdot_escape_needs_confirmation() {
         let root = Path::new("/home/user/project");
-        let args = serde_json::json!({"file_path": "../../../etc/passwd"});
+        let args = serde_json::json!({"path": "../../../etc/passwd"});
         assert_eq!(
             check_tool(
                 "Edit",
@@ -704,7 +707,7 @@ mod tests {
 
     #[test]
     fn test_no_project_root_skips_path_check() {
-        let args = serde_json::json!({"file_path": "/etc/hosts"});
+        let args = serde_json::json!({"path": "/etc/hosts"});
         assert_eq!(
             check_tool(
                 "Write",
