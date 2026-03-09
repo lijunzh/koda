@@ -395,7 +395,7 @@ impl TuiContext {
                             }
 
                             // Intercept /self.provider (no args) — open inline dropdown
-                            if input.trim() == "/self.provider" {
+                            if input.trim() == "/provider" {
                                 let providers = crate::repl::PROVIDERS;
                                 let items: Vec<crate::widgets::provider_menu::ProviderItem> =
                                     providers
@@ -415,7 +415,7 @@ impl TuiContext {
                                         .collect();
                                 let mut dd = crate::widgets::dropdown::DropdownState::new(
                                     items,
-                                    "\u{1f43b} Select a self.provider",
+                                    "\u{1f43b} Select a provider",
                                 );
                                 // Pre-select current self.provider
                                 if let Some(idx) = dd.filtered.iter().position(|p| p.is_current) {
@@ -430,9 +430,8 @@ impl TuiContext {
                             }
 
                             // Intercept /self.provider <name> — skip dropdown, start wizard at API key step
-                            if input.trim().starts_with("/self.provider ") {
-                                let name =
-                                    input.trim().strip_prefix("/self.provider ").unwrap().trim();
+                            if input.trim().starts_with("/provider ") {
+                                let name = input.trim().strip_prefix("/provider ").unwrap().trim();
                                 let ptype = koda_core::config::ProviderType::from_url_or_name(
                                     "",
                                     Some(name),
@@ -1117,7 +1116,7 @@ impl TuiContext {
                         // Terminal resized while idle — erase stale viewport and reinit.
                         reinit_viewport_in_place(&mut self.terminal, self.viewport_height, self.viewport_height)?;
                     } else if let Event::Key(key) = ev {
-                        // ── Slash self.menu key interception ───────────
+                        // ── Slash menu key interception ───────────
                         // When a self.menu is active, intercept navigation
                         // and selection keys before normal handling.
                         if !self.menu.is_none() {
@@ -1233,7 +1232,7 @@ impl TuiContext {
                                                     emit_above(
                                                         &mut self.terminal,
                                                         Line::styled(
-                                                            "  Already in this self.session.",
+                                                            "  Already in this session.",
                                                             Style::default().fg(Color::DarkGray),
                                                         ),
                                                     );
@@ -1248,7 +1247,7 @@ impl TuiContext {
                                                                 "  \u{2714} ",
                                                                 Style::default().fg(Color::Green),
                                                             ),
-                                                            Span::raw("Resumed self.session "),
+                                                            Span::raw("Resumed session "),
                                                             Span::styled(
                                                                 short.to_string(),
                                                                 Style::default().fg(Color::Cyan),
@@ -1586,7 +1585,7 @@ impl TuiContext {
                                         self.menu = MenuContent::None;
                                     }
                                 } else {
-                                    // Clear self.menu if it was a slash or file self.menu
+                                    // Clear menu if it was a slash or file menu
                                     if matches!(self.menu, MenuContent::Slash(_) | MenuContent::File { .. }) {
                                         self.menu = MenuContent::None;
                                     }
