@@ -48,7 +48,7 @@ pub fn assemble_messages(
             .as_deref()
             .and_then(|tc| serde_json::from_str(tc).ok());
         messages.push(ChatMessage {
-            role: msg.role.clone(),
+            role: msg.role.as_str().to_string(),
             content: msg.content.clone(),
             tool_calls,
             tool_call_id: msg.tool_call_id.clone(),

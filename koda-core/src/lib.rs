@@ -34,6 +34,7 @@ pub mod prompt;
 pub mod providers;
 pub mod runtime_env;
 pub mod session;
+pub mod settings;
 pub mod skills;
 pub mod sub_agent_cache;
 pub mod task_phase;

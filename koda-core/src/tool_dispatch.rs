@@ -99,18 +99,13 @@ pub(crate) async fn execute_one_tool(
         }
     } else {
         // Invalidate sub-agent cache on file mutations
-        if is_mutating_tool(&tc.function_name) {
+        if crate::tools::is_mutating_tool(&tc.function_name) {
             sub_agent_cache.invalidate();
         }
         let r = tools.execute(&tc.function_name, &tc.arguments).await;
         r.output
     };
     (tc.id.clone(), result)
-}
-
-/// Tools that mutate files/state — trigger sub-agent cache invalidation.
-fn is_mutating_tool(name: &str) -> bool {
-    matches!(name, "Write" | "Edit" | "Delete" | "Bash" | "MemoryWrite")
 }
 
 /// Run multiple tool calls concurrently and store results.
@@ -597,7 +592,7 @@ pub(crate) async fn execute_sub_agent(
                 .as_deref()
                 .and_then(|tc| serde_json::from_str(tc).ok());
             messages.push(ChatMessage {
-                role: msg.role.clone(),
+                role: msg.role.as_str().to_string(),
                 content: msg.content.clone(),
                 tool_calls,
                 tool_call_id: msg.tool_call_id.clone(),
@@ -822,14 +817,15 @@ mod tests {
 
     #[test]
     fn test_is_mutating_tool() {
-        assert!(is_mutating_tool("Write"));
-        assert!(is_mutating_tool("Edit"));
-        assert!(is_mutating_tool("Delete"));
-        assert!(is_mutating_tool("Bash"));
-        assert!(is_mutating_tool("MemoryWrite"));
-        assert!(!is_mutating_tool("Read"));
-        assert!(!is_mutating_tool("List"));
-        assert!(!is_mutating_tool("InvokeAgent"));
+        assert!(crate::tools::is_mutating_tool("Write"));
+        assert!(crate::tools::is_mutating_tool("Edit"));
+        assert!(crate::tools::is_mutating_tool("Delete"));
+        assert!(crate::tools::is_mutating_tool("Bash"));
+        assert!(crate::tools::is_mutating_tool("MemoryWrite"));
+        assert!(!crate::tools::is_mutating_tool("Read"));
+        assert!(!crate::tools::is_mutating_tool("List"));
+        // InvokeAgent is mutating in the canonical function (CreateAgent/InvokeAgent included)
+        assert!(crate::tools::is_mutating_tool("InvokeAgent"));
     }
 
     #[test]

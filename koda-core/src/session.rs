@@ -5,11 +5,13 @@
 //! Instantiable N times for parallel sub-agents or cowork mode.
 
 use crate::agent::KodaAgent;
-use crate::approval::{ApprovalMode, Settings};
+use crate::approval::ApprovalMode;
 use crate::config::KodaConfig;
 use crate::db::Database;
 use crate::engine::{EngineCommand, EngineSink};
+use crate::inference::InferenceContext;
 use crate::providers::{self, ImageData, LlmProvider};
+use crate::settings::Settings;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -82,22 +84,22 @@ impl KodaSession {
             }
         }
 
-        let result = crate::inference::inference_loop(
-            &self.agent.project_root,
+        let result = crate::inference::inference_loop(InferenceContext {
+            project_root: &self.agent.project_root,
             config,
-            &self.db,
-            &self.id,
-            &self.agent.system_prompt,
-            self.provider.as_ref(),
-            &self.agent.tools,
-            &self.agent.tool_defs,
+            db: &self.db,
+            session_id: &self.id,
+            system_prompt: &self.agent.system_prompt,
+            provider: self.provider.as_ref(),
+            tools: &self.agent.tools,
+            tool_defs: &self.agent.tool_defs,
             pending_images,
-            self.mode,
-            &mut self.settings,
+            mode: self.mode,
+            settings: &mut self.settings,
             sink,
-            self.cancel.clone(),
+            cancel: self.cancel.clone(),
             cmd_rx,
-        )
+        })
         .await;
 
         let reason = match &result {
