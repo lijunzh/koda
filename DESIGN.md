@@ -302,6 +302,76 @@ is help. Keyboard shortcuts moved to the startup banner header.
 
 **Implementation**: [#229](https://github.com/lijunzh/koda/pull/229)
 
+### 16. Adaptive Phase-Gated Agent Loop (v0.1.4)
+
+**Decision**: Koda tracks a six-phase state machine per conversation turn:
+Understanding → Planning → Reviewing → Executing → Verifying → Reporting.
+Phase transitions are detected structurally from tool-use signals, not by
+parsing LLM text output.
+
+**Design reference**: [#216](https://github.com/lijunzh/koda/issues/216)
+(original OPAR design), [#242](https://github.com/lijunzh/koda/issues/242)
+(implementation plan with Tang Dynasty bureaucracy mapping).
+
+**Key components**:
+- `PhaseTracker` (`task_phase.rs`): state machine with `advance(signal)` that
+  returns `Option<PhaseTransition>` on phase change. Decision tree uses
+  `(current_phase, has_tool_calls, tool_type)` — no LLM output parsing.
+- `PhaseInfo`: snapshot of tracker state passed to `check_tool()` for
+  phase-aware approval decisions.
+- `Role::Phase` messages: phase transitions logged to the DB as structured
+  messages. Human-readable summary + JSON metadata. The LLM sees these for
+  process self-awareness; the InterventionObserver parses the metadata.
+- `InterventionObserver`: per-phase override frequency tracker. Learns from
+  auto/override data points at phase gates. Not yet wired into the inference
+  loop — data structure and persistence only in v0.1.4.
+
+**Phase-aware approval** (`check_tool()`):
+- Understanding/Planning: writes require confirmation even in Auto mode
+  (the agent hasn't formed a plan yet)
+- Reviewing: writes blocked (forced through the review gate)
+- Executing with `plan_approved`: writes auto-approved
+- Destructive operations: hardcoded floor regardless of phase
+
+**Escalation and rejection**:
+- Executing → Understanding ("escalation"): tool failure suggests scope
+  changed (e.g., merge conflict). Explicit, logged transition.
+- Reviewing → Planning ("封驳"): LLM self-reflection or human review finds
+  the plan unsound.
+
+**Philosophy**: The process adapts to the task, not the other way around.
+Simple tasks shortcut (Understanding → Executing). Complex tasks get full
+six-phase progression. The human's level of involvement is learned, not
+configured. See Design Principles above.
+
+### 17. Folder-Scoped Permissions (v0.1.4)
+
+**Decision**: Writes outside `project_root` always require explicit
+confirmation, regardless of approval mode or phase. Bash commands are
+linted for path escapes before execution.
+
+**Design reference**: [#218](https://github.com/lijunzh/koda/issues/218)
+
+**Three layers** (defense in depth):
+1. `safe_resolve_path()` (existed pre-v0.1.4): blocks path traversal at
+   the execution layer for file tools.
+2. `is_outside_project()` (v0.1.4): checks path args at the approval layer
+   with a clear warning. Hardcoded floor of NeedsConfirmation.
+3. `lint_bash_paths()` (v0.1.4): heuristic analysis of bash commands for
+   `cd` escapes, absolute paths, and `../` traversals.
+
+**Bash lint decisions**:
+- `cd /outside`: flagged
+- `cd ~` / bare `cd`: flagged (resolves to $HOME)
+- `cd $VAR` / `cd $(cmd)`: ignored (can't resolve statically)
+- Chained `cd a && cd b`: first target only
+- Symlinks: deferred to v0.1.5 (#280)
+
+**Threat model**: The LLM is semi-trusted (can make mistakes, not adversarial).
+The concern is accidental blast radius, not targeted attacks. The lint catches
+common accidental escapes; OS-level sandboxing (seccomp/landlock) is a v1.0
+concern.
+
 ## References
 
 - [ACP (Agent Client Protocol)](https://www.npmjs.com/package/@agentclientprotocol/sdk)
