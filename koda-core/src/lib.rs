@@ -43,5 +43,6 @@ pub mod task_phase;
 pub mod tier_observer;
 pub mod tool_dispatch;
 pub mod tools;
+pub mod truncate;
 pub mod undo;
 pub mod version;

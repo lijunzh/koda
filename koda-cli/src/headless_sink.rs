@@ -54,8 +54,32 @@ impl EngineSink for HeadlessSink {
                 eprintln!("\x1b[36m  \u{26a1} {name}\x1b[0m");
             }
             EngineEvent::ToolCallResult { name, output, .. } => {
-                let summary = truncate(&output, 200);
-                eprintln!("\x1b[32m  \u{2713} {name}\x1b[0m: {summary}");
+                use koda_core::truncate::{Truncated, truncate_for_display};
+                eprintln!("\x1b[32m  \u{2713} {name}\x1b[0m");
+                match truncate_for_display(&output) {
+                    Truncated::Full(_) => {
+                        for line in output.lines() {
+                            eprintln!("  \u{2502} {line}");
+                        }
+                    }
+                    Truncated::Split {
+                        head,
+                        tail,
+                        hidden,
+                        total,
+                    } => {
+                        for line in &head {
+                            eprintln!("  \u{2502} {line}");
+                        }
+                        eprintln!(
+                            "\x1b[2m{}\x1b[0m",
+                            koda_core::truncate::separator(hidden, total)
+                        );
+                        for line in &tail {
+                            eprintln!("  \u{2502} {line}");
+                        }
+                    }
+                }
             }
 
             // ── Sub-agents ──────────────────────────────────────
@@ -106,37 +130,5 @@ impl EngineSink for HeadlessSink {
                 );
             }
         }
-    }
-}
-
-fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        s
-    } else {
-        // Find a safe char boundary
-        let mut end = max;
-        while end > 0 && !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        &s[..end]
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_truncate_ascii() {
-        assert_eq!(truncate("hello world", 5), "hello");
-        assert_eq!(truncate("hi", 10), "hi");
-    }
-
-    #[test]
-    fn test_truncate_unicode() {
-        // '🐶' is 4 bytes — truncating at 2 should give empty
-        let s = "🐶hello";
-        let t = truncate(s, 2);
-        assert!(t.len() <= 2);
     }
 }
