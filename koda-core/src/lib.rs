@@ -17,6 +17,7 @@ pub mod engine;
 pub mod inference;
 pub mod inference_helpers;
 pub mod intent;
+pub mod intervention_observer;
 pub mod keystore;
 pub mod loop_guard;
 pub mod mcp;
