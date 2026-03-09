@@ -6,15 +6,16 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use koda_core::{
-    approval::{ApprovalMode, Settings},
+    approval::ApprovalMode,
     config::{KodaConfig, ModelSettings, ProviderType},
     db::{Database, Role},
     engine::{EngineCommand, EngineEvent, sink::TestSink},
-    inference,
+    inference::{self, InferenceContext},
     providers::{
         ChatMessage, LlmProvider, LlmResponse, ModelInfo, StreamChunk, ToolDefinition,
         mock::{MockProvider, MockResponse},
     },
+    settings::Settings,
     tools::ToolRegistry,
 };
 use std::path::PathBuf;
@@ -73,22 +74,22 @@ impl Env {
         let mut settings = Settings::load();
         let tool_defs = self.tool_defs();
 
-        let result = inference::inference_loop(
-            &self.root,
-            &self.config,
-            &self.db,
-            &self.session_id,
-            "You are a test assistant.",
+        let result = inference::inference_loop(InferenceContext {
+            project_root: &self.root,
+            config: &self.config,
+            db: &self.db,
+            session_id: &self.session_id,
+            system_prompt: "You are a test assistant.",
             provider,
-            &self.tools,
-            &tool_defs,
-            None,
-            ApprovalMode::Auto,
-            &mut settings,
-            &sink,
-            CancellationToken::new(),
-            &mut cmd_rx,
-        )
+            tools: &self.tools,
+            tool_defs: &tool_defs,
+            pending_images: None,
+            mode: ApprovalMode::Auto,
+            settings: &mut settings,
+            sink: &sink,
+            cancel: CancellationToken::new(),
+            cmd_rx: &mut cmd_rx,
+        })
         .await;
 
         assert!(result.is_ok(), "inference_loop failed: {:?}", result.err());
@@ -244,22 +245,22 @@ async fn test_provider_error_emits_error_event() {
     let mut settings = Settings::load();
     let tool_defs = env.tool_defs();
 
-    let result = inference::inference_loop(
-        &env.root,
-        &env.config,
-        &env.db,
-        &env.session_id,
-        "You are a test assistant.",
-        &provider,
-        &env.tools,
-        &tool_defs,
-        None,
-        ApprovalMode::Auto,
-        &mut settings,
-        &sink,
-        CancellationToken::new(),
-        &mut cmd_rx,
-    )
+    let result = inference::inference_loop(InferenceContext {
+        project_root: &env.root,
+        config: &env.config,
+        db: &env.db,
+        session_id: &env.session_id,
+        system_prompt: "You are a test assistant.",
+        provider: &provider,
+        tools: &env.tools,
+        tool_defs: &tool_defs,
+        pending_images: None,
+        mode: ApprovalMode::Auto,
+        settings: &mut settings,
+        sink: &sink,
+        cancel: CancellationToken::new(),
+        cmd_rx: &mut cmd_rx,
+    })
     .await;
 
     // Provider error should propagate as an Err (wrapped by inference_loop)
@@ -357,22 +358,22 @@ async fn test_cancel_during_streaming() {
     });
 
     let start = std::time::Instant::now();
-    let result = inference::inference_loop(
-        &env.root,
-        &env.config,
-        &env.db,
-        &env.session_id,
-        "You are a test assistant.",
-        &HangingProvider,
-        &env.tools,
-        &tool_defs,
-        None,
-        ApprovalMode::Auto,
-        &mut settings,
-        &sink,
+    let result = inference::inference_loop(InferenceContext {
+        project_root: &env.root,
+        config: &env.config,
+        db: &env.db,
+        session_id: &env.session_id,
+        system_prompt: "You are a test assistant.",
+        provider: &HangingProvider,
+        tools: &env.tools,
+        tool_defs: &tool_defs,
+        pending_images: None,
+        mode: ApprovalMode::Auto,
+        settings: &mut settings,
+        sink: &sink,
         cancel,
-        &mut cmd_rx,
-    )
+        cmd_rx: &mut cmd_rx,
+    })
     .await;
 
     let elapsed = start.elapsed();

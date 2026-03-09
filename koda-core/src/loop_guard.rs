@@ -50,7 +50,7 @@ impl LoopDetector {
 
             // Sliding window for loop detection ONLY tracks mutating tools.
             // Repeating read-only operations is handled by stale-read optimization.
-            if is_mutating_tool(&tc.function_name) {
+            if crate::tools::is_mutating_tool(&tc.function_name) {
                 self.window.push_back(fp);
                 if self.window.len() > WINDOW_SIZE {
                     self.window.pop_front();
@@ -88,15 +88,6 @@ impl LoopDetector {
 fn fingerprint(name: &str, args: &str) -> String {
     let prefix = &args[..args.len().min(200)];
     format!("{name}:{prefix}")
-}
-
-/// Tools that can cause destructive/mutating loops if repeated blindly.
-/// Read-only tools (Read, List, Grep) are excluded to allow safe exploration.
-fn is_mutating_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "Bash" | "Edit" | "Write" | "Delete" | "MemoryWrite" | "CreateAgent" | "InvokeAgent"
-    )
 }
 
 // ── Hard-cap prompt ───────────────────────────────────────────────
