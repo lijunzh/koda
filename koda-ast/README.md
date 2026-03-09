@@ -6,10 +6,17 @@ Extracts function signatures, class definitions, and call graphs from source
 code using embedded tree-sitter parsers. Communicates via the
 [Model Context Protocol](https://modelcontextprotocol.io) over stdio.
 
-## Built-in languages
+## Supported languages
 
-Rust, Python, JavaScript, TypeScript. Additional languages require adding
-tree-sitter grammars to this crate — see [#298](https://github.com/lijunzh/koda/issues/298).
+- **Rust**: `.rs`
+- **Python**: `.py`, `.pyi`, `.pyw`
+- **JavaScript/TypeScript**: `.js`, `.jsx`, `.mjs`, `.cjs`, `.ts`, `.mts`, `.cts`, `.tsx`
+- **Go**: `.go`
+- **Java**: `.java`
+- **C/C++**: `.c`, `.h`, `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`
+- **Bash**: `.sh`, `.bash`
+
+Additional languages require adding tree-sitter grammars to this crate — see [#298](https://github.com/lijunzh/koda/issues/298).
 
 ## Auto-provisioning
 
