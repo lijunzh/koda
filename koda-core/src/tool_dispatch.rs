@@ -42,11 +42,18 @@ pub(crate) fn can_parallelize(
     tool_calls: &[ToolCall],
     mode: ApprovalMode,
     phase_info: crate::task_phase::PhaseInfo,
+    project_root: &Path,
 ) -> bool {
     !tool_calls.iter().any(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            approval::check_tool(&tc.function_name, &args, mode, phase_info),
+            approval::check_tool(
+                &tc.function_name,
+                &args,
+                mode,
+                phase_info,
+                Some(project_root)
+            ),
             ToolApproval::NeedsConfirmation | ToolApproval::Blocked
         )
     })
@@ -213,7 +220,13 @@ pub(crate) async fn execute_tools_split_batch(
     let (parallel, sequential): (Vec<_>, Vec<_>) = tool_calls.iter().partition(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            approval::check_tool(&tc.function_name, &args, mode, phase_info),
+            approval::check_tool(
+                &tc.function_name,
+                &args,
+                mode,
+                phase_info,
+                Some(project_root)
+            ),
             ToolApproval::AutoApprove | ToolApproval::Notify
         )
     });
@@ -361,7 +374,13 @@ pub(crate) async fn execute_tools_sequential(
         });
 
         // Check approval for this tool call
-        let approval = approval::check_tool(&tc.function_name, &parsed_args, mode, phase_info);
+        let approval = approval::check_tool(
+            &tc.function_name,
+            &parsed_args,
+            mode,
+            phase_info,
+            Some(project_root),
+        );
 
         match approval {
             ToolApproval::AutoApprove | ToolApproval::Notify => {
@@ -626,7 +645,13 @@ pub(crate) async fn execute_sub_agent(
             // Sub-agents inherit the parent's approval mode
             let parsed_args: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or_default();
-            let approval = approval::check_tool(&tc.function_name, &parsed_args, mode, phase_info);
+            let approval = approval::check_tool(
+                &tc.function_name,
+                &parsed_args,
+                mode,
+                phase_info,
+                Some(project_root),
+            );
 
             let output = match approval {
                 ToolApproval::AutoApprove | ToolApproval::Notify => {
@@ -745,7 +770,8 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::legacy()
+            crate::task_phase::PhaseInfo::legacy(),
+            Path::new("/test/project")
         ));
     }
 
@@ -755,7 +781,8 @@ mod tests {
         assert!(!can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::legacy()
+            crate::task_phase::PhaseInfo::legacy(),
+            Path::new("/test/project")
         ));
     }
 
@@ -774,7 +801,8 @@ mod tests {
         assert!(!can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::legacy()
+            crate::task_phase::PhaseInfo::legacy(),
+            Path::new("/test/project")
         ));
     }
 
@@ -784,7 +812,8 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::legacy()
+            crate::task_phase::PhaseInfo::legacy(),
+            Path::new("/test/project")
         ));
     }
 
@@ -806,7 +835,8 @@ mod tests {
         assert!(!can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::legacy()
+            crate::task_phase::PhaseInfo::legacy(),
+            Path::new("/test/project")
         ));
     }
 
@@ -816,7 +846,8 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             ApprovalMode::Auto,
-            crate::task_phase::PhaseInfo::legacy()
+            crate::task_phase::PhaseInfo::legacy(),
+            Path::new("/test/project")
         ));
     }
 }
