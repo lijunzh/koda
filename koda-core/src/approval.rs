@@ -259,12 +259,19 @@ fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &
     match path_arg {
         Some(p) => {
             let requested = Path::new(p);
-            let resolved = if requested.is_absolute() {
-                requested.to_path_buf().clean()
+            let abs_path = if requested.is_absolute() {
+                requested.to_path_buf()
             } else {
-                project_root.join(requested).clean()
+                project_root.join(requested)
             };
-            !resolved.starts_with(project_root)
+            // Try canonicalize (follows symlinks, resolves ..).
+            // Falls back to lexical clean for new files that don't exist yet.
+            let resolved = abs_path.canonicalize().unwrap_or_else(|_| abs_path.clean());
+            // Also canonicalize project_root for consistent comparison
+            let canon_root = project_root
+                .canonicalize()
+                .unwrap_or_else(|_| project_root.to_path_buf());
+            !resolved.starts_with(&canon_root)
         }
         None => false,
     }

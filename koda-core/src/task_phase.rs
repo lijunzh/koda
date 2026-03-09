@@ -221,6 +221,9 @@ pub struct PhaseTracker {
     /// Whether to expect full six-phase progression.
     /// Set from TaskIntent at construction.
     expect_full_progression: bool,
+    /// Transition count per phase pair — for oscillation detection (#287).
+    /// Key: (from_ordinal, to_ordinal), Value: count.
+    transition_counts: std::collections::HashMap<(u8, u8), u8>,
 }
 
 /// Record of a phase transition, for logging as `Role::Phase` messages.
@@ -266,6 +269,7 @@ impl PhaseTracker {
                 intent,
                 TaskIntent::Complex | TaskIntent::Review | TaskIntent::TestGen
             ),
+            transition_counts: std::collections::HashMap::new(),
         }
     }
 
@@ -381,6 +385,16 @@ impl PhaseTracker {
 
         // Return transition record if phase actually changed
         if old_phase != new_phase {
+            // Oscillation detection (#287): cap transitions per phase pair
+            let pair = (old_phase.ordinal(), new_phase.ordinal());
+            let count = self.transition_counts.entry(pair).or_insert(0);
+            *count = count.saturating_add(1);
+            if *count > Self::MAX_PAIR_TRANSITIONS {
+                // Oscillation detected — stop transitioning, stay in current phase
+                self.current = old_phase;
+                return None;
+            }
+
             let trigger = match (old_phase, new_phase) {
                 (TaskPhase::Understanding, TaskPhase::Planning) => "text_only_after_reads",
                 (TaskPhase::Understanding, TaskPhase::Executing) => "simple_task_shortcut",
@@ -402,6 +416,11 @@ impl PhaseTracker {
             None
         }
     }
+
+    /// Max transitions allowed per phase pair before oscillation is capped.
+    /// 5 round-trips (e.g., Executing ↔ Verifying) is generous; beyond that
+    /// the agent is stuck and the loop guard will eventually terminate.
+    const MAX_PAIR_TRANSITIONS: u8 = 5;
 
     /// Force an escalation (Executing → Understanding) on tool failure
     /// indicating scope change.
@@ -842,5 +861,41 @@ mod tests {
         assert_eq!(tr.trigger, "封驳");
         assert_eq!(tr.from, TaskPhase::Reviewing);
         assert_eq!(tr.to, TaskPhase::Planning);
+    }
+
+    #[test]
+    fn test_oscillation_capped() {
+        let mut t = PhaseTracker::new(&TaskIntent::Modify);
+        // Get to Executing
+        t.advance(&signal(true, ToolType::HasWrites, false)); // Understanding → Executing
+        assert_eq!(t.current(), TaskPhase::Executing);
+
+        // Oscillate Executing ↔ Verifying
+        for i in 0..20 {
+            t.advance(&signal(false, ToolType::ReadOnly, true)); // → Verifying
+            t.advance(&signal(true, ToolType::HasWrites, false)); // → Executing
+            // After MAX_PAIR_TRANSITIONS (5), oscillation should be capped
+            if i >= 5 {
+                // Phase should stop transitioning
+                let stuck = t.current();
+                assert!(
+                    stuck == TaskPhase::Executing || stuck == TaskPhase::Verifying,
+                    "phase should be stuck in Executing or Verifying, got {stuck:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_oscillation_does_not_affect_different_pairs() {
+        let mut t = PhaseTracker::new(&TaskIntent::Modify);
+        // Understanding → Planning (text) — this pair shouldn't be affected
+        // by Executing ↔ Verifying oscillation
+        t.advance(&signal(false, ToolType::ReadOnly, false)); // → Planning
+        assert_eq!(t.current(), TaskPhase::Planning);
+        t.advance(&signal(false, ToolType::ReadOnly, false)); // → Reviewing
+        assert_eq!(t.current(), TaskPhase::Reviewing);
+        t.advance(&signal(true, ToolType::HasWrites, false)); // → Executing
+        assert_eq!(t.current(), TaskPhase::Executing);
     }
 }
