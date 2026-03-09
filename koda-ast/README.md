@@ -8,7 +8,8 @@ code using embedded tree-sitter parsers. Communicates via the
 
 ## Built-in languages
 
-Rust, Python, JavaScript, TypeScript.
+Rust, Python, JavaScript, TypeScript. Additional languages require adding
+tree-sitter grammars to this crate — see [#298](https://github.com/lijunzh/koda/issues/298).
 
 ## Auto-provisioning
 
@@ -33,11 +34,8 @@ Add to `.mcp.json`:
 }
 ```
 
-## MCP tools exposed
-
-| Tool | Description |
-|------|-------------|
-| `AstAnalysis` | Extract functions, classes, and call graphs from source files |
+Exposes one MCP tool: **AstAnalysis** — extracts functions, classes, and
+call graphs from source files.
 
 ## License
 
