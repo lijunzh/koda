@@ -15,6 +15,11 @@ pub enum Role {
     User,
     Assistant,
     Tool,
+    /// Phase transition log entry. Stored in the same messages table
+    /// with structured JSON metadata in the content field.
+    /// The LLM sees these as self-awareness of its own process.
+    /// The InterventionObserver parses the metadata for learning.
+    Phase,
 }
 
 impl Role {
@@ -24,6 +29,7 @@ impl Role {
             Self::User => "user",
             Self::Assistant => "assistant",
             Self::Tool => "tool",
+            Self::Phase => "phase",
         }
     }
 }
@@ -349,7 +355,15 @@ impl Database {
             // - Old assistant text: moderate truncation (1000 chars)
             // - User messages: keep full (they're the source of intent)
             if idx >= recency_threshold {
-                if msg.role == "tool"
+                if msg.role == "phase" {
+                    // Phase messages: keep only the human-readable summary when old.
+                    // Strip the JSON metadata to save tokens.
+                    if let Some(ref content) = msg.content
+                        && let Some(nl) = content.find('\n')
+                    {
+                        msg.content = Some(content[..nl].to_string());
+                    }
+                } else if msg.role == "tool"
                     && let Some(ref content) = msg.content
                     && content.len() > 200
                 {

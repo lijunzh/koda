@@ -474,7 +474,25 @@ pub async fn inference_loop(
                 tool_type: ToolType::classify(&tool_names),
                 after_bash,
             };
-            phase_tracker.advance(&signal);
+            if let Some(transition) = phase_tracker.advance(&signal) {
+                tracing::debug!(
+                    "Phase transition: {:?} → {:?} (trigger: {})",
+                    transition.from,
+                    transition.to,
+                    transition.trigger,
+                );
+                // Log phase transition as a Role::Phase message
+                let _ = db
+                    .insert_message(
+                        session_id,
+                        &crate::db::Role::Phase,
+                        Some(&transition.as_message_content()),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+            }
         }
 
         // If no tool calls, we already streamed the response — done
