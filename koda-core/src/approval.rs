@@ -713,7 +713,7 @@ mod tests {
                 "Write",
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
-                phase.clone(),
+                phase,
                 None
             ),
             ToolApproval::AutoApprove,
