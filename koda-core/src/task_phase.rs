@@ -126,14 +126,55 @@ impl std::fmt::Display for TaskPhase {
 pub struct PhaseInfo {
     pub phase: TaskPhase,
     pub plan_approved: bool,
+    /// If `Some(n)`, at most `n` LocalMutation/Destructive actions allowed
+    /// before the system forces a plan. Used by the simple-task shortcut.
+    pub action_budget: Option<usize>,
 }
 
 impl PhaseInfo {
-    /// Default for legacy callers: Executing + approved (preserves old Auto behavior).
-    pub fn legacy() -> Self {
+    /// Normal entry point: starts at Understanding, no plan approved.
+    pub fn new_session() -> Self {
+        Self {
+            phase: TaskPhase::Understanding,
+            plan_approved: false,
+            action_budget: None,
+        }
+    }
+
+    /// Simple-task shortcut: Executing + approved, but budget-limited.
+    ///
+    /// After `max_actions` mutating tool calls, the system injects a
+    /// plan-requirement message. Default budget: 3.
+    pub fn simple_task(max_actions: usize) -> Self {
         Self {
             phase: TaskPhase::Executing,
             plan_approved: true,
+            action_budget: Some(max_actions),
+        }
+    }
+
+    /// Delegated sub-agent: Executing + approved (parent already approved).
+    pub fn delegated() -> Self {
+        Self {
+            phase: TaskPhase::Executing,
+            plan_approved: true,
+            action_budget: None,
+        }
+    }
+
+    /// Consume one action from the budget. Returns `true` if budget
+    /// is exhausted (caller should inject a plan-requirement message).
+    ///
+    /// Returns `false` if there's no budget (unlimited) or budget > 0.
+    pub fn consume_action(&mut self) -> bool {
+        if let Some(ref mut budget) = self.action_budget {
+            if *budget == 0 {
+                return true; // already exhausted
+            }
+            *budget -= 1;
+            *budget == 0
+        } else {
+            false
         }
     }
 }
@@ -143,6 +184,7 @@ impl From<&PhaseTracker> for PhaseInfo {
         Self {
             phase: tracker.current(),
             plan_approved: tracker.plan_approved(),
+            action_budget: None,
         }
     }
 }
@@ -897,5 +939,52 @@ mod tests {
         assert_eq!(t.current(), TaskPhase::Reviewing);
         t.advance(&signal(true, ToolType::HasWrites, false)); // → Executing
         assert_eq!(t.current(), TaskPhase::Executing);
+    }
+
+    #[test]
+    fn test_consume_action_with_budget() {
+        let mut info = PhaseInfo::simple_task(3);
+        assert!(!info.consume_action()); // 3 → 2
+        assert!(!info.consume_action()); // 2 → 1
+        assert!(info.consume_action()); // 1 → 0 (exhausted)
+        assert!(info.consume_action()); // still exhausted
+    }
+
+    #[test]
+    fn test_consume_action_no_budget() {
+        let mut info = PhaseInfo::delegated();
+        assert!(!info.consume_action()); // unlimited
+        assert!(!info.consume_action());
+        assert!(!info.consume_action());
+    }
+
+    #[test]
+    fn test_consume_action_zero_budget() {
+        let mut info = PhaseInfo::simple_task(0);
+        assert!(info.consume_action()); // immediately exhausted
+    }
+
+    #[test]
+    fn test_new_session_constructor() {
+        let info = PhaseInfo::new_session();
+        assert_eq!(info.phase, TaskPhase::Understanding);
+        assert!(!info.plan_approved);
+        assert!(info.action_budget.is_none());
+    }
+
+    #[test]
+    fn test_simple_task_constructor() {
+        let info = PhaseInfo::simple_task(5);
+        assert_eq!(info.phase, TaskPhase::Executing);
+        assert!(info.plan_approved);
+        assert_eq!(info.action_budget, Some(5));
+    }
+
+    #[test]
+    fn test_delegated_constructor() {
+        let info = PhaseInfo::delegated();
+        assert_eq!(info.phase, TaskPhase::Executing);
+        assert!(info.plan_approved);
+        assert!(info.action_budget.is_none());
     }
 }

@@ -111,6 +111,9 @@ pub enum ToolApproval {
     NeedsConfirmation,
     /// Safe mode: show what would happen, don't execute.
     Blocked,
+    /// Simple-task action budget exhausted. The inference loop should
+    /// inject a system message requiring the LLM to produce a plan.
+    PlanRequired,
 }
 
 /// Read-only tools that auto-approve in all modes (including Safe).
@@ -149,7 +152,7 @@ pub fn check_tool(
     tool_name: &str,
     args: &serde_json::Value,
     mode: ApprovalMode,
-    phase_info: crate::task_phase::PhaseInfo,
+    mut phase_info: crate::task_phase::PhaseInfo,
     project_root: Option<&Path>,
 ) -> ToolApproval {
     // Classify the tool's effect
@@ -177,6 +180,14 @@ pub fn check_tool(
                 return ToolApproval::NeedsConfirmation;
             }
         }
+    }
+
+    // Action budget check: if budget-limited and this is a mutation,
+    // consume one action. If exhausted, require a plan.
+    if matches!(effect, ToolEffect::LocalMutation | ToolEffect::Destructive)
+        && phase_info.consume_action()
+    {
+        return ToolApproval::PlanRequired;
     }
 
     // Apply the ToolEffect × ApprovalMode matrix
@@ -333,7 +344,7 @@ mod tests {
                     tool,
                     &serde_json::json!({}),
                     ApprovalMode::Safe,
-                    crate::task_phase::PhaseInfo::legacy(),
+                    crate::task_phase::PhaseInfo::delegated(),
                     None
                 ),
                 ToolApproval::AutoApprove,
@@ -350,7 +361,7 @@ mod tests {
                     tool,
                     &serde_json::json!({}),
                     ApprovalMode::Safe,
-                    crate::task_phase::PhaseInfo::legacy(),
+                    crate::task_phase::PhaseInfo::delegated(),
                     None
                 ),
                 ToolApproval::Blocked,
@@ -369,7 +380,7 @@ mod tests {
                     tool,
                     &serde_json::json!({}),
                     ApprovalMode::Auto,
-                    crate::task_phase::PhaseInfo::legacy(),
+                    crate::task_phase::PhaseInfo::delegated(),
                     None
                 ),
                 ToolApproval::AutoApprove,
@@ -385,7 +396,7 @@ mod tests {
                 "Delete",
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 None
             ),
             ToolApproval::NeedsConfirmation,
@@ -399,6 +410,7 @@ mod tests {
         let phase = PhaseInfo {
             phase: TaskPhase::Understanding,
             plan_approved: false,
+            action_budget: None,
         };
         assert_eq!(
             check_tool(
@@ -419,6 +431,7 @@ mod tests {
         let phase = PhaseInfo {
             phase: TaskPhase::Executing,
             plan_approved: false,
+            action_budget: None,
         };
         assert_eq!(
             check_tool(
@@ -441,7 +454,7 @@ mod tests {
                 "Bash",
                 &args,
                 ApprovalMode::Strict,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 None
             ),
             ToolApproval::AutoApprove,
@@ -457,7 +470,7 @@ mod tests {
                 "Bash",
                 &args,
                 ApprovalMode::Strict,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 None
             ),
             ToolApproval::NeedsConfirmation,
@@ -473,7 +486,7 @@ mod tests {
                 "Bash",
                 &args,
                 ApprovalMode::Strict,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 None
             ),
             ToolApproval::NeedsConfirmation,
@@ -487,7 +500,7 @@ mod tests {
                 "Write",
                 &serde_json::json!({}),
                 ApprovalMode::Strict,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 None
             ),
             ToolApproval::NeedsConfirmation,
@@ -503,7 +516,7 @@ mod tests {
                     "InvokeAgent",
                     &args,
                     mode,
-                    crate::task_phase::PhaseInfo::legacy(),
+                    crate::task_phase::PhaseInfo::delegated(),
                     None
                 ),
                 ToolApproval::AutoApprove,
@@ -520,7 +533,7 @@ mod tests {
                 "Bash",
                 &args,
                 ApprovalMode::Safe,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 None
             ),
             ToolApproval::AutoApprove,
@@ -536,7 +549,7 @@ mod tests {
                 "Bash",
                 &args,
                 ApprovalMode::Safe,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 None
             ),
             ToolApproval::AutoApprove,
@@ -552,7 +565,7 @@ mod tests {
                 "Bash",
                 &args,
                 ApprovalMode::Safe,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 None
             ),
             ToolApproval::Blocked,
@@ -568,7 +581,7 @@ mod tests {
                 "Bash",
                 &args,
                 ApprovalMode::Safe,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 None
             ),
             ToolApproval::Blocked,
@@ -583,7 +596,7 @@ mod tests {
                 "WebFetch",
                 &args,
                 ApprovalMode::Safe,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 None
             ),
             ToolApproval::AutoApprove,
@@ -601,7 +614,7 @@ mod tests {
                 "Write",
                 &args,
                 ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
             ),
             ToolApproval::NeedsConfirmation,
@@ -617,7 +630,7 @@ mod tests {
                 "Write",
                 &args,
                 ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
             ),
             ToolApproval::AutoApprove,
@@ -633,7 +646,7 @@ mod tests {
                 "Edit",
                 &args,
                 ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
             ),
             ToolApproval::NeedsConfirmation,
@@ -649,7 +662,7 @@ mod tests {
                 "Bash",
                 &args,
                 ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
             ),
             ToolApproval::NeedsConfirmation,
@@ -665,7 +678,7 @@ mod tests {
                 "Bash",
                 &args,
                 ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 Some(root),
             ),
             ToolApproval::AutoApprove,
@@ -680,10 +693,90 @@ mod tests {
                 "Write",
                 &args,
                 ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::legacy(),
+                crate::task_phase::PhaseInfo::delegated(),
                 None,
             ),
             ToolApproval::AutoApprove,
         );
+    }
+
+    // ── Action budget tests ──────────────────────────────────
+
+    #[test]
+    fn test_simple_task_budget_exhausted() {
+        use crate::task_phase::PhaseInfo;
+        // simple_task(2) allows 2 mutations, 3rd triggers PlanRequired
+        let phase = PhaseInfo::simple_task(2);
+        // First mutation: auto-approve (budget 2 → 1)
+        assert_eq!(
+            check_tool(
+                "Write",
+                &serde_json::json!({}),
+                ApprovalMode::Auto,
+                phase.clone(),
+                None
+            ),
+            ToolApproval::AutoApprove,
+        );
+    }
+
+    #[test]
+    fn test_simple_task_budget_triggers_plan_required() {
+        use crate::task_phase::PhaseInfo;
+        // Budget of 0 → immediately triggers PlanRequired
+        let phase = PhaseInfo::simple_task(0);
+        assert_eq!(
+            check_tool(
+                "Write",
+                &serde_json::json!({}),
+                ApprovalMode::Auto,
+                phase,
+                None
+            ),
+            ToolApproval::PlanRequired,
+        );
+    }
+
+    #[test]
+    fn test_simple_task_budget_readonly_doesnt_count() {
+        use crate::task_phase::PhaseInfo;
+        // ReadOnly tools don't consume budget
+        let phase = PhaseInfo::simple_task(0);
+        assert_eq!(
+            check_tool(
+                "Read",
+                &serde_json::json!({}),
+                ApprovalMode::Auto,
+                phase,
+                None
+            ),
+            ToolApproval::AutoApprove,
+        );
+    }
+
+    #[test]
+    fn test_delegated_has_no_budget() {
+        use crate::task_phase::PhaseInfo;
+        // delegated() has no budget → unlimited mutations
+        let phase = PhaseInfo::delegated();
+        assert_eq!(
+            check_tool(
+                "Write",
+                &serde_json::json!({}),
+                ApprovalMode::Auto,
+                phase,
+                None
+            ),
+            ToolApproval::AutoApprove,
+        );
+    }
+
+    #[test]
+    fn test_new_session_starts_at_understanding() {
+        use crate::task_phase::{PhaseInfo, TaskPhase};
+        let phase = PhaseInfo::new_session();
+        assert_eq!(phase.phase, TaskPhase::Understanding);
+        assert!(!phase.plan_approved);
+        assert!(phase.action_budget.is_none());
     }
 }
