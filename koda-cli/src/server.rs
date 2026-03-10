@@ -12,6 +12,7 @@ use koda_core::approval::ApprovalMode;
 use koda_core::config::KodaConfig;
 use koda_core::db::{Database, Role};
 use koda_core::engine::EngineCommand;
+use koda_core::persistence::Persistence;
 use koda_core::session::KodaSession;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -47,7 +48,7 @@ struct ServerState {
 /// and writes JSON-RPC responses/notifications to stdout.
 pub async fn run_stdio_server(project_root: PathBuf, mut config: KodaConfig) -> Result<()> {
     // Initialize database
-    let db = Database::init(&project_root, &koda_core::db::config_dir()?).await?;
+    let db = Database::init(&koda_core::db::config_dir()?).await?;
 
     // Query actual model capabilities before building agent
     let tmp_provider = koda_core::providers::create_provider(&config);

@@ -9,6 +9,7 @@
 
 use crate::config::ModelSettings;
 use crate::db::Database;
+use crate::persistence::Persistence;
 use crate::providers::{ChatMessage, LlmProvider};
 use anyhow::{Result, bail};
 use std::sync::Arc;

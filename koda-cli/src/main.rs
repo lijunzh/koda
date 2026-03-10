@@ -30,6 +30,7 @@ mod widgets;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use koda_core::persistence::Persistence;
 use std::path::PathBuf;
 
 /// Koda 🐻 - Your AI coding bear.
@@ -211,8 +212,7 @@ async fn main() -> Result<()> {
                 cli.reasoning_effort,
             )
             .with_tier_override(cli.model_tier.as_deref());
-        let db =
-            koda_core::db::Database::init(&project_root, &koda_core::db::config_dir()?).await?;
+        let db = koda_core::db::Database::init(&koda_core::db::config_dir()?).await?;
         let session_id = match cli.session {
             Some(id) => id,
             None => db.create_session(&config.agent_name, &project_root).await?,
@@ -248,7 +248,7 @@ async fn main() -> Result<()> {
         .with_tier_override(cli.model_tier.as_deref());
 
     // Initialize database
-    let db = koda_core::db::Database::init(&project_root, &koda_core::db::config_dir()?).await?;
+    let db = koda_core::db::Database::init(&koda_core::db::config_dir()?).await?;
 
     // Load or create session
     let session_id = match cli.session {

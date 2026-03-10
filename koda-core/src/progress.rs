@@ -5,6 +5,7 @@
 //! always knows what's been done even after context is trimmed.
 
 use crate::db::Database;
+use crate::persistence::Persistence;
 
 /// Extract progress from a tool call and persist it.
 pub async fn track_progress(
