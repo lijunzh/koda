@@ -199,8 +199,8 @@ impl Database {
                 reviewer_reasoning TEXT,
                 human_decision TEXT CHECK(human_decision IN ('accepted_plan', 'accepted_review', 'manual_edit', 'aborted')),
                 gate_reason TEXT NOT NULL CHECK(gate_reason IN (
-                    'destructive_floor', 'complexity_threshold', 'observer_auto',
-                    'peer_review_disagreement', 're_plan_exhausted'
+                    'destructive_floor', 'remote_action_floor', 'complexity_threshold',
+                    'observer_auto', 'peer_review_disagreement', 're_plan_exhausted'
                 )),
                 created_at TEXT DEFAULT (datetime('now'))
             );",

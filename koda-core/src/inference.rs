@@ -629,15 +629,19 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
 
             match crate::review::PlanArtifact::from_tool_args(&args) {
                 Ok(plan) => {
-                    let depth = phase_tracker.select_review_depth(&intervention_observer);
+                    let base_depth = phase_tracker.select_review_depth(&intervention_observer);
 
-                    // Upgrade depth based on plan content
-                    let depth = if plan.has_destructive_step()
-                        && depth == crate::task_phase::ReviewDepth::FastPath
+                    // Upgrade depth based on plan content (one-way ratchet):
+                    // ToolEffect::Destructive → always PeerReview
+                    // ToolEffect::RemoteAction → at least SelfReview
+                    let depth = if plan.has_destructive_step() {
+                        crate::task_phase::ReviewDepth::PeerReview
+                    } else if plan.has_remote_step()
+                        && base_depth == crate::task_phase::ReviewDepth::FastPath
                     {
                         crate::task_phase::ReviewDepth::SelfReview
                     } else {
-                        depth
+                        base_depth
                     };
 
                     sink.emit(EngineEvent::Info {
@@ -652,6 +656,8 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                         // Determine gate reason
                         let gate_reason = if plan.has_destructive_step() {
                             crate::review::GateReason::DestructiveFloor
+                        } else if plan.has_remote_step() {
+                            crate::review::GateReason::RemoteActionFloor
                         } else {
                             crate::review::GateReason::ComplexityThreshold
                         };
