@@ -150,6 +150,13 @@ impl InterventionObserver {
         }
     }
 
+    /// Load from disk with auto-save on drop.
+    pub fn load_auto_save() -> ObserverGuard {
+        ObserverGuard {
+            observer: Self::load(),
+        }
+    }
+
     fn storage_path() -> PathBuf {
         let config_dir = std::env::var("XDG_CONFIG_HOME")
             .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config")))
@@ -164,6 +171,34 @@ impl InterventionObserver {
 impl Default for InterventionObserver {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// RAII wrapper that saves the observer on drop.
+///
+/// Use `InterventionObserver::load_auto_save()` to get one.
+/// The observer is saved when this guard goes out of scope,
+/// guaranteeing persistence even on early returns.
+pub struct ObserverGuard {
+    pub observer: InterventionObserver,
+}
+
+impl std::ops::Deref for ObserverGuard {
+    type Target = InterventionObserver;
+    fn deref(&self) -> &Self::Target {
+        &self.observer
+    }
+}
+
+impl std::ops::DerefMut for ObserverGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.observer
+    }
+}
+
+impl Drop for ObserverGuard {
+    fn drop(&mut self) {
+        self.observer.save();
     }
 }
 
