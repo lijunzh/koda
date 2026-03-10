@@ -1,11 +1,14 @@
-//! Task signature extraction for per-task-type learning.
+//! Task signature — fingerprints tasks for per-type learning.
 //!
-//! Fingerprints tasks so the InterventionObserver can learn
-//! domain-specific autonomy preferences (e.g., "user always approves
-//! git tasks but reviews refactoring carefully").
+//! The LLM classifies {domain, scope} in the Observe phase via structured
+//! output (~50 tokens). `from_prompt()` is a zero-cost fallback that always
+//! returns General:SingleFile — no keyword stemming, no NLP pipeline.
+//!
+//! See #329 (Trap 3.5) for rationale.
 
 /// High-level domain of a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TaskDomain {
     Git,
     Refactor,
@@ -30,6 +33,7 @@ impl std::fmt::Display for TaskDomain {
 
 /// Scope of changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TaskScope {
     SingleFile,
     MultiFile,
@@ -59,134 +63,45 @@ impl std::fmt::Display for TaskSignature {
     }
 }
 
+impl Default for TaskSignature {
+    fn default() -> Self {
+        Self {
+            domain: TaskDomain::General,
+            scope: TaskScope::SingleFile,
+        }
+    }
+}
+
 impl TaskSignature {
-    /// Classify a task from the user prompt.
+    /// Fallback classification — always General:SingleFile.
     ///
-    /// Uses simple keyword matching as a fast heuristic.
-    /// Future: replace with LLM-classified structured output at session
-    /// start (~50 tokens) for better accuracy. See #329 Trap 3.5.
-    pub fn from_prompt(prompt: &str) -> Self {
-        let lower = prompt.to_lowercase();
-        let domain = classify_domain(&lower);
-        let scope = classify_scope(&lower);
+    /// The real classification happens when the LLM emits `{domain, scope}`
+    /// in its first Observe-phase response. This exists so we always have
+    /// a signature, even if the LLM doesn't classify.
+    pub fn from_prompt(_prompt: &str) -> Self {
+        Self::default()
+    }
+
+    /// Construct from LLM-classified domain and scope strings.
+    ///
+    /// Falls back to General / SingleFile for unrecognized values.
+    pub fn from_llm(domain: &str, scope: &str) -> Self {
+        let domain = match domain {
+            "git" => TaskDomain::Git,
+            "refactor" => TaskDomain::Refactor,
+            "test" => TaskDomain::Test,
+            "release" => TaskDomain::Release,
+            "debug" => TaskDomain::Debug,
+            _ => TaskDomain::General,
+        };
+        let scope = match scope {
+            "single_file" => TaskScope::SingleFile,
+            "multi_file" => TaskScope::MultiFile,
+            "project" => TaskScope::Project,
+            _ => TaskScope::SingleFile,
+        };
         Self { domain, scope }
     }
-}
-
-/// Classify the domain from prompt keywords.
-fn classify_domain(lower: &str) -> TaskDomain {
-    // Count matches for each domain
-    let git_signals = [
-        "merge",
-        "branch",
-        "commit",
-        "rebase",
-        "cherry-pick",
-        "git ",
-        "pull request",
-        "pr ",
-        "stash",
-        "checkout",
-    ];
-    let test_signals = [
-        "test",
-        "spec",
-        "assert",
-        "expect",
-        "mock",
-        "fixture",
-        "coverage",
-        "pytest",
-        "jest",
-        "cargo test",
-    ];
-    let refactor_signals = [
-        "refactor",
-        "rename",
-        "extract",
-        "inline",
-        "move ",
-        "reorganize",
-        "restructure",
-        "clean up",
-        "simplify",
-    ];
-    let release_signals = [
-        "release",
-        "version",
-        "changelog",
-        "deploy",
-        "publish",
-        "tag ",
-        "bump",
-        "ship",
-    ];
-    let debug_signals = [
-        "debug",
-        "fix ",
-        "bug",
-        "error",
-        "crash",
-        "issue",
-        "broken",
-        "failing",
-        "investigate",
-    ];
-
-    let counts = [
-        (TaskDomain::Git, count_matches(lower, &git_signals)),
-        (TaskDomain::Test, count_matches(lower, &test_signals)),
-        (
-            TaskDomain::Refactor,
-            count_matches(lower, &refactor_signals),
-        ),
-        (TaskDomain::Release, count_matches(lower, &release_signals)),
-        (TaskDomain::Debug, count_matches(lower, &debug_signals)),
-    ];
-
-    // Pick the domain with the most matches (require ≥2 for specificity)
-    let best = counts.iter().max_by_key(|(_, c)| *c).unwrap();
-    if best.1 >= 2 {
-        best.0
-    } else {
-        TaskDomain::General
-    }
-}
-
-/// Classify the scope from prompt keywords.
-fn classify_scope(lower: &str) -> TaskScope {
-    let project_signals = [
-        "project",
-        "codebase",
-        "repo",
-        "repository",
-        "all files",
-        "everywhere",
-        "across",
-        "entire",
-    ];
-    let multi_signals = [
-        "files",
-        "modules",
-        "components",
-        "several",
-        "multiple",
-        "both",
-        "each",
-    ];
-
-    if count_matches(lower, &project_signals) >= 1 {
-        TaskScope::Project
-    } else if count_matches(lower, &multi_signals) >= 1 {
-        TaskScope::MultiFile
-    } else {
-        TaskScope::SingleFile
-    }
-}
-
-/// Count how many signal keywords appear in the text.
-fn count_matches(text: &str, signals: &[&str]) -> usize {
-    signals.iter().filter(|s| text.contains(**s)).count()
 }
 
 #[cfg(test)]
@@ -194,57 +109,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_git_domain() {
+    fn test_from_prompt_always_general() {
         let sig = TaskSignature::from_prompt("merge the feature branch and resolve conflicts");
-        assert_eq!(sig.domain, TaskDomain::Git);
-    }
-
-    #[test]
-    fn test_test_domain() {
-        let sig = TaskSignature::from_prompt("write unit tests for the parser with mocks");
-        assert_eq!(sig.domain, TaskDomain::Test);
-    }
-
-    #[test]
-    fn test_refactor_domain() {
-        let sig = TaskSignature::from_prompt("refactor the database module and extract helpers");
-        assert_eq!(sig.domain, TaskDomain::Refactor);
-    }
-
-    #[test]
-    fn test_release_domain() {
-        let sig =
-            TaskSignature::from_prompt("prepare the release, bump version and update changelog");
-        assert_eq!(sig.domain, TaskDomain::Release);
-    }
-
-    #[test]
-    fn test_debug_domain() {
-        let sig = TaskSignature::from_prompt("fix the crash bug when loading config");
-        assert_eq!(sig.domain, TaskDomain::Debug);
-    }
-
-    #[test]
-    fn test_general_domain_ambiguous() {
-        let sig = TaskSignature::from_prompt("can you help me with this?");
         assert_eq!(sig.domain, TaskDomain::General);
+        assert_eq!(sig.scope, TaskScope::SingleFile);
     }
 
     #[test]
-    fn test_project_scope() {
-        let sig = TaskSignature::from_prompt("search the entire codebase for TODO comments");
+    fn test_from_llm_known_values() {
+        let sig = TaskSignature::from_llm("git", "project");
+        assert_eq!(sig.domain, TaskDomain::Git);
         assert_eq!(sig.scope, TaskScope::Project);
     }
 
     #[test]
-    fn test_multi_file_scope() {
-        let sig = TaskSignature::from_prompt("update both modules to use the new API");
-        assert_eq!(sig.scope, TaskScope::MultiFile);
-    }
-
-    #[test]
-    fn test_single_file_scope() {
-        let sig = TaskSignature::from_prompt("add a method to main.rs");
+    fn test_from_llm_unknown_falls_back() {
+        let sig = TaskSignature::from_llm("quantum_computing", "galaxy");
+        assert_eq!(sig.domain, TaskDomain::General);
         assert_eq!(sig.scope, TaskScope::SingleFile);
     }
 
@@ -258,9 +139,16 @@ mod tests {
     }
 
     #[test]
-    fn test_requires_two_matches() {
-        // Single keyword shouldn't classify ("test" alone)
-        let sig = TaskSignature::from_prompt("test this thing");
-        assert_eq!(sig.domain, TaskDomain::General);
+    fn test_default() {
+        let sig = TaskSignature::default();
+        assert_eq!(sig.to_string(), "general:single_file");
+    }
+
+    #[test]
+    fn test_serde_roundtrip() {
+        let sig = TaskSignature::from_llm("release", "multi_file");
+        let json = serde_json::to_string(&sig).unwrap();
+        let deserialized: TaskSignature = serde_json::from_str(&json).unwrap();
+        assert_eq!(sig, deserialized);
     }
 }
