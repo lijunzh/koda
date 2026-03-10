@@ -36,6 +36,7 @@ pub async fn run(
     session_id: String,
     version_check: tokio::task::JoinHandle<Option<String>>,
     first_run: bool,
+    skip_probe: bool,
 ) -> Result<()> {
     let mut ctx = TuiContext::new(
         project_root,
@@ -44,6 +45,7 @@ pub async fn run(
         session_id,
         version_check,
         first_run,
+        skip_probe,
     )
     .await?;
 

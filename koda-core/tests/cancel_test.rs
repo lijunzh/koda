@@ -100,6 +100,7 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
         sink: &sink,
         cancel,
         cmd_rx: &mut cmd_rx,
+        skip_probe: true,
     })
     .await;
 

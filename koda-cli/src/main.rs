@@ -94,9 +94,9 @@ struct Cli {
     #[arg(long)]
     reasoning_effort: Option<String>,
 
-    /// Override model tier (strong, standard, lite)
-    #[arg(long, value_parser = ["strong", "standard", "lite"])]
-    model_tier: Option<String>,
+    /// Skip the model capability probe at startup
+    #[arg(long)]
+    skip_probe: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -144,8 +144,7 @@ async fn main() -> Result<()> {
                             cli.temperature,
                             cli.thinking_budget,
                             cli.reasoning_effort.clone(),
-                        )
-                        .with_tier_override(cli.model_tier.as_deref());
+                        );
                     server::run_stdio_server(project_root, config).await?;
                 } else {
                     eprintln!("WebSocket server (--port {port}) not yet implemented. Use --stdio.");
@@ -210,8 +209,7 @@ async fn main() -> Result<()> {
                 cli.temperature,
                 cli.thinking_budget,
                 cli.reasoning_effort,
-            )
-            .with_tier_override(cli.model_tier.as_deref());
+            );
         let db = koda_core::db::Database::init(&koda_core::db::config_dir()?).await?;
         let session_id = match cli.session {
             Some(id) => id,
@@ -224,6 +222,7 @@ async fn main() -> Result<()> {
             session_id,
             prompt,
             &cli.output_format,
+            cli.skip_probe,
         )
         .await?;
         std::process::exit(exit_code);
@@ -244,8 +243,7 @@ async fn main() -> Result<()> {
             cli.temperature,
             cli.thinking_budget,
             cli.reasoning_effort,
-        )
-        .with_tier_override(cli.model_tier.as_deref());
+        );
 
     // Initialize database
     let db = koda_core::db::Database::init(&koda_core::db::config_dir()?).await?;
@@ -264,6 +262,7 @@ async fn main() -> Result<()> {
         session_id,
         version_check,
         first_run,
+        cli.skip_probe,
     )
     .await
 }
