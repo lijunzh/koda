@@ -673,6 +673,75 @@ pub async fn run_peer_review(
     None
 }
 
+// ── Plan submission decision logic (testable) ───────────────
+
+/// What should happen when the model calls SubmitPlan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanSubmitAction {
+    /// Plan already approved — ignore duplicate submission.
+    DuplicateIgnored,
+    /// Plan parsed, review at the given depth.
+    Review {
+        depth: crate::task_phase::ReviewDepth,
+        gate_reason: GateReason,
+    },
+    /// Plan parsing failed.
+    ParseError(String),
+}
+
+/// What should happen when the model responds with text (no tool calls)
+/// and a re-plan is pending.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextResponseAction {
+    /// Normal end of turn.
+    EndTurn,
+    /// Re-plan pending: nudge the model to call submit_plan.
+    NudgeReplan { attempt: u32 },
+}
+
+/// Decide what to do when SubmitPlan is called.
+pub fn decide_plan_submit(
+    plan_already_approved: bool,
+    plan: &PlanArtifact,
+    base_depth: crate::task_phase::ReviewDepth,
+) -> PlanSubmitAction {
+    if plan_already_approved {
+        return PlanSubmitAction::DuplicateIgnored;
+    }
+
+    use crate::task_phase::ReviewDepth;
+
+    // One-way ratchet: upgrade depth based on plan content
+    let depth = if plan.has_destructive_step() {
+        ReviewDepth::PeerReview
+    } else if plan.has_remote_step() && base_depth == ReviewDepth::FastPath {
+        ReviewDepth::SelfReview
+    } else {
+        base_depth
+    };
+
+    let gate_reason = if plan.has_destructive_step() {
+        GateReason::DestructiveFloor
+    } else if plan.has_remote_step() {
+        GateReason::RemoteActionFloor
+    } else {
+        GateReason::ComplexityThreshold
+    };
+
+    PlanSubmitAction::Review { depth, gate_reason }
+}
+
+/// Decide what to do when the model produces text with no tool calls.
+pub fn decide_text_response(re_plan_count: u32, plan_approved: bool) -> TextResponseAction {
+    if re_plan_count > 0 && !plan_approved && re_plan_count <= 2 {
+        TextResponseAction::NudgeReplan {
+            attempt: re_plan_count,
+        }
+    } else {
+        TextResponseAction::EndTurn
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -854,5 +923,122 @@ mod tests {
             "destructive_floor"
         );
         assert_eq!(GateReason::RePlanExhausted.to_string(), "re_plan_exhausted");
+    }
+
+    // ── Plan submission decision tests (#342 regression) ───────
+
+    fn make_plan(steps: &[(&str, crate::tools::ToolEffect)]) -> PlanArtifact {
+        PlanArtifact {
+            goal: "test goal".into(),
+            steps: steps
+                .iter()
+                .map(|(desc, effect)| PlanStep {
+                    description: desc.to_string(),
+                    tool: "Bash".into(),
+                    files: vec![],
+                    effect: *effect,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_duplicate_submit_ignored() {
+        let plan = make_plan(&[("step 1", crate::tools::ToolEffect::ReadOnly)]);
+        let action = decide_plan_submit(
+            true, // already approved
+            &plan,
+            crate::task_phase::ReviewDepth::FastPath,
+        );
+        assert_eq!(action, PlanSubmitAction::DuplicateIgnored);
+    }
+
+    #[test]
+    fn test_fastpath_plan_returns_review() {
+        let plan = make_plan(&[("read files", crate::tools::ToolEffect::ReadOnly)]);
+        let action = decide_plan_submit(false, &plan, crate::task_phase::ReviewDepth::FastPath);
+        assert_eq!(
+            action,
+            PlanSubmitAction::Review {
+                depth: crate::task_phase::ReviewDepth::FastPath,
+                gate_reason: GateReason::ComplexityThreshold,
+            }
+        );
+    }
+
+    #[test]
+    fn test_destructive_step_escalates_to_peer_review() {
+        let plan = make_plan(&[
+            ("delete files", crate::tools::ToolEffect::Destructive),
+            ("read config", crate::tools::ToolEffect::ReadOnly),
+        ]);
+        let action = decide_plan_submit(false, &plan, crate::task_phase::ReviewDepth::FastPath);
+        assert_eq!(
+            action,
+            PlanSubmitAction::Review {
+                depth: crate::task_phase::ReviewDepth::PeerReview,
+                gate_reason: GateReason::DestructiveFloor,
+            }
+        );
+    }
+
+    #[test]
+    fn test_remote_step_escalates_fastpath_to_self_review() {
+        let plan = make_plan(&[("api call", crate::tools::ToolEffect::RemoteAction)]);
+        let action = decide_plan_submit(false, &plan, crate::task_phase::ReviewDepth::FastPath);
+        assert_eq!(
+            action,
+            PlanSubmitAction::Review {
+                depth: crate::task_phase::ReviewDepth::SelfReview,
+                gate_reason: GateReason::RemoteActionFloor,
+            }
+        );
+    }
+
+    #[test]
+    fn test_remote_step_s_not_downgrade_self_review() {
+        let plan = make_plan(&[("api call", crate::tools::ToolEffect::RemoteAction)]);
+        let action = decide_plan_submit(false, &plan, crate::task_phase::ReviewDepth::SelfReview);
+        // SelfReview stays SelfReview (one-way ratchet, no downgrade)
+        assert_eq!(
+            action,
+            PlanSubmitAction::Review {
+                depth: crate::task_phase::ReviewDepth::SelfReview,
+                gate_reason: GateReason::RemoteActionFloor,
+            }
+        );
+    }
+
+    // ── Text response decision tests (#342 regression) ────────
+
+    #[test]
+    fn test_text_response_no_replan_ends_turn() {
+        assert_eq!(decide_text_response(0, false), TextResponseAction::EndTurn);
+    }
+
+    #[test]
+    fn test_text_response_plan_approved_ends_turn() {
+        assert_eq!(
+            decide_text_response(1, true), // rejected once but then approved
+            TextResponseAction::EndTurn
+        );
+    }
+
+    #[test]
+    fn test_text_response_replan_pending_nudges() {
+        assert_eq!(
+            decide_text_response(1, false),
+            TextResponseAction::NudgeReplan { attempt: 1 }
+        );
+        assert_eq!(
+            decide_text_response(2, false),
+            TextResponseAction::NudgeReplan { attempt: 2 }
+        );
+    }
+
+    #[test]
+    fn test_text_response_replan_budget_exhausted_ends_turn() {
+        // re_plan_count > 2 means budget exhausted
+        assert_eq!(decide_text_response(3, false), TextResponseAction::EndTurn);
     }
 }
