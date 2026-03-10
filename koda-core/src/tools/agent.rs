@@ -436,12 +436,17 @@ mod tests {
     #[test]
     fn test_create_agent_succeeds_for_custom_name() {
         let dir = TempDir::new().unwrap();
-        let args = json!({"name": "my_custom_agent_xyz", "system_prompt": "x".repeat(60)});
+        // Use a name unlikely to exist in ~/.config/koda/agents/
+        let unique = format!("test_agent_{}", std::process::id());
+        let args = json!({"name": unique, "system_prompt": "x".repeat(60)});
         let result = create_agent(dir.path(), &args);
         assert!(
             result.contains("created") || result.contains("Created"),
             "Should create custom agent: {result}"
         );
+        // Clean up: delete the created file from the project agents dir
+        let agent_file = dir.path().join("agents").join(format!("{unique}.json"));
+        let _ = std::fs::remove_file(agent_file);
     }
 
     #[test]
