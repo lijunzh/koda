@@ -19,11 +19,22 @@ autonomy accordingly. Configuration is a confession that the system can't figure
 it out — a personal AI tool should learn how you work by working with you.
 
 This principle drives several architectural choices:
-- `TierObserver` learns model capability from tool-use quality, not model names.
 - `InterventionObserver` ([#242](https://github.com/lijunzh/koda/issues/242))
-  will learn human oversight preferences from phase-gate override patterns.
+  learns human oversight preferences from phase-gate override patterns.
 - No `DepthMode` enum or `--autonomy` flag — autonomy is a continuous variable
   that emerges from data, not a discrete setting the user picks.
+
+**Control the information environment, not the model's behavior.** Koda's value
+in the OPAR loop isn't telling the model *what* to think. It's controlling what
+the model can **see**. This is what separates an orchestrator from a prompt
+wrapper. Phase boundaries are valuable because they are **context boundaries**,
+not instruction boundaries. A reviewer that can't see the planner's reasoning
+chain is a meaningfully different reviewer, even if it's the same weights.
+
+This principle drives the `ReviewDepth` tiers ([#335](https://github.com/lijunzh/koda/issues/335)):
+- `FastPath`: no boundary — model's own deep thinking IS the review.
+- `SelfReview`: context wall — same model, fresh context window.
+- `PeerReview`: model wall — different model, fresh context window.
 
 ## Execution Modes
 
@@ -142,30 +153,33 @@ RecallContext uses an optional `db` + `session_id` on the ToolRegistry, set via
 locations per tool (definitions, match arm, module import) is a bottleneck,
 convert to a `Tool` trait + `ToolContext`. Do both together, not piecemeal.
 
-### 8. Model-Adaptive Architecture (v0.1.3 → v0.1.4)
+### 8. Model Capability Probe (v0.1.4)
 
-**Decision**: Koda uses three prompt tiers (Strong/Standard/Lite) and adapts
-them at runtime based on **observed tool-use quality**, not model names.
+**Decision**: Replace the three-tier model gradient (Strong/Standard/Lite) with
+a binary startup probe. Can this model handle koda's contract? Yes → full trust.
+No → fail loudly.
 
-**Rationale**: Name-based detection was fundamentally broken — a 122B MoE model
-on LM Studio would get Lite tier, GPT-4o-mini would get Strong, and any new
-model would be wrong until the hardcoded list was updated. No metadata signal
-(name, param count, context size, provider) reliably predicts tool-use ability.
+**What was deleted** (v0.1.4, [#332](https://github.com/lijunzh/koda/pull/332)):
+- `model_tier.rs` — Strong/Standard/Lite enum
+- `tier_observer.rs` — dynamic promotion/demotion based on tool-call quality
+- Tier-specific prompt personas (`build_strong_persona`, `build_lite_persona`)
+- `--model-tier` CLI flag
+- `get_definitions_tiered()` (Strong-tier tool filtering)
 
-**How it works**:
-- All models start at **Standard** tier
-- `TierObserver` tracks tool call outcomes (valid / unknown name / malformed args)
-- After 3 successful turns → **promote to Strong** (terse prompt, lazy tools)
-- After 2+ hallucinated names or malformed args → **demote to Lite** (verbose prompt)
-- Tier transitions are applied at compaction boundaries (prompt is rebuilt anyway)
-- CLI `--model-tier` flag and agent JSON `"model_tier"` override the observer
+**What replaced it**: `model_probe.rs` — one inference call at session start
+that asks the model to emit structured JSON with specific keys. Binary pass/fail.
+Cached per model name in `~/.config/koda/model_probes.json`. Skippable with
+`--skip-probe`.
 
-**Resource limits are decoupled from tiers**: iteration cap (200), parallel tools
-(always on), and auto-compact threshold (85%) are the same for all tiers. Tiers
-only control **prompt strategy** (verbosity + tool loading).
+**Rationale**: The three-tier system was configuration masquerading as
+adaptation. Tier-specific prompts were hedging against model uncertainty by
+coddling weaker models with verbose instructions. In practice, models either
+handle koda's structured tool-use contract or they don't — there's no useful
+middle ground. A model that can't emit valid JSON tool calls won't improve
+with a more verbose prompt; it'll just fail in more verbose ways.
 
-**Key constraint**: System prompt must be stable within a session for Anthropic
-prompt cache hit rates. Tier changes are queued and applied at compaction.
+**Philosophy**: The probe replaces hedging with a hard gate at the only moment
+you can't check at compile time — model identity is inherently a runtime fact.
 
 ### 9. Context Window Auto-Detection (v0.1.3 → v0.1.4)
 
@@ -182,18 +196,16 @@ and `outputTokenLimit`.
 **Called everywhere**: `query_and_apply_capabilities()` runs in all entry
 points (TUI, headless, ACP server, model switch, provider setup).
 
-### 10. Lazy Tool Loading with DiscoverTools (v0.1.3)
+### 10. ~~Lazy Tool Loading with DiscoverTools (v0.1.3)~~ Removed (v0.1.4)
 
-**Decision**: Strong-tier models get only 9 tools (8 core + DiscoverTools)
-upfront. Everything else is discoverable on demand by category.
+**Removed in** [#332](https://github.com/lijunzh/koda/pull/332) as part of
+the ModelTier deletion. All models now receive all tool schemas. The
+`DiscoverTools` tool and `get_definitions_tiered()` filtering were deleted.
 
-**Rationale**: 20+ tool schemas cost ~2000 tokens/turn. Core tools (Read, Write,
-Edit, etc.) handle 90%+ of turns. Agents, skills, memory, web, AST, and email
-tools are situational. DiscoverTools costs ~50 tokens for the schema + ~80 tokens
-for category hints in the system prompt.
-
-**Net savings**: ~57% reduction in per-turn tool overhead for Strong tier.
-Standard and Lite tiers still get all tools (they need the explicit schemas).
+**Original rationale**: 20+ tool schemas cost ~2000 tokens/turn, so Strong-tier
+models got only 9 core tools upfront. In practice, the lazy loading added
+complexity without proportional benefit — most models handle the full tool
+set fine, and the binary probe gate ensures they can.
 
 ### 11. Rate Limit Retry (v0.1.3)
 
@@ -371,6 +383,57 @@ linted for path escapes before execution.
 The concern is accidental blast radius, not targeted attacks. The lint catches
 common accidental escapes; OS-level sandboxing (seccomp/landlock) is a v1.0
 concern.
+
+### 18. Review Depth as Isolation Boundaries (v0.1.4)
+
+**Decision**: `ReviewDepth` tiers are defined by **isolation boundaries**, not
+review intensity. Each tier adds exactly one isolation dimension.
+
+**Design reference**: [#335](https://github.com/lijunzh/koda/issues/335)
+(full design doc), [#216](https://github.com/lijunzh/koda/issues/216)
+(original OPAR design).
+
+| Tier | Model | Context | Analogy |
+|------|-------|---------|--------|
+| `FastPath` | Same | Same | Thinking harder about your own essay |
+| `SelfReview` | Same | **Fresh** | Reading your essay after sleeping on it |
+| `PeerReview` | **Different** | Fresh | Handing it to a colleague |
+
+**The core insight**: Koda's value in the OPAR loop isn't telling the model
+*what* to think. It's controlling what the model can **see**. The review phase
+boundary is valuable because it's a **context boundary**, not an instruction
+boundary. A reviewer that can't see the planner's reasoning chain is a
+meaningfully different reviewer, even if it's the same weights.
+
+**FastPath**: The model's extended thinking (Opus, o3) IS the review. One
+inference call. Koda does nothing extra. This is where "deep think" happens —
+the model plans, critiques, revises, and emits internally.
+
+**SelfReview**: Koda serializes the plan, strips the conversation history,
+and makes a second inference call with only: reviewer system prompt + original
+task + plan artifact + file summaries. The reviewer sees the plan as an
+external artifact and cannot trace back through the reasoning that produced it.
+Breaks self-confirmation bias at near-zero cost.
+
+**PeerReview**: Same fresh context as SelfReview, routed to a different
+model/provider. Different training data = different blind spots. The prompt
+frames the reviewer as adversarial and adds a 5th review dimension:
+**Alternatives** — "Is there a simpler approach the planner missed?"
+
+**Trigger selection** (`select_review_depth()`):
+- `InterventionObserver` recommends auto → FastPath
+- Simple task (shortcutted Understanding → Executing) → FastPath
+- Complex intent with full progression → PeerReview
+- Default → SelfReview
+
+**One-way ratchet**: The agent can escalate review depth (FastPath →
+SelfReview → PeerReview) but never de-escalate without user consent.
+Destructive operations promote to PeerReview regardless of learned behavior.
+Safety floors are not overridable by `InterventionObserver`.
+
+**Implementation status**: Semantic contract and prompt framing shipped in
+v0.1.4 ([#334](https://github.com/lijunzh/koda/pull/334)). Inference-level
+plumbing (fresh context window, secondary provider routing) is future work.
 
 ## References
 
