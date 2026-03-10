@@ -141,7 +141,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             hard_cap += extra;
         }
 
-        // Inject task phase hint + progress summary into system prompt
+        // Inject task phase hint + progress + git context into system prompt
         let phase = phase_tracker.current();
         let progress = crate::progress::get_progress_summary(db, session_id)
             .await
@@ -152,8 +152,11 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         } else {
             format!("\n[Flow: {flow_summary}]")
         };
+        let git_line = crate::git::git_context(project_root)
+            .map(|ctx| format!("\n{ctx}"))
+            .unwrap_or_default();
         let phase_prompt = format!(
-            "{base_system_prompt}\n\n{}{progress}{flow_line}",
+            "{base_system_prompt}\n\n{}{progress}{flow_line}{git_line}",
             phase.prompt_hint(config.model_tier)
         );
         let system_message = ChatMessage::text("system", &phase_prompt);
@@ -593,6 +596,9 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         total_char_count += char_count;
 
         made_tool_calls = true;
+
+        // Git checkpoint before tool execution (crash-safe undo)
+        let _checkpoint_sha = crate::git::checkpoint(project_root);
 
         // Execute tool calls — parallelize when possible
         // (Lite tier models must use sequential to avoid confusion)
