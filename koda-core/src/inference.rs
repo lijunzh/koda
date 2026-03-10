@@ -108,6 +108,18 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             .map(|s| s.intent)
             .unwrap_or(crate::intent::TaskIntent::Modify)
     };
+
+    // Task signature: fingerprint for per-task-type learning.
+    let _task_signature = {
+        let history = db.load_context(session_id, available).await?;
+        let prompt = history
+            .iter()
+            .rev()
+            .find(|m| m.role == crate::db::Role::User)
+            .and_then(|m| m.content.as_deref())
+            .unwrap_or("");
+        crate::task_signature::TaskSignature::from_prompt(prompt)
+    };
     let mut phase_tracker = PhaseTracker::new(&intent);
 
     loop {
