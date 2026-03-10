@@ -335,6 +335,47 @@ impl PhaseTracker {
         self.expect_full_progression
     }
 
+    /// Force a phase demotion (escalation).
+    ///
+    /// Used when the agent discovers unexpected complexity mid-execution.
+    /// Only demotes from Executing or Verifying back to Understanding.
+    /// Returns the transition record, or None if demotion isn't applicable.
+    pub fn demote_to_understanding(&mut self, trigger: &'static str) -> Option<PhaseTransition> {
+        if !matches!(self.current, TaskPhase::Executing | TaskPhase::Verifying) {
+            return None;
+        }
+
+        let old = self.current;
+        self.current = TaskPhase::Understanding;
+        self.plan_approved = false; // plan is invalidated by scope change
+
+        Some(PhaseTransition {
+            from: old,
+            to: TaskPhase::Understanding,
+            trigger,
+        })
+    }
+
+    /// Collapse to a simpler phase (complexity decreased).
+    ///
+    /// Used when the agent discovers existing solutions during Review.
+    /// Only collapses from Reviewing to Executing.
+    pub fn collapse_to_executing(&mut self) -> Option<PhaseTransition> {
+        if self.current != TaskPhase::Reviewing {
+            return None;
+        }
+
+        let old = self.current;
+        self.current = TaskPhase::Executing;
+        self.plan_approved = true;
+
+        Some(PhaseTransition {
+            from: old,
+            to: TaskPhase::Executing,
+            trigger: "simplification",
+        })
+    }
+
     /// Advance the phase based on a structural turn signal.
     ///
     /// Returns the new phase (which may be unchanged).

@@ -543,6 +543,51 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                     )
                     .await;
             }
+
+            // Escalation check: if we're in Executing and tool output
+            // suggests scope changed, demote to Understanding.
+            if matches!(
+                phase_tracker.current(),
+                crate::task_phase::TaskPhase::Executing | crate::task_phase::TaskPhase::Verifying
+            ) {
+                // Check recent tool results for escalation signals
+                let recent = db.load_context(session_id, 2000).await.unwrap_or_default();
+                let last_tool_output = recent
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == crate::persistence::Role::Tool)
+                    .and_then(|m| m.content.as_deref())
+                    .unwrap_or("");
+
+                if let crate::escalation::EscalationSignal::Escalate { reason, .. } =
+                    crate::escalation::classify_error("tool", last_tool_output)
+                    && let Some(transition) = phase_tracker.demote_to_understanding("escalation")
+                {
+                    intervention_observer.record_auto(transition.to);
+                    let _ = db
+                        .insert_phase_transition(
+                            session_id,
+                            iteration,
+                            &transition.from.to_string(),
+                            &transition.to.to_string(),
+                            Some("error_escalation"),
+                        )
+                        .await;
+
+                    // Inject reflection prompt
+                    let prompt = crate::escalation::escalation_prompt("tool", &reason);
+                    let _ = db
+                        .insert_message(
+                            session_id,
+                            &crate::persistence::Role::Phase,
+                            Some(&prompt),
+                            None,
+                            None,
+                            None,
+                        )
+                        .await;
+                }
+            }
         }
 
         // If no tool calls, we already streamed the response — done
