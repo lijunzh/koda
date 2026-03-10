@@ -101,6 +101,7 @@ impl TuiContext {
         session_id: String,
         version_check: tokio::task::JoinHandle<Option<String>>,
         first_run: bool,
+        skip_probe: bool,
     ) -> Result<Self> {
         // Restore last-used provider
         let settings = koda_core::approval::Settings::load();
@@ -158,7 +159,9 @@ impl TuiContext {
             Arc::new(koda_core::agent::KodaAgent::new(&config, project_root.clone()).await?);
         crate::startup::print_mcp_status(&agent.mcp_statuses);
 
-        let session = KodaSession::new(session_id, agent.clone(), db, &config, ApprovalMode::Auto);
+        let mut session =
+            KodaSession::new(session_id, agent.clone(), db, &config, ApprovalMode::Auto);
+        session.skip_probe = skip_probe;
 
         let shared_mode = approval::new_shared_mode(ApprovalMode::Auto);
 
@@ -265,7 +268,7 @@ impl TuiContext {
                 f,
                 textarea,
                 &config.model,
-                config.model_tier.label(),
+                "koda",
                 mode,
                 ctx,
                 tui_state,
@@ -619,7 +622,7 @@ impl TuiContext {
                                             f,
                                             &self.textarea,
                                             &self.config.model,
-                                            self.config.model_tier.label(),
+                                            "koda",
                                             mode,
                                             ctx,
                                             self.tui_state,
@@ -733,7 +736,7 @@ impl TuiContext {
                                             f,
                                             &self.textarea,
                                             &self.config.model,
-                                            self.config.model_tier.label(),
+                                            "koda",
                                             mode,
                                             ctx,
                                             self.tui_state,
@@ -1095,7 +1098,7 @@ impl TuiContext {
                     f,
                     &self.textarea,
                     &self.config.model,
-                    self.config.model_tier.label(),
+                    "koda",
                     mode,
                     ctx,
                     self.tui_state,

@@ -258,36 +258,12 @@ impl ToolRegistry {
     /// Get tool definitions, optionally filtered by an allow-list.
     /// Includes MCP tools merged with built-in tools.
     pub fn get_definitions(&self, allowed: &[String]) -> Vec<ToolDefinition> {
-        self.get_definitions_tiered(allowed, crate::model_tier::ModelTier::Standard)
-    }
-
-    /// Get tool definitions with tier-aware filtering.
-    ///
-    /// - **Strong**: core tools + DiscoverTools only (~850 tokens)
-    /// - **Standard**: all tools (~2K tokens, current behavior)
-    /// - **Lite**: all tools (~2K tokens)
-    pub fn get_definitions_tiered(
-        &self,
-        allowed: &[String],
-        tier: crate::model_tier::ModelTier,
-    ) -> Vec<ToolDefinition> {
         let mut defs: Vec<ToolDefinition> = if !allowed.is_empty() {
-            // Explicit allow-list always wins
             allowed
                 .iter()
                 .filter_map(|name| self.definitions.get(name).cloned())
                 .collect()
-        } else if tier == crate::model_tier::ModelTier::Strong {
-            // Strong tier: core tools + DiscoverTools only
-            self.definitions
-                .values()
-                .filter(|d| {
-                    discover::CORE_TOOLS.contains(&d.name.as_str()) || d.name == "DiscoverTools"
-                })
-                .cloned()
-                .collect()
         } else {
-            // Standard/Lite: all tools
             self.definitions.values().cloned().collect()
         };
 
