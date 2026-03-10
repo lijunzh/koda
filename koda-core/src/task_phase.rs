@@ -345,6 +345,11 @@ impl PhaseTracker {
         self.plan_approved
     }
 
+    /// Mark the plan as approved (review passed or FastPath).
+    pub fn approve_plan(&mut self) {
+        self.plan_approved = true;
+    }
+
     pub fn review_result(&self) -> Option<ReviewResult> {
         self.review_result
     }
