@@ -10,6 +10,7 @@ use crate::config::KodaConfig;
 use crate::db::Database;
 use crate::engine::{EngineCommand, EngineSink};
 use crate::inference::InferenceContext;
+use crate::persistence::Persistence;
 use crate::providers::{self, ImageData, LlmProvider};
 use crate::settings::Settings;
 

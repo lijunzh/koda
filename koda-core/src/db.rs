@@ -1,86 +1,15 @@
-//! SQLite database layer for durable execution state.
+//! SQLite persistence layer.
 //!
-//! Uses WAL mode for concurrent access and indexes for fast session lookups.
+//! Implements `Persistence` trait for SQLite via sqlx.
+//! Uses WAL mode for concurrent access.
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::path::Path;
 use std::str::FromStr;
 
-/// Message roles in the conversation.
-#[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
-pub enum Role {
-    System,
-    User,
-    Assistant,
-    Tool,
-    /// Phase transition log entry. Stored in the same messages table
-    /// with structured JSON metadata in the content field.
-    /// The LLM sees these as self-awareness of its own process.
-    /// The InterventionObserver parses the metadata for learning.
-    Phase,
-}
-
-impl Role {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::User => "user",
-            Self::Assistant => "assistant",
-            Self::Tool => "tool",
-            Self::Phase => "phase",
-        }
-    }
-}
-
-impl std::fmt::Display for Role {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-impl std::str::FromStr for Role {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "system" => Ok(Self::System),
-            "user" => Ok(Self::User),
-            "assistant" => Ok(Self::Assistant),
-            "tool" => Ok(Self::Tool),
-            "phase" => Ok(Self::Phase),
-            other => Err(format!("unknown role: {other}")),
-        }
-    }
-}
-
-/// A stored message row.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct Message {
-    pub id: i64,
-    pub session_id: String,
-    pub role: Role,
-    pub content: Option<String>,
-    pub tool_calls: Option<String>,
-    pub tool_call_id: Option<String>,
-    pub prompt_tokens: Option<i64>,
-    pub completion_tokens: Option<i64>,
-    pub cache_read_tokens: Option<i64>,
-    pub cache_creation_tokens: Option<i64>,
-    pub thinking_tokens: Option<i64>,
-}
-
-/// Token usage totals for a session.
-#[derive(Debug, Clone, Default)]
-pub struct SessionUsage {
-    pub prompt_tokens: i64,
-    pub completion_tokens: i64,
-    pub cache_read_tokens: i64,
-    pub cache_creation_tokens: i64,
-    pub thinking_tokens: i64,
-    pub api_calls: i64,
-}
+// Re-export types from persistence for backward compatibility.
+pub use crate::persistence::{Message, Persistence, Role, SessionInfo, SessionUsage};
 
 /// Wrapper around the SQLite connection pool.
 #[derive(Debug, Clone)]
@@ -104,11 +33,6 @@ pub fn config_dir() -> Result<std::path::PathBuf> {
     Ok(base.join("koda"))
 }
 
-/// Get the central database directory (`~/.config/koda/db`).
-pub fn db_dir() -> Result<std::path::PathBuf> {
-    Ok(config_dir()?.join("db"))
-}
-
 impl Database {
     /// Initialize the database, run migrations, and enable WAL mode.
     ///
@@ -116,36 +40,18 @@ impl Database {
     /// The database lives in `<koda_config_dir>/db/koda.db`.
     ///
     /// Production callers should pass `db::config_dir()?`; tests pass a temp dir.
-    pub async fn init(project_root: &Path, koda_config_dir: &Path) -> Result<Self> {
+    pub async fn init(koda_config_dir: &Path) -> Result<Self> {
         let db_dir = koda_config_dir.join("db");
         std::fs::create_dir_all(&db_dir)
             .with_context(|| format!("Failed to create DB dir: {}", db_dir.display()))?;
 
         let db_path = db_dir.join("koda.db");
 
-        // Migrate old `<koda_config_dir>/koda.db` to the new `db/` folder if needed
-        let old_db_path = koda_config_dir.join("koda.db");
-        if old_db_path.exists() && !db_path.exists() {
-            tracing::info!("Migrating koda.db to new db/ directory");
-            if let Err(e) = std::fs::rename(&old_db_path, &db_path) {
-                tracing::warn!("Failed to move old koda.db to db/ folder: {}", e);
-            }
-            // Also try to move WAL files if they exist
-            let old_wal = koda_config_dir.join("koda.db-wal");
-            let old_shm = koda_config_dir.join("koda.db-shm");
-            if old_wal.exists() {
-                let _ = std::fs::rename(old_wal, db_dir.join("koda.db-wal"));
-            }
-            if old_shm.exists() {
-                let _ = std::fs::rename(old_shm, db_dir.join("koda.db-shm"));
-            }
-        }
-
-        Self::open(&db_path, project_root).await
+        Self::open(&db_path).await
     }
 
     /// Open a database at a specific path (used by tests and init).
-    pub async fn open(db_path: &Path, project_root: &Path) -> Result<Self> {
+    pub async fn open(db_path: &Path) -> Result<Self> {
         let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
 
         let options = SqliteConnectOptions::from_str(&db_url)?
@@ -162,16 +68,6 @@ impl Database {
 
         // Run schema migrations
         Self::migrate(&pool).await?;
-
-        // Migrate legacy per-project DB if it exists
-        let legacy_db = project_root.join(".koda.db");
-        if legacy_db.exists()
-            && let Err(e) = Self::migrate_legacy(&pool, &legacy_db, project_root).await
-        {
-            tracing::warn!("Failed to migrate legacy DB {}: {e}", legacy_db.display());
-        }
-
-        tracing::info!("Database initialized at {:?}", db_path);
         Ok(Self { pool })
     }
 
@@ -291,9 +187,50 @@ impl Database {
 
         Ok(())
     }
+}
 
+// ── Private helpers ─────────────────────────────────────────────
+
+/// Strip tool_calls from any assistant message whose tool calls have no
+/// corresponding tool result messages following it.
+fn fix_orphaned_tool_calls(messages: &mut [Message]) {
+    let len = messages.len();
+    if len == 0 {
+        return;
+    }
+
+    // Walk backwards: find the last assistant message with tool_calls
+    // and check if tool result messages follow it.
+    let mut i = len;
+    while i > 0 {
+        i -= 1;
+        if messages[i].role == Role::Assistant && messages[i].tool_calls.is_some() {
+            // Check if the next message is a tool result
+            let has_result = i + 1 < len && messages[i + 1].role == Role::Tool;
+            if !has_result {
+                messages[i].tool_calls = None;
+            }
+            break; // only need to fix the trailing orphan
+        }
+        // If we hit a non-tool, non-assistant message going backwards, stop
+        if messages[i].role != Role::Tool {
+            break;
+        }
+    }
+}
+
+/// Rough token estimate: ~4 chars per token (good enough for sliding window).
+fn estimate_tokens(msg: &Message) -> usize {
+    let content_len = msg.content.as_deref().map_or(0, |c| c.len());
+    let tool_len = msg.tool_calls.as_deref().map_or(0, |c| c.len());
+    ((content_len + tool_len) as f64 / crate::inference_helpers::CHARS_PER_TOKEN) as usize
+        + crate::inference_helpers::PER_MESSAGE_OVERHEAD
+}
+
+#[async_trait::async_trait]
+impl Persistence for Database {
     /// Create a new session, returning the generated session ID.
-    pub async fn create_session(&self, agent_name: &str, project_root: &Path) -> Result<String> {
+    async fn create_session(&self, agent_name: &str, project_root: &Path) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let root = project_root.to_string_lossy().to_string();
         sqlx::query("INSERT INTO sessions (id, agent_name, project_root) VALUES (?, ?, ?)")
@@ -307,7 +244,7 @@ impl Database {
     }
 
     /// Insert a message into the conversation log.
-    pub async fn insert_message(
+    async fn insert_message(
         &self,
         session_id: &str,
         role: &Role,
@@ -330,7 +267,7 @@ impl Database {
 
     /// Insert a message with an optional agent name for cost tracking.
     #[allow(clippy::too_many_arguments)]
-    pub async fn insert_message_with_agent(
+    async fn insert_message_with_agent(
         &self,
         session_id: &str,
         role: &Role,
@@ -365,7 +302,7 @@ impl Database {
 
     /// Load recent messages for a session, applying a sliding window.
     /// Returns messages newest-first, capped at `max_tokens` estimated usage.
-    pub async fn load_context(&self, session_id: &str, max_tokens: usize) -> Result<Vec<Message>> {
+    async fn load_context(&self, session_id: &str, max_tokens: usize) -> Result<Vec<Message>> {
         let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
@@ -434,7 +371,7 @@ impl Database {
                 // User messages: never truncated (they carry intent)
             }
 
-            let estimated = Self::estimate_tokens(&msg);
+            let estimated = estimate_tokens(&msg);
             if estimated > budget {
                 break;
             }
@@ -450,49 +387,20 @@ impl Database {
         // strip the tool_calls so the LLM doesn't see inconsistent state.
         // This happens when a session was interrupted between saving the assistant
         // response and executing/saving tool results.
-        Self::fix_orphaned_tool_calls(&mut window);
+        fix_orphaned_tool_calls(&mut window);
 
         Ok(window)
     }
-
-    /// Strip tool_calls from any assistant message whose tool calls have no
-    /// corresponding tool result messages following it.
-    fn fix_orphaned_tool_calls(messages: &mut [Message]) {
-        let len = messages.len();
-        if len == 0 {
-            return;
-        }
-
-        // Walk backwards: find the last assistant message with tool_calls
-        // and check if tool result messages follow it.
-        let mut i = len;
-        while i > 0 {
-            i -= 1;
-            if messages[i].role == Role::Assistant && messages[i].tool_calls.is_some() {
-                // Check if the next message is a tool result
-                let has_result = i + 1 < len && messages[i + 1].role == Role::Tool;
-                if !has_result {
-                    messages[i].tool_calls = None;
-                }
-                break; // only need to fix the trailing orphan
-            }
-            // If we hit a non-tool, non-assistant message going backwards, stop
-            if messages[i].role != Role::Tool {
-                break;
-            }
-        }
-    }
-
     /// Load ALL messages for a session (for RecallContext search).
     /// Returns messages in chronological order, no truncation.
-    pub async fn load_all_messages(&self, session_id: &str) -> Result<Vec<Message>> {
+    async fn load_all_messages(&self, session_id: &str) -> Result<Vec<Message>> {
         let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, tool_calls, tool_call_id,
-                    prompt_tokens, completion_tokens,
-                    cache_read_tokens, cache_creation_tokens, thinking_tokens
-             FROM messages
-             WHERE session_id = ?
-             ORDER BY id ASC",
+    prompt_tokens, completion_tokens,
+    cache_read_tokens, cache_creation_tokens, thinking_tokens
+    FROM messages
+    WHERE session_id = ?
+    ORDER BY id ASC",
         )
         .bind(session_id)
         .fetch_all(&self.pool)
@@ -505,11 +413,11 @@ impl Database {
 
     /// Load recent user messages across all sessions (for the startup banner).
     /// Returns up to `limit` messages, newest first.
-    pub async fn recent_user_messages(&self, limit: i64) -> Result<Vec<String>> {
+    async fn recent_user_messages(&self, limit: i64) -> Result<Vec<String>> {
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT content FROM messages
-             WHERE role = 'user' AND content IS NOT NULL AND content != ''
-             ORDER BY id DESC LIMIT ?",
+    WHERE role = 'user' AND content IS NOT NULL AND content != ''
+    ORDER BY id DESC LIMIT ?",
         )
         .bind(limit)
         .fetch_all(&self.pool)
@@ -518,18 +426,8 @@ impl Database {
         Ok(rows.into_iter().map(|r| r.0).collect())
     }
 
-    /// Rough token estimate: ~4 chars per token (good enough for sliding window).
-    fn estimate_tokens(msg: &Message) -> usize {
-        let content_len = msg.content.as_deref().map_or(0, |c| c.len());
-        let tool_len = msg.tool_calls.as_deref().map_or(0, |c| c.len());
-        // Use the same formula as inference_helpers::estimate_tokens
-        // to avoid budget mismatch between load_context and inference_loop.
-        ((content_len + tool_len) as f64 / crate::inference_helpers::CHARS_PER_TOKEN) as usize
-            + crate::inference_helpers::PER_MESSAGE_OVERHEAD
-    }
-
     /// Get token usage totals for a session.
-    pub async fn session_token_usage(&self, session_id: &str) -> Result<SessionUsage> {
+    async fn session_token_usage(&self, session_id: &str) -> Result<SessionUsage> {
         let row: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
             "SELECT
                 COALESCE(SUM(prompt_tokens), 0),
@@ -556,7 +454,7 @@ impl Database {
     }
 
     /// Get token usage broken down by agent name.
-    pub async fn session_usage_by_agent(
+    async fn session_usage_by_agent(
         &self,
         session_id: &str,
     ) -> Result<Vec<(String, SessionUsage)>> {
@@ -597,7 +495,7 @@ impl Database {
     }
 
     /// List recent sessions for a specific project.
-    pub async fn list_sessions(&self, limit: i64, project_root: &Path) -> Result<Vec<SessionInfo>> {
+    async fn list_sessions(&self, limit: i64, project_root: &Path) -> Result<Vec<SessionInfo>> {
         let root = project_root.to_string_lossy().to_string();
         let rows: Vec<SessionInfoRow> = sqlx::query_as(
             "SELECT s.id, s.agent_name, s.created_at,
@@ -618,7 +516,7 @@ impl Database {
     }
 
     /// Get the last assistant text response for a session (for headless JSON output).
-    pub async fn last_assistant_message(&self, session_id: &str) -> Result<String> {
+    async fn last_assistant_message(&self, session_id: &str) -> Result<String> {
         let row: Option<(String,)> = sqlx::query_as(
             "SELECT content FROM messages
              WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL
@@ -631,7 +529,7 @@ impl Database {
     }
 
     /// Get the last user message in a session.
-    pub async fn last_user_message(&self, session_id: &str) -> Result<String> {
+    async fn last_user_message(&self, session_id: &str) -> Result<String> {
         let row: Option<(String,)> = sqlx::query_as(
             "SELECT content FROM messages
              WHERE session_id = ? AND role = 'user' AND content IS NOT NULL
@@ -644,7 +542,7 @@ impl Database {
     }
 
     /// Delete a session and all its messages/metadata atomically.
-    pub async fn delete_session(&self, session_id: &str) -> Result<bool> {
+    async fn delete_session(&self, session_id: &str) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
 
         sqlx::query("DELETE FROM messages WHERE session_id = ?")
@@ -679,7 +577,7 @@ impl Database {
     /// (as an `assistant` message) before the preserved tail.
     ///
     /// Returns the number of messages that were deleted/replaced.
-    pub async fn compact_session(
+    async fn compact_session(
         &self,
         session_id: &str,
         summary: &str,
@@ -758,7 +656,7 @@ impl Database {
 
     /// Check if the last message in a session is a tool call awaiting a response.
     /// Used to defer compaction during active tool execution.
-    pub async fn has_pending_tool_calls(&self, session_id: &str) -> Result<bool> {
+    async fn has_pending_tool_calls(&self, session_id: &str) -> Result<bool> {
         // A pending tool call exists when the last message has role='assistant'
         // with tool_calls set, and there's no subsequent tool response.
         let last_msg: Option<(String, Option<String>)> = sqlx::query_as(
@@ -773,102 +671,8 @@ impl Database {
         Ok(matches!(last_msg, Some((role, Some(_))) if role == "assistant"))
     }
 
-    /// Migrate data from a legacy per-project `.koda.db` into the centralized DB.
-    /// After successful migration, removes the legacy files.
-    async fn migrate_legacy(
-        pool: &SqlitePool,
-        legacy_path: &Path,
-        project_root: &Path,
-    ) -> Result<()> {
-        let legacy_url = format!("sqlite:{}?mode=ro", legacy_path.display());
-        let legacy_opts = SqliteConnectOptions::from_str(&legacy_url)?;
-        let legacy_pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(legacy_opts)
-            .await?;
-
-        let root = project_root.to_string_lossy().to_string();
-
-        // Migrate sessions
-        let sessions: Vec<(String, String, String)> =
-            sqlx::query_as("SELECT id, agent_name, created_at FROM sessions")
-                .fetch_all(&legacy_pool)
-                .await?;
-
-        for (id, agent_name, created_at) in &sessions {
-            let _ = sqlx::query(
-                "INSERT OR IGNORE INTO sessions (id, agent_name, created_at, project_root) VALUES (?, ?, ?, ?)",
-            )
-            .bind(id)
-            .bind(agent_name)
-            .bind(created_at)
-            .bind(&root)
-            .execute(pool)
-            .await;
-        }
-
-        // Migrate messages
-        let msg_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM messages")
-            .fetch_one(&legacy_pool)
-            .await?;
-
-        if msg_count.0 > 0 {
-            // Attach and copy in bulk
-            let attach_sql = format!("ATTACH DATABASE '{}' AS legacy", legacy_path.display());
-            sqlx::query(&attach_sql).execute(pool).await?;
-
-            sqlx::query(
-                "INSERT OR IGNORE INTO messages
-                 (id, session_id, role, content, tool_calls, tool_call_id,
-                  prompt_tokens, completion_tokens, created_at)
-                 SELECT id, session_id, role, content, tool_calls, tool_call_id,
-                        prompt_tokens, completion_tokens, created_at
-                 FROM legacy.messages",
-            )
-            .execute(pool)
-            .await?;
-
-            sqlx::query("DETACH DATABASE legacy").execute(pool).await?;
-        }
-
-        // Migrate session metadata if table exists
-        let has_metadata: Option<(String,)> = sqlx::query_as(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='session_metadata'",
-        )
-        .fetch_optional(&legacy_pool)
-        .await?;
-
-        if has_metadata.is_some() {
-            let attach_sql = format!("ATTACH DATABASE '{}' AS legacy", legacy_path.display());
-            sqlx::query(&attach_sql).execute(pool).await?;
-
-            let _ = sqlx::query(
-                "INSERT OR IGNORE INTO session_metadata (session_id, key, value, updated_at)
-                 SELECT session_id, key, value, updated_at FROM legacy.session_metadata",
-            )
-            .execute(pool)
-            .await;
-
-            sqlx::query("DETACH DATABASE legacy").execute(pool).await?;
-        }
-
-        legacy_pool.close().await;
-
-        // Remove legacy files
-        let _ = std::fs::remove_file(legacy_path);
-        let _ = std::fs::remove_file(format!("{}-wal", legacy_path.display()));
-        let _ = std::fs::remove_file(format!("{}-shm", legacy_path.display()));
-
-        tracing::info!(
-            "Migrated {} sessions from legacy DB {}",
-            sessions.len(),
-            legacy_path.display()
-        );
-        Ok(())
-    }
-
     /// Get a session metadata value by key.
-    pub async fn get_metadata(&self, session_id: &str, key: &str) -> Result<Option<String>> {
+    async fn get_metadata(&self, session_id: &str, key: &str) -> Result<Option<String>> {
         let row: Option<(String,)> =
             sqlx::query_as("SELECT value FROM session_metadata WHERE session_id = ? AND key = ?")
                 .bind(session_id)
@@ -879,7 +683,7 @@ impl Database {
     }
 
     /// Set a session metadata value (upsert).
-    pub async fn set_metadata(&self, session_id: &str, key: &str, value: &str) -> Result<()> {
+    async fn set_metadata(&self, session_id: &str, key: &str, value: &str) -> Result<()> {
         sqlx::query(
             "INSERT INTO session_metadata (session_id, key, value, updated_at)
              VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -894,19 +698,19 @@ impl Database {
     }
 
     /// Get the todo list for a session (convenience wrapper).
-    pub async fn get_todo(&self, session_id: &str) -> Result<Option<String>> {
+    async fn get_todo(&self, session_id: &str) -> Result<Option<String>> {
         self.get_metadata(session_id, "todo").await
     }
 
     /// Set the todo list for a session (convenience wrapper).
-    pub async fn set_todo(&self, session_id: &str, content: &str) -> Result<()> {
+    async fn set_todo(&self, session_id: &str, content: &str) -> Result<()> {
         self.set_metadata(session_id, "todo", content).await
     }
 
     // ── Phase transition flow log ────────────────────────────
 
     /// Record a phase transition in the flow log.
-    pub async fn insert_phase_transition(
+    async fn insert_phase_transition(
         &self,
         session_id: &str,
         iteration: u32,
@@ -932,7 +736,7 @@ impl Database {
     /// Load a compact phase flow summary for a session.
     ///
     /// Returns a string like: `Observe(3) → Plan(1) → Review(1) → Act(7)`
-    pub async fn phase_flow_summary(&self, session_id: &str) -> Result<String> {
+    async fn phase_flow_summary(&self, session_id: &str) -> Result<String> {
         let rows: Vec<PhaseTransitionRow> = sqlx::query_as(
             "SELECT to_phase, COUNT(*) as count \
              FROM phase_transitions \
@@ -980,16 +784,7 @@ struct PhaseTransitionRow {
 }
 
 /// Session metadata for listing.
-#[derive(Debug, Clone)]
-pub struct SessionInfo {
-    pub id: String,
-    pub agent_name: String,
-    pub created_at: String,
-    pub message_count: i64,
-    pub total_tokens: i64,
-}
-
-#[derive(sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 struct SessionInfoRow {
     id: String,
     agent_name: String,
@@ -1036,7 +831,7 @@ mod tests {
     async fn setup() -> (Database, TempDir) {
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("test.db");
-        let db = Database::open(&db_path, tmp.path()).await.unwrap();
+        let db = Database::open(&db_path).await.unwrap();
         (db, tmp)
     }
 
@@ -1415,12 +1210,12 @@ mod tests {
 
         // No messages — no crash
         let mut empty: Vec<Message> = vec![];
-        Database::fix_orphaned_tool_calls(&mut empty);
+        fix_orphaned_tool_calls(&mut empty);
         assert!(empty.is_empty());
 
         // Last message is user — no change
         let mut msgs = vec![msg("user", Some("hi"), None, None)];
-        Database::fix_orphaned_tool_calls(&mut msgs);
+        fix_orphaned_tool_calls(&mut msgs);
         assert!(msgs[0].tool_calls.is_none());
 
         // Last message is assistant with tool_calls, no tool result — stripped
@@ -1433,7 +1228,7 @@ mod tests {
                 None,
             ),
         ];
-        Database::fix_orphaned_tool_calls(&mut msgs);
+        fix_orphaned_tool_calls(&mut msgs);
         assert!(msgs[1].tool_calls.is_none());
 
         // Last message is tool result — assistant tool_calls preserved
@@ -1442,7 +1237,7 @@ mod tests {
             msg("assistant", None, Some(r#"[{"id":"t1"}]"#), None),
             msg("tool", Some("ok"), None, Some("t1")),
         ];
-        Database::fix_orphaned_tool_calls(&mut msgs);
+        fix_orphaned_tool_calls(&mut msgs);
         assert!(msgs[1].tool_calls.is_some());
     }
 
@@ -1589,7 +1384,7 @@ mod tests {
     #[tokio::test]
     async fn test_phase_transitions_insert_and_summary() {
         let dir = tempfile::tempdir().unwrap();
-        let db = Database::open(dir.path().join("test.db").as_path(), dir.path())
+        let db = Database::open(dir.path().join("test.db").as_path())
             .await
             .unwrap();
         let session = db.create_session("test", dir.path()).await.unwrap();
@@ -1617,7 +1412,7 @@ mod tests {
     #[tokio::test]
     async fn test_phase_flow_summary_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let db = Database::open(dir.path().join("test.db").as_path(), dir.path())
+        let db = Database::open(dir.path().join("test.db").as_path())
             .await
             .unwrap();
         let session = db.create_session("test", dir.path()).await.unwrap();

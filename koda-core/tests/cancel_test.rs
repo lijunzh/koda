@@ -7,6 +7,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use koda_core::persistence::Persistence;
 use koda_core::{
     config::{KodaConfig, ProviderType},
     db::{Database, Role},
@@ -58,7 +59,7 @@ impl LlmProvider for SlowProvider {
 #[tokio::test]
 async fn test_cancel_during_chat_stream_returns_immediately() {
     let tmp = tempfile::tempdir().unwrap();
-    let db = Database::init(tmp.path(), tmp.path()).await.unwrap();
+    let db = Database::init(tmp.path()).await.unwrap();
     let session_id = db.create_session("test-agent", tmp.path()).await.unwrap();
 
     // Insert a user message so inference has something to send
