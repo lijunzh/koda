@@ -341,6 +341,7 @@ fn render_tool_output(
 
     // Syntax highlighting for Read tool output
     let use_highlight = name == "Read" && file_ext.is_some();
+    let is_diff_tool = matches!(name, "Edit" | "Write" | "Delete");
     let mut highlighter = if use_highlight {
         Some(crate::highlight::CodeHighlighter::new(file_ext.unwrap()))
     } else {
@@ -357,6 +358,30 @@ fn render_tool_output(
                 let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
                 spans.extend(h.highlight_spans(line));
                 tui_output::emit_line(terminal, Line::from(spans));
+            } else if is_diff_tool && line.starts_with('+') {
+                tui_output::emit_line(
+                    terminal,
+                    Line::from(vec![
+                        Span::styled("  \u{2502} ", DIM),
+                        Span::styled(line.to_string(), Style::default().fg(Color::Green)),
+                    ]),
+                );
+            } else if is_diff_tool && line.starts_with('-') {
+                tui_output::emit_line(
+                    terminal,
+                    Line::from(vec![
+                        Span::styled("  \u{2502} ", DIM),
+                        Span::styled(line.to_string(), Style::default().fg(Color::Red)),
+                    ]),
+                );
+            } else if is_diff_tool && line.starts_with('@') {
+                tui_output::emit_line(
+                    terminal,
+                    Line::from(vec![
+                        Span::styled("  \u{2502} ", DIM),
+                        Span::styled(line.to_string(), Style::default().fg(Color::Cyan)),
+                    ]),
+                );
             } else {
                 tui_output::emit_line(
                     terminal,
