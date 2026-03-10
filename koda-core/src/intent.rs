@@ -98,8 +98,8 @@ pub fn classify_intent(msg: &str) -> IntentSuggestion {
     ) {
         return IntentSuggestion {
             intent: TaskIntent::Explore,
-            suggestion: Some("scout".into()),
-            reason: Some("The scout agent is optimized for codebase exploration.".into()),
+            suggestion: None,
+            reason: None,
         };
     }
 
@@ -184,7 +184,7 @@ mod tests {
     fn test_classify_exploration() {
         let r = classify_intent("find all uses of DatabaseConfig");
         assert_eq!(r.intent, TaskIntent::Explore);
-        assert_eq!(r.suggestion.as_deref(), Some("scout"));
+        assert!(r.suggestion.is_none());
     }
 
     #[test]
