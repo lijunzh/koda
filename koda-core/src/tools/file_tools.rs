@@ -169,7 +169,9 @@ pub async fn read_file(
             && cached_mtime == mtime
         {
             return Ok(format!(
-                "[File '{}' is unchanged since last read. Full content is already in your conversation history.]",
+                "[File '{}' is unchanged since last read. Full content is already in \
+                 your conversation history. To read a specific section, use the \
+                 start_line and num_lines parameters instead of re-reading the whole file.]",
                 path_str
             ));
         }
