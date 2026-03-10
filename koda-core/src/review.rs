@@ -171,8 +171,10 @@ impl std::fmt::Display for HumanDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GateReason {
-    /// `ToolEffect::Destructive` detected in plan.
+    /// `ToolEffect::Destructive` detected in plan → PeerReview.
     DestructiveFloor,
+    /// `ToolEffect::RemoteAction` detected in plan → at least SelfReview.
+    RemoteActionFloor,
     /// Plan has >3 steps or full progression expected.
     ComplexityThreshold,
     /// `InterventionObserver` recommended auto.
@@ -187,6 +189,7 @@ impl std::fmt::Display for GateReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DestructiveFloor => write!(f, "destructive_floor"),
+            Self::RemoteActionFloor => write!(f, "remote_action_floor"),
             Self::ComplexityThreshold => write!(f, "complexity_threshold"),
             Self::ObserverAuto => write!(f, "observer_auto"),
             Self::PeerReviewDisagreement => write!(f, "peer_review_disagreement"),
