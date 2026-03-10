@@ -37,6 +37,9 @@ pub struct TokenUsage {
     pub cache_creation_tokens: i64,
     /// Tokens used for reasoning/thinking (e.g. OpenAI reasoning_tokens, Anthropic thinking).
     pub thinking_tokens: i64,
+    /// Why the model stopped: "end_turn", "max_tokens", "stop_sequence", etc.
+    /// Empty string means unknown (provider didn't report it).
+    pub stop_reason: String,
 }
 
 /// The LLM's response: either text, tool calls, or both.
