@@ -6,7 +6,6 @@
 //! See #242 for the full design.
 
 use crate::intent::TaskIntent;
-use crate::model_tier::ModelTier;
 
 /// Review gate intensity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,98 +59,39 @@ impl TaskPhase {
         }
     }
 
-    /// Tier-aware prompt hint.
-    ///
-    /// Strong tier: cooperative — trusts model to reason.
-    /// Standard tier: directive — tells model what to produce.
-    /// Lite tier: mechanical — constrains model behavior.
-    pub fn prompt_hint(self, tier: ModelTier) -> &'static str {
-        match (self, tier) {
-            // Understanding
-            (Self::Understanding, ModelTier::Strong) => {
-                "[Phase: Understanding — explore before acting]"
-            }
-            (Self::Understanding, ModelTier::Standard) => {
+    /// Phase-appropriate prompt hint injected into the system prompt.
+    pub fn prompt_hint(self) -> &'static str {
+        match self {
+            Self::Understanding => {
                 "[Phase: Understanding — read relevant files before making changes]"
             }
-            (Self::Understanding, ModelTier::Lite) => {
-                "[Phase: Understanding — READ files first. Do NOT edit yet.]"
-            }
-
-            // Planning
-            (Self::Planning, ModelTier::Strong) => "[Phase: Planning — outline your approach]",
-            (Self::Planning, ModelTier::Standard) => {
-                "[Phase: Planning — list the steps you will take before executing]"
-            }
-            (Self::Planning, ModelTier::Lite) => {
-                "[Phase: Planning — LIST your steps. Do NOT execute yet.]"
-            }
-
-            // Reviewing
-            (Self::Reviewing, ModelTier::Strong) => {
-                "[Phase: Reviewing — self-check feasibility, completeness, risk]"
-            }
-            (Self::Reviewing, ModelTier::Standard) => {
-                "[Phase: Reviewing — list what could go wrong. Stop if unclear.]"
-            }
-            (Self::Reviewing, ModelTier::Lite) => {
-                "[Phase: Reviewing — STOP. Check your plan. Do NOT proceed if unsure.]"
-            }
-
-            // Executing
-            (Self::Executing, ModelTier::Strong) => "[Phase: Executing — apply changes carefully]",
-            (Self::Executing, ModelTier::Standard) => {
-                "[Phase: Executing — make changes one file at a time]"
-            }
-            (Self::Executing, ModelTier::Lite) => {
-                "[Phase: Executing — edit ONE file at a time. Verify after each edit.]"
-            }
-
-            // Verifying
-            (Self::Verifying, ModelTier::Strong) => "[Phase: Verifying — check results, run tests]",
-            (Self::Verifying, ModelTier::Standard) => {
-                "[Phase: Verifying — run tests and check for errors]"
-            }
-            (Self::Verifying, ModelTier::Lite) => {
-                "[Phase: Verifying — RUN tests. Report pass/fail.]"
-            }
-
-            // Reporting
-            (Self::Reporting, ModelTier::Strong) => "[Phase: Reporting — summarize what was done]",
-            (Self::Reporting, ModelTier::Standard) => {
-                "[Phase: Reporting — summarize changes and results]"
-            }
-            (Self::Reporting, ModelTier::Lite) => {
-                "[Phase: Reporting — LIST what you changed and the outcome.]"
-            }
+            Self::Planning => "[Phase: Planning — list the steps you will take before executing]",
+            Self::Reviewing => "[Phase: Reviewing — list what could go wrong. Stop if unclear.]",
+            Self::Executing => "[Phase: Executing — make changes one file at a time]",
+            Self::Verifying => "[Phase: Verifying — run tests and check for errors]",
+            Self::Reporting => "[Phase: Reporting — summarize changes and results]",
         }
     }
 
     /// Review-phase prompt hint with depth scaling.
     ///
     /// Overrides the generic Reviewing hint when `ReviewDepth` is known.
-    pub fn review_hint(self, tier: ModelTier, depth: ReviewDepth) -> &'static str {
+    pub fn review_hint(self, depth: ReviewDepth) -> &'static str {
         if self != Self::Reviewing {
-            return self.prompt_hint(tier);
+            return self.prompt_hint();
         }
-        match (depth, tier) {
+        match depth {
             // FastPath: brief confirmation, skip detailed checklist
-            (ReviewDepth::FastPath, _) => {
+            ReviewDepth::FastPath => {
                 "[Phase: Reviewing/fast — plan looks straightforward. \
                  Quick sanity check, then proceed.]"
             }
             // Standard: 4-dimension checklist
-            (ReviewDepth::Standard, ModelTier::Strong) => {
-                "[Phase: Reviewing — self-check feasibility, completeness, risk]"
-            }
-            (ReviewDepth::Standard, ModelTier::Standard) => {
+            ReviewDepth::Standard => {
                 "[Phase: Reviewing — list what could go wrong. Stop if unclear.]"
             }
-            (ReviewDepth::Standard, ModelTier::Lite) => {
-                "[Phase: Reviewing — STOP. Check your plan. Do NOT proceed if unsure.]"
-            }
             // Deep: full checklist + user approval
-            (ReviewDepth::Deep, _) => {
+            ReviewDepth::Deep => {
                 "[Phase: Reviewing/deep — full self-check before proceeding:\n\
                  \u{2705} Feasibility: Can each step be done with available tools?\n\
                  \u{2705} Completeness: Does the plan cover the full request?\n\
@@ -653,15 +593,6 @@ mod tests {
     // ── TaskPhase basic tests ─────────────────────────────────
 
     #[test]
-    fn test_prompt_hint_varies_by_tier() {
-        let hint_strong = TaskPhase::Reviewing.prompt_hint(ModelTier::Strong);
-        let hint_lite = TaskPhase::Reviewing.prompt_hint(ModelTier::Lite);
-        assert!(hint_strong.contains("feasibility"));
-        assert!(hint_lite.contains("STOP"));
-        assert_ne!(hint_strong, hint_lite);
-    }
-
-    #[test]
     fn test_prompt_hint_all_phases_have_content() {
         for phase in [
             TaskPhase::Understanding,
@@ -671,14 +602,9 @@ mod tests {
             TaskPhase::Verifying,
             TaskPhase::Reporting,
         ] {
-            for tier in [ModelTier::Strong, ModelTier::Standard, ModelTier::Lite] {
-                let hint = phase.prompt_hint(tier);
-                assert!(!hint.is_empty(), "{phase:?}/{tier:?} has empty hint");
-                assert!(
-                    hint.contains("Phase:"),
-                    "{phase:?}/{tier:?} missing Phase: prefix"
-                );
-            }
+            let hint = phase.prompt_hint();
+            assert!(!hint.is_empty(), "{phase:?} has empty hint");
+            assert!(hint.contains("Phase:"), "{phase:?} missing Phase: prefix");
         }
     }
 
@@ -1142,14 +1068,14 @@ mod tests {
 
     #[test]
     fn test_review_hint_fast_path() {
-        let hint = TaskPhase::Reviewing.review_hint(ModelTier::Standard, ReviewDepth::FastPath);
+        let hint = TaskPhase::Reviewing.review_hint(ReviewDepth::FastPath);
         assert!(hint.contains("fast"));
         assert!(hint.contains("straightforward"));
     }
 
     #[test]
     fn test_review_hint_deep() {
-        let hint = TaskPhase::Reviewing.review_hint(ModelTier::Standard, ReviewDepth::Deep);
+        let hint = TaskPhase::Reviewing.review_hint(ReviewDepth::Deep);
         assert!(hint.contains("Feasibility"));
         assert!(hint.contains("Risk"));
         assert!(hint.contains("user"));
@@ -1157,8 +1083,7 @@ mod tests {
 
     #[test]
     fn test_review_hint_non_reviewing_falls_back() {
-        // Non-Reviewing phase should fall back to normal prompt_hint
-        let hint = TaskPhase::Executing.review_hint(ModelTier::Standard, ReviewDepth::Deep);
+        let hint = TaskPhase::Executing.review_hint(ReviewDepth::Deep);
         assert!(hint.contains("Executing"));
     }
 }
