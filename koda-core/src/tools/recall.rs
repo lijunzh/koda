@@ -4,6 +4,7 @@
 //! context that was dropped from the sliding window.
 
 use crate::db::Database;
+use crate::persistence::Persistence;
 use crate::providers::ToolDefinition;
 use serde_json::json;
 

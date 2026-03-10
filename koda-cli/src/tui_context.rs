@@ -26,6 +26,7 @@ use koda_core::approval::{self, ApprovalMode};
 use koda_core::config::KodaConfig;
 use koda_core::db::Role;
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent};
+use koda_core::persistence::Persistence;
 use koda_core::providers::LlmProvider;
 use koda_core::session::KodaSession;
 use ratatui::{

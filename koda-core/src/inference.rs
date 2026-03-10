@@ -12,6 +12,7 @@ use crate::inference_helpers::{
     is_context_overflow_error, is_rate_limit_error, rate_limit_backoff,
 };
 use crate::loop_guard::LoopDetector;
+use crate::persistence::Persistence;
 use crate::providers::{ChatMessage, ImageData, LlmProvider, StreamChunk, ToolCall};
 use crate::settings::Settings;
 use crate::task_phase::{PhaseInfo, PhaseTracker, ToolType, TurnSignal};

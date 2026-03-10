@@ -5,6 +5,7 @@ use koda_core::agent::KodaAgent;
 use koda_core::approval::ApprovalMode;
 use koda_core::config::KodaConfig;
 use koda_core::db::{Database, Role};
+use koda_core::persistence::Persistence;
 use koda_core::session::KodaSession;
 
 use anyhow::Result;

@@ -9,6 +9,7 @@ use crate::db::{Database, Role};
 use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
 use crate::loop_guard;
 use crate::memory;
+use crate::persistence::Persistence;
 use crate::preview;
 use crate::prompt::build_system_prompt;
 use crate::providers::{ChatMessage, ToolCall};
