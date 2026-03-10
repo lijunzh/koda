@@ -146,8 +146,14 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let progress = crate::progress::get_progress_summary(db, session_id)
             .await
             .unwrap_or_default();
+        let flow_summary = db.phase_flow_summary(session_id).await.unwrap_or_default();
+        let flow_line = if flow_summary.is_empty() {
+            String::new()
+        } else {
+            format!("\n[Flow: {flow_summary}]")
+        };
         let phase_prompt = format!(
-            "{base_system_prompt}\n\n{}{progress}",
+            "{base_system_prompt}\n\n{}{progress}{flow_line}",
             phase.prompt_hint(config.model_tier)
         );
         let system_message = ChatMessage::text("system", &phase_prompt);
@@ -509,6 +515,17 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 // TODO(#320 Phase 6): record_override when plan approval (#217)
                 // gates are wired — requires approval results to flow back.
                 intervention_observer.record_auto(transition.to);
+
+                // Persist to flow log (survives compaction)
+                let _ = db
+                    .insert_phase_transition(
+                        session_id,
+                        iteration,
+                        &transition.from.to_string(),
+                        &transition.to.to_string(),
+                        Some(transition.trigger),
+                    )
+                    .await;
 
                 // Log phase transition as a Role::Phase message
                 let _ = db
