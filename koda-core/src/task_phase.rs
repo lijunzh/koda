@@ -8,22 +8,36 @@
 use crate::intent::TaskIntent;
 
 /// Review gate intensity.
+///
+/// Each tier adds one isolation dimension over the previous:
+/// - `FastPath`: no review call — let the model's internal reasoning handle it.
+/// - `SelfReview`: same model, **fresh context** — breaks self-confirmation bias
+///   by stripping the reasoning chain that produced the plan.
+/// - `PeerReview`: **different model**, fresh context — genuine adversarial review
+///   with different training biases and blind spots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewDepth {
-    /// ≤3 steps, familiar tools → brief confirmation.
+    /// Skip the review phase entirely. The model's extended thinking
+    /// (if available) serves as the implicit review. For simple tasks
+    /// with small action budgets and familiar tools.
     FastPath,
-    /// 4-dimension checklist (feasibility, completeness, risk, resources).
-    Standard,
-    /// Full checklist + present to user for approval.
-    Deep,
+    /// Same model, fresh context window. Koda serializes the plan,
+    /// strips conversation history, and sends only: system prompt +
+    /// original task + plan artifact + file summaries. The reviewer
+    /// sees the plan as an external artifact. For complex tasks.
+    SelfReview,
+    /// Different model, fresh context window. The plan is documented
+    /// as a multi-step artifact and reviewed independently by a
+    /// separate model/provider. For destructive or irreversible operations.
+    PeerReview,
 }
 
 impl std::fmt::Display for ReviewDepth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::FastPath => write!(f, "fast_path"),
-            Self::Standard => write!(f, "standard"),
-            Self::Deep => write!(f, "deep"),
+            Self::SelfReview => write!(f, "self_review"),
+            Self::PeerReview => write!(f, "peer_review"),
         }
     }
 }
@@ -81,23 +95,31 @@ impl TaskPhase {
             return self.prompt_hint();
         }
         match depth {
-            // FastPath: brief confirmation, skip detailed checklist
+            // FastPath: no separate review — let extended thinking handle it
             ReviewDepth::FastPath => {
                 "[Phase: Reviewing/fast — plan looks straightforward. \
                  Quick sanity check, then proceed.]"
             }
-            // Standard: 4-dimension checklist
-            ReviewDepth::Standard => {
-                "[Phase: Reviewing — list what could go wrong. Stop if unclear.]"
-            }
-            // Deep: full checklist + user approval
-            ReviewDepth::Deep => {
-                "[Phase: Reviewing/deep — full self-check before proceeding:\n\
+            // SelfReview: same model reviews in a fresh context window
+            ReviewDepth::SelfReview => {
+                "[Phase: Reviewing/self-review — review this plan as an independent artifact.\n\
+                 You did NOT produce this plan. Evaluate it critically:\n\
                  \u{2705} Feasibility: Can each step be done with available tools?\n\
                  \u{2705} Completeness: Does the plan cover the full request?\n\
                  \u{2705} Risk: What could go wrong? Is there a rollback?\n\
                  \u{2705} Resources: Which files are affected? Is scope reasonable?\n\
-                 Present this plan to the user before proceeding.]"
+                 If any dimension fails, reject with specific feedback.]"
+            }
+            // PeerReview: different model reviews in a fresh context window
+            ReviewDepth::PeerReview => {
+                "[Phase: Reviewing/peer-review — you are an independent reviewer.\n\
+                 A different agent produced the plan below. Your job is adversarial:\n\
+                 \u{2705} Feasibility: Can each step be done with available tools?\n\
+                 \u{2705} Completeness: Does the plan cover the full request?\n\
+                 \u{2705} Risk: What could go wrong? Is there a rollback?\n\
+                 \u{2705} Resources: Which files are affected? Is scope reasonable?\n\
+                 \u{2705} Alternatives: Is there a simpler approach the planner missed?\n\
+                 Approve, reject with feedback, or suggest revisions.]"
             }
         }
     }
@@ -336,8 +358,8 @@ impl PhaseTracker {
     /// Priority:
     /// 1. InterventionObserver recommends auto → FastPath
     /// 2. Simple task (Understanding → Executing shortcut) → FastPath
-    /// 3. Full progression expected (Complex/Review/TestGen intent) → Deep
-    /// 4. Default → Standard
+    /// 3. Full progression expected (Complex/Review/TestGen intent) → PeerReview
+    /// 4. Default → SelfReview
     pub fn select_review_depth(
         &self,
         observer: &crate::intervention_observer::InterventionObserver,
@@ -347,9 +369,9 @@ impl PhaseTracker {
             return ReviewDepth::FastPath;
         }
 
-        // Complex tasks get deep review
+        // Complex tasks get peer review (different model, fresh context)
         if self.expect_full_progression {
-            return ReviewDepth::Deep;
+            return ReviewDepth::PeerReview;
         }
 
         // Simple task shortcut was taken (jumped from Understanding to Executing)
@@ -357,7 +379,7 @@ impl PhaseTracker {
             return ReviewDepth::FastPath;
         }
 
-        ReviewDepth::Standard
+        ReviewDepth::SelfReview
     }
 
     /// Force a phase demotion (escalation).
@@ -1041,18 +1063,18 @@ mod tests {
     }
 
     #[test]
-    fn test_review_depth_default_is_standard() {
+    fn test_review_depth_default_is_self_review() {
         let tracker = PhaseTracker::new(&TaskIntent::Modify);
         let obs = crate::intervention_observer::InterventionObserver::new();
-        // Modify intent, no observer data → Standard
-        assert_eq!(tracker.select_review_depth(&obs), ReviewDepth::Standard);
+        // Modify intent, no observer data → SelfReview
+        assert_eq!(tracker.select_review_depth(&obs), ReviewDepth::SelfReview);
     }
 
     #[test]
-    fn test_review_depth_complex_is_deep() {
+    fn test_review_depth_complex_is_peer_review() {
         let tracker = PhaseTracker::new(&TaskIntent::Complex);
         let obs = crate::intervention_observer::InterventionObserver::new();
-        assert_eq!(tracker.select_review_depth(&obs), ReviewDepth::Deep);
+        assert_eq!(tracker.select_review_depth(&obs), ReviewDepth::PeerReview);
     }
 
     #[test]
@@ -1074,16 +1096,24 @@ mod tests {
     }
 
     #[test]
-    fn test_review_hint_deep() {
-        let hint = TaskPhase::Reviewing.review_hint(ReviewDepth::Deep);
+    fn test_review_hint_self_review() {
+        let hint = TaskPhase::Reviewing.review_hint(ReviewDepth::SelfReview);
+        assert!(hint.contains("self-review"));
         assert!(hint.contains("Feasibility"));
-        assert!(hint.contains("Risk"));
-        assert!(hint.contains("user"));
+        assert!(hint.contains("did NOT produce"));
+    }
+
+    #[test]
+    fn test_review_hint_peer_review() {
+        let hint = TaskPhase::Reviewing.review_hint(ReviewDepth::PeerReview);
+        assert!(hint.contains("peer-review"));
+        assert!(hint.contains("independent reviewer"));
+        assert!(hint.contains("Alternatives"));
     }
 
     #[test]
     fn test_review_hint_non_reviewing_falls_back() {
-        let hint = TaskPhase::Executing.review_hint(ReviewDepth::Deep);
+        let hint = TaskPhase::Executing.review_hint(ReviewDepth::PeerReview);
         assert!(hint.contains("Executing"));
     }
 }
