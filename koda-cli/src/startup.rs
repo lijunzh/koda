@@ -79,6 +79,8 @@ pub fn print_banner(config: &KodaConfig, recent_activity: &[String]) {
         Span::styled("mode", DIM),
         Span::styled("  Ctrl+C ", WARM_ACCENT),
         Span::styled("cancel", DIM),
+        Span::styled("  Ctrl+D ", WARM_ACCENT),
+        Span::styled("quit", DIM),
     ]));
     tui_output::write_blank();
 }
