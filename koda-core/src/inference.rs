@@ -130,6 +130,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     };
     let mut phase_tracker = PhaseTracker::new(&intent);
     let mut re_plan_count: u32 = 0;
+    let mut cached_reviewer: Option<(crate::config::ProviderType, String)> = None;
 
     loop {
         if iteration >= hard_cap {
@@ -656,9 +657,45 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                         };
 
                         // Run review (fresh context, reviewer-only tools)
-                        let review_result =
-                            crate::review::run_review(&plan, &original_prompt, provider, depth)
-                                .await;
+                        let review_result = if depth == crate::task_phase::ReviewDepth::PeerReview {
+                            // PeerReview: different model, fallthrough on model-not-found
+                            match crate::review::run_peer_review(
+                                &plan,
+                                &original_prompt,
+                                &config.provider_type,
+                                &mut cached_reviewer,
+                            )
+                            .await
+                            {
+                                Some(result) => result,
+                                None => {
+                                    // No cross-provider available — downgrade to SelfReview
+                                    sink.emit(EngineEvent::Info {
+                                        message: "No cross-provider key available. \
+                                            Downgrading PeerReview → SelfReview."
+                                            .into(),
+                                    });
+                                    crate::review::run_review(
+                                        &plan,
+                                        &original_prompt,
+                                        provider,
+                                        crate::task_phase::ReviewDepth::SelfReview,
+                                        &config.model,
+                                    )
+                                    .await
+                                }
+                            }
+                        } else {
+                            // SelfReview: same provider, fresh context
+                            crate::review::run_review(
+                                &plan,
+                                &original_prompt,
+                                provider,
+                                depth,
+                                &config.model,
+                            )
+                            .await
+                        };
 
                         match review_result {
                             Ok(result) => {
@@ -674,17 +711,21 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                                     .await
                                     .unwrap_or(0);
 
+                                let reviewer_model_name = cached_reviewer
+                                    .as_ref()
+                                    .map(|(_, m)| m.as_str())
+                                    .unwrap_or(&config.model);
                                 let plan_json = serde_json::to_string(&plan).unwrap_or_default();
                                 let _ = db
                                     .insert_review_record(
                                         transition_id,
                                         &depth.to_string(),
-                                        &config.model,
+                                        reviewer_model_name,
                                         &config.model,
                                         &plan_json,
                                         &result.verdict.to_string(),
                                         Some(&result.reasoning),
-                                        None, // human_decision (Phase 3)
+                                        None, // human_decision (future: user arbitration)
                                         &gate_reason.to_string(),
                                     )
                                     .await;
