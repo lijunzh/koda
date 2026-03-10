@@ -49,6 +49,33 @@ pub struct InferenceContext<'a> {
 }
 
 /// Run inference, executing tool calls until the LLM produces a text response.
+/// Format a plan artifact for user-visible display.
+///
+/// Shows the goal, each step with its effect tag, and the planner/review model.
+fn format_plan_detail(
+    plan: &crate::review::PlanArtifact,
+    planner_model: &str,
+    depth: crate::task_phase::ReviewDepth,
+) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "\u{1f4cb} Plan submitted by {planner_model} (review: {depth})"
+    );
+    let _ = writeln!(out, "  Goal: {}", plan.goal);
+    for (i, step) in plan.steps.iter().enumerate() {
+        let effect_tag = match step.effect {
+            crate::tools::ToolEffect::ReadOnly => "read",
+            crate::tools::ToolEffect::RemoteAction => "remote",
+            crate::tools::ToolEffect::LocalMutation => "edit",
+            crate::tools::ToolEffect::Destructive => "destructive",
+        };
+        let _ = writeln!(out, "  {}. [{}] {}", i + 1, effect_tag, step.description);
+    }
+    out
+}
+
 pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     let InferenceContext {
         project_root,
@@ -542,9 +569,23 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             };
             if let Some(transition) = phase_tracker.advance(&signal) {
                 // Record auto transition (no human intervention at this gate)
-                // TODO(#320 Phase 6): record_override when plan approval (#217)
-                // gates are wired — requires approval results to flow back.
                 intervention_observer.record_auto(transition.to);
+
+                // Show phase transition to user
+                let phase_icon = match transition.to {
+                    crate::task_phase::TaskPhase::Understanding => "🔍",
+                    crate::task_phase::TaskPhase::Planning => "📝",
+                    crate::task_phase::TaskPhase::Reviewing => "🔎",
+                    crate::task_phase::TaskPhase::Executing => "⚙️",
+                    crate::task_phase::TaskPhase::Verifying => "✔️",
+                    crate::task_phase::TaskPhase::Reporting => "📋",
+                };
+                sink.emit(EngineEvent::Info {
+                    message: format!(
+                        "{phase_icon} {} → {} ({}) — model: {}",
+                        transition.from, transition.to, transition.trigger, config.model,
+                    ),
+                });
 
                 // Persist to flow log (survives compaction)
                 let _ = db
@@ -590,6 +631,15 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                     && let Some(transition) = phase_tracker.demote_to_understanding("escalation")
                 {
                     intervention_observer.record_auto(transition.to);
+
+                    // Show escalation to user
+                    sink.emit(EngineEvent::Warn {
+                        message: format!(
+                            "⚠️ Escalation: {} → {} — {reason}",
+                            transition.from, transition.to,
+                        ),
+                    });
+
                     let _ = db
                         .insert_phase_transition(
                             session_id,
@@ -644,12 +694,10 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                         base_depth
                     };
 
+                    // Show the full plan so the user can judge quality
+                    let plan_detail = format_plan_detail(&plan, &config.model, depth);
                     sink.emit(EngineEvent::Info {
-                        message: format!(
-                            "Plan submitted: {} ({} steps) — review: {depth}",
-                            plan.goal,
-                            plan.steps.len()
-                        ),
+                        message: plan_detail,
                     });
 
                     if depth != crate::task_phase::ReviewDepth::FastPath {
@@ -661,6 +709,21 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                         } else {
                             crate::review::GateReason::ComplexityThreshold
                         };
+
+                        // Show who is reviewing
+                        let reviewer_label = if depth == crate::task_phase::ReviewDepth::PeerReview
+                        {
+                            cached_reviewer
+                                .as_ref()
+                                .map(|(_, m)| m.as_str())
+                                .unwrap_or("cross-provider")
+                                .to_string()
+                        } else {
+                            config.model.clone()
+                        };
+                        sink.emit(EngineEvent::Info {
+                            message: format!("🔍 Reviewing ({depth} by {reviewer_label})..."),
+                        });
 
                         // Run review (fresh context, reviewer-only tools)
                         let review_result = if depth == crate::task_phase::ReviewDepth::PeerReview {
@@ -740,7 +803,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                                     crate::review::ReviewVerdict::Approved => {
                                         sink.emit(EngineEvent::Info {
                                             message: format!(
-                                                "✅ Review passed: {}",
+                                                "✅ Review passed ({reviewer_label}): {}",
                                                 result.reasoning
                                             ),
                                         });
@@ -758,32 +821,52 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                                             });
                                             phase_tracker.approve_plan();
                                         } else {
-                                            // Append rejection feedback and re-enter Planning
-                                            let feedback = format!(
-                                                "Plan review ({depth}): {}\nReason: {}\n{}",
+                                            // Build structured rejection feedback
+                                            let suggested = result
+                                                .suggested_changes
+                                                .as_ref()
+                                                .map(|c| {
+                                                    c.iter()
+                                                        .map(|s| format!("  - {s}"))
+                                                        .collect::<Vec<_>>()
+                                                        .join("\n")
+                                                })
+                                                .unwrap_or_default();
+
+                                            // Show full rejection detail to user
+                                            let user_msg = format!(
+                                                "\u{274c} Review rejected (attempt {re_plan_count}/2)\n\
+                                                 Reviewer: {reviewer_label}\n\
+                                                 Verdict: {}\n\
+                                                 Reasoning: {}\n\
+                                                 {}",
                                                 result.verdict,
                                                 result.reasoning,
-                                                result
-                                                    .suggested_changes
-                                                    .as_ref()
-                                                    .map(|c| format!(
-                                                        "Suggested changes:\n{}",
-                                                        c.iter()
-                                                            .map(|s| format!("- {s}"))
-                                                            .collect::<Vec<_>>()
-                                                            .join("\n")
-                                                    ))
-                                                    .unwrap_or_default()
+                                                if suggested.is_empty() {
+                                                    String::new()
+                                                } else {
+                                                    format!("Suggested changes:\n{suggested}")
+                                                }
                                             );
-                                            sink.emit(EngineEvent::Info {
-                                                message: format!(
-                                                    "❌ Review rejected (attempt {re_plan_count}/2): {}",
-                                                    result.reasoning
-                                                ),
-                                            });
+                                            sink.emit(EngineEvent::Info { message: user_msg });
 
-                                            // Insert feedback as assistant message
-                                            // so the planner sees it on next iteration
+                                            // Feedback for the planner — explicit re-plan instruction
+                                            let feedback = format!(
+                                                "Your plan was REJECTED by the reviewer ({depth}).\n\
+                                                 Reason: {}\n\
+                                                 {}\n\n\
+                                                 You MUST revise your plan and call `submit_plan` again \
+                                               with an improved plan. Do NOT respond with text — \
+                                                 call the submit_plan tool.",
+                                                result.reasoning,
+                                                if suggested.is_empty() {
+                                                    String::new()
+                                                } else {
+                                                    format!("Suggested changes:\n{suggested}")
+                                                }
+                                            );
+
+                                            // Insert feedback so the planner sees it
                                             let _ = db
                                                 .insert_message(
                                                     session_id,
@@ -795,9 +878,11 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                                                 )
                                                 .await;
 
-                                            // Demote back to Planning
-                                            let _ = phase_tracker
-                                                .demote_to_understanding("review_rejected");
+                                            // Stay in Planning phase (don't demote
+                                            // to Understanding — the planner already
+                                            // understands the task, it just needs to
+                                            // revise the plan)
+                                            phase_tracker.invalidate_plan();
 
                                             // Skip normal tool execution, re-enter loop
                                             continue;

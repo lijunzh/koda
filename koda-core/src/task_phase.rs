@@ -354,6 +354,15 @@ impl PhaseTracker {
         self.plan_approved = true;
     }
 
+    /// Invalidate the current plan (e.g., after review rejection).
+    ///
+    /// Keeps the phase at Planning so the planner can revise and resubmit.
+    /// Does NOT demote to Understanding — the planner already understands
+    /// the task, it just needs to fix the plan.
+    pub fn invalidate_plan(&mut self) {
+        self.plan_approved = false;
+    }
+
     pub fn review_result(&self) -> Option<ReviewResult> {
         self.review_result
     }
