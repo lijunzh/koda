@@ -81,6 +81,7 @@ impl Env {
             cancel: CancellationToken::new(),
             cmd_rx: &mut cmd_rx,
             skip_probe: true,
+            original_prompt: String::new(),
         })
         .await;
 

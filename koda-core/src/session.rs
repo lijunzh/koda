@@ -103,6 +103,21 @@ impl KodaSession {
             cancel: self.cancel.clone(),
             cmd_rx,
             skip_probe: self.skip_probe,
+            original_prompt: {
+                // Extract the most recent user message as the original prompt
+                let ctx_size = config.model_settings.max_context_tokens;
+                let history = self
+                    .db
+                    .load_context(&self.id, ctx_size)
+                    .await
+                    .unwrap_or_default();
+                history
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == crate::db::Role::User)
+                    .and_then(|m| m.content.clone())
+                    .unwrap_or_default()
+            },
         })
         .await;
 
