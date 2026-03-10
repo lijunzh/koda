@@ -922,7 +922,25 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         }
 
         // If no tool calls, we already streamed the response — done
+        // UNLESS we're waiting for a re-plan (rejected plan, re_plan_count > 0)
         if tool_calls.is_empty() {
+            // Re-plan guard: if a plan was rejected and the model responded
+            // with text instead of calling submit_plan, nudge it to try again.
+            if re_plan_count > 0 && !phase_tracker.plan_approved() && re_plan_count <= 2 {
+                sink.emit(EngineEvent::Info {
+                    message: format!(
+                        "⚠️ Model responded with text instead of submit_plan \
+                         (re-plan attempt {re_plan_count}/2). Nudging..."
+                    ),
+                });
+                let nudge = "You must revise and resubmit your plan by calling \
+                    the `submit_plan` tool. Do NOT respond with text — call the tool.";
+                let _ = db
+                    .insert_message(session_id, &Role::Phase, Some(nudge), None, None, None)
+                    .await;
+                continue;
+            }
+
             if made_tool_calls && full_text.trim().is_empty() {
                 sink.emit(EngineEvent::Warn {
                     message: "Model produced an empty response after tool use — it may have given up mid-task. Try rephrasing or switching to a more capable model.".into(),
