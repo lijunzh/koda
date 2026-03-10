@@ -43,6 +43,7 @@ pub mod settings;
 pub mod skills;
 pub mod sub_agent_cache;
 pub mod task_phase;
+pub mod task_signature;
 pub mod tier_observer;
 pub mod tool_dispatch;
 pub mod tools;
