@@ -161,6 +161,20 @@ pub trait Persistence: Send + Sync {
         from_phase: &str,
         to_phase: &str,
         trigger: Option<&str>,
+    ) -> Result<i64>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_review_record(
+        &self,
+        phase_transition_id: i64,
+        review_depth: &str,
+        reviewer_model: &str,
+        planner_model: &str,
+        plan_summary: &str,
+        reviewer_verdict: &str,
+        reviewer_reasoning: Option<&str>,
+        human_decision: Option<&str>,
+        gate_reason: &str,
     ) -> Result<()>;
 
     async fn phase_flow_summary(&self, session_id: &str) -> Result<String>;

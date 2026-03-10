@@ -37,6 +37,7 @@ pub mod preview;
 pub mod progress;
 pub mod prompt;
 pub mod providers;
+pub mod review;
 pub mod runtime_env;
 pub mod session;
 pub mod settings;

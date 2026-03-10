@@ -79,7 +79,11 @@ impl TaskPhase {
             Self::Understanding => {
                 "[Phase: Understanding — read relevant files before making changes]"
             }
-            Self::Planning => "[Phase: Planning — list the steps you will take before executing]",
+            Self::Planning => {
+                "[Phase: Planning — list the steps you will take. \
+                 When your plan is complete, call SubmitPlan with your goal and steps. \
+                 Do not begin execution until the plan has been reviewed.]"
+            }
             Self::Reviewing => "[Phase: Reviewing — list what could go wrong. Stop if unclear.]",
             Self::Executing => "[Phase: Executing — make changes one file at a time]",
             Self::Verifying => "[Phase: Verifying — run tests and check for errors]",
@@ -343,6 +347,11 @@ impl PhaseTracker {
 
     pub fn plan_approved(&self) -> bool {
         self.plan_approved
+    }
+
+    /// Mark the plan as approved (review passed or FastPath).
+    pub fn approve_plan(&mut self) {
+        self.plan_approved = true;
     }
 
     pub fn review_result(&self) -> Option<ReviewResult> {
