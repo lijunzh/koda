@@ -31,6 +31,7 @@ pub struct KodaSession {
     pub mode: ApprovalMode,
     pub settings: Settings,
     pub cancel: CancellationToken,
+    pub skip_probe: bool,
 }
 
 impl KodaSession {
@@ -54,6 +55,7 @@ impl KodaSession {
             mode,
             settings,
             cancel: CancellationToken::new(),
+            skip_probe: false,
         }
     }
 
@@ -100,6 +102,7 @@ impl KodaSession {
             sink,
             cancel: self.cancel.clone(),
             cmd_rx,
+            skip_probe: self.skip_probe,
         })
         .await;
 

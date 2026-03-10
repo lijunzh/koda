@@ -269,13 +269,14 @@ async fn handle_new_session(
     let (cmd_tx, _cmd_rx) = mpsc::channel::<EngineCommand>(32);
     let cancel = CancellationToken::new();
 
-    let session = KodaSession::new(
+    let mut session = KodaSession::new(
         session_id.clone(),
         state.agent.clone(),
         state.db.clone(),
         &state.config,
         ApprovalMode::Auto,
     );
+    session.skip_probe = true; // Server mode — probe at connection, not per-session
 
     state.active = Some(ActiveSession {
         session,

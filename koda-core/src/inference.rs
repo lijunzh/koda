@@ -43,6 +43,7 @@ pub struct InferenceContext<'a> {
     pub sink: &'a dyn crate::engine::EngineSink,
     pub cancel: CancellationToken,
     pub cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
+    pub skip_probe: bool,
 }
 
 /// Run inference, executing tool calls until the LLM produces a text response.
@@ -62,7 +63,16 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         sink,
         cancel,
         cmd_rx,
+        skip_probe,
     } = ctx;
+
+    // Capability probe: verify the model can produce structured output.
+    // Cached per model name — only runs once per model, ever.
+    if !skip_probe {
+        crate::model_probe::ensure_capable(&config.model, provider, &config.model_settings, sink)
+            .await?;
+    }
+
     // Use the same formula as estimate_tokens (chars/CHARS_PER_TOKEN + overhead)
     // to keep the budget calculation consistent with re-estimation later.
     let system_tokens = (system_prompt.len() as f64 / crate::inference_helpers::CHARS_PER_TOKEN)
@@ -75,11 +85,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     let mut made_tool_calls = false;
     let mut loop_detector = LoopDetector::new();
     let sub_agent_cache = crate::sub_agent_cache::SubAgentCache::new();
-    let mut tier_observer = crate::tier_observer::TierObserver::new(
-        config.model_tier,
-        // Tier is explicitly set if it came from agent config (not auto-detected)
-        false,
-    );
     // Intervention observer: learns human override patterns at phase gates.
     // Auto-saves on drop (ObserverGuard), so all exit paths are covered.
     let mut intervention_observer =
@@ -170,9 +175,9 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             .unwrap_or_default();
         let phase_hint = if phase == crate::task_phase::TaskPhase::Reviewing {
             let depth = phase_tracker.select_review_depth(&intervention_observer);
-            phase.review_hint(config.model_tier, depth)
+            phase.review_hint(depth)
         } else {
-            phase.prompt_hint(config.model_tier)
+            phase.prompt_hint()
         };
         let phase_prompt =
             format!("{base_system_prompt}\n\n{phase_hint}{progress}{flow_line}{git_line}",);
@@ -665,10 +670,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         // Execute tool calls — parallelize when possible
         // (Lite tier models must use sequential to avoid confusion)
         let pi = PhaseInfo::from(&phase_tracker);
-        if tool_calls.len() > 1
-            && config.model_tier.allows_parallel_tools()
-            && can_parallelize(&tool_calls, mode, pi, project_root)
-        {
+        if tool_calls.len() > 1 && can_parallelize(&tool_calls, mode, pi, project_root) {
             execute_tools_parallel(
                 &tool_calls,
                 project_root,
@@ -683,7 +685,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 pi,
             )
             .await?;
-        } else if tool_calls.len() > 1 && config.model_tier.allows_parallel_tools() {
+        } else if tool_calls.len() > 1 {
             // Mixed batch: some tools need confirmation, but parallelizable
             // ones (like InvokeAgent) can still run concurrently.
             execute_tools_split_batch(
@@ -721,26 +723,10 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             .await?;
         }
 
-        // Track tool names for task phase detection
-        // and observe tool call quality for tier adaptation.
+        // Track tool names for task phase detection.
         for tc in &tool_calls {
             recent_tool_names.push(tc.function_name.clone());
-
-            // Observe: is the tool name known?
-            let name_valid = tools.has_tool(&tc.function_name);
-            // Observe: do the arguments parse as valid JSON?
-            let args_valid = serde_json::from_str::<serde_json::Value>(&tc.arguments).is_ok();
-
-            let outcome = if !name_valid {
-                crate::tier_observer::ToolCallOutcome::UnknownTool
-            } else if !args_valid {
-                crate::tier_observer::ToolCallOutcome::MalformedArgs
-            } else {
-                crate::tier_observer::ToolCallOutcome::Valid
-            };
-            tier_observer.record_tool_call(outcome);
         }
-        tier_observer.end_turn();
 
         // Loop detection: same tool+args repeated REPEAT_THRESHOLD times → stop immediately.
         if let Some(fp) = loop_detector.record(&tool_calls) {

@@ -80,6 +80,7 @@ impl Env {
             sink: &sink,
             cancel: CancellationToken::new(),
             cmd_rx: &mut cmd_rx,
+            skip_probe: true,
         })
         .await;
 
