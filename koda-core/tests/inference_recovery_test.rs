@@ -3,6 +3,7 @@
 //! Exercises rate-limit retry (429 → backoff → success) and context-overflow
 //! recovery (overflow → compact → retry → success).
 
+use koda_core::persistence::Persistence;
 use koda_core::{
     approval::ApprovalMode,
     config::{KodaConfig, ProviderType},
@@ -32,7 +33,7 @@ impl Env {
     async fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
-        let db = Database::init(&root, &root).await.unwrap();
+        let db = Database::init(&root).await.unwrap();
         let session_id = db.create_session("test-agent", &root).await.unwrap();
         let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
         let tools = ToolRegistry::new(root.clone(), config.max_context_tokens);

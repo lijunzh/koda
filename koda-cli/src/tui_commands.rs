@@ -7,6 +7,7 @@ use crate::repl::ReplAction;
 use crate::tui_output;
 use crate::tui_render::TuiRenderer;
 use crate::tui_types::Term;
+use koda_core::persistence::Persistence;
 
 use koda_core::agent::KodaAgent;
 use koda_core::approval;
