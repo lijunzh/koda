@@ -91,6 +91,7 @@ impl Env {
             cancel: CancellationToken::new(),
             cmd_rx: &mut cmd_rx,
             skip_probe: true,
+            original_prompt: String::new(),
         })
         .await;
 
@@ -263,6 +264,7 @@ async fn test_provider_error_emits_error_event() {
         cancel: CancellationToken::new(),
         cmd_rx: &mut cmd_rx,
         skip_probe: true,
+        original_prompt: String::new(),
     })
     .await;
 
@@ -377,6 +379,7 @@ async fn test_cancel_during_streaming() {
         cancel,
         cmd_rx: &mut cmd_rx,
         skip_probe: true,
+        original_prompt: String::new(),
     })
     .await;
 
