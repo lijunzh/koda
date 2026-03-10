@@ -8,6 +8,27 @@
 use crate::intent::TaskIntent;
 use crate::model_tier::ModelTier;
 
+/// Review gate intensity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewDepth {
+    /// ≤3 steps, familiar tools → brief confirmation.
+    FastPath,
+    /// 4-dimension checklist (feasibility, completeness, risk, resources).
+    Standard,
+    /// Full checklist + present to user for approval.
+    Deep,
+}
+
+impl std::fmt::Display for ReviewDepth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FastPath => write!(f, "fast_path"),
+            Self::Standard => write!(f, "standard"),
+            Self::Deep => write!(f, "deep"),
+        }
+    }
+}
+
 /// Current phase of a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TaskPhase {
@@ -102,6 +123,41 @@ impl TaskPhase {
             }
             (Self::Reporting, ModelTier::Lite) => {
                 "[Phase: Reporting — LIST what you changed and the outcome.]"
+            }
+        }
+    }
+
+    /// Review-phase prompt hint with depth scaling.
+    ///
+    /// Overrides the generic Reviewing hint when `ReviewDepth` is known.
+    pub fn review_hint(self, tier: ModelTier, depth: ReviewDepth) -> &'static str {
+        if self != Self::Reviewing {
+            return self.prompt_hint(tier);
+        }
+        match (depth, tier) {
+            // FastPath: brief confirmation, skip detailed checklist
+            (ReviewDepth::FastPath, _) => {
+                "[Phase: Reviewing/fast — plan looks straightforward. \
+                 Quick sanity check, then proceed.]"
+            }
+            // Standard: 4-dimension checklist
+            (ReviewDepth::Standard, ModelTier::Strong) => {
+                "[Phase: Reviewing — self-check feasibility, completeness, risk]"
+            }
+            (ReviewDepth::Standard, ModelTier::Standard) => {
+                "[Phase: Reviewing — list what could go wrong. Stop if unclear.]"
+            }
+            (ReviewDepth::Standard, ModelTier::Lite) => {
+                "[Phase: Reviewing — STOP. Check your plan. Do NOT proceed if unsure.]"
+            }
+            // Deep: full checklist + user approval
+            (ReviewDepth::Deep, _) => {
+                "[Phase: Reviewing/deep — full self-check before proceeding:\n\
+                 \u{2705} Feasibility: Can each step be done with available tools?\n\
+                 \u{2705} Completeness: Does the plan cover the full request?\n\
+                 \u{2705} Risk: What could go wrong? Is there a rollback?\n\
+                 \u{2705} Resources: Which files are affected? Is scope reasonable?\n\
+                 Present this plan to the user before proceeding.]"
             }
         }
     }
@@ -333,6 +389,35 @@ impl PhaseTracker {
 
     pub fn expects_full_progression(&self) -> bool {
         self.expect_full_progression
+    }
+
+    /// Select review depth based on task complexity signals.
+    ///
+    /// Priority:
+    /// 1. InterventionObserver recommends auto → FastPath
+    /// 2. Simple task (Understanding → Executing shortcut) → FastPath
+    /// 3. Full progression expected (Complex/Review/TestGen intent) → Deep
+    /// 4. Default → Standard
+    pub fn select_review_depth(
+        &self,
+        observer: &crate::intervention_observer::InterventionObserver,
+    ) -> ReviewDepth {
+        // If observer has enough data and recommends auto, go fast
+        if observer.recommends_auto(TaskPhase::Reviewing) {
+            return ReviewDepth::FastPath;
+        }
+
+        // Complex tasks get deep review
+        if self.expect_full_progression {
+            return ReviewDepth::Deep;
+        }
+
+        // Simple task shortcut was taken (jumped from Understanding to Executing)
+        if self.plan_approved && self.review_result.is_none() {
+            return ReviewDepth::FastPath;
+        }
+
+        ReviewDepth::Standard
     }
 
     /// Force a phase demotion (escalation).
@@ -1027,5 +1112,53 @@ mod tests {
         assert_eq!(info.phase, TaskPhase::Executing);
         assert!(info.plan_approved);
         assert!(info.action_budget.is_none());
+    }
+
+    #[test]
+    fn test_review_depth_default_is_standard() {
+        let tracker = PhaseTracker::new(&TaskIntent::Modify);
+        let obs = crate::intervention_observer::InterventionObserver::new();
+        // Modify intent, no observer data → Standard
+        assert_eq!(tracker.select_review_depth(&obs), ReviewDepth::Standard);
+    }
+
+    #[test]
+    fn test_review_depth_complex_is_deep() {
+        let tracker = PhaseTracker::new(&TaskIntent::Complex);
+        let obs = crate::intervention_observer::InterventionObserver::new();
+        assert_eq!(tracker.select_review_depth(&obs), ReviewDepth::Deep);
+    }
+
+    #[test]
+    fn test_review_depth_observer_recommends_fast() {
+        let tracker = PhaseTracker::new(&TaskIntent::Modify);
+        let mut obs = crate::intervention_observer::InterventionObserver::new();
+        // Build enough auto data for Reviewing
+        for _ in 0..10 {
+            obs.record_auto(TaskPhase::Reviewing);
+        }
+        assert_eq!(tracker.select_review_depth(&obs), ReviewDepth::FastPath);
+    }
+
+    #[test]
+    fn test_review_hint_fast_path() {
+        let hint = TaskPhase::Reviewing.review_hint(ModelTier::Standard, ReviewDepth::FastPath);
+        assert!(hint.contains("fast"));
+        assert!(hint.contains("straightforward"));
+    }
+
+    #[test]
+    fn test_review_hint_deep() {
+        let hint = TaskPhase::Reviewing.review_hint(ModelTier::Standard, ReviewDepth::Deep);
+        assert!(hint.contains("Feasibility"));
+        assert!(hint.contains("Risk"));
+        assert!(hint.contains("user"));
+    }
+
+    #[test]
+    fn test_review_hint_non_reviewing_falls_back() {
+        // Non-Reviewing phase should fall back to normal prompt_hint
+        let hint = TaskPhase::Executing.review_hint(ModelTier::Standard, ReviewDepth::Deep);
+        assert!(hint.contains("Executing"));
     }
 }
