@@ -331,13 +331,10 @@ mod tests {
         let names: Vec<&str> = result.iter().map(|(n, _, _)| n.as_str()).collect();
         // reviewer and security are now skills, not sub-agents
         assert!(
-            names.contains(&"testgen"),
-            "Should include built-in testgen"
+            names.contains(&"verifier"),
+            "Should include built-in verifier"
         );
-        assert!(
-            names.contains(&"releaser"),
-            "Should include built-in releaser"
-        );
+        assert!(names.contains(&"scout"), "Should include built-in scout");
     }
 
     #[test]
@@ -375,22 +372,22 @@ mod tests {
         let builtins: Vec<_> = agents.iter().filter(|a| a.source == "built-in").collect();
         assert_eq!(
             builtins.len(),
-            5,
-            "Expected 5 built-in agents (testgen, releaser, scout, planner, verifier), got {}",
+            2,
+            "Expected 2 built-in agents (scout, verifier), got {}",
             builtins.len()
         );
         let names: Vec<_> = builtins.iter().map(|a| a.name.as_str()).collect();
-        assert!(names.contains(&"testgen"));
-        assert!(names.contains(&"releaser"));
+        assert!(names.contains(&"verifier"));
+        assert!(names.contains(&"scout"));
     }
 
     #[test]
     fn test_list_agents_detail_shows_prompts() {
         let dir = TempDir::new().unwrap();
         let result = list_agents_detail(dir.path());
-        assert!(result.contains("## testgen [built-in]"));
-        assert!(result.contains("## releaser [built-in]"));
-        assert!(result.contains("You are a QA engineer"));
+        assert!(result.contains("## verifier [built-in]"));
+        assert!(result.contains("## scout [built-in]"));
+        assert!(result.contains("Verifier, a quality checker"));
     }
 
     #[test]
@@ -446,7 +443,7 @@ mod tests {
     #[test]
     fn test_create_agent_rejects_existing_builtin() {
         let dir = TempDir::new().unwrap();
-        let args = json!({"name": "testgen", "system_prompt": "x".repeat(60)});
+        let args = json!({"name": "scout", "system_prompt": "x".repeat(60)});
         let result = create_agent(dir.path(), &args);
         assert!(
             result.contains("already exists"),

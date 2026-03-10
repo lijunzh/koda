@@ -62,9 +62,9 @@ impl std::fmt::Display for TaskSignature {
 impl TaskSignature {
     /// Classify a task from the user prompt.
     ///
-    /// Uses keyword matching as a fast heuristic. The #320 design calls for
-    /// LLM-classified structured output at session start (~50 tokens), but
-    /// keyword matching is the fallback when no LLM is available.
+    /// Uses simple keyword matching as a fast heuristic.
+    /// Future: replace with LLM-classified structured output at session
+    /// start (~50 tokens) for better accuracy. See #329 Trap 3.5.
     pub fn from_prompt(prompt: &str) -> Self {
         let lower = prompt.to_lowercase();
         let domain = classify_domain(&lower);
