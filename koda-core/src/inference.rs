@@ -156,10 +156,14 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let git_line = crate::git::git_context(project_root)
             .map(|ctx| format!("\n{ctx}"))
             .unwrap_or_default();
-        let phase_prompt = format!(
-            "{base_system_prompt}\n\n{}{progress}{flow_line}{git_line}",
+        let phase_hint = if phase == crate::task_phase::TaskPhase::Reviewing {
+            let depth = phase_tracker.select_review_depth(&intervention_observer);
+            phase.review_hint(config.model_tier, depth)
+        } else {
             phase.prompt_hint(config.model_tier)
-        );
+        };
+        let phase_prompt =
+            format!("{base_system_prompt}\n\n{phase_hint}{progress}{flow_line}{git_line}",);
         let system_message = ChatMessage::text("system", &phase_prompt);
 
         // Assemble context with sliding window
