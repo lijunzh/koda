@@ -185,6 +185,29 @@ impl Database {
         .execute(pool)
         .await?;
 
+        // Review records — child table of phase_transitions.
+        // Only SelfReview and PeerReview create rows (not FastPath).
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS review_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phase_transition_id INTEGER NOT NULL REFERENCES phase_transitions(id),
+                review_depth TEXT NOT NULL CHECK(review_depth IN ('self_review', 'peer_review')),
+                reviewer_model TEXT NOT NULL,
+                planner_model TEXT NOT NULL,
+                plan_summary TEXT NOT NULL,
+                reviewer_verdict TEXT NOT NULL CHECK(reviewer_verdict IN ('approved', 'rejected', 'revised')),
+                reviewer_reasoning TEXT,
+                human_decision TEXT CHECK(human_decision IN ('accepted_plan', 'accepted_review', 'manual_edit', 'aborted')),
+                gate_reason TEXT NOT NULL CHECK(gate_reason IN (
+                    'destructive_floor', 'complexity_threshold', 'observer_auto',
+                    'peer_review_disagreement', 're_plan_exhausted'
+                )),
+                created_at TEXT DEFAULT (datetime('now'))
+            );",
+        )
+        .execute(pool)
+        .await?;
+
         Ok(())
     }
 }
@@ -717,8 +740,8 @@ impl Persistence for Database {
         from_phase: &str,
         to_phase: &str,
         trigger: Option<&str>,
-    ) -> Result<()> {
-        sqlx::query(
+    ) -> Result<i64> {
+        let result = sqlx::query(
             "INSERT INTO phase_transitions \
              (session_id, iteration, from_phase, to_phase, trigger) \
              VALUES (?, ?, ?, ?, ?)",
@@ -728,6 +751,40 @@ impl Persistence for Database {
         .bind(from_phase)
         .bind(to_phase)
         .bind(trigger)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.last_insert_rowid())
+    }
+
+    /// Insert a review record (child of a phase transition).
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_review_record(
+        &self,
+        phase_transition_id: i64,
+        review_depth: &str,
+        reviewer_model: &str,
+        planner_model: &str,
+        plan_summary: &str,
+        reviewer_verdict: &str,
+        reviewer_reasoning: Option<&str>,
+        human_decision: Option<&str>,
+        gate_reason: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO review_records \
+             (phase_transition_id, review_depth, reviewer_model, planner_model, \
+              plan_summary, reviewer_verdict, reviewer_reasoning, human_decision, gate_reason) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(phase_transition_id)
+        .bind(review_depth)
+        .bind(reviewer_model)
+        .bind(planner_model)
+        .bind(plan_summary)
+        .bind(reviewer_verdict)
+        .bind(reviewer_reasoning)
+        .bind(human_decision)
+        .bind(gate_reason)
         .execute(&self.pool)
         .await?;
         Ok(())
