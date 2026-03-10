@@ -79,6 +79,10 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         // Tier is explicitly set if it came from agent config (not auto-detected)
         false,
     );
+    // Intervention observer: learns human override patterns at phase gates.
+    // Auto-saves on drop (ObserverGuard), so all exit paths are covered.
+    let mut intervention_observer =
+        crate::intervention_observer::InterventionObserver::load_auto_save();
     let mut total_prompt_tokens: i64 = 0;
     let mut total_completion_tokens: i64 = 0;
     let mut total_cache_read_tokens: i64 = 0;
@@ -501,6 +505,11 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 after_bash,
             };
             if let Some(transition) = phase_tracker.advance(&signal) {
+                // Record auto transition (no human intervention at this gate)
+                // TODO(#320 Phase 6): record_override when plan approval (#217)
+                // gates are wired — requires approval results to flow back.
+                intervention_observer.record_auto(transition.to);
+
                 // Log phase transition as a Role::Phase message
                 let _ = db
                     .insert_message(
