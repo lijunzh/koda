@@ -158,6 +158,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     let mut phase_tracker = PhaseTracker::new(&intent);
     let mut re_plan_count: u32 = 0;
     let mut cached_reviewer: Option<(crate::config::ProviderType, String)> = None;
+    let mut duplicate_plan_count: u32 = 0;
 
     loop {
         if iteration >= hard_cap {
@@ -673,13 +674,39 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             .iter()
             .position(|tc| tc.function_name == "SubmitPlan")
         {
-            // If a plan is already approved, ignore duplicate submissions
+            // If a plan is already approved, show the plan but skip review
             if phase_tracker.plan_approved() {
-                sink.emit(EngineEvent::Info {
-                    message: "Plan already approved — ignoring duplicate SubmitPlan. \
+                duplicate_plan_count += 1;
+
+                // Still show the plan so the user can see what was submitted
+                let submit_tc = &tool_calls[submit_idx];
+                let args: serde_json::Value =
+                    serde_json::from_str(&submit_tc.arguments).unwrap_or_default();
+                if let Ok(plan) = crate::review::PlanArtifact::from_tool_args(&args) {
+                    let plan_detail = format_plan_detail(
+                        &plan,
+                        &config.model,
+                        crate::task_phase::ReviewDepth::FastPath,
+                    );
+                    sink.emit(EngineEvent::Info {
+                        message: plan_detail,
+                    });
+                }
+
+                let msg = if duplicate_plan_count >= 2 {
+                    format!(
+                        "Plan already approved — ignoring duplicate SubmitPlan \
+                         ({duplicate_plan_count} duplicates). The model ({}) is \
+                         struggling with this task. Consider switching to a more \
+                         capable model with /model.",
+                        config.model,
+                    )
+                } else {
+                    "Plan already approved — ignoring duplicate SubmitPlan. \
                         Proceed with execution."
-                        .into(),
-                });
+                        .into()
+                };
+                sink.emit(EngineEvent::Warn { message: msg });
                 tool_calls.remove(submit_idx);
                 if tool_calls.is_empty() {
                     continue;
@@ -972,7 +999,12 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
 
             if made_tool_calls && full_text.trim().is_empty() {
                 sink.emit(EngineEvent::Warn {
-                    message: "Model produced an empty response after tool use — it may have given up mid-task. Try rephrasing or switching to a more capable model.".into(),
+                    message: format!(
+                        "Model {} produced an empty response after tool use — \
+                         it may have exceeded its capability for this task. \
+                         Switch to a stronger model with /model.",
+                        config.model,
+                    ),
                 });
             }
             total_prompt_tokens += usage.prompt_tokens;
