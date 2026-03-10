@@ -325,22 +325,20 @@ mod tests {
     }
 
     #[test]
-    fn test_list_agents_includes_builtins() {
+    fn test_list_agents_no_builtins() {
         let dir = TempDir::new().unwrap();
         let result = list_agents(dir.path());
-        let names: Vec<&str> = result.iter().map(|(n, _, _)| n.as_str()).collect();
-        // reviewer and security are now skills, not sub-agents
+        // No built-in sub-agents after purge (#329)
+        // (user-level agents from ~/.config/koda/agents/ may still appear)
+        let builtins: Vec<_> = result
+            .iter()
+            .filter(|(_, _, src)| src == "built-in")
+            .collect();
         assert!(
-            names.contains(&"verifier"),
-            "Should include built-in verifier"
+            builtins.is_empty(),
+            "No built-in sub-agents after purge (#329), got: {builtins:?}"
         );
-        assert!(names.contains(&"scout"), "Should include built-in scout");
-    }
-
-    #[test]
-    fn test_list_agents_excludes_default() {
-        let dir = TempDir::new().unwrap();
-        let result = list_agents(dir.path());
+        // Default is always excluded from listing
         let names: Vec<&str> = result.iter().map(|(n, _, _)| n.as_str()).collect();
         assert!(!names.contains(&"default"), "Should exclude default agent");
     }
@@ -365,29 +363,24 @@ mod tests {
     }
 
     #[test]
-    fn test_discover_all_agents_has_builtins() {
+    fn test_discover_all_agents_no_builtins() {
         let dir = TempDir::new().unwrap();
         let agents = discover_all_agents(dir.path());
-        // Should have at least the 4 built-in agents (excluding default)
         let builtins: Vec<_> = agents.iter().filter(|a| a.source == "built-in").collect();
         assert_eq!(
             builtins.len(),
-            2,
-            "Expected 2 built-in agents (scout, verifier), got {}",
+            0,
+            "No built-in sub-agents after #329 purge, got {}",
             builtins.len()
         );
-        let names: Vec<_> = builtins.iter().map(|a| a.name.as_str()).collect();
-        assert!(names.contains(&"verifier"));
-        assert!(names.contains(&"scout"));
     }
 
     #[test]
-    fn test_list_agents_detail_shows_prompts() {
+    fn test_list_agents_detail_empty_when_no_builtins() {
         let dir = TempDir::new().unwrap();
         let result = list_agents_detail(dir.path());
-        assert!(result.contains("## verifier [built-in]"));
-        assert!(result.contains("## scout [built-in]"));
-        assert!(result.contains("Verifier, a quality checker"));
+        // No built-in sub-agents after #329 purge
+        assert!(!result.contains("[built-in]"));
     }
 
     #[test]
@@ -441,17 +434,13 @@ mod tests {
     }
 
     #[test]
-    fn test_create_agent_rejects_existing_builtin() {
+    fn test_create_agent_succeeds_for_custom_name() {
         let dir = TempDir::new().unwrap();
-        let args = json!({"name": "scout", "system_prompt": "x".repeat(60)});
+        let args = json!({"name": "my_custom_agent_xyz", "system_prompt": "x".repeat(60)});
         let result = create_agent(dir.path(), &args);
         assert!(
-            result.contains("already exists"),
-            "Should reject duplicate of built-in: {result}"
-        );
-        assert!(
-            result.contains("built-in"),
-            "Should mention source: {result}"
+            result.contains("created") || result.contains("Created"),
+            "Should create custom agent: {result}"
         );
     }
 
