@@ -494,11 +494,7 @@ impl KodaConfig {
 
     /// Built-in agent configs, embedded at compile time.
     /// These are always available regardless of disk state.
-    const BUILTIN_AGENTS: &[(&str, &str)] = &[
-        ("default", include_str!("../agents/default.json")),
-        ("scout", include_str!("../agents/scout.json")),
-        ("verifier", include_str!("../agents/verifier.json")),
-    ];
+    const BUILTIN_AGENTS: &[(&str, &str)] = &[("default", include_str!("../agents/default.json"))];
 
     /// Try to load a built-in (embedded) agent by name.
     pub fn load_builtin(name: &str) -> Option<AgentConfig> {

@@ -1,7 +1,7 @@
 //! Intervention observer — learns human override patterns at phase gates.
 //!
-//! Parallel to `TierObserver`: observes whether the user intervenes at
-//! phase transitions and adjusts autonomy recommendations over time.
+//! Observes whether the user intervenes at phase transitions and adjusts
+//! autonomy recommendations over time.
 //!
 //! Each phase transition is one data point:
 //! - Transition with no human intervention → "auto" data point
