@@ -906,11 +906,9 @@ impl TuiContext {
                                                     (KeyCode::Char('c'), m)
                                                         if m.contains(KeyModifiers::CONTROL) =>
                                                     {
-                                                        if crate::interrupt::handle_sigint() {
-                                                            restore_terminal(&mut self.terminal, self.viewport_height);
-                                                            tui_output::err_msg("Force quit.".into());
-                                                            std::process::exit(130);
-                                                        }
+                                                        // Ctrl+C cancels the current turn.
+                                                        // Never exits koda — use Ctrl+D at
+                                                        // empty prompt to quit.
                                                         cancel_token.cancel();
                                                     }
                                                     (KeyCode::BackTab, _) => {
@@ -987,7 +985,6 @@ impl TuiContext {
                             // Turn completed — cleanup
                             self.tui_state = TuiState::Idle;
                             self.inference_start = None;
-                            crate::interrupt::reset();
                             self.session.cancel = tokio_util::sync::CancellationToken::new();
 
                             // Commit undo snapshots for this turn
