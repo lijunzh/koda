@@ -12,7 +12,6 @@ use ratatui::{
 
 pub struct StatusBar<'a> {
     model: &'a str,
-    tier_label: &'a str,
     mode_label: &'a str,
     context_pct: u32,
     queue_len: usize,
@@ -37,10 +36,9 @@ pub struct TurnStats {
 }
 
 impl<'a> StatusBar<'a> {
-    pub fn new(model: &'a str, tier_label: &'a str, mode_label: &'a str, context_pct: u32) -> Self {
+    pub fn new(model: &'a str, mode_label: &'a str, context_pct: u32) -> Self {
         Self {
             model,
-            tier_label,
             mode_label,
             context_pct,
             queue_len: 0,
@@ -68,9 +66,10 @@ impl<'a> StatusBar<'a> {
 impl Widget for StatusBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let mode_color = match self.mode_label {
-            "plan" => Color::Yellow,
-            "yolo" => Color::Red,
-            _ => Color::Cyan,
+            "auto" => Color::Green,
+            "strict" => Color::Cyan,
+            "safe" => Color::Yellow,
+            _ => Color::DarkGray,
         };
 
         let bar_width: u32 = 10;
@@ -84,14 +83,17 @@ impl Widget for StatusBar<'_> {
             Color::DarkGray
         };
 
+        // Truncate long model names to keep status bar readable
+        let model_display = if self.model.len() > 32 {
+            format!("{}…", &self.model[..31])
+        } else {
+            self.model.to_string()
+        };
+
         let mut spans = vec![
             Span::styled(
-                format!(" {} ", self.model),
+                format!(" {model_display} "),
                 Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                format!("[{}]", self.tier_label),
-                Style::default().fg(Color::Rgb(100, 100, 100)),
             ),
             Span::styled("\u{2502}", Style::default().fg(Color::Rgb(60, 60, 60))),
             Span::styled(
