@@ -9,9 +9,9 @@ Pure logic with zero terminal dependencies — communicates exclusively through
 
 - **LLM providers** — 14 providers (Anthropic, OpenAI, Gemini, Groq, Ollama, LM Studio, etc.)
 - **Tool system** — 20+ built-in tools (file ops, shell, search, memory, agents)
-- **Phase-gated approval** — six-phase state machine gates tool permissions
+- **Per-tool approval** — three modes (Auto/Strict/Safe) with effect-based safety classification
 - **Inference loop** — streaming tool-use loop with parallel execution
-- **SQLite persistence** — sessions, messages, compaction, phase flow log
+- **SQLite persistence** — sessions, messages, compaction
 - **MCP client** — connects to external MCP servers for extensibility
 
 **Rust edition:** 2024
