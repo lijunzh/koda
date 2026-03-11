@@ -20,7 +20,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 imap = "3.0.0-alpha.15"
 lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
-mail-parser = "0.9"
+mail-parser = "0.11"
 
 [dev-dependencies]
 tempfile = "3"
