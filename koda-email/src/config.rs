@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 
 /// IMAP + SMTP connection settings.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EmailConfig {
     pub imap_host: String,
     pub imap_port: u16,
@@ -16,6 +16,19 @@ pub struct EmailConfig {
     pub smtp_port: u16,
     pub username: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for EmailConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailConfig")
+            .field("imap_host", &self.imap_host)
+            .field("imap_port", &self.imap_port)
+            .field("smtp_host", &self.smtp_host)
+            .field("smtp_port", &self.smtp_port)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl EmailConfig {
