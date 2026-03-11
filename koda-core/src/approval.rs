@@ -266,10 +266,18 @@ fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &
             } else {
                 project_root.join(requested)
             };
-            // Try canonicalize (follows symlinks, resolves ..).
-            // Falls back to lexical clean for new files that don't exist yet.
-            let resolved = abs_path.canonicalize().unwrap_or_else(|_| abs_path.clean());
-            // Also canonicalize project_root for consistent comparison
+            // Canonicalize for symlink resolution (macOS /var → /private/var).
+            // For new files, canonicalize the parent dir and append the filename.
+            let resolved = abs_path.canonicalize().unwrap_or_else(|_| {
+                if let Some(parent) = abs_path.parent() {
+                    if let Ok(canon_parent) = parent.canonicalize() {
+                        if let Some(name) = abs_path.file_name() {
+                            return canon_parent.join(name);
+                        }
+                    }
+                }
+                abs_path.clean()
+            });
             let canon_root = project_root
                 .canonicalize()
                 .unwrap_or_else(|_| project_root.to_path_buf());
