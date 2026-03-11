@@ -56,22 +56,13 @@ fn test_all_tools_handled_by_approval() {
     let empty_args = serde_json::json!({});
     for name in all_tool_names() {
         // Should not panic in any mode
-        let result = check_tool(
-            &name,
-            &empty_args,
-            ApprovalMode::Strict,
-            koda_core::task_phase::PhaseInfo::delegated(),
-            None,
-            None,
-            None,
-        );
+        let result = check_tool(&name, &empty_args, ApprovalMode::Strict, None, None, None);
         // Verify it returns a valid variant (not a crash)
         match result {
             ToolApproval::AutoApprove
             | ToolApproval::Notify
             | ToolApproval::NeedsConfirmation
-            | ToolApproval::Blocked
-            | ToolApproval::PlanRequired => {}
+            | ToolApproval::Blocked => {}
         }
     }
 }

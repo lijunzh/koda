@@ -32,8 +32,6 @@ pub fn normalize_tool_name(name: &str) -> String {
         "emailread" | "email_read" => "EmailRead".to_string(),
         "emailsend" | "email_send" => "EmailSend".to_string(),
         "emailsearch" | "email_search" => "EmailSearch".to_string(),
-        "submitplan" | "submit_plan" => "SubmitPlan".to_string(),
-        "submitreview" | "submit_review" => "SubmitReview".to_string(),
         _ => name.to_string(), // pass through unknown names (e.g., MCP tools)
     }
 }
@@ -191,11 +189,6 @@ impl ToolRegistry {
         // RecallContext — on-demand history retrieval
         let recall_def = recall::definition();
         definitions.insert(recall_def.name.clone(), recall_def);
-        // Review tools — phase transition contracts
-        let submit_plan_def = crate::review::submit_plan_definition();
-        definitions.insert(submit_plan_def.name.clone(), submit_plan_def);
-        // Note: SubmitReview is NOT registered here — it's only available
-        // in the reviewer's fresh context window, not the main tool set.
         // Auto-provisionable MCP tools (registered so the LLM knows they exist)
         for def in crate::mcp::capability_registry::tool_definitions() {
             definitions.insert(def.name.clone(), def);
@@ -356,26 +349,6 @@ impl ToolRegistry {
             // Memory
             "MemoryRead" => memory::memory_read(&self.project_root).await,
             "MemoryWrite" => memory::memory_write(&self.project_root, &args).await,
-
-            // Review tools (phase transition contracts)
-            "SubmitPlan" => {
-                // Validate the plan artifact structure.
-                // The actual phase transition is handled by the inference loop
-                // when it sees this tool result.
-                match crate::review::PlanArtifact::from_tool_args(&args) {
-                    Ok(plan) => {
-                        let summary =
-                            format!("Plan submitted: {} ({} steps)", plan.goal, plan.steps.len());
-                        Ok(summary)
-                    }
-                    Err(e) => Err(anyhow::anyhow!("Invalid plan: {e}")),
-                }
-            }
-            "SubmitReview" => {
-                // Should only be called in the reviewer's context, not the main loop.
-                // If called here, it's a model error — return gracefully.
-                Ok("SubmitReview is only valid during plan review.".to_string())
-            }
 
             // Agent tools
             "ListAgents" => {

@@ -96,10 +96,6 @@ pub async fn handle_slash_command(
             }
             SlashAction::Continue
         }
-        ReplAction::ShowPriors => {
-            handle_priors();
-            SlashAction::Continue
-        }
         ReplAction::ListSessions => {
             // Handled inline by tui_app.rs MenuContent::Session dropdown
             SlashAction::Continue
@@ -303,35 +299,6 @@ async fn handle_resume_session(
             Err(e) => err_msg(format!("Error: {e}")),
         }
     }
-}
-
-#[allow(unused_variables)]
-fn handle_priors() {
-    let observer = koda_core::intervention_observer::InterventionObserver::load();
-    let summary = observer.summary();
-
-    tui_output::write_blank();
-    tui_output::write_line(&Line::from(vec![Span::styled(
-        "  Intervention Priors",
-        BOLD,
-    )]));
-    tui_output::write_line(&Line::styled(
-        "  ─────────────────────────────────────────────────────",
-        DIM,
-    ));
-
-    let has_data = summary.iter().any(|p| p.auto_count + p.override_count > 0);
-    if !has_data {
-        tui_output::write_line(&Line::styled(
-            "  No data yet. Priors are learned as you use koda.",
-            DIM,
-        ));
-    } else {
-        for prior in &summary {
-            tui_output::write_line(&Line::styled(format!("  {prior}"), DIM));
-        }
-    }
-    tui_output::write_blank();
 }
 
 fn handle_expand(_terminal: &mut Term, renderer: &TuiRenderer, n: usize) {

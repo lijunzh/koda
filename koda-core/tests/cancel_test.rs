@@ -101,7 +101,6 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
         cancel,
         cmd_rx: &mut cmd_rx,
         skip_probe: true,
-        original_prompt: String::new(),
     })
     .await;
 
