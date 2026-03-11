@@ -1,6 +1,6 @@
 [package]
 name = "koda-cli"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 description = "A high-performance AI coding agent built in Rust"
 license = "MIT"
@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core engine
-koda-core = { path = "../koda-core", version = "0.1.5" }
+koda-core = { path = "../koda-core", version = "0.1.6" }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }

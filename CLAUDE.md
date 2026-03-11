@@ -329,5 +329,5 @@ See `koda-ast/tests/mcp_integration_test.rs` for the reference implementation.
 4. Add `--version` flag to `main()`
 5. Write MCP integration tests in `tests/mcp_integration_test.rs`
 6. Update `release.yml`: version verify, build, package, publish, Homebrew
-7. Sync version with workspace (currently 0.1.5)
+7. Sync version with workspace (currently 0.1.6)
 8. Update this file (claude.md)
