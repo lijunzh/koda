@@ -361,7 +361,77 @@ The concern is accidental blast radius, not targeted attacks. The lint catches
 common accidental escapes; OS-level sandboxing (seccomp/landlock) is a v1.0
 concern.
 
-### 18. ~~Review Depth as Isolation Boundaries~~ (v0.1.4 — RETIRED in #355)
+### 18. Security Model (v0.1.4)
+
+**Decision**: Per-tool safety classification with three approval modes and
+hardcoded floors that override mode settings for high-risk operations.
+
+**Approval modes** (cycle with `Shift+Tab`):
+
+| Mode | Description | Default |
+|------|-------------|--------|
+| **Auto** | Local mutations auto-approved. Destructive operations and outside-project writes always require confirmation. | ✅ |
+| **Strict** | Every non-read action requires explicit user confirmation. | |
+| **Safe** | Local-read-only. No filesystem mutations. Remote actions (GitHub CLI, MCP readOnly) allowed. | |
+
+**Tool effect classification** — every tool call is classified:
+
+| Effect | Description | Auto | Strict | Safe |
+|--------|-------------|------|--------|------|
+| **ReadOnly** | No side-effects (file reads, grep, git status) | ✅ auto | ✅ auto | ✅ auto |
+| **RemoteAction** | Remote-only side-effects (gh CLI, WebFetch) | ✅ auto | ✅ auto | ✅ auto |
+| **LocalMutation** | Local filesystem writes (Write, Edit, cargo test) | ✅ auto | ⚠️ confirm | ❌ blocked |
+| **Destructive** | Irreversible (rm -rf, git push --force, sed -i) | ⚠️ confirm | ⚠️ confirm | ❌ blocked |
+
+**Guarantee matrix**:
+
+| Action | Auto | Strict | Safe |
+|--------|------|--------|------|
+| Read files inside project | ✅ | ✅ | ✅ |
+| Read files outside project | ✅ (log) | ✅ | ✅ |
+| Write files inside project | ✅ auto | ⚠️ confirm | ❌ blocked |
+| Write files outside project | ⚠️ confirm | ⚠️ confirm | ❌ blocked |
+| Delete files | ⚠️ confirm | ⚠️ confirm | ❌ blocked |
+| Safe bash (grep, git status) | ✅ | ✅ | ✅ |
+| Bash with write side-effect (>, tee) | ✅ auto | ⚠️ confirm | ❌ blocked |
+| Destructive bash (rm -rf, force push) | ⚠️ confirm | ⚠️ confirm | ❌ blocked |
+| Bash with path escape (cd /tmp) | ⚠️ confirm | ⚠️ confirm | ❌ blocked |
+| Sub-agent invocation | ✅ | ✅ | ✅ |
+| Sub-agent writes | ✅ (DelegationScope) | ⚠️ confirm | ❌ blocked |
+| MCP tool (readOnly: true) | ✅ | ✅ | ✅ |
+| MCP tool (readOnly: false) | ✅ auto | ⚠️ confirm | ❌ blocked |
+| MCP tool (config override) | Per override | Per override | Per override |
+| MemoryWrite | ✅ auto | ⚠️ confirm | ❌ blocked |
+| WebFetch (GET) | ✅ | ✅ | ✅ |
+| gh issue/pr (RemoteAction) | ✅ | ✅ | ✅ |
+
+**Hardcoded safety floors** (apply regardless of mode):
+1. Writes outside project root → NeedsConfirmation (Auto/Strict) or Blocked (Safe)
+2. Bash path escape (cd /tmp, absolute paths outside project) → NeedsConfirmation
+3. Destructive operations (Delete, rm -rf, force push) → NeedsConfirmation in Auto
+4. Symlink escape → `canonicalize()` resolves symlinks before path checks
+
+**Sub-agent delegation** — `DelegationScope` constrains child agents:
+- Mode clamping: child can never exceed parent (Safe parent → Safe child only)
+- Filesystem grant: `ReadOnly`, `Scoped { read_paths, write_paths }`, or `FullProject`
+- Tool allowlist: optional list of permitted tools
+- Delegation depth: `can_delegate` controls whether sub-agents can spawn further sub-agents
+- Enforcement is a **hard gate** in `check_tool()`, not a log
+
+**MCP tool classification** from schema annotations:
+- `readOnlyHint: true` → ReadOnly (auto-approved in all modes)
+- `destructiveHint: true` → Destructive (confirm in Auto+Strict)
+- Neither → LocalMutation (conservative default)
+- Config overrides in `.mcp.json` `toolOverrides` take precedence
+
+**Accepted risks** (gaps intentionally not addressed):
+1. **No kernel-level sandboxing** — file write blocking is in-process, not seccomp/landlock. Mitigation: LLM would need to generate + compile + execute an exploit.
+2. **Shell command parsing is heuristic** — complex pipelines and eval tricks can bypass. Mitigation: unknown commands default to unsafe; `DANGEROUS_PATTERNS` catches common evasion.
+3. **MCP readOnly is trust-based** — malicious server could lie about readOnly. Mitigation: config overrides let users distrust specific tools.
+4. **Auto mode sub-agents with FullProject scope** — if LLM doesn't narrow scope, sub-agent has full write access. Mitigation: user's chosen trade-off; DelegationScope exists for narrowing.
+5. **Hardcoded floors don't return Blocked in Safe mode** — outside-project writes show confirm prompt instead of clean block. Mitigation: confirm dialog has no "approve" action in Safe mode.
+
+### 19. ~~Review Depth as Isolation Boundaries~~ (v0.1.4 — RETIRED in #355)
 
 **Decision**: RETIRED along with the phase system in [#355](https://github.com/lijunzh/koda/pull/355).
 The concept of asymmetric model collaboration (weak model asks questions,
