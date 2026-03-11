@@ -25,6 +25,15 @@ pub struct GeminiProvider {
     cached_content: std::sync::Mutex<Option<CachedContentState>>,
 }
 
+impl std::fmt::Debug for GeminiProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeminiProvider")
+            .field("base_url", &self.base_url)
+            .field("api_key", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
 /// State for Gemini explicit context caching.
 #[derive(Debug, Clone)]
 struct CachedContentState {
@@ -989,5 +998,85 @@ mod tests {
         };
         let body = p.build_request_body(&[], None, &[], Some(&settings));
         assert!(body["generationConfig"]["thinkingConfig"].is_null());
+    }
+
+    // ── GenerateResponse / Candidate / ResponsePart deserialization tests ──
+
+    #[test]
+    fn generate_response_deserializes_text_part() {
+        let json = r#"{
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "Hello, world!"}]
+                }
+            }]
+        }"#;
+        let resp: GenerateResponse = serde_json::from_str(json).unwrap();
+        let candidates = resp.candidates.unwrap();
+        assert_eq!(candidates.len(), 1);
+        let parts = candidates[0].content.as_ref().unwrap().parts.as_ref().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].text.as_deref(), Some("Hello, world!"));
+        assert!(parts[0].thought.is_none());
+    }
+
+    #[test]
+    fn generate_response_deserializes_thinking_part() {
+        let json = r#"{
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "Let me reason...", "thought": true}]
+                }
+            }]
+        }"#;
+        let resp: GenerateResponse = serde_json::from_str(json).unwrap();
+        let candidates = resp.candidates.unwrap();
+        let parts = candidates[0].content.as_ref().unwrap().parts.as_ref().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].text.as_deref(), Some("Let me reason..."));
+        assert_eq!(parts[0].thought, Some(true));
+    }
+
+    #[test]
+    fn generate_response_deserializes_finish_reason() {
+        let json = r#"{
+            "candidates": [{
+                "finishReason": "STOP",
+                "content": {"parts": [{"text": "done"}]}
+            }]
+        }"#;
+        let resp: GenerateResponse = serde_json::from_str(json).unwrap();
+        let candidates = resp.candidates.unwrap();
+        assert_eq!(candidates[0].finish_reason.as_deref(), Some("STOP"));
+    }
+
+    #[test]
+    fn generate_response_with_usage_metadata() {
+        let json = r#"{
+            "candidates": [],
+            "usageMetadata": {
+                "promptTokenCount": 42,
+                "candidatesTokenCount": 17,
+                "cachedContentTokenCount": 5,
+                "thoughtsTokenCount": 8
+            }
+        }"#;
+        let resp: GenerateResponse = serde_json::from_str(json).unwrap();
+        let usage = resp.usage_metadata.unwrap();
+        assert_eq!(usage.prompt_token_count, 42);
+        assert_eq!(usage.candidates_token_count, 17);
+        assert_eq!(usage.cached_content_token_count, 5);
+        assert_eq!(usage.thoughts_token_count, 8);
+    }
+
+    #[test]
+    fn response_part_empty_text_is_valid() {
+        let json = r#"{"text": ""}"#;
+        let result = serde_json::from_str::<ResponsePart>(json);
+        assert!(result.is_ok());
+        let part = result.unwrap();
+        assert_eq!(part.text.as_deref(), Some(""));
+        assert!(part.function_call.is_none());
+        assert!(part.thought.is_none());
     }
 }

@@ -19,6 +19,15 @@ pub struct OpenAiCompatProvider {
     api_key: Option<String>,
 }
 
+impl std::fmt::Debug for OpenAiCompatProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiCompatProvider")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_deref().map(|_| "[REDACTED]"))
+            .finish_non_exhaustive()
+    }
+}
+
 impl OpenAiCompatProvider {
     pub fn new(base_url: &str, api_key: Option<String>) -> Self {
         Self {
@@ -683,5 +692,68 @@ mod tests {
         let tcs = request.messages[0].tool_calls.as_ref().unwrap();
         assert_eq!(tcs.len(), 1);
         assert_eq!(tcs[0].function.name, "Read");
+    }
+
+    // ── SSE StreamChatResponse / StreamChoice / StreamDelta / StreamToolCall deserialization tests ──
+
+    #[test]
+    fn stream_response_deserializes_text_delta() {
+        let json = r#"{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}"#;
+        let resp: StreamChatResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.choices.len(), 1);
+        let choice = &resp.choices[0];
+        assert_eq!(choice.delta.content.as_deref(), Some("hello"));
+        assert!(choice.finish_reason.is_none());
+    }
+
+    #[test]
+    fn stream_response_deserializes_finish_reason() {
+        let json = r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#;
+        let resp: StreamChatResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.choices.len(), 1);
+        assert_eq!(resp.choices[0].finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn stream_response_deserializes_tool_call_delta() {
+        let json = r#"{
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_abc",
+                        "function": {"name": "Bash", "arguments": "{\"cmd\""}
+                    }]
+                },
+                "finish_reason": null
+            }]
+        }"#;
+        let resp: StreamChatResponse = serde_json::from_str(json).unwrap();
+        let choice = &resp.choices[0];
+        let tool_calls = choice.delta.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        let tc = &tool_calls[0];
+        assert_eq!(tc.index, Some(0));
+        assert_eq!(tc.id.as_deref(), Some("call_abc"));
+        let func = tc.function.as_ref().unwrap();
+        assert_eq!(func.name.as_deref(), Some("Bash"));
+        assert_eq!(func.arguments.as_deref(), Some("{\"cmd\""));
+    }
+
+    #[test]
+    fn stream_response_handles_null_content() {
+        let json = r#"{"choices":[{"delta":{"content":null},"finish_reason":null}]}"#;
+        let resp: StreamChatResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.choices.len(), 1);
+        assert!(resp.choices[0].delta.content.is_none());
+    }
+
+    #[test]
+    fn stream_response_handles_empty_choices() {
+        let json = r#"{"choices":[]}"#;
+        let result = serde_json::from_str::<StreamChatResponse>(json);
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert!(resp.choices.is_empty());
     }
 }
