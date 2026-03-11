@@ -71,9 +71,7 @@ impl Env {
             tool_defs: ToolRegistry::new(self.root.clone(), self.config.max_context_tokens)
                 .get_definitions(&[]),
             system_prompt: "You are a test assistant.".to_string(),
-            mcp_registry: Arc::new(tokio::sync::RwLock::new(
-                koda_core::mcp::McpRegistry::new(),
-            )),
+            mcp_registry: Arc::new(tokio::sync::RwLock::new(koda_core::mcp::McpRegistry::new())),
             mcp_statuses: vec![],
         });
 
@@ -116,7 +114,11 @@ async fn session_run_turn_emits_turn_start_and_end() {
     let result = session
         .run_turn(&env.config, None, &sink, &mut cmd_rx)
         .await;
-    assert!(result.is_ok(), "run_turn should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "run_turn should succeed: {:?}",
+        result.err()
+    );
 
     let events = sink.events();
 
@@ -266,9 +268,13 @@ async fn session_persists_messages_across_two_turns() {
 
     // Verify turn 1 ended with Complete.
     assert!(
-        sink1.events().iter().any(
-            |e| matches!(e, EngineEvent::TurnEnd { reason: TurnEndReason::Complete, .. })
-        ),
+        sink1.events().iter().any(|e| matches!(
+            e,
+            EngineEvent::TurnEnd {
+                reason: TurnEndReason::Complete,
+                ..
+            }
+        )),
         "turn 1 should end with Complete"
     );
 
@@ -289,18 +295,17 @@ async fn session_persists_messages_across_two_turns() {
         .expect("turn 2 should succeed");
 
     // Verify both turns' messages are in the DB.
-    let messages: Vec<koda_core::persistence::Message> = env
-        .db
-        .load_context(&env.session_id, 100_000)
-        .await
-        .unwrap();
+    let messages: Vec<koda_core::persistence::Message> =
+        env.db.load_context(&env.session_id, 100_000).await.unwrap();
     let contents: Vec<String> = messages
         .iter()
         .filter_map(|m: &koda_core::persistence::Message| m.content.clone())
         .collect();
 
     assert!(
-        contents.iter().any(|c: &String| c.contains("first question")),
+        contents
+            .iter()
+            .any(|c: &String| c.contains("first question")),
         "DB should contain first user message"
     );
     assert!(

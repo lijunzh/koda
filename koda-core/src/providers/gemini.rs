@@ -1014,7 +1014,13 @@ mod tests {
         let resp: GenerateResponse = serde_json::from_str(json).unwrap();
         let candidates = resp.candidates.unwrap();
         assert_eq!(candidates.len(), 1);
-        let parts = candidates[0].content.as_ref().unwrap().parts.as_ref().unwrap();
+        let parts = candidates[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .parts
+            .as_ref()
+            .unwrap();
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].text.as_deref(), Some("Hello, world!"));
         assert!(parts[0].thought.is_none());
@@ -1031,7 +1037,13 @@ mod tests {
         }"#;
         let resp: GenerateResponse = serde_json::from_str(json).unwrap();
         let candidates = resp.candidates.unwrap();
-        let parts = candidates[0].content.as_ref().unwrap().parts.as_ref().unwrap();
+        let parts = candidates[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .parts
+            .as_ref()
+            .unwrap();
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].text.as_deref(), Some("Let me reason..."));
         assert_eq!(parts[0].thought, Some(true));

@@ -1094,7 +1094,8 @@ mod tests {
 
     #[test]
     fn stream_event_deserializes_message_start_with_usage() {
-        let json = r#"{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}"#;
+        let json =
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}"#;
         let event: StreamEvent = serde_json::from_str(json).unwrap();
         assert_eq!(event.event_type, "message_start");
         let message = event.message.unwrap();
