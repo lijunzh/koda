@@ -271,6 +271,9 @@ struct StreamDelta {
     thinking: Option<String>,
     #[serde(default)]
     partial_json: Option<String>,
+    /// Present on message_delta events: "end_turn", "max_tokens", "stop_sequence"
+    #[serde(default)]
+    stop_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -613,9 +616,14 @@ impl LlmProvider for AnthropicProvider {
                             }
                         }
                         "message_delta" => {
-                            // Final usage info
+                            // Final usage info + stop reason
                             if let Some(u) = event.usage {
                                 final_usage.completion_tokens = u.output_tokens;
+                            }
+                            if let Some(delta) = &event.delta
+                                && let Some(reason) = &delta.stop_reason
+                            {
+                                final_usage.stop_reason = reason.clone();
                             }
                         }
                         "message_start" => {

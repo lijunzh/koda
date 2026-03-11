@@ -135,7 +135,6 @@ struct StreamChatResponse {
 #[derive(Deserialize)]
 struct StreamChoice {
     delta: StreamDelta,
-    #[allow(dead_code)]
     finish_reason: Option<String>,
 }
 
@@ -403,6 +402,16 @@ impl LlmProvider for OpenAiCompatProvider {
                     }
 
                     for choice in &chunk.choices {
+                        // Capture finish_reason ("stop", "length", "tool_calls", etc.)
+                        if let Some(reason) = &choice.finish_reason {
+                            // OpenAI uses "length" for max_tokens, normalize
+                            final_usage.stop_reason = if reason == "length" {
+                                "max_tokens".to_string()
+                            } else {
+                                reason.clone()
+                            };
+                        }
+
                         // Reasoning content (o1/o3/o4-mini)
                         if let Some(reasoning) = &choice.delta.reasoning_content
                             && !reasoning.is_empty()
