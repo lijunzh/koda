@@ -38,7 +38,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
-use tui_textarea::TextArea;
+use ratatui_textarea::TextArea;
 
 /// All mutable TUI state, extracted from `run()`'s local variables.
 ///
