@@ -10,7 +10,6 @@ use crate::config::KodaConfig;
 use crate::db::Database;
 use crate::engine::{EngineCommand, EngineSink};
 use crate::inference::InferenceContext;
-use crate::persistence::Persistence;
 use crate::providers::{self, ImageData, LlmProvider};
 use crate::settings::Settings;
 
@@ -76,17 +75,6 @@ impl KodaSession {
             turn_id: turn_id.clone(),
         });
 
-        // Surface intent-based agent/skill suggestions
-        if let Ok(last_msg) = self.db.last_user_message(&self.id).await {
-            let suggestion = crate::intent::classify_intent(&last_msg);
-            if let (Some(ref agent), Some(ref reason)) = (suggestion.suggestion, suggestion.reason)
-            {
-                sink.emit(crate::engine::EngineEvent::Info {
-                    message: format!("\u{1f4a1} Tip: {reason} (agent: {agent})"),
-                });
-            }
-        }
-
         let result = crate::inference::inference_loop(InferenceContext {
             project_root: &self.agent.project_root,
             config,
@@ -103,21 +91,6 @@ impl KodaSession {
             cancel: self.cancel.clone(),
             cmd_rx,
             skip_probe: self.skip_probe,
-            original_prompt: {
-                // Extract the most recent user message as the original prompt
-                let ctx_size = config.model_settings.max_context_tokens;
-                let history = self
-                    .db
-                    .load_context(&self.id, ctx_size)
-                    .await
-                    .unwrap_or_default();
-                history
-                    .iter()
-                    .rev()
-                    .find(|m| m.role == crate::db::Role::User)
-                    .and_then(|m| m.content.clone())
-                    .unwrap_or_default()
-            },
         })
         .await;
 
