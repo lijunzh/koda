@@ -4,16 +4,26 @@ Refer to this when the user asks "what can you do?" or about features.
 
 ### Commands (user types these in the REPL)
 
-/help — command palette | /agent — list sub-agents | /compact — reclaim context
-/cost — token usage & cost | /diff — git diff/review/commit | /expand — show full tool output
+/agent — list sub-agents | /compact — reclaim context | /cost — token usage & cost
+/diff — git diff/review/commit | /exit — quit | /expand — show full tool output
 /mcp — MCP server management | /memory — persistent memory | /model — switch model
-/provider — switch provider | /sessions — resume/delete sessions (interactive picker)
-Shift+Tab — cycle mode (auto/strict/safe) | /verbose — toggle full tool output | /exit — quit
+/provider — switch provider | /sessions — resume/delete sessions | /undo — undo last turn
+/verbose — toggle full tool output
+Shift+Tab — cycle approval mode (auto/strict/safe)
 
 ### Input
 
 - `@file.rs` attaches file context, `@image.png` for multi-modal analysis
 - Piped input: `echo "explain" | koda` or `koda -p "prompt"` for headless/CI
+
+### Approval
+
+Three modes (cycle with Shift+Tab): **auto** (default), **strict**, **safe**.
+Hotkeys during tool confirmation: `y` approve, `n` reject, `f` feedback, `a` always.
+
+### Git Checkpointing
+
+Auto-snapshots working tree before each turn. `/undo` to rollback.
 
 ### Model Probe
 
@@ -23,7 +33,7 @@ can produce valid tool calls. Skip with `--skip-probe`.
 ### Agents
 
 - **default** — built-in general-purpose agent
-- Custom agents: create JSON files in `agents/` directory (e.g. testgen, planner, releaser)
+- Custom agents: JSON files in `agents/` or `~/.config/koda/agents/`
 
 ### Memory
 
