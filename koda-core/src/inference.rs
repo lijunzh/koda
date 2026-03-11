@@ -15,7 +15,6 @@ use crate::loop_guard::LoopDetector;
 use crate::persistence::Persistence;
 use crate::providers::{ChatMessage, ImageData, LlmProvider, StreamChunk, ToolCall};
 use crate::settings::Settings;
-use crate::task_phase::{PhaseInfo, PhaseTracker, ToolType, TurnSignal};
 use crate::tool_dispatch::{
     can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
 };
@@ -44,36 +43,6 @@ pub struct InferenceContext<'a> {
     pub cancel: CancellationToken,
     pub cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
     pub skip_probe: bool,
-    /// The user's original prompt for this turn (used by plan review).
-    pub original_prompt: String,
-}
-
-/// Run inference, executing tool calls until the LLM produces a text response.
-/// Format a plan artifact for user-visible display.
-///
-/// Shows the goal, each step with its effect tag, and the planner/review model.
-fn format_plan_detail(
-    plan: &crate::review::PlanArtifact,
-    planner_model: &str,
-    depth: crate::task_phase::ReviewDepth,
-) -> String {
-    use std::fmt::Write;
-    let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "\u{1f4cb} Plan submitted by {planner_model} (review: {depth})"
-    );
-    let _ = writeln!(out, "  Goal: {}", plan.goal);
-    for (i, step) in plan.steps.iter().enumerate() {
-        let effect_tag = match step.effect {
-            crate::tools::ToolEffect::ReadOnly => "read",
-            crate::tools::ToolEffect::RemoteAction => "remote",
-            crate::tools::ToolEffect::LocalMutation => "edit",
-            crate::tools::ToolEffect::Destructive => "destructive",
-        };
-        let _ = writeln!(out, "  {}. [{}] {}", i + 1, effect_tag, step.description);
-    }
-    out
 }
 
 pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
@@ -93,7 +62,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         cancel,
         cmd_rx,
         skip_probe,
-        original_prompt,
     } = ctx;
 
     // Capability probe: verify the model can produce structured output.
@@ -115,10 +83,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     let mut made_tool_calls = false;
     let mut loop_detector = LoopDetector::new();
     let sub_agent_cache = crate::sub_agent_cache::SubAgentCache::new();
-    // Intervention observer: learns human override patterns at phase gates.
-    // Auto-saves on drop (ObserverGuard), so all exit paths are covered.
-    let mut intervention_observer =
-        crate::intervention_observer::InterventionObserver::load_auto_save();
     let mut total_prompt_tokens: i64 = 0;
     let mut total_completion_tokens: i64 = 0;
     let mut total_cache_read_tokens: i64 = 0;
@@ -128,37 +92,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
 
     // Pre-build the base system message (avoids re-cloning 4-8KB per iteration)
     let base_system_prompt = system_prompt.to_string();
-    let mut recent_tool_names: Vec<String> = Vec::new();
-
-    // Phase tracker: structural detection of task progression.
-    // Classify intent from the last user message for phase expectations.
-    let intent = {
-        let history = db.load_context(session_id, available).await?;
-        history
-            .iter()
-            .rev()
-            .find(|m| m.role == crate::db::Role::User)
-            .and_then(|m| m.content.as_deref())
-            .map(crate::intent::classify_intent)
-            .map(|s| s.intent)
-            .unwrap_or(crate::intent::TaskIntent::Modify)
-    };
-
-    // Task signature: fingerprint for per-task-type learning.
-    let _task_signature = {
-        let history = db.load_context(session_id, available).await?;
-        let prompt = history
-            .iter()
-            .rev()
-            .find(|m| m.role == crate::db::Role::User)
-            .and_then(|m| m.content.as_deref())
-            .unwrap_or("");
-        crate::task_signature::TaskSignature::from_prompt(prompt)
-    };
-    let mut phase_tracker = PhaseTracker::new(&intent);
-    let mut re_plan_count: u32 = 0;
-    let mut cached_reviewer: Option<(crate::config::ProviderType, String)> = None;
-    let mut duplicate_plan_count: u32 = 0;
 
     loop {
         if iteration >= hard_cap {
@@ -192,29 +125,15 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             hard_cap += extra;
         }
 
-        // Inject task phase hint + progress + git context into system prompt
-        let phase = phase_tracker.current();
+        // Build system prompt with progress + git context
         let progress = crate::progress::get_progress_summary(db, session_id)
             .await
             .unwrap_or_default();
-        let flow_summary = db.phase_flow_summary(session_id).await.unwrap_or_default();
-        let flow_line = if flow_summary.is_empty() {
-            String::new()
-        } else {
-            format!("\n[Flow: {flow_summary}]")
-        };
         let git_line = crate::git::git_context(project_root)
             .map(|ctx| format!("\n{ctx}"))
             .unwrap_or_default();
-        let phase_hint = if phase == crate::task_phase::TaskPhase::Reviewing {
-            let depth = phase_tracker.select_review_depth(&intervention_observer);
-            phase.review_hint(depth)
-        } else {
-            phase.prompt_hint()
-        };
-        let phase_prompt =
-            format!("{base_system_prompt}\n\n{phase_hint}{progress}{flow_line}{git_line}",);
-        let system_message = ChatMessage::text("system", &phase_prompt);
+        let system_prompt_full = format!("{base_system_prompt}{progress}{git_line}");
+        let system_message = ChatMessage::text("system", &system_prompt_full);
 
         // Assemble context with sliding window
         let history = db.load_context(session_id, available).await?;
@@ -556,447 +475,8 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         )
         .await?;
 
-        // Advance phase tracker based on structural turn signal
-        {
-            let tool_names: Vec<&str> = tool_calls
-                .iter()
-                .map(|tc| tc.function_name.as_str())
-                .collect();
-            let after_bash = recent_tool_names.iter().rev().take(3).any(|n| n == "Bash");
-            let signal = TurnSignal {
-                has_tool_calls: !tool_calls.is_empty(),
-                tool_type: ToolType::classify(&tool_names),
-                after_bash,
-            };
-            if let Some(transition) = phase_tracker.advance(&signal) {
-                // Record auto transition (no human intervention at this gate)
-                intervention_observer.record_auto(transition.to);
-
-                // Show phase transition to user
-                let phase_icon = match transition.to {
-                    crate::task_phase::TaskPhase::Understanding => "🔍",
-                    crate::task_phase::TaskPhase::Planning => "📝",
-                    crate::task_phase::TaskPhase::Reviewing => "🔎",
-                    crate::task_phase::TaskPhase::Executing => "⚙️",
-                    crate::task_phase::TaskPhase::Verifying => "✔️",
-                    crate::task_phase::TaskPhase::Reporting => "📋",
-                };
-                sink.emit(EngineEvent::Info {
-                    message: format!(
-                        "{phase_icon} {} → {} ({}) — model: {}",
-                        transition.from, transition.to, transition.trigger, config.model,
-                    ),
-                });
-
-                // Persist to flow log (survives compaction)
-                let _ = db
-                    .insert_phase_transition(
-                        session_id,
-                        iteration,
-                        &transition.from.to_string(),
-                        &transition.to.to_string(),
-                        Some(transition.trigger),
-                    )
-                    .await;
-
-                // Log phase transition as a Role::Phase message
-                let _ = db
-                    .insert_message(
-                        session_id,
-                        &crate::db::Role::Phase,
-                        Some(&transition.as_message_content()),
-                        None,
-                        None,
-                        None,
-                    )
-                    .await;
-            }
-
-            // Escalation check: if we're in Executing and tool output
-            // suggests scope changed, demote to Understanding.
-            if matches!(
-                phase_tracker.current(),
-                crate::task_phase::TaskPhase::Executing | crate::task_phase::TaskPhase::Verifying
-            ) {
-                // Check recent tool results for escalation signals
-                let recent = db.load_context(session_id, 2000).await.unwrap_or_default();
-                let last_tool_output = recent
-                    .iter()
-                    .rev()
-                    .find(|m| m.role == crate::persistence::Role::Tool)
-                    .and_then(|m| m.content.as_deref())
-                    .unwrap_or("");
-
-                if let crate::escalation::EscalationSignal::Escalate { reason, .. } =
-                    crate::escalation::classify_error("tool", last_tool_output)
-                    && let Some(transition) = phase_tracker.demote_to_understanding("escalation")
-                {
-                    intervention_observer.record_auto(transition.to);
-
-                    // Show escalation to user
-                    sink.emit(EngineEvent::Warn {
-                        message: format!(
-                            "⚠️ Escalation: {} → {} — {reason}",
-                            transition.from, transition.to,
-                        ),
-                    });
-
-                    let _ = db
-                        .insert_phase_transition(
-                            session_id,
-                            iteration,
-                            &transition.from.to_string(),
-                            &transition.to.to_string(),
-                            Some("error_escalation"),
-                        )
-                        .await;
-
-                    // Inject reflection prompt
-                    let prompt = crate::escalation::escalation_prompt("tool", &reason);
-                    let _ = db
-                        .insert_message(
-                            session_id,
-                            &crate::persistence::Role::Phase,
-                            Some(&prompt),
-                            None,
-                            None,
-                            None,
-                        )
-                        .await;
-                }
-            }
-        }
-
-        // ── SubmitPlan interception: typed plan review handoff ─────────
-        // If the model called SubmitPlan, intercept it before normal tool execution.
-        // Parse the plan, run review (if not FastPath), handle verdict.
-        if let Some(submit_idx) = tool_calls
-            .iter()
-            .position(|tc| tc.function_name == "SubmitPlan")
-        {
-            // If a plan is already approved, show the plan but skip review
-            if phase_tracker.plan_approved() {
-                duplicate_plan_count += 1;
-
-                // Still show the plan so the user can see what was submitted
-                let submit_tc = &tool_calls[submit_idx];
-                let args: serde_json::Value =
-                    serde_json::from_str(&submit_tc.arguments).unwrap_or_default();
-                if let Ok(plan) = crate::review::PlanArtifact::from_tool_args(&args) {
-                    let plan_detail = format_plan_detail(
-                        &plan,
-                        &config.model,
-                        crate::task_phase::ReviewDepth::FastPath,
-                    );
-                    sink.emit(EngineEvent::Info {
-                        message: plan_detail,
-                    });
-                }
-
-                let msg = if duplicate_plan_count >= 2 {
-                    format!(
-                        "Plan already approved — ignoring duplicate SubmitPlan \
-                         ({duplicate_plan_count} duplicates). The model ({}) is \
-                         struggling with this task. Consider switching to a more \
-                         capable model with /model.",
-                        config.model,
-                    )
-                } else {
-                    "Plan already approved — ignoring duplicate SubmitPlan. \
-                        Proceed with execution."
-                        .into()
-                };
-                sink.emit(EngineEvent::Warn { message: msg });
-                tool_calls.remove(submit_idx);
-                if tool_calls.is_empty() {
-                    continue;
-                }
-            } else {
-                let submit_tc = &tool_calls[submit_idx];
-                let args: serde_json::Value =
-                    serde_json::from_str(&submit_tc.arguments).unwrap_or_default();
-
-                match crate::review::PlanArtifact::from_tool_args(&args) {
-                    Ok(plan) => {
-                        let base_depth = phase_tracker.select_review_depth(&intervention_observer);
-                        let submit_action = crate::review::decide_plan_submit(
-                            false, // outer guard already checked plan_approved
-                            &plan, base_depth,
-                        );
-                        let (depth, gate_reason) = match submit_action {
-                            crate::review::PlanSubmitAction::Review { depth, gate_reason } => {
-                                (depth, gate_reason)
-                            }
-                            // DuplicateIgnored can't happen here (outer guard)
-                            // ParseError can't happen here (plan already parsed)
-                            _ => unreachable!(),
-                        };
-
-                        // Show the full plan so the user can judge quality
-                        let plan_detail = format_plan_detail(&plan, &config.model, depth);
-                        sink.emit(EngineEvent::Info {
-                            message: plan_detail,
-                        });
-
-                        if depth != crate::task_phase::ReviewDepth::FastPath {
-                            // gate_reason already computed by decide_plan_submit
-
-                            // Show who is reviewing
-                            let reviewer_label =
-                                if depth == crate::task_phase::ReviewDepth::PeerReview {
-                                    cached_reviewer
-                                        .as_ref()
-                                        .map(|(_, m)| m.as_str())
-                                        .unwrap_or("cross-provider")
-                                        .to_string()
-                                } else {
-                                    config.model.clone()
-                                };
-                            sink.emit(EngineEvent::Info {
-                                message: format!("🔍 Reviewing ({depth} by {reviewer_label})..."),
-                            });
-
-                            // Run review (fresh context, reviewer-only tools)
-                            let review_result =
-                                if depth == crate::task_phase::ReviewDepth::PeerReview {
-                                    // PeerReview: different model, fallthrough on model-not-found
-                                    match crate::review::run_peer_review(
-                                        &plan,
-                                        &original_prompt,
-                                        &config.provider_type,
-                                        &mut cached_reviewer,
-                                    )
-                                    .await
-                                    {
-                                        Some(result) => result,
-                                        None => {
-                                            // No cross-provider available — downgrade to SelfReview
-                                            sink.emit(EngineEvent::Info {
-                                                message: "No cross-provider key available. \
-                                            Downgrading PeerReview → SelfReview."
-                                                    .into(),
-                                            });
-                                            crate::review::run_review(
-                                                &plan,
-                                                &original_prompt,
-                                                provider,
-                                                crate::task_phase::ReviewDepth::SelfReview,
-                                                &config.model,
-                                            )
-                                            .await
-                                        }
-                                    }
-                                } else {
-                                    // SelfReview: same provider, fresh context
-                                    crate::review::run_review(
-                                        &plan,
-                                        &original_prompt,
-                                        provider,
-                                        depth,
-                                        &config.model,
-                                    )
-                                    .await
-                                };
-
-                            match review_result {
-                                Ok(result) => {
-                                    // Persist review record
-                                    let transition_id = db
-                                        .insert_phase_transition(
-                                            session_id,
-                                            iteration,
-                                            "Planning",
-                                            "Reviewing",
-                                            Some("submit_plan"),
-                                        )
-                                        .await
-                                        .unwrap_or(0);
-
-                                    let reviewer_model_name = cached_reviewer
-                                        .as_ref()
-                                        .map(|(_, m)| m.as_str())
-                                        .unwrap_or(&config.model);
-                                    let plan_json =
-                                        serde_json::to_string(&plan).unwrap_or_default();
-                                    let _ = db
-                                        .insert_review_record(
-                                            transition_id,
-                                            &depth.to_string(),
-                                            reviewer_model_name,
-                                            &config.model,
-                                            &plan_json,
-                                            &result.verdict.to_string(),
-                                            Some(&result.reasoning),
-                                            None, // human_decision (future: user arbitration)
-                                            &gate_reason.to_string(),
-                                        )
-                                        .await;
-
-                                    match result.verdict {
-                                        crate::review::ReviewVerdict::Approved => {
-                                            sink.emit(EngineEvent::Info {
-                                                message: format!(
-                                                    "✅ Review passed ({reviewer_label}): {}",
-                                                    result.reasoning
-                                                ),
-                                            });
-                                            // Mark plan as approved, continue to execution
-                                            phase_tracker.approve_plan();
-                                        }
-                                        crate::review::ReviewVerdict::Rejected
-                                        | crate::review::ReviewVerdict::Revised => {
-                                            re_plan_count += 1;
-                                            if re_plan_count > 2 {
-                                                sink.emit(EngineEvent::Warn {
-                                                    message:
-                                                        "Re-plan budget exhausted (2 attempts). \
-                                                    Proceeding with current plan."
-                                                            .into(),
-                                                });
-                                                phase_tracker.approve_plan();
-                                            } else {
-                                                // Build structured rejection feedback
-                                                let suggested = result
-                                                    .suggested_changes
-                                                    .as_ref()
-                                                    .map(|c| {
-                                                        c.iter()
-                                                            .map(|s| format!("  - {s}"))
-                                                            .collect::<Vec<_>>()
-                                                            .join("\n")
-                                                    })
-                                                    .unwrap_or_default();
-
-                                                // Show full rejection detail to user
-                                                let user_msg = format!(
-                                                    "\u{274c} Review rejected (attempt {re_plan_count}/2)\n\
-                                                 Reviewer: {reviewer_label}\n\
-                                                 Verdict: {}\n\
-                                                 Reasoning: {}\n\
-                                                 {}",
-                                                    result.verdict,
-                                                    result.reasoning,
-                                                    if suggested.is_empty() {
-                                                        String::new()
-                                                    } else {
-                                                        format!("Suggested changes:\n{suggested}")
-                                                    }
-                                                );
-                                                sink.emit(EngineEvent::Info { message: user_msg });
-
-                                                // Feedback for the planner — explicit re-plan instruction
-                                                let feedback = format!(
-                                                    "Your plan was REJECTED by the reviewer ({depth}).\n\
-                                                 Reason: {}\n\
-                                                 {}\n\n\
-                                                 You MUST revise your plan and call `submit_plan` again \
-                                               with an improved plan. Do NOT respond with text — \
-                                                 call the submit_plan tool.",
-                                                    result.reasoning,
-                                                    if suggested.is_empty() {
-                                                        String::new()
-                                                    } else {
-                                                        format!("Suggested changes:\n{suggested}")
-                                                    }
-                                                );
-
-                                                // Insert feedback so the planner sees it
-                                                let _ = db
-                                                    .insert_message(
-                                                        session_id,
-                                                        &Role::Phase,
-                                                        Some(&feedback),
-                                                        None,
-                                                        None,
-                                                        None,
-                                                    )
-                                                    .await;
-
-                                                // Stay in Planning phase (don't demote
-                                                // to Understanding — the planner already
-                                                // understands the task, it just needs to
-                                                // revise the plan)
-                                                phase_tracker.invalidate_plan();
-
-                                                // Skip normal tool execution, re-enter loop
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    // Review call failed — log and proceed (don't block execution)
-                                    sink.emit(EngineEvent::Warn {
-                                        message: format!(
-                                            "Review call failed: {e}. Proceeding without review."
-                                        ),
-                                    });
-                                    phase_tracker.approve_plan();
-                                }
-                            }
-                        } else {
-                            // FastPath: no review, just approve
-                            phase_tracker.approve_plan();
-
-                            // Inject feedback so the model knows its plan was approved
-                            // and should proceed to execution.
-                            let approval_msg = format!(
-                                "Plan approved (fast_path). Proceed to execute the plan. \
-                             Goal: {}",
-                                plan.goal
-                            );
-                            let _ = db
-                                .insert_message(
-                                    session_id,
-                                    &Role::Phase,
-                                    Some(&approval_msg),
-                                    None,
-                                    None,
-                                    None,
-                                )
-                                .await;
-                        }
-                    }
-                    Err(e) => {
-                        sink.emit(EngineEvent::Warn {
-                            message: format!("Invalid SubmitPlan: {e}. Ignoring."),
-                        });
-                    }
-                }
-
-                // Remove SubmitPlan from tool_calls so it doesn't get dispatched normally
-                tool_calls.remove(submit_idx);
-
-                // If no other tool calls remain, continue to next iteration
-                if tool_calls.is_empty() {
-                    continue;
-                }
-            } // close else (plan not already approved)
-        }
-
         // If no tool calls, we already streamed the response — done
-        // UNLESS we're waiting for a re-plan (rejected plan, re_plan_count > 0)
         if tool_calls.is_empty() {
-            // Use extracted decision logic (testable in review.rs)
-            match crate::review::decide_text_response(re_plan_count, phase_tracker.plan_approved())
-            {
-                crate::review::TextResponseAction::NudgeReplan { attempt } => {
-                    sink.emit(EngineEvent::Info {
-                        message: format!(
-                            "⚠️ Model responded with text instead of submit_plan \
-                             (re-plan attempt {attempt}/2). Nudging..."
-                        ),
-                    });
-                    let nudge = "You must revise and resubmit your plan by calling \
-                        the `submit_plan` tool. Do NOT respond with text — call the tool.";
-                    let _ = db
-                        .insert_message(session_id, &Role::Phase, Some(nudge), None, None, None)
-                        .await;
-                    continue;
-                }
-                crate::review::TextResponseAction::EndTurn => {}
-            }
-
             // Detect why the model stopped
             if usage.stop_reason == "max_tokens" {
                 // Model was truncated — it didn't finish, it ran out of output tokens
@@ -1070,9 +550,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let _checkpoint_sha = crate::git::checkpoint(project_root);
 
         // Execute tool calls — parallelize when possible
-        // (Lite tier models must use sequential to avoid confusion)
-        let pi = PhaseInfo::from(&phase_tracker);
-        if tool_calls.len() > 1 && can_parallelize(&tool_calls, mode, pi, project_root) {
+        if tool_calls.len() > 1 && can_parallelize(&tool_calls, mode, project_root) {
             execute_tools_parallel(
                 &tool_calls,
                 project_root,
@@ -1084,7 +562,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 sink,
                 cancel.clone(),
                 &sub_agent_cache,
-                pi,
             )
             .await?;
         } else if tool_calls.len() > 1 {
@@ -1103,7 +580,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 cancel.clone(),
                 cmd_rx,
                 &sub_agent_cache,
-                pi,
             )
             .await?;
         } else {
@@ -1120,14 +596,8 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 cancel.clone(),
                 cmd_rx,
                 &sub_agent_cache,
-                pi,
             )
             .await?;
-        }
-
-        // Track tool names for task phase detection.
-        for tc in &tool_calls {
-            recent_tool_names.push(tc.function_name.clone());
         }
 
         // Loop detection: same tool+args repeated REPEAT_THRESHOLD times → stop immediately.

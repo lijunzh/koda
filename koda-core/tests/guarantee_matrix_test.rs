@@ -24,17 +24,11 @@
 //! Columns: Auto, Strict, Safe
 
 use koda_core::approval::{ApprovalMode, ToolApproval, check_tool};
-use koda_core::task_phase::PhaseInfo;
 use koda_core::tools::ToolEffect;
 use std::path::Path;
 
 fn root() -> &'static Path {
     Path::new("/home/user/project")
-}
-
-/// PhaseInfo for auto mode with plan approved (maximum autonomy).
-fn executing() -> PhaseInfo {
-    PhaseInfo::delegated()
 }
 
 /// Helper: check a tool in all three modes and return (auto, strict, safe).
@@ -47,7 +41,6 @@ fn check_all(
         tool,
         args,
         ApprovalMode::Auto,
-        executing(),
         Some(root()),
         mcp_effect,
         None,
@@ -56,7 +49,6 @@ fn check_all(
         tool,
         args,
         ApprovalMode::Strict,
-        executing(),
         Some(root()),
         mcp_effect,
         None,
@@ -65,7 +57,6 @@ fn check_all(
         tool,
         args,
         ApprovalMode::Safe,
-        executing(),
         Some(root()),
         mcp_effect,
         None,
@@ -277,7 +268,6 @@ fn matrix_delegation_blocks_unauthorized_tool() {
         "Write",
         &args,
         ApprovalMode::Auto,
-        executing(),
         Some(root()),
         None,
         Some(&scope),
@@ -302,7 +292,6 @@ fn matrix_delegation_blocks_write_outside_grant() {
         "Write",
         &args,
         ApprovalMode::Auto,
-        executing(),
         Some(root()),
         None,
         Some(&scope),
@@ -327,7 +316,6 @@ fn matrix_delegation_allows_write_inside_grant() {
         "Write",
         &args,
         ApprovalMode::Auto,
-        executing(),
         Some(root()),
         None,
         Some(&scope),

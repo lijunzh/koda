@@ -158,56 +158,6 @@ impl Database {
             }
         }
 
-        // Phase transition flow log (#320 Phase 2).
-        // Survives compaction — separate from conversation history.
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS phase_transitions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                iteration INTEGER NOT NULL,
-                from_phase TEXT NOT NULL,
-                to_phase TEXT NOT NULL,
-                trigger TEXT,
-                autonomy TEXT,
-                review_depth TEXT,
-                human_response TEXT,
-                created_at TEXT DEFAULT (datetime('now')),
-                FOREIGN KEY(session_id) REFERENCES sessions(id)
-            );",
-        )
-        .execute(pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_phase_transitions_session \
-             ON phase_transitions(session_id);",
-        )
-        .execute(pool)
-        .await?;
-
-        // Review records — child table of phase_transitions.
-        // Only SelfReview and PeerReview create rows (not FastPath).
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS review_records (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                phase_transition_id INTEGER NOT NULL REFERENCES phase_transitions(id),
-                review_depth TEXT NOT NULL CHECK(review_depth IN ('self_review', 'peer_review')),
-                reviewer_model TEXT NOT NULL,
-                planner_model TEXT NOT NULL,
-                plan_summary TEXT NOT NULL,
-                reviewer_verdict TEXT NOT NULL CHECK(reviewer_verdict IN ('approved', 'rejected', 'revised')),
-                reviewer_reasoning TEXT,
-                human_decision TEXT CHECK(human_decision IN ('accepted_plan', 'accepted_review', 'manual_edit', 'aborted')),
-                gate_reason TEXT NOT NULL CHECK(gate_reason IN (
-                    'destructive_floor', 'remote_action_floor', 'complexity_threshold',
-                    'observer_auto', 'peer_review_disagreement', 're_plan_exhausted'
-                )),
-                created_at TEXT DEFAULT (datetime('now'))
-            );",
-        )
-        .execute(pool)
-        .await?;
-
         Ok(())
     }
 }
@@ -729,92 +679,6 @@ impl Persistence for Database {
     async fn set_todo(&self, session_id: &str, content: &str) -> Result<()> {
         self.set_metadata(session_id, "todo", content).await
     }
-
-    // ── Phase transition flow log ────────────────────────────
-
-    /// Record a phase transition in the flow log.
-    async fn insert_phase_transition(
-        &self,
-        session_id: &str,
-        iteration: u32,
-        from_phase: &str,
-        to_phase: &str,
-        trigger: Option<&str>,
-    ) -> Result<i64> {
-        let result = sqlx::query(
-            "INSERT INTO phase_transitions \
-             (session_id, iteration, from_phase, to_phase, trigger) \
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(session_id)
-        .bind(iteration as i64)
-        .bind(from_phase)
-        .bind(to_phase)
-        .bind(trigger)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.last_insert_rowid())
-    }
-
-    /// Insert a review record (child of a phase transition).
-    #[allow(clippy::too_many_arguments)]
-    async fn insert_review_record(
-        &self,
-        phase_transition_id: i64,
-        review_depth: &str,
-        reviewer_model: &str,
-        planner_model: &str,
-        plan_summary: &str,
-        reviewer_verdict: &str,
-        reviewer_reasoning: Option<&str>,
-        human_decision: Option<&str>,
-        gate_reason: &str,
-    ) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO review_records \
-             (phase_transition_id, review_depth, reviewer_model, planner_model, \
-              plan_summary, reviewer_verdict, reviewer_reasoning, human_decision, gate_reason) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(phase_transition_id)
-        .bind(review_depth)
-        .bind(reviewer_model)
-        .bind(planner_model)
-        .bind(plan_summary)
-        .bind(reviewer_verdict)
-        .bind(reviewer_reasoning)
-        .bind(human_decision)
-        .bind(gate_reason)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// Load a compact phase flow summary for a session.
-    ///
-    /// Returns a string like: `Observe(3) → Plan(1) → Review(1) → Act(7)`
-    async fn phase_flow_summary(&self, session_id: &str) -> Result<String> {
-        let rows: Vec<PhaseTransitionRow> = sqlx::query_as(
-            "SELECT to_phase, COUNT(*) as count \
-             FROM phase_transitions \
-             WHERE session_id = ? \
-             GROUP BY to_phase \
-             ORDER BY MIN(id)",
-        )
-        .bind(session_id)
-        .fetch_all(&self.pool)
-        .await?;
-
-        if rows.is_empty() {
-            return Ok(String::new());
-        }
-
-        let parts: Vec<String> = rows
-            .iter()
-            .map(|r| format!("{}({})", r.to_phase, r.count))
-            .collect();
-        Ok(parts.join(" \u{2192} "))
-    }
 }
 
 /// Internal row type for sqlx deserialization.
@@ -831,13 +695,6 @@ struct MessageRow {
     cache_read_tokens: Option<i64>,
     cache_creation_tokens: Option<i64>,
     thinking_tokens: Option<i64>,
-}
-
-/// Internal row type for phase transition queries.
-#[derive(sqlx::FromRow)]
-struct PhaseTransitionRow {
-    to_phase: String,
-    count: i64,
 }
 
 /// Session metadata for listing.
@@ -1436,45 +1293,5 @@ mod tests {
 
         let msg = db.last_assistant_message(&session).await.unwrap();
         assert_eq!(msg, "Done!");
-    }
-
-    #[tokio::test]
-    async fn test_phase_transitions_insert_and_summary() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = Database::open(dir.path().join("test.db").as_path())
-            .await
-            .unwrap();
-        let session = db.create_session("test", dir.path()).await.unwrap();
-
-        db.insert_phase_transition(&session, 1, "Understanding", "Planning", Some("text_only"))
-            .await
-            .unwrap();
-        db.insert_phase_transition(&session, 2, "Planning", "Reviewing", Some("text_only"))
-            .await
-            .unwrap();
-        db.insert_phase_transition(&session, 3, "Reviewing", "Executing", Some("tool:Edit"))
-            .await
-            .unwrap();
-        db.insert_phase_transition(&session, 5, "Executing", "Executing", Some("tool:Bash"))
-            .await
-            .unwrap();
-
-        let summary = db.phase_flow_summary(&session).await.unwrap();
-        assert!(summary.contains("Planning"));
-        assert!(summary.contains("Reviewing"));
-        assert!(summary.contains("Executing"));
-        assert!(summary.contains("\u{2192}")); // arrow
-    }
-
-    #[tokio::test]
-    async fn test_phase_flow_summary_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = Database::open(dir.path().join("test.db").as_path())
-            .await
-            .unwrap();
-        let session = db.create_session("test", dir.path()).await.unwrap();
-
-        let summary = db.phase_flow_summary(&session).await.unwrap();
-        assert!(summary.is_empty());
     }
 }
