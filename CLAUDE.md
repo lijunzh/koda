@@ -27,34 +27,25 @@ Koda adapts behavior based on observed model quality:
   - Fallback: `model_context.rs` lookup table
 - **DiscoverTools** (`tools/discover.rs`): on-demand tool schema injection by category
 - **RecallContext** (`tools/recall.rs`): search/recall older conversation turns
-- **Intent classifier** (`intent.rs`): rule-based task routing to agents/skills
 - **Rate limit retry**: exponential backoff (2/4/8/16/32s) for 429 errors
 - **Built-in agents**: default, testgen, releaser, scout, planner, verifier
 
-### v0.1.4 Architecture (Phase-Gated Safety)
+### v0.1.4 Architecture (Simplified Safety)
 
-Koda tracks agent process via a six-phase state machine:
+Approval is per-tool, not per-phase. Three modes (Auto/Strict/Safe) control
+how mutations are gated:
 
-- **PhaseTracker** (`task_phase.rs`): Understanding → Planning → Reviewing → Executing → Verifying → Reporting
-  - Structural detection: `(current_phase, has_tool_calls, tool_type)` decision tree
-  - `PhaseTransition` records: from, to, trigger label
-  - Escalation: Executing → Understanding on tool failure
-  - 封驳 (rejection): Reviewing → Planning on review failure
-- **Phase-aware approval** (`approval.rs`): `check_tool()` consults `PhaseInfo`
-  - Understanding/Planning: writes need confirmation in Auto mode
-  - Executing + plan_approved: writes auto-approved
-  - Destructive ops + outside-project writes: hardcoded NeedsConfirmation floor
-- **Role::Phase** (`db.rs`): phase transitions logged as messages
-  - Line 1: human-readable summary (LLM sees for self-awareness)
-  - Line 2: JSON metadata (InterventionObserver parses)
-- **InterventionObserver** (`intervention_observer.rs`): per-phase autonomy learning
-  - Records auto/override data points at phase gates
-  - Persists to `~/.config/koda/intervention_priors.json`
-  - Not yet wired into inference loop (data structure + persistence only)
+- **ToolEffect** (`approval.rs`): ReadOnly / LocalMutation / Destructive / RemoteAction
+  - Auto: local mutations auto-approved, destructive/remote need confirmation
+  - Strict: everything needs confirmation
+  - Safe: all mutations blocked
+- **Hardcoded floors**: destructive ops and outside-project writes always need
+  confirmation regardless of mode
 - **Folder scoping** (`approval.rs`, `bash_safety.rs`):
   - `is_outside_project()`: checks file tool paths against project_root
   - `lint_bash_paths()`: heuristic bash command analysis for cd/path escapes
   - Startup warning when project_root == $HOME
+- **Model probe** (`model_probe.rs`): one-time structured output test at session start
 
 ## Documentation Rules
 
@@ -112,8 +103,6 @@ koda/
 │   │   ├── model_context.rs# Model → context window size lookup table (fallback)
 │   │   ├── model_tier.rs   # ModelTier enum (Strong/Standard/Lite) prompt strategies
 │   │   ├── tier_observer.rs# Runtime tier promotion/demotion based on tool-use quality
-│   │   ├── intent.rs       # Rule-based intent classifier (task → agent/skill)
-│   │   ├── task_phase.rs   # Task phase state machine (Understanding→Verifying)
 │   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
 │   │   ├── runtime_env.rs  # Thread-safe runtime env for API keys
 │   │   ├── version.rs      # Background version checker (queries crates.io)

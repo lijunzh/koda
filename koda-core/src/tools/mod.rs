@@ -91,7 +91,7 @@ pub fn classify_tool(name: &str) -> ToolEffect {
 /// Returns true if the tool performs a mutating operation.
 ///
 /// Convenience wrapper over [`classify_tool`] for call sites that only
-/// need a bool (e.g., loop guard, phase tracker).
+/// need a bool (e.g., loop guard).
 pub fn is_mutating_tool(name: &str) -> bool {
     !matches!(classify_tool(name), ToolEffect::ReadOnly)
 }
