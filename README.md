@@ -57,9 +57,8 @@ echo "explain this" | koda        # Piped input
 - **Lazy tool loading** — Strong models get 9 core tools; discover more on demand via `DiscoverTools`
 - **Smart context** — queries context window from provider API at startup (falls back to lookup table), rate limit retry with backoff, auto-compact
 - **Approval modes** — auto (default) / strict (confirm writes) / safe (read-only) via `Shift+Tab`
-- **Phase-aware gating** — six-phase state machine (Understanding → Executing → Verifying) gates write approval based on where the agent is in its process
+- **Per-tool safety gates** — destructive ops and outside-project writes always need confirmation; local mutations auto-approved in auto mode
 - **Folder-scoped permissions** — writes outside `project_root` always require confirmation; bash commands with path escapes are flagged
-- **Learned autonomy** — `InterventionObserver` tracks human override patterns at phase gates and adapts autonomy over time
 - **Diff preview** — see exactly what changes before approving Edit, Write, Delete
 - **Loop detection** — catches repeated tool calls with configurable iteration caps
 - **Parallel execution** — concurrent tool calls and sub-agent orchestration

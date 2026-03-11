@@ -306,15 +306,7 @@ impl Persistence for Database {
             // - Old assistant text: moderate truncation (1000 chars)
             // - User messages: keep full (they're the source of intent)
             if idx >= recency_threshold {
-                if msg.role == Role::Phase {
-                    // Phase messages: keep only the human-readable summary when old.
-                    // Strip the JSON metadata to save tokens.
-                    if let Some(ref content) = msg.content
-                        && let Some(nl) = content.find('\n')
-                    {
-                        msg.content = Some(content[..nl].to_string());
-                    }
-                } else if msg.role == Role::Tool
+                if msg.role == Role::Tool
                     && let Some(ref content) = msg.content
                     && content.len() > 200
                 {

@@ -237,7 +237,6 @@ fn resolve_effect(tool_name: &str, args: &serde_json::Value) -> ToolEffect {
     base
 }
 
-/// Phase-aware gating for Auto mode.
 /// Extract the file path that a write tool targets.
 fn extract_write_path<'a>(tool_name: &str, args: &'a serde_json::Value) -> Option<&'a str> {
     match tool_name {
@@ -250,7 +249,7 @@ fn extract_write_path<'a>(tool_name: &str, args: &'a serde_json::Value) -> Optio
 }
 
 /// Whether a file tool targets a path outside the project root (#218).
-/// Hardcoded floor: always NeedsConfirmation regardless of mode or phase.
+/// Hardcoded floor: always NeedsConfirmation regardless of mode.
 fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &Path) -> bool {
     let path_arg = match tool_name {
         "Write" | "Edit" | "Delete" => args
@@ -371,8 +370,7 @@ mod tests {
 
     #[test]
     fn test_auto_approves_non_destructive_in_executing() {
-        // In Auto mode during Executing with plan_approved, non-destructive
-        // mutating tools are auto-approved.
+        // In Auto mode, non-destructive mutating tools are auto-approved.
         for tool in ["Write", "Edit", "Bash", "WebFetch"] {
             assert_eq!(
                 check_tool(
