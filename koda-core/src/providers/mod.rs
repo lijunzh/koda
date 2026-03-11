@@ -145,15 +145,15 @@ pub fn build_http_client(base_url: Option<&str>) -> reqwest::Client {
                     let pass = crate::runtime_env::get("PROXY_PASS");
                     if let (Some(u), Some(p)) = (user, pass) {
                         proxy = proxy.basic_auth(&u, &p);
-                        tracing::debug!("Using proxy with basic auth: {url}");
+                        tracing::debug!("Using proxy with basic auth (credentials redacted)");
                     }
                 }
 
                 builder = builder.proxy(proxy);
-                tracing::debug!("Using proxy: {url}");
+                tracing::debug!("Using proxy: {}", redact_url_credentials(url));
             }
             Err(e) => {
-                tracing::warn!("Invalid proxy URL '{url}': {e}");
+                tracing::warn!("Invalid proxy URL '{}': {e}", redact_url_credentials(url));
             }
         }
     }
@@ -175,6 +175,21 @@ pub fn build_http_client(base_url: Option<&str>) -> reqwest::Client {
     }
 
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Redact embedded credentials from a URL.
+///
+/// `http://user:pass@proxy:8080` → `http://***:***@proxy:8080`
+fn redact_url_credentials(url: &str) -> String {
+    // Pattern: scheme://user:pass@host...
+    if let Some(at_pos) = url.find('@')
+        && let Some(scheme_end) = url.find("://")
+    {
+        let prefix = &url[..scheme_end + 3]; // "http://"
+        let host_part = &url[at_pos..]; // "@proxy:8080/..."
+        return format!("{prefix}***:***{host_part}");
+    }
+    url.to_string()
 }
 
 /// A streaming chunk from the LLM.
