@@ -25,7 +25,7 @@ impl std::fmt::Debug for EmailConfig {
             .field("imap_port", &self.imap_port)
             .field("smtp_host", &self.smtp_host)
             .field("smtp_port", &self.smtp_port)
-            .field("username", &self.username)
+            .field("username", &"[REDACTED]")
             .field("password", &"[REDACTED]")
             .finish()
     }
