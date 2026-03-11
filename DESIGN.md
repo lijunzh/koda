@@ -258,47 +258,21 @@ rules and should be tracked separately.
 fixed `menu_area` below the status bar inside the ratatui viewport. The
 conversation is always visible. No fullscreen takeover, ever.
 
-**Principle**: *The conversation is the primary surface. Interactions happen
+**Rationale**: *The conversation is the primary surface. Interactions happen
 within it, not on top of it.* This is the common thread across Claude Code
 and Codex. Goose's stepped wizards and Code Puppy's fullscreen forms violate
 this — users find them tedious and disorienting.
 
-**Viewport layout** (established in [#229](https://github.com/lijunzh/koda/pull/229)):
-```
-[LLM output in terminal scrollback]   ← always visible
-─── 🐻 ─
-⚡> input                              ← fixed, never moves
-────────────────────────────────
-model │ auto │ 0%                      ← fixed, hugs input
-  [menu_area]                          ← dropdown / approval / wizard
-  [empty when inactive]                ← looks like terminal bottom
-```
+**Key choices**:
+- Per-command state machine enums, not a generic wizard framework (YAGNI)
+- Power-user escape hatch: positional args skip wizards entirely
+- No "go back" — Esc to cancel and restart is fine for 2–4 step flows
 
-Input + status bar form a fixed “center of mass” panel. The 12-line viewport
-never resizes for menus. Menu content appears below the status bar and
-disappears on dismiss.
+For the viewport layout diagram and interaction patterns, see
+[docs/user-guide.md](docs/user-guide.md#slash-commands).
 
-**Three interaction patterns**, all sharing `menu_area`:
-
-| Pattern | Widget | Examples |
-|---------|--------|----------|
-| 1a. Select | `DropdownState<T>` with type-to-filter, scroll | `/model`, `/provider`, `/` commands, `@file` |
-| 1b. Confirm | Compact approval + optional diff preview | Tool approval, file edits |
-| 2. Multi-step | Sequential inline prompts with compact trail | `/provider` setup, `/mcp add`, onboarding |
-
-**Key architectural decisions**:
-- Per-command state machine enums (`ProviderWizard`, `McpAddWizard`), not a
-  generic wizard framework — only 3 commands need multi-step flows (YAGNI)
-- Shared `WizardView { trail, active_widget }` for rendering; command-specific
-  logic in typed enums with exhaustive `match`
-- Power-user escape hatch: positional args skip the wizard entirely
-  (`/provider anthropic sk-ant-xxx` → zero prompts)
-- Keystore eliminates repeat wizards — most provider switches are instant
-- Shared `validate_and_build` between wizard completion and positional parser (DRY)
-- No “go back” in v0.2 — Esc to cancel and restart is fine for 2–4 step flows
-
-**Competitive analysis and detailed design**: [#230](https://github.com/lijunzh/koda/issues/230)
-**Implementation (slash dropdown)**: [#229](https://github.com/lijunzh/koda/pull/229)
+**Competitive analysis**: [#230](https://github.com/lijunzh/koda/issues/230)
+**Implementation**: [#229](https://github.com/lijunzh/koda/pull/229)
 
 ### 15. No `?` Help Overlay — The Dropdown Is Help (v0.1.4)
 
@@ -339,97 +313,41 @@ thinking IS the planning.
 confirmation, regardless of approval mode. Bash commands are
 linted for path escapes before execution.
 
-**Design reference**: [#218](https://github.com/lijunzh/koda/issues/218)
+**Rationale**: Defense in depth with three layers — path resolution at
+execution, path checks at approval, and heuristic bash linting. The LLM
+is semi-trusted (can make mistakes, not adversarial). The concern is
+accidental blast radius, not targeted attacks.
 
-**Three layers** (defense in depth):
-1. `safe_resolve_path()` (existed pre-v0.1.4): blocks path traversal at
-   the execution layer for file tools.
-2. `is_outside_project()` (v0.1.4): checks path args at the approval layer
-   with a clear warning. Hardcoded floor of NeedsConfirmation.
-3. `lint_bash_paths()` (v0.1.4): heuristic analysis of bash commands for
-   `cd` escapes, absolute paths, and `../` traversals.
-
-**Bash lint decisions**:
-- `cd /outside`: flagged
-- `cd ~` / bare `cd`: flagged (resolves to $HOME)
-- `cd $VAR` / `cd $(cmd)`: ignored (can't resolve statically)
-- Chained `cd a && cd b`: first target only
-- Symlinks: deferred to v0.1.5 (#280)
-
-**Threat model**: The LLM is semi-trusted (can make mistakes, not adversarial).
-The concern is accidental blast radius, not targeted attacks. The lint catches
-common accidental escapes; OS-level sandboxing (seccomp/landlock) is a v1.0
-concern.
+**Design reference**: [#218](https://github.com/lijunzh/koda/issues/218).
+For operational details, see [docs/user-guide.md](docs/user-guide.md#security-model).
 
 ### 18. Security Model (v0.1.4)
 
 **Decision**: Per-tool safety classification with three approval modes and
 hardcoded floors that override mode settings for high-risk operations.
 
-**Approval modes** (cycle with `Shift+Tab`):
+**Rationale**: The LLM is semi-trusted — capable of mistakes, not adversarial.
+Every tool call is classified into one of four effects (ReadOnly, LocalMutation,
+Destructive, RemoteAction). Approval modes (Auto/Strict/Safe) determine which
+effects need confirmation. Hardcoded floors ensure destructive operations and
+outside-project writes always require confirmation regardless of mode.
 
-| Mode | Description | Default |
-|------|-------------|--------|
-| **Auto** | Local mutations auto-approved. Destructive operations and outside-project writes always require confirmation. | ✅ |
-| **Strict** | Every non-read action requires explicit user confirmation. | |
-| **Safe** | Local-read-only. No filesystem mutations. Remote actions (GitHub CLI, MCP readOnly) allowed. | |
+For approval mode tables, tool effect matrix, and operational details, see
+[docs/user-guide.md](docs/user-guide.md#security-model).
 
-**Tool effect classification** — every tool call is classified:
+**Key design choices**:
+- Sub-agent delegation via `DelegationScope` (mode clamping, filesystem grants,
+  tool allowlists) — enforcement is a hard gate, not a log
+- MCP tool classification from schema annotations (`readOnlyHint`, `destructiveHint`)
+  with `.mcp.json` overrides taking precedence
+- No kernel-level sandboxing yet — seccomp/landlock is a v1.0 concern
 
-| Effect | Description | Auto | Strict | Safe |
-|--------|-------------|------|--------|------|
-| **ReadOnly** | No side-effects (file reads, grep, git status) | ✅ auto | ✅ auto | ✅ auto |
-| **RemoteAction** | Remote-only side-effects (gh CLI, WebFetch) | ✅ auto | ✅ auto | ✅ auto |
-| **LocalMutation** | Local filesystem writes (Write, Edit, cargo test) | ✅ auto | ⚠️ confirm | ❌ blocked |
-| **Destructive** | Irreversible (rm -rf, git push --force, sed -i) | ⚠️ confirm | ⚠️ confirm | ❌ blocked |
-
-**Guarantee matrix**:
-
-| Action | Auto | Strict | Safe |
-|--------|------|--------|------|
-| Read files inside project | ✅ | ✅ | ✅ |
-| Read files outside project | ✅ (log) | ✅ | ✅ |
-| Write files inside project | ✅ auto | ⚠️ confirm | ❌ blocked |
-| Write files outside project | ⚠️ confirm | ⚠️ confirm | ❌ blocked |
-| Delete files | ⚠️ confirm | ⚠️ confirm | ❌ blocked |
-| Safe bash (grep, git status) | ✅ | ✅ | ✅ |
-| Bash with write side-effect (>, tee) | ✅ auto | ⚠️ confirm | ❌ blocked |
-| Destructive bash (rm -rf, force push) | ⚠️ confirm | ⚠️ confirm | ❌ blocked |
-| Bash with path escape (cd /tmp) | ⚠️ confirm | ⚠️ confirm | ❌ blocked |
-| Sub-agent invocation | ✅ | ✅ | ✅ |
-| Sub-agent writes | ✅ (DelegationScope) | ⚠️ confirm | ❌ blocked |
-| MCP tool (readOnly: true) | ✅ | ✅ | ✅ |
-| MCP tool (readOnly: false) | ✅ auto | ⚠️ confirm | ❌ blocked |
-| MCP tool (config override) | Per override | Per override | Per override |
-| MemoryWrite | ✅ auto | ⚠️ confirm | ❌ blocked |
-| WebFetch (GET) | ✅ | ✅ | ✅ |
-| gh issue/pr (RemoteAction) | ✅ | ✅ | ✅ |
-
-**Hardcoded safety floors** (apply regardless of mode):
-1. Writes outside project root → NeedsConfirmation (Auto/Strict) or Blocked (Safe)
-2. Bash path escape (cd /tmp, absolute paths outside project) → NeedsConfirmation
-3. Destructive operations (Delete, rm -rf, force push) → NeedsConfirmation in Auto
-4. Symlink escape → `canonicalize()` resolves symlinks before path checks
-
-**Sub-agent delegation** — `DelegationScope` constrains child agents:
-- Mode clamping: child can never exceed parent (Safe parent → Safe child only)
-- Filesystem grant: `ReadOnly`, `Scoped { read_paths, write_paths }`, or `FullProject`
-- Tool allowlist: optional list of permitted tools
-- Delegation depth: `can_delegate` controls whether sub-agents can spawn further sub-agents
-- Enforcement is a **hard gate** in `check_tool()`, not a log
-
-**MCP tool classification** from schema annotations:
-- `readOnlyHint: true` → ReadOnly (auto-approved in all modes)
-- `destructiveHint: true` → Destructive (confirm in Auto+Strict)
-- Neither → LocalMutation (conservative default)
-- Config overrides in `.mcp.json` `toolOverrides` take precedence
-
-**Accepted risks** (gaps intentionally not addressed):
-1. **No kernel-level sandboxing** — file write blocking is in-process, not seccomp/landlock. Mitigation: LLM would need to generate + compile + execute an exploit.
-2. **Shell command parsing is heuristic** — complex pipelines and eval tricks can bypass. Mitigation: unknown commands default to unsafe; `DANGEROUS_PATTERNS` catches common evasion.
-3. **MCP readOnly is trust-based** — malicious server could lie about readOnly. Mitigation: config overrides let users distrust specific tools.
-4. **Auto mode sub-agents with FullProject scope** — if LLM doesn't narrow scope, sub-agent has full write access. Mitigation: user's chosen trade-off; DelegationScope exists for narrowing.
-5. **Hardcoded floors don't return Blocked in Safe mode** — outside-project writes show confirm prompt instead of clean block. Mitigation: confirm dialog has no "approve" action in Safe mode.
+**Accepted risks**:
+1. No kernel-level sandboxing — in-process only
+2. Shell command parsing is heuristic — complex pipelines can bypass
+3. MCP `readOnly` is trust-based — malicious servers could lie
+4. Auto mode sub-agents with `FullProject` scope get full write access
+5. Outside-project writes in Safe mode show confirm prompt instead of clean block
 
 ### 19. ~~Review Depth as Isolation Boundaries~~ (v0.1.4 — RETIRED in #355)
 
