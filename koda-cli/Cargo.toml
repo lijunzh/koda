@@ -38,7 +38,7 @@ syntect = { version = "5", default-features = false, features = ["default-syntax
 once_cell = "1"
 
 # TUI (inline viewport: input + status bar)
-ratatui = { version = "0.29", default-features = false, features = ["crossterm", "scrolling-regions"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "scrolling-regions"] }
 tui-textarea = "0.7"
 
 # Logging (subscriber for CLI configuration)
