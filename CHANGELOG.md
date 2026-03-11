@@ -9,6 +9,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-03-11
+
+### Security
+- **Keystore TOCTOU fix** — `keys.toml` now created with 0600 permissions atomically
+  via `OpenOptions::mode()`, eliminating the window where the file was world-readable
+  between `write()` and `set_permissions()` (#387)
+- **Gemini API key centralised** — all URL construction goes through `api_url()` helpers,
+  removing inline `format!` calls that could leak the key if logged (#389)
+- **Proxy credential redaction** — `redact_url_credentials()` strips `user:pass@` from
+  all proxy URL log messages (#390)
+- **EmailConfig Debug redacted** — custom `Debug` impl shows `[REDACTED]` for password
+  field instead of the plaintext value (#391)
+- **`.env` in `.gitignore`** — prevents accidental commit of environment files (#392)
+
+### Fixed
+- **Removed `unsafe` transmute** in `highlight.rs` — stores `&'static SyntaxReference`
+  and creates `HighlightLines` on demand instead of transmuting lifetimes (#388)
+
 ## [0.1.5] - 2026-03-11
 
 ### Changed
