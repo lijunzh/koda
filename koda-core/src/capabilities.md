@@ -15,22 +15,15 @@ Shift+Tab — cycle mode (auto/strict/safe) | /verbose — toggle full tool outp
 - `@file.rs` attaches file context, `@image.png` for multi-modal analysis
 - Piped input: `echo "explain" | koda` or `koda -p "prompt"` for headless/CI
 
-### Model Tiers
+### Model Probe
 
-Koda starts all models at Standard and adapts based on tool-use quality.
-Override with `--model-tier strong|standard|lite`.
-- Strong (promoted after 3 successful turns): minimal prompts, lazy tools
-- Standard (default): full prompts, all tools
-- Lite (demoted after hallucinations): verbose prompts, step-by-step guidance
-- Lite (local models): verbose prompts, step-by-step, sequential
+On session start, Koda runs a one-time structured output test to verify the model
+can produce valid tool calls. Skip with `--skip-probe`.
 
-### Built-in Agents
+### Agents
 
-- **scout** — read-only codebase exploration
-- **testgen** — test generation
-- **planner** — task decomposition
-- **verifier** — quality verification
-- **releaser** — release engineering
+- **default** — built-in general-purpose agent
+- Custom agents: create JSON files in `agents/` directory (e.g. testgen, planner, releaser)
 
 ### Memory
 
