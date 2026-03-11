@@ -42,7 +42,6 @@ fn truncate_for_history(output: &str, max_chars: usize) -> String {
 pub(crate) fn can_parallelize(
     tool_calls: &[ToolCall],
     mode: ApprovalMode,
-    phase_info: crate::task_phase::PhaseInfo,
     project_root: &Path,
 ) -> bool {
     !tool_calls.iter().any(|tc| {
@@ -52,7 +51,6 @@ pub(crate) fn can_parallelize(
                 &tc.function_name,
                 &args,
                 mode,
-                phase_info,
                 Some(project_root),
                 None,
                 None,
@@ -75,7 +73,6 @@ pub(crate) async fn execute_one_tool(
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
-    phase_info: crate::task_phase::PhaseInfo,
 ) -> (String, String) {
     let result = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
@@ -93,7 +90,6 @@ pub(crate) async fn execute_one_tool(
             &mut mpsc::channel(1).1,
             Some(tools.file_read_cache()),
             sub_agent_cache,
-            phase_info,
         )
         .await
         {
@@ -124,7 +120,6 @@ pub(crate) async fn execute_tools_parallel(
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
-    phase_info: crate::task_phase::PhaseInfo,
 ) -> Result<()> {
     // Print all tool call banners upfront
     for tc in tool_calls {
@@ -156,7 +151,6 @@ pub(crate) async fn execute_tools_parallel(
                 sink,
                 cancel.clone(),
                 sub_agent_cache,
-                phase_info,
             )
         })
         .collect();
@@ -212,7 +206,6 @@ pub(crate) async fn execute_tools_split_batch(
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     sub_agent_cache: &SubAgentCache,
-    phase_info: crate::task_phase::PhaseInfo,
 ) -> Result<()> {
     // Partition into parallelizable vs sequential
     let (parallel, sequential): (Vec<_>, Vec<_>) = tool_calls.iter().partition(|tc| {
@@ -222,7 +215,6 @@ pub(crate) async fn execute_tools_split_batch(
                 &tc.function_name,
                 &args,
                 mode,
-                phase_info,
                 Some(project_root),
                 None,
                 None,
@@ -259,7 +251,6 @@ pub(crate) async fn execute_tools_split_batch(
                     sink,
                     cancel.clone(),
                     sub_agent_cache,
-                    phase_info,
                 )
             })
             .collect();
@@ -307,7 +298,6 @@ pub(crate) async fn execute_tools_split_batch(
                 cancel.clone(),
                 cmd_rx,
                 sub_agent_cache,
-                phase_info,
             )
             .await?;
         }
@@ -329,7 +319,6 @@ pub(crate) async fn execute_tools_split_batch(
             cancel.clone(),
             cmd_rx,
             sub_agent_cache,
-            phase_info,
         )
         .await?;
     }
@@ -352,7 +341,6 @@ pub(crate) async fn execute_tools_sequential(
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     sub_agent_cache: &SubAgentCache,
-    phase_info: crate::task_phase::PhaseInfo,
 ) -> Result<()> {
     for tc in tool_calls {
         // Check for interrupt before each tool
@@ -378,7 +366,6 @@ pub(crate) async fn execute_tools_sequential(
             &tc.function_name,
             &parsed_args,
             mode,
-            phase_info,
             Some(project_root),
             None,
             None,
@@ -387,23 +374,6 @@ pub(crate) async fn execute_tools_sequential(
         match approval {
             ToolApproval::AutoApprove | ToolApproval::Notify => {
                 // Execute without asking
-            }
-            ToolApproval::PlanRequired => {
-                // Simple-task action budget exhausted — tell the LLM to plan
-                db.insert_message(
-                    session_id,
-                    &Role::Tool,
-                    Some(
-                        "[system] You have exceeded the simple-task action limit. \
-                          Please produce a plan for the remaining work before \
-                          continuing with more tool calls.",
-                    ),
-                    None,
-                    Some(&tc.id),
-                    None,
-                )
-                .await?;
-                continue;
             }
             ToolApproval::Blocked => {
                 // Plan mode: emit ActionBlocked event, let the client render it
@@ -486,7 +456,6 @@ pub(crate) async fn execute_tools_sequential(
             sink,
             cancel.clone(),
             sub_agent_cache,
-            phase_info,
         )
         .await;
         sink.emit(EngineEvent::ToolCallResult {
@@ -534,7 +503,6 @@ pub(crate) async fn execute_sub_agent(
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     parent_cache: Option<crate::tools::FileReadCache>,
     sub_agent_cache: &SubAgentCache,
-    phase_info: crate::task_phase::PhaseInfo,
 ) -> Result<String> {
     let args: serde_json::Value = serde_json::from_str(arguments)?;
     let agent_name = args["agent_name"]
@@ -672,7 +640,6 @@ pub(crate) async fn execute_sub_agent(
                 &tc.function_name,
                 &parsed_args,
                 mode,
-                phase_info,
                 Some(project_root),
                 None,
                 None,
@@ -681,9 +648,6 @@ pub(crate) async fn execute_sub_agent(
             let output = match approval {
                 ToolApproval::AutoApprove | ToolApproval::Notify => {
                     tools.execute(&tc.function_name, &tc.arguments).await.output
-                }
-                ToolApproval::PlanRequired => {
-                    "[system] Simple-task action budget exhausted. Produce a plan.".to_string()
                 }
                 ToolApproval::Blocked => {
                     let detail = tools::describe_action(&tc.function_name, &parsed_args);
@@ -797,7 +761,6 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::delegated(),
             Path::new("/test/project")
         ));
     }
@@ -808,7 +771,6 @@ mod tests {
         assert!(!can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::delegated(),
             Path::new("/test/project")
         ));
     }
@@ -828,7 +790,6 @@ mod tests {
         assert!(!can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::delegated(),
             Path::new("/test/project")
         ));
     }
@@ -839,7 +800,6 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::delegated(),
             Path::new("/test/project")
         ));
     }
@@ -863,7 +823,6 @@ mod tests {
         assert!(!can_parallelize(
             &calls,
             ApprovalMode::Strict,
-            crate::task_phase::PhaseInfo::delegated(),
             Path::new("/test/project")
         ));
     }
@@ -874,7 +833,6 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             ApprovalMode::Auto,
-            crate::task_phase::PhaseInfo::delegated(),
             Path::new("/test/project")
         ));
     }

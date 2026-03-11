@@ -39,8 +39,6 @@ pub enum ReplAction {
     MemoryCommand(Option<String>),
     /// Undo last turn's file mutations
     Undo,
-    /// Show learned intervention priors
-    ShowPriors,
     #[allow(dead_code)]
     Handled,
     NotACommand,
@@ -129,8 +127,6 @@ pub async fn handle_command(
         "/memory" => ReplAction::MemoryCommand(arg.map(|s| s.to_string())),
 
         "/undo" => ReplAction::Undo,
-
-        "/priors" => ReplAction::ShowPriors,
 
         _ => ReplAction::NotACommand,
     }
