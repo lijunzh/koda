@@ -49,6 +49,23 @@ impl GeminiProvider {
         }
     }
 
+    /// Build a Gemini API URL with the API key as a query parameter.
+    ///
+    /// The Gemini API requires `?key=` in the URL (no Bearer header alternative).
+    /// This method centralises URL construction to avoid key leakage through
+    /// `format!()` strings that might be logged elsewhere.
+    fn api_url(&self, path: &str) -> String {
+        format!("{}/v1beta/{}?key={}", self.base_url, path, self.api_key)
+    }
+
+    /// Like `api_url` but appends extra query parameters.
+    fn api_url_with_params(&self, path: &str, extra: &str) -> String {
+        format!(
+            "{}/v1beta/{}?{}&key={}",
+            self.base_url, path, extra, self.api_key
+        )
+    }
+
     /// Create or reuse a cached content resource for the system prompt + tools.
     /// Returns the cache name if successful, None if caching isn't available.
     async fn ensure_cached_content(
@@ -92,10 +109,7 @@ impl GeminiProvider {
 
         let resp = self
             .client
-            .post(format!(
-                "{}/v1beta/cachedContents?key={}",
-                self.base_url, self.api_key
-            ))
+            .post(self.api_url("cachedContents"))
             .json(&cache_body)
             .send()
             .await
@@ -293,10 +307,7 @@ impl LlmProvider for GeminiProvider {
 
         let resp = self
             .client
-            .post(format!(
-                "{}/v1beta/models/{}:generateContent?key={}",
-                self.base_url, model, self.api_key
-            ))
+            .post(self.api_url(&format!("models/{model}:generateContent")))
             .json(&body)
             .send()
             .await
@@ -319,10 +330,7 @@ impl LlmProvider for GeminiProvider {
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         let resp = self
             .client
-            .get(format!(
-                "{}/v1beta/models?key={}",
-                self.base_url, self.api_key
-            ))
+            .get(self.api_url("models"))
             .send()
             .await
             .context("Failed to list Gemini models")?;
@@ -366,10 +374,7 @@ impl LlmProvider for GeminiProvider {
     async fn model_capabilities(&self, model: &str) -> Result<ModelCapabilities> {
         let resp = self
             .client
-            .get(format!(
-                "{}/v1beta/models/{}?key={}",
-                self.base_url, model, self.api_key
-            ))
+            .get(self.api_url(&format!("models/{model}")))
             .send()
             .await
             .context("Failed to query Gemini model info")?;
@@ -408,16 +413,16 @@ impl LlmProvider for GeminiProvider {
             Some(settings),
         );
 
-        let resp = self
-            .client
-            .post(format!(
-                "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
-                self.base_url, model, self.api_key
-            ))
-            .json(&body)
-            .send()
-            .await
-            .context("Failed to call Gemini API (stream)")?;
+        let resp =
+            self.client
+                .post(self.api_url_with_params(
+                    &format!("models/{model}:streamGenerateContent"),
+                    "alt=sse",
+                ))
+                .json(&body)
+                .send()
+                .await
+                .context("Failed to call Gemini API (stream)")?;
 
         let status = resp.status();
         if !status.is_success() {
