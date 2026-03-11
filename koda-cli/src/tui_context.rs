@@ -1191,22 +1191,63 @@ impl TuiContext {
                                                 let provider_name = item.name.to_string();
 
                                                 if ptype.requires_api_key() {
-                                                    // Start wizard: need API key
                                                     let env_name = ptype.env_key_name().to_string();
-                                                    self.menu = MenuContent::WizardTrail(vec![
-                                                        ("Provider".into(), provider_name),
-                                                    ]);
-                                                    self.prompt_mode = PromptMode::WizardInput {
-                                                        label: format!("API key for {}", ptype),
-                                                        masked: true,
-                                                    };
-                                                    self.provider_wizard = Some(ProviderWizard::NeedApiKey {
-                                                        provider_type: ptype,
-                                                        base_url,
-                                                        env_name,
-                                                    });
-                                                    self.textarea.select_all();
-                                                    self.textarea.cut();
+                                                    // Check if key already exists — skip wizard
+                                                    if koda_core::runtime_env::is_set(&env_name) {
+                                                        self.config.provider_type = ptype.clone();
+                                                        self.config.base_url = base_url;
+                                                        self.config.model = ptype.default_model().to_string();
+                                                        self.config.model_settings.model =
+                                                            self.config.model.clone();
+                                                        self.config.recalculate_model_derived();
+                                                        *self.provider.write().await =
+                                                            koda_core::providers::create_provider(&self.config);
+                                                        crate::tui_wizards::save_provider(&self.config);
+                                                        let prov = self.provider.read().await;
+                                                        if let Ok(models) = prov.list_models().await {
+                                                            if let Some(first) = models.first() {
+                                                                self.config.model = first.id.clone();
+                                                                self.config.model_settings.model =
+                                                                    self.config.model.clone();
+                                                                self.config.recalculate_model_derived();
+                                                            }
+                                                            self.config
+                                                                .query_and_apply_capabilities(prov.as_ref())
+                                                                .await;
+                                                            self.completer.set_model_names(
+                                                                models.iter().map(|m| m.id.clone()).collect(),
+                                                            );
+                                                        }
+                                                        self.renderer.model = self.config.model.clone();
+                                                        self.menu = MenuContent::None;
+                                                        self.prompt_mode = PromptMode::Chat;
+                                                        emit_above(
+                                                            &mut self.terminal,
+                                                            Line::styled(
+                                                                format!(
+                                                                    "  \u{2714} Provider: {} ({})",
+                                                                    self.config.provider_type, self.config.model
+                                                                ),
+                                                                Style::default().fg(Color::Green),
+                                                            ),
+                                                        );
+                                                    } else {
+                                                        // No key — start wizard
+                                                        self.menu = MenuContent::WizardTrail(vec![
+                                                            ("Provider".into(), provider_name),
+                                                        ]);
+                                                        self.prompt_mode = PromptMode::WizardInput {
+                                                            label: format!("API key for {}", ptype),
+                                                            masked: true,
+                                                        };
+                                                        self.provider_wizard = Some(ProviderWizard::NeedApiKey {
+                                                            provider_type: ptype,
+                                                            base_url,
+                                                            env_name,
+                                                        });
+                                                        self.textarea.select_all();
+                                                        self.textarea.cut();
+                                                    }
                                                 } else {
                                                     // Local self.provider: need URL
                                                     self.menu = MenuContent::WizardTrail(vec![

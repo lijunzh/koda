@@ -339,6 +339,11 @@ fn render_tool_output(
         return;
     }
 
+    // Collapse consecutive blank lines (3+ → 1) to reduce visual noise,
+    // especially from WebFetch HTML-to-text conversion.
+    let collapsed = collapse_blank_lines(output);
+    let output = &collapsed;
+
     // Syntax highlighting for Read tool output
     let use_highlight = name == "Read" && file_ext.is_some();
     let is_diff_tool = matches!(name, "Edit" | "Write" | "Delete");
@@ -430,6 +435,31 @@ fn render_tool_output(
     }
 }
 
+/// Collapse runs of consecutive blank lines down to at most 1.
+///
+/// WebFetch HTML-to-text conversion often produces dozens of empty lines
+/// from page footers, nav elements, etc. This keeps output scannable
+/// without losing meaningful whitespace (single blank lines are preserved).
+fn collapse_blank_lines(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut consecutive_blanks = 0u32;
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            consecutive_blanks += 1;
+            if consecutive_blanks <= 1 {
+                result.push('\n');
+            }
+        } else {
+            consecutive_blanks = 0;
+            if !result.is_empty() {
+                result.push('\n');
+            }
+            result.push_str(line);
+        }
+    }
+    result
+}
+
 /// Render a single list entry with directory/file coloring.
 ///
 /// List output format: `d path/to/dir` (directory) or `  path/to/file` (file).
@@ -503,5 +533,30 @@ fn render_grep_line(terminal: &mut Term, line: &str) {
                 Span::raw(line.to_string()),
             ]),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_collapse_preserves_single_blank() {
+        assert_eq!(collapse_blank_lines("a\n\nb"), "a\n\nb");
+    }
+
+    #[test]
+    fn test_collapse_many_blanks() {
+        assert_eq!(collapse_blank_lines("a\n\n\n\n\nb"), "a\n\nb");
+    }
+
+    #[test]
+    fn test_collapse_no_blanks() {
+        assert_eq!(collapse_blank_lines("a\nb\nc"), "a\nb\nc");
+    }
+
+    #[test]
+    fn test_collapse_all_blank() {
+        assert_eq!(collapse_blank_lines("\n\n\n\n"), "\n");
     }
 }
