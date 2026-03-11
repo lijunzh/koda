@@ -55,7 +55,7 @@ futures-util = "0.3"
 
 # Error handling
 anyhow = "1"
-which = "7"
+which = "8"
 
 # Async trait support
 async-trait = "0.1"
