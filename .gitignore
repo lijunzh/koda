@@ -20,6 +20,10 @@ target/
 .DS_Store
 Thumbs.db
 
+# Secrets
+.env
+.env.*
+
 # Logs
 logs/
 *.log

@@ -34,6 +34,10 @@ impl KeyStore {
     }
 
     /// Save keys to disk with restrictive permissions.
+    ///
+    /// On Unix, the file is created with mode 0600 atomically via `OpenOptions`
+    /// to avoid a TOCTOU window where the file is world-readable between
+    /// `write()` and `set_permissions()`.
     pub fn save(&self) -> Result<()> {
         let path = Self::keys_path()?;
 
@@ -43,13 +47,24 @@ impl KeyStore {
         }
 
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(&path, &content)?;
 
-        // Set file permissions to owner-only (0600)
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)
+                .with_context(|| format!("Failed to create {}", path.display()))?;
+            file.write_all(content.as_bytes())?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&path, &content)?;
         }
 
         tracing::info!("Saved keys to {}", path.display());

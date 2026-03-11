@@ -6,7 +6,7 @@
 use once_cell::sync::Lazy;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
-use syntect::parsing::SyntaxSet;
+use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::as_24_bit_terminal_escaped;
 
 /// Lazily loaded syntax definitions and theme.
@@ -14,8 +14,11 @@ static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines
 static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
 
 /// A syntax highlighter for a specific language.
+///
+/// Stores a reference to the static `SyntaxReference` and creates a fresh
+/// `HighlightLines` on demand — no unsafe code needed.
 pub struct CodeHighlighter {
-    highlighter: Option<HighlightLines<'static>>,
+    syntax: Option<&'static SyntaxReference>,
 }
 
 impl CodeHighlighter {
@@ -26,25 +29,21 @@ impl CodeHighlighter {
             .find_syntax_by_token(lang)
             .or_else(|| SYNTAX_SET.find_syntax_by_extension(lang));
 
-        let highlighter = syntax.map(|syn| {
-            let theme = &THEME_SET.themes["base16-ocean.dark"];
-            // SAFETY: HighlightLines borrows SyntaxSet, which is 'static via Lazy.
-            // We transmute the lifetime to satisfy the borrow checker.
-            // This is safe because SYNTAX_SET lives for the entire program.
-            unsafe {
-                std::mem::transmute::<HighlightLines<'_>, HighlightLines<'static>>(
-                    HighlightLines::new(syn, theme),
-                )
-            }
-        });
+        Self { syntax }
+    }
 
-        Self { highlighter }
+    /// Create a fresh `HighlightLines` instance from the static theme.
+    fn highlighter(&self) -> Option<HighlightLines<'static>> {
+        self.syntax.map(|syn| {
+            let theme = &THEME_SET.themes["base16-ocean.dark"];
+            HighlightLines::new(syn, theme)
+        })
     }
 
     /// Highlight a single line of code, returning ANSI-colored output.
     pub fn highlight_line(&mut self, line: &str) -> String {
-        match &mut self.highlighter {
-            Some(h) => {
+        match self.highlighter() {
+            Some(mut h) => {
                 let ranges = h.highlight_line(line, &SYNTAX_SET).unwrap_or_default();
                 let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
                 format!("{escaped}\x1b[0m")
@@ -61,8 +60,8 @@ impl CodeHighlighter {
         use ratatui::style::{Color, Style as RStyle};
         use ratatui::text::Span;
 
-        match &mut self.highlighter {
-            Some(h) => {
+        match self.highlighter() {
+            Some(mut h) => {
                 let ranges = h.highlight_line(line, &SYNTAX_SET).unwrap_or_default();
                 ranges
                     .into_iter()
