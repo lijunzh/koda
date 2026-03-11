@@ -49,7 +49,6 @@ pub(crate) fn draw_viewport(
     frame: &mut ratatui::Frame,
     textarea: &TextArea,
     model: &str,
-    tier_label: &str,
     mode: ApprovalMode,
     context_pct: u32,
     state: TuiState,
@@ -100,7 +99,8 @@ pub(crate) fn draw_viewport(
             (format!("{icon}> "), c)
         }
     };
-    let prompt_width: u16 = prompt_text.len().min(30) as u16;
+    let prompt_width: u16 =
+        (prompt_text.chars().count().min(30) as u16).min(area.width.saturating_sub(4));
     let [prompt_area, text_area] =
         Layout::horizontal([Constraint::Length(prompt_width), Constraint::Fill(1)])
             .areas(input_rows);
@@ -122,7 +122,7 @@ pub(crate) fn draw_viewport(
     );
 
     // Status bar
-    let mut sb = StatusBar::new(model, tier_label, mode.label(), context_pct);
+    let mut sb = StatusBar::new(model, mode.label(), context_pct);
     if queue_len > 0 {
         sb = sb.with_queue(queue_len);
     }
