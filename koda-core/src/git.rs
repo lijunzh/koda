@@ -1,7 +1,9 @@
-//! Git integration for context injection and checkpointing.
+//! Git integration for context injection.
 //!
 //! - `git_context()`: compact git info for the system prompt
-//! - `checkpoint()` / `rollback()`: crash-safe undo via git stash
+//!
+//! File-level undo is handled by `undo.rs` (in-memory snapshots),
+//! not git. See DESIGN.md for rationale.
 
 use std::path::Path;
 use std::process::Command;
@@ -70,74 +72,6 @@ pub fn git_context(project_root: &Path) -> Option<String> {
     Some(parts.join(", "))
 }
 
-// ── Checkpointing (#264) ────────────────────────────────────────
-
-/// Create a lightweight git snapshot of the working tree.
-///
-/// Uses `git stash create` which creates a stash commit without
-/// modifying the working tree or stash list. Returns the stash
-/// commit SHA, or `None` if there's nothing to snapshot.
-pub fn checkpoint(project_root: &Path) -> Option<String> {
-    // First check if we're in a git repo
-    git_cmd(project_root, &["rev-parse", "--git-dir"])?;
-
-    // git stash create: makes a commit object but doesn't modify state
-    let sha = git_cmd(project_root, &["stash", "create"])?;
-    let sha = sha.trim().to_string();
-
-    if sha.is_empty() {
-        // Nothing to stash (clean working tree)
-        return None;
-    }
-
-    // Store the ref so it doesn't get garbage-collected
-    let _ = git_cmd(
-        project_root,
-        &["stash", "store", "-m", "koda checkpoint (auto)", &sha],
-    );
-
-    Some(sha)
-}
-
-/// Roll back the working tree to a checkpoint.
-///
-/// Restores the working tree to the checkpoint state by first
-/// resetting uncommitted changes, then applying the stash.
-/// Returns a summary or an error message.
-pub fn rollback(project_root: &Path, sha: &str) -> Result<String, String> {
-    // Verify the SHA exists
-    if git_cmd(project_root, &["cat-file", "-t", sha]).is_none() {
-        return Err(format!("Checkpoint {sha} not found"));
-    }
-
-    // Reset working tree to HEAD first (discard current changes)
-    let reset = Command::new("git")
-        .args(["checkout", "."])
-        .current_dir(project_root)
-        .output();
-    if let Ok(o) = &reset
-        && !o.status.success()
-    {
-        let stderr = String::from_utf8_lossy(&o.stderr);
-        return Err(format!("Failed to reset working tree: {stderr}"));
-    }
-
-    // Apply the stash
-    let result = Command::new("git")
-        .args(["stash", "apply", sha])
-        .current_dir(project_root)
-        .output();
-
-    match result {
-        Ok(output) if output.status.success() => Ok("Restored to checkpoint.".to_string()),
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            Err(format!("Rollback failed: {stderr}"))
-        }
-        Err(e) => Err(format!("Failed to run git: {e}")),
-    }
-}
-
 // ── Helpers ─────────────────────────────────────────────────────
 
 /// Run a git command and return stdout if successful.
@@ -196,67 +130,5 @@ mod tests {
         let truncated = truncate_str(&input, 50);
         assert!(truncated.len() <= 80); // 50 + "... (N more lines)"
         assert!(truncated.contains("more lines"));
-    }
-
-    #[test]
-    fn test_checkpoint_in_clean_repo() {
-        // In CI or clean working tree, checkpoint returns None
-        // (nothing to stash). This is correct behavior.
-        let result = checkpoint(Path::new("."));
-        // We can't assert None because the working tree might be dirty
-        // during development. Just assert it doesn't panic.
-        let _ = result;
-    }
-
-    #[test]
-    fn test_checkpoint_not_a_repo() {
-        let tmp = tempfile::tempdir().unwrap();
-        let result = checkpoint(tmp.path());
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_rollback_bad_sha() {
-        let result = rollback(Path::new("."), "deadbeef1234567890");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_checkpoint_and_rollback_cycle() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-
-        // Init a git repo
-        git_cmd(root, &["init"]).unwrap();
-        git_cmd(root, &["config", "user.email", "test@test.com"]).unwrap();
-        git_cmd(root, &["config", "user.name", "Test"]).unwrap();
-
-        // Create and commit a file
-        std::fs::write(root.join("file.txt"), "original").unwrap();
-        git_cmd(root, &["add", "."]).unwrap();
-        git_cmd(root, &["commit", "-m", "initial"]).unwrap();
-
-        // Modify the file
-        std::fs::write(root.join("file.txt"), "modified").unwrap();
-
-        // Checkpoint
-        let sha = checkpoint(root);
-        assert!(sha.is_some(), "Should create checkpoint for dirty tree");
-        let sha = sha.unwrap();
-
-        // File is still modified (stash create doesn't touch working tree)
-        let content = std::fs::read_to_string(root.join("file.txt")).unwrap();
-        assert_eq!(content, "modified");
-
-        // Make another change
-        std::fs::write(root.join("file.txt"), "further modified").unwrap();
-
-        // Rollback to checkpoint
-        let result = rollback(root, &sha);
-        assert!(result.is_ok(), "Rollback failed: {:?}", result);
-
-        // File should be back to "modified" (the checkpoint state)
-        let content = std::fs::read_to_string(root.join("file.txt")).unwrap();
-        assert_eq!(content, "modified");
     }
 }

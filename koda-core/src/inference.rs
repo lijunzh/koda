@@ -546,9 +546,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
 
         made_tool_calls = true;
 
-        // Git checkpoint before tool execution (crash-safe undo)
-        let _checkpoint_sha = crate::git::checkpoint(project_root);
-
         // Execute tool calls — parallelize when possible
         if tool_calls.len() > 1 && can_parallelize(&tool_calls, mode, project_root) {
             execute_tools_parallel(
