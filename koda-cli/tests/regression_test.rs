@@ -17,11 +17,10 @@ mod repl_commands {
             .build()
             .unwrap();
         let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
-        let provider: Arc<RwLock<Box<dyn koda_core::providers::LlmProvider>>> = Arc::new(
-            RwLock::new(Box::new(MockProvider::new(vec![MockResponse::Text(
-                String::new(),
-            )]))),
-        );
+        let provider: Arc<RwLock<Box<dyn koda_core::providers::LlmProvider>>> =
+            Arc::new(RwLock::new(Box::new(MockProvider::new(vec![
+                MockResponse::Text(String::new()),
+            ]))));
         rt.block_on(handle_command(input, &config, &provider))
     }
 
@@ -143,10 +142,7 @@ mod repl_commands {
     #[test]
     fn verbose_bare_returns_toggle() {
         // No argument → None (toggle)
-        assert!(matches!(
-            dispatch("/verbose"),
-            ReplAction::Verbose(None)
-        ));
+        assert!(matches!(dispatch("/verbose"), ReplAction::Verbose(None)));
     }
 
     #[test]
@@ -197,10 +193,7 @@ mod repl_commands {
 
     #[test]
     fn mcp_with_arg_returns_mcp_command() {
-        assert!(matches!(
-            dispatch("/mcp status"),
-            ReplAction::McpCommand(_)
-        ));
+        assert!(matches!(dispatch("/mcp status"), ReplAction::McpCommand(_)));
         if let ReplAction::McpCommand(arg) = dispatch("/mcp status") {
             assert_eq!(arg, "status");
         }
