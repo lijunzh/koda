@@ -12,27 +12,19 @@ Koda is a high-performance AI coding agent built in Rust (edition 2024). Four-cr
 
 See [DESIGN.md](DESIGN.md) for architectural decisions. See [#70](https://github.com/lijunzh/koda/issues/70) for the TUI design.
 
-### v0.1.3 Architecture (Token Efficiency)
+### Current Architecture
 
-Koda adapts behavior based on observed model quality:
+Simple inference loop: stream LLM response → execute tool calls → repeat.
+No phases, no tiers — the model drives execution directly.
 
-- **ModelTier** (`model_tier.rs`): Strong/Standard/Lite prompt strategies
-  - All models start at Standard; `TierObserver` promotes/demotes at runtime
-  - Strong: minimal prompts, lazy tool loading (DiscoverTools)
-  - Standard: full prompts, all tools (default for all models)
-  - Lite: verbose prompts, step-by-step guidance (demoted models)
-- **TierObserver** (`tier_observer.rs`): tracks tool-call quality across turns
-  - Promotes after 3 successful turns, demotes after 2+ failures
 - **Context from API** (`providers/`): queries actual context window from provider
   - Fallback: `model_context.rs` lookup table
-- **DiscoverTools** (`tools/discover.rs`): on-demand tool schema injection by category
-- **RecallContext** (`tools/recall.rs`): search/recall older conversation turns
+- **Model probe** (`model_probe.rs`): one-time structured output test at session start
 - **Rate limit retry**: exponential backoff (2/4/8/16/32s) for 429 errors
-- **Built-in agents**: default, testgen, releaser, scout, planner, verifier
+- **Built-in agents**: default (others via user-created agent configs)
+- **Git checkpointing** (`git.rs`): auto-snapshot before each turn
 
-### v0.1.4 Architecture (Simplified Safety)
-
-Approval is per-tool, not per-phase. Three modes (Auto/Strict/Safe) control
+Approval is per-tool. Three modes (Auto/Strict/Safe) control
 how mutations are gated:
 
 - **ToolEffect** (`approval.rs`): ReadOnly / LocalMutation / Destructive / RemoteAction
@@ -101,14 +93,17 @@ koda/
 │   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
 │   │   ├── memory.rs       # Semantic memory (global + project tiers → system prompt)
 │   │   ├── model_context.rs# Model → context window size lookup table (fallback)
-│   │   ├── model_tier.rs   # ModelTier enum (Strong/Standard/Lite) prompt strategies
-│   │   ├── tier_observer.rs# Runtime tier promotion/demotion based on tool-use quality
+│   │   ├── model_probe.rs  # One-time structured output test at session start
+│   │   ├── output_caps.rs  # Output cap scaling based on context window size
 │   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
+│   │   ├── delegation.rs   # Sub-agent delegation scoping
+│   │   ├── git.rs          # Git checkpointing + rollback
+│   │   ├── settings.rs     # Runtime settings (approval mode, etc.)
 │   │   ├── runtime_env.rs  # Thread-safe runtime env for API keys
 │   │   ├── version.rs      # Background version checker (queries crates.io)
 │   │   ├── engine/         # EngineEvent, EngineCommand, EngineSink trait
 │   │   ├── providers/      # LLM providers (Anthropic, Gemini, OpenAI-compat, mock)
-│   │   ├── tools/          # Built-in tools (Bash, Read, Write, Edit, DiscoverTools, RecallContext, etc.)
+│   │   ├── tools/          # Built-in tools (Bash, Read, Write, Edit, Glob, Grep, etc.)
 │   │   ├── mcp/            # MCP client (registry, config, capability_registry)
 │   │   ├── db.rs           # SQLite persistence (WAL mode, parameterized queries)
 │   │   └── config.rs       # Agent/provider config
@@ -121,12 +116,16 @@ koda/
 │   │   ├── tui_commands.rs # Slash command dispatch (/help, /model, /sessions, etc.)
 │   │   ├── tui_wizards.rs  # Interactive wizards (/provider, /compact, /mcp, /agent)
 │   │   ├── tui_output.rs   # Output bridge: emit_line (ratatui) + write_line (crossterm)
+│   │   ├── tui_viewport.rs # Viewport layout + menu_area rendering
+│   │   ├── tui_types.rs    # MenuContent, UiEvent, shared TUI types
+│   │   ├── tui_context.rs  # TUI context state
+│   │   ├── tui_history.rs  # Command history persistence
 │   │   ├── md_render.rs    # Streaming markdown → ratatui renderer
 │   │   ├── completer.rs    # Tab completion (/commands, @files, /model names)
+│   │   ├── cost.rs         # Cost estimation per model
 │   │   ├── diff_render.rs  # Diff preview → ratatui renderer (syntax highlighted)
 │   │   ├── highlight.rs    # Syntax highlighting via syntect
-│   │   ├── select_menu.rs  # Arrow-key selection menus (standalone + inline)
-│   │   ├── commands.rs     # Provider factory (create_provider)
+│   │   ├── startup.rs      # Startup banner rendering
 │   │   ├── repl.rs         # Slash command parsing + provider/model lists
 │   │   ├── input.rs        # @file reference processing + image loading
 │   │   ├── headless.rs     # Single-prompt headless mode
@@ -135,7 +134,6 @@ koda/
 │   │   ├── server.rs       # ACP server over stdio JSON-RPC
 │   │   ├── acp_adapter.rs  # ACP protocol adapter
 │   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
-│   │   ├── interrupt.rs    # Ctrl+C double-tap graceful cancellation
 │   │   ├── tool_history.rs # Tool output history for /expand
 │   │   ├── lib.rs          # Crate root (exports acp_adapter)
 │   │   └── widgets/        # TUI widgets
@@ -331,5 +329,5 @@ See `koda-ast/tests/mcp_integration_test.rs` for the reference implementation.
 4. Add `--version` flag to `main()`
 5. Write MCP integration tests in `tests/mcp_integration_test.rs`
 6. Update `release.yml`: version verify, build, package, publish, Homebrew
-7. Sync version with workspace (currently 0.1.3)
+7. Sync version with workspace (currently 0.1.4)
 8. Update this file (claude.md)

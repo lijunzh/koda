@@ -42,7 +42,7 @@ On first run, an onboarding wizard guides you through provider and API key setup
 ```bash
 koda                              # Interactive REPL (auto-detects LM Studio)
 koda --provider anthropic         # Use a cloud provider
-koda --model-tier strong          # Force a specific tier (usually auto-adapts)
+koda --skip-probe                 # Skip model capability probe at startup
 koda -p "fix the bug in auth.rs"  # Headless one-shot
 echo "explain this" | koda        # Piped input
 ```
@@ -52,10 +52,10 @@ echo "explain this" | koda        # Piped input
 - **20+ built-in tools** — file ops, search, shell, web fetch, memory, agents, AST analysis, email, context recall
 - **MCP support** — connect to any [MCP server](https://modelcontextprotocol.io) via `.mcp.json` (same format as Claude Code / Cursor)
 - **14 LLM providers** — LM Studio, OpenAI, Anthropic, Gemini, Groq, Grok, Ollama, DeepSeek, Mistral, MiniMax, OpenRouter, Together, Fireworks, vLLM
-- **6 built-in agents** — default, test writer, release engineer, codebase scout, planner, verifier
-- **Model-adaptive** — starts all models at Standard tier, then promotes to Strong or demotes to Lite based on observed tool-use quality
-- **Lazy tool loading** — Strong models get 9 core tools; discover more on demand via `DiscoverTools`
+- **User-defined agents** — create specialized agents via JSON configs (testgen, releaser, planner, etc.)
+- **Model probe** — one-time structured output test at startup to verify model capabilities
 - **Smart context** — queries context window from provider API at startup (falls back to lookup table), rate limit retry with backoff, auto-compact
+- **Git checkpointing** — auto-snapshots before each turn for safe rollback
 - **Approval modes** — auto (default) / strict (confirm writes) / safe (read-only) via `Shift+Tab`
 - **Per-tool safety gates** — destructive ops and outside-project writes always need confirmation; local mutations auto-approved in auto mode
 - **Folder-scoped permissions** — writes outside `project_root` always require confirmation; bash commands with path escapes are flagged
@@ -156,60 +156,29 @@ koda/
 The engine communicates through `EngineEvent` (output) and `EngineCommand` (input) enums
 over async channels. See [DESIGN.md](DESIGN.md) for architectural decisions.
 
-### Model-Adaptive Architecture
-
-Koda auto-detects your model's capabilities and adapts its behavior:
-
-| Tier | Models | Behavior |
-|------|--------|----------|
-| **Strong** | Promoted at runtime after 3 successful tool-use turns | Minimal prompts, lazy tool loading, parallel execution |
-| **Standard** | Default for all models | Full prompts, all tools, balanced |
-| **Lite** | Demoted at runtime after 2+ hallucinated/malformed tool calls | Verbose prompts, step-by-step guidance |
-
-Tier is observed at runtime, not guessed from model names. Override with `--model-tier strong|standard|lite` or `"model_tier": "strong"` in agent config.
-
 ## Getting the Most Out of Koda
 
-### Model tiers adapt automatically
+### Model capability probe
 
-Koda starts every model at Standard and adapts based on observed behavior:
-- **Promotion to Strong** — after 3 turns of valid tool calls (correct names, parseable JSON)
-- **Demotion to Lite** — if 2+ tool calls hallucinate names or send malformed JSON
+At session start, Koda sends a small structured output test to verify the model can produce valid tool calls. If the probe fails, Koda warns you and falls back to text-only mode. Skip with `--skip-probe`.
 
-You can force a tier if needed:
+### Create custom agents
 
-```bash
-koda --model-tier strong    # Minimal prompts, lazy tools (saves ~57% token overhead)
-koda --model-tier lite      # Verbose prompts, step-by-step guidance for small models
-```
+Define specialized agents as JSON files in your project's `agents/` directory:
 
-The status bar shows your current tier: `claude-sonnet-4-6 [Standard]` (then `[Strong]` after promotion)
-
-### Delegate with sub-agents
-
-Koda ships with specialized agents. Use them for focused tasks:
-
-| Agent | Purpose | Tools |
-|-------|---------|-------|
-| **scout** | Codebase exploration (read-only) | Read, List, Grep, Glob |
-| **testgen** | Test generation | All tools |
-| **planner** | Task decomposition (read-only) | Read, List, Grep, Glob |
-| **verifier** | Quality verification | Read, Grep, Bash |
-| **releaser** | Release engineering | All tools |
-
-Koda's intent classifier suggests agents automatically: "find all uses of X" → scout, "write tests" → testgen.
-
-Sub-agents can run on different models for cost optimization:
 ```json
-// agents/scout.json — use cheap model for exploration
+// agents/testgen.json — test generation specialist
 {
-  "name": "scout",
+  "name": "testgen",
+  "system_prompt": "You are a test generation specialist. Write comprehensive tests.",
   "provider": "gemini",
   "model": "gemini-2.5-flash",
-  "allowed_tools": ["Read", "List", "Grep", "Glob"],
-  "max_iterations": 10
+  "allowed_tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+  "max_iterations": 15
 }
 ```
+
+Sub-agents can run on different models for cost optimization. The default agent is built-in; all others are user-created.
 
 ### Context window management
 
@@ -217,20 +186,12 @@ Koda auto-detects your model's context window and manages it:
 
 | Model | Context | Auto-compact at |
 |-------|---------|----------------|
-| Claude Opus/Sonnet | 200K tokens | 90% (Strong) |
-| Gemini 2.5 | 1M tokens | 80% (Standard) |
-| GPT-4o | 128K tokens | 90% (Strong) |
-| Local models | 4K–128K | 70% (Lite) |
+| Claude Opus/Sonnet | 200K tokens | 90% |
+| Gemini 2.5 | 1M tokens | 80% |
+| GPT-4o | 128K tokens | 90% |
+| Local models | 4K–128K | 70% |
 
 Use `/compact` manually, or let auto-compact handle it. The `/cost` command shows token usage and estimated cost.
-
-### Save tokens with DiscoverTools
-
-Strong-tier models load only core tools (Read, Write, Edit, etc.) by default. When the model needs agents, skills, or other capabilities, it calls `DiscoverTools` to load them on demand — saving ~57% per-turn tool overhead.
-
-### Recall older context
-
-If context was dropped from the sliding window, the model can use `RecallContext` to search or retrieve specific turns from conversation history.
 
 ## Documentation
 
