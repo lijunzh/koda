@@ -88,3 +88,7 @@ required-features = ["test-support"]
 [[test]]
 name = "inference_recovery_test"
 required-features = ["test-support"]
+
+[[test]]
+name = "session_test"
+required-features = ["test-support"]

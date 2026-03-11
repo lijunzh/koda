@@ -78,6 +78,15 @@ pub struct AnthropicProvider {
     api_key: String,
 }
 
+impl std::fmt::Debug for AnthropicProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnthropicProvider")
+            .field("base_url", &self.base_url)
+            .field("api_key", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
 impl AnthropicProvider {
     /// Build the system prompt as a cacheable content block array.
     /// The cache_control on the last block tells Anthropic to cache
@@ -1068,5 +1077,65 @@ mod tests {
         let header = beta_header(true);
         assert!(header.contains(ANTHROPIC_BETA_FEATURES));
         assert!(header.contains(EXTENDED_CONTEXT_BETA));
+    }
+
+    // ── SSE StreamEvent deserialization tests ──────────────────
+
+    #[test]
+    fn stream_event_deserializes_content_block_delta() {
+        let json = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.event_type, "content_block_delta");
+        assert_eq!(event.index, Some(0));
+        let delta = event.delta.unwrap();
+        assert_eq!(delta.delta_type.as_deref(), Some("text_delta"));
+        assert_eq!(delta.text.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn stream_event_deserializes_message_start_with_usage() {
+        let json =
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.event_type, "message_start");
+        let message = event.message.unwrap();
+        let usage = message.usage.unwrap();
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 0);
+    }
+
+    #[test]
+    fn stream_event_deserializes_message_delta_with_stop_reason() {
+        let json = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":0,"output_tokens":25}}"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.event_type, "message_delta");
+        let delta = event.delta.unwrap();
+        assert_eq!(delta.stop_reason.as_deref(), Some("end_turn"));
+        let usage = event.usage.unwrap();
+        assert_eq!(usage.output_tokens, 25);
+    }
+
+    #[test]
+    fn stream_event_unknown_type_deserializes_gracefully() {
+        let json = r#"{"type":"ping"}"#;
+        let result = serde_json::from_str::<StreamEvent>(json);
+        // Should not error — unknown event types are valid in the SSE protocol
+        assert!(result.is_ok());
+        let event = result.unwrap();
+        assert_eq!(event.event_type, "ping");
+        assert!(event.delta.is_none());
+        assert!(event.message.is_none());
+    }
+
+    #[test]
+    fn stream_event_missing_delta_field() {
+        // A content_block_delta event with no "delta" key — should parse
+        // but delta will be None (all fields have #[serde(default)])
+        let json = r#"{"type":"content_block_delta","index":0}"#;
+        let result = serde_json::from_str::<StreamEvent>(json);
+        assert!(result.is_ok());
+        let event = result.unwrap();
+        assert_eq!(event.event_type, "content_block_delta");
+        assert!(event.delta.is_none());
     }
 }

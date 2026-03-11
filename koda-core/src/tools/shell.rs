@@ -104,6 +104,42 @@ fn cap_output(output: &str, max_lines: usize) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn shell_timeout_returns_timeout_message() {
+        // Run a command that sleeps longer than the timeout (1 second) to keep the test fast.
+        let tmp = tempfile::tempdir().unwrap();
+        let args = serde_json::json!({"command": "sleep 5", "timeout": 1});
+        let result = run_shell_command(tmp.path(), &args, 256).await.unwrap();
+        assert!(
+            result.contains("timed out"),
+            "Expected timeout message, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shell_respects_custom_timeout_parameter() {
+        // A fast command should succeed even with a short timeout.
+        let tmp = tempfile::tempdir().unwrap();
+        let args = serde_json::json!({"command": "echo hello", "timeout": 5});
+        let result = run_shell_command(tmp.path(), &args, 256).await.unwrap();
+        assert!(
+            result.contains("hello"),
+            "Fast command should succeed within timeout: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shell_default_timeout_is_applied_when_not_specified() {
+        // Verify a normal command works when no timeout parameter is given.
+        let tmp = tempfile::tempdir().unwrap();
+        let args = serde_json::json!({"command": "echo world"});
+        let result = run_shell_command(tmp.path(), &args, 256).await.unwrap();
+        assert!(
+            result.contains("world"),
+            "Command without explicit timeout should work: {result}"
+        );
+    }
+
     #[test]
     fn test_cap_output_short() {
         let input = "line1\nline2\nline3";
