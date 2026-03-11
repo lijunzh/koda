@@ -9,6 +9,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-03-11
+
+### Changed
+- **Simplified inference loop** — removed phase system, tier system, and OPAR remnants.
+  The model now drives execution directly: stream LLM response → execute tool calls → repeat.
+  (#354, #355, #357)
+- **TUI polish** — removed vestigial tier label from status bar, fixed approval mode
+  colors (auto=green, strict=cyan, safe=yellow), model name truncation at 32 chars,
+  prompt width uses char count (not byte length), narrow terminal guard (#380)
+- **ratatui 0.30** — upgraded from 0.29, migrated tui-textarea 0.7 → ratatui-textarea 0.8,
+  crossterm 0.28 → 0.29 (#362)
+
+### Added
+- **User guide** — `docs/user-guide.md` covering approval modes, slash commands, file
+  references, memory, agents, MCP servers, git checkpointing, headless mode, and
+  security model (#299)
+- **Capabilities.md refresh** — added `/undo`, `/expand`, `/verbose` commands; approval
+  section with mode hotkeys; git checkpointing section; removed stale `/help` (#378)
+- **Doc freshness CI gates** — `capabilities_test.rs` verifies slash commands, feature
+  keywords, and user guide sections match the codebase (#378)
+
+### Fixed
+- **/provider re-prompts for saved API keys** — no longer asks for keys that are
+  already stored (#356)
+- **Parallel tool display** — concurrent tool executions render correctly (#353, #358)
+
+### Security
+- **quinn-proto bumped** 0.11.13 → 0.11.14 — resolves RUSTSEC-2026-0037 (High DoS).
+  Not compiled in koda builds (transitive optional dep via reqwest) but flagged by
+  cargo audit (#393)
+
+### Documentation
+- **DESIGN.md cleanup** — trimmed verbose tables from §14 (viewport), §17 (bash safety),
+  §18 (approval) — operational details moved to user guide (#301)
+- **Stale docs purge** — removed all phase/tier/agent references from docs, README,
+  and code comments (#364, #379)
+
+### Dependencies
+- ratatui 0.29 → 0.30 (#362)
+- tui-textarea 0.7 → ratatui-textarea 0.8 (#362)
+- crossterm 0.28 → 0.29 (#362)
+- tree-sitter-go 0.23.4 → 0.25.0 (#359)
+- which 7.0.3 → 8.0.2 (#360)
+- mail-parser 0.9.4 → 0.11.2 (#361)
+- tempfile 3.26.0 → 3.27.0 (#363)
+- quinn-proto 0.11.13 → 0.11.14 (#393)
+
+### Testing
+- 671 tests across 4 crates (up from 432 in v0.1.4)
+- New: doc freshness gates (capabilities commands, feature keywords, user guide sections)
+
 ## [0.1.4] - 2026-03-09
 
 ### Added
