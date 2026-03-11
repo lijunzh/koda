@@ -33,12 +33,12 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
+use ratatui_textarea::TextArea;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
-use tui_textarea::TextArea;
 
 /// All mutable TUI state, extracted from `run()`'s local variables.
 ///

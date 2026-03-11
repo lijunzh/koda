@@ -40,7 +40,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use tui_textarea::TextArea;
+use ratatui_textarea::TextArea;
 
 // ── Viewport drawing ────────────────────────────────────────
 
