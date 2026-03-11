@@ -4,82 +4,228 @@
 //! and catch regressions when commands are added/removed.
 
 mod repl_commands {
-    /// Reproduce the REPL command dispatch logic for testing.
-    /// Maps a slash command to the action name it should produce.
-    fn dispatch(input: &str) -> &'static str {
-        let parts: Vec<&str> = input.splitn(2, ' ').collect();
-        let cmd = parts[0];
-        let arg = parts.get(1).copied().unwrap_or("");
+    use koda_cli::repl::{ReplAction, handle_command};
+    use koda_core::config::{KodaConfig, ProviderType};
+    use koda_core::providers::mock::{MockProvider, MockResponse};
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
 
-        match cmd {
-            "/exit" => "Quit",
-            "/model" if !arg.is_empty() => "SwitchModel",
-            "/model" => "PickModel",
-            "/provider" if !arg.is_empty() => "SetupProvider",
-            "/provider" => "PickProvider",
-            "/help" => "ShowHelp",
-            "/cost" => "ShowCost",
-            "/diff" if !arg.is_empty() => "InjectPrompt_or_Handled",
-            "/diff" => "Handled",
-            "/sessions" if arg.starts_with("delete ") => "DeleteSession",
-            "/sessions" if arg.starts_with("resume ") => "ResumeSession",
-            "/sessions"
-                if !arg.is_empty() && arg.chars().all(|c| c.is_ascii_hexdigit() || c == '-') =>
-            {
-                "ResumeSession"
-            }
-            "/sessions" => "ListSessions",
-            "/expand" => "Expand",
-            "/verbose" => "Verbose",
-            "/memory" => "Handled",
+    /// Synchronous helper: runs `handle_command` in a single-threaded tokio runtime
+    /// with dummy config/provider values (both are unused by the dispatcher).
+    fn dispatch(input: &str) -> ReplAction {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        let provider: Arc<RwLock<Box<dyn koda_core::providers::LlmProvider>>> =
+            Arc::new(RwLock::new(Box::new(MockProvider::new(vec![
+                MockResponse::Text(String::new()),
+            ]))));
+        rt.block_on(handle_command(input, &config, &provider))
+    }
 
-            "/compact" => "Compact",
-            "/mcp" => "McpCommand",
-            "/agent" => "Handled",
-            _ => "NotACommand",
+    #[test]
+    fn exit_command_returns_quit() {
+        assert!(matches!(dispatch("/exit"), ReplAction::Quit));
+    }
+
+    #[test]
+    fn model_bare_returns_pick_model() {
+        assert!(matches!(dispatch("/model"), ReplAction::PickModel));
+    }
+
+    #[test]
+    fn model_with_name_returns_switch_model() {
+        assert!(matches!(
+            dispatch("/model gpt-4o"),
+            ReplAction::SwitchModel(_)
+        ));
+        // Verify the model name is carried through
+        if let ReplAction::SwitchModel(name) = dispatch("/model gpt-4o") {
+            assert_eq!(name, "gpt-4o");
         }
     }
 
     #[test]
-    fn test_key_command_is_removed() {
-        assert_eq!(dispatch("/key"), "NotACommand");
-        assert_eq!(dispatch("/key my-secret-key"), "NotACommand");
+    fn provider_bare_returns_pick_provider() {
+        assert!(matches!(dispatch("/provider"), ReplAction::PickProvider));
     }
 
     #[test]
-    fn test_all_expected_commands_dispatch() {
-        assert_eq!(dispatch("/exit"), "Quit");
-        assert_eq!(dispatch("/model"), "PickModel");
-        assert_eq!(dispatch("/model gpt-4o"), "SwitchModel");
-        assert_eq!(dispatch("/provider"), "PickProvider");
-        assert_eq!(dispatch("/provider openai"), "SetupProvider");
-        assert_eq!(dispatch("/help"), "ShowHelp");
-        assert_eq!(dispatch("/cost"), "ShowCost");
-        assert_eq!(dispatch("/diff"), "Handled");
-        assert_eq!(dispatch("/diff review"), "InjectPrompt_or_Handled");
-        assert_eq!(dispatch("/diff commit"), "InjectPrompt_or_Handled");
-        assert_eq!(dispatch("/sessions"), "ListSessions");
-        assert_eq!(dispatch("/sessions delete abc123"), "DeleteSession");
-        assert_eq!(dispatch("/sessions resume abc123"), "ResumeSession");
-        assert_eq!(dispatch("/sessions abc12345"), "ResumeSession");
-        assert_eq!(dispatch("/expand"), "Expand");
-        assert_eq!(dispatch("/verbose"), "Verbose");
-        assert_eq!(dispatch("/memory"), "Handled");
-        assert_eq!(dispatch("/memory add test"), "Handled");
-        assert_eq!(dispatch("/memory global test"), "Handled");
-
-        assert_eq!(dispatch("/compact"), "Compact");
-        assert_eq!(dispatch("/mcp"), "McpCommand");
-        assert_eq!(dispatch("/mcp status"), "McpCommand");
-        assert_eq!(dispatch("/agent"), "Handled");
+    fn provider_with_name_returns_setup_provider() {
+        assert!(matches!(
+            dispatch("/provider openai"),
+            ReplAction::SetupProvider(_, _)
+        ));
     }
 
     #[test]
-    fn test_unknown_commands_fall_through() {
-        assert_eq!(dispatch("/foo"), "NotACommand");
-        assert_eq!(dispatch("/set"), "NotACommand");
-        assert_eq!(dispatch("/config"), "NotACommand");
-        assert_eq!(dispatch("/transcript"), "NotACommand"); // removed feature
+    fn help_returns_show_help() {
+        assert!(matches!(dispatch("/help"), ReplAction::ShowHelp));
+    }
+
+    #[test]
+    fn cost_returns_show_cost() {
+        assert!(matches!(dispatch("/cost"), ReplAction::ShowCost));
+    }
+
+    #[test]
+    fn diff_bare_returns_show_diff() {
+        assert!(matches!(dispatch("/diff"), ReplAction::ShowDiff));
+    }
+
+    #[test]
+    fn diff_review_returns_inject_prompt() {
+        assert!(matches!(
+            dispatch("/diff review"),
+            ReplAction::InjectPrompt(_)
+        ));
+    }
+
+    #[test]
+    fn diff_commit_returns_inject_prompt() {
+        assert!(matches!(
+            dispatch("/diff commit"),
+            ReplAction::InjectPrompt(_)
+        ));
+    }
+
+    #[test]
+    fn sessions_bare_returns_list_sessions() {
+        assert!(matches!(dispatch("/sessions"), ReplAction::ListSessions));
+    }
+
+    #[test]
+    fn sessions_delete_returns_delete_session() {
+        assert!(matches!(
+            dispatch("/sessions delete abc123"),
+            ReplAction::DeleteSession(_)
+        ));
+        if let ReplAction::DeleteSession(id) = dispatch("/sessions delete abc123") {
+            assert_eq!(id, "abc123");
+        }
+    }
+
+    #[test]
+    fn sessions_resume_returns_resume_session() {
+        assert!(matches!(
+            dispatch("/sessions resume abc123"),
+            ReplAction::ResumeSession(_)
+        ));
+        if let ReplAction::ResumeSession(id) = dispatch("/sessions resume abc123") {
+            assert_eq!(id, "abc123");
+        }
+    }
+
+    #[test]
+    fn sessions_bare_id_returns_resume_session() {
+        // Bare hex ID shorthand: /sessions <hex-id>
+        assert!(matches!(
+            dispatch("/sessions abc12345"),
+            ReplAction::ResumeSession(_)
+        ));
+    }
+
+    #[test]
+    fn expand_returns_expand() {
+        assert!(matches!(dispatch("/expand"), ReplAction::Expand(_)));
+        // Default n=1 when no argument given
+        if let ReplAction::Expand(n) = dispatch("/expand") {
+            assert_eq!(n, 1);
+        }
+        // Explicit n
+        if let ReplAction::Expand(n) = dispatch("/expand 3") {
+            assert_eq!(n, 3);
+        }
+    }
+
+    #[test]
+    fn verbose_bare_returns_toggle() {
+        // No argument → None (toggle)
+        assert!(matches!(dispatch("/verbose"), ReplAction::Verbose(None)));
+    }
+
+    #[test]
+    fn verbose_on_returns_true() {
+        assert!(matches!(
+            dispatch("/verbose on"),
+            ReplAction::Verbose(Some(true))
+        ));
+    }
+
+    #[test]
+    fn verbose_off_returns_false() {
+        assert!(matches!(
+            dispatch("/verbose off"),
+            ReplAction::Verbose(Some(false))
+        ));
+    }
+
+    #[test]
+    fn memory_bare_returns_memory_command() {
+        assert!(matches!(
+            dispatch("/memory"),
+            ReplAction::MemoryCommand(None)
+        ));
+    }
+
+    #[test]
+    fn memory_with_arg_returns_memory_command_some() {
+        assert!(matches!(
+            dispatch("/memory add test"),
+            ReplAction::MemoryCommand(Some(_))
+        ));
+        assert!(matches!(
+            dispatch("/memory global test"),
+            ReplAction::MemoryCommand(Some(_))
+        ));
+    }
+
+    #[test]
+    fn compact_returns_compact() {
+        assert!(matches!(dispatch("/compact"), ReplAction::Compact));
+    }
+
+    #[test]
+    fn mcp_bare_returns_mcp_command() {
+        assert!(matches!(dispatch("/mcp"), ReplAction::McpCommand(_)));
+    }
+
+    #[test]
+    fn mcp_with_arg_returns_mcp_command() {
+        assert!(matches!(dispatch("/mcp status"), ReplAction::McpCommand(_)));
+        if let ReplAction::McpCommand(arg) = dispatch("/mcp status") {
+            assert_eq!(arg, "status");
+        }
+    }
+
+    #[test]
+    fn agent_returns_list_agents() {
+        assert!(matches!(dispatch("/agent"), ReplAction::ListAgents));
+    }
+
+    #[test]
+    fn undo_returns_undo() {
+        assert!(matches!(dispatch("/undo"), ReplAction::Undo));
+    }
+
+    #[test]
+    fn key_command_is_not_a_command() {
+        // /key was removed; must fall through
+        assert!(matches!(dispatch("/key"), ReplAction::NotACommand));
+        assert!(matches!(
+            dispatch("/key my-secret-key"),
+            ReplAction::NotACommand
+        ));
+    }
+
+    #[test]
+    fn unknown_commands_fall_through() {
+        assert!(matches!(dispatch("/foobar"), ReplAction::NotACommand));
+        assert!(matches!(dispatch("/foo"), ReplAction::NotACommand));
+        assert!(matches!(dispatch("/set"), ReplAction::NotACommand));
+        assert!(matches!(dispatch("/config"), ReplAction::NotACommand));
+        assert!(matches!(dispatch("/transcript"), ReplAction::NotACommand));
     }
 }
 
