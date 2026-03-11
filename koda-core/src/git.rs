@@ -131,5 +131,4 @@ mod tests {
         assert!(truncated.len() <= 80); // 50 + "... (N more lines)"
         assert!(truncated.contains("more lines"));
     }
-
 }
