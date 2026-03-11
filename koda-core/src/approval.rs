@@ -269,12 +269,11 @@ fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &
             // Canonicalize for symlink resolution (macOS /var → /private/var).
             // For new files, canonicalize the parent dir and append the filename.
             let resolved = abs_path.canonicalize().unwrap_or_else(|_| {
-                if let Some(parent) = abs_path.parent() {
-                    if let Ok(canon_parent) = parent.canonicalize() {
-                        if let Some(name) = abs_path.file_name() {
-                            return canon_parent.join(name);
-                        }
-                    }
+                if let Some(parent) = abs_path.parent()
+                    && let Ok(canon_parent) = parent.canonicalize()
+                    && let Some(name) = abs_path.file_name()
+                {
+                    return canon_parent.join(name);
                 }
                 abs_path.clean()
             });
