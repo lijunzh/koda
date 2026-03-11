@@ -16,8 +16,6 @@ pub enum Role {
     User,
     Assistant,
     Tool,
-    /// Phase transition log entry.
-    Phase,
 }
 
 impl Role {
@@ -27,7 +25,6 @@ impl Role {
             Self::User => "user",
             Self::Assistant => "assistant",
             Self::Tool => "tool",
-            Self::Phase => "phase",
         }
     }
 }
@@ -46,7 +43,6 @@ impl std::str::FromStr for Role {
             "user" => Ok(Self::User),
             "assistant" => Ok(Self::Assistant),
             "tool" => Ok(Self::Tool),
-            "phase" => Ok(Self::Phase),
             other => Err(format!("unknown role: {other}")),
         }
     }

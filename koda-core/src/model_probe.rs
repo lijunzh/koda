@@ -12,10 +12,10 @@ use std::path::PathBuf;
 
 /// The probe prompt — tests structured JSON output + instruction following.
 const PROBE_PROMPT: &str = r#"You are being tested. Respond with ONLY this JSON, no other text:
-{"phase": "Understanding", "tool": "Read", "reasoning": "need to explore first"}"#;
+{"action": "read_file", "target": "src/main.rs", "reasoning": "need to explore first"}"#;
 
 /// Expected keys in the probe response.
-const EXPECTED_KEYS: &[&str] = &["phase", "tool", "reasoning"];
+const EXPECTED_KEYS: &[&str] = &["action", "target", "reasoning"];
 
 /// Run the capability probe for a model.
 ///
@@ -122,32 +122,33 @@ mod tests {
 
     #[test]
     fn test_valid_response() {
-        let response = r#"{"phase": "Understanding", "tool": "Read", "reasoning": "exploring"}"#;
+        let response =
+            r#"{"action": "read_file", "target": "src/main.rs", "reasoning": "exploring"}"#;
         assert!(validate_probe_response(response).is_ok());
     }
 
     #[test]
     fn test_valid_response_with_code_fence() {
-        let response = "```json\n{\"phase\": \"Understanding\", \"tool\": \"Read\", \"reasoning\": \"exploring\"}\n```";
+        let response = "```json\n{\"action\": \"read_file\", \"target\": \"src/main.rs\", \"reasoning\": \"exploring\"}\n```";
         assert!(validate_probe_response(response).is_ok());
     }
 
     #[test]
     fn test_invalid_not_json() {
-        let response = "Sure! Here is the JSON: {phase: Understanding}";
+        let response = "Sure! Here is the JSON: {action: read_file}";
         assert!(validate_probe_response(response).is_err());
     }
 
     #[test]
     fn test_invalid_missing_key() {
-        let response = r#"{"phase": "Understanding", "tool": "Read"}"#;
+        let response = r#"{"action": "read_file", "target": "src/main.rs"}"#;
         let err = validate_probe_response(response).unwrap_err();
         assert!(err.contains("reasoning"));
     }
 
     #[test]
     fn test_invalid_not_object() {
-        let response = r#"["phase", "Understanding"]"#;
+        let response = r#"["action", "read_file"]"#;
         assert!(validate_probe_response(response).is_err());
     }
 

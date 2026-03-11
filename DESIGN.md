@@ -19,22 +19,23 @@ autonomy accordingly. Configuration is a confession that the system can't figure
 it out — a personal AI tool should learn how you work by working with you.
 
 This principle drives several architectural choices:
-- `InterventionObserver` ([#242](https://github.com/lijunzh/koda/issues/242))
-  learns human oversight preferences from phase-gate override patterns.
+- Approval modes (auto/strict/safe) are the only user-facing setting
 - No `DepthMode` enum or `--autonomy` flag — autonomy is a continuous variable
-  that emerges from data, not a discrete setting the user picks.
+  that should emerge from data, not a discrete setting the user picks
+- The v0.1.4 `InterventionObserver` was an attempt at this but was removed
+  in #355 due to insufficient data — the cold-start problem was never solved
 
-**Control the information environment, not the model's behavior.** Koda's value
-in the OPAR loop isn't telling the model *what* to think. It's controlling what
-the model can **see**. This is what separates an orchestrator from a prompt
-wrapper. Phase boundaries are valuable because they are **context boundaries**,
-not instruction boundaries. A reviewer that can't see the planner's reasoning
-chain is a meaningfully different reviewer, even if it's the same weights.
+**Don’t reimplement what the model does.** The LLM’s extended thinking IS the
+planning. The tool results ARE the verification. Koda’s inference loop is
+simple: prompt → stream (thinking + tool calls) → execute tools → repeat.
+The v0.1.4 phase system attempted to formalize this loop in application code
+and was removed in [#355](https://github.com/lijunzh/koda/pull/355) after
+proving that it reimplemented what the model already does, but worse.
+See [#216 post-mortem](https://github.com/lijunzh/koda/issues/216#issuecomment-4035670832).
 
-This principle drives the `ReviewDepth` tiers ([#335](https://github.com/lijunzh/koda/issues/335)):
-- `FastPath`: no boundary — model's own deep thinking IS the review.
-- `SelfReview`: context wall — same model, fresh context window.
-- `PeerReview`: model wall — different model, fresh context window.
+**Gate at the action, not the plan.** Review individual destructive operations
+(`ToolEffect::Destructive` → `NeedsConfirmation`), not entire plans. Per-tool
+approval is cheaper, more precise, and doesn’t fight the model’s natural flow.
 
 ## Execution Modes
 
@@ -314,52 +315,28 @@ is help. Keyboard shortcuts moved to the startup banner header.
 
 **Implementation**: [#229](https://github.com/lijunzh/koda/pull/229)
 
-### 16. Adaptive Phase-Gated Agent Loop (v0.1.4)
+### 16. ~~Adaptive Phase-Gated Agent Loop~~ (v0.1.4 — RETIRED in #355)
 
-**Decision**: Koda tracks a six-phase state machine per conversation turn:
-Understanding → Planning → Reviewing → Executing → Verifying → Reporting.
-Phase transitions are detected structurally from tool-use signals, not by
-parsing LLM text output.
+**Decision**: RETIRED. The six-phase state machine (Understanding → Planning →
+Reviewing → Executing → Verifying → Reporting) was fully implemented and then
+stripped in [#355](https://github.com/lijunzh/koda/pull/355) (-4,308 lines).
 
-**Design reference**: [#216](https://github.com/lijunzh/koda/issues/216)
-(original OPAR design), [#242](https://github.com/lijunzh/koda/issues/242)
-(implementation plan with Tang Dynasty bureaucracy mapping).
+**Why it was removed**: Formal plan submission cost ~500 tokens/turn in schema
+overhead. SelfReview re-sent the entire context for the same model to review
+its own output. Strong models plan naturally; weak models couldn’t follow the
+protocol. The state machine became the primary source of bugs (7 PRs to fix
+one bug, #342). See [#216 post-mortem](https://github.com/lijunzh/koda/issues/216#issuecomment-4035670832).
 
-**Key components**:
-- `PhaseTracker` (`task_phase.rs`): state machine with `advance(signal)` that
-  returns `Option<PhaseTransition>` on phase change. Decision tree uses
-  `(current_phase, has_tool_calls, tool_type)` — no LLM output parsing.
-- `PhaseInfo`: snapshot of tracker state passed to `check_tool()` for
-  phase-aware approval decisions.
-- `Role::Phase` messages: phase transitions logged to the DB as structured
-  messages. Human-readable summary + JSON metadata. The LLM sees these for
-  process self-awareness; the InterventionObserver parses the metadata.
-- `InterventionObserver`: per-phase override frequency tracker. Learns from
-  auto/override data points at phase gates. Not yet wired into the inference
-  loop — data structure and persistence only in v0.1.4.
+**What survived**: Per-tool safety gates (`ToolEffect` → `check_tool()`),
+folder-scoped permissions (§17), and the principle that the LLM’s extended
+thinking IS the planning.
 
-**Phase-aware approval** (`check_tool()`):
-- Understanding/Planning: writes require confirmation even in Auto mode
-  (the agent hasn't formed a plan yet)
-- Reviewing: writes blocked (forced through the review gate)
-- Executing with `plan_approved`: writes auto-approved
-- Destructive operations: hardcoded floor regardless of phase
-
-**Escalation and rejection**:
-- Executing → Understanding ("escalation"): tool failure suggests scope
-  changed (e.g., merge conflict). Explicit, logged transition.
-- Reviewing → Planning ("封驳"): LLM self-reflection or human review finds
-  the plan unsound.
-
-**Philosophy**: The process adapts to the task, not the other way around.
-Simple tasks shortcut (Understanding → Executing). Complex tasks get full
-six-phase progression. The human's level of involvement is learned, not
-configured. See Design Principles above.
+**Archive**: Tag `v0.1.4-phase-system` preserves the full implementation.
 
 ### 17. Folder-Scoped Permissions (v0.1.4)
 
 **Decision**: Writes outside `project_root` always require explicit
-confirmation, regardless of approval mode or phase. Bash commands are
+confirmation, regardless of approval mode. Bash commands are
 linted for path escapes before execution.
 
 **Design reference**: [#218](https://github.com/lijunzh/koda/issues/218)
@@ -384,56 +361,14 @@ The concern is accidental blast radius, not targeted attacks. The lint catches
 common accidental escapes; OS-level sandboxing (seccomp/landlock) is a v1.0
 concern.
 
-### 18. Review Depth as Isolation Boundaries (v0.1.4)
+### 18. ~~Review Depth as Isolation Boundaries~~ (v0.1.4 — RETIRED in #355)
 
-**Decision**: `ReviewDepth` tiers are defined by **isolation boundaries**, not
-review intensity. Each tier adds exactly one isolation dimension.
+**Decision**: RETIRED along with the phase system in [#355](https://github.com/lijunzh/koda/pull/355).
+The concept of asymmetric model collaboration (weak model asks questions,
+strong model answers) remains valuable and may return as a standalone
+`/review` command ([#256](https://github.com/lijua/issues/256)).
 
-**Design reference**: [#335](https://github.com/lijunzh/koda/issues/335)
-(full design doc), [#216](https://github.com/lijunzh/koda/issues/216)
-(original OPAR design).
-
-| Tier | Model | Context | Analogy |
-|------|-------|---------|--------|
-| `FastPath` | Same | Same | Thinking harder about your own essay |
-| `SelfReview` | Same | **Fresh** | Reading your essay after sleeping on it |
-| `PeerReview` | **Different** | Fresh | Handing it to a colleague |
-
-**The core insight**: Koda's value in the OPAR loop isn't telling the model
-*what* to think. It's controlling what the model can **see**. The review phase
-boundary is valuable because it's a **context boundary**, not an instruction
-boundary. A reviewer that can't see the planner's reasoning chain is a
-meaningfully different reviewer, even if it's the same weights.
-
-**FastPath**: The model's extended thinking (Opus, o3) IS the review. One
-inference call. Koda does nothing extra. This is where "deep think" happens —
-the model plans, critiques, revises, and emits internally.
-
-**SelfReview**: Koda serializes the plan, strips the conversation history,
-and makes a second inference call with only: reviewer system prompt + original
-task + plan artifact + file summaries. The reviewer sees the plan as an
-external artifact and cannot trace back through the reasoning that produced it.
-Breaks self-confirmation bias at near-zero cost.
-
-**PeerReview**: Same fresh context as SelfReview, routed to a different
-model/provider. Different training data = different blind spots. The prompt
-frames the reviewer as adversarial and adds a 5th review dimension:
-**Alternatives** — "Is there a simpler approach the planner missed?"
-
-**Trigger selection** (`select_review_depth()`):
-- `InterventionObserver` recommends auto → FastPath
-- Simple task (shortcutted Understanding → Executing) → FastPath
-- Complex intent with full progression → PeerReview
-- Default → SelfReview
-
-**One-way ratchet**: The agent can escalate review depth (FastPath →
-SelfReview → PeerReview) but never de-escalate without user consent.
-Destructive operations promote to PeerReview regardless of learned behavior.
-Safety floors are not overridable by `InterventionObserver`.
-
-**Implementation status**: Semantic contract and prompt framing shipped in
-v0.1.4 ([#334](https://github.com/lijunzh/koda/pull/334)). Inference-level
-plumbing (fresh context window, secondary provider routing) is future work.
+**Archive**: Tag `v0.1.4-phase-system` preserves the full implementation.
 
 ## References
 
