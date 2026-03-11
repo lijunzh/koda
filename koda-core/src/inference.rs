@@ -997,7 +997,20 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 crate::review::TextResponseAction::EndTurn => {}
             }
 
-            if made_tool_calls && full_text.trim().is_empty() {
+            // Detect why the model stopped
+            if usage.stop_reason == "max_tokens" {
+                // Model was truncated — it didn't finish, it ran out of output tokens
+                sink.emit(EngineEvent::Warn {
+                    message: format!(
+                        "Model {} hit max_tokens limit — response was truncated. \
+                         The context may be too large. Try /compact or start a new session.",
+                        config.model,
+                    ),
+                });
+                // Don't end the turn — continue so the model can try again
+                // with the truncated response in context
+                continue;
+            } else if made_tool_calls && full_text.trim().is_empty() {
                 sink.emit(EngineEvent::Warn {
                     message: format!(
                         "Model {} produced an empty response after tool use — \

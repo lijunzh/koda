@@ -186,6 +186,9 @@ struct GenerateResponse {
 #[derive(Deserialize)]
 struct Candidate {
     content: Option<CandidateContent>,
+    /// "STOP", "MAX_TOKENS", "SAFETY", "RECITATION", etc.
+    #[serde(default, rename = "finishReason")]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -458,9 +461,14 @@ impl LlmProvider for GeminiProvider {
                         usage.log_cache_stats();
                     }
 
-                    // Extract content parts
+                    // Extract content parts + finish reason
                     if let Some(candidates) = &event.candidates {
                         for candidate in candidates {
+                            // Capture finish reason (last one wins)
+                            if let Some(reason) = &candidate.finish_reason {
+                                // Gemini uses "MAX_TOKENS", normalize to lowercase
+                                final_usage.stop_reason = reason.to_lowercase();
+                            }
                             if let Some(content) = &candidate.content
                                 && let Some(parts) = &content.parts
                             {
@@ -866,6 +874,7 @@ mod tests {
         let p = make_provider();
         let resp = GenerateResponse {
             candidates: Some(vec![Candidate {
+                finish_reason: None,
                 content: Some(CandidateContent {
                     parts: Some(vec![ResponsePart {
                         text: Some("Hello!".into()),
@@ -894,6 +903,7 @@ mod tests {
         let p = make_provider();
         let resp = GenerateResponse {
             candidates: Some(vec![Candidate {
+                finish_reason: None,
                 content: Some(CandidateContent {
                     parts: Some(vec![ResponsePart {
                         text: None,
@@ -919,6 +929,7 @@ mod tests {
         let p = make_provider();
         let resp = GenerateResponse {
             candidates: Some(vec![Candidate {
+                finish_reason: None,
                 content: Some(CandidateContent {
                     parts: Some(vec![
                         ResponsePart {
