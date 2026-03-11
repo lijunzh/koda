@@ -18,7 +18,6 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/mcp", "MCP servers: status / add / remove"),
     ("/memory", "View/save project & global memory"),
     ("/model", "Pick a model interactively"),
-    ("/priors", "Show learned intervention priors"),
     ("/provider", "Switch LLM provider"),
     ("/sessions", "List/resume/delete sessions"),
     ("/undo", "Undo last turn's file changes"),

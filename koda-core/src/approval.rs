@@ -111,9 +111,6 @@ pub enum ToolApproval {
     NeedsConfirmation,
     /// Safe mode: show what would happen, don't execute.
     Blocked,
-    /// Simple-task action budget exhausted. The inference loop should
-    /// inject a system message requiring the LLM to produce a plan.
-    PlanRequired,
 }
 
 /// Read-only tools that auto-approve in all modes (including Safe).
@@ -138,12 +135,12 @@ const READ_ONLY_TOOLS: &[&str] = &[
 ///
 /// Uses the [`ToolEffect`] classification to apply a per-mode decision matrix:
 ///
-/// | ToolEffect     | Auto                 | Strict        | Safe        |
-/// |----------------|----------------------|---------------|-------------|
-/// | ReadOnly       | ✅ auto               | ✅ auto        | ✅ auto      |
-/// | RemoteAction   | ✅ auto (phase-gated)  | ✅ auto        | ✅ auto      |
-/// | LocalMutation  | ✅ auto (phase-gated)  | ⚠️ confirm     | ❌ blocked   |
-/// | Destructive    | ⚠️ confirm            | ⚠️ confirm     | ❌ blocked   |
+/// | ToolEffect     | Auto          | Strict        | Safe        |
+/// |----------------|---------------|---------------|-------------|
+/// | ReadOnly       | ✅ auto        | ✅ auto        | ✅ auto      |
+/// | RemoteAction   | ✅ auto        | ✅ auto        | ✅ auto      |
+/// | LocalMutation  | ✅ auto        | ⚠️ confirm     | ❌ blocked   |
+/// | Destructive    | ⚠️ confirm    | ⚠️ confirm     | ❌ blocked   |
 ///
 /// Additional hardcoded floors:
 /// - Writes outside project root → NeedsConfirmation (#218)
@@ -152,7 +149,6 @@ pub fn check_tool(
     tool_name: &str,
     args: &serde_json::Value,
     mode: ApprovalMode,
-    mut phase_info: crate::task_phase::PhaseInfo,
     project_root: Option<&Path>,
     mcp_effect: Option<ToolEffect>,
     delegation: Option<&crate::delegation::DelegationScope>,
@@ -200,20 +196,12 @@ pub fn check_tool(
         }
     }
 
-    // Action budget check: if budget-limited and this is a mutation,
-    // consume one action. If exhausted, require a plan.
-    if matches!(effect, ToolEffect::LocalMutation | ToolEffect::Destructive)
-        && phase_info.consume_action()
-    {
-        return ToolApproval::PlanRequired;
-    }
-
     // Apply the ToolEffect × ApprovalMode matrix
     match mode {
         ApprovalMode::Auto => match effect {
             ToolEffect::ReadOnly => ToolApproval::AutoApprove,
-            ToolEffect::RemoteAction => auto_phase_gate(phase_info),
-            ToolEffect::LocalMutation => auto_phase_gate(phase_info),
+            ToolEffect::RemoteAction => ToolApproval::AutoApprove,
+            ToolEffect::LocalMutation => ToolApproval::AutoApprove,
             ToolEffect::Destructive => ToolApproval::NeedsConfirmation,
         },
         ApprovalMode::Strict => match effect {
@@ -250,26 +238,6 @@ fn resolve_effect(tool_name: &str, args: &serde_json::Value) -> ToolEffect {
 }
 
 /// Phase-aware gating for Auto mode.
-///
-/// In Auto mode, mutations are allowed during Executing (with approved plan)
-/// but require confirmation before any plan exists.
-fn auto_phase_gate(phase_info: crate::task_phase::PhaseInfo) -> ToolApproval {
-    use crate::task_phase::TaskPhase;
-
-    match phase_info.phase {
-        // Before any plan: writes need confirmation
-        TaskPhase::Understanding | TaskPhase::Planning | TaskPhase::Reviewing => {
-            ToolApproval::NeedsConfirmation
-        }
-        // Executing with approved plan: auto-approve
-        TaskPhase::Executing if phase_info.plan_approved => ToolApproval::AutoApprove,
-        // Executing without approved plan (shortcut path): notify
-        TaskPhase::Executing => ToolApproval::Notify,
-        // Verifying/Reporting: auto-approve (checking results)
-        TaskPhase::Verifying | TaskPhase::Reporting => ToolApproval::AutoApprove,
-    }
-}
-
 /// Extract the file path that a write tool targets.
 fn extract_write_path<'a>(tool_name: &str, args: &'a serde_json::Value) -> Option<&'a str> {
     match tool_name {
@@ -373,7 +341,6 @@ mod tests {
                     tool,
                     &serde_json::json!({}),
                     ApprovalMode::Safe,
-                    crate::task_phase::PhaseInfo::delegated(),
                     None,
                     None,
                     None,
@@ -392,7 +359,6 @@ mod tests {
                     tool,
                     &serde_json::json!({}),
                     ApprovalMode::Safe,
-                    crate::task_phase::PhaseInfo::delegated(),
                     None,
                     None,
                     None,
@@ -413,7 +379,6 @@ mod tests {
                     tool,
                     &serde_json::json!({}),
                     ApprovalMode::Auto,
-                    crate::task_phase::PhaseInfo::delegated(),
                     None,
                     None,
                     None,
@@ -431,58 +396,11 @@ mod tests {
                 "Delete",
                 &serde_json::json!({}),
                 ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::delegated(),
                 None,
                 None,
                 None,
             ),
             ToolApproval::NeedsConfirmation,
-        );
-    }
-
-    #[test]
-    fn test_auto_confirms_writes_before_plan() {
-        use crate::task_phase::{PhaseInfo, TaskPhase};
-        // In Auto mode during Understanding, writes need confirmation
-        let phase = PhaseInfo {
-            phase: TaskPhase::Understanding,
-            plan_approved: false,
-            action_budget: None,
-        };
-        assert_eq!(
-            check_tool(
-                "Edit",
-                &serde_json::json!({}),
-                ApprovalMode::Auto,
-                phase,
-                None,
-                None,
-                None,
-            ),
-            ToolApproval::NeedsConfirmation,
-        );
-    }
-
-    #[test]
-    fn test_auto_notifies_executing_without_approval() {
-        use crate::task_phase::{PhaseInfo, TaskPhase};
-        // Executing without plan_approved → Notify
-        let phase = PhaseInfo {
-            phase: TaskPhase::Executing,
-            plan_approved: false,
-            action_budget: None,
-        };
-        assert_eq!(
-            check_tool(
-                "Edit",
-                &serde_json::json!({}),
-                ApprovalMode::Auto,
-                phase,
-                None,
-                None,
-                None,
-            ),
-            ToolApproval::Notify,
         );
     }
 
@@ -491,15 +409,7 @@ mod tests {
         // Read-only bash: auto-approved in Strict
         let args = serde_json::json!({"command": "git status"});
         assert_eq!(
-            check_tool(
-                "Bash",
-                &args,
-                ApprovalMode::Strict,
-                crate::task_phase::PhaseInfo::delegated(),
-                None,
-                None,
-                None,
-            ),
+            check_tool("Bash", &args, ApprovalMode::Strict, None, None, None,),
             ToolApproval::AutoApprove,
         );
     }
@@ -509,15 +419,7 @@ mod tests {
         // cargo test is LocalMutation → NeedsConfirmation in Strict
         let args = serde_json::json!({"command": "cargo test --release"});
         assert_eq!(
-            check_tool(
-                "Bash",
-                &args,
-                ApprovalMode::Strict,
-                crate::task_phase::PhaseInfo::delegated(),
-                None,
-                None,
-                None,
-            ),
+            check_tool("Bash", &args, ApprovalMode::Strict, None, None, None,),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -527,15 +429,7 @@ mod tests {
         // Destructive bash: NeedsConfirmation in Strict
         let args = serde_json::json!({"command": "rm -rf target/"});
         assert_eq!(
-            check_tool(
-                "Bash",
-                &args,
-                ApprovalMode::Strict,
-                crate::task_phase::PhaseInfo::delegated(),
-                None,
-                None,
-                None,
-            ),
+            check_tool("Bash", &args, ApprovalMode::Strict, None, None, None,),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -547,7 +441,6 @@ mod tests {
                 "Write",
                 &serde_json::json!({}),
                 ApprovalMode::Strict,
-                crate::task_phase::PhaseInfo::delegated(),
                 None,
                 None,
                 None,
@@ -561,15 +454,7 @@ mod tests {
         let args = serde_json::json!({"agent_name": "reviewer", "prompt": "review this"});
         for mode in [ApprovalMode::Auto, ApprovalMode::Strict, ApprovalMode::Safe] {
             assert_eq!(
-                check_tool(
-                    "InvokeAgent",
-                    &args,
-                    mode,
-                    crate::task_phase::PhaseInfo::delegated(),
-                    None,
-                    None,
-                    None,
-                ),
+                check_tool("InvokeAgent", &args, mode, None, None, None,),
                 ToolApproval::AutoApprove,
             );
         }
@@ -580,15 +465,7 @@ mod tests {
         // Read-only bash: git status is ReadOnly → auto-approved in Safe
         let args = serde_json::json!({"command": "git status"});
         assert_eq!(
-            check_tool(
-                "Bash",
-                &args,
-                ApprovalMode::Safe,
-                crate::task_phase::PhaseInfo::delegated(),
-                None,
-                None,
-                None,
-            ),
+            check_tool("Bash", &args, ApprovalMode::Safe, None, None, None,),
             ToolApproval::AutoApprove,
         );
     }
@@ -598,15 +475,7 @@ mod tests {
         // gh issue create is RemoteAction → auto-approved in Safe
         let args = serde_json::json!({"command": "gh issue create --title 'bug'"});
         assert_eq!(
-            check_tool(
-                "Bash",
-                &args,
-                ApprovalMode::Safe,
-                crate::task_phase::PhaseInfo::delegated(),
-                None,
-                None,
-                None,
-            ),
+            check_tool("Bash", &args, ApprovalMode::Safe, None, None, None,),
             ToolApproval::AutoApprove,
         );
     }
@@ -616,15 +485,7 @@ mod tests {
         // cargo test is LocalMutation (dev-workflow) → blocked in Safe
         let args = serde_json::json!({"command": "cargo test --release"});
         assert_eq!(
-            check_tool(
-                "Bash",
-                &args,
-                ApprovalMode::Safe,
-                crate::task_phase::PhaseInfo::delegated(),
-                None,
-                None,
-                None,
-            ),
+            check_tool("Bash", &args, ApprovalMode::Safe, None, None, None,),
             ToolApproval::Blocked,
         );
     }
@@ -634,15 +495,7 @@ mod tests {
         // Destructive bash: blocked in Safe
         let args = serde_json::json!({"command": "rm -rf target/"});
         assert_eq!(
-            check_tool(
-                "Bash",
-                &args,
-                ApprovalMode::Safe,
-                crate::task_phase::PhaseInfo::delegated(),
-                None,
-                None,
-                None,
-            ),
+            check_tool("Bash", &args, ApprovalMode::Safe, None, None, None,),
             ToolApproval::Blocked,
         );
     }
@@ -651,15 +504,7 @@ mod tests {
     fn test_safe_mode_allows_web_fetch() {
         let args = serde_json::json!({"url": "https://example.com"});
         assert_eq!(
-            check_tool(
-                "WebFetch",
-                &args,
-                ApprovalMode::Safe,
-                crate::task_phase::PhaseInfo::delegated(),
-                None,
-                None,
-                None,
-            ),
+            check_tool("WebFetch", &args, ApprovalMode::Safe, None, None, None,),
             ToolApproval::AutoApprove,
         );
     }
@@ -671,15 +516,7 @@ mod tests {
         let root = Path::new("/home/user/project");
         let args = serde_json::json!({"path": "/etc/hosts"});
         assert_eq!(
-            check_tool(
-                "Write",
-                &args,
-                ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::delegated(),
-                Some(root),
-                None,
-                None,
-            ),
+            check_tool("Write", &args, ApprovalMode::Auto, Some(root), None, None,),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -689,15 +526,7 @@ mod tests {
         let root = Path::new("/home/user/project");
         let args = serde_json::json!({"path": "src/main.rs"});
         assert_eq!(
-            check_tool(
-                "Write",
-                &args,
-                ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::delegated(),
-                Some(root),
-                None,
-                None,
-            ),
+            check_tool("Write", &args, ApprovalMode::Auto, Some(root), None, None,),
             ToolApproval::AutoApprove,
         );
     }
@@ -707,15 +536,7 @@ mod tests {
         let root = Path::new("/home/user/project");
         let args = serde_json::json!({"path": "../../../etc/passwd"});
         assert_eq!(
-            check_tool(
-                "Edit",
-                &args,
-                ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::delegated(),
-                Some(root),
-                None,
-                None,
-            ),
+            check_tool("Edit", &args, ApprovalMode::Auto, Some(root), None, None,),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -725,15 +546,7 @@ mod tests {
         let root = Path::new("/home/user/project");
         let args = serde_json::json!({"command": "cd /tmp && ls"});
         assert_eq!(
-            check_tool(
-                "Bash",
-                &args,
-                ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::delegated(),
-                Some(root),
-                None,
-                None,
-            ),
+            check_tool("Bash", &args, ApprovalMode::Auto, Some(root), None, None,),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -743,15 +556,7 @@ mod tests {
         let root = Path::new("/home/user/project");
         let args = serde_json::json!({"command": "cd src && ls"});
         assert_eq!(
-            check_tool(
-                "Bash",
-                &args,
-                ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::delegated(),
-                Some(root),
-                None,
-                None,
-            ),
+            check_tool("Bash", &args, ApprovalMode::Auto, Some(root), None, None,),
             ToolApproval::AutoApprove,
         );
     }
@@ -760,104 +565,8 @@ mod tests {
     fn test_no_project_root_skips_path_check() {
         let args = serde_json::json!({"path": "/etc/hosts"});
         assert_eq!(
-            check_tool(
-                "Write",
-                &args,
-                ApprovalMode::Auto,
-                crate::task_phase::PhaseInfo::delegated(),
-                None,
-                None,
-                None,
-            ),
+            check_tool("Write", &args, ApprovalMode::Auto, None, None, None,),
             ToolApproval::AutoApprove,
         );
-    }
-
-    // ── Action budget tests ──────────────────────────────────
-
-    #[test]
-    fn test_simple_task_budget_exhausted() {
-        use crate::task_phase::PhaseInfo;
-        // simple_task(2) allows 2 mutations, 3rd triggers PlanRequired
-        let phase = PhaseInfo::simple_task(2);
-        // First mutation: auto-approve (budget 2 → 1)
-        assert_eq!(
-            check_tool(
-                "Write",
-                &serde_json::json!({}),
-                ApprovalMode::Auto,
-                phase,
-                None,
-                None,
-                None,
-            ),
-            ToolApproval::AutoApprove,
-        );
-    }
-
-    #[test]
-    fn test_simple_task_budget_triggers_plan_required() {
-        use crate::task_phase::PhaseInfo;
-        // Budget of 0 → immediately triggers PlanRequired
-        let phase = PhaseInfo::simple_task(0);
-        assert_eq!(
-            check_tool(
-                "Write",
-                &serde_json::json!({}),
-                ApprovalMode::Auto,
-                phase,
-                None,
-                None,
-                None,
-            ),
-            ToolApproval::PlanRequired,
-        );
-    }
-
-    #[test]
-    fn test_simple_task_budget_readonly_doesnt_count() {
-        use crate::task_phase::PhaseInfo;
-        // ReadOnly tools don't consume budget
-        let phase = PhaseInfo::simple_task(0);
-        assert_eq!(
-            check_tool(
-                "Read",
-                &serde_json::json!({}),
-                ApprovalMode::Auto,
-                phase,
-                None,
-                None,
-                None,
-            ),
-            ToolApproval::AutoApprove,
-        );
-    }
-
-    #[test]
-    fn test_delegated_has_no_budget() {
-        use crate::task_phase::PhaseInfo;
-        // delegated() has no budget → unlimited mutations
-        let phase = PhaseInfo::delegated();
-        assert_eq!(
-            check_tool(
-                "Write",
-                &serde_json::json!({}),
-                ApprovalMode::Auto,
-                phase,
-                None,
-                None,
-                None,
-            ),
-            ToolApproval::AutoApprove,
-        );
-    }
-
-    #[test]
-    fn test_new_session_starts_at_understanding() {
-        use crate::task_phase::{PhaseInfo, TaskPhase};
-        let phase = PhaseInfo::new_session();
-        assert_eq!(phase.phase, TaskPhase::Understanding);
-        assert!(!phase.plan_approved);
-        assert!(phase.action_budget.is_none());
     }
 }
