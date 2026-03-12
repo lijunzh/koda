@@ -741,6 +741,19 @@ impl TuiContext {
                                                     &mut self.crossterm_events,
                                                     self.viewport_height,
                                                 )?;
+                                                emit_above(
+                                                    &mut self.terminal,
+                                                    Line::from(vec![
+                                                        Span::styled(
+                                                            "  \u{26a0} ",
+                                                            Style::default().fg(Color::Yellow),
+                                                        ),
+                                                        Span::styled(
+                                                            "Terminal resized \u{2014} visual artifacts may appear above. Press Ctrl+L to refresh.",
+                                                            Style::default().fg(Color::DarkGray),
+                                                        ),
+                                                    ]),
+                                                );
                                             } else if let Event::Paste(text) = ev {
                                                 // Bracketed paste during inference
                                                 let char_count = text.chars().count();
@@ -1526,6 +1539,16 @@ impl TuiContext {
                                 if self.textarea.lines().join("").trim().is_empty() {
                                     self.should_quit = true;
                                 }
+                            }
+                            (KeyCode::Char('l'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                // Ctrl+L: clear visible screen and reinit viewport.
+                                // Standard Unix convention (bash, less, tmux).
+                                // Cleans up ghost fragments from resize reflow.
+                                scroll_past_and_reinit(
+                                    &mut self.terminal,
+                                    &mut self.crossterm_events,
+                                    self.viewport_height,
+                                )?;
                             }
                             (KeyCode::BackTab, _) => {
                                 approval::cycle_mode(&self.shared_mode);
