@@ -368,8 +368,8 @@ For approval mode tables, tool effect matrix, and operational details, see
 [docs/user-guide.md](docs/user-guide.md#security-model).
 
 **Key design choices**:
-- Sub-agent delegation via `DelegationScope` (mode clamping, filesystem grants,
-  tool allowlists) — enforcement is a hard gate, not a log
+- Sub-agents inherit the parent's approval mode (clamped — Auto parent still
+  gets Confirm child if the child is set to Confirm)
 - MCP tool classification from schema annotations (`readOnlyHint`, `destructiveHint`)
   with `.mcp.json` overrides taking precedence
 - No kernel-level sandboxing yet — seccomp/landlock is a v1.0 concern
@@ -378,8 +378,7 @@ For approval mode tables, tool effect matrix, and operational details, see
 1. No kernel-level sandboxing — in-process only
 2. Shell command parsing is heuristic — complex pipelines can bypass
 3. MCP `readOnly` is trust-based — malicious servers could lie
-4. Auto mode sub-agents with `FullProject` scope get full write access
-5. Outside-project writes in Confirm mode show confirm prompt instead of clean block
+4. Outside-project writes in Confirm mode show confirm prompt instead of clean block
 
 ### 19. ~~Review Depth as Isolation Boundaries~~ (v0.1.4 — RETIRED in #355)
 
@@ -419,8 +418,8 @@ violate the principles are tracked as issues for future cleanup.
 | `query_and_apply_capabilities()` | 6 call sites querying provider APIs to override hardcoded context table | Software for One | — | Aligned — multi-provider support is intentional |
 | ~~`model_probe.rs`~~ | ~~Runtime binary gate hedging for weak models that can't follow the contract~~ | ~~Clear Boundaries~~ | — | **Resolved** in [#401] |
 | ~~`DiscoverTools`~~ | ~~§10 says removed, but `tools/discover.rs` still exists~~ — **Resolved** in [#402] | Software for One | — | [#402] |
-| `DelegationScope` | 140 lines of sub-agent permission scoping; unused if sole user doesn't delegate | Software for One | Medium | [#403] |
-| `CreateAgent` tool | LLM-invoked agent file creation; manual JSON is sufficient | Software for One | Low | [#403] |
+| ~~`DelegationScope`~~ | ~~140 lines of sub-agent permission scoping; unused if sole user doesn't delegate~~ | ~~Software for One~~ | — | **Resolved** in [#403] |
+| ~~`CreateAgent` tool~~ | ~~LLM-invoked agent file creation; manual JSON is sufficient~~ | ~~Software for One~~ | — | **Resolved** in [#403] |
 | `Persistence` trait | Trait abstraction with single SQLite backend; no second backend exists | Software for One | Low | — |
 | `thinking_budget` / `reasoning_effort` | Provider-specific optional fields scattered across config | Software for One | — | Aligned — multi-provider support is intentional |
 

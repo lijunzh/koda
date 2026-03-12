@@ -162,7 +162,7 @@ First match wins.
 
 **Sub-agents**: The model can invoke agents via `InvokeAgent` tool calls.
 Sub-agents inherit the parent's approval mode (clamped — a Confirm parent
-produces a Confirm child). See [DESIGN.md §18](../DESIGN.md) for delegation scoping.
+produces a Confirm child).
 
 ---
 
@@ -273,7 +273,7 @@ The security model focuses on preventing accidental blast radius.
 3. **Folder scoping** — writes outside project root always need confirmation
 4. **Bash linting** — heuristic analysis catches `cd` escapes, absolute paths
    outside project, and dangerous patterns (`rm -rf`, force push)
-5. **Sub-agent delegation** — children inherit clamped permissions from parent
+5. **Sub-agent inheritance** — children inherit clamped approval mode from parent
 
 ### What Koda does NOT protect against
 

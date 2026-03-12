@@ -36,7 +36,7 @@ pub fn classify_tool(name: &str) -> ToolEffect {
         "InvokeAgent" => ToolEffect::ReadOnly, // sub-agents inherit parent's mode
 
         // Local mutations — write to filesystem or local state
-        "Write" | "Edit" | "MemoryWrite" | "CreateAgent" => ToolEffect::LocalMutation,
+        "Write" | "Edit" | "MemoryWrite" => ToolEffect::LocalMutation,
 
         // Bash — default to LocalMutation; refined by classify_bash_command()
         "Bash" => ToolEffect::LocalMutation,
@@ -367,8 +367,6 @@ impl ToolRegistry {
                     }
                 }
             }
-            "CreateAgent" => Ok(agent::create_agent(&self.project_root, &args)),
-
             // Skill tools
             "ListSkills" => Ok(skill_tools::list_skills(&self.skill_registry, &args)),
             "ActivateSkill" => Ok(skill_tools::activate_skill(&self.skill_registry, &args)),

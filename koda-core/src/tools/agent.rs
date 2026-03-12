@@ -50,108 +50,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 }
             }),
         },
-        ToolDefinition {
-            name: "CreateAgent".to_string(),
-            description: "Create a new sub-agent for recurring specialized tasks. \
-                Only for tasks that need a dedicated persona — not for one-off work."
-                .to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Agent name (lowercase, no spaces). Used as the filename: agents/<name>.json"
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "One-line description of what this agent does"
-                    },
-                    "system_prompt": {
-                        "type": "string",
-                        "description": "Full system prompt for the agent"
-                    },
-                    "allowed_tools": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Tools this agent can use. Empty [] = all tools."
-                    }
-                },
-                "required": ["name", "system_prompt"]
-            }),
-        },
     ]
-}
-
-/// Create a new sub-agent, validating the request first.
-pub fn create_agent(project_root: &Path, args: &serde_json::Value) -> String {
-    let Some(name) = args["name"].as_str() else {
-        return "Error: 'name' is required.".to_string();
-    };
-    let Some(system_prompt) = args["system_prompt"].as_str() else {
-        return "Error: 'system_prompt' is required.".to_string();
-    };
-
-    // Validate name
-    if name.is_empty() || name.contains(' ') || name.contains('/') {
-        return "Error: agent name must be lowercase with no spaces or slashes.".to_string();
-    }
-    if name == "default" {
-        return "Error: cannot overwrite the default agent.".to_string();
-    }
-
-    // Check if agent already exists in any source (built-in, user, project)
-    let all_agents = discover_all_agents(project_root);
-    if let Some(existing) = all_agents.iter().find(|a| a.name == name) {
-        return format!(
-            "Error: agent '{}' already exists [{}]. Use Edit to modify it, or choose a different name.",
-            name, existing.source
-        );
-    }
-
-    // Validate system prompt has reasonable content
-    if system_prompt.len() < 50 {
-        return "Error: system_prompt is too short. Include identity, process, and output format."
-            .to_string();
-    }
-
-    // Build the agent config
-    let allowed_tools = args["allowed_tools"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let config = json!({
-        "name": name,
-        "system_prompt": system_prompt,
-        "allowed_tools": allowed_tools,
-        "model": null,
-        "base_url": null
-    });
-
-    // Write to user config dir (~/.config/koda/agents/) so it's portable
-    let Ok(agents_dir) = user_agents_dir() else {
-        return "Error: could not determine user config directory.".to_string();
-    };
-    if let Err(e) = std::fs::create_dir_all(&agents_dir) {
-        return format!("Error creating agents directory: {e}");
-    }
-    let agent_path = agents_dir.join(format!("{name}.json"));
-
-    // Write the agent file
-    match serde_json::to_string_pretty(&config) {
-        Ok(json_str) => match std::fs::write(&agent_path, json_str) {
-            Ok(()) => format!(
-                "Created agent '{name}' at {}.\nUse /agent to see it, or ask me to invoke it.",
-                agent_path.display()
-            ),
-            Err(e) => format!("Error writing agent file: {e}"),
-        },
-        Err(e) => format!("Error serializing agent config: {e}"),
-    }
 }
 
 /// Agent info from discovery: name, description, source, and optionally the full prompt.
@@ -254,7 +153,7 @@ pub fn list_agents(project_root: &Path) -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// Format detailed agent list (for ListAgents with detail=true, used by CreateAgent workflow).
+/// Format detailed agent list (for ListAgents with detail=true).
 pub fn list_agents_detail(project_root: &Path) -> String {
     let agents = discover_all_agents(project_root);
 
@@ -318,10 +217,9 @@ mod tests {
     #[test]
     fn test_definitions_count() {
         let defs = definitions();
-        assert_eq!(defs.len(), 3);
+        assert_eq!(defs.len(), 2);
         assert_eq!(defs[0].name, "InvokeAgent");
         assert_eq!(defs[1].name, "ListAgents");
-        assert_eq!(defs[2].name, "CreateAgent");
     }
 
     #[test]
@@ -400,86 +298,5 @@ mod tests {
     fn test_extract_description_fallback() {
         let desc = extract_description("Review all the code carefully.");
         assert_eq!(desc, "Review all the code carefully.");
-    }
-
-    #[test]
-    fn test_create_agent_success() {
-        // CreateAgent writes to ~/.config/koda/agents/, so we just verify
-        // the output message (not the file) to avoid polluting user config
-        let dir = TempDir::new().unwrap();
-        let args = json!({
-            "name": "test_temp_agent_xyz",
-            "system_prompt": "You are a helpful agent. Your job is to do specialized things for the project with care and precision.",
-            "allowed_tools": ["Read", "List"]
-        });
-        let result = create_agent(dir.path(), &args);
-        assert!(
-            result.contains("Created agent") || result.contains("already exists"),
-            "Got: {result}"
-        );
-        // Clean up if created
-        if result.contains("Created agent")
-            && let Ok(user_dir) = user_agents_dir()
-        {
-            let _ = std::fs::remove_file(user_dir.join("test_temp_agent_xyz.json"));
-        }
-    }
-
-    #[test]
-    fn test_create_agent_rejects_default() {
-        let dir = TempDir::new().unwrap();
-        let args = json!({"name": "default", "system_prompt": "x".repeat(60)});
-        let result = create_agent(dir.path(), &args);
-        assert!(result.contains("cannot overwrite the default"));
-    }
-
-    #[test]
-    fn test_create_agent_succeeds_for_custom_name() {
-        let dir = TempDir::new().unwrap();
-        // Use a name unlikely to exist in ~/.config/koda/agents/
-        let unique = format!("test_agent_{}", std::process::id());
-        let args = json!({"name": unique, "system_prompt": "x".repeat(60)});
-        let result = create_agent(dir.path(), &args);
-        assert!(
-            result.contains("created") || result.contains("Created"),
-            "Should create custom agent: {result}"
-        );
-        // Clean up: delete the created file from the project agents dir
-        let agent_file = dir.path().join("agents").join(format!("{unique}.json"));
-        let _ = std::fs::remove_file(agent_file);
-    }
-
-    #[test]
-    fn test_create_agent_rejects_existing_disk() {
-        let dir = TempDir::new().unwrap();
-        let agents_dir = dir.path().join("agents");
-        std::fs::create_dir(&agents_dir).unwrap();
-        std::fs::write(
-            agents_dir.join("custom.json"),
-            r#"{"name":"custom","system_prompt":"x"}"#,
-        )
-        .unwrap();
-        let args = json!({"name": "custom", "system_prompt": "x".repeat(60)});
-        let result = create_agent(dir.path(), &args);
-        assert!(
-            result.contains("already exists"),
-            "Should reject duplicate: {result}"
-        );
-    }
-
-    #[test]
-    fn test_create_agent_rejects_short_prompt() {
-        let dir = TempDir::new().unwrap();
-        let args = json!({"name": "bad", "system_prompt": "Too short."});
-        let result = create_agent(dir.path(), &args);
-        assert!(result.contains("too short"));
-    }
-
-    #[test]
-    fn test_create_agent_rejects_bad_name() {
-        let dir = TempDir::new().unwrap();
-        let args = json!({"name": "bad name", "system_prompt": "x".repeat(60)});
-        let result = create_agent(dir.path(), &args);
-        assert!(result.contains("no spaces"));
     }
 }
