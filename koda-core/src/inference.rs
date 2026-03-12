@@ -28,22 +28,37 @@ use tokio_util::sync::CancellationToken;
 
 /// All parameters for the inference loop, bundled into a single struct.
 pub struct InferenceContext<'a> {
+    /// Project root directory.
     pub project_root: &'a Path,
+    /// Global configuration.
     pub config: &'a KodaConfig,
+    /// Database handle for message persistence.
     pub db: &'a Database,
+    /// Current session identifier.
     pub session_id: &'a str,
+    /// System prompt for this session.
     pub system_prompt: &'a str,
+    /// LLM provider to use.
     pub provider: &'a dyn LlmProvider,
+    /// Tool registry with all available tools.
     pub tools: &'a ToolRegistry,
+    /// Pre-computed tool definitions sent to the LLM.
     pub tool_defs: &'a [crate::providers::ToolDefinition],
+    /// Images attached to the current prompt (consumed on first turn).
     pub pending_images: Option<Vec<ImageData>>,
+    /// Current approval mode.
     pub mode: ApprovalMode,
+    /// User settings (may be mutated for auto-compact).
     pub settings: &'a mut Settings,
+    /// Event sink for streaming output to the client.
     pub sink: &'a dyn crate::engine::EngineSink,
+    /// Cancellation token for graceful interruption.
     pub cancel: CancellationToken,
+    /// Channel for receiving client commands (approval responses, etc.).
     pub cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
 }
 
+/// Run the inference loop: send messages, stream responses, dispatch tool calls.
 pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     let InferenceContext {
         project_root,

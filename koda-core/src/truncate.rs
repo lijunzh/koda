@@ -19,9 +19,13 @@ pub enum Truncated<'a> {
     Full(&'a str),
     /// Output was truncated into head + tail.
     Split {
+        /// First N lines of output.
         head: Vec<&'a str>,
+        /// Last N lines of output.
         tail: Vec<&'a str>,
+        /// Number of lines hidden between head and tail.
         hidden: usize,
+        /// Total line count before truncation.
         total: usize,
     },
 }

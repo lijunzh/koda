@@ -58,7 +58,9 @@ pub struct McpServerConfig {
 
 /// Loaded MCP configuration: server configs + tool effect overrides.
 pub struct McpConfigs {
+    /// Server name → server configuration.
     pub servers: HashMap<String, McpServerConfig>,
+    /// Tool name → effect override (from `.mcp.json` annotations).
     pub tool_overrides: HashMap<String, ToolEffect>,
 }
 

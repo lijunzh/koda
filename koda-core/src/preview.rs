@@ -21,15 +21,23 @@ const MAX_WRITE_PREVIEW_LINES: usize = 8;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind")]
 pub enum DiffPreview {
+    /// Replacement-based edit with context lines.
     Edit(EditPreview),
+    /// New file creation.
     WriteNew(WritePreview),
+    /// Overwrite of an existing file.
     WriteOverwrite(WriteOverwritePreview),
+    /// Single file deletion.
     DeleteFile(DeleteFilePreview),
+    /// Directory deletion.
     DeleteDir(DeleteDirPreview),
+    /// Target file doesn't exist yet (Write will create it).
     FileNotYetExists,
+    /// Target path not found.
     PathNotFound,
 }
 
+/// Preview of an Edit (replacement-based) operation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EditPreview {
     /// File path (as given in the tool args).
@@ -40,6 +48,7 @@ pub struct EditPreview {
     pub truncated_count: usize,
 }
 
+/// A single replacement within an Edit operation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReplacementPreview {
     /// 0-based index of this replacement.
@@ -54,32 +63,49 @@ pub struct ReplacementPreview {
     pub new_lines: Vec<String>,
 }
 
+/// Preview of a Write (new file) operation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WritePreview {
+    /// Total line count of the new file.
     pub line_count: usize,
+    /// Total byte count.
     pub byte_count: usize,
+    /// First few lines (for preview display).
     pub first_lines: Vec<String>,
+    /// Whether `first_lines` was truncated.
     pub truncated: bool,
 }
 
+/// Preview of a Write (overwrite existing file) operation.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WriteOverwritePreview {
+    /// Line count of the existing file.
     pub old_line_count: usize,
+    /// Byte count of the existing file.
     pub old_byte_count: usize,
+    /// Line count of the new content.
     pub new_line_count: usize,
+    /// Byte count of the new content.
     pub new_byte_count: usize,
+    /// First few lines of the new content.
     pub first_lines: Vec<String>,
+    /// Whether `first_lines` was truncated.
     pub truncated: bool,
 }
 
+/// Preview of a single file deletion.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeleteFilePreview {
+    /// Line count of the file being deleted.
     pub line_count: usize,
+    /// Byte count of the file being deleted.
     pub byte_count: u64,
 }
 
+/// Preview of a directory deletion.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeleteDirPreview {
+    /// Whether the deletion is recursive.
     pub recursive: bool,
 }
 

@@ -180,10 +180,15 @@ impl McpRegistry {
 /// Display info for a connected MCP server.
 #[derive(Debug)]
 pub struct McpServerInfo {
+    /// Server name (from `.mcp.json` key).
     pub name: String,
+    /// Command used to start the server.
     pub command: String,
+    /// Command-line arguments.
     pub args: Vec<String>,
+    /// Number of tools provided by this server.
     pub tool_count: usize,
+    /// Names of all tools from this server.
     pub tool_names: Vec<String>,
 }
 

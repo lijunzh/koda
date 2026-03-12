@@ -72,6 +72,7 @@ fn beta_header(extended_context: bool) -> String {
     }
 }
 
+/// Anthropic Claude API provider.
 pub struct AnthropicProvider {
     client: reqwest::Client,
     base_url: String,
@@ -134,6 +135,7 @@ impl AnthropicProvider {
             );
         }
     }
+    /// Create a new Anthropic provider with the given API key and optional base URL.
     pub fn new(api_key: String, base_url: Option<&str>) -> Self {
         Self {
             client: super::build_http_client(base_url),

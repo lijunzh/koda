@@ -15,23 +15,31 @@ use std::path::Path;
 /// Metadata from a SKILL.md frontmatter.
 #[derive(Debug, Clone)]
 pub struct SkillMeta {
+    /// Skill name (derived from filename or frontmatter).
     pub name: String,
+    /// One-line description.
     pub description: String,
+    /// Searchable tags.
     pub tags: Vec<String>,
+    /// Where this skill was discovered.
     pub source: SkillSource,
 }
 
 /// Where a skill was loaded from.
 #[derive(Debug, Clone)]
 pub enum SkillSource {
+    /// Shipped with koda.
     BuiltIn,
+    /// From `~/.config/koda/skills/`.
     User,
+    /// From `.koda/skills/` in the project.
     Project,
 }
 
 /// A fully loaded skill (metadata + content).
 #[derive(Debug, Clone)]
 pub struct Skill {
+    /// Skill metadata (name, description, tags, source).
     pub meta: SkillMeta,
     /// The full SKILL.md content (after frontmatter).
     pub content: String,
@@ -139,6 +147,7 @@ impl SkillRegistry {
         self.skills.len()
     }
 
+    /// Returns `true` if no skills were discovered.
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
     }

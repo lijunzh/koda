@@ -32,6 +32,7 @@ pub struct ThinkTagFilter {
 }
 
 impl ThinkTagFilter {
+    /// Create a new filter with empty state.
     pub fn new() -> Self {
         Self {
             buffer: String::new(),

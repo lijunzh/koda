@@ -8,7 +8,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::path::Path;
 use std::str::FromStr;
 
-// Re-export types from persistence for backward compatibility.
+/// Re-export persistence types for backward compatibility.
 pub use crate::persistence::{Message, Persistence, Role, SessionInfo, SessionUsage};
 
 /// Wrapper around the SQLite connection pool.

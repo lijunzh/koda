@@ -16,6 +16,7 @@ const KEYS_FILE: &str = "keys.toml";
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct KeyStore {
     #[serde(default)]
+    /// Map of environment variable name → API key value.
     pub keys: HashMap<String, String>,
 }
 

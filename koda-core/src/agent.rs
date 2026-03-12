@@ -26,10 +26,15 @@ pub type McpStatus = (String, Result<usize, String>);
 ///
 /// Create once, share via `Arc<KodaAgent>` across sessions and sub-agents.
 pub struct KodaAgent {
+    /// Project root directory.
     pub project_root: PathBuf,
+    /// Tool registry with all built-in and MCP tools.
     pub tools: ToolRegistry,
+    /// Pre-computed tool definitions for the LLM.
     pub tool_defs: Vec<ToolDefinition>,
+    /// Assembled system prompt.
     pub system_prompt: String,
+    /// Shared MCP server registry.
     pub mcp_registry: Arc<RwLock<McpRegistry>>,
     /// MCP server connection results from init (for client rendering).
     pub mcp_statuses: Vec<McpStatus>,
