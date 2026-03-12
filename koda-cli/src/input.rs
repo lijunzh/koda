@@ -252,6 +252,9 @@ pub fn format_context_files(files: &[FileContext]) -> Option<String> {
     Some(parts.join("\n\n"))
 }
 
+/// Pastes shorter than this go inline in the textarea; longer ones become PasteBlocks.
+pub const PASTE_BLOCK_THRESHOLD: usize = 200;
+
 /// Max chars per paste block (~40k chars, matching file truncation policy).
 const PASTE_BLOCK_MAX_CHARS: usize = 40_000;
 

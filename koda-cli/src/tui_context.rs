@@ -743,12 +743,18 @@ impl TuiContext {
                                                 // viewport and reinit to prevent ghost prompt lines.
                                                 reinit_viewport_in_place(&mut self.terminal, self.viewport_height, self.viewport_height)?;
                                             } else if let Event::Paste(text) = ev {
-                                                // Bracketed paste during inference — accumulate for next turn
+                                                // Bracketed paste during inference
                                                 let char_count = text.chars().count();
-                                                self.paste_blocks.push(input::PasteBlock {
-                                                    content: text,
-                                                    char_count,
-                                                });
+                                                if char_count < input::PASTE_BLOCK_THRESHOLD {
+                                                    // Short paste: insert into textarea for next turn
+                                                    self.textarea.insert_str(&text);
+                                                } else {
+                                                    // Large paste: accumulate as block for next turn
+                                                    self.paste_blocks.push(input::PasteBlock {
+                                                        content: text,
+                                                        char_count,
+                                                    });
+                                                }
                                             } else if let Event::Key(key) = ev {
                                                 // Approval hotkeys during inference
                                                 if let MenuContent::Approval { id, .. } = &self.menu {
@@ -1094,12 +1100,14 @@ impl TuiContext {
                         // Terminal resized while idle — erase stale viewport and reinit.
                         reinit_viewport_in_place(&mut self.terminal, self.viewport_height, self.viewport_height)?;
                     } else if let Event::Paste(text) = ev {
-                        if matches!(self.prompt_mode, PromptMode::WizardInput { .. }) {
-                            // In wizard mode (API key, URL entry), insert paste into textarea
+                        let char_count = text.chars().count();
+                        if matches!(self.prompt_mode, PromptMode::WizardInput { .. })
+                            || char_count < input::PASTE_BLOCK_THRESHOLD
+                        {
+                            // Wizard mode or short paste: insert inline into textarea
                             self.textarea.insert_str(&text);
                         } else {
-                            // Chat mode: capture as a paste block reference
-                            let char_count = text.chars().count();
+                            // Large paste in chat mode: capture as a collapsed block reference
                             self.paste_blocks.push(input::PasteBlock {
                                 content: text.clone(),
                                 char_count,
