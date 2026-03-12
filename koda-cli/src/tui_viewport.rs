@@ -98,8 +98,12 @@ pub(crate) fn draw_viewport(
             (format!("{icon}> "), c)
         }
     };
+    let max_prompt = match prompt_mode {
+        PromptMode::WizardInput { .. } => 60,
+        PromptMode::Chat => 30,
+    };
     let prompt_width: u16 =
-        (prompt_text.chars().count().min(30) as u16).min(area.width.saturating_sub(4));
+        (prompt_text.chars().count().min(max_prompt) as u16).min(area.width.saturating_sub(4));
     let [prompt_area, text_area] =
         Layout::horizontal([Constraint::Length(prompt_width), Constraint::Fill(1)])
             .areas(input_rows);
