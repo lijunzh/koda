@@ -29,6 +29,7 @@ impl std::fmt::Debug for OpenAiCompatProvider {
 }
 
 impl OpenAiCompatProvider {
+    /// Create a new OpenAI-compatible provider with the given base URL and optional API key.
     pub fn new(base_url: &str, api_key: Option<String>) -> Self {
         Self {
             client: super::build_http_client(Some(base_url)),

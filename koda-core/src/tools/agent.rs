@@ -55,9 +55,13 @@ pub fn definitions() -> Vec<ToolDefinition> {
 
 /// Agent info from discovery: name, description, source, and optionally the full prompt.
 pub struct AgentInfo {
+    /// Agent name (used in `InvokeAgent` tool calls).
     pub name: String,
+    /// One-line description shown in `ListAgents` output.
     pub description: String,
-    pub source: &'static str, // "built-in", "user", or "project"
+    /// Discovery source: `"built-in"`, `"user"`, or `"project"`.
+    pub source: &'static str,
+    /// Full system prompt content.
     pub system_prompt: String,
 }
 

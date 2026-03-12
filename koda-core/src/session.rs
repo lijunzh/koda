@@ -23,12 +23,19 @@ use tokio_util::sync::CancellationToken;
 /// Each session has its own provider, approval settings, and cancel token.
 /// Multiple sessions can share the same `Arc<KodaAgent>`.
 pub struct KodaSession {
+    /// Unique session identifier.
     pub id: String,
+    /// Shared agent configuration (tools, MCP, system prompt).
     pub agent: Arc<KodaAgent>,
+    /// Database handle for message persistence.
     pub db: Database,
+    /// LLM provider for this session.
     pub provider: Box<dyn LlmProvider>,
+    /// Current approval mode (Auto / Confirm).
     pub mode: ApprovalMode,
+    /// User settings (last provider, preferences).
     pub settings: Settings,
+    /// Cancellation token for graceful shutdown.
     pub cancel: CancellationToken,
 }
 

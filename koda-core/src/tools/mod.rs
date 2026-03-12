@@ -61,14 +61,23 @@ pub fn is_mutating_tool(name: &str) -> bool {
     !matches!(classify_tool(name), ToolEffect::ReadOnly)
 }
 
+/// Sub-agent invocation tool (`InvokeAgent`, `ListAgents`).
 pub mod agent;
+/// File CRUD tools (`Read`, `Write`, `Edit`, `Delete`, `List`).
 pub mod file_tools;
+/// Glob pattern search tool (`Glob`).
 pub mod glob_tool;
+/// Recursive text search tool (`Grep`).
 pub mod grep;
+/// Project memory read/write tools (`MemoryRead`, `MemoryWrite`).
 pub mod memory;
+/// On-demand conversation history retrieval (`RecallContext`).
 pub mod recall;
+/// Shell command execution tool (`Bash`).
 pub mod shell;
+/// Skill discovery and activation tools (`ListSkills`, `ActivateSkill`).
 pub mod skill_tools;
+/// HTTP fetch tool (`WebFetch`).  
 pub mod web_fetch;
 
 use anyhow::Result;
@@ -92,6 +101,7 @@ pub type FileReadCache = Arc<std::sync::Mutex<HashMap<String, (u64, SystemTime)>
 /// Result of executing a tool.
 #[derive(Debug, Clone)]
 pub struct ToolResult {
+    /// The tool's output string.
     pub output: String,
 }
 
