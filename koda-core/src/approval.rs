@@ -4,7 +4,7 @@
 //! - **Auto** (default): Auto-approve everything. Destructive ops need confirmation.
 //! - **Confirm**: Every non-read action requires explicit confirmation.
 //!
-//! Tool effects are classified via [`ToolEffect`] and bash commands are
+//! Tool effects are classified via [`crate::tools::ToolEffect`] and bash commands are
 //! further refined by [`crate::bash_safety::classify_bash_command`].
 
 use crate::bash_safety::classify_bash_command;

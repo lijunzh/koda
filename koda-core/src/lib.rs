@@ -1,12 +1,12 @@
 //! Koda Core — the engine library for the Koda AI coding agent.
 //!
 //! This crate contains the pure engine logic with zero terminal dependencies.
-
-#![warn(missing_docs)]
-//! It communicates exclusively through [`engine::EngineEvent`] (output) and
-//! [`engine::EngineCommand`] (input) enums.
+//! It communicates exclusively through `EngineEvent` (output) and
+//! `EngineCommand` (input) enums.
 //!
 //! See `DESIGN.md` in the repository root for the full architectural rationale.
+
+#![warn(missing_docs)]
 
 /// Sub-agent configuration, discovery, and invocation.
 pub mod agent;
@@ -24,7 +24,7 @@ pub mod config;
 pub mod context;
 /// SQLite persistence layer — sessions, messages, usage tracking.
 pub mod db;
-/// Engine protocol: [`engine::EngineEvent`] / [`engine::EngineCommand`] enums.
+/// Engine protocol: `EngineEvent` / `EngineCommand` enums.
 pub mod engine;
 /// Git helpers — status, diff, blame, log.
 pub mod git;
