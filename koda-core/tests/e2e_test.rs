@@ -712,3 +712,166 @@ async fn test_compact_skips_short_conversation() {
         "should skip compaction for short conversations"
     );
 }
+
+// ── Skill tools ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_list_skills_returns_builtins() {
+    let env = Env::new().await;
+    env.insert_user_message("list skills").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call("ListSkills", serde_json::json!({})),
+        MockResponse::Text("Here are the available skills.".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    let tool_result = events.iter().find_map(|e| {
+        if let EngineEvent::ToolCallResult { output, name, .. } = e
+            && name == "ListSkills"
+        {
+            return Some(output.clone());
+        }
+        None
+    });
+    assert!(tool_result.is_some(), "expected ListSkills result");
+    let output = tool_result.unwrap();
+    assert!(
+        output.contains("code-review"),
+        "should list built-in code-review skill: {output}"
+    );
+    assert!(
+        output.contains("security-audit"),
+        "should list built-in security-audit skill: {output}"
+    );
+}
+
+#[tokio::test]
+async fn test_list_skills_with_search_query() {
+    let env = Env::new().await;
+    env.insert_user_message("find security skills").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call("ListSkills", serde_json::json!({"query": "security"})),
+        MockResponse::Text("Found security skills.".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    let tool_result = events.iter().find_map(|e| {
+        if let EngineEvent::ToolCallResult { output, name, .. } = e
+            && name == "ListSkills"
+        {
+            return Some(output.clone());
+        }
+        None
+    });
+    assert!(tool_result.is_some(), "expected ListSkills result");
+    let output = tool_result.unwrap();
+    assert!(
+        output.contains("security-audit"),
+        "should find security-audit: {output}"
+    );
+    assert!(
+        !output.contains("code-review"),
+        "should NOT find code-review when searching 'security': {output}"
+    );
+}
+
+#[tokio::test]
+async fn test_activate_skill_injects_content() {
+    let env = Env::new().await;
+    env.insert_user_message("review my code").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "ActivateSkill",
+            serde_json::json!({"skill_name": "code-review"}),
+        ),
+        MockResponse::Text("Starting code review per the skill instructions.".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    let tool_result = events.iter().find_map(|e| {
+        if let EngineEvent::ToolCallResult { output, name, .. } = e
+            && name == "ActivateSkill"
+        {
+            return Some(output.clone());
+        }
+        None
+    });
+    assert!(tool_result.is_some(), "expected ActivateSkill result");
+    let output = tool_result.unwrap();
+    assert!(
+        output.contains("Skill 'code-review' activated"),
+        "should confirm activation: {output}"
+    );
+    assert!(
+        output.contains("# Code Review"),
+        "should inject full skill content: {output}"
+    );
+    assert!(
+        output.contains("Principles"),
+        "should include skill guidance sections: {output}"
+    );
+}
+
+#[tokio::test]
+async fn test_activate_skill_not_found() {
+    let env = Env::new().await;
+    env.insert_user_message("use nonexistent skill").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "ActivateSkill",
+            serde_json::json!({"skill_name": "nonexistent"}),
+        ),
+        MockResponse::Text("That skill doesn't exist.".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    let tool_result = events.iter().find_map(|e| {
+        if let EngineEvent::ToolCallResult { output, name, .. } = e
+            && name == "ActivateSkill"
+        {
+            return Some(output.clone());
+        }
+        None
+    });
+    assert!(tool_result.is_some(), "expected ActivateSkill result");
+    let output = tool_result.unwrap();
+    assert!(
+        output.contains("not found"),
+        "should report skill not found: {output}"
+    );
+    assert!(
+        output.contains("code-review"),
+        "should suggest available skills: {output}"
+    );
+}
+
+#[tokio::test]
+async fn test_activate_skill_missing_parameter() {
+    let env = Env::new().await;
+    env.insert_user_message("activate skill").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call("ActivateSkill", serde_json::json!({})),
+        MockResponse::Text("Missing parameter.".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    let tool_result = events.iter().find_map(|e| {
+        if let EngineEvent::ToolCallResult { output, name, .. } = e
+            && name == "ActivateSkill"
+        {
+            return Some(output.clone());
+        }
+        None
+    });
+    assert!(tool_result.is_some(), "expected ActivateSkill result");
+    let output = tool_result.unwrap();
+    assert!(
+        output.contains("Missing"),
+        "should report missing parameter: {output}"
+    );
+}

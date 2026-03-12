@@ -20,6 +20,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/model", "Pick a model interactively"),
     ("/provider", "Switch LLM provider"),
     ("/sessions", "List/resume/delete sessions"),
+    ("/skills", "List available skills (search with query)"),
     ("/undo", "Undo last turn's file changes"),
     ("/verbose", "Toggle full tool output"),
 ];
