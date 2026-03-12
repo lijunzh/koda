@@ -234,7 +234,6 @@ mod naming_convention {
         "ShareReasoning",
         "InvokeAgent",
         "ListAgents",
-        "CreateAgent",
     ];
 
     #[test]
@@ -267,7 +266,7 @@ mod naming_convention {
 
     #[test]
     fn test_expected_tool_count() {
-        // 15 built-in tools as of this version
-        assert_eq!(BUILTIN_TOOLS.len(), 15);
+        // 14 built-in tools as of this version
+        assert_eq!(BUILTIN_TOOLS.len(), 14);
     }
 }

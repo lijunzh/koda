@@ -47,14 +47,7 @@ pub(crate) fn can_parallelize(
     !tool_calls.iter().any(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            approval::check_tool(
-                &tc.function_name,
-                &args,
-                mode,
-                Some(project_root),
-                None,
-                None,
-            ),
+            approval::check_tool(&tc.function_name, &args, mode, Some(project_root), None,),
             ToolApproval::NeedsConfirmation | ToolApproval::Blocked
         )
     })
@@ -211,14 +204,7 @@ pub(crate) async fn execute_tools_split_batch(
     let (parallel, sequential): (Vec<_>, Vec<_>) = tool_calls.iter().partition(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            approval::check_tool(
-                &tc.function_name,
-                &args,
-                mode,
-                Some(project_root),
-                None,
-                None,
-            ),
+            approval::check_tool(&tc.function_name, &args, mode, Some(project_root), None,),
             ToolApproval::AutoApprove
         )
     });
@@ -367,7 +353,6 @@ pub(crate) async fn execute_tools_sequential(
             &parsed_args,
             mode,
             Some(project_root),
-            None,
             None,
         );
 
@@ -641,7 +626,6 @@ pub(crate) async fn execute_sub_agent(
                 &parsed_args,
                 mode,
                 Some(project_root),
-                None,
                 None,
             );
 

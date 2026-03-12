@@ -92,7 +92,6 @@ koda/
 │   │   ├── model_context.rs# Model → context window size lookup table (fallback)
 │   │   ├── output_caps.rs  # Output cap scaling based on context window size
 │   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
-│   │   ├── delegation.rs   # Sub-agent delegation scoping
 │   │   ├── git.rs          # Git checkpointing + rollback
 │   │   ├── settings.rs     # Runtime settings (approval mode, etc.)
 │   │   ├── runtime_env.rs  # Thread-safe runtime env for API keys

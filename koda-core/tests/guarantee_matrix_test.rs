@@ -37,22 +37,8 @@ fn check_both(
     args: &serde_json::Value,
     mcp_effect: Option<ToolEffect>,
 ) -> (ToolApproval, ToolApproval) {
-    let auto = check_tool(
-        tool,
-        args,
-        ApprovalMode::Auto,
-        Some(root()),
-        mcp_effect,
-        None,
-    );
-    let confirm = check_tool(
-        tool,
-        args,
-        ApprovalMode::Confirm,
-        Some(root()),
-        mcp_effect,
-        None,
-    );
+    let auto = check_tool(tool, args, ApprovalMode::Auto, Some(root()), mcp_effect);
+    let confirm = check_tool(tool, args, ApprovalMode::Confirm, Some(root()), mcp_effect);
     (auto, confirm)
 }
 
@@ -222,75 +208,4 @@ fn matrix_mcp_config_override_remote_action() {
     let (auto, confirm) = check_both("github.create_issue", &args, Some(ToolEffect::RemoteAction));
     assert_eq!(auto, ToolApproval::AutoApprove);
     assert_eq!(confirm, ToolApproval::AutoApprove);
-}
-
-// ── Delegation scope tests ──
-
-#[test]
-fn matrix_delegation_blocks_unauthorized_tool() {
-    use koda_core::delegation::{DelegationScope, FsGrant};
-    let scope = DelegationScope {
-        mode: ApprovalMode::Auto,
-        fs_grant: FsGrant::FullProject,
-        allowed_tools: Some(vec!["Read".to_string(), "Grep".to_string()]),
-        can_delegate: false,
-    };
-    let args = serde_json::json!({"path": "src/main.rs"});
-    let result = check_tool(
-        "Write",
-        &args,
-        ApprovalMode::Auto,
-        Some(root()),
-        None,
-        Some(&scope),
-    );
-    assert_eq!(result, ToolApproval::Blocked);
-}
-
-#[test]
-fn matrix_delegation_blocks_write_outside_grant() {
-    use koda_core::delegation::{DelegationScope, FsGrant};
-    let scope = DelegationScope {
-        mode: ApprovalMode::Auto,
-        fs_grant: FsGrant::Scoped {
-            read_paths: vec![std::path::PathBuf::from(".")],
-            write_paths: vec![std::path::PathBuf::from("src/")],
-        },
-        allowed_tools: None,
-        can_delegate: false,
-    };
-    let args = serde_json::json!({"path": "tests/test.rs"});
-    let result = check_tool(
-        "Write",
-        &args,
-        ApprovalMode::Auto,
-        Some(root()),
-        None,
-        Some(&scope),
-    );
-    assert_eq!(result, ToolApproval::Blocked);
-}
-
-#[test]
-fn matrix_delegation_allows_write_inside_grant() {
-    use koda_core::delegation::{DelegationScope, FsGrant};
-    let scope = DelegationScope {
-        mode: ApprovalMode::Auto,
-        fs_grant: FsGrant::Scoped {
-            read_paths: vec![std::path::PathBuf::from(".")],
-            write_paths: vec![std::path::PathBuf::from("src/")],
-        },
-        allowed_tools: None,
-        can_delegate: false,
-    };
-    let args = serde_json::json!({"path": "src/main.rs"});
-    let result = check_tool(
-        "Write",
-        &args,
-        ApprovalMode::Auto,
-        Some(root()),
-        None,
-        Some(&scope),
-    );
-    assert_eq!(result, ToolApproval::AutoApprove);
 }

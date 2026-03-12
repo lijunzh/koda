@@ -391,7 +391,6 @@ mod display_regression {
         ("ShareReasoning", "Tool"),
         ("InvokeAgent", "Agent"),
         ("ListAgents", "Tool"),
-        ("CreateAgent", "Create"),
         ("TodoWrite", "Todo"),
         ("TodoRead", "Todo"),
         ("AstAnalysis", "AST"),
@@ -410,7 +409,6 @@ mod display_regression {
             "WebFetch" => "Fetch",
             "MemoryRead" | "MemoryWrite" => "Memory",
             "InvokeAgent" => "Agent",
-            "CreateAgent" => "Create",
             "TodoWrite" | "TodoRead" => "Todo",
             "AstAnalysis" => "AST",
             _ => "Tool",
@@ -437,8 +435,8 @@ mod display_regression {
     fn test_tool_count() {
         assert_eq!(
             KNOWN_TOOLS.len(),
-            18,
-            "Expected 18 known tools (update this test when adding tools)"
+            17,
+            "Expected 17 known tools (update this test when adding tools)"
         );
     }
 }
