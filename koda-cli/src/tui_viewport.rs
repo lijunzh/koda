@@ -313,16 +313,20 @@ pub(crate) fn scroll_past_and_reinit(
     // with DSR cursor queries that init_terminal() needs.
     *events = crossterm::event::EventStream::new();
 
-    // Erase the bottom viewport_height rows — the inline viewport's approximate region.
-    // Stay in raw mode: MoveTo+Clear work fine, and raw mode ensures the DSR response
-    // in init_terminal() is captured by crossterm (not echoed to screen as ^[[row;colR]).
-    let (_, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    let erase_from = term_rows.saturating_sub(viewport_height);
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::cursor::MoveTo(0, erase_from),
-        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
-    );
+    // Ink/Claude Code approach: don't try to perfectly erase the old viewport.
+    // After a column resize, content reflows unpredictably — separator lines wrap,
+    // viewport_area.y becomes stale. Erasing a large region risks eating scrollback.
+    //
+    // Instead: scroll past the old viewport entirely by emitting newlines.
+    // Old viewport fragments end up in scrollback (may look messy, but history is
+    // preserved). Then create a fresh terminal at the new cursor position.
+    //
+    // Stay in raw mode so DSR response in init_terminal() is captured (not echoed).
+    let mut stdout = std::io::stdout();
+    // Scroll past: emit enough newlines to push old viewport into scrollback.
+    for _ in 0..viewport_height {
+        let _ = crossterm::execute!(stdout, crossterm::style::Print("\n"));
+    }
 
     // Create fresh terminal. DSR query succeeds because:
     // - Old EventStream reader is stopped (dropped above)
