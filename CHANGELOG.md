@@ -9,6 +9,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-03-12
+
+### Added
+- **Skills system polish** — `/skills` REPL command, `ActivateSkill` tool, E2E tests
+  for built-in `code-review` and `security-audit` skills, skills documented in
+  system prompt and README (#367)
+
+### Changed
+- **Design principles rewritten** — DESIGN.md now states three clear principles:
+  Software for One, Clear Boundaries, Make It Work. Removed the old numbered
+  decision log in favour of focused architectural guidance (#404)
+- **Tool infrastructure simplified** — merged `bash_safety.rs` into `approval.rs`,
+  removed `normalize_tool_name()` indirection (tools are always PascalCase),
+  collapsed three approval-mode enums into two (Auto/Confirm) (#406, #407)
+
+### Removed
+- **Dead code cleanup** — removed `DiscoverTools` tool and trait, `DelegationScope`
+  enum, `CreateAgent` placeholder, `model_probe.rs` capability probing, and dead
+  git checkpoint/rollback + `FileWatcher` code. ~1,200 lines removed across the
+  workspace (#366, #272, #399, #401, #402, #403, #405, #408, #409)
+
+### Fixed
+- **Test reliability** — SSE parser tests, dispatch test fixes, session lifecycle
+  test with proper shell timeout handling (#384, #385, #386, #398)
+- **Parallel tool output** — each tool's banner now appears immediately before its
+  own result; previously all banners printed upfront under the first tool's header
+  (#410, #411)
+
 ## [0.1.6] - 2026-03-11
 
 ### Security
