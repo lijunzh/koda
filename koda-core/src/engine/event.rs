@@ -29,7 +29,7 @@ pub enum EngineEvent {
     /// A chunk of streaming text from the LLM response.
     TextDelta {
         /// The text chunk.
-        text: String
+        text: String,
     },
 
     /// The LLM finished streaming text. Flush any buffered output.
@@ -41,7 +41,7 @@ pub enum EngineEvent {
     /// A chunk of thinking/reasoning content.
     ThinkingDelta {
         /// The thinking text chunk.
-        text: String
+        text: String,
     },
 
     /// The thinking/reasoning block finished.
@@ -77,7 +77,7 @@ pub enum EngineEvent {
     /// A sub-agent is being invoked.
     SubAgentStart {
         /// Name of the sub-agent being invoked.
-        agent_name: String
+        agent_name: String,
     },
 
     /// A sub-agent finished.
@@ -149,7 +149,7 @@ pub enum EngineEvent {
     /// or ignore it entirely. The ratatui TUI uses the status bar instead.
     SpinnerStart {
         /// Status message to display.
-        message: String
+        message: String,
     },
 
     /// Stop the spinner (presentational hint).
@@ -164,7 +164,7 @@ pub enum EngineEvent {
     /// to lock input, start timers, or update status indicators.
     TurnStart {
         /// Unique identifier for this turn.
-        turn_id: String
+        turn_id: String,
     },
 
     /// An inference turn has ended.
@@ -186,26 +186,26 @@ pub enum EngineEvent {
         /// The iteration cap that was hit.
         cap: u32,
         /// Recent tool names for context.
-        recent_tools: Vec<String>
+        recent_tools: Vec<String>,
     },
 
     // ── Messages ──────────────────────────────────────────────────────
     /// Informational message (not from the LLM).
     Info {
         /// The informational message.
-        message: String
+        message: String,
     },
 
     /// Warning message.
     Warn {
         /// The warning message.
-        message: String
+        message: String,
     },
 
     /// Error message.
     Error {
         /// The error message.
-        message: String
+        message: String,
     },
 }
 
@@ -220,7 +220,7 @@ pub enum TurnEndReason {
     /// The turn failed with an error.
     Error {
         /// The error message.
-        message: String
+        message: String,
     },
 }
 
@@ -306,7 +306,7 @@ pub enum ApprovalDecision {
     /// Reject with feedback (tells the LLM what to change).
     RejectWithFeedback {
         /// Feedback explaining why the action was rejected.
-        feedback: String
+        feedback: String,
     },
 }
 
@@ -321,43 +321,43 @@ pub enum SlashCommand {
     /// Switch to a specific model by name.
     SwitchModel {
         /// Model identifier.
-        model: String
+        model: String,
     },
     /// Switch to a specific provider.
     SwitchProvider {
         /// Provider name.
-        provider: String
+        provider: String,
     },
     /// List recent sessions.
     ListSessions,
     /// Delete a session by ID.
     DeleteSession {
         /// Session ID to delete.
-        id: String
+        id: String,
     },
     /// Set the approval/trust mode.
     SetTrust {
         /// Approval mode name.
-        mode: String
+        mode: String,
     },
     /// MCP server management command.
     McpCommand {
         /// Raw MCP subcommand arguments.
-        args: String
+        args: String,
     },
     /// Show token usage for this session.
     Cost,
     /// View or save memory.
     Memory {
         /// Optional action (`"save"`, `"show"`, etc.).
-        action: Option<String>
+        action: Option<String>,
     },
     /// Show help / command list.
     Help,
     /// Inject a prompt as if the user typed it (used by /diff review, etc.).
     InjectPrompt {
         /// Prompt text to inject.
-        text: String
+        text: String,
     },
 }
 
