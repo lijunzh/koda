@@ -14,8 +14,8 @@ use crate::tui_types::{
     MIN_VIEWPORT_HEIGHT, MenuContent, PromptMode, ProviderWizard, Term, TuiState,
 };
 use crate::tui_viewport::{
-    draw_viewport, emit_above, init_terminal, maybe_resize_viewport, reinit_viewport_in_place,
-    restore_terminal,
+    drain_pending_resizes, draw_viewport, emit_above, init_terminal, maybe_resize_viewport,
+    restore_terminal, scroll_past_and_reinit,
 };
 
 use anyhow::Result;
@@ -261,7 +261,10 @@ impl TuiContext {
         let last_turn = self.renderer.last_turn_stats.as_ref();
         let menu = &self.menu;
 
-        self.terminal.draw(|f| {
+        // draw() triggers autoresize() which calls get_cursor_position() (DSR query).
+        // During/after terminal resize, DSR can time out. Swallow the error —
+        // the next draw will retry once the terminal has settled.
+        if let Err(e) = self.terminal.draw(|f| {
             draw_viewport(
                 f,
                 textarea,
@@ -275,7 +278,9 @@ impl TuiContext {
                 last_turn,
                 menu,
             );
-        })?;
+        }) {
+            tracing::debug!("draw skipped (resize settling): {e}");
+        }
         Ok(())
     }
 
@@ -567,33 +572,19 @@ impl TuiContext {
                                     self.crossterm_events = EventStream::new();
                                     self.terminal = init_terminal(self.viewport_height)?;
                                     // Refresh model name cache (self.provider may have changed)
-                                    let prov = self.provider.read().await;
-                                    if let Ok(models) = prov.list_models().await {
-                                        self.completer.set_model_names(
-                                            models.iter().map(|m| m.id.clone()).collect(),
-                                        );
+                                    {
+                                        let prov = self.provider.read().await;
+                                        if let Ok(models) = prov.list_models().await {
+                                            self.completer.set_model_names(
+                                                models.iter().map(|m| m.id.clone()).collect(),
+                                            );
+                                        }
                                     }
                                     // Sync model name for cost estimation
                                     self.renderer.model = self.config.model.clone();
                                     // Force immediate redraw so the prompt is visible
                                     // after slash command output (don't wait for next event).
-                                    let mode = approval::read_mode(&self.shared_mode);
-                                    let ctx = koda_core::context::percentage() as u32;
-                                    self.terminal.draw(|f| {
-                                        draw_viewport(
-                                            f,
-                                            &self.textarea,
-                                            &self.config.model,
-                                            mode,
-                                            ctx,
-                                            self.tui_state,
-                                            &self.prompt_mode,
-                                            self.input_queue.len(),
-                                            0,
-                                            self.renderer.last_turn_stats.as_ref(),
-                                            &self.menu,
-                                        );
-                                    })?;
+                                    self.draw()?;
                                 }
                                 SlashAction::Quit => {
                                     tui_output::emit_line(
@@ -700,10 +691,11 @@ impl TuiContext {
                                 tokio::pin!(turn);
 
                                 loop {
-                                    // Redraw viewport inside inference loop
+                                    // Redraw viewport inside inference loop.
+                                    // Swallow draw errors (DSR timeout during resize).
                                     let mode = approval::read_mode(&self.shared_mode);
                                     let ctx = koda_core::context::percentage() as u32;
-                                    self.terminal.draw(|f| {
+                                    let _ = self.terminal.draw(|f| {
                                         draw_viewport(
                                             f,
                                             &self.textarea,
@@ -719,7 +711,7 @@ impl TuiContext {
                                             self.renderer.last_turn_stats.as_ref(),
                                             &self.menu,
                                         );
-                                    })?;
+                                    });
 
                                     tokio::select! {
                                         result = &mut turn => {
@@ -739,9 +731,16 @@ impl TuiContext {
                                         }
                                         Some(Ok(ev)) = self.crossterm_events.next() => {
                                             if let Event::Resize(_, _) = ev {
-                                                // Terminal resized during inference — erase stale
-                                                // viewport and reinit to prevent ghost prompt lines.
-                                                reinit_viewport_in_place(&mut self.terminal, self.viewport_height, self.viewport_height)?;
+                                                // Terminal resized during inference.
+                                                // Don't try to erase old viewport — viewport_area.y
+                                                // is stale after reflow and will eat scrollback.
+                                                // Instead, scroll past it and start fresh (Ink approach).
+                                                let _ = drain_pending_resizes(&mut self.crossterm_events);
+                                                scroll_past_and_reinit(
+                                                    &mut self.terminal,
+                                                    &mut self.crossterm_events,
+                                                    self.viewport_height,
+                                                )?;
                                             } else if let Event::Paste(text) = ev {
                                                 // Bracketed paste during inference
                                                 let char_count = text.chars().count();
@@ -1067,38 +1066,23 @@ impl TuiContext {
             }
 
             // Redraw viewport (resize if self.textarea grew/shrank)
-            let mode = approval::read_mode(&self.shared_mode);
-            let ctx = koda_core::context::percentage() as u32;
-            maybe_resize_viewport(
-                &mut self.terminal,
-                &self.textarea,
-                &mut self.viewport_height,
-            )?;
-            self.terminal.draw(|f| {
-                draw_viewport(
-                    f,
-                    &self.textarea,
-                    &self.config.model,
-                    mode,
-                    ctx,
-                    self.tui_state,
-                    &self.prompt_mode,
-                    self.input_queue.len(),
-                    self.inference_start
-                        .map(|s| s.elapsed().as_secs())
-                        .unwrap_or(0),
-                    self.renderer.last_turn_stats.as_ref(),
-                    &self.menu,
-                );
-            })?;
+            self.draw()?;
 
             // ── Idle: wait for keyboard input ────────────────────
 
             tokio::select! {
                 Some(Ok(ev)) = self.crossterm_events.next() => {
                     if let Event::Resize(_, _) = ev {
-                        // Terminal resized while idle — erase stale viewport and reinit.
-                        reinit_viewport_in_place(&mut self.terminal, self.viewport_height, self.viewport_height)?;
+                        // Terminal resized while idle.
+                        // Don't try to erase old viewport — viewport_area.y
+                        // is stale after reflow and will eat scrollback.
+                        // Instead, scroll past it and start fresh (Ink approach).
+                        let _ = drain_pending_resizes(&mut self.crossterm_events);
+                        scroll_past_and_reinit(
+                            &mut self.terminal,
+                            &mut self.crossterm_events,
+                            self.viewport_height,
+                        )?;
                     } else if let Event::Paste(text) = ev {
                         let char_count = text.chars().count();
                         if matches!(self.prompt_mode, PromptMode::WizardInput { .. })

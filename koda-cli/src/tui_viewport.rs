@@ -262,25 +262,92 @@ pub(crate) fn init_terminal(height: u16) -> Result<Term> {
     Err(last_err.unwrap().into())
 }
 
-pub(crate) fn restore_terminal(terminal: &mut Term, height: u16) {
+pub(crate) fn restore_terminal(terminal: &mut Term, _height: u16) {
+    // For inline viewport, clear() moves cursor to viewport_area.as_position()
+    // (the viewport origin) and queues Clear(FromCursorDown). This erases the
+    // viewport without touching scrollback above.
+    //
+    // Do NOT call draw() here — it triggers autoresize() which queries cursor
+    // position (DSR), and do NOT add manual \x1b[{N}A — the cursor is already
+    // at the viewport origin after clear(), not at the textarea row.
     let _ = terminal.clear();
+    let _ = std::io::Write::flush(terminal.backend_mut());
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     let _ = crossterm::terminal::disable_raw_mode();
-    print!("\x1b[{}A\x1b[J", height);
-    let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
 pub(crate) fn reinit_viewport_in_place(
     terminal: &mut Term,
-    old_height: u16,
+    _old_height: u16,
     new_height: u16,
 ) -> Result<()> {
+    // For inline viewport, clear() moves cursor to viewport_area.as_position()
+    // (the viewport origin tracked by ratatui) and queues Clear(FromCursorDown).
+    // This erases the old viewport region using ratatui's stored coordinates.
+    //
+    // Do NOT call draw() — it triggers autoresize() which calls
+    // get_cursor_position() (DSR query), unreliable during resize events.
+    // Do NOT add manual \x1b[{N}A — clear() already positioned the cursor
+    // at the viewport origin, not at the textarea row.
     let _ = terminal.clear();
+    let _ = std::io::Write::flush(terminal.backend_mut());
     let _ = crossterm::terminal::disable_raw_mode();
-    print!("\x1b[{}A\x1b[J", old_height);
-    let _ = std::io::Write::flush(&mut std::io::stdout());
     *terminal = init_terminal(new_height)?;
     Ok(())
+}
+
+/// Handle terminal resize by erasing the old viewport region and creating a fresh terminal.
+///
+/// After a column resize, the terminal reflows content, making ratatui's stored
+/// `viewport_area.y` unreliable. Instead of using stale coordinates, we erase the
+/// bottom `viewport_height` rows of the visible screen (where the inline viewport
+/// approximately lives), then create a fresh terminal at that position.
+///
+/// This preserves scrollback above the viewport while cleaning up old render fragments.
+pub(crate) fn scroll_past_and_reinit(
+    terminal: &mut Term,
+    events: &mut crossterm::event::EventStream,
+    viewport_height: u16,
+) -> Result<()> {
+    // Drop old EventStream FIRST — its background stdin reader competes
+    // with DSR cursor queries that init_terminal() needs.
+    *events = crossterm::event::EventStream::new();
+
+    // Erase the bottom viewport_height rows — the inline viewport's approximate region.
+    // Stay in raw mode: MoveTo+Clear work fine, and raw mode ensures the DSR response
+    // in init_terminal() is captured by crossterm (not echoed to screen as ^[[row;colR]).
+    let (_, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let erase_from = term_rows.saturating_sub(viewport_height);
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::cursor::MoveTo(0, erase_from),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
+    );
+
+    // Create fresh terminal. DSR query succeeds because:
+    // - Old EventStream reader is stopped (dropped above)
+    // - Raw mode is active (DSR response captured, not echoed)
+    *terminal = init_terminal(viewport_height)?;
+    Ok(())
+}
+
+/// Drain any queued `Event::Resize` events so we only reinit once per resize burst.
+/// Returns the final terminal size if any resize events were consumed, or `None`.
+pub(crate) fn drain_pending_resizes(
+    events: &mut crossterm::event::EventStream,
+) -> Option<(u16, u16)> {
+    use crossterm::event::Event;
+    use futures_util::Stream;
+    let mut last_size = None;
+    // Poll without awaiting — consume only events already buffered.
+    let waker = futures_util::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+    while let std::task::Poll::Ready(Some(Ok(Event::Resize(w, h)))) =
+        std::pin::Pin::new(&mut *events).poll_next(&mut cx)
+    {
+        last_size = Some((w, h));
+    }
+    last_size
 }
 
 pub(crate) fn maybe_resize_viewport(
