@@ -40,13 +40,12 @@ inline tool execution.
 
 ## Approval Modes
 
-Koda gates tool execution with three approval modes. Cycle with **Shift+Tab**.
+Koda gates tool execution with two approval modes. Cycle with **Shift+Tab**.
 
-| Mode | What's auto-approved | What needs confirmation | What's blocked |
-|------|---------------------|----------------------|---------------|
-| **Auto** (default) | Reads, remote actions, local writes inside project | Destructive ops (delete, `rm -rf`, force push), writes outside project | Nothing |
-| **Strict** | Reads, remote actions | All local writes and destructive ops | Nothing |
-| **Safe** | Reads, remote actions | — | All local filesystem mutations |
+| Mode | What's auto-approved | What needs confirmation |
+|------|---------------------|----------------------|
+| **Auto** (default) | Reads, remote actions, local writes inside project | Destructive ops (delete, `rm -rf`, force push), writes outside project |
+| **Confirm** | Reads | All non-read actions (local writes, destructive ops, remote actions) |
 
 **Hardcoded safety floors** (apply in every mode):
 - Writes outside the project root always require confirmation
@@ -162,8 +161,8 @@ Create a JSON file in `agents/` (project-local) or `~/.config/koda/agents/`
 First match wins.
 
 **Sub-agents**: The model can invoke agents via `InvokeAgent` tool calls.
-Sub-agents inherit the parent's approval mode (clamped — a Safe parent
-produces a Safe child). See [DESIGN.md §18](../DESIGN.md) for delegation scoping.
+Sub-agents inherit the parent's approval mode (clamped — a Confirm parent
+produces a Confirm child). See [DESIGN.md §18](../DESIGN.md) for delegation scoping.
 
 ---
 
@@ -271,7 +270,7 @@ The security model focuses on preventing accidental blast radius.
 
 1. **Tool effect classification** — every tool call is tagged as ReadOnly,
    LocalMutation, Destructive, or RemoteAction
-2. **Approval modes** — Auto/Strict/Safe control which effects need confirmation
+2. **Approval modes** — Auto/Confirm control which effects need confirmation
 3. **Folder scoping** — writes outside project root always need confirmation
 4. **Bash linting** — heuristic analysis catches `cd` escapes, absolute paths
    outside project, and dangerous patterns (`rm -rf`, force push)
