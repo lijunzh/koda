@@ -90,7 +90,6 @@ impl Env {
             sink: &sink,
             cancel: CancellationToken::new(),
             cmd_rx: &mut cmd_rx,
-            skip_probe: true,
         })
         .await;
 
@@ -262,7 +261,6 @@ async fn test_provider_error_emits_error_event() {
         sink: &sink,
         cancel: CancellationToken::new(),
         cmd_rx: &mut cmd_rx,
-        skip_probe: true,
     })
     .await;
 
@@ -376,7 +374,6 @@ async fn test_cancel_during_streaming() {
         sink: &sink,
         cancel,
         cmd_rx: &mut cmd_rx,
-        skip_probe: true,
     })
     .await;
 

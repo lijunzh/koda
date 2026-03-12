@@ -92,10 +92,6 @@ struct Cli {
     /// OpenAI reasoning effort (low, medium, high)
     #[arg(long)]
     reasoning_effort: Option<String>,
-
-    /// Skip the model capability probe at startup
-    #[arg(long)]
-    skip_probe: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -221,7 +217,6 @@ async fn main() -> Result<()> {
             session_id,
             prompt,
             &cli.output_format,
-            cli.skip_probe,
         )
         .await?;
         std::process::exit(exit_code);
@@ -261,7 +256,6 @@ async fn main() -> Result<()> {
         session_id,
         version_check,
         first_run,
-        cli.skip_probe,
     )
     .await
 }

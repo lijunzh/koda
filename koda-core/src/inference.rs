@@ -42,7 +42,6 @@ pub struct InferenceContext<'a> {
     pub sink: &'a dyn crate::engine::EngineSink,
     pub cancel: CancellationToken,
     pub cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
-    pub skip_probe: bool,
 }
 
 pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
@@ -61,15 +60,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         sink,
         cancel,
         cmd_rx,
-        skip_probe,
     } = ctx;
-
-    // Capability probe: verify the model can produce structured output.
-    // Cached per model name — only runs once per model, ever.
-    if !skip_probe {
-        crate::model_probe::ensure_capable(&config.model, provider, &config.model_settings, sink)
-            .await?;
-    }
 
     // Use the same formula as estimate_tokens (chars/CHARS_PER_TOKEN + overhead)
     // to keep the budget calculation consistent with re-estimation later.
