@@ -229,6 +229,8 @@ points (TUI, headless, ACP server, model switch, provider setup).
 **Removed in** [#332](https://github.com/lijunzh/koda/pull/332) as part of
 the ModelTier deletion. All models now receive all tool schemas. The
 `DiscoverTools` tool and `get_definitions_tiered()` filtering were deleted.
+Dead code (`tools/discover.rs`, registration, and dispatch) fully cleaned up
+in [#402](https://github.com/lijunzh/koda/issues/402).
 
 **Original rationale**: 20+ tool schemas cost ~2000 tokens/turn, so Strong-tier
 models got only 9 core tools upfront. In practice, the lazy loading added
@@ -413,7 +415,7 @@ violate the principles are tracked as issues for future cleanup.
 | `output_caps.rs` | Tool output limits scale 1–4× based on context window at runtime | Software for One | Medium | [#401] |
 | `query_and_apply_capabilities()` | 6 call sites querying provider APIs to override hardcoded context table | Software for One | Medium | [#401] |
 | `model_probe.rs` | Runtime binary gate hedging for weak models that can't follow the contract | Clear Boundaries | Low | [#401] |
-| `DiscoverTools` | §10 says removed, but `tools/discover.rs` still exists and is registered | Software for One | Medium | [#402] |
+| ~~`DiscoverTools`~~ | ~~§10 says removed, but `tools/discover.rs` still exists~~ — **Resolved** in [#402] | Software for One | — | [#402] |
 | `DelegationScope` | 140 lines of sub-agent permission scoping; unused if sole user doesn't delegate | Software for One | Medium | [#403] |
 | `CreateAgent` tool | LLM-invoked agent file creation; manual JSON is sufficient | Software for One | Low | [#403] |
 | `Persistence` trait | Trait abstraction with single SQLite backend; no second backend exists | Software for One | Low | — |
