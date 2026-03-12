@@ -64,6 +64,7 @@ pub(crate) struct TuiContext {
     pub pending_approval_id: Option<String>,
 
     // ── Control flow ──────────────────────────────────────────
+    pub paste_blocks: Vec<input::PasteBlock>,
     pub input_queue: VecDeque<String>,
     pub pending_command: Option<String>,
     pub should_quit: bool,
@@ -219,6 +220,7 @@ impl TuiContext {
             prompt_mode: PromptMode::Chat,
             provider_wizard: None,
             pending_approval_id: None,
+            paste_blocks: Vec::new(),
             input_queue: VecDeque::new(),
             pending_command: None,
             should_quit: false,
@@ -642,7 +644,11 @@ impl TuiContext {
                         } else {
                             // ── Start inference turn inline ──────────
                             let user_input = input.clone();
-                            let processed = input::process_input(&user_input, &self.project_root);
+                            let mut processed =
+                                input::process_input(&user_input, &self.project_root);
+                            // Attach any accumulated paste blocks
+                            processed.paste_blocks = std::mem::take(&mut self.paste_blocks);
+
                             if !processed.images.is_empty() {
                                 for (i, _img) in processed.images.iter().enumerate() {
                                     emit_above(
@@ -658,7 +664,7 @@ impl TuiContext {
                                 }
                             }
 
-                            let user_message = if let Some(context) =
+                            let mut user_message = if let Some(context) =
                                 input::format_context_files(&processed.context_files)
                             {
                                 for f in &processed.context_files {
@@ -677,6 +683,13 @@ impl TuiContext {
                             } else {
                                 processed.prompt.clone()
                             };
+
+                            // Append paste block references
+                            if let Some(pasted) =
+                                input::format_paste_blocks(&processed.paste_blocks)
+                            {
+                                user_message = format!("{user_message}\n\n{pasted}");
+                            }
 
                             if let Err(e) = self
                                 .session
@@ -763,6 +776,13 @@ impl TuiContext {
                                                 // Terminal resized during inference — erase stale
                                                 // viewport and reinit to prevent ghost prompt lines.
                                                 reinit_viewport_in_place(&mut self.terminal, self.viewport_height, self.viewport_height)?;
+                                            } else if let Event::Paste(text) = ev {
+                                                // Bracketed paste during inference — accumulate for next turn
+                                                let char_count = text.chars().count();
+                                                self.paste_blocks.push(input::PasteBlock {
+                                                    content: text,
+                                                    char_count,
+                                                });
                                             } else if let Event::Key(key) = ev {
                                                 // Approval hotkeys during inference
                                                 if let MenuContent::Approval { id, .. } = &self.menu {
@@ -1107,6 +1127,36 @@ impl TuiContext {
                     if let Event::Resize(_, _) = ev {
                         // Terminal resized while idle — erase stale viewport and reinit.
                         reinit_viewport_in_place(&mut self.terminal, self.viewport_height, self.viewport_height)?;
+                    } else if let Event::Paste(text) = ev {
+                        // Bracketed paste: capture as a paste block reference
+                        let char_count = text.chars().count();
+                        self.paste_blocks.push(input::PasteBlock {
+                            content: text.clone(),
+                            char_count,
+                        });
+                        let label = format!("\u{1f4cb} Pasted text ({char_count} chars)");
+                        emit_above(
+                            &mut self.terminal,
+                            Line::from(vec![
+                                Span::raw("  "),
+                                Span::styled(label, Style::default().fg(Color::Yellow)),
+                            ]),
+                        );
+                        // Show a short preview (first ~80 chars)
+                        let preview: String = text.chars().take(80).collect();
+                        let preview = preview.replace('\n', "\u{21b5}");
+                        let preview = if char_count > 80 {
+                            format!("{preview}\u{2026}")
+                        } else {
+                            preview
+                        };
+                        emit_above(
+                            &mut self.terminal,
+                            Line::from(vec![
+                                Span::raw("    "),
+                                Span::styled(preview, Style::default().fg(Color::DarkGray)),
+                            ]),
+                        );
                     } else if let Event::Key(key) = ev {
                         // ── Slash menu key interception ───────────
                         // When a self.menu is active, intercept navigation
@@ -1470,42 +1520,25 @@ impl TuiContext {
                                     continue;
                                 }
 
-                                // Paste detection: peek ahead for more input.
-                                // If characters arrive within 30ms, it's a paste —
-                                // insert newline instead of submitting.
-                                let is_paste = tokio::time::timeout(
-                                    std::time::Duration::from_millis(30),
-                                    self.crossterm_events.next(),
-                                )
-                                .await;
-
-                                match is_paste {
-                                    Ok(Some(Ok(Event::Key(next_key)))) => {
-                                        // More input arrived quickly — it's a paste
-                                        self.textarea.insert_newline();
-                                        self.textarea.input(Event::Key(next_key));
-                                    }
-                                    _ => {
-                                        // Timeout or no event — real Enter, submit
-                                        let text = self.textarea.lines().join("\n");
-                                        if !text.trim().is_empty() {
-                                            self.textarea.select_all();
-                                            self.textarea.cut();
-                                            self.history.push(text.clone());
-                                            tui_history::save_history(&self.history);
-                                            self.history_idx = None;
-                                            let mode = approval::read_mode(&self.shared_mode);
-                                            let icon = match mode {
-                                                ApprovalMode::Confirm => "🔒",
-                                                ApprovalMode::Auto => "⚡",
-                                            };
-                                            emit_above(&mut self.terminal, Line::from(vec![
-                                                Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
-                                                Span::raw(text.clone()),
-                                            ]));
-                                            self.pending_command = Some(text);
-                                        }
-                                    }
+                                // With bracketed paste enabled, Enter always means submit.
+                                // Pasted content arrives as Event::Paste, not individual key events.
+                                let text = self.textarea.lines().join("\n");
+                                if !text.trim().is_empty() {
+                                    self.textarea.select_all();
+                                    self.textarea.cut();
+                                    self.history.push(text.clone());
+                                    tui_history::save_history(&self.history);
+                                    self.history_idx = None;
+                                    let mode = approval::read_mode(&self.shared_mode);
+                                    let icon = match mode {
+                                        ApprovalMode::Confirm => "\u{1f512}",
+                                        ApprovalMode::Auto => "\u{26a1}",
+                                    };
+                                    emit_above(&mut self.terminal, Line::from(vec![
+                                        Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
+                                        Span::raw(text.clone()),
+                                    ]));
+                                    self.pending_command = Some(text);
                                 }
                             }
                             (KeyCode::Up, KeyModifiers::NONE)

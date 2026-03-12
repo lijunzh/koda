@@ -232,6 +232,7 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
 
 pub(crate) fn init_terminal(height: u16) -> Result<Term> {
     crossterm::terminal::enable_raw_mode()?;
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
     let _ = std::io::Write::flush(&mut std::io::stdout());
 
     let mut last_err = None;
@@ -259,6 +260,7 @@ pub(crate) fn init_terminal(height: u16) -> Result<Term> {
 
 pub(crate) fn restore_terminal(terminal: &mut Term, height: u16) {
     let _ = terminal.clear();
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     let _ = crossterm::terminal::disable_raw_mode();
     print!("\x1b[{}A\x1b[J", height);
     let _ = std::io::Write::flush(&mut std::io::stdout());
