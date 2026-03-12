@@ -1,6 +1,6 @@
 [package]
 name = "koda-cli"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 description = "A high-performance AI coding agent built in Rust"
 license = "MIT"
