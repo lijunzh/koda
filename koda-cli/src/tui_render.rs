@@ -473,8 +473,7 @@ fn render_list_line(terminal: &mut Term, line: &str) {
     };
 
     let style = if is_dir {
-        Style::default()
-            .add_modifier(ratatui::style::Modifier::BOLD)
+        Style::default().add_modifier(ratatui::style::Modifier::BOLD)
     } else {
         // Color files by extension category
         let ext = std::path::Path::new(path_str)

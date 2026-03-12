@@ -114,16 +114,6 @@ pub(crate) async fn execute_tools_parallel(
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
 ) -> Result<()> {
-    // Print all tool call banners upfront
-    for tc in tool_calls {
-        sink.emit(EngineEvent::ToolCallStart {
-            id: tc.id.clone(),
-            name: tc.function_name.clone(),
-            args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
-            is_sub_agent: false,
-        });
-    }
-
     let count = tool_calls.len();
     sink.emit(EngineEvent::Info {
         message: format!("Running {count} tools in parallel..."),
@@ -149,8 +139,14 @@ pub(crate) async fn execute_tools_parallel(
         .collect();
     let results = futures_util::future::join_all(futures).await;
 
-    // Store results and display output (in original order)
+    // Emit banner + result together so each tool's output is visually grouped
     for (i, (tc_id, result)) in results.into_iter().enumerate() {
+        sink.emit(EngineEvent::ToolCallStart {
+            id: tc_id.clone(),
+            name: tool_calls[i].function_name.clone(),
+            args: serde_json::from_str(&tool_calls[i].arguments).unwrap_or_default(),
+            is_sub_agent: false,
+        });
         sink.emit(EngineEvent::ToolCallResult {
             id: tc_id.clone(),
             name: tool_calls[i].function_name.clone(),
@@ -211,14 +207,6 @@ pub(crate) async fn execute_tools_split_batch(
 
     // Run parallelizable tools concurrently (if more than one)
     if parallel.len() > 1 {
-        for tc in &parallel {
-            sink.emit(EngineEvent::ToolCallStart {
-                id: tc.id.clone(),
-                name: tc.function_name.clone(),
-                args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
-                is_sub_agent: false,
-            });
-        }
         sink.emit(EngineEvent::Info {
             message: format!("Running {} tools in parallel...", parallel.len()),
         });
@@ -243,6 +231,12 @@ pub(crate) async fn execute_tools_split_batch(
         let results = futures_util::future::join_all(futures).await;
 
         for (j, (tc_id, result)) in results.into_iter().enumerate() {
+            sink.emit(EngineEvent::ToolCallStart {
+                id: tc_id.clone(),
+                name: parallel[j].function_name.clone(),
+                args: serde_json::from_str(&parallel[j].arguments).unwrap_or_default(),
+                is_sub_agent: false,
+            });
             sink.emit(EngineEvent::ToolCallResult {
                 id: tc_id.clone(),
                 name: parallel[j].function_name.clone(),
