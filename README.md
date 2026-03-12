@@ -68,6 +68,34 @@ echo "explain this" | koda        # Piped input
 - **Headless mode** — `koda -p "prompt"` with JSON output for CI/CD
 - **Persistent memory** — project (`MEMORY.md`) and global (`~/.config/koda/memory.md`)
 - **Cost tracking** — per-turn and per-session cost estimation including thinking tokens
+- **Skills** — built-in expertise modules (code review, security audit) + user-created skills for repeatable analysis
+
+### 📚 Skills
+
+Skills inject expert instructions into context — zero cost, instant activation.
+Koda includes built-in skills for common analysis tasks, and you can create your own.
+
+**Built-in skills:**
+- `code-review` — senior code review (bugs, anti-patterns, improvements)
+- `security-audit` — security vulnerability scan (OWASP checklist)
+
+**Create custom skills:** add a `SKILL.md` file with YAML frontmatter to:
+- `.koda/skills/<name>/SKILL.md` — project-level (shared with team)
+- `~/.config/koda/skills/<name>/SKILL.md` — user-level (global)
+
+```markdown
+---
+name: my-skill
+description: What this skill does
+tags: [tag1, tag2]
+---
+
+# Instructions for the agent
+
+Your expert guidance here...
+```
+
+Use `/skills` to list available skills, or ask Koda to "use the code review skill".
 
 ### 🌳 AST Code Analysis
 
@@ -97,6 +125,7 @@ Koda connects to your email via IMAP/SMTP through the koda-email MCP server.
 | `/model` | Pick a model (↑↓ arrow keys) |
 | `/provider` | Switch LLM provider |
 | `/sessions` | List, resume, or delete sessions |
+| `/skills` | List available skills (search with `/skills <query>`) |
 | `/exit` | Quit Koda |
 
 **Tips:** `@file` to attach context · Tab to autocomplete · `Shift+Tab` to cycle mode · `Alt+Enter` for multi-line

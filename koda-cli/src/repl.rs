@@ -39,6 +39,8 @@ pub enum ReplAction {
     MemoryCommand(Option<String>),
     /// Undo last turn's file mutations
     Undo,
+    /// List available skills (optional search query)
+    ListSkills(Option<String>),
     #[allow(dead_code)]
     Handled,
     NotACommand,
@@ -127,6 +129,8 @@ pub async fn handle_command(
         "/memory" => ReplAction::MemoryCommand(arg.map(|s| s.to_string())),
 
         "/undo" => ReplAction::Undo,
+
+        "/skills" => ReplAction::ListSkills(arg.map(|s| s.to_string())),
 
         _ => ReplAction::NotACommand,
     }
