@@ -28,6 +28,7 @@ pub struct TestSink {
 
 #[cfg(any(test, feature = "test-support"))]
 impl TestSink {
+    /// Create an empty test sink.
     pub fn new() -> Self {
         Self::default()
     }
