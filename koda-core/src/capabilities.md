@@ -25,11 +25,6 @@ Hotkeys during tool confirmation: `y` approve, `n` reject, `f` feedback, `a` alw
 
 Auto-snapshots working tree before each turn. `/undo` to rollback.
 
-### Model Probe
-
-On session start, Koda runs a one-time structured output test to verify the model
-can produce valid tool calls. Skip with `--skip-probe`.
-
 ### Skills
 
 Expert instruction modules — zero cost, instant activation via `ActivateSkill`.

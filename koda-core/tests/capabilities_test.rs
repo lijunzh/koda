@@ -43,7 +43,6 @@ fn test_capabilities_mentions_key_features() {
         "auto",
         "confirm",
         "Shift+Tab",
-        "--skip-probe",
         "koda-ast",
         "koda-email",
         "Skills",

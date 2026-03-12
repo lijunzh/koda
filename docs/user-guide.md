@@ -254,10 +254,9 @@ koda -p "continue" -s <session-id>
 - `json` — structured response: `{ "success": bool, "response": string, "session_id": string, "model": string }`
 
 **Behavior**: Headless mode uses Auto approval (all tool calls auto-approved).
-The model probe runs once per model (cached in `~/.config/koda/model_probes.json`).
 
 **CLI flags**: `--max-tokens`, `--temperature`, `--thinking-budget`,
-`--reasoning-effort`, `--skip-probe`, `--project-root`.
+`--reasoning-effort`, `--project-root`.
 
 ---
 

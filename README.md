@@ -42,7 +42,6 @@ On first run, an onboarding wizard guides you through provider and API key setup
 ```bash
 koda                              # Interactive REPL (auto-detects LM Studio)
 koda --provider anthropic         # Use a cloud provider
-koda --skip-probe                 # Skip model capability probe at startup
 koda -p "fix the bug in auth.rs"  # Headless one-shot
 echo "explain this" | koda        # Piped input
 ```
@@ -53,7 +52,6 @@ echo "explain this" | koda        # Piped input
 - **MCP support** — connect to any [MCP server](https://modelcontextprotocol.io) via `.mcp.json` (same format as Claude Code / Cursor)
 - **14 LLM providers** — LM Studio, OpenAI, Anthropic, Gemini, Groq, Grok, Ollama, DeepSeek, Mistral, MiniMax, OpenRouter, Together, Fireworks, vLLM
 - **User-defined agents** — create specialized agents via JSON configs (testgen, releaser, planner, etc.)
-- **Model probe** — one-time structured output test at startup to verify model capabilities
 - **Smart context** — queries context window from provider API at startup (falls back to lookup table), rate limit retry with backoff, auto-compact
 - **Git checkpointing** — auto-snapshots before each turn for safe rollback
 - **Approval modes** — auto (default) / confirm (confirm writes) via `Shift+Tab`
@@ -186,10 +184,6 @@ The engine communicates through `EngineEvent` (output) and `EngineCommand` (inpu
 over async channels. See [DESIGN.md](DESIGN.md) for architectural decisions.
 
 ## Getting the Most Out of Koda
-
-### Model capability probe
-
-At session start, Koda sends a small structured output test to verify the model can produce valid tool calls. If the probe fails, Koda warns you and falls back to text-only mode. Skip with `--skip-probe`.
 
 ### Create custom agents
 

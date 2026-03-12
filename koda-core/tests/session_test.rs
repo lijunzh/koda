@@ -88,7 +88,6 @@ impl Env {
             mode: ApprovalMode::Auto,
             settings: Settings::load(),
             cancel: cancel.clone(),
-            skip_probe: true,
         };
         (session, cancel)
     }

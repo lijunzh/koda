@@ -19,7 +19,6 @@ No phases, no tiers — the model drives execution directly.
 
 - **Context from API** (`providers/`): queries actual context window from provider
   - Fallback: `model_context.rs` lookup table
-- **Model probe** (`model_probe.rs`): one-time structured output test at session start
 - **Rate limit retry**: exponential backoff (2/4/8/16/32s) for 429 errors
 - **Built-in agents**: default (others via user-created agent configs)
 - **Git checkpointing** (`git.rs`): auto-snapshot before each turn
@@ -36,7 +35,6 @@ how mutations are gated:
   - `is_outside_project()`: checks file tool paths against project_root
   - `lint_bash_paths()`: heuristic bash command analysis for cd/path escapes
   - Startup warning when project_root == $HOME
-- **Model probe** (`model_probe.rs`): one-time structured output test at session start
 
 ## Documentation Rules
 
@@ -92,7 +90,6 @@ koda/
 │   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
 │   │   ├── memory.rs       # Semantic memory (global + project tiers → system prompt)
 │   │   ├── model_context.rs# Model → context window size lookup table (fallback)
-│   │   ├── model_probe.rs  # One-time structured output test at session start
 │   │   ├── output_caps.rs  # Output cap scaling based on context window size
 │   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
 │   │   ├── delegation.rs   # Sub-agent delegation scoping

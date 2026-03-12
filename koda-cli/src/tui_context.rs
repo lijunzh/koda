@@ -93,7 +93,6 @@ impl TuiContext {
     ///
     /// This handles provider setup, auto-detection, terminal init,
     /// onboarding, and everything that `run()` used to do before `loop {`.
-    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         project_root: PathBuf,
         mut config: KodaConfig,
@@ -101,7 +100,6 @@ impl TuiContext {
         session_id: String,
         version_check: tokio::task::JoinHandle<Option<String>>,
         first_run: bool,
-        skip_probe: bool,
     ) -> Result<Self> {
         // Restore last-used provider
         let settings = koda_core::approval::Settings::load();
@@ -159,9 +157,7 @@ impl TuiContext {
             Arc::new(koda_core::agent::KodaAgent::new(&config, project_root.clone()).await?);
         crate::startup::print_mcp_status(&agent.mcp_statuses);
 
-        let mut session =
-            KodaSession::new(session_id, agent.clone(), db, &config, ApprovalMode::Auto);
-        session.skip_probe = skip_probe;
+        let session = KodaSession::new(session_id, agent.clone(), db, &config, ApprovalMode::Auto);
 
         let shared_mode = approval::new_shared_mode(ApprovalMode::Auto);
 
