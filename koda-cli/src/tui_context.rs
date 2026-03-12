@@ -64,6 +64,7 @@ pub(crate) struct TuiContext {
     pub pending_approval_id: Option<String>,
 
     // ── Control flow ──────────────────────────────────────────
+    pub paste_blocks: Vec<input::PasteBlock>,
     pub input_queue: VecDeque<String>,
     pub pending_command: Option<String>,
     pub should_quit: bool,
@@ -219,6 +220,7 @@ impl TuiContext {
             prompt_mode: PromptMode::Chat,
             provider_wizard: None,
             pending_approval_id: None,
+            paste_blocks: Vec::new(),
             input_queue: VecDeque::new(),
             pending_command: None,
             should_quit: false,
@@ -439,62 +441,28 @@ impl TuiContext {
 
                                 if ptype.requires_api_key() {
                                     let env_name = ptype.env_key_name().to_string();
-                                    // Check if key already exists in keystore
-                                    if koda_core::runtime_env::is_set(&env_name) {
-                                        // Key exists — just switch self.provider, no wizard
-                                        self.config.provider_type = ptype.clone();
-                                        self.config.base_url = base_url;
-                                        self.config.model = ptype.default_model().to_string();
-                                        self.config.model_settings.model =
-                                            self.config.model.clone();
-                                        self.config.recalculate_model_derived();
-                                        *self.provider.write().await =
-                                            koda_core::providers::create_provider(&self.config);
-                                        crate::tui_wizards::save_provider(&self.config);
-                                        let prov = self.provider.read().await;
-                                        if let Ok(models) = prov.list_models().await {
-                                            if let Some(first) = models.first() {
-                                                self.config.model = first.id.clone();
-                                                self.config.model_settings.model =
-                                                    self.config.model.clone();
-                                                self.config.recalculate_model_derived();
-                                            }
-                                            self.config
-                                                .query_and_apply_capabilities(prov.as_ref())
-                                                .await;
-                                            self.completer.set_model_names(
-                                                models.iter().map(|m| m.id.clone()).collect(),
-                                            );
-                                        }
-                                        self.renderer.model = self.config.model.clone();
-                                        emit_above(
-                                            &mut self.terminal,
-                                            Line::styled(
-                                                format!(
-                                                    "  \u{2714} Provider: {} ({})",
-                                                    self.config.provider_type, self.config.model
-                                                ),
-                                                Style::default().fg(Color::Green),
-                                            ),
-                                        );
+                                    let has_key = koda_core::runtime_env::is_set(&env_name);
+                                    // Always start wizard so user can re-enter API key
+                                    let label = if has_key {
+                                        format!("API key for {} (Enter to keep current)", ptype)
                                     } else {
-                                        // Need API key — start wizard at step 2
-                                        self.menu = MenuContent::WizardTrail(vec![(
-                                            "Provider".into(),
-                                            provider_name,
-                                        )]);
-                                        self.prompt_mode = PromptMode::WizardInput {
-                                            label: format!("API key for {}", ptype),
-                                            masked: true,
-                                        };
-                                        self.provider_wizard = Some(ProviderWizard::NeedApiKey {
-                                            provider_type: ptype,
-                                            base_url,
-                                            env_name,
-                                        });
-                                        self.textarea.select_all();
-                                        self.textarea.cut();
-                                    }
+                                        format!("API key for {}", ptype)
+                                    };
+                                    self.menu = MenuContent::WizardTrail(vec![(
+                                        "Provider".into(),
+                                        provider_name,
+                                    )]);
+                                    self.prompt_mode = PromptMode::WizardInput {
+                                        label,
+                                        masked: true,
+                                    };
+                                    self.provider_wizard = Some(ProviderWizard::NeedApiKey {
+                                        provider_type: ptype,
+                                        base_url,
+                                        env_name,
+                                    });
+                                    self.textarea.select_all();
+                                    self.textarea.cut();
                                 } else {
                                     // Local self.provider — start wizard at URL step
                                     self.menu = MenuContent::WizardTrail(vec![(
@@ -642,7 +610,11 @@ impl TuiContext {
                         } else {
                             // ── Start inference turn inline ──────────
                             let user_input = input.clone();
-                            let processed = input::process_input(&user_input, &self.project_root);
+                            let mut processed =
+                                input::process_input(&user_input, &self.project_root);
+                            // Attach any accumulated paste blocks
+                            processed.paste_blocks = std::mem::take(&mut self.paste_blocks);
+
                             if !processed.images.is_empty() {
                                 for (i, _img) in processed.images.iter().enumerate() {
                                     emit_above(
@@ -658,7 +630,7 @@ impl TuiContext {
                                 }
                             }
 
-                            let user_message = if let Some(context) =
+                            let mut user_message = if let Some(context) =
                                 input::format_context_files(&processed.context_files)
                             {
                                 for f in &processed.context_files {
@@ -677,6 +649,13 @@ impl TuiContext {
                             } else {
                                 processed.prompt.clone()
                             };
+
+                            // Append paste block references
+                            if let Some(pasted) =
+                                input::format_paste_blocks(&processed.paste_blocks)
+                            {
+                                user_message = format!("{user_message}\n\n{pasted}");
+                            }
 
                             if let Err(e) = self
                                 .session
@@ -763,6 +742,19 @@ impl TuiContext {
                                                 // Terminal resized during inference — erase stale
                                                 // viewport and reinit to prevent ghost prompt lines.
                                                 reinit_viewport_in_place(&mut self.terminal, self.viewport_height, self.viewport_height)?;
+                                            } else if let Event::Paste(text) = ev {
+                                                // Bracketed paste during inference
+                                                let char_count = text.chars().count();
+                                                if char_count < input::PASTE_BLOCK_THRESHOLD {
+                                                    // Short paste: insert into textarea for next turn
+                                                    self.textarea.insert_str(&text);
+                                                } else {
+                                                    // Large paste: accumulate as block for next turn
+                                                    self.paste_blocks.push(input::PasteBlock {
+                                                        content: text,
+                                                        char_count,
+                                                    });
+                                                }
                                             } else if let Event::Key(key) = ev {
                                                 // Approval hotkeys during inference
                                                 if let MenuContent::Approval { id, .. } = &self.menu {
@@ -1107,6 +1099,43 @@ impl TuiContext {
                     if let Event::Resize(_, _) = ev {
                         // Terminal resized while idle — erase stale viewport and reinit.
                         reinit_viewport_in_place(&mut self.terminal, self.viewport_height, self.viewport_height)?;
+                    } else if let Event::Paste(text) = ev {
+                        let char_count = text.chars().count();
+                        if matches!(self.prompt_mode, PromptMode::WizardInput { .. })
+                            || char_count < input::PASTE_BLOCK_THRESHOLD
+                        {
+                            // Wizard mode or short paste: insert inline into textarea
+                            self.textarea.insert_str(&text);
+                        } else {
+                            // Large paste in chat mode: capture as a collapsed block reference
+                            self.paste_blocks.push(input::PasteBlock {
+                                content: text.clone(),
+                                char_count,
+                            });
+                            let label = format!("\u{1f4cb} Pasted text ({char_count} chars)");
+                            emit_above(
+                                &mut self.terminal,
+                                Line::from(vec![
+                                    Span::raw("  "),
+                                    Span::styled(label, Style::default().fg(Color::Yellow)),
+                                ]),
+                            );
+                            // Show a short preview (first ~80 chars)
+                            let preview: String = text.chars().take(80).collect();
+                            let preview = preview.replace('\n', "\u{21b5}");
+                            let preview = if char_count > 80 {
+                                format!("{preview}\u{2026}")
+                            } else {
+                                preview
+                            };
+                            emit_above(
+                                &mut self.terminal,
+                                Line::from(vec![
+                                    Span::raw("    "),
+                                    Span::styled(preview, Style::default().fg(Color::DarkGray)),
+                                ]),
+                            );
+                        }
                     } else if let Event::Key(key) = ev {
                         // ── Slash menu key interception ───────────
                         // When a self.menu is active, intercept navigation
@@ -1183,62 +1212,27 @@ impl TuiContext {
 
                                                 if ptype.requires_api_key() {
                                                     let env_name = ptype.env_key_name().to_string();
-                                                    // Check if key already exists — skip wizard
-                                                    if koda_core::runtime_env::is_set(&env_name) {
-                                                        self.config.provider_type = ptype.clone();
-                                                        self.config.base_url = base_url;
-                                                        self.config.model = ptype.default_model().to_string();
-                                                        self.config.model_settings.model =
-                                                            self.config.model.clone();
-                                                        self.config.recalculate_model_derived();
-                                                        *self.provider.write().await =
-                                                            koda_core::providers::create_provider(&self.config);
-                                                        crate::tui_wizards::save_provider(&self.config);
-                                                        let prov = self.provider.read().await;
-                                                        if let Ok(models) = prov.list_models().await {
-                                                            if let Some(first) = models.first() {
-                                                                self.config.model = first.id.clone();
-                                                                self.config.model_settings.model =
-                                                                    self.config.model.clone();
-                                                                self.config.recalculate_model_derived();
-                                                            }
-                                                            self.config
-                                                                .query_and_apply_capabilities(prov.as_ref())
-                                                                .await;
-                                                            self.completer.set_model_names(
-                                                                models.iter().map(|m| m.id.clone()).collect(),
-                                                            );
-                                                        }
-                                                        self.renderer.model = self.config.model.clone();
-                                                        self.menu = MenuContent::None;
-                                                        self.prompt_mode = PromptMode::Chat;
-                                                        emit_above(
-                                                            &mut self.terminal,
-                                                            Line::styled(
-                                                                format!(
-                                                                    "  \u{2714} Provider: {} ({})",
-                                                                    self.config.provider_type, self.config.model
-                                                                ),
-                                                                Style::default().fg(Color::Green),
-                                                            ),
-                                                        );
+                                                    let has_key = koda_core::runtime_env::is_set(&env_name);
+                                                    // Always start wizard so user can re-enter API key
+                                                    let label = if has_key {
+                                                        format!("API key for {} (Enter to keep current)", ptype)
                                                     } else {
-                                                        // No key — start wizard
-                                                        self.menu = MenuContent::WizardTrail(vec![
-                                                            ("Provider".into(), provider_name),
-                                                        ]);
-                                                        self.prompt_mode = PromptMode::WizardInput {
-                                                            label: format!("API key for {}", ptype),
-                                                            masked: true,
-                                                        };
-                                                        self.provider_wizard = Some(ProviderWizard::NeedApiKey {
-                                                            provider_type: ptype,
-                                                            base_url,
-                                                            env_name,
-                                                        });
-                                                        self.textarea.select_all();
-                                                        self.textarea.cut();
-                                                    }
+                                                        format!("API key for {}", ptype)
+                                                    };
+                                                    self.menu = MenuContent::WizardTrail(vec![
+                                                        ("Provider".into(), provider_name),
+                                                    ]);
+                                                    self.prompt_mode = PromptMode::WizardInput {
+                                                        label,
+                                                        masked: true,
+                                                    };
+                                                    self.provider_wizard = Some(ProviderWizard::NeedApiKey {
+                                                        provider_type: ptype,
+                                                        base_url,
+                                                        env_name,
+                                                    });
+                                                    self.textarea.select_all();
+                                                    self.textarea.cut();
                                                 } else {
                                                     // Local self.provider: need URL
                                                     self.menu = MenuContent::WizardTrail(vec![
@@ -1351,6 +1345,21 @@ impl TuiContext {
                                                 base_url,
                                                 env_name,
                                             } => {
+                                                // Empty + no existing key → abort wizard
+                                                if value.is_empty()
+                                                    && !koda_core::runtime_env::is_set(&env_name)
+                                                {
+                                                    emit_above(
+                                                        &mut self.terminal,
+                                                        Line::styled(
+                                                            "  \u{2716} No API key provided.",
+                                                            Style::default().fg(Color::Red),
+                                                        ),
+                                                    );
+                                                    self.prompt_mode = PromptMode::Chat;
+                                                    self.menu = MenuContent::None;
+                                                    continue;
+                                                }
                                                 if !value.is_empty() {
                                                     koda_core::runtime_env::set(&env_name, &value);
                                                     // Persist to keystore
@@ -1470,42 +1479,25 @@ impl TuiContext {
                                     continue;
                                 }
 
-                                // Paste detection: peek ahead for more input.
-                                // If characters arrive within 30ms, it's a paste —
-                                // insert newline instead of submitting.
-                                let is_paste = tokio::time::timeout(
-                                    std::time::Duration::from_millis(30),
-                                    self.crossterm_events.next(),
-                                )
-                                .await;
-
-                                match is_paste {
-                                    Ok(Some(Ok(Event::Key(next_key)))) => {
-                                        // More input arrived quickly — it's a paste
-                                        self.textarea.insert_newline();
-                                        self.textarea.input(Event::Key(next_key));
-                                    }
-                                    _ => {
-                                        // Timeout or no event — real Enter, submit
-                                        let text = self.textarea.lines().join("\n");
-                                        if !text.trim().is_empty() {
-                                            self.textarea.select_all();
-                                            self.textarea.cut();
-                                            self.history.push(text.clone());
-                                            tui_history::save_history(&self.history);
-                                            self.history_idx = None;
-                                            let mode = approval::read_mode(&self.shared_mode);
-                                            let icon = match mode {
-                                                ApprovalMode::Confirm => "🔒",
-                                                ApprovalMode::Auto => "⚡",
-                                            };
-                                            emit_above(&mut self.terminal, Line::from(vec![
-                                                Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
-                                                Span::raw(text.clone()),
-                                            ]));
-                                            self.pending_command = Some(text);
-                                        }
-                                    }
+                                // With bracketed paste enabled, Enter always means submit.
+                                // Pasted content arrives as Event::Paste, not individual key events.
+                                let text = self.textarea.lines().join("\n");
+                                if !text.trim().is_empty() {
+                                    self.textarea.select_all();
+                                    self.textarea.cut();
+                                    self.history.push(text.clone());
+                                    tui_history::save_history(&self.history);
+                                    self.history_idx = None;
+                                    let mode = approval::read_mode(&self.shared_mode);
+                                    let icon = match mode {
+                                        ApprovalMode::Confirm => "\u{1f512}",
+                                        ApprovalMode::Auto => "\u{26a1}",
+                                    };
+                                    emit_above(&mut self.terminal, Line::from(vec![
+                                        Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
+                                        Span::raw(text.clone()),
+                                    ]));
+                                    self.pending_command = Some(text);
                                 }
                             }
                             (KeyCode::Up, KeyModifiers::NONE)
