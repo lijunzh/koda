@@ -1,16 +1,18 @@
 //! Bash command safety classification.
 //!
-//! Classifies shell commands as safe (auto-approve) or dangerous (needs confirmation)
-//! by parsing pipelines and checking each segment against a built-in safe list.
+//! Classifies shell commands by effect: ReadOnly (auto-approve),
+//! LocalMutation (default for unknown), or Destructive (always confirm).
+//!
+//! Design: simple allowlist for safe commands, blocklist for dangerous ones,
+//! everything else defaults to LocalMutation. No hand-rolled parser.
 
 use crate::tools::ToolEffect;
 
-// ── Bash Safety Classification ────────────────────────────────
+// ── Read-only commands (auto-approve) ────────────────────────
 
 /// Commands that are truly read-only — no filesystem writes, no state changes.
-/// Used in Safe mode (local-read-only).
 const READ_ONLY_PREFIXES: &[&str] = &[
-    // ── Read-only file inspection ──
+    // File inspection
     "cat ",
     "head ",
     "tail ",
@@ -20,20 +22,20 @@ const READ_ONLY_PREFIXES: &[&str] = &[
     "file ",
     "stat ",
     "bat ",
-    // ── Directory listing ──
+    // Directory listing
     "ls",
     "tree",
     "du ",
     "df",
     "pwd",
-    // ── Search ──
+    // Search
     "grep ",
     "rg ",
     "ag ",
     "find ",
     "fd ",
     "fzf",
-    // ── System info ──
+    // System info
     "echo ",
     "printf ",
     "whoami",
@@ -45,13 +47,13 @@ const READ_ONLY_PREFIXES: &[&str] = &[
     "command -v ",
     "env",
     "printenv",
-    // ── Version checks ──
+    // Version checks
     "rustc --version",
     "node --version",
     "npm --version",
     "python --version",
     "python3 --version",
-    // ── Git read-only ──
+    // Git read-only
     "git status",
     "git log",
     "git diff",
@@ -64,28 +66,13 @@ const READ_ONLY_PREFIXES: &[&str] = &[
     "git rev-parse",
     "git ls-files",
     "git blame",
-    // ── Docker read-only ──
+    // Docker read-only
     "docker ps",
     "docker images",
     "docker logs",
     "docker compose ps",
     "docker compose logs",
-    // ── Cloud CLIs (read-only subcommands only) ──
-    "gcloud projects list",
-    "gcloud compute instances list",
-    "gcloud config ",
-    "gcloud auth ",
-    "gcloud info",
-    "bq ls",
-    "bq show",
-    "bq query ",
-    "bq head ",
-    "aws sts ",
-    "aws s3 ls",
-    "aws s3api list",
-    "az account ",
-    "az group list",
-    // ── Text processing (stdout-only, no -i) ──
+    // Text processing (stdout-only, no -i)
     "sort ",
     "uniq ",
     "cut ",
@@ -100,7 +87,7 @@ const READ_ONLY_PREFIXES: &[&str] = &[
     "basename ",
     "realpath ",
     "readlink ",
-    // ── Misc read-only ──
+    // Misc
     "tput ",
     "true",
     "false",
@@ -108,83 +95,9 @@ const READ_ONLY_PREFIXES: &[&str] = &[
     "[ ",
 ];
 
-/// Commands that mutate local state but are standard dev workflow.
-/// Allowed in Strict mode (with confirmation) but NOT in Safe mode.
-const DEV_WORKFLOW_PREFIXES: &[&str] = &[
-    // ── Build tools ──
-    "cargo check",
-    "cargo build",
-    "cargo test",
-    "cargo clippy",
-    "cargo fmt",
-    "cargo bench",
-    "cargo doc",
-    "cargo run",
-    "npm test",
-    "npm run ",
-    "npm install",
-    "npm ci",
-    "npx ",
-    "yarn ",
-    "pnpm ",
-    "python -m pytest",
-    "python -m mypy",
-    "python -m black",
-    "python -m ruff",
-    "python -c ",
-    "python3 -m pytest",
-    "pytest",
-    "mypy ",
-    "black ",
-    "ruff ",
-    "uv ",
-    "go build",
-    "go test",
-    "go vet",
-    "go fmt",
-    "make",
-    "cmake ",
-    "just ",
-    // ── Git local writes (safe within project) ──
-    "git add",
-    "git commit",
-    "git stash",
-    "git checkout",
-    "git switch",
-    "git fetch",
-    "git pull",
-    "git merge",
-    "git push", // but NOT git push --force (checked in DANGEROUS_PATTERNS)
-    // ── Misc dev tools ──
-    "brew ",
-    "open ",
-    "code ",
-    "pbcopy",
-];
+// ── Dangerous patterns (always need confirmation) ────────────
 
-/// Remote-action commands: side-effects on remote services only.
-/// Allowed in Safe mode (no local mutation).
-const REMOTE_ACTION_PREFIXES: &[&str] = &[
-    // ── GitHub CLI (creates/modifies remote resources) ──
-    "gh issue ",
-    "gh issue create",
-    "gh issue edit",
-    "gh issue close",
-    "gh pr ",
-    "gh pr create",
-    "gh pr merge",
-    "gh pr review",
-    "gh repo view",
-    "gh api ",
-    "gh auth status",
-    "gh label ",
-    "gh release ",
-    "gh run ",
-    "gh workflow ",
-];
-
-/// Patterns that override safety even if the base command is safe.
-/// These are checked against the FULL command string.
+/// Patterns that make any command Destructive regardless of prefix.
 const DANGEROUS_PATTERNS: &[&str] = &[
     // Destructive file operations
     "rm ",
@@ -205,7 +118,7 @@ const DANGEROUS_PATTERNS: &[&str] = &[
     "| sh",
     "| bash",
     "| zsh",
-    // Command substitution / eval (shell injection)
+    // Command substitution / eval
     "$(",
     "`",
     "eval ",
@@ -221,7 +134,7 @@ const DANGEROUS_PATTERNS: &[&str] = &[
     "git push --force",
     "git reset --hard",
     "git clean -fd",
-    // Safe-command escalation: safe prefixes that become dangerous with certain args
+    // In-place edits
     "sed -i",
     "sed -i ",
     "sed -i'",
@@ -235,27 +148,16 @@ const DANGEROUS_PATTERNS: &[&str] = &[
     "cargo publish",
 ];
 
-/// Check if a full command string is safe to auto-approve.
-///
-/// **Backward-compatible wrapper** — returns `true` for ReadOnly and
-/// RemoteAction commands, `false` for LocalMutation and Destructive.
-/// Use [`classify_bash_command`] for the full ToolEffect classification.
-#[cfg(test)]
-pub fn is_command_safe(command: &str) -> bool {
-    !matches!(
-        classify_bash_command(command),
-        ToolEffect::Destructive | ToolEffect::LocalMutation
-    )
-}
+// ── Classification ───────────────────────────────────────────
 
 /// Classify a bash command's effect.
 ///
 /// Returns the *most dangerous* effect found across all pipeline/chain
-/// segments. Checks in order:
-/// 1. Dangerous patterns (Destructive) — always wins
-/// 2. Write side-effects: `>`, `>>`, `| tee` (LocalMutation)
-/// 3. Mutating flags: `sed -i`, `awk -i inplace` (LocalMutation)
-/// 4. Per-segment classification against prefix lists
+/// segments:
+/// 1. Dangerous patterns → Destructive
+/// 2. Write side-effects (`>`, `>>`, `| tee`) → LocalMutation
+/// 3. Read-only prefix match → ReadOnly
+/// 4. Everything else → LocalMutation (conservative default)
 pub fn classify_bash_command(command: &str) -> ToolEffect {
     let trimmed = command.trim();
     if trimmed.is_empty() {
@@ -280,17 +182,38 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
 
     for seg in &segments {
         let effect = classify_segment(seg);
-        worst = worst_effect(worst, effect);
+        if effect == ToolEffect::LocalMutation {
+            return ToolEffect::LocalMutation; // worst possible non-destructive
+        }
+        if effect != ToolEffect::ReadOnly {
+            worst = effect;
+        }
     }
 
     worst
 }
 
-/// Detect write side-effects that bypass per-segment classification.
-///
-/// Catches:
-/// - Output redirects: `>`, `>>` (but not `>/dev/null`, `2>&1`)
-/// - Pipe to tee with file arg: `| tee output.txt`
+/// Classify a single command segment.
+fn classify_segment(segment: &str) -> ToolEffect {
+    let seg = strip_env_vars(segment.trim());
+    let seg = strip_redirections(&seg);
+    let seg = seg.trim();
+
+    if seg.is_empty() {
+        return ToolEffect::ReadOnly;
+    }
+
+    if matches_prefix_list(seg, READ_ONLY_PREFIXES) {
+        ToolEffect::ReadOnly
+    } else {
+        ToolEffect::LocalMutation
+    }
+}
+
+// ── Write side-effect detection ──────────────────────────────
+
+/// Detect write side-effects: `>`, `>>` (but not `>/dev/null`, `2>&1`),
+/// and `| tee`.
 fn has_write_side_effect(command: &str) -> bool {
     let chars: Vec<char> = command.chars().collect();
     let mut in_sq = false;
@@ -303,35 +226,27 @@ fn has_write_side_effect(command: &str) -> bool {
             in_sq = !in_sq;
         } else if c == '"' && !in_sq {
             in_dq = !in_dq;
-        } else if !in_sq && !in_dq {
-            // Check for > or >> (but skip >/dev/null, 2>&1, 2>/dev/null)
-            if c == '>' {
-                // Look at what comes before: skip 2>&1 patterns
-                let before = if i > 0 { chars[i - 1] } else { ' ' };
-                if before == '&' {
-                    // Part of 2>&1 or >&2 — not a file redirect
-                    i += 1;
-                    continue;
-                }
-                // Look at what comes after: skip >/dev/null
-                let after: String = chars[i + 1..].iter().collect();
-                let after_trimmed = after.trim_start();
-                if after_trimmed.starts_with("/dev/null")
-                    || after_trimmed.starts_with("&1")
-                    || after_trimmed.starts_with("&2")
-                {
-                    i += 1;
-                    continue;
-                }
-                // This is a real file redirect
-                return true;
+        } else if !in_sq && !in_dq && c == '>' {
+            let before = if i > 0 { chars[i - 1] } else { ' ' };
+            if before == '&' {
+                i += 1;
+                continue;
             }
+            let after: String = chars[i + 1..].iter().collect();
+            let after_trimmed = after.trim_start();
+            if after_trimmed.starts_with("/dev/null")
+                || after_trimmed.starts_with("&1")
+                || after_trimmed.starts_with("&2")
+            {
+                i += 1;
+                continue;
+            }
+            return true;
         }
         i += 1;
     }
 
-    // Check for `| tee` (pipe to tee with file argument)
-    // Must be outside quotes — use the segment splitter
+    // Check for `| tee`
     let segments = split_command_segments(command);
     for (idx, seg) in segments.iter().enumerate() {
         if idx > 0 {
@@ -345,34 +260,7 @@ fn has_write_side_effect(command: &str) -> bool {
     false
 }
 
-/// Classify a single command segment's effect.
-fn classify_segment(segment: &str) -> ToolEffect {
-    let seg = strip_env_vars(segment.trim());
-    let seg = strip_redirections(&seg);
-    let seg = seg.trim();
-
-    if seg.is_empty() {
-        return ToolEffect::ReadOnly;
-    }
-
-    // Check read-only prefixes first
-    if matches_prefix_list(seg, READ_ONLY_PREFIXES) {
-        return ToolEffect::ReadOnly;
-    }
-
-    // Check remote-action prefixes
-    if matches_prefix_list(seg, REMOTE_ACTION_PREFIXES) {
-        return ToolEffect::RemoteAction;
-    }
-
-    // Check dev-workflow prefixes (local mutation but "known safe")
-    if matches_prefix_list(seg, DEV_WORKFLOW_PREFIXES) {
-        return ToolEffect::LocalMutation;
-    }
-
-    // Unknown command → LocalMutation (conservative)
-    ToolEffect::LocalMutation
-}
+// ── Helpers (also used by bash_path_lint) ────────────────────
 
 /// Check if a segment matches any prefix in a list.
 fn matches_prefix_list(seg: &str, prefixes: &[&str]) -> bool {
@@ -381,31 +269,18 @@ fn matches_prefix_list(seg: &str, prefixes: &[&str]) -> bool {
             if seg.starts_with(prefix) {
                 return true;
             }
-        } else {
-            // Exact match or followed by space/tab/end
-            if seg == *prefix
-                || seg.starts_with(&format!("{prefix} "))
-                || seg.starts_with(&format!("{prefix}\t"))
-            {
-                return true;
-            }
+        } else if seg == *prefix
+            || seg.starts_with(&format!("{prefix} "))
+            || seg.starts_with(&format!("{prefix}\t"))
+        {
+            return true;
         }
     }
     false
 }
 
-/// Return the more severe of two effects.
-fn worst_effect(a: ToolEffect, b: ToolEffect) -> ToolEffect {
-    use ToolEffect::*;
-    match (a, b) {
-        (Destructive, _) | (_, Destructive) => Destructive,
-        (LocalMutation, _) | (_, LocalMutation) => LocalMutation,
-        (RemoteAction, _) | (_, RemoteAction) => RemoteAction,
-        _ => ReadOnly,
-    }
-}
-
 /// Split a command into segments on `|`, `&&`, `||`, `;`.
+/// Respects single and double quotes.
 pub fn split_command_segments(command: &str) -> Vec<&str> {
     let mut segments = Vec::new();
     let mut start = 0;
@@ -417,46 +292,29 @@ pub fn split_command_segments(command: &str) -> Vec<&str> {
     while i < chars.len() {
         let c = chars[i];
 
-        // Track quoting to avoid splitting inside strings
         if c == '\'' && !in_double_quote {
             in_single_quote = !in_single_quote;
         } else if c == '"' && !in_single_quote {
             in_double_quote = !in_double_quote;
         } else if !in_single_quote && !in_double_quote {
-            let is_split = if c == '|' && i + 1 < chars.len() && chars[i + 1] == '|' {
-                // ||
-                segments.push(&command[start..i]);
-                i += 2;
-                start = i;
-                true
-            } else if c == '&' && i + 1 < chars.len() && chars[i + 1] == '&' {
-                // &&
-                segments.push(&command[start..i]);
-                i += 2;
-                start = i;
-                true
-            } else if c == '|' {
-                // single pipe
-                segments.push(&command[start..i]);
-                i += 1;
-                start = i;
-                true
-            } else if c == ';' {
-                segments.push(&command[start..i]);
-                i += 1;
-                start = i;
-                true
+            // Detect separator and its width (2 for ||/&&, 1 for |/;, 0 for none)
+            let sep_len = if (c == '|' || c == '&') && i + 1 < chars.len() && chars[i + 1] == c {
+                2 // || or &&
+            } else if c == '|' || c == ';' {
+                1
             } else {
-                false
+                0
             };
-            if is_split {
+            if sep_len > 0 {
+                segments.push(&command[start..i]);
+                i += sep_len;
+                start = i;
                 continue;
             }
         }
         i += 1;
     }
 
-    // Last segment
     if start < chars.len() {
         segments.push(&command[start..]);
     }
@@ -469,16 +327,13 @@ pub fn strip_env_vars(segment: &str) -> String {
     let mut rest = segment;
     loop {
         let trimmed = rest.trim_start();
-        // Match pattern: WORD=VALUE followed by space
         if let Some(eq_pos) = trimmed.find('=') {
             let before_eq = &trimmed[..eq_pos];
-            // Check it's a valid env var name (alphanumeric + underscore)
             if !before_eq.is_empty()
                 && before_eq
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '_')
             {
-                // Skip past the value (find next unquoted space)
                 let after_eq = &trimmed[eq_pos + 1..];
                 if let Some(space_pos) = find_unquoted_space(after_eq) {
                     rest = &after_eq[space_pos..];
@@ -490,11 +345,9 @@ pub fn strip_env_vars(segment: &str) -> String {
     }
 }
 
-/// Strip shell redirections (`>`, `>>`, `2>`, `2>&1`, `< file`).
+/// Strip shell redirections (`2>&1`, `2>/dev/null`, `>/dev/null`, `</dev/null`).
 fn strip_redirections(segment: &str) -> String {
-    // Simple approach: remove common redirection patterns
     let mut result = segment.to_string();
-    // Remove 2>&1, 2>/dev/null, etc.
     for pat in ["2>&1", "2>/dev/null", ">/dev/null", "</dev/null"] {
         result = result.replace(pat, "");
     }
@@ -516,6 +369,17 @@ fn find_unquoted_space(s: &str) -> Option<usize> {
     None
 }
 
+/// Check if a full command string is safe to auto-approve.
+///
+/// Returns `true` for ReadOnly commands, `false` for everything else.
+#[cfg(test)]
+pub fn is_command_safe(command: &str) -> bool {
+    !matches!(
+        classify_bash_command(command),
+        ToolEffect::Destructive | ToolEffect::LocalMutation
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,32 +399,11 @@ mod tests {
             "rg pattern src/",
             "grep foo bar.txt",
             "git log --oneline",
-            "bq query 'SELECT 1'",
-            "aws s3 ls",
         ] {
             assert_eq!(
                 classify_bash_command(cmd),
                 ToolEffect::ReadOnly,
                 "expected ReadOnly: {cmd}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_remote_action_commands() {
-        for cmd in [
-            "gh issue view 179",
-            "gh pr view 186",
-            "gh issue create --title 'bug'",
-            "gh pr merge 42 --squash",
-            "gh repo view --json name",
-            "gh api /repos",
-            "gh auth status",
-        ] {
-            assert_eq!(
-                classify_bash_command(cmd),
-                ToolEffect::RemoteAction,
-                "expected RemoteAction: {cmd}"
             );
         }
     }
@@ -577,8 +420,10 @@ mod tests {
             "git push origin main",
             "npm install",
             "make",
-            "brew install ripgrep",
-            "open https://example.com",
+            "gh issue create --title 'bug'",
+            "gh pr merge 42 --squash",
+            "curl https://api.example.com",
+            "wget https://example.com/file.txt",
         ] {
             assert_eq!(
                 classify_bash_command(cmd),
@@ -631,7 +476,6 @@ mod tests {
 
     #[test]
     fn test_redirect_is_local_mutation() {
-        // echo is read-only but > makes it a write
         assert_eq!(
             classify_bash_command("echo hello > output.txt"),
             ToolEffect::LocalMutation
@@ -644,7 +488,6 @@ mod tests {
 
     #[test]
     fn test_redirect_to_dev_null_not_write() {
-        // >/dev/null and 2>&1 are not file writes
         assert_eq!(
             classify_bash_command("git status 2>&1"),
             ToolEffect::ReadOnly
@@ -676,7 +519,6 @@ mod tests {
 
     #[test]
     fn test_mixed_pipeline_worst_wins() {
-        // cargo test (LocalMutation) | tail (ReadOnly) → LocalMutation
         assert_eq!(
             classify_bash_command("cargo test 2>&1 | tail -5"),
             ToolEffect::LocalMutation
@@ -697,7 +539,6 @@ mod tests {
 
     #[test]
     fn test_env_var_prefix_stripped() {
-        // RUST_LOG=debug cargo test → cargo test is dev-workflow → LocalMutation
         assert_eq!(
             classify_bash_command("RUST_LOG=debug cargo test"),
             ToolEffect::LocalMutation
@@ -726,12 +567,10 @@ mod tests {
 
     #[test]
     fn test_quoted_strings_not_split() {
-        // echo with quoted pipe → single segment → ReadOnly
         assert_eq!(
             classify_bash_command("echo 'hello | world'"),
             ToolEffect::ReadOnly
         );
-        // git commit is dev-workflow → LocalMutation
         assert_eq!(
             classify_bash_command("git commit -m 'fix: a && b'"),
             ToolEffect::LocalMutation
@@ -754,18 +593,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_curl_wget_not_safe() {
-        assert_eq!(
-            classify_bash_command("curl https://api.example.com"),
-            ToolEffect::LocalMutation
-        );
-        assert_eq!(
-            classify_bash_command("wget https://example.com/file.txt"),
-            ToolEffect::LocalMutation
-        );
-    }
-
     // ── Backward-compatible is_command_safe ──
 
     #[test]
@@ -773,12 +600,10 @@ mod tests {
         assert!(is_command_safe("git status"));
         assert!(is_command_safe("ls -la"));
         assert!(is_command_safe("cat file.txt"));
-        assert!(is_command_safe("gh issue view 179"));
     }
 
     #[test]
     fn test_is_command_safe_dev_workflow_now_unsafe() {
-        // Dev workflow commands are LocalMutation → is_command_safe returns false
         assert!(!is_command_safe("cargo test"));
         assert!(!is_command_safe("git push origin main"));
         assert!(!is_command_safe("npm install"));

@@ -1,7 +1,7 @@
 //! Verify every built-in tool is properly wired through all layers.
 //!
 //! If you add a new tool, these tests will fail until you wire it
-//! through the dispatcher, normalizer, and approval system.
+//! through the dispatcher and approval system.
 
 use std::path::PathBuf;
 
@@ -30,22 +30,6 @@ async fn test_all_tools_routable_in_dispatcher() {
     }
 }
 
-/// Every PascalCase tool name must be reachable via its lowercase form
-/// through normalize_tool_name().
-#[test]
-fn test_all_tools_have_normalizer_mapping() {
-    for name in all_tool_names() {
-        let lowercase = name.to_lowercase();
-        let normalized = koda_core::tools::normalize_tool_name(&lowercase);
-        assert_eq!(
-            normalized, name,
-            "Tool '{name}' has no normalizer mapping. \
-             normalize_tool_name(\"{lowercase}\") returned \"{normalized}\" instead of \"{name}\". \
-             Add it to normalize_tool_name() in tools/mod.rs."
-        );
-    }
-}
-
 /// Every tool must be classified in the approval system.
 /// It should be either in READ_ONLY_TOOLS (auto-approved) or
 /// return NeedsConfirmation/AutoApproved — never panic or crash.
@@ -56,13 +40,11 @@ fn test_all_tools_handled_by_approval() {
     let empty_args = serde_json::json!({});
     for name in all_tool_names() {
         // Should not panic in any mode
-        let result = check_tool(&name, &empty_args, ApprovalMode::Strict, None, None, None);
+        let result = check_tool(&name, &empty_args, ApprovalMode::Confirm, None, None, None);
         // Verify it returns a valid variant (not a crash)
         match result {
-            ToolApproval::AutoApprove
-            | ToolApproval::Notify
-            | ToolApproval::NeedsConfirmation
-            | ToolApproval::Blocked => {}
+            ToolApproval::AutoApprove | ToolApproval::NeedsConfirmation | ToolApproval::Blocked => {
+            }
         }
     }
 }

@@ -54,7 +54,7 @@ impl DelegationScope {
     /// Restricted scope: read-only filesystem, no delegation.
     pub fn read_only(parent_mode: ApprovalMode) -> Self {
         Self {
-            mode: clamp_mode(parent_mode, ApprovalMode::Safe),
+            mode: clamp_mode(parent_mode, ApprovalMode::Confirm),
             fs_grant: FsGrant::ReadOnly,
             allowed_tools: None,
             can_delegate: false,
@@ -105,7 +105,7 @@ impl DelegationScope {
 }
 
 /// Clamp a child mode to never exceed the parent's mode.
-/// Mode ordering: Safe < Strict < Auto.
+/// Mode ordering: Confirm < Auto.
 fn clamp_mode(parent: ApprovalMode, child: ApprovalMode) -> ApprovalMode {
     if (child as u8) > (parent as u8) {
         parent
@@ -168,20 +168,20 @@ mod tests {
 
     #[test]
     fn test_mode_clamping() {
-        // Safe parent can't spawn Auto child
+        // Confirm parent can't spawn Auto child
         assert_eq!(
-            clamp_mode(ApprovalMode::Safe, ApprovalMode::Auto),
-            ApprovalMode::Safe
+            clamp_mode(ApprovalMode::Confirm, ApprovalMode::Auto),
+            ApprovalMode::Confirm
         );
-        // Auto parent can spawn any child
+        // Auto parent can spawn Confirm child
         assert_eq!(
-            clamp_mode(ApprovalMode::Auto, ApprovalMode::Safe),
-            ApprovalMode::Safe
+            clamp_mode(ApprovalMode::Auto, ApprovalMode::Confirm),
+            ApprovalMode::Confirm
         );
         // Same mode passes through
         assert_eq!(
-            clamp_mode(ApprovalMode::Strict, ApprovalMode::Strict),
-            ApprovalMode::Strict
+            clamp_mode(ApprovalMode::Auto, ApprovalMode::Auto),
+            ApprovalMode::Auto
         );
     }
 
@@ -206,8 +206,8 @@ mod tests {
     }
 
     #[test]
-    fn test_read_only_clamps_to_safe() {
+    fn test_read_only_clamps_to_confirm() {
         let scope = DelegationScope::read_only(ApprovalMode::Auto);
-        assert_eq!(scope.mode, ApprovalMode::Safe);
+        assert_eq!(scope.mode, ApprovalMode::Confirm);
     }
 }

@@ -219,7 +219,7 @@ pub(crate) async fn execute_tools_split_batch(
                 None,
                 None,
             ),
-            ToolApproval::AutoApprove | ToolApproval::Notify
+            ToolApproval::AutoApprove
         )
     });
 
@@ -372,7 +372,7 @@ pub(crate) async fn execute_tools_sequential(
         );
 
         match approval {
-            ToolApproval::AutoApprove | ToolApproval::Notify => {
+            ToolApproval::AutoApprove => {
                 // Execute without asking
             }
             ToolApproval::Blocked => {
@@ -646,7 +646,7 @@ pub(crate) async fn execute_sub_agent(
             );
 
             let output = match approval {
-                ToolApproval::AutoApprove | ToolApproval::Notify => {
+                ToolApproval::AutoApprove => {
                     tools.execute(&tc.function_name, &tc.arguments).await.output
                 }
                 ToolApproval::Blocked => {
@@ -760,7 +760,7 @@ mod tests {
         let calls = vec![make_tool_call("Read"), make_tool_call("Grep")];
         assert!(can_parallelize(
             &calls,
-            ApprovalMode::Strict,
+            ApprovalMode::Confirm,
             Path::new("/test/project")
         ));
     }
@@ -770,7 +770,7 @@ mod tests {
         let calls = vec![make_tool_call("Read"), make_tool_call("Write")];
         assert!(!can_parallelize(
             &calls,
-            ApprovalMode::Strict,
+            ApprovalMode::Confirm,
             Path::new("/test/project")
         ));
     }
@@ -789,7 +789,7 @@ mod tests {
         ];
         assert!(!can_parallelize(
             &calls,
-            ApprovalMode::Strict,
+            ApprovalMode::Confirm,
             Path::new("/test/project")
         ));
     }
@@ -799,7 +799,7 @@ mod tests {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("InvokeAgent")];
         assert!(can_parallelize(
             &calls,
-            ApprovalMode::Strict,
+            ApprovalMode::Confirm,
             Path::new("/test/project")
         ));
     }
@@ -822,7 +822,7 @@ mod tests {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("Write")];
         assert!(!can_parallelize(
             &calls,
-            ApprovalMode::Strict,
+            ApprovalMode::Confirm,
             Path::new("/test/project")
         ));
     }

@@ -9,7 +9,7 @@ Refer to this when the user asks "what can you do?" or about features.
 /mcp — MCP server management | /memory — persistent memory | /model — switch model
 /provider — switch provider | /sessions — resume/delete sessions | /skills — list skills
 /undo — undo last turn | /verbose — toggle full tool output
-Shift+Tab — cycle approval mode (auto/strict/safe)
+Shift+Tab — cycle approval mode (auto/confirm)
 
 ### Input
 
@@ -18,7 +18,7 @@ Shift+Tab — cycle approval mode (auto/strict/safe)
 
 ### Approval
 
-Three modes (cycle with Shift+Tab): **auto** (default), **strict**, **safe**.
+Two modes (cycle with Shift+Tab): **auto** (default), **confirm**.
 Hotkeys during tool confirmation: `y` approve, `n` reject, `f` feedback, `a` always.
 
 ### Git Checkpointing

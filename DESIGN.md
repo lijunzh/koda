@@ -352,12 +352,12 @@ For operational details, see [docs/user-guide.md](docs/user-guide.md#security-mo
 
 ### 18. Security Model (v0.1.4)
 
-**Decision**: Per-tool safety classification with three approval modes and
+**Decision**: Per-tool safety classification with two approval modes and
 hardcoded floors that override mode settings for high-risk operations.
 
 **Rationale**: The LLM is semi-trusted — capable of mistakes, not adversarial.
 Every tool call is classified into one of four effects (ReadOnly, LocalMutation,
-Destructive, RemoteAction). Approval modes (Auto/Strict/Safe) determine which
+Destructive, RemoteAction). Approval modes (Auto/Confirm) determine which
 effects need confirmation. Hardcoded floors ensure destructive operations and
 outside-project writes always require confirmation regardless of mode.
 
@@ -376,7 +376,7 @@ For approval mode tables, tool effect matrix, and operational details, see
 2. Shell command parsing is heuristic — complex pipelines can bypass
 3. MCP `readOnly` is trust-based — malicious servers could lie
 4. Auto mode sub-agents with `FullProject` scope get full write access
-5. Outside-project writes in Safe mode show confirm prompt instead of clean block
+5. Outside-project writes in Confirm mode show confirm prompt instead of clean block
 
 ### 19. ~~Review Depth as Isolation Boundaries~~ (v0.1.4 — RETIRED in #355)
 
