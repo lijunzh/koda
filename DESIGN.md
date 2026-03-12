@@ -12,30 +12,57 @@ and knowledge management — all powered by the same engine.
 
 ## Design Principles
 
-**Adapt to behavior, not configuration.** AI should learn human intention from
-historical interaction patterns, not from config files or mode flags. The system
-observes how the user intervenes (or doesn't) at each decision point and adjusts
-autonomy accordingly. Configuration is a confession that the system can't figure
-it out — a personal AI tool should learn how you work by working with you.
+Principles are truths we enforce on the product. They may not be correct for
+everyone, but we follow them anyway. Design decisions (§1–§19 below) are
+examples that follow — or violated — these principles.
 
-This principle drives several architectural choices:
-- Approval modes (auto/strict/safe) are the only user-facing setting
-- No `DepthMode` enum or `--autonomy` flag — autonomy is a continuous variable
-  that should emerge from data, not a discrete setting the user picks
-- The v0.1.4 `InterventionObserver` was an attempt at this but was removed
-  in #355 due to insufficient data — the cold-start problem was never solved
+### 1. Software for One
 
-**Don’t reimplement what the model does.** The LLM’s extended thinking IS the
-planning. The tool results ARE the verification. Koda’s inference loop is
-simple: prompt → stream (thinking + tool calls) → execute tools → repeat.
-The v0.1.4 phase system attempted to formalize this loop in application code
-and was removed in [#355](https://github.com/lijunzh/koda/pull/355) after
-proving that it reimplemented what the model already does, but worse.
-See [#216 post-mortem](https://github.com/lijunzh/koda/issues/216#issuecomment-4035670832).
+AI changes how software is built. We no longer need configurable software
+that caters to a broad audience through options and flags. Instead, we build
+hyper-targeted software for a single user — the author — whose needs can
+be changed with a few prompts and a recompile.
 
-**Gate at the action, not the plan.** Review individual destructive operations
-(`ToolEffect::Destructive` → `NeedsConfirmation`), not entire plans. Per-tool
-approval is cheaper, more precise, and doesn’t fight the model’s natural flow.
+This is not a limitation. It is a superpower:
+
+- **Customization over configuration.** If a decision can be made at compile
+  time, it must be. Rust excels at compile-time safety; runtime configuration
+  defeats it. Flags that select an execution scenario are fine (`-p` for
+  headless, `server --stdio` for ACP) — flags that alter behavior within a
+  scenario are not (`--autonomy`, `--model-tier`). If something needs to
+  change, change the code
+- **Build only what we need.** Don't anticipate what users might want.
+  There is one user. Code that isn't written has zero bugs. Features that
+  were built but aren't used should be deleted — git preserves history
+- **Delete aggressively.** Carrying dead code forward degrades every future
+  decision because it obscures what the system actually does. No
+  "extensibility for later" — trait abstractions and plugin systems have a
+  cost even when idle
+
+### 2. Clear Boundaries
+
+Every component has a sharp boundary — what it does, what it doesn't,
+and where responsibility transfers to the next component.
+
+- **Engine** (`koda-core`): communicate with the LLM, curate context,
+  execute tools, manage safety. Zero terminal deps. Zero UI opinions
+- **UI** (`koda-cli`): deliver the best UX. Render events, capture input,
+  present approvals. Zero inference decisions
+- **Model**: plan, reason, decide which tools to call. The engine does NOT
+  reimplement planning, verification, or decision-making in application code
+- **Provider**: koda targets a single model family. Don't adapt to different
+  model capabilities at runtime. If a model can't meet the contract, it
+  fails — the engine doesn't bend to accommodate it
+
+These boundaries are load-bearing. Breaking them causes the exact class of
+bugs that motivated removing the phase system (§16), the model tier system
+(§8), and the intervention observer.
+
+### 3. Make It Work, Make It Right, Make It Fast
+
+Don't optimize prematurely. Ship working code first, refactor to clean
+design second, optimize for performance only when measured. This applies
+to architecture too — don't design for scale that doesn't exist yet.
 
 ## Execution Modes
 
@@ -357,6 +384,44 @@ strong model answers) remains valuable and may return as a standalone
 `/review` command ([#256](https://github.com/lijua/issues/256)).
 
 **Archive**: Tag `v0.1.4-phase-system` preserves the full implementation.
+
+## Principles Audit (v0.1.6)
+
+How existing design decisions align with the core principles. Decisions that
+violate the principles are tracked as issues for future cleanup.
+
+### Aligned
+
+| Decision | Principle | Why it aligns |
+|----------|-----------|---------------|
+| §1 Engine as library | Clear Boundaries | Engine has zero terminal deps, communicates only via events |
+| §5 Monolithic db.rs | Software for One | Resisted premature abstraction; split by domain divergence, not line count |
+| §7 Match dispatch | Software for One | Compile-time exhaustive matching > runtime `HashMap<String, Box<dyn Tool>>` |
+| §8 Binary probe > model tiers | Clear Boundaries | Removed 3-tier runtime adaptation; models meet the contract or fail |
+| §13 CLAUDE.md not .koda.md | Software for One | One file for all tools; rejected redundant config surface |
+| §14 Inline UI, never fullscreen | Software for One | No generic wizard framework (YAGNI); per-command state machines |
+| §15 Dropdown is help | Software for One | Removed 3 overlapping discovery mechanisms → 1 |
+| §16 Phase system retired | Clear Boundaries | Removed 4,308 lines of planning that reimplemented what the model does |
+| §17 Folder-scoped permissions | Software for One | Hardcoded safety floors, not configurable trust levels |
+| §18 Security model | Software for One | ToolEffect classification is compile-time; approval modes are the only runtime knob |
+
+### Violations (tracked for cleanup)
+
+| Area | Violation | Principle | Severity | Issue |
+|------|-----------|-----------|----------|-------|
+| `model_context.rs` | 250-line lookup table for 50+ models across 14 providers. 95% unused if targeting Claude | Software for One | Medium | [#401] |
+| `output_caps.rs` | Tool output limits scale 1–4× based on context window at runtime | Software for One | Medium | [#401] |
+| `query_and_apply_capabilities()` | 6 call sites querying provider APIs to override hardcoded context table | Software for One | Medium | [#401] |
+| `model_probe.rs` | Runtime binary gate hedging for weak models that can't follow the contract | Clear Boundaries | Low | [#401] |
+| `DiscoverTools` | §10 says removed, but `tools/discover.rs` still exists and is registered | Software for One | Medium | [#402] |
+| `DelegationScope` | 140 lines of sub-agent permission scoping; unused if sole user doesn't delegate | Software for One | Medium | [#403] |
+| `CreateAgent` tool | LLM-invoked agent file creation; manual JSON is sufficient | Software for One | Low | [#403] |
+| `Persistence` trait | Trait abstraction with single SQLite backend; no second backend exists | Software for One | Low | — |
+| `thinking_budget` / `reasoning_effort` | Provider-specific optional fields scattered across config; inert if Claude-only | Software for One | Low | [#401] |
+
+**Note**: The `Persistence` trait is retained — its cost is minimal (~50 lines)
+and trait-based testing (mock DB) justifies its existence independently of a
+second backend.
 
 ## References
 
