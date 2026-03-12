@@ -181,7 +181,7 @@ RecallContext uses an optional `db` + `session_id` on the ToolRegistry, set via
 locations per tool (definitions, match arm, module import) is a bottleneck,
 convert to a `Tool` trait + `ToolContext`. Do both together, not piecemeal.
 
-### 8. Model Capability Probe (v0.1.4)
+### 8. ~~Model Capability Probe (v0.1.4)~~ Removed (v0.1.6)
 
 **Decision**: Replace the three-tier model gradient (Strong/Standard/Lite) with
 a binary startup probe. Can this model handle koda's contract? Yes → full trust.
@@ -194,10 +194,16 @@ No → fail loudly.
 - `--model-tier` CLI flag
 - `get_definitions_tiered()` (Strong-tier tool filtering)
 
-**What replaced it**: `model_probe.rs` — one inference call at session start
+**What replaced it (v0.1.4)**: `model_probe.rs` — one inference call at session start
 that asks the model to emit structured JSON with specific keys. Binary pass/fail.
 Cached per model name in `~/.config/koda/model_probes.json`. Skippable with
 `--skip-probe`.
+
+**Removed (v0.1.6)**: The probe itself was removed in [#401]. The binary gate
+was hedging for weak models that can't follow the contract — violating the
+Clear Boundaries principle (§2). Models either support structured tool-use or
+they don't; a one-time probe at startup doesn't change that outcome. The
+`model_probe.rs` file, `--skip-probe` CLI flag, and probe cache were all deleted.
 
 **Rationale**: The three-tier system was configuration masquerading as
 adaptation. Tier-specific prompts were hedging against model uncertainty by
@@ -205,9 +211,6 @@ coddling weaker models with verbose instructions. In practice, models either
 handle koda's structured tool-use contract or they don't — there's no useful
 middle ground. A model that can't emit valid JSON tool calls won't improve
 with a more verbose prompt; it'll just fail in more verbose ways.
-
-**Philosophy**: The probe replaces hedging with a hard gate at the only moment
-you can't check at compile time — model identity is inherently a runtime fact.
 
 ### 9. Context Window Auto-Detection (v0.1.3 → v0.1.4)
 
@@ -411,15 +414,15 @@ violate the principles are tracked as issues for future cleanup.
 
 | Area | Violation | Principle | Severity | Issue |
 |------|-----------|-----------|----------|-------|
-| `model_context.rs` | 250-line lookup table for 50+ models across 14 providers. 95% unused if targeting Claude | Software for One | Medium | [#401] |
-| `output_caps.rs` | Tool output limits scale 1–4× based on context window at runtime | Software for One | Medium | [#401] |
-| `query_and_apply_capabilities()` | 6 call sites querying provider APIs to override hardcoded context table | Software for One | Medium | [#401] |
-| `model_probe.rs` | Runtime binary gate hedging for weak models that can't follow the contract | Clear Boundaries | Low | [#401] |
+| `model_context.rs` | 250-line lookup table for 50+ models across 14 providers | Software for One | — | Aligned — multi-provider support is intentional |
+| `output_caps.rs` | Tool output limits scale 1–4× based on context window at runtime | Software for One | — | Aligned — multi-provider support is intentional |
+| `query_and_apply_capabilities()` | 6 call sites querying provider APIs to override hardcoded context table | Software for One | — | Aligned — multi-provider support is intentional |
+| ~~`model_probe.rs`~~ | ~~Runtime binary gate hedging for weak models that can't follow the contract~~ | ~~Clear Boundaries~~ | — | **Resolved** in [#401] |
 | ~~`DiscoverTools`~~ | ~~§10 says removed, but `tools/discover.rs` still exists~~ — **Resolved** in [#402] | Software for One | — | [#402] |
 | `DelegationScope` | 140 lines of sub-agent permission scoping; unused if sole user doesn't delegate | Software for One | Medium | [#403] |
 | `CreateAgent` tool | LLM-invoked agent file creation; manual JSON is sufficient | Software for One | Low | [#403] |
 | `Persistence` trait | Trait abstraction with single SQLite backend; no second backend exists | Software for One | Low | — |
-| `thinking_budget` / `reasoning_effort` | Provider-specific optional fields scattered across config; inert if Claude-only | Software for One | Low | [#401] |
+| `thinking_budget` / `reasoning_effort` | Provider-specific optional fields scattered across config | Software for One | — | Aligned — multi-provider support is intentional |
 
 **Note**: The `Persistence` trait is retained — its cost is minimal (~50 lines)
 and trait-based testing (mock DB) justifies its existence independently of a

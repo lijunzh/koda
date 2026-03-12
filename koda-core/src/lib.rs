@@ -27,7 +27,6 @@ pub mod loop_guard;
 pub mod mcp;
 pub mod memory;
 pub mod model_context;
-pub mod model_probe;
 pub mod output_caps;
 pub mod persistence;
 pub mod preview;
