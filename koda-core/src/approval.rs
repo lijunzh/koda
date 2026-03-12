@@ -1,9 +1,8 @@
 //! Approval modes and tool confirmation.
 //!
-//! Three modes control how Koda handles tool confirmations:
-//! - **Auto** (default): Auto-approve everything. Full trust in the model.
-//! - **Strict**: Every non-read action requires explicit confirmation.
-//! - **Safe**: Local-read-only, remote actions allowed. No filesystem mutations.
+//! Two modes control how Koda handles tool confirmations:
+//! - **Auto** (default): Auto-approve everything. Destructive ops need confirmation.
+//! - **Confirm**: Every non-read action requires explicit confirmation.
 //!
 //! Tool effects are classified via [`ToolEffect`] and bash commands are
 //! further refined by [`crate::bash_safety::classify_bash_command`].
@@ -17,49 +16,45 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 // ── Approval Mode ─────────────────────────────────────────
 
-/// The three approval modes.
+/// The two approval modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ApprovalMode {
-    /// Read-only: safe bash allowed, mutations blocked.
-    Safe = 0,
     /// Every non-read action needs explicit confirmation.
-    Strict = 1,
-    /// Full auto: approve everything without confirmation.
-    Auto = 2,
+    Confirm = 0,
+    /// Full auto: approve everything except destructive ops.
+    Auto = 1,
 }
 
 impl ApprovalMode {
-    /// Cycle to the next mode: Auto → Strict → Safe → Auto.
+    /// Toggle between the two modes.
     pub fn next(self) -> Self {
         match self {
-            Self::Auto => Self::Strict,
-            Self::Strict => Self::Safe,
-            Self::Safe => Self::Auto,
+            Self::Auto => Self::Confirm,
+            Self::Confirm => Self::Auto,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Safe => "safe",
-            Self::Strict => "strict",
+            Self::Confirm => "confirm",
             Self::Auto => "auto",
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Safe => "local-read-only, remote actions allowed",
-            Self::Strict => "confirm every non-read action",
-            Self::Auto => "auto-approve everything",
+            Self::Confirm => "confirm every non-read action",
+            Self::Auto => "auto-approve, confirm destructive only",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "auto" | "yolo" | "accept" => Some(Self::Auto),
-            "strict" | "normal" => Some(Self::Strict),
-            "safe" | "plan" | "readonly" => Some(Self::Safe),
+            "confirm" | "strict" | "normal" => Some(Self::Confirm),
+            // Legacy: "safe" and "plan" map to Confirm (closest equivalent)
+            "safe" | "plan" | "readonly" => Some(Self::Confirm),
             _ => None,
         }
     }
@@ -68,9 +63,8 @@ impl ApprovalMode {
 impl From<u8> for ApprovalMode {
     fn from(v: u8) -> Self {
         match v {
-            0 => Self::Safe,
-            1 => Self::Strict,
-            _ => Self::Auto, // default is now Auto
+            0 => Self::Confirm,
+            _ => Self::Auto, // default is Auto
         }
     }
 }
@@ -104,43 +98,22 @@ pub fn cycle_mode(shared: &SharedMode) -> ApprovalMode {
 pub enum ToolApproval {
     /// Execute without asking.
     AutoApprove,
-    /// Execute but display what's happening (de-escalation).
-    /// Agent continues automatically; user's next input is implicit consent.
-    Notify,
     /// Show confirmation dialog.
     NeedsConfirmation,
-    /// Safe mode: show what would happen, don't execute.
+    /// Blocked (delegation scope violation).
     Blocked,
 }
 
-/// Read-only tools that auto-approve in all modes (including Safe).
-/// These never modify the filesystem or have destructive side effects.
-///
-/// **Superseded by `classify_tool()`** — kept for reference in tests.
-#[cfg(test)]
-const READ_ONLY_TOOLS: &[&str] = &[
-    "Read",
-    "List",
-    "Grep",
-    "Glob",
-    "MemoryRead",
-    "ListAgents",
-    "InvokeAgent",   // sub-agents inherit parent's approval mode
-    "WebFetch",      // GET-only URL fetch
-    "ListSkills",    // read-only skill listing
-    "ActivateSkill", // read-only skill activation (context injection)
-];
-
 /// Decide whether a tool call should be auto-approved, confirmed, or blocked.
 ///
-/// Uses the [`ToolEffect`] classification to apply a per-mode decision matrix:
+/// Decision matrix:
 ///
-/// | ToolEffect     | Auto          | Strict        | Safe        |
-/// |----------------|---------------|---------------|-------------|
-/// | ReadOnly       | ✅ auto        | ✅ auto        | ✅ auto      |
-/// | RemoteAction   | ✅ auto        | ✅ auto        | ✅ auto      |
-/// | LocalMutation  | ✅ auto        | ⚠️ confirm     | ❌ blocked   |
-/// | Destructive    | ⚠️ confirm    | ⚠️ confirm     | ❌ blocked   |
+/// | ToolEffect     | Auto          | Confirm       |
+/// |----------------|---------------|---------------|
+/// | ReadOnly       | ✅ auto        | ✅ auto        |
+/// | RemoteAction   | ✅ auto        | ✅ auto        |
+/// | LocalMutation  | ✅ auto        | ⚠️ confirm     |
+/// | Destructive    | ⚠️ confirm    | ⚠️ confirm     |
 ///
 /// Additional hardcoded floors:
 /// - Writes outside project root → NeedsConfirmation (#218)
@@ -199,21 +172,14 @@ pub fn check_tool(
     // Apply the ToolEffect × ApprovalMode matrix
     match mode {
         ApprovalMode::Auto => match effect {
-            ToolEffect::ReadOnly => ToolApproval::AutoApprove,
-            ToolEffect::RemoteAction => ToolApproval::AutoApprove,
-            ToolEffect::LocalMutation => ToolApproval::AutoApprove,
+            ToolEffect::ReadOnly | ToolEffect::RemoteAction | ToolEffect::LocalMutation => {
+                ToolApproval::AutoApprove
+            }
             ToolEffect::Destructive => ToolApproval::NeedsConfirmation,
         },
-        ApprovalMode::Strict => match effect {
-            ToolEffect::ReadOnly => ToolApproval::AutoApprove,
-            ToolEffect::RemoteAction => ToolApproval::AutoApprove,
-            ToolEffect::LocalMutation => ToolApproval::NeedsConfirmation,
-            ToolEffect::Destructive => ToolApproval::NeedsConfirmation,
-        },
-        ApprovalMode::Safe => match effect {
-            ToolEffect::ReadOnly => ToolApproval::AutoApprove,
-            ToolEffect::RemoteAction => ToolApproval::AutoApprove,
-            ToolEffect::LocalMutation | ToolEffect::Destructive => ToolApproval::Blocked,
+        ApprovalMode::Confirm => match effect {
+            ToolEffect::ReadOnly | ToolEffect::RemoteAction => ToolApproval::AutoApprove,
+            ToolEffect::LocalMutation | ToolEffect::Destructive => ToolApproval::NeedsConfirmation,
         },
     }
 }
@@ -300,31 +266,30 @@ mod tests {
 
     #[test]
     fn test_mode_cycle() {
-        assert_eq!(ApprovalMode::Auto.next(), ApprovalMode::Strict);
-        assert_eq!(ApprovalMode::Strict.next(), ApprovalMode::Safe);
-        assert_eq!(ApprovalMode::Safe.next(), ApprovalMode::Auto);
+        assert_eq!(ApprovalMode::Auto.next(), ApprovalMode::Confirm);
+        assert_eq!(ApprovalMode::Confirm.next(), ApprovalMode::Auto);
     }
 
     #[test]
     fn test_mode_from_str() {
         // New names
         assert_eq!(ApprovalMode::parse("auto"), Some(ApprovalMode::Auto));
-        assert_eq!(ApprovalMode::parse("strict"), Some(ApprovalMode::Strict));
-        assert_eq!(ApprovalMode::parse("safe"), Some(ApprovalMode::Safe));
+        assert_eq!(ApprovalMode::parse("confirm"), Some(ApprovalMode::Confirm));
         // Legacy aliases
         assert_eq!(ApprovalMode::parse("yolo"), Some(ApprovalMode::Auto));
-        assert_eq!(ApprovalMode::parse("normal"), Some(ApprovalMode::Strict));
-        assert_eq!(ApprovalMode::parse("plan"), Some(ApprovalMode::Safe));
-        assert_eq!(ApprovalMode::parse("readonly"), Some(ApprovalMode::Safe));
+        assert_eq!(ApprovalMode::parse("strict"), Some(ApprovalMode::Confirm));
+        assert_eq!(ApprovalMode::parse("normal"), Some(ApprovalMode::Confirm));
+        assert_eq!(ApprovalMode::parse("safe"), Some(ApprovalMode::Confirm));
+        assert_eq!(ApprovalMode::parse("plan"), Some(ApprovalMode::Confirm));
+        assert_eq!(ApprovalMode::parse("readonly"), Some(ApprovalMode::Confirm));
         assert_eq!(ApprovalMode::parse("accept"), Some(ApprovalMode::Auto));
         assert_eq!(ApprovalMode::parse("nope"), None);
     }
 
     #[test]
     fn test_mode_from_u8() {
-        assert_eq!(ApprovalMode::from(0), ApprovalMode::Safe);
-        assert_eq!(ApprovalMode::from(1), ApprovalMode::Strict);
-        assert_eq!(ApprovalMode::from(2), ApprovalMode::Auto);
+        assert_eq!(ApprovalMode::from(0), ApprovalMode::Confirm);
+        assert_eq!(ApprovalMode::from(1), ApprovalMode::Auto);
         assert_eq!(ApprovalMode::from(99), ApprovalMode::Auto); // default is Auto
     }
 
@@ -333,11 +298,25 @@ mod tests {
         let shared = new_shared_mode(ApprovalMode::Auto);
         assert_eq!(read_mode(&shared), ApprovalMode::Auto);
         let next = cycle_mode(&shared);
-        assert_eq!(next, ApprovalMode::Strict);
-        assert_eq!(read_mode(&shared), ApprovalMode::Strict);
+        assert_eq!(next, ApprovalMode::Confirm);
+        assert_eq!(read_mode(&shared), ApprovalMode::Confirm);
     }
 
     // ── Tool approval tests ──
+
+    /// Read-only tools auto-approve in every mode.
+    const READ_ONLY_TOOLS: &[&str] = &[
+        "Read",
+        "List",
+        "Grep",
+        "Glob",
+        "MemoryRead",
+        "ListAgents",
+        "InvokeAgent",
+        "WebFetch",
+        "ListSkills",
+        "ActivateSkill",
+    ];
 
     #[test]
     fn test_read_tools_always_approved() {
@@ -346,38 +325,37 @@ mod tests {
                 check_tool(
                     tool,
                     &serde_json::json!({}),
-                    ApprovalMode::Safe,
+                    ApprovalMode::Confirm,
                     None,
                     None,
                     None,
                 ),
                 ToolApproval::AutoApprove,
-                "{tool} should auto-approve even in Safe mode"
+                "{tool} should auto-approve even in Confirm mode"
             );
         }
     }
 
     #[test]
-    fn test_write_tools_blocked_in_safe() {
+    fn test_write_tools_need_confirmation_in_confirm() {
         for tool in ["Write", "Edit", "Delete", "CreateAgent", "MemoryWrite"] {
             assert_eq!(
                 check_tool(
                     tool,
                     &serde_json::json!({}),
-                    ApprovalMode::Safe,
+                    ApprovalMode::Confirm,
                     None,
                     None,
                     None,
                 ),
-                ToolApproval::Blocked,
-                "{tool} should be blocked in Safe mode"
+                ToolApproval::NeedsConfirmation,
+                "{tool} should need confirmation in Confirm mode"
             );
         }
     }
 
     #[test]
-    fn test_auto_approves_non_destructive_in_executing() {
-        // In Auto mode, non-destructive mutating tools are auto-approved.
+    fn test_auto_approves_non_destructive() {
         for tool in ["Write", "Edit", "Bash", "WebFetch"] {
             assert_eq!(
                 check_tool(
@@ -395,7 +373,6 @@ mod tests {
 
     #[test]
     fn test_auto_confirms_destructive_ops() {
-        // Delete is always destructive → NeedsConfirmation even in Auto + Executing
         assert_eq!(
             check_tool(
                 "Delete",
@@ -410,42 +387,41 @@ mod tests {
     }
 
     #[test]
-    fn test_safe_bash_auto_approved_in_strict() {
-        // Read-only bash: auto-approved in Strict
+    fn test_safe_bash_auto_approved_in_confirm() {
         let args = serde_json::json!({"command": "git status"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Strict, None, None, None,),
+            check_tool("Bash", &args, ApprovalMode::Confirm, None, None, None,),
             ToolApproval::AutoApprove,
         );
     }
 
     #[test]
-    fn test_dev_workflow_bash_needs_confirmation_in_strict() {
-        // cargo test is LocalMutation → NeedsConfirmation in Strict
+    fn test_dev_workflow_bash_needs_confirmation_in_confirm() {
         let args = serde_json::json!({"command": "cargo test --release"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Strict, None, None, None,),
+            check_tool("Bash", &args, ApprovalMode::Confirm, None, None, None,),
             ToolApproval::NeedsConfirmation,
         );
     }
 
     #[test]
-    fn test_dangerous_bash_needs_confirmation_in_strict() {
-        // Destructive bash: NeedsConfirmation in Strict
+    fn test_dangerous_bash_needs_confirmation() {
         let args = serde_json::json!({"command": "rm -rf target/"});
-        assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Strict, None, None, None,),
-            ToolApproval::NeedsConfirmation,
-        );
+        for mode in [ApprovalMode::Auto, ApprovalMode::Confirm] {
+            assert_eq!(
+                check_tool("Bash", &args, mode, None, None, None,),
+                ToolApproval::NeedsConfirmation,
+            );
+        }
     }
 
     #[test]
-    fn test_write_needs_confirmation_in_strict() {
+    fn test_write_needs_confirmation_in_confirm() {
         assert_eq!(
             check_tool(
                 "Write",
                 &serde_json::json!({}),
-                ApprovalMode::Strict,
+                ApprovalMode::Confirm,
                 None,
                 None,
                 None,
@@ -457,61 +433,12 @@ mod tests {
     #[test]
     fn test_invoke_agent_auto_approved() {
         let args = serde_json::json!({"agent_name": "reviewer", "prompt": "review this"});
-        for mode in [ApprovalMode::Auto, ApprovalMode::Strict, ApprovalMode::Safe] {
+        for mode in [ApprovalMode::Auto, ApprovalMode::Confirm] {
             assert_eq!(
                 check_tool("InvokeAgent", &args, mode, None, None, None,),
                 ToolApproval::AutoApprove,
             );
         }
-    }
-
-    #[test]
-    fn test_safe_mode_allows_safe_bash() {
-        // Read-only bash: git status is ReadOnly → auto-approved in Safe
-        let args = serde_json::json!({"command": "git status"});
-        assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Safe, None, None, None,),
-            ToolApproval::AutoApprove,
-        );
-    }
-
-    #[test]
-    fn test_safe_mode_allows_remote_action_bash() {
-        // gh issue create is RemoteAction → auto-approved in Safe
-        let args = serde_json::json!({"command": "gh issue create --title 'bug'"});
-        assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Safe, None, None, None,),
-            ToolApproval::AutoApprove,
-        );
-    }
-
-    #[test]
-    fn test_safe_mode_blocks_dev_workflow_bash() {
-        // cargo test is LocalMutation (dev-workflow) → blocked in Safe
-        let args = serde_json::json!({"command": "cargo test --release"});
-        assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Safe, None, None, None,),
-            ToolApproval::Blocked,
-        );
-    }
-
-    #[test]
-    fn test_safe_mode_blocks_dangerous_bash() {
-        // Destructive bash: blocked in Safe
-        let args = serde_json::json!({"command": "rm -rf target/"});
-        assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Safe, None, None, None,),
-            ToolApproval::Blocked,
-        );
-    }
-
-    #[test]
-    fn test_safe_mode_allows_web_fetch() {
-        let args = serde_json::json!({"url": "https://example.com"});
-        assert_eq!(
-            check_tool("WebFetch", &args, ApprovalMode::Safe, None, None, None,),
-            ToolApproval::AutoApprove,
-        );
     }
 
     // ── Path scoping tests (#218) ──────────────────────────

@@ -24,13 +24,12 @@ No phases, no tiers — the model drives execution directly.
 - **Built-in agents**: default (others via user-created agent configs)
 - **Git checkpointing** (`git.rs`): auto-snapshot before each turn
 
-Approval is per-tool. Three modes (Auto/Strict/Safe) control
+Approval is per-tool. Two modes (Auto/Confirm) control
 how mutations are gated:
 
 - **ToolEffect** (`approval.rs`): ReadOnly / LocalMutation / Destructive / RemoteAction
-  - Auto: local mutations auto-approved, destructive/remote need confirmation
-  - Strict: everything needs confirmation
-  - Safe: all mutations blocked
+  - Auto: local mutations auto-approved, destructive need confirmation
+  - Confirm: every non-read action needs confirmation
 - **Hardcoded floors**: destructive ops and outside-project writes always need
   confirmation regardless of mode
 - **Folder scoping** (`approval.rs`, `bash_safety.rs`):

@@ -324,8 +324,7 @@ impl TuiContext {
                     // Echo queued input above viewport
                     let mode = approval::read_mode(&self.shared_mode);
                     let icon = match mode {
-                        ApprovalMode::Safe => "🔍",
-                        ApprovalMode::Strict => "🔒",
+                        ApprovalMode::Confirm => "🔒",
                         ApprovalMode::Auto => "⚡",
                     };
                     emit_above(
@@ -1501,8 +1500,7 @@ impl TuiContext {
                                             self.history_idx = None;
                                             let mode = approval::read_mode(&self.shared_mode);
                                             let icon = match mode {
-                                                ApprovalMode::Safe => "🔍",
-                                                ApprovalMode::Strict => "🔒",
+                                                ApprovalMode::Confirm => "🔒",
                                                 ApprovalMode::Auto => "⚡",
                                             };
                                             emit_above(&mut self.terminal, Line::from(vec![
