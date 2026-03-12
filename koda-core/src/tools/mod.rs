@@ -27,7 +27,6 @@ pub fn normalize_tool_name(name: &str) -> String {
         "listskills" | "list_skills" => "ListSkills".to_string(),
         "activateskill" | "activate_skill" => "ActivateSkill".to_string(),
         "astanalysis" | "ast_analysis" => "AstAnalysis".to_string(),
-        "discovertools" | "discover_tools" | "discover" => "DiscoverTools".to_string(),
         "recallcontext" | "recall_context" | "recall" => "RecallContext".to_string(),
         "emailread" | "email_read" => "EmailRead".to_string(),
         "emailsend" | "email_send" => "EmailSend".to_string(),
@@ -62,9 +61,7 @@ pub fn classify_tool(name: &str) -> ToolEffect {
     match name {
         // Pure reads — zero side-effects
         "Read" | "List" | "Grep" | "Glob" | "MemoryRead" | "ListAgents" | "ListSkills"
-        | "ActivateSkill" | "DiscoverTools" | "RecallContext" | "AstAnalysis" => {
-            ToolEffect::ReadOnly
-        }
+        | "ActivateSkill" | "RecallContext" | "AstAnalysis" => ToolEffect::ReadOnly,
 
         // Remote actions — side-effects on remote services only
         "WebFetch" => ToolEffect::ReadOnly,    // GET-only fetch
@@ -97,7 +94,6 @@ pub fn is_mutating_tool(name: &str) -> bool {
 }
 
 pub mod agent;
-pub mod discover;
 pub mod file_tools;
 pub mod glob_tool;
 pub mod grep;
@@ -183,9 +179,6 @@ impl ToolRegistry {
         for def in skill_tools::definitions() {
             definitions.insert(def.name.clone(), def);
         }
-        // DiscoverTools — lazy loading for Strong tier
-        let discover_def = discover::definition();
-        definitions.insert(discover_def.name.clone(), discover_def);
         // RecallContext — on-demand history retrieval
         let recall_def = recall::definition();
         definitions.insert(recall_def.name.clone(), recall_def);
@@ -411,12 +404,6 @@ impl ToolRegistry {
             // Skill tools
             "ListSkills" => Ok(skill_tools::list_skills(&self.skill_registry, &args)),
             "ActivateSkill" => Ok(skill_tools::activate_skill(&self.skill_registry, &args)),
-
-            // Discovery tool
-            "DiscoverTools" => {
-                let all_defs: Vec<ToolDefinition> = self.definitions.values().cloned().collect();
-                Ok(discover::discover(&all_defs, &args))
-            }
 
             // Recall context tool
             "RecallContext" => {
