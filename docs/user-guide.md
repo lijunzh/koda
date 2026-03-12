@@ -78,6 +78,7 @@ Type `/` to open the command palette with descriptions. Tab to complete.
 | `/model` | Pick a model interactively |
 | `/provider` | Switch LLM provider |
 | `/sessions` | List, resume, or delete sessions |
+| `/skills` | List available skills (search with `/skills <query>`) |
 | `/undo` | Undo last turn's file changes |
 | `/verbose` | Toggle full tool output display |
 

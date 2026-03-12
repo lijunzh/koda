@@ -237,6 +237,51 @@ pub(crate) fn handle_list_agents(terminal: &mut Term, project_root: &std::path::
     dim_msg("Need a specialist? Ask Koda to create one for recurring tasks".into());
 }
 
+// ── Skills ───────────────────────────────────────────────
+
+#[allow(unused_variables)]
+pub(crate) fn handle_list_skills(
+    terminal: &mut Term,
+    query: Option<&str>,
+    tools: &koda_core::tools::ToolRegistry,
+) {
+    let skills = match query {
+        Some(q) if !q.is_empty() => tools.search_skills(q),
+        _ => tools.list_skills(),
+    };
+
+    tui_output::write_blank();
+    tui_output::write_line(&Line::styled("  \u{1f4da} Skills", BOLD));
+    tui_output::write_blank();
+
+    if skills.is_empty() {
+        match query {
+            Some(q) => dim_msg(format!("No skills matching '{q}'.")),
+            None => dim_msg("No skills available.".into()),
+        }
+    } else {
+        for (name, description, source) in &skills {
+            let tag = match source.as_str() {
+                "user" => " [user]",
+                "project" => " [project]",
+                _ => "",
+            };
+            tui_output::write_line(&Line::from(vec![
+                Span::styled(format!("  {name}"), CYAN),
+                Span::raw(format!(" \u{2014} {description}")),
+                Span::styled(tag, DIM),
+            ]));
+        }
+    }
+
+    tui_output::write_blank();
+    dim_msg("Ask Koda to activate a skill, or use ActivateSkill tool directly.".into());
+    dim_msg(
+        "Create your own: .koda/skills/<name>/SKILL.md or ~/.config/koda/skills/<name>/SKILL.md"
+            .into(),
+    );
+}
+
 // ── Diff (native TUI) ────────────────────────────────────
 
 #[allow(unused_variables)]

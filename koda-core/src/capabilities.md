@@ -7,8 +7,8 @@ Refer to this when the user asks "what can you do?" or about features.
 /agent — list sub-agents | /compact — reclaim context | /cost — token usage & cost
 /diff — git diff/review/commit | /exit — quit | /expand — show full tool output
 /mcp — MCP server management | /memory — persistent memory | /model — switch model
-/provider — switch provider | /sessions — resume/delete sessions | /undo — undo last turn
-/verbose — toggle full tool output
+/provider — switch provider | /sessions — resume/delete sessions | /skills — list skills
+/undo — undo last turn | /verbose — toggle full tool output
 Shift+Tab — cycle approval mode (auto/strict/safe)
 
 ### Input
@@ -29,6 +29,14 @@ Auto-snapshots working tree before each turn. `/undo` to rollback.
 
 On session start, Koda runs a one-time structured output test to verify the model
 can produce valid tool calls. Skip with `--skip-probe`.
+
+### Skills
+
+Expert instruction modules — zero cost, instant activation via `ActivateSkill`.
+- **Built-in:** `code-review` (bugs, anti-patterns), `security-audit` (OWASP checklist)
+- **Custom:** `.koda/skills/<name>/SKILL.md` (project) or `~/.config/koda/skills/<name>/SKILL.md` (global)
+- Use `ListSkills` to browse, `ActivateSkill` to load expert guidance into context.
+- `/skills` lists all available skills from the REPL.
 
 ### Agents
 

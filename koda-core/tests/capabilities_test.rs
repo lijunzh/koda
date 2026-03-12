@@ -15,6 +15,7 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "/model",
     "/provider",
     "/sessions",
+    "/skills",
     "/undo",
     "/verbose",
 ];
@@ -46,6 +47,9 @@ fn test_capabilities_mentions_key_features() {
         "--skip-probe",
         "koda-ast",
         "koda-email",
+        "Skills",
+        "ActivateSkill",
+        "ListSkills",
     ];
     for feature in must_mention {
         assert!(

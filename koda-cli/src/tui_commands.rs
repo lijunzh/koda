@@ -149,6 +149,10 @@ pub async fn handle_slash_command(
             crate::tui_wizards::handle_memory(terminal, arg.as_deref(), project_root);
             SlashAction::Continue
         }
+        ReplAction::ListSkills(ref query) => {
+            crate::tui_wizards::handle_list_skills(terminal, query.as_deref(), &agent.tools);
+            SlashAction::Continue
+        }
         ReplAction::Handled => SlashAction::Continue,
         ReplAction::NotACommand => SlashAction::Continue,
     }

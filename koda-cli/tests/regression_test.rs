@@ -210,6 +210,22 @@ mod repl_commands {
     }
 
     #[test]
+    fn skills_bare_returns_list_skills_none() {
+        assert!(matches!(dispatch("/skills"), ReplAction::ListSkills(None)));
+    }
+
+    #[test]
+    fn skills_with_query_returns_list_skills_some() {
+        assert!(matches!(
+            dispatch("/skills review"),
+            ReplAction::ListSkills(Some(_))
+        ));
+        if let ReplAction::ListSkills(Some(q)) = dispatch("/skills review") {
+            assert_eq!(q, "review");
+        }
+    }
+
+    #[test]
     fn key_command_is_not_a_command() {
         // /key was removed; must fall through
         assert!(matches!(dispatch("/key"), ReplAction::NotACommand));
@@ -330,6 +346,7 @@ mod completions {
         "/model",
         "/provider",
         "/sessions",
+        "/skills",
     ];
 
     /// Commands that should NOT appear in completions.
@@ -337,7 +354,7 @@ mod completions {
 
     #[test]
     fn test_expected_commands_present() {
-        assert_eq!(EXPECTED_COMMANDS.len(), 10, "Expected 10 slash commands");
+        assert_eq!(EXPECTED_COMMANDS.len(), 11, "Expected 11 slash commands");
         for cmd in EXPECTED_COMMANDS {
             assert!(
                 EXPECTED_COMMANDS.contains(cmd),
