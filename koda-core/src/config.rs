@@ -4,10 +4,15 @@ use anyhow::{Context, Result};
 
 /// Metadata for a provider — single source of truth.
 pub struct ProviderMeta {
+    /// Display name.
     pub name: &'static str,
+    /// Default API base URL.
     pub url: &'static str,
+    /// Default model identifier.
     pub model: &'static str,
+    /// Environment variable for the API key.
     pub env_key: &'static str,
+    /// Whether this provider requires an API key.
     pub api_key: bool,
 }
 use serde::Deserialize;
@@ -17,19 +22,33 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderType {
+    /// OpenAI API.
     OpenAI,
+    /// Anthropic Claude API.
     Anthropic,
+    /// LM Studio (local, OpenAI-compatible).
     LMStudio,
+    /// Google Gemini API.
     Gemini,
+    /// Groq (fast inference, OpenAI-compatible).
     Groq,
+    /// Grok / xAI API.
     Grok,
+    /// Ollama (local, OpenAI-compatible).
     Ollama,
+    /// DeepSeek API.
     DeepSeek,
+    /// Mistral AI API.
     Mistral,
+    /// MiniMax API.
     MiniMax,
+    /// OpenRouter (multi-provider gateway).
     OpenRouter,
+    /// Together AI API.
     Together,
+    /// Fireworks AI API.
     Fireworks,
+    /// vLLM (local, OpenAI-compatible).
     Vllm,
     /// Mock provider for testing (reads KODA_MOCK_RESPONSES env var).
     Mock,
@@ -147,15 +166,19 @@ impl ProviderType {
         }
     }
 
+    /// Whether this provider requires an API key.
     pub fn requires_api_key(&self) -> bool {
         self.meta().api_key
     }
+    /// Default API base URL for this provider.
     pub fn default_base_url(&self) -> &str {
         self.meta().url
     }
+    /// Default model identifier for this provider.
     pub fn default_model(&self) -> &str {
         self.meta().model
     }
+    /// Environment variable name for this provider's API key.
     pub fn env_key_name(&self) -> &str {
         self.meta().env_key
     }
@@ -260,28 +283,41 @@ impl ModelSettings {
 /// Top-level agent configuration loaded from JSON.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
+    /// Agent identifier.
     pub name: String,
+    /// System prompt template.
     pub system_prompt: String,
+    /// Allowlisted tool names (empty = all tools).
     #[serde(default)]
     pub allowed_tools: Vec<String>,
+    /// Override model identifier.
     #[serde(default)]
     pub model: Option<String>,
+    /// Override API base URL.
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Override provider type.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Override max output tokens.
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Override temperature.
     #[serde(default)]
     pub temperature: Option<f64>,
+    /// Override thinking budget (Anthropic extended thinking).
     #[serde(default)]
     pub thinking_budget: Option<u32>,
+    /// Override reasoning effort (OpenAI reasoning models).
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// Override max context window tokens.
     #[serde(default)]
     pub max_context_tokens: Option<usize>,
+    /// Override max inference iterations.
     #[serde(default)]
     pub max_iterations: Option<u32>,
+    /// Override auto-compact threshold percentage.
     #[serde(default)]
     pub auto_compact_threshold: Option<usize>,
 }
@@ -289,15 +325,25 @@ pub struct AgentConfig {
 /// Runtime configuration assembled from CLI args, env vars, and agent JSON.
 #[derive(Debug, Clone)]
 pub struct KodaConfig {
+    /// Agent name (e.g. `"koda"`, `"scout"`).
     pub agent_name: String,
+    /// Assembled system prompt.
     pub system_prompt: String,
+    /// Allowlisted tool names (empty = all tools).
     pub allowed_tools: Vec<String>,
+    /// Active provider type.
     pub provider_type: ProviderType,
+    /// API base URL.
     pub base_url: String,
+    /// Model identifier.
     pub model: String,
+    /// Max context window tokens.
     pub max_context_tokens: usize,
+    /// Directory containing agent JSON configs.
     pub agents_dir: PathBuf,
+    /// Model-specific settings (max_tokens, temperature, etc.).
     pub model_settings: ModelSettings,
+    /// Max inference iterations per turn.
     pub max_iterations: u32,
     /// Context usage percentage (0-100) that triggers auto-compact. 0 = disabled.
     pub auto_compact_threshold: usize,

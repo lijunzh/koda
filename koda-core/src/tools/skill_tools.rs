@@ -7,6 +7,7 @@ use crate::providers::ToolDefinition;
 use crate::skills::SkillRegistry;
 use serde_json::json;
 
+/// Tool definitions for `ListSkills` and `ActivateSkill`.
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
@@ -42,6 +43,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
     ]
 }
 
+/// List available skills, optionally filtered by `query`.
 pub fn list_skills(registry: &SkillRegistry, args: &serde_json::Value) -> String {
     let query = args.get("query").and_then(|v| v.as_str());
 
@@ -76,6 +78,7 @@ pub fn list_skills(registry: &SkillRegistry, args: &serde_json::Value) -> String
     out
 }
 
+/// Load a skill's full SKILL.md content by name.
 pub fn activate_skill(registry: &SkillRegistry, args: &serde_json::Value) -> String {
     let name = match args.get("skill_name").and_then(|v| v.as_str()) {
         Some(n) => n,

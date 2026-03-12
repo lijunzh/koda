@@ -35,6 +35,7 @@ pub struct LoopDetector {
 }
 
 impl LoopDetector {
+    /// Create a new loop detector with empty history.
     pub fn new() -> Self {
         Self {
             window: VecDeque::new(),
@@ -98,8 +99,11 @@ fn fingerprint(name: &str, args: &str) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LoopContinuation {
+    /// Stop the inference loop.
     Stop,
+    /// Continue for 50 more iterations.
     Continue50,
+    /// Continue for 200 more iterations.
     Continue200,
 }
 

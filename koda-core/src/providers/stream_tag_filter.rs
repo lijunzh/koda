@@ -198,6 +198,7 @@ pub struct StreamTagFilter {
 }
 
 impl StreamTagFilter {
+    /// Create a new filter with empty state.
     pub fn new() -> Self {
         Self {
             buffer: String::new(),
@@ -354,6 +355,7 @@ impl Default for StreamTagFilter {
 }
 
 // Re-export old name for backward compat within the crate.
+/// Backward-compatible alias for [`StreamTagFilter`].
 pub type ThinkTagFilter = StreamTagFilter;
 
 #[cfg(test)]

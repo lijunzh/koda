@@ -56,6 +56,7 @@ pub struct MockProvider {
 }
 
 impl MockProvider {
+    /// Create a mock provider that returns the given responses in order.
     pub fn new(responses: Vec<MockResponse>) -> Self {
         Self {
             responses: Mutex::new(responses),

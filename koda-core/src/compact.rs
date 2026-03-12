@@ -30,7 +30,9 @@ pub struct CompactResult {
 /// Why compaction was skipped (not an error, just a precondition).
 #[derive(Debug)]
 pub enum CompactSkip {
+    /// Session has unresolved tool calls — can't compact safely.
     PendingToolCalls,
+    /// Session is too short to compact (contains N messages).
     TooShort(usize),
 }
 

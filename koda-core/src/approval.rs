@@ -35,6 +35,7 @@ impl ApprovalMode {
         }
     }
 
+    /// Short label for display.
     pub fn label(self) -> &'static str {
         match self {
             Self::Confirm => "confirm",
@@ -42,6 +43,7 @@ impl ApprovalMode {
         }
     }
 
+    /// Human-readable description of this mode.
     pub fn description(self) -> &'static str {
         match self {
             Self::Confirm => "confirm every non-read action",
@@ -49,6 +51,7 @@ impl ApprovalMode {
         }
     }
 
+    /// Parse an approval mode from a user-provided string.
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "auto" | "yolo" | "accept" => Some(Self::Auto),
@@ -72,18 +75,22 @@ impl From<u8> for ApprovalMode {
 /// Thread-safe shared mode, readable from prompt formatter and input handlers.
 pub type SharedMode = Arc<AtomicU8>;
 
+/// Create a new atomic shared mode initialized to `mode`.
 pub fn new_shared_mode(mode: ApprovalMode) -> SharedMode {
     Arc::new(AtomicU8::new(mode as u8))
 }
 
+/// Read the current approval mode from shared state.
 pub fn read_mode(shared: &SharedMode) -> ApprovalMode {
     ApprovalMode::from(shared.load(Ordering::Relaxed))
 }
 
+/// Atomically set the approval mode.
 pub fn set_mode(shared: &SharedMode, mode: ApprovalMode) {
     shared.store(mode as u8, Ordering::Relaxed);
 }
 
+/// Cycle to the next approval mode and return it.
 pub fn cycle_mode(shared: &SharedMode) -> ApprovalMode {
     let current = read_mode(shared);
     let next = current.next();
@@ -226,6 +233,7 @@ fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &
 
 // ── Settings persistence ──────────────────────────────────
 
+/// Re-export settings types used by approval persistence.
 pub use crate::settings::{LastProvider, Settings};
 
 // ── Tests ─────────────────────────────────────────────────

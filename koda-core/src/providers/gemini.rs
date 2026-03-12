@@ -16,6 +16,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+/// Google Gemini API provider.
 pub struct GeminiProvider {
     client: reqwest::Client,
     base_url: String,
@@ -46,6 +47,7 @@ struct CachedContentState {
 }
 
 impl GeminiProvider {
+    /// Create a new Gemini provider with the given API key and optional base URL.
     pub fn new(api_key: String, base_url: Option<&str>) -> Self {
         Self {
             client: super::build_http_client(base_url),

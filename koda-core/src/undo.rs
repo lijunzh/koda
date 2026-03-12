@@ -22,6 +22,7 @@ pub struct UndoStack {
 }
 
 impl UndoStack {
+    /// Create an empty undo stack.
     pub fn new() -> Self {
         Self::default()
     }

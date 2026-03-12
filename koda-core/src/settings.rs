@@ -12,10 +12,14 @@ pub struct Settings {
     pub last_provider: Option<LastProvider>,
 }
 
+/// Last-used provider configuration, restored on startup.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LastProvider {
+    /// Provider type name (e.g. `"Anthropic"`, `"Gemini"`).
     pub provider_type: String,
+    /// API base URL.
     pub base_url: String,
+    /// Model identifier.
     pub model: String,
 }
 

@@ -27,7 +27,10 @@ use serde_json::Value;
 pub enum EngineEvent {
     // ── Streaming LLM output ──────────────────────────────────────────
     /// A chunk of streaming text from the LLM response.
-    TextDelta { text: String },
+    TextDelta {
+        /// The text chunk.
+        text: String
+    },
 
     /// The LLM finished streaming text. Flush any buffered output.
     TextDone,
@@ -36,7 +39,10 @@ pub enum EngineEvent {
     ThinkingStart,
 
     /// A chunk of thinking/reasoning content.
-    ThinkingDelta { text: String },
+    ThinkingDelta {
+        /// The thinking text chunk.
+        text: String
+    },
 
     /// The thinking/reasoning block finished.
     ThinkingDone,
@@ -69,7 +75,10 @@ pub enum EngineEvent {
 
     // ── Sub-agent delegation ──────────────────────────────────────────
     /// A sub-agent is being invoked.
-    SubAgentStart { agent_name: String },
+    SubAgentStart {
+        /// Name of the sub-agent being invoked.
+        agent_name: String
+    },
 
     /// A sub-agent finished.
 
@@ -91,30 +100,46 @@ pub enum EngineEvent {
 
     /// An action was blocked by safe mode (shown but not executed).
     ActionBlocked {
+        /// Tool name that was blocked.
         tool_name: String,
+        /// Description of the blocked action.
         detail: String,
+        /// Diff preview (if applicable).
         preview: Option<crate::preview::DiffPreview>,
     },
 
     // ── Session metadata ──────────────────────────────────────────────
     /// Progress/status update for the persistent status bar.
     StatusUpdate {
+        /// Current model identifier.
         model: String,
+        /// Current provider name.
         provider: String,
+        /// Context window usage (0.0–1.0).
         context_pct: f64,
+        /// Current approval mode label.
         approval_mode: String,
+        /// Number of in-flight tool calls.
         active_tools: usize,
     },
 
     /// Inference completion footer with timing and token stats.
     Footer {
+        /// Input tokens used.
         prompt_tokens: i64,
+        /// Output tokens generated.
         completion_tokens: i64,
+        /// Tokens read from cache.
         cache_read_tokens: i64,
+        /// Tokens used for reasoning.
         thinking_tokens: i64,
+        /// Total response characters.
         total_chars: usize,
+        /// Wall-clock time in milliseconds.
         elapsed_ms: u64,
+        /// Characters per second.
         rate: f64,
+        /// Human-readable context usage string.
         context: String,
     },
 
@@ -122,7 +147,10 @@ pub enum EngineEvent {
     ///
     /// Clients may render this as a terminal spinner, a status bar update,
     /// or ignore it entirely. The ratatui TUI uses the status bar instead.
-    SpinnerStart { message: String },
+    SpinnerStart {
+        /// Status message to display.
+        message: String
+    },
 
     /// Stop the spinner (presentational hint).
     ///
@@ -134,14 +162,19 @@ pub enum EngineEvent {
     ///
     /// Emitted at the beginning of `inference_loop()`. Clients can use this
     /// to lock input, start timers, or update status indicators.
-    TurnStart { turn_id: String },
+    TurnStart {
+        /// Unique identifier for this turn.
+        turn_id: String
+    },
 
     /// An inference turn has ended.
     ///
     /// Emitted when `inference_loop()` completes. Clients can use this to
     /// unlock input, drain type-ahead queues, or update status.
     TurnEnd {
+        /// Matches the `turn_id` from `TurnStart`.
         turn_id: String,
+        /// Why the turn ended.
         reason: TurnEndReason,
     },
 
@@ -149,17 +182,31 @@ pub enum EngineEvent {
     ///
     /// The client must respond with `EngineCommand::LoopDecision`.
     /// Until the client responds, the inference loop is paused.
-    LoopCapReached { cap: u32, recent_tools: Vec<String> },
+    LoopCapReached {
+        /// The iteration cap that was hit.
+        cap: u32,
+        /// Recent tool names for context.
+        recent_tools: Vec<String>
+    },
 
     // ── Messages ──────────────────────────────────────────────────────
     /// Informational message (not from the LLM).
-    Info { message: String },
+    Info {
+        /// The informational message.
+        message: String
+    },
 
     /// Warning message.
-    Warn { message: String },
+    Warn {
+        /// The warning message.
+        message: String
+    },
 
     /// Error message.
-    Error { message: String },
+    Error {
+        /// The error message.
+        message: String
+    },
 }
 
 /// Why an inference turn ended.
@@ -171,7 +218,10 @@ pub enum TurnEndReason {
     /// The user or system cancelled the turn.
     Cancelled,
     /// The turn failed with an error.
-    Error { message: String },
+    Error {
+        /// The error message.
+        message: String
+    },
 }
 
 // ── Client → Engine ──────────────────────────────────────────────────────
@@ -194,6 +244,7 @@ pub enum EngineCommand {
     /// Currently handled client-side. Will be consumed by the engine
     /// in server mode (v0.2.0) for prompt queuing.
     UserPrompt {
+        /// The user's prompt text.
         text: String,
         /// Base64-encoded images attached to the prompt.
         #[serde(default)]
@@ -210,6 +261,7 @@ pub enum EngineCommand {
     ApprovalResponse {
         /// Must match the `id` from the `ApprovalRequest`.
         id: String,
+        /// The user's decision.
         decision: ApprovalDecision,
     },
 
@@ -218,6 +270,7 @@ pub enum EngineCommand {
     /// Tells the engine whether to continue or stop after hitting
     /// the iteration hard cap.
     LoopDecision {
+        /// Whether to continue or stop.
         action: crate::loop_guard::LoopContinuation,
     },
 
@@ -251,7 +304,10 @@ pub enum ApprovalDecision {
     /// Reject the action.
     Reject,
     /// Reject with feedback (tells the LLM what to change).
-    RejectWithFeedback { feedback: String },
+    RejectWithFeedback {
+        /// Feedback explaining why the action was rejected.
+        feedback: String
+    },
 }
 
 /// Slash commands that the client can send to the engine.
@@ -263,25 +319,46 @@ pub enum SlashCommand {
     /// Compact the conversation by summarizing history.
     Compact,
     /// Switch to a specific model by name.
-    SwitchModel { model: String },
+    SwitchModel {
+        /// Model identifier.
+        model: String
+    },
     /// Switch to a specific provider.
-    SwitchProvider { provider: String },
+    SwitchProvider {
+        /// Provider name.
+        provider: String
+    },
     /// List recent sessions.
     ListSessions,
     /// Delete a session by ID.
-    DeleteSession { id: String },
+    DeleteSession {
+        /// Session ID to delete.
+        id: String
+    },
     /// Set the approval/trust mode.
-    SetTrust { mode: String },
+    SetTrust {
+        /// Approval mode name.
+        mode: String
+    },
     /// MCP server management command.
-    McpCommand { args: String },
+    McpCommand {
+        /// Raw MCP subcommand arguments.
+        args: String
+    },
     /// Show token usage for this session.
     Cost,
     /// View or save memory.
-    Memory { action: Option<String> },
+    Memory {
+        /// Optional action (`"save"`, `"show"`, etc.).
+        action: Option<String>
+    },
     /// Show help / command list.
     Help,
     /// Inject a prompt as if the user typed it (used by /diff review, etc.).
-    InjectPrompt { text: String },
+    InjectPrompt {
+        /// Prompt text to inject.
+        text: String
+    },
 }
 
 #[cfg(test)]
