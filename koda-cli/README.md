@@ -29,9 +29,8 @@ Cycle with `Shift+Tab`:
 
 | Mode | Behavior |
 |------|----------|
-| **Auto** | Phase-gated: writes confirmed before plan, auto-approved after |
-| **Strict** | Every non-read action requires confirmation |
-| **Safe** | Read-only: safe bash allowed, mutations blocked |
+| **Auto** | Local mutations auto-approved, destructive ops need confirmation |
+| **Confirm** | Every non-read action requires confirmation |
 
 See the [README](https://github.com/lijunzh/koda) for full documentation.
 

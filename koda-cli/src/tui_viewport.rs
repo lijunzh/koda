@@ -92,8 +92,7 @@ pub(crate) fn draw_viewport(
         PromptMode::Chat => {
             let (icon, c) = match (state, mode) {
                 (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray),
-                (_, ApprovalMode::Safe) => ("\u{1f50d}", Color::Yellow),
-                (_, ApprovalMode::Strict) => ("\u{1f512}", Color::Cyan),
+                (_, ApprovalMode::Confirm) => ("\u{1f512}", Color::Cyan),
                 (_, ApprovalMode::Auto) => ("\u{26a1}", Color::Green),
             };
             (format!("{icon}> "), c)

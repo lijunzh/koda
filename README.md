@@ -56,7 +56,7 @@ echo "explain this" | koda        # Piped input
 - **Model probe** — one-time structured output test at startup to verify model capabilities
 - **Smart context** — queries context window from provider API at startup (falls back to lookup table), rate limit retry with backoff, auto-compact
 - **Git checkpointing** — auto-snapshots before each turn for safe rollback
-- **Approval modes** — auto (default) / strict (confirm writes) / safe (read-only) via `Shift+Tab`
+- **Approval modes** — auto (default) / confirm (confirm writes) via `Shift+Tab`
 - **Per-tool safety gates** — destructive ops and outside-project writes always need confirmation; local mutations auto-approved in auto mode
 - **Folder-scoped permissions** — writes outside `project_root` always require confirmation; bash commands with path escapes are flagged
 - **Diff preview** — see exactly what changes before approving Edit, Write, Delete
@@ -140,7 +140,7 @@ Koda connects to your email via IMAP/SMTP through the koda-email MCP server.
 | **Ctrl+C ×2** | During inference | Force quit Koda |
 | **Ctrl+C** | At prompt (with text) | Clear the line |
 | **Esc** | At prompt | Clear the line |
-| **Shift+Tab** | At prompt | Cycle mode (auto → strict → safe) |
+| **Shift+Tab** | At prompt | Cycle mode (auto ↔ confirm) |
 | **Ctrl+D** | At prompt (empty) | Exit Koda |
 | **↑/↓** | At prompt | Browse command history |
 

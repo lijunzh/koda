@@ -18,7 +18,7 @@ use crate::settings::Settings;
 use crate::tool_dispatch::{
     can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
 };
-use crate::tools::{self, ToolRegistry};
+use crate::tools::ToolRegistry;
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -420,14 +420,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                         native_think_buf.clear();
                     }
                     sink.emit(EngineEvent::SpinnerStop);
-                    // Normalize tool names (small models send lowercase)
-                    tool_calls = tcs
-                        .into_iter()
-                        .map(|mut tc| {
-                            tc.function_name = tools::normalize_tool_name(&tc.function_name);
-                            tc
-                        })
-                        .collect();
+                    tool_calls = tcs;
                 }
                 StreamChunk::Done(u) => {
                     // Close any open thinking block (content already streamed)
