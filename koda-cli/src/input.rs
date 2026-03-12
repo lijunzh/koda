@@ -8,6 +8,15 @@ use std::path::{Path, PathBuf};
 
 // ── @file pre-processor ────────────────────────────────────────
 
+/// Content pasted via clipboard (bracketed paste).
+#[derive(Debug, Clone)]
+pub struct PasteBlock {
+    /// The raw pasted text.
+    pub content: String,
+    /// Character count.
+    pub char_count: usize,
+}
+
 /// Result of processing user input for `@path` references.
 #[derive(Debug)]
 pub struct ProcessedInput {
@@ -17,6 +26,8 @@ pub struct ProcessedInput {
     pub context_files: Vec<FileContext>,
     /// Base64-encoded images from @image references.
     pub images: Vec<ImageData>,
+    /// Pasted content blocks (from bracketed paste).
+    pub paste_blocks: Vec<PasteBlock>,
 }
 
 /// A file's contents loaded from an `@path` reference.
@@ -204,6 +215,7 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
         prompt,
         context_files,
         images,
+        paste_blocks: Vec::new(),
     }
 }
 
@@ -236,6 +248,47 @@ pub fn format_context_files(files: &[FileContext]) -> Option<String> {
             }
         ));
     }
+
+    Some(parts.join("\n\n"))
+}
+
+/// Pastes shorter than this go inline in the textarea; longer ones become PasteBlocks.
+pub const PASTE_BLOCK_THRESHOLD: usize = 200;
+
+/// Max chars per paste block (~40k chars, matching file truncation policy).
+const PASTE_BLOCK_MAX_CHARS: usize = 40_000;
+
+/// Format paste blocks into semantically tagged XML for the LLM.
+///
+/// Each block is wrapped in `<reference type="pasted" chars="N">...</reference>`
+/// so the model can distinguish pasted reference material from direct instructions.
+pub fn format_paste_blocks(blocks: &[PasteBlock]) -> Option<String> {
+    if blocks.is_empty() {
+        return None;
+    }
+
+    let parts: Vec<String> = blocks
+        .iter()
+        .map(|b| {
+            let content = if b.content.len() > PASTE_BLOCK_MAX_CHARS {
+                let mut end = PASTE_BLOCK_MAX_CHARS;
+                while !b.content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!(
+                    "{}\n\n[truncated — {} chars total]",
+                    &b.content[..end],
+                    b.char_count
+                )
+            } else {
+                b.content.clone()
+            };
+            format!(
+                "<reference type=\"pasted\" chars=\"{}\">{}</reference>",
+                b.char_count, content
+            )
+        })
+        .collect();
 
     Some(parts.join("\n\n"))
 }
@@ -499,5 +552,54 @@ mod tests {
         );
         // The @ref should remain in the prompt as-is
         assert!(result.prompt.contains("@../../etc/passwd"));
+    }
+
+    #[test]
+    fn test_format_paste_blocks_empty() {
+        assert!(format_paste_blocks(&[]).is_none());
+    }
+
+    #[test]
+    fn test_format_paste_blocks_single() {
+        let blocks = vec![PasteBlock {
+            content: "hello world".into(),
+            char_count: 11,
+        }];
+        let result = format_paste_blocks(&blocks).unwrap();
+        assert!(result.contains("<reference type=\"pasted\" chars=\"11\">"));
+        assert!(result.contains("hello world"));
+        assert!(result.contains("</reference>"));
+    }
+
+    #[test]
+    fn test_format_paste_blocks_multiple() {
+        let blocks = vec![
+            PasteBlock {
+                content: "block one".into(),
+                char_count: 9,
+            },
+            PasteBlock {
+                content: "block two".into(),
+                char_count: 9,
+            },
+        ];
+        let result = format_paste_blocks(&blocks).unwrap();
+        assert!(result.contains("block one"));
+        assert!(result.contains("block two"));
+        // Joined with double newline
+        assert!(result.contains("</reference>\n\n<reference"));
+    }
+
+    #[test]
+    fn test_format_paste_blocks_truncation() {
+        let long_content = "a".repeat(50_000);
+        let blocks = vec![PasteBlock {
+            content: long_content,
+            char_count: 50_000,
+        }];
+        let result = format_paste_blocks(&blocks).unwrap();
+        assert!(result.contains("[truncated — 50000 chars total]"));
+        // Should be capped, not the full 50k
+        assert!(result.len() < 45_000);
     }
 }

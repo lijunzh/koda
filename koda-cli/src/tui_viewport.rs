@@ -98,8 +98,12 @@ pub(crate) fn draw_viewport(
             (format!("{icon}> "), c)
         }
     };
+    let max_prompt = match prompt_mode {
+        PromptMode::WizardInput { .. } => 60,
+        PromptMode::Chat => 30,
+    };
     let prompt_width: u16 =
-        (prompt_text.chars().count().min(30) as u16).min(area.width.saturating_sub(4));
+        (prompt_text.chars().count().min(max_prompt) as u16).min(area.width.saturating_sub(4));
     let [prompt_area, text_area] =
         Layout::horizontal([Constraint::Length(prompt_width), Constraint::Fill(1)])
             .areas(input_rows);
@@ -232,6 +236,7 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
 
 pub(crate) fn init_terminal(height: u16) -> Result<Term> {
     crossterm::terminal::enable_raw_mode()?;
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
     let _ = std::io::Write::flush(&mut std::io::stdout());
 
     let mut last_err = None;
@@ -259,6 +264,7 @@ pub(crate) fn init_terminal(height: u16) -> Result<Term> {
 
 pub(crate) fn restore_terminal(terminal: &mut Term, height: u16) {
     let _ = terminal.clear();
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     let _ = crossterm::terminal::disable_raw_mode();
     print!("\x1b[{}A\x1b[J", height);
     let _ = std::io::Write::flush(&mut std::io::stdout());
