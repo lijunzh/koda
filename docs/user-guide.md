@@ -86,6 +86,28 @@ If auto-compaction can't fit the history into a summarization call
    Start a new session (/session) or switch to a larger model.
 ```
 
+### Purging archived history (`/purge`)
+
+Compacted messages stay in the database forever by default. Over time
+(especially with image-heavy sessions), this can grow. `/purge`
+permanently deletes them:
+
+```
+/purge          # delete ALL compacted messages (with confirmation)
+/purge 90d      # delete compacted messages older than 90 days
+```
+
+Before deleting, Koda shows a preview:
+
+```
+🧹 42 compacted messages across 8 sessions (12.3MB), oldest from 2025-11-03
+  Permanently delete? This cannot be undone. [y/N]
+```
+
+**Startup nudge**: If archived data exceeds 500MB, Koda shows a one-line
+reminder: `💡 523MB of archived history — run /purge to clean up`.
+This is informational only — no data is ever auto-deleted.
+
 ### What to do when context is full
 
 | Option | When to use |
@@ -151,6 +173,7 @@ Type `/` to open the command palette with descriptions. Tab to complete.
 | `/memory` | View or save project and global memory |
 | `/model` | Pick a model interactively |
 | `/provider` | Switch LLM provider |
+| `/purge` | Delete archived history (e.g. `/purge 90d`) |
 | `/sessions` | List, resume, or delete sessions |
 | `/skills` | List available skills (search with `/skills <query>`) |
 | `/undo` | Undo last turn's file changes |
