@@ -7,6 +7,7 @@ For developer docs (building, testing, contributing), see [CLAUDE.md](../CLAUDE.
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Context Management](#context-management)
 - [Approval Modes](#approval-modes)
 - [Slash Commands](#slash-commands)
 - [File References](#file-references)
@@ -35,6 +36,81 @@ koda -s <session-id>
 On first launch, Koda runs a provider setup wizard. After that, it
 drops you into an interactive REPL with streaming LLM output and
 inline tool execution.
+
+---
+
+## Context Management
+
+Koda manages the LLM's context window transparently. Understanding how
+it works helps you get the most out of long sessions.
+
+### How context works
+
+Every message you send, every tool call, every LLM response — they all
+accumulate in the session's message history. The LLM sees the **entire
+active history** on every turn. Nothing is silently dropped or truncated.
+
+The status bar shows context usage as a percentage. When it gets high,
+you have options.
+
+### Compaction (`/compact`)
+
+When context gets full, `/compact` summarizes older messages:
+
+1. Koda sends the conversation history to the LLM with a summarization prompt
+2. The LLM produces a concise summary preserving key decisions, files, and state
+3. Old messages are **archived** (marked as compacted) — not deleted
+4. The summary replaces them in the active context
+5. The last 4 messages are always preserved verbatim
+
+**Non-destructive**: Compacted messages stay in the database. They're
+excluded from the LLM's context but remain recoverable. No data is
+permanently lost during compaction.
+
+**Capacity check**: Koda verifies the full history fits in the current
+model's context window before summarizing. If the history is too large
+(e.g., you switched from a 1M model to a 200K model), compaction
+refuses rather than silently discarding unsummarized messages.
+
+### Auto-compaction
+
+Koda automatically compacts when context usage exceeds ~85-90% of the
+model's context window. This happens transparently before sending the
+next request to the LLM.
+
+If auto-compaction can't fit the history into a summarization call
+(e.g., the model's context is too small), Koda warns you:
+
+```
+⚠️ Context is full but history is too large for this model to summarize.
+   Start a new session (/session) or switch to a larger model.
+```
+
+### What to do when context is full
+
+| Option | When to use |
+|--------|-------------|
+| `/compact` | Summarize and continue in the same session |
+| `/session` | Start a fresh session (old one is preserved) |
+| Switch model | Use `/model` to pick a model with a larger context window |
+
+### Tool call integrity
+
+LLM APIs require every tool call (`tool_use`) to have a matching result
+(`tool_result`). Interrupted sessions or compaction boundaries can break
+these pairs. Koda automatically detects and removes mismatched pairs
+before sending context to the LLM, preventing API errors.
+
+### Key design choices
+
+- **No sliding window** — Koda loads your full session history, not a
+  truncated recent window. You're paying for the model's context; use it.
+- **No silent truncation** — messages are never silently dropped or
+  shortened. If context is too large, Koda tells you.
+- **Non-destructive compaction** — archived messages stay in the database.
+  Compaction is reversible in principle.
+- **Session isolation** — each session has its own history. Sessions
+  don't leak context into each other.
 
 ---
 
@@ -67,8 +143,7 @@ Type `/` to open the command palette with descriptions. Tab to complete.
 | Command | Description |
 |---------|-------------|
 | `/agent` | List available sub-agents |
-| `/compact` | Summarize conversation to reclaim context |
-| `/cost` | Show token usage and cost for this session |
+| `/compact` | Summarize older messages to reclaim context (see [Context Management](#context-management)) |
 | `/diff` | Show git diff, review changes, or commit |
 | `/exit` | Quit the session |
 | `/expand` | Show full output of last collapsed tool call |

@@ -158,46 +158,87 @@ impl Database {
             }
         }
 
+        // Additive migration: add compacted_at for non-destructive compaction (#428)
+        let sql = "ALTER TABLE messages ADD COLUMN compacted_at TEXT";
+        if let Err(e) = sqlx::query(sql).execute(pool).await {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column name") {
+                return Err(e.into());
+            }
+        }
+
         Ok(())
     }
 }
 
-// ── Private helpers ─────────────────────────────────────────────
+// ── Private helpers ─────────────────────────────────────────────────────────
 
-/// Strip tool_calls from any assistant message whose tool calls have no
-/// corresponding tool result messages following it.
-fn fix_orphaned_tool_calls(messages: &mut [Message]) {
-    let len = messages.len();
-    if len == 0 {
+/// Remove messages with mismatched tool_use / tool_result pairing (#428).
+///
+/// Uses the symmetric-difference approach (inspired by Code Puppy):
+/// collect all tool_call IDs from calls and returns, find IDs that appear
+/// in only one set, and drop any message referencing a mismatched ID.
+///
+/// Handles orphans from any source: interrupted sessions, compaction
+/// boundaries, or session resume.
+fn prune_mismatched_tool_calls(messages: &mut Vec<Message>) {
+    if messages.is_empty() {
         return;
     }
 
-    // Walk backwards: find the last assistant message with tool_calls
-    // and check if tool result messages follow it.
-    let mut i = len;
-    while i > 0 {
-        i -= 1;
-        if messages[i].role == Role::Assistant && messages[i].tool_calls.is_some() {
-            // Check if the next message is a tool result
-            let has_result = i + 1 < len && messages[i + 1].role == Role::Tool;
-            if !has_result {
-                messages[i].tool_calls = None;
+    let mut tool_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut tool_return_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for msg in messages.iter() {
+        if msg.role == Role::Assistant {
+            if let Some(ref tc_json) = msg.tool_calls
+                && let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json)
+            {
+                for call in &calls {
+                    if let Some(id) = call.get("id").and_then(|v| v.as_str()) {
+                        tool_call_ids.insert(id.to_string());
+                    }
+                }
             }
-            break; // only need to fix the trailing orphan
-        }
-        // If we hit a non-tool, non-assistant message going backwards, stop
-        if messages[i].role != Role::Tool {
-            break;
+        } else if msg.role == Role::Tool
+            && let Some(ref id) = msg.tool_call_id
+        {
+            tool_return_ids.insert(id.clone());
         }
     }
-}
 
-/// Rough token estimate: ~4 chars per token (good enough for sliding window).
-fn estimate_tokens(msg: &Message) -> usize {
-    let content_len = msg.content.as_deref().map_or(0, |c| c.len());
-    let tool_len = msg.tool_calls.as_deref().map_or(0, |c| c.len());
-    ((content_len + tool_len) as f64 / crate::inference_helpers::CHARS_PER_TOKEN) as usize
-        + crate::inference_helpers::PER_MESSAGE_OVERHEAD
+    let mismatched: std::collections::HashSet<&String> = tool_call_ids
+        .symmetric_difference(&tool_return_ids)
+        .collect();
+
+    if mismatched.is_empty() {
+        return;
+    }
+
+    messages.retain(|msg| {
+        // Drop tool_result messages with mismatched IDs
+        if msg.role == Role::Tool
+            && let Some(ref id) = msg.tool_call_id
+            && mismatched.contains(id)
+        {
+            return false;
+        }
+        // Drop assistant messages whose tool_calls contain mismatched IDs
+        if msg.role == Role::Assistant
+            && let Some(ref tc_json) = msg.tool_calls
+            && let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json)
+        {
+            let has_mismatched = calls.iter().any(|call| {
+                call.get("id")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|id| mismatched.contains(&id.to_string()))
+            });
+            if has_mismatched {
+                return false;
+            }
+        }
+        true
+    });
 }
 
 #[async_trait::async_trait]
@@ -273,17 +314,19 @@ impl Persistence for Database {
         Ok(result.last_insert_rowid())
     }
 
-    /// Load recent messages for a session, applying a sliding window.
-    /// Returns messages newest-first, capped at `max_tokens` estimated usage.
-    async fn load_context(&self, session_id: &str, max_tokens: usize) -> Result<Vec<Message>> {
-        let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
+    /// Load active (non-compacted) messages for a session.
+    ///
+    /// Returns messages in chronological order. Compacted messages
+    /// (archived by `/compact`) are excluded — their summary replaces them.
+    /// Mismatched tool_use/tool_result pairs are pruned (#428).
+    async fn load_context(&self, session_id: &str) -> Result<Vec<Message>> {
+        let mut messages: Vec<Message> = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
                     cache_read_tokens, cache_creation_tokens, thinking_tokens
              FROM messages
-             WHERE session_id = ?
-             ORDER BY id DESC
-             LIMIT 200",
+             WHERE session_id = ? AND compacted_at IS NULL
+             ORDER BY id ASC",
         )
         .bind(session_id)
         .fetch_all(&self.pool)
@@ -292,69 +335,12 @@ impl Persistence for Database {
         .map(|r| r.into())
         .collect();
 
-        // Sliding window: accumulate tokens from newest to oldest.
-        // Messages are prioritized: user/assistant messages kept before
-        // old tool results, which get aggressively truncated.
-        let mut budget = max_tokens;
-        let mut window = Vec::new();
-        let recency_threshold = 4; // keep full content for this many recent messages
+        // Prune mismatched tool_use/tool_result pairs.
+        // Handles orphans from interrupted sessions, compaction boundaries,
+        // or session resume.
+        prune_mismatched_tool_calls(&mut messages);
 
-        for (idx, mut msg) in rows.into_iter().enumerate() {
-            // Priority-based truncation:
-            // - Recent messages (< threshold): full content always
-            // - Old tool results: aggressive truncation (200 chars)
-            // - Old assistant text: moderate truncation (1000 chars)
-            // - User messages: keep full (they're the source of intent)
-            if idx >= recency_threshold {
-                if msg.role == Role::Tool
-                    && let Some(ref content) = msg.content
-                    && content.len() > 200
-                {
-                    let mut end = 200.min(content.len());
-                    while end > 0 && !content.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    msg.content = Some(format!(
-                        "{}\n[truncated — {} chars. Re-read if needed.]",
-                        &content[..end],
-                        content.len()
-                    ));
-                } else if msg.role == Role::Assistant
-                    && let Some(ref content) = msg.content
-                    && content.len() > 1000
-                {
-                    let mut end = 1000.min(content.len());
-                    while end > 0 && !content.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    msg.content = Some(format!(
-                        "{}\n[truncated — {} chars]",
-                        &content[..end],
-                        content.len()
-                    ));
-                }
-                // User messages: never truncated (they carry intent)
-            }
-
-            let estimated = estimate_tokens(&msg);
-            if estimated > budget {
-                break;
-            }
-            budget -= estimated;
-            window.push(msg);
-        }
-
-        // Reverse so messages are in chronological order
-        window.reverse();
-
-        // Fix orphaned tool calls from interrupted sessions: if the last message
-        // is an assistant message with tool_calls but no subsequent tool results,
-        // strip the tool_calls so the LLM doesn't see inconsistent state.
-        // This happens when a session was interrupted between saving the assistant
-        // response and executing/saving tool results.
-        fix_orphaned_tool_calls(&mut window);
-
-        Ok(window)
+        Ok(messages)
     }
     /// Load ALL messages for a session (for RecallContext search).
     /// Returns messages in chronological order, no truncation.
@@ -550,12 +536,13 @@ impl Persistence for Database {
     ) -> Result<usize> {
         let mut tx = self.pool.begin().await?;
 
-        // Get all message IDs ordered oldest→newest
-        let all_ids: Vec<(i64,)> =
-            sqlx::query_as("SELECT id FROM messages WHERE session_id = ? ORDER BY id ASC")
-                .bind(session_id)
-                .fetch_all(&mut *tx)
-                .await?;
+        // Get active (non-compacted) message IDs ordered oldest→newest
+        let all_ids: Vec<(i64,)> = sqlx::query_as(
+            "SELECT id FROM messages WHERE session_id = ? AND compacted_at IS NULL ORDER BY id ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&mut *tx)
+        .await?;
 
         let total = all_ids.len();
         if total == 0 {
@@ -563,21 +550,23 @@ impl Persistence for Database {
             return Ok(0);
         }
 
-        // Determine which messages to delete (everything except the tail)
+        // Determine which messages to archive (everything except the tail)
         let keep_from = total.saturating_sub(preserve_count);
-        let ids_to_delete: Vec<i64> = all_ids[..keep_from].iter().map(|r| r.0).collect();
-        let deleted_count = ids_to_delete.len();
+        let ids_to_archive: Vec<i64> = all_ids[..keep_from].iter().map(|r| r.0).collect();
+        let archived_count = ids_to_archive.len();
 
-        if deleted_count == 0 {
+        if archived_count == 0 {
             tx.commit().await?;
             return Ok(0);
         }
 
-        // Delete old messages in batches (SQLite has a variable limit)
-        for chunk in ids_to_delete.chunks(500) {
+        // Mark old messages as compacted (non-destructive — history preserved in DB)
+        for chunk in ids_to_archive.chunks(500) {
             let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql =
-                format!("DELETE FROM messages WHERE session_id = ? AND id IN ({placeholders})");
+            let sql = format!(
+                "UPDATE messages SET compacted_at = datetime('now') \
+                 WHERE session_id = ? AND id IN ({placeholders})"
+            );
             let mut query = sqlx::query(&sql).bind(session_id);
             for id in chunk {
                 query = query.bind(id);
@@ -585,8 +574,7 @@ impl Persistence for Database {
             query.execute(&mut *tx).await?;
         }
 
-        // Insert the summary as a system message (it's context, not user speech)
-        // Use a low ID trick: find the min preserved ID and insert before it
+        // Insert the summary as a system message
         sqlx::query(
             "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, prompt_tokens, completion_tokens)
              VALUES (?, 'system', ?, NULL, NULL, NULL, NULL)",
@@ -611,12 +599,7 @@ impl Persistence for Database {
 
         tx.commit().await?;
 
-        // Reclaim freed pages from the bulk deletion.
-        sqlx::query("PRAGMA incremental_vacuum")
-            .execute(&self.pool)
-            .await?;
-
-        Ok(deleted_count)
+        Ok(archived_count)
     }
 
     /// Check if the last message in a session is a tool call awaiting a response.
@@ -626,7 +609,7 @@ impl Persistence for Database {
         // with tool_calls set, and there's no subsequent tool response.
         let last_msg: Option<(String, Option<String>)> = sqlx::query_as(
             "SELECT role, tool_calls FROM messages
-             WHERE session_id = ?
+             WHERE session_id = ? AND compacted_at IS NULL
              ORDER BY id DESC LIMIT 1",
         )
         .bind(session_id)
@@ -767,37 +750,32 @@ mod tests {
         .await
         .unwrap();
 
-        let msgs = db.load_context(&session, 100_000).await.unwrap();
+        let msgs = db.load_context(&session).await.unwrap();
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, Role::User);
         assert_eq!(msgs[1].role, Role::Assistant);
     }
 
     #[tokio::test]
-    async fn test_sliding_window_truncates_old_messages() {
+    async fn test_load_context_returns_all_active_messages() {
         let (db, _tmp) = setup().await;
         let session = db.create_session("default", _tmp.path()).await.unwrap();
 
         // Insert many messages
         for i in 0..20 {
-            let content = format!("Message number {i} with some padding text to take up tokens");
+            let content = format!("Message number {i}");
             db.insert_message(&session, &Role::User, Some(&content), None, None, None)
                 .await
                 .unwrap();
         }
 
-        // Load with a tiny token budget - should only get the most recent messages
-        let msgs = db.load_context(&session, 50).await.unwrap();
-        assert!(msgs.len() < 20, "Should have truncated, got {}", msgs.len());
-        assert!(!msgs.is_empty(), "Should have at least one message");
+        // Load all messages — no sliding window, no truncation
+        let msgs = db.load_context(&session).await.unwrap();
+        assert_eq!(msgs.len(), 20, "Should load all 20 messages");
 
-        // The last message in the window should be the newest
-        let last = msgs.last().unwrap();
-        assert!(
-            last.content.as_ref().unwrap().contains("19"),
-            "Last message should be #19, got: {:?}",
-            last.content
-        );
+        // Messages should be in chronological order
+        assert!(msgs[0].content.as_ref().unwrap().contains("number 0"));
+        assert!(msgs[19].content.as_ref().unwrap().contains("number 19"));
     }
 
     #[tokio::test]
@@ -813,8 +791,8 @@ mod tests {
             .await
             .unwrap();
 
-        let msgs1 = db.load_context(&s1, 100_000).await.unwrap();
-        let msgs2 = db.load_context(&s2, 100_000).await.unwrap();
+        let msgs1 = db.load_context(&s1).await.unwrap();
+        let msgs2 = db.load_context(&s2).await.unwrap();
 
         assert_eq!(msgs1.len(), 1);
         assert_eq!(msgs2.len(), 1);
@@ -925,7 +903,7 @@ mod tests {
         assert_eq!(deleted, 8); // 10 total - 2 preserved = 8 deleted
 
         // Should have: summary(system) + continuation(assistant) + 2 preserved = 4
-        let msgs = db.load_context(&session, 100_000).await.unwrap();
+        let msgs = db.load_context(&session).await.unwrap();
         assert_eq!(msgs.len(), 4);
 
         // Check that the summary is a system message
@@ -979,7 +957,7 @@ mod tests {
             .unwrap();
         assert_eq!(deleted, 6);
 
-        let msgs = db.load_context(&session, 100_000).await.unwrap();
+        let msgs = db.load_context(&session).await.unwrap();
         assert_eq!(msgs.len(), 2); // summary + continuation
         assert_eq!(msgs.iter().filter(|m| m.role == Role::System).count(), 1);
         assert_eq!(msgs.iter().filter(|m| m.role == Role::Assistant).count(), 1);
@@ -1027,7 +1005,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fix_orphaned_tool_calls() {
+    async fn test_prune_mismatched_tool_calls() {
         let (db, _tmp) = setup().await;
         let session = db.create_session("default", _tmp.path()).await.unwrap();
 
@@ -1068,7 +1046,7 @@ mod tests {
         .await
         .unwrap();
 
-        let msgs = db.load_context(&session, 100_000).await.unwrap();
+        let msgs = db.load_context(&session).await.unwrap();
 
         // The first assistant's tool_calls should be preserved (has tool result)
         let first_asst = msgs
@@ -1080,19 +1058,18 @@ mod tests {
             "completed tool_calls should be preserved"
         );
 
-        // The orphaned assistant's tool_calls should be stripped
+        // The orphaned assistant (tool_calls with no result) should be dropped entirely
         let orphaned = msgs
             .iter()
-            .find(|m| m.content.as_deref() == Some("I'll edit the file."))
-            .unwrap();
+            .find(|m| m.content.as_deref() == Some("I'll edit the file."));
         assert!(
-            orphaned.tool_calls.is_none(),
-            "orphaned tool_calls should be stripped"
+            orphaned.is_none(),
+            "orphaned assistant message should be dropped by prune_mismatched_tool_calls"
         );
     }
 
     #[test]
-    fn test_fix_orphaned_tool_calls_unit() {
+    fn test_prune_mismatched_tool_calls_unit() {
         fn msg(
             role: &str,
             content: Option<&str>,
@@ -1116,15 +1093,15 @@ mod tests {
 
         // No messages — no crash
         let mut empty: Vec<Message> = vec![];
-        fix_orphaned_tool_calls(&mut empty);
+        prune_mismatched_tool_calls(&mut empty);
         assert!(empty.is_empty());
 
-        // Last message is user — no change
+        // User message only — no change
         let mut msgs = vec![msg("user", Some("hi"), None, None)];
-        fix_orphaned_tool_calls(&mut msgs);
-        assert!(msgs[0].tool_calls.is_none());
+        prune_mismatched_tool_calls(&mut msgs);
+        assert_eq!(msgs.len(), 1);
 
-        // Last message is assistant with tool_calls, no tool result — stripped
+        // Orphaned assistant with tool_calls, no result — dropped
         let mut msgs = vec![
             msg("user", Some("hi"), None, None),
             msg(
@@ -1134,16 +1111,18 @@ mod tests {
                 None,
             ),
         ];
-        fix_orphaned_tool_calls(&mut msgs);
-        assert!(msgs[1].tool_calls.is_none());
+        prune_mismatched_tool_calls(&mut msgs);
+        assert_eq!(msgs.len(), 1, "orphaned assistant should be dropped");
+        assert_eq!(msgs[0].role, Role::User);
 
-        // Last message is tool result — assistant tool_calls preserved
+        // Complete pair — preserved
         let mut msgs = vec![
             msg("user", Some("hi"), None, None),
             msg("assistant", None, Some(r#"[{"id":"t1"}]"#), None),
             msg("tool", Some("ok"), None, Some("t1")),
         ];
-        fix_orphaned_tool_calls(&mut msgs);
+        prune_mismatched_tool_calls(&mut msgs);
+        assert_eq!(msgs.len(), 3, "complete pair should be preserved");
         assert!(msgs[1].tool_calls.is_some());
     }
 

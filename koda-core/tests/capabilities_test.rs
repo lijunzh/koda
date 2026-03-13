@@ -6,7 +6,6 @@ const CAPABILITIES_MD: &str = include_str!("../src/capabilities.md");
 const EXPECTED_COMMANDS: &[&str] = &[
     "/agent",
     "/compact",
-    "/cost",
     "/diff",
     "/exit",
     "/expand",

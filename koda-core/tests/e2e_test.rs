@@ -289,7 +289,7 @@ async fn test_session_history_persists_across_turns() {
     env.run_inference(&provider2).await;
 
     // Verify both messages are in the DB
-    let messages = env.db.load_context(&env.session_id, 100_000).await.unwrap();
+    let messages = env.db.load_context(&env.session_id).await.unwrap();
 
     let contents: Vec<String> = messages.iter().filter_map(|m| m.content.clone()).collect();
 
@@ -622,7 +622,7 @@ async fn test_compact_session_summarizes_and_reduces_messages() {
     }
 
     // Verify we have 20 messages
-    let before = env.db.load_context(&env.session_id, 100_000).await.unwrap();
+    let before = env.db.load_context(&env.session_id).await.unwrap();
     assert_eq!(before.len(), 20);
 
     // Create a mock provider that returns a summary
@@ -651,7 +651,7 @@ async fn test_compact_session_summarizes_and_reduces_messages() {
     );
 
     // Verify message count decreased
-    let after = env.db.load_context(&env.session_id, 100_000).await.unwrap();
+    let after = env.db.load_context(&env.session_id).await.unwrap();
     assert!(
         after.len() < before.len(),
         "message count should decrease after compaction: {} < {}",

@@ -62,6 +62,12 @@ pub(crate) async fn handle_compact(
                 "Conversation is too short to compact ({n} messages)."
             ));
         }
+        Ok(Err(CompactSkip::HistoryTooLarge)) => {
+            warn_msg("History is too large for this model to summarize without data loss.".into());
+            dim_msg(
+                "Switch to a model with a larger context window, or start a new session.".into(),
+            );
+        }
         Err(e) => err_msg(format!("Compact failed: {e:#}")),
     }
 }
