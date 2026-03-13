@@ -1745,6 +1745,8 @@ dependencies = [
  "futures-util",
  "glob",
  "ignore",
+ "koda-ast",
+ "koda-email",
  "path-clean",
  "regex",
  "reqwest",

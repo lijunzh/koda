@@ -57,6 +57,10 @@ futures-util = "0.3"
 anyhow = "1"
 which = "8"
 
+# First-party workspace libraries (direct calls, no MCP IPC)
+koda-ast = { path = "../koda-ast" }
+koda-email = { path = "../koda-email" }
+
 # Async trait support
 async-trait = "0.1"
 
