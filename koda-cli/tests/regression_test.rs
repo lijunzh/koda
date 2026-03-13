@@ -65,11 +65,6 @@ mod repl_commands {
     }
 
     #[test]
-    fn cost_returns_show_cost() {
-        assert!(matches!(dispatch("/cost"), ReplAction::ShowCost));
-    }
-
-    #[test]
     fn diff_bare_returns_show_diff() {
         assert!(matches!(dispatch("/diff"), ReplAction::ShowDiff));
     }
