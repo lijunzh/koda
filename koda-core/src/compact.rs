@@ -34,6 +34,9 @@ pub enum CompactSkip {
     PendingToolCalls,
     /// Session is too short to compact (contains N messages).
     TooShort(usize),
+    /// History is too large for the current model to summarize without data loss.
+    /// The user should switch to a model with a larger context window or start a new session.
+    HistoryTooLarge,
 }
 
 /// Attempt to compact a session.
@@ -67,14 +70,24 @@ pub async fn compact_session_with_provider(
         return Ok(Err(CompactSkip::PendingToolCalls));
     }
 
-    let history = db.load_context(session_id, max_context_tokens).await?;
+    let history = db.load_context(session_id).await?;
 
     if history.len() < 4 {
         return Ok(Err(CompactSkip::TooShort(history.len())));
     }
 
-    // Build conversation text for summarization
+    // Build conversation text for summarization (no hard cap — scales to model capacity)
     let conversation_text = build_conversation_text(&history);
+
+    // Check if the conversation text fits in the current model's context.
+    // Reserve 4096 tokens for the summary output + overhead.
+    let text_tokens = (conversation_text.len() as f64 / crate::inference_helpers::CHARS_PER_TOKEN)
+        as usize
+        + crate::inference_helpers::SYSTEM_PROMPT_OVERHEAD;
+    let available = max_context_tokens.saturating_sub(4096);
+    if text_tokens > available {
+        return Ok(Err(CompactSkip::HistoryTooLarge));
+    }
 
     let summary_prompt = format!(
         "Summarize the conversation below. This summary will replace the older messages \
@@ -96,10 +109,8 @@ pub async fn compact_session_with_provider(
 
     let messages = vec![ChatMessage::text("user", &summary_prompt)];
     // Use reduced settings for compaction on the SAME model/provider.
-    // We intentionally keep the same model (not a cheaper one) because:
-    // 1. A cheaper model may have a smaller context window and fail on long histories
-    // 2. The conversation text is already capped at 20K chars (manageable for any model)
-    // 3. The real savings come from disabling thinking/reasoning, not switching models
+    // The capacity check above guarantees the conversation text fits.
+    // Savings come from disabling thinking/reasoning, not switching models.
     let compact_settings = ModelSettings {
         model: model_settings.model.clone(),
         max_tokens: Some(4096),
@@ -127,6 +138,11 @@ pub async fn compact_session_with_provider(
 }
 
 /// Format conversation history into a single string for the summarizer.
+///
+/// Per-message content is truncated to 2000 chars (individual tool outputs
+/// can be huge but add little summarization value beyond a preview).
+/// No total cap — the capacity check in `compact_session_with_provider`
+/// guarantees the result fits in the model's context window.
 fn build_conversation_text(history: &[crate::db::Message]) -> String {
     let mut text = String::new();
     for msg in history {
@@ -139,16 +155,6 @@ fn build_conversation_text(history: &[crate::db::Message]) -> String {
             let truncated: String = tool_calls.chars().take(500).collect();
             text.push_str(&format!("[{role} tool_calls]: {truncated}\n\n"));
         }
-    }
-    // Cap total text
-    const MAX_TEXT: usize = 20_000;
-    if text.len() > MAX_TEXT {
-        let mut end = MAX_TEXT;
-        while end > 0 && !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text.truncate(end);
-        text.push_str("\n\n[...truncated for summarization...]");
     }
     text
 }
@@ -200,15 +206,16 @@ mod tests {
     }
 
     #[test]
-    fn test_truncates_total_over_20k() {
-        // 50 messages × 500 chars each = 25K chars
+    fn test_no_total_cap() {
+        // 50 messages × 500 chars each = 25K chars — no cap applied
         let content = "y".repeat(500);
         let msgs: Vec<_> = (0..50)
             .map(|_| make_msg("user", Some(&content), None))
             .collect();
         let text = build_conversation_text(&msgs);
-        assert!(text.len() <= 20_100); // 20K + truncation message
-        assert!(text.contains("[...truncated for summarization...]"));
+        // All 50 messages should be included (no 20K cap)
+        assert!(text.len() > 20_000);
+        assert!(!text.contains("truncated"));
     }
 
     #[test]

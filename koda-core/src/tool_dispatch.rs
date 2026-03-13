@@ -545,17 +545,12 @@ pub(crate) async fn execute_sub_agent(
         &tool_defs,
     );
 
-    let system_tokens = (system_prompt.len() as f64 / crate::inference_helpers::CHARS_PER_TOKEN)
-        as usize
-        + crate::inference_helpers::SYSTEM_PROMPT_OVERHEAD;
-    let available = sub_config.max_context_tokens.saturating_sub(system_tokens);
-
     for _ in 0..loop_guard::MAX_SUB_AGENT_ITERATIONS {
         // Respect parent cancellation (#286)
         if cancel.is_cancelled() {
             return Ok("[cancelled by parent]".to_string());
         }
-        let history = db.load_context(&sub_session, available).await?;
+        let history = db.load_context(&sub_session).await?;
         let mut messages = vec![ChatMessage::text("system", &system_prompt)];
         for msg in &history {
             let tool_calls: Option<Vec<ToolCall>> = msg

@@ -34,7 +34,7 @@ mod db_perf {
         }
 
         let start = Instant::now();
-        let messages = db.load_context(&session_id, 128_000).await.unwrap();
+        let messages = db.load_context(&session_id).await.unwrap();
         let elapsed = start.elapsed();
 
         assert!(!messages.is_empty());
