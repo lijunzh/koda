@@ -9,6 +9,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-03-12
+
+### Added
+- **Context Management docs** — new user guide section explaining context loading,
+  compaction lifecycle, auto-compaction, purge, and design philosophy
+- **`/purge` command** — permanently delete archived (compacted) messages with
+  preview stats and y/N confirmation. Supports age filter: `/purge 90d` (#429)
+- **Startup nudge** — one-line hint when archived history exceeds 500MB:
+  `💡 523MB of archived history — run /purge to clean up`
+- **`last_accessed_at` tracking** — sessions table tracks actual activity
+  timestamps, enabling age-based purge filtering by real usage
+- **`CompactSkip::HistoryTooLarge`** — compaction refuses when history exceeds
+  model context window, with clear user-facing warning
+
+### Changed
+- **Non-destructive compaction** — `compact_session()` now archives messages
+  with `compacted_at` timestamp instead of permanently deleting them.
+  Original history preserved in DB for recovery (#428)
+- **No sliding window** — `load_context()` loads ALL active (non-compacted)
+  messages chronologically. Removed token budgeting, priority-based truncation,
+  and `LIMIT 200`. Full model context utilized (#428)
+- **Orphan pruning** — `prune_mismatched_tool_calls()` uses symmetric-difference
+  of tool_call IDs to drop mismatched tool_use/tool_result pairs. Fixes
+  Anthropic API 400 errors from interrupted sessions (#428)
+- **No conversation text cap** — removed 20K char cap on compaction
+  summarization input. Scales to model capacity instead of hardcoded limit
+
+### Removed
+- **Dollar cost estimation** — stripped `cost.rs` (219 lines) and `/cost`
+  command. Token counts shown in status bar are sufficient; dollar estimates
+  were unreliable across providers (#427)
+- **Sliding window** — removed token budgeting, `estimate_tokens()`, and
+  priority-based truncation from `load_context()`. Replaced by loading all
+  active messages (#428)
+
+### Fixed
+- **Orphaned tool_result blocks** — API 400 errors from Anthropic caused by
+  mismatched tool_use/tool_result pairs after session interruption or
+  compaction boundaries (#428)
+- **GitHub Actions Node.js deprecation** — bumped CI/release workflows to
+  actions v6 (Node.js 24) (#426)
+- **Logs directory** — moved from `.koda_logs/` in project root to
+  `~/.config/koda/logs/` (#425)
+
 ## [0.1.8] - 2026-03-12
 
 ### Added

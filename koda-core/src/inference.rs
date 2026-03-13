@@ -78,7 +78,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     } = ctx;
 
     // Hard cap is configurable per-agent; user can extend it interactively.
-    let _hard_cap = config.max_iterations;
     let mut hard_cap = config.max_iterations;
     let mut iteration = 0u32;
     let mut made_tool_calls = false;
