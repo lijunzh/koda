@@ -81,6 +81,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     let mut hard_cap = config.max_iterations;
     let mut iteration = 0u32;
     let mut made_tool_calls = false;
+    let mut retried_empty = false;
     let mut loop_detector = LoopDetector::new();
     let sub_agent_cache = crate::sub_agent_cache::SubAgentCache::new();
     let mut total_prompt_tokens: i64 = 0;
@@ -453,6 +454,21 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             sink.emit(EngineEvent::SpinnerStop);
         }
 
+        // Empty response after tool use — retry once before giving up.
+        // Don't save the empty message so the model sees the same context on retry.
+        if tool_calls.is_empty()
+            && made_tool_calls
+            && full_text.trim().is_empty()
+            && usage.stop_reason != "max_tokens"
+            && !retried_empty
+        {
+            retried_empty = true;
+            sink.emit(EngineEvent::SpinnerStart {
+                message: "Empty response — retrying...".into(),
+            });
+            continue;
+        }
+
         // Log the assistant response
         let content = if full_text.is_empty() {
             None
@@ -493,9 +509,8 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             } else if made_tool_calls && full_text.trim().is_empty() {
                 sink.emit(EngineEvent::Warn {
                     message: format!(
-                        "Model {} produced an empty response after tool use — \
-                         it may have exceeded its capability for this task. \
-                         Switch to a stronger model with /model.",
+                        "Model {} produced an empty response after tool use. \
+                         Try rephrasing, run /compact, or switch models with /model.",
                         config.model,
                     ),
                 });
