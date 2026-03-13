@@ -1,9 +1,7 @@
 //! koda-ast: MCP server for tree-sitter AST analysis.
 //!
-//! Provides `AstAnalysis` tool via MCP stdio transport.
+//! Thin MCP wrapper around the `koda_ast` library crate.
 //! Part of the koda ecosystem — auto-provisioned on first use.
-
-mod ast;
 
 use rmcp::{
     ServerHandler, ServiceExt,
@@ -61,6 +59,9 @@ impl ServerHandler for AstServer {
 #[tool_router]
 impl AstServer {
     /// Read-only AST code analysis for Rust, Python, JavaScript, TypeScript.
+    ///
+    /// NOTE: The description below must stay in sync with
+    /// `koda_ast::tool_definitions()` in lib.rs (the authoritative source).
     #[tool(
         name = "AstAnalysis",
         description = "Read-only AST code analysis. Use 'analyze_file' for functions/classes/structs summary, or 'get_call_graph' with a symbol name to find callers and callees. Supports .rs, .py, .pyi, .pyw, .js, .jsx, .mjs, .cjs, .ts, .mts, .cts, .tsx, .go, .java, .c, .h, .cpp, .cc, .cxx, .hpp, .hh, .sh, .bash files."
@@ -70,36 +71,7 @@ impl AstServer {
         params: Parameters<AstAnalysisParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let p = &params.0;
-        let path = if PathBuf::from(&p.file_path).is_absolute() {
-            PathBuf::from(&p.file_path)
-        } else {
-            self.cwd.join(&p.file_path)
-        };
-
-        if !path.exists() {
-            return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Error: File not found: {}",
-                p.file_path
-            ))]));
-        }
-
-        let result = match p.action.as_str() {
-            "analyze_file" => ast::analyze_file(&path),
-            "get_call_graph" => {
-                let sym = p.symbol.as_deref().unwrap_or("");
-                if sym.is_empty() {
-                    return Ok(CallToolResult::error(vec![Content::text(
-                        "Error: 'symbol' is required for get_call_graph",
-                    )]));
-                }
-                ast::get_call_graph(&path, sym)
-            }
-            other => Ok(format!(
-                "Error: Unknown action '{other}'. Use 'analyze_file' or 'get_call_graph'."
-            )),
-        };
-
-        match result {
+        match koda_ast::execute(&self.cwd, &p.action, &p.file_path, p.symbol.as_deref()) {
             Ok(output) => Ok(CallToolResult::success(vec![Content::text(output)])),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Error: {e}"

@@ -100,27 +100,50 @@ mode is optional for external clients.
 messages, tool calls with permissions, and status updates — exactly what
 Koda needs. Adopting ACP gives us Zed integration for free.
 
-### 3. Extensibility: Thin Core + Auto-Provisioned MCP
+### 3. Extensibility: Thin Core + First-Party Libraries + Auto-Provisioned MCP
 
 **Decision**: The core binary contains only essential tools (file ops, shell,
-search, web fetch, memory, agents). Domain-specific capabilities (AST analysis,
-email, calendar, browser) are delivered as MCP servers, auto-installed on demand.
+search, web fetch, memory, agents). Domain-specific capabilities are split
+into two tiers:
+
+- **First-party libraries** (AST analysis, email): Ship in the same workspace
+  as library crates with thin MCP binary wrappers. `koda-cli` calls the
+  library functions directly — zero IPC, zero process management. The MCP
+  binaries remain available for external consumers (other editors, standalone
+  use). `koda-core` stays dependency-free from these domains.
+- **Third-party / external capabilities** (browser, calendar, etc.): Delivered
+  as auto-provisioned MCP servers, installed on demand.
 
 **Principle evolution**: Early v0.1.x compiled everything into one binary.
-As the vision expanded beyond coding, we realized "everything just works"
-doesn't require "everything compiled in" — it requires "everything
-auto-provisioned with zero user config." The user experience is identical —
-zero friction — but the implementation scales to domains beyond coding.
+As the vision expanded beyond coding, we adopted MCP for all domain-specific
+capabilities ([#113](https://github.com/lijunzh/koda/issues/113)). In practice,
+routing in-repo capabilities through stdio JSON-RPC added process management
+overhead and IPC failure modes for functionality that ships in the same
+workspace. The current design distinguishes between first-party capabilities
+(library + optional MCP wrapper) and third-party capabilities (MCP only).
+See [#431](https://github.com/lijunzh/koda/issues/431) for the migration.
 
-**How it works**: When the LLM calls a tool that isn't built-in, koda checks
-an MCP capability registry, auto-installs the matching server, connects it,
-and retries — transparently. The user sees a brief spinner on first use;
-subsequent calls are instant.
+**How it works for third-party tools**: When the LLM calls a tool that isn't
+built-in or registered as a first-party library, koda checks an MCP capability
+registry, auto-installs the matching server, connects it, and retries —
+transparently. The user sees a brief spinner on first use; subsequent calls
+are instant.
 
-**Rationale**: As koda expands to email, calendar, and knowledge management,
-compiling every integration into one binary creates bloat. The MCP protocol
-is the contract; the implementation language and deployment model are details.
-AST analysis is the pilot for this pattern (see [#113](https://github.com/lijunzh/koda/issues/113)).
+**Dependency graph**:
+```
+koda-cli → koda-core  (inference engine, zero domain deps)
+         → koda-ast   (direct library call)
+         → koda-email (direct library call)
+
+koda-ast/main.rs  → thin MCP wrapper (for external use)
+koda-email/main.rs → thin MCP wrapper (for external use)
+```
+
+**Rationale**: MCP is the right protocol for *external* tool integration —
+not for in-repo capabilities that share the same workspace and release cycle.
+First-party libraries eliminate IPC overhead while preserving clean boundaries:
+`koda-core` has zero domain-specific deps, and each library is independently
+testable and usable via MCP by external consumers.
 
 **MCP server language**: Default to Rust (`cargo binstall`) for koda-maintained
 servers. Use Node/Python when critical libraries only exist in those ecosystems.
