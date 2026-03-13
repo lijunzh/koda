@@ -44,13 +44,33 @@ pub(crate) fn can_parallelize(
     mode: ApprovalMode,
     project_root: &Path,
 ) -> bool {
-    !tool_calls.iter().any(|tc| {
+    let all_approved = !tool_calls.iter().any(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
             approval::check_tool(&tc.function_name, &args, mode, Some(project_root), None,),
             ToolApproval::NeedsConfirmation | ToolApproval::Blocked
         )
-    })
+    });
+
+    if !all_approved {
+        return false;
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let has_conflict = tool_calls.iter().any(|tc| {
+        if !crate::tools::is_mutating_tool(&tc.function_name) {
+            return false;
+        }
+        let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+        if let Some(path) = crate::undo::extract_file_path(&tc.function_name, &args) {
+            // If the path is already in the set, we have a conflict
+            !seen.insert(path)
+        } else {
+            false
+        }
+    });
+
+    !has_conflict
 }
 
 /// Execute a single tool call, returning (tool_call_id, result).
@@ -773,6 +793,52 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             ApprovalMode::Confirm,
+            Path::new("/test/project")
+        ));
+    }
+
+    #[test]
+    fn test_cannot_parallelize_same_file_edits() {
+        let calls = vec![
+            ToolCall {
+                id: "t1".to_string(),
+                function_name: "Edit".to_string(),
+                arguments: r#"{"file_path": "src/main.rs"}"#.to_string(),
+                thought_signature: None,
+            },
+            ToolCall {
+                id: "t2".to_string(),
+                function_name: "Edit".to_string(),
+                arguments: r#"{"file_path": "src/main.rs"}"#.to_string(),
+                thought_signature: None,
+            },
+        ];
+        assert!(!can_parallelize(
+            &calls,
+            ApprovalMode::Auto, // Auto mode would normally allow parallelization
+            Path::new("/test/project")
+        ));
+    }
+
+    #[test]
+    fn test_can_parallelize_different_file_edits() {
+        let calls = vec![
+            ToolCall {
+                id: "t1".to_string(),
+                function_name: "Edit".to_string(),
+                arguments: r#"{"file_path": "src/main.rs"}"#.to_string(),
+                thought_signature: None,
+            },
+            ToolCall {
+                id: "t2".to_string(),
+                function_name: "Edit".to_string(),
+                arguments: r#"{"file_path": "src/lib.rs"}"#.to_string(),
+                thought_signature: None,
+            },
+        ];
+        assert!(can_parallelize(
+            &calls,
+            ApprovalMode::Auto,
             Path::new("/test/project")
         ));
     }
