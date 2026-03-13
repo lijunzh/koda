@@ -1,13 +1,12 @@
 //! koda-email: MCP server for email read/send/search via IMAP/SMTP.
 //!
-//! Provides `EmailRead`, `EmailSend`, and `EmailSearch` tools via MCP stdio.
+//! Thin MCP wrapper around the `koda_email` library crate.
 //! Part of the koda ecosystem — auto-provisioned on first use.
 
-mod config;
-mod imap_client;
-mod smtp_client;
+use koda_email::config::EmailConfig;
+use koda_email::imap_client;
+use koda_email::smtp_client;
 
-use config::EmailConfig;
 use rmcp::{
     ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -57,6 +56,9 @@ fn default_max_results() -> u32 {
 }
 
 // ── MCP Server ───────────────────────────────────────────
+//
+// NOTE: The #[tool(description = "...")] attributes below must stay in sync
+// with `koda_email::tool_definitions()` in lib.rs (the authoritative source).
 
 #[derive(Debug, Clone)]
 struct EmailServer {
