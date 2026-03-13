@@ -3,7 +3,6 @@
 //! CLI entry point. The binary is named `koda` for ergonomics.
 
 mod completer;
-mod cost;
 mod diff_render;
 mod headless;
 mod headless_sink;

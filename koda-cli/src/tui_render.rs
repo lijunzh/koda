@@ -212,7 +212,6 @@ impl TuiRenderer {
                 prompt_tokens,
                 completion_tokens,
                 cache_read_tokens,
-                thinking_tokens,
                 total_chars,
                 elapsed_ms,
                 rate,
@@ -223,20 +222,12 @@ impl TuiRenderer {
                 } else {
                     (total_chars / 4) as i64
                 };
-                let cost_usd = crate::cost::estimate_turn_cost(
-                    &self.model,
-                    prompt_tokens,
-                    completion_tokens,
-                    cache_read_tokens,
-                    thinking_tokens,
-                );
                 self.last_turn_stats = Some(TurnStats {
                     tokens_in: prompt_tokens,
                     tokens_out,
                     cache_read: cache_read_tokens,
                     elapsed_ms,
                     rate,
-                    cost_usd,
                 });
             }
             EngineEvent::SpinnerStart { .. } | EngineEvent::SpinnerStop => {

@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/agent", "List available sub-agents"),
     ("/compact", "Summarize conversation to reclaim context"),
-    ("/cost", "Show token usage for this session"),
     ("/diff", "Show git diff (review, commit)"),
     ("/exit", "Quit the session"),
     ("/expand", "Show full output of last tool call"),
