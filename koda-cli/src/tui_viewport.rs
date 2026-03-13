@@ -41,6 +41,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 use ratatui_textarea::TextArea;
+use unicode_width::UnicodeWidthStr;
 
 // ── Viewport drawing ────────────────────────────────────────
 
@@ -114,6 +115,9 @@ pub(crate) fn draw_viewport(
     );
     frame.render_widget(textarea, text_area);
 
+    // Horizontal overflow indicators (→ / ←)
+    render_overflow_indicators(frame, textarea, text_area);
+
     // Bottom separator
     let bot_width = bot_sep_row.width as usize;
     frame.render_widget(
@@ -136,6 +140,60 @@ pub(crate) fn draw_viewport(
         sb = sb.with_last_turn(stats);
     }
     frame.render_widget(sb, status_row);
+}
+
+/// Overlay `→` / `←` arrows on textarea lines that extend beyond the visible area.
+///
+/// The textarea widget scrolls horizontally but gives no visual cue that
+/// content is hidden off-screen. We estimate the scroll offset from the
+/// cursor position and paint dim arrows on the right/left edges of lines
+/// whose display width exceeds the viewport.
+fn render_overflow_indicators(
+    frame: &mut ratatui::Frame,
+    textarea: &TextArea,
+    text_area: ratatui::layout::Rect,
+) {
+    let w = text_area.width as usize;
+    let h = text_area.height as usize;
+    if w == 0 || h == 0 {
+        return;
+    }
+
+    let (cursor_row, cursor_col) = textarea.cursor();
+    let lines = textarea.lines();
+
+    // Estimate horizontal scroll offset.
+    // ratatui-textarea keeps the cursor visible via next_scroll_top():
+    //   if cursor < prev_top → prev_top = cursor
+    //   if cursor >= prev_top + width → prev_top = cursor + 1 - width
+    //   else → prev_top unchanged
+    // Without access to the internal viewport we approximate assuming the
+    // common steady-state where the cursor drives the scroll position.
+    let col_scroll = cursor_col.saturating_sub(w.saturating_sub(1));
+
+    // Estimate vertical scroll offset (same logic, row axis).
+    let row_scroll = cursor_row.saturating_sub(h.saturating_sub(1));
+
+    let visible_end = (row_scroll + h).min(lines.len());
+    let arrow_style = Style::default().fg(Color::DarkGray);
+
+    for (vi, line_idx) in (row_scroll..visible_end).enumerate() {
+        let display_width = UnicodeWidthStr::width(lines[line_idx].as_str());
+        let y = text_area.y + vi as u16;
+
+        // Right overflow: content extends past the right edge
+        if display_width > col_scroll + w {
+            let x = text_area.x + text_area.width - 1;
+            frame.buffer_mut().set_string(x, y, "\u{2192}", arrow_style);
+        }
+
+        // Left overflow: content is scrolled past the left edge
+        if col_scroll > 0 && display_width > 0 {
+            frame
+                .buffer_mut()
+                .set_string(text_area.x, y, "\u{2190}", arrow_style);
+        }
+    }
 }
 
 /// Render the active menu content into the menu area.
