@@ -4,7 +4,7 @@ Refer to this when the user asks "what can you do?" or about features.
 
 ### Commands (user types these in the REPL)
 
-/agent — list sub-agents | /compact — reclaim context | /cost — token usage & cost
+/agent — list sub-agents | /compact — reclaim context
 /diff — git diff/review/commit | /exit — quit | /expand — show full tool output
 /mcp — MCP server management | /memory — persistent memory | /model — switch model
 /provider — switch provider | /sessions — resume/delete sessions | /skills — list skills

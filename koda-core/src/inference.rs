@@ -77,13 +77,8 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         cmd_rx,
     } = ctx;
 
-    // Use the same formula as estimate_tokens (chars/CHARS_PER_TOKEN + overhead)
-    // to keep the budget calculation consistent with re-estimation later.
-    let system_tokens = (system_prompt.len() as f64 / crate::inference_helpers::CHARS_PER_TOKEN)
-        as usize
-        + crate::inference_helpers::SYSTEM_PROMPT_OVERHEAD;
-    let available = config.max_context_tokens.saturating_sub(system_tokens);
     // Hard cap is configurable per-agent; user can extend it interactively.
+    let _hard_cap = config.max_iterations;
     let mut hard_cap = config.max_iterations;
     let mut iteration = 0u32;
     let mut made_tool_calls = false;
@@ -141,8 +136,8 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let system_prompt_full = format!("{base_system_prompt}{progress}{git_line}");
         let system_message = ChatMessage::text("system", &system_prompt_full);
 
-        // Assemble context with sliding window
-        let history = db.load_context(session_id, available).await?;
+        // Assemble context
+        let history = db.load_context(session_id).await?;
         let mut messages = assemble_messages(&system_message, &history);
 
         // Attach pending images to the last user message (first iteration only)
@@ -184,7 +179,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                         ),
                     });
                     // Re-assemble with compacted history
-                    let history = db.load_context(session_id, available).await?;
+                    let history = db.load_context(session_id).await?;
                     messages = assemble_messages(&system_message, &history);
                     // Re-attach images if first iteration
                     if iteration == 0
@@ -200,6 +195,13 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 }
                 Ok(Err(skip)) => {
                     tracing::info!("Pre-flight compact skipped: {skip:?}");
+                    if matches!(skip, crate::compact::CompactSkip::HistoryTooLarge) {
+                        sink.emit(EngineEvent::Warn {
+                            message: "\u{26a0}\u{fe0f} Context is full but history is too large for this model to summarize. \
+                                      Start a new session (/session) or switch to a model with a larger context window."
+                                .to_string(),
+                        });
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("Pre-flight compact failed: {e:#}");
@@ -296,7 +298,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 }
 
                 // Re-assemble messages with compacted history
-                let history = db.load_context(session_id, available).await?;
+                let history = db.load_context(session_id).await?;
                 messages = assemble_messages(&system_message, &history);
                 if iteration == 0
                     && let Some(ref imgs) = pending_images

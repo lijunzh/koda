@@ -152,7 +152,7 @@ pub trait Persistence: Send + Sync {
     ) -> Result<i64>;
 
     /// Load conversation context within a token budget.
-    async fn load_context(&self, session_id: &str, max_tokens: usize) -> Result<Vec<Message>>;
+    async fn load_context(&self, session_id: &str) -> Result<Vec<Message>>;
     /// Load all messages in a session (no token limit).
     async fn load_all_messages(&self, session_id: &str) -> Result<Vec<Message>>;
     /// Recent user messages across all sessions (for startup hints).

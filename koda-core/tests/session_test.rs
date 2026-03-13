@@ -295,7 +295,7 @@ async fn session_persists_messages_across_two_turns() {
 
     // Verify both turns' messages are in the DB.
     let messages: Vec<koda_core::persistence::Message> =
-        env.db.load_context(&env.session_id, 100_000).await.unwrap();
+        env.db.load_context(&env.session_id).await.unwrap();
     let contents: Vec<String> = messages
         .iter()
         .filter_map(|m: &koda_core::persistence::Message| m.content.clone())
