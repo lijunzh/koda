@@ -9,9 +9,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-03-12
+
 ### Added
 - **Horizontal overflow indicators** — textarea input shows dim `→` / `←` arrows
   at the edges when content extends beyond the visible width (#416)
+- **Paste as collapsible block** — pasted content is inserted as a collapsible
+  `<details>` block reference, keeping the input area clean (#244)
+
+### Changed
+- **`#![warn(missing_docs)]` on koda-core** — all public items in the engine
+  crate now require documentation; ~235 doc comments added (#300)
+
+### Fixed
+- **Terminal resize stability** — cursor-aware viewport erase prevents ghost
+  prompts and scrollback corruption on resize (#415, #417)
+- **Ctrl+L screen refresh** — standard Unix convention cleans up visual
+  artifacts from resize reflow; resize warning guides users (#418, #420)
 
 ## [0.1.7] - 2026-03-12
 
