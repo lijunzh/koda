@@ -9,7 +9,9 @@ use std::path::Path;
 use std::str::FromStr;
 
 /// Re-export persistence types for backward compatibility.
-pub use crate::persistence::{Message, Persistence, Role, SessionInfo, SessionUsage};
+pub use crate::persistence::{
+    CompactedStats, Message, Persistence, Role, SessionInfo, SessionUsage,
+};
 
 /// Wrapper around the SQLite connection pool.
 #[derive(Debug, Clone)]
@@ -167,6 +169,15 @@ impl Database {
             }
         }
 
+        // Additive migration: track last activity per session (#429)
+        let sql = "ALTER TABLE sessions ADD COLUMN last_accessed_at TEXT";
+        if let Err(e) = sqlx::query(sql).execute(pool).await {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column name") {
+                return Err(e.into());
+            }
+        }
+
         Ok(())
     }
 }
@@ -310,6 +321,12 @@ impl Persistence for Database {
         .bind(agent_name)
         .execute(&self.pool)
         .await?;
+
+        // Update session activity timestamp
+        sqlx::query("UPDATE sessions SET last_accessed_at = datetime('now') WHERE id = ?")
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
 
         Ok(result.last_insert_rowid())
     }
@@ -617,6 +634,55 @@ impl Persistence for Database {
         .await?;
 
         Ok(matches!(last_msg, Some((role, Some(_))) if role == "assistant"))
+    }
+
+    /// Stats about compacted (archived) messages across all sessions.
+    async fn compacted_stats(&self) -> Result<CompactedStats> {
+        let row: (i64, i64, i64, Option<String>) = sqlx::query_as(
+            "SELECT
+                 COUNT(*),
+                 COUNT(DISTINCT session_id),
+                 COALESCE(SUM(LENGTH(content) + LENGTH(COALESCE(tool_calls,''))), 0),
+                 MIN(compacted_at)
+             FROM messages
+             WHERE compacted_at IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(CompactedStats {
+            message_count: row.0,
+            session_count: row.1,
+            size_bytes: row.2,
+            oldest: row.3,
+        })
+    }
+
+    /// Permanently delete compacted messages older than `min_age_days`.
+    /// Pass 0 to delete all compacted messages regardless of age.
+    async fn purge_compacted(&self, min_age_days: u32) -> Result<usize> {
+        let result = if min_age_days == 0 {
+            sqlx::query("DELETE FROM messages WHERE compacted_at IS NOT NULL")
+                .execute(&self.pool)
+                .await?
+        } else {
+            sqlx::query(
+                "DELETE FROM messages
+                 WHERE compacted_at IS NOT NULL
+                   AND compacted_at < datetime('now', ?)",
+            )
+            .bind(format!("-{min_age_days} days"))
+            .execute(&self.pool)
+            .await?
+        };
+
+        let deleted = result.rows_affected() as usize;
+
+        // Reclaim disk space.
+        sqlx::query("VACUUM").execute(&self.pool).await?;
+
+        tracing::info!("Purged {deleted} compacted messages (>{min_age_days} days old)");
+        Ok(deleted)
     }
 
     /// Get a session metadata value by key.

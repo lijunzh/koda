@@ -18,6 +18,7 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/memory", "View/save project & global memory"),
     ("/model", "Pick a model interactively"),
     ("/provider", "Switch LLM provider"),
+    ("/purge", "Delete archived history (e.g. /purge 90d)"),
     ("/sessions", "List/resume/delete sessions"),
     ("/skills", "List available skills (search with query)"),
     ("/undo", "Undo last turn's file changes"),

@@ -23,6 +23,8 @@ pub enum ReplAction {
     InjectPrompt(String),
     /// Compact the conversation by summarizing history
     Compact,
+    /// Purge compacted messages (optional age filter like "90d")
+    Purge(Option<String>),
     /// Switch approval mode (with optional name, or interactive picker)
     /// MCP server management command
     McpCommand(String),
@@ -91,6 +93,7 @@ pub async fn handle_command(
         },
 
         "/compact" => ReplAction::Compact,
+        "/purge" => ReplAction::Purge(arg.map(|s| s.to_string())),
 
         "/mcp" => ReplAction::McpCommand(arg.unwrap_or("").to_string()),
 

@@ -72,7 +72,109 @@ pub(crate) async fn handle_compact(
     }
 }
 
-// ── MCP (native TUI) ───────────────────────────────────────
+// ── Purge (native TUI) ───────────────────────────────────────────
+
+pub(crate) async fn handle_purge(
+    _terminal: &mut Term,
+    session: &KodaSession,
+    age_filter: Option<&str>,
+) {
+    use koda_core::persistence::Persistence;
+
+    // Parse age filter: "90d" -> 90, "7d" -> 7, None -> 0 (all)
+    let min_age_days: u32 = match age_filter {
+        Some(s) => {
+            let s = s.trim().trim_end_matches('d');
+            match s.parse() {
+                Ok(d) => d,
+                Err(_) => {
+                    err_msg(format!("Invalid age filter: '{s}'. Use e.g. /purge 90d"));
+                    return;
+                }
+            }
+        }
+        None => 0,
+    };
+
+    // Show stats first
+    let stats = match session.db.compacted_stats().await {
+        Ok(s) => s,
+        Err(e) => {
+            err_msg(format!("Failed to query stats: {e:#}"));
+            return;
+        }
+    };
+
+    if stats.message_count == 0 {
+        dim_msg("No compacted messages to purge.".into());
+        return;
+    }
+
+    let size_str = format_bytes(stats.size_bytes);
+    let oldest_str = stats.oldest.as_deref().unwrap_or("unknown");
+    let age_str = if min_age_days > 0 {
+        format!(" older than {min_age_days} days")
+    } else {
+        String::new()
+    };
+
+    tui_output::write_line(&Line::from(vec![
+        Span::styled("  \u{1f9f9} ", BOLD),
+        Span::styled(
+            format!(
+                "{} compacted messages across {} sessions ({size_str}), oldest from {oldest_str}{age_str}",
+                stats.message_count, stats.session_count
+            ),
+            CYAN,
+        ),
+    ]));
+
+    // Ask for confirmation
+    tui_output::write_line(&Line::styled(
+        "  Permanently delete? This cannot be undone. [y/N] ",
+        DIM,
+    ));
+
+    // Read a single key
+    use crossterm::event::{self, Event, KeyCode};
+    let confirmed = loop {
+        if let Ok(Event::Key(key)) = event::read() {
+            break matches!(key.code, KeyCode::Char('y' | 'Y'));
+        }
+    };
+
+    if !confirmed {
+        dim_msg("Purge cancelled.".into());
+        return;
+    }
+
+    match session.db.purge_compacted(min_age_days).await {
+        Ok(deleted) => {
+            ok_msg(format!("Purged {deleted} archived messages."));
+        }
+        Err(e) => {
+            err_msg(format!("Purge failed: {e:#}"));
+        }
+    }
+}
+
+/// Format byte count as human-readable (KB, MB, GB).
+pub(crate) fn format_bytes(bytes: i64) -> String {
+    const KB: i64 = 1024;
+    const MB: i64 = 1024 * KB;
+    const GB: i64 = 1024 * MB;
+    if bytes >= GB {
+        format!("{:.1}GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1}MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.0}KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
+// ── MCP (native TUI) ───────────────────────────────────────────
 
 #[allow(unused_variables)]
 pub(crate) async fn handle_mcp(
