@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **Horizontal overflow indicators** — textarea input shows dim `→` / `←` arrows
+  at the edges when content extends beyond the visible width (#416)
+
 ## [0.1.7] - 2026-03-12
 
 ### Added
