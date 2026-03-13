@@ -164,7 +164,7 @@ async fn main() -> Result<()> {
     let project_root = std::fs::canonicalize(&project_root)?;
 
     // Initialize logging to file (invisible to user)
-    let log_dir = project_root.join(".koda_logs");
+    let log_dir = koda_core::db::config_dir()?.join("logs");
     std::fs::create_dir_all(&log_dir)?;
     let file_appender = tracing_appender::rolling::daily(&log_dir, "koda.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);

@@ -26,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   prompts and scrollback corruption on resize (#415, #417)
 - **Ctrl+L screen refresh** — standard Unix convention cleans up visual
   artifacts from resize reflow; resize warning guides users (#418, #420)
+- **Logs moved to `~/.config/koda/logs/`** — no longer creates `.koda_logs/`
+  in the project directory
 
 ## [0.1.7] - 2026-03-12
 
