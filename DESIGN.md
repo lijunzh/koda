@@ -107,10 +107,10 @@ search, web fetch, memory, agents). Domain-specific capabilities are split
 into two tiers:
 
 - **First-party libraries** (AST analysis, email): Ship in the same workspace
-  as library crates with thin MCP binary wrappers. `koda-cli` calls the
+  as library crates with thin MCP binary wrappers. `koda-core` calls the
   library functions directly — zero IPC, zero process management. The MCP
   binaries remain available for external consumers (other editors, standalone
-  use). `koda-core` stays dependency-free from these domains.
+  use).
 - **Third-party / external capabilities** (browser, calendar, etc.): Delivered
   as auto-provisioned MCP servers, installed on demand.
 
