@@ -131,9 +131,9 @@ are instant.
 
 **Dependency graph**:
 ```
-koda-cli → koda-core  (inference engine, zero domain deps)
-         → koda-ast   (direct library call)
-         → koda-email (direct library call)
+koda-cli → koda-core  (inference engine + first-party tool calls)
+                    → koda-ast   (direct library call from ToolRegistry)
+                    → koda-email (direct library call from ToolRegistry)
 
 koda-ast/main.rs  → thin MCP wrapper (for external use)
 koda-email/main.rs → thin MCP wrapper (for external use)
@@ -141,9 +141,8 @@ koda-email/main.rs → thin MCP wrapper (for external use)
 
 **Rationale**: MCP is the right protocol for *external* tool integration —
 not for in-repo capabilities that share the same workspace and release cycle.
-First-party libraries eliminate IPC overhead while preserving clean boundaries:
-`koda-core` has zero domain-specific deps, and each library is independently
-testable and usable via MCP by external consumers.
+First-party libraries eliminate IPC overhead while keeping each domain
+independently testable and usable via MCP by external consumers.
 
 **MCP server language**: Default to Rust (`cargo binstall`) for koda-maintained
 servers. Use Node/Python when critical libraries only exist in those ecosystems.
