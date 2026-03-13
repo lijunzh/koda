@@ -16,7 +16,6 @@ pub enum ReplAction {
     SetupProvider(ProviderType, String), // (provider_type, base_url)
     PickProvider,
     ShowHelp,
-    ShowCost,
     ListSessions,
     ResumeSession(String),
     DeleteSession(String),
@@ -74,8 +73,6 @@ pub async fn handle_command(
         },
 
         "/help" => ReplAction::ShowHelp,
-
-        "/cost" => ReplAction::ShowCost,
 
         "/diff" => match arg {
             Some("review") => {
