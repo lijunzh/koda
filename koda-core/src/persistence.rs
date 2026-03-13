@@ -113,6 +113,19 @@ pub struct SessionInfo {
     pub total_tokens: i64,
 }
 
+/// Stats about compacted (archived) messages in the database.
+#[derive(Debug, Clone, Default)]
+pub struct CompactedStats {
+    /// Number of compacted messages.
+    pub message_count: i64,
+    /// Number of sessions with compacted messages.
+    pub session_count: i64,
+    /// Approximate size in bytes of compacted message content.
+    pub size_bytes: i64,
+    /// ISO 8601 timestamp of the oldest compacted message.
+    pub oldest: Option<String>,
+}
+
 /// Core storage contract for sessions, messages, and metadata.
 #[async_trait::async_trait]
 pub trait Persistence: Send + Sync {
@@ -181,6 +194,14 @@ pub trait Persistence: Send + Sync {
         summary: &str,
         preserve_count: usize,
     ) -> Result<usize>;
+
+    // ── Purge ──
+
+    /// Stats about compacted (archived) messages across all sessions.
+    async fn compacted_stats(&self) -> Result<CompactedStats>;
+    /// Permanently delete compacted messages older than `min_age_days`.
+    /// Returns the number of messages deleted.
+    async fn purge_compacted(&self, min_age_days: u32) -> Result<usize>;
 
     // ── Metadata ──
 

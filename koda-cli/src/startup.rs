@@ -160,6 +160,28 @@ pub fn print_resume_hint(session_id: &str) {
     ));
 }
 
+/// Nudge threshold: 500MB of compacted data.
+const PURGE_NUDGE_BYTES: i64 = 500 * 1024 * 1024;
+
+/// Print a one-line nudge if compacted data exceeds 500MB.
+pub async fn print_purge_nudge_if_needed(db: &koda_core::db::Database) {
+    match <koda_core::db::Database as koda_core::persistence::Persistence>::compacted_stats(db)
+        .await
+    {
+        Ok(stats) if stats.size_bytes >= PURGE_NUDGE_BYTES => {
+            let size = crate::tui_wizards::format_bytes(stats.size_bytes);
+            tui_output::write_line(&Line::from(vec![
+                Span::styled("  \u{1f4a1} ", Style::default()),
+                Span::styled(
+                    format!("{size} of archived history — run /purge to clean up"),
+                    DIM,
+                ),
+            ]));
+        }
+        _ => {} // No stats, no nudge
+    }
+}
+
 // ── Helpers ─────────────────────────────────────────────────
 
 /// Visible character width of a Span (emoji = 2, ASCII = 1).

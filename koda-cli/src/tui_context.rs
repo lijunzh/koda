@@ -158,7 +158,15 @@ impl TuiContext {
             Arc::new(koda_core::agent::KodaAgent::new(&config, project_root.clone()).await?);
         crate::startup::print_mcp_status(&agent.mcp_statuses);
 
-        let session = KodaSession::new(session_id, agent.clone(), db, &config, ApprovalMode::Auto);
+        let session = KodaSession::new(
+            session_id,
+            agent.clone(),
+            db.clone(),
+            &config,
+            ApprovalMode::Auto,
+        );
+
+        crate::startup::print_purge_nudge_if_needed(&db).await;
 
         let shared_mode = approval::new_shared_mode(ApprovalMode::Auto);
 

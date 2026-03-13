@@ -7,7 +7,8 @@ Refer to this when the user asks "what can you do?" or about features.
 /agent — list sub-agents | /compact — reclaim context
 /diff — git diff/review/commit | /exit — quit | /expand — show full tool output
 /mcp — MCP server management | /memory — persistent memory | /model — switch model
-/provider — switch provider | /sessions — resume/delete sessions | /skills — list skills
+/provider — switch provider | /purge — delete archived history
+/sessions — resume/delete sessions | /skills — list skills
 /undo — undo last turn | /verbose — toggle full tool output
 Shift+Tab — cycle approval mode (auto/confirm)
 

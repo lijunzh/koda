@@ -13,6 +13,7 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "/memory",
     "/model",
     "/provider",
+    "/purge",
     "/sessions",
     "/skills",
     "/undo",
