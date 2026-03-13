@@ -749,6 +749,19 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
             let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("?");
             format!("Fetch URL: {url}")
         }
+        "AstAnalysis" => {
+            let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("?");
+            let file = args
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("AST {action}: {file}")
+        }
+        "EmailSend" => {
+            let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("?");
+            let subject = args.get("subject").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("Send email to {to}: {subject}")
+        }
         _ => format!("Execute: {tool_name}"),
     }
 }

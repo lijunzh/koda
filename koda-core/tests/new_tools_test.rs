@@ -220,20 +220,26 @@ mod web_fetch {
 mod naming_convention {
     /// All built-in tool names must be PascalCase.
     const BUILTIN_TOOLS: &[&str] = &[
-        "Read",
-        "Write",
-        "Edit",
-        "Delete",
-        "List",
-        "Grep",
-        "Glob",
+        "ActivateSkill",
+        "AstAnalysis",
         "Bash",
-        "WebFetch",
+        "Delete",
+        "Edit",
+        "EmailRead",
+        "EmailSearch",
+        "EmailSend",
+        "Glob",
+        "Grep",
+        "InvokeAgent",
+        "List",
+        "ListAgents",
+        "ListSkills",
         "MemoryRead",
         "MemoryWrite",
-        "ShareReasoning",
-        "InvokeAgent",
-        "ListAgents",
+        "Read",
+        "RecallContext",
+        "WebFetch",
+        "Write",
     ];
 
     #[test]
@@ -266,7 +272,29 @@ mod naming_convention {
 
     #[test]
     fn test_expected_tool_count() {
-        // 14 built-in tools as of this version
-        assert_eq!(BUILTIN_TOOLS.len(), 14);
+        // 20 built-in tools as of v0.1.9+
+        assert_eq!(BUILTIN_TOOLS.len(), 20);
+    }
+
+    /// Ensure BUILTIN_TOOLS stays in sync with the actual registry.
+    /// If this fails, a tool was added/removed without updating BUILTIN_TOOLS above.
+    #[test]
+    fn test_builtin_list_matches_registry() {
+        let registry =
+            koda_core::tools::ToolRegistry::new(std::path::PathBuf::from("/tmp/test"), 100_000);
+        let actual: std::collections::HashSet<String> =
+            registry.all_builtin_tool_names().into_iter().collect();
+        let expected: std::collections::HashSet<String> =
+            BUILTIN_TOOLS.iter().map(|s| s.to_string()).collect();
+
+        let missing: Vec<_> = actual.difference(&expected).collect();
+        let extra: Vec<_> = expected.difference(&actual).collect();
+
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "BUILTIN_TOOLS is out of sync with the registry!\n  \
+             In registry but not in list: {missing:?}\n  \
+             In list but not in registry: {extra:?}"
+        );
     }
 }
