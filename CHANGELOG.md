@@ -9,6 +9,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-03-14
+
+### Removed
+- **MCP client** — removed the entire MCP client module (`koda-core/src/mcp/`),
+  `/mcp` slash command, auto-provisioning, and all integration points.
+  First-party tools (koda-ast, koda-email) were already migrated to direct
+  library calls in v0.1.9. Standalone MCP server binaries remain for external
+  consumers. Net -1,719 lines across 34 files (#443, #444)
+- **Capability registry** — removed auto-provisioning of third-party MCP servers.
+  Closed #274 (Playwright MCP) as dependent on removed infrastructure
+- **`rmcp` dependency** — removed from koda-core (still used by koda-ast and
+  koda-email standalone binaries)
+
+### Fixed
+- **Stale documentation** — updated CLAUDE.md, DESIGN.md, README.md,
+  capabilities.md, and user-guide.md to remove all MCP client references
+
 ## [0.1.9] - 2026-03-12
 
 ### Added
