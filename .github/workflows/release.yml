@@ -140,6 +140,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      # Publish order follows dependency graph:
+      # koda-ast, koda-email (no workspace deps) → koda-core → koda-cli
+      - name: Publish koda-ast
+        run: cargo publish -p koda-ast
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish koda-email
+        run: cargo publish -p koda-email
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Wait for crates.io index
+        run: sleep 30
       - name: Publish koda-core
         run: cargo publish -p koda-core
         env:
@@ -148,14 +160,6 @@ jobs:
         run: sleep 30
       - name: Publish koda-cli
         run: cargo publish -p koda-cli
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Publish koda-ast
-        run: cargo publish -p koda-ast
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Publish koda-email
-        run: cargo publish -p koda-email
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 

@@ -57,8 +57,8 @@ futures-util = "0.3"
 anyhow = "1"
 
 # First-party workspace libraries (direct calls)
-koda-ast = { path = "../koda-ast" }
-koda-email = { path = "../koda-email" }
+koda-ast = { path = "../koda-ast", version = "0.1.10" }
+koda-email = { path = "../koda-email", version = "0.1.10" }
 
 # Async trait support
 async-trait = "0.1"
