@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// Re-export core analysis functions at the crate root for convenience.
 pub use ast::{analyze_file, get_call_graph};
 
-/// Tool definition metadata for consumers (koda-cli, capability_registry).
+/// Tool definition metadata for consumers (koda-core ToolRegistry).
 ///
 /// This is the single source of truth for the AstAnalysis tool schema.
 /// Both the MCP wrapper (`main.rs`) and direct integrations use this.
