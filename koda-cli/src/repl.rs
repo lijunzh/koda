@@ -26,8 +26,6 @@ pub enum ReplAction {
     /// Purge compacted messages (optional age filter like "90d")
     Purge(Option<String>),
     /// Switch approval mode (with optional name, or interactive picker)
-    /// MCP server management command
-    McpCommand(String),
     /// Expand Nth most recent tool output (1 = last)
     Expand(usize),
     /// Toggle verbose tool output (None = toggle, Some = set)
@@ -94,8 +92,6 @@ pub async fn handle_command(
 
         "/compact" => ReplAction::Compact,
         "/purge" => ReplAction::Purge(arg.map(|s| s.to_string())),
-
-        "/mcp" => ReplAction::McpCommand(arg.unwrap_or("").to_string()),
 
         "/expand" => {
             let n: usize = arg.and_then(|s| s.parse().ok()).unwrap_or(1);
