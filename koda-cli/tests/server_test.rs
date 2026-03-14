@@ -128,7 +128,7 @@ fn test_server_new_session() {
         "method": "session/new",
         "params": {
             "cwd": project_dir.path().to_string_lossy(),
-            "mcpServers": []
+            "mcpServers": []  // Required by ACP protocol schema
         }
     });
     let resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &new_session);
@@ -168,7 +168,7 @@ fn test_server_cancel_notification() {
         "method": "session/new",
         "params": {
             "cwd": project_dir.path().to_string_lossy(),
-            "mcpServers": []
+            "mcpServers": []  // Required by ACP protocol schema
         }
     });
     let resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &new_session);

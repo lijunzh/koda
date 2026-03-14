@@ -25,7 +25,6 @@ pub enum ReplAction {
     Compact,
     /// Purge compacted messages (optional age filter like "90d")
     Purge(Option<String>),
-    /// Switch approval mode (with optional name, or interactive picker)
     /// Expand Nth most recent tool output (1 = last)
     Expand(usize),
     /// Toggle verbose tool output (None = toggle, Some = set)
