@@ -10,8 +10,6 @@ pub mod gemini;
 pub mod openai_compat;
 /// Streaming XML tag filter for think/reasoning tags.
 pub mod stream_tag_filter;
-/// Deprecated: use `stream_tag_filter` instead.
-pub mod think_tag_filter;
 
 /// Mock provider for deterministic testing.
 pub mod mock;

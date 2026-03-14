@@ -89,6 +89,26 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::output_caps::OutputCaps;
+
+/// Load email config from env, returning a `ToolResult` error if not configured.
+///
+/// Used by EmailRead, EmailSend, EmailSearch to avoid repeating the same
+/// match-and-return-error boilerplate three times.
+macro_rules! require_email_config {
+    ($self:ident) => {
+        match koda_email::config::EmailConfig::from_env() {
+            Ok(c) => c,
+            Err(e) => {
+                return ToolResult {
+                    output: format!(
+                        "Email not configured: {e:#}\n\n{}",
+                        koda_email::config::EmailConfig::setup_instructions()
+                    ),
+                };
+            }
+        }
+    };
+}
 use crate::providers::ToolDefinition;
 
 /// Shared file-read cache: tracks (size, mtime) per cache key so we can
@@ -424,17 +444,7 @@ impl ToolRegistry {
             }
 
             "EmailRead" => {
-                let config = match koda_email::config::EmailConfig::from_env() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        return ToolResult {
-                            output: format!(
-                                "Email not configured: {e:#}\n\n{}",
-                                koda_email::config::EmailConfig::setup_instructions()
-                            ),
-                        };
-                    }
-                };
+                let config = require_email_config!(self);
                 let count = args["count"].as_u64().unwrap_or(5).clamp(1, 20) as u32;
                 match koda_email::imap_client::read_emails(&config, count).await {
                     Ok(emails) if emails.is_empty() => Ok("No emails found in INBOX.".to_string()),
@@ -444,17 +454,7 @@ impl ToolRegistry {
             }
 
             "EmailSend" => {
-                let config = match koda_email::config::EmailConfig::from_env() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        return ToolResult {
-                            output: format!(
-                                "Email not configured: {e:#}\n\n{}",
-                                koda_email::config::EmailConfig::setup_instructions()
-                            ),
-                        };
-                    }
-                };
+                let config = require_email_config!(self);
                 let to = args["to"].as_str().unwrap_or("");
                 let subject = args["subject"].as_str().unwrap_or("");
                 let body = args["body"].as_str().unwrap_or("");
@@ -464,17 +464,7 @@ impl ToolRegistry {
             }
 
             "EmailSearch" => {
-                let config = match koda_email::config::EmailConfig::from_env() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        return ToolResult {
-                            output: format!(
-                                "Email not configured: {e:#}\n\n{}",
-                                koda_email::config::EmailConfig::setup_instructions()
-                            ),
-                        };
-                    }
-                };
+                let config = require_email_config!(self);
                 let query = args["query"].as_str().unwrap_or("");
                 let max = args["max_results"].as_u64().unwrap_or(10).clamp(1, 50) as u32;
                 match koda_email::imap_client::search_emails(&config, query, max).await {
