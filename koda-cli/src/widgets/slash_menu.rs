@@ -62,21 +62,20 @@ mod tests {
         ("/diff", "Diff"),
         ("/exit", "Quit"),
         ("/expand", "Expand"),
-        ("/mcp", "MCP"),
         ("/model", "Pick model"),
     ];
 
     #[test]
     fn from_input_all() {
         let state = from_input(TEST_COMMANDS, "/").unwrap();
-        assert_eq!(state.filtered.len(), 8);
+        assert_eq!(state.filtered.len(), 7);
     }
 
     #[test]
     fn from_input_filtered() {
         let state = from_input(TEST_COMMANDS, "/m").unwrap();
-        assert_eq!(state.filtered.len(), 2);
-        assert_eq!(state.filtered[0].command, "/mcp");
+        assert_eq!(state.filtered.len(), 1);
+        assert_eq!(state.filtered[0].command, "/model");
     }
 
     #[test]

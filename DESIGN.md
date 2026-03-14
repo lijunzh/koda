@@ -100,34 +100,26 @@ mode is optional for external clients.
 messages, tool calls with permissions, and status updates — exactly what
 Koda needs. Adopting ACP gives us Zed integration for free.
 
-### 3. Extensibility: Thin Core + First-Party Libraries + Auto-Provisioned MCP
+### 3. Extensibility: Thin Core + First-Party Libraries
 
 **Decision**: The core binary contains only essential tools (file ops, shell,
 search, web fetch, memory, agents). Domain-specific capabilities are split
-into two tiers:
+into first-party library crates:
 
 - **First-party libraries** (AST analysis, email): Ship in the same workspace
-  as library crates with thin MCP binary wrappers. `koda-core` calls the
+  as library crates with standalone MCP binary wrappers. `koda-core` calls the
   library functions directly — zero IPC, zero process management. The MCP
   binaries remain available for external consumers (other editors, standalone
   use).
-- **Third-party / external capabilities** (browser, calendar, etc.): Delivered
-  as auto-provisioned MCP servers, installed on demand.
 
 **Principle evolution**: Early v0.1.x compiled everything into one binary.
-As the vision expanded beyond coding, we adopted MCP for all domain-specific
-capabilities ([#113](https://github.com/lijunzh/koda/issues/113)). In practice,
-routing in-repo capabilities through stdio JSON-RPC added process management
-overhead and IPC failure modes for functionality that ships in the same
-workspace. The current design distinguishes between first-party capabilities
-(library + optional MCP wrapper) and third-party capabilities (MCP only).
-See [#431](https://github.com/lijunzh/koda/issues/431) for the migration.
-
-**How it works for third-party tools**: When the LLM calls a tool that isn't
-built-in or registered as a first-party library, koda checks an MCP capability
-registry, auto-installs the matching server, connects it, and retries —
-transparently. The user sees a brief spinner on first use; subsequent calls
-are instant.
+As the vision expanded beyond coding, we initially adopted MCP for all
+domain-specific capabilities ([#113](https://github.com/lijunzh/koda/issues/113)).
+In practice, routing in-repo capabilities through stdio JSON-RPC added process
+management overhead and IPC failure modes for functionality that ships in the
+same workspace. [#431](https://github.com/lijunzh/koda/issues/431) migrated
+first-party tools to direct library calls. [#443](https://github.com/lijunzh/koda/issues/443)
+removed the now-unused MCP client entirely.
 
 **Dependency graph**:
 ```
@@ -135,16 +127,16 @@ koda-cli → koda-core  (inference engine + first-party tool calls)
                     → koda-ast   (direct library call from ToolRegistry)
                     → koda-email (direct library call from ToolRegistry)
 
-koda-ast/main.rs  → thin MCP wrapper (for external use)
-koda-email/main.rs → thin MCP wrapper (for external use)
+koda-ast/main.rs  → standalone MCP server (for external consumers)
+koda-email/main.rs → standalone MCP server (for external consumers)
 ```
 
-**Rationale**: MCP is the right protocol for *external* tool integration —
-not for in-repo capabilities that share the same workspace and release cycle.
-First-party libraries eliminate IPC overhead while keeping each domain
-independently testable and usable via MCP by external consumers.
+**Rationale**: For in-repo capabilities that share the same workspace and
+release cycle, direct library calls are simpler, faster, and more reliable
+than IPC. The standalone MCP binaries keep each domain independently
+testable and usable by external consumers.
 
-**MCP server language**: Default to Rust (`cargo binstall`) for koda-maintained
+**Server language**: Default to Rust (`cargo binstall`) for koda-maintained
 servers. Use Node/Python when critical libraries only exist in those ecosystems.
 See [#123](https://github.com/lijunzh/koda/issues/123) for tradeoff analysis.
 
@@ -392,15 +384,12 @@ For approval mode tables, tool effect matrix, and operational details, see
 **Key design choices**:
 - Sub-agents inherit the parent's approval mode (clamped — Auto parent still
   gets Confirm child if the child is set to Confirm)
-- MCP tool classification from schema annotations (`readOnlyHint`, `destructiveHint`)
-  with `.mcp.json` overrides taking precedence
 - No kernel-level sandboxing yet — seccomp/landlock is a v1.0 concern
 
 **Accepted risks**:
 1. No kernel-level sandboxing — in-process only
 2. Shell command parsing is heuristic — complex pipelines can bypass
-3. MCP `readOnly` is trust-based — malicious servers could lie
-4. Outside-project writes in Confirm mode show confirm prompt instead of clean block
+3. Outside-project writes in Confirm mode show confirm prompt instead of clean block
 
 ### 19. ~~Review Depth as Isolation Boundaries~~ (v0.1.4 — RETIRED in #355)
 

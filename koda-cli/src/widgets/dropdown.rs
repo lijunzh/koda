@@ -220,7 +220,6 @@ mod tests {
             SimpleItem::new("/diff", "Diff"),
             SimpleItem::new("/exit", "Quit"),
             SimpleItem::new("/expand", "Expand"),
-            SimpleItem::new("/mcp", "MCP"),
             SimpleItem::new("/model", "Pick model"),
         ]
     }
@@ -228,7 +227,7 @@ mod tests {
     #[test]
     fn new_contains_all() {
         let dd = DropdownState::new(test_items(), "Test");
-        assert_eq!(dd.filtered.len(), 8);
+        assert_eq!(dd.filtered.len(), 7);
         assert_eq!(dd.selected, 0);
     }
 
@@ -236,8 +235,8 @@ mod tests {
     fn filter_narrows() {
         let mut dd = DropdownState::new(test_items(), "Test");
         assert!(dd.apply_filter("/m"));
-        assert_eq!(dd.filtered.len(), 2); // /mcp, /model
-        assert_eq!(dd.filtered[0].label(), "/mcp");
+        assert_eq!(dd.filtered.len(), 1); // /model
+        assert_eq!(dd.filtered[0].label(), "/model");
     }
 
     #[test]
@@ -250,7 +249,7 @@ mod tests {
     #[test]
     fn filter_case_insensitive() {
         let mut dd = DropdownState::new(test_items(), "Test");
-        assert!(dd.apply_filter("/MCP"));
+        assert!(dd.apply_filter("/MODEL"));
         assert_eq!(dd.filtered.len(), 1);
     }
 
@@ -260,7 +259,7 @@ mod tests {
         assert_eq!(dd.selected_item().unwrap().label(), "/agent");
         dd.down();
         assert_eq!(dd.selected_item().unwrap().label(), "/compact");
-        for _ in 0..6 {
+        for _ in 0..5 {
             dd.down();
         }
         assert_eq!(dd.selected_item().unwrap().label(), "/model");

@@ -13,7 +13,6 @@ For developer docs (building, testing, contributing), see [CLAUDE.md](../CLAUDE.
 - [File References](#file-references)
 - [Memory System](#memory-system)
 - [Agents](#agents)
-- [MCP Servers](#mcp-servers)
 - [Git Checkpointing](#git-checkpointing)
 - [Headless Mode](#headless-mode)
 - [Security Model](#security-model)
@@ -169,7 +168,6 @@ Type `/` to open the command palette with descriptions. Tab to complete.
 | `/diff` | Show git diff, review changes, or commit |
 | `/exit` | Quit the session |
 | `/expand` | Show full output of last collapsed tool call |
-| `/mcp` | MCP server management (status, add, remove) |
 | `/memory` | View or save project and global memory |
 | `/model` | Pick a model interactively |
 | `/provider` | Switch LLM provider |
@@ -264,53 +262,6 @@ produces a Confirm child).
 
 ---
 
-## MCP Servers
-
-MCP (Model Context Protocol) servers extend Koda with external tool
-capabilities — AST analysis, email, databases, GitHub, and anything
-with an MCP adapter.
-
-### Configuration
-
-Create `.mcp.json` in your project root (or `~/.config/koda/mcp.json` for global):
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-      "env": { "NODE_ENV": "production" },
-      "timeout": 30
-    }
-  },
-  "toolOverrides": {
-    "filesystem.write_file": "Destructive"
-  }
-}
-```
-
-**Server fields**:
-- `command` (required) — executable to launch (e.g. `npx`, `uvx`, `python`)
-- `args` — command-line arguments
-- `env` — environment variables (supports `$VAR` and `${VAR}` expansion)
-- `timeout` — connection timeout in seconds (default: 30)
-
-**Tool effect overrides**: Override the safety classification of specific
-MCP tools. Values: `ReadOnly`, `LocalMutation`, `RemoteAction`, `Destructive`.
-
-### Auto-provisioned servers
-
-Koda ships two MCP servers that auto-install on first use:
-- **koda-ast** — tree-sitter AST analysis (Rust, Python, JS, TS, Go, Java, C, C++)
-- **koda-email** — email via IMAP/SMTP (requires `KODA_EMAIL_*` env vars)
-
-### Management
-
-Use `/mcp` to view status, add, or remove servers interactively.
-
----
-
 ## Git Checkpointing
 
 Koda automatically snapshots your working tree before each inference turn
@@ -377,7 +328,6 @@ The security model focuses on preventing accidental blast radius.
 
 - Kernel-level sandboxing (no seccomp/landlock) — planned for v1.0
 - Complex shell pipelines that evade heuristic parsing
-- Malicious MCP servers lying about `readOnly` annotations
 - Auto mode sub-agents with unconstrained `FullProject` scope
 
 For the full security analysis, see [DESIGN.md §18](../DESIGN.md).

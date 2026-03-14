@@ -15,16 +15,13 @@
 //!  8. Destructive bash (rm -rf, git push --force)
 //!  9. Bash with path escape (cd /tmp)
 //! 10. Sub-agent invocation (InvokeAgent)
-//! 11. MCP tool (readOnly: true) — via mcp_effect override
-//! 12. MCP tool (readOnly: false) — via mcp_effect override
-//! 13. MemoryWrite
-//! 14. WebFetch (GET)
-//! 15. gh issue create (LocalMutation bash)
+//! 11. MemoryWrite
+//! 12. WebFetch (GET)
+//! 13. gh issue create (LocalMutation bash)
 //!
 //! Columns: Auto, Confirm
 
 use koda_core::approval::{ApprovalMode, ToolApproval, check_tool};
-use koda_core::tools::ToolEffect;
 use std::path::Path;
 
 fn root() -> &'static Path {
@@ -32,13 +29,9 @@ fn root() -> &'static Path {
 }
 
 /// Helper: check a tool in both modes and return (auto, confirm).
-fn check_both(
-    tool: &str,
-    args: &serde_json::Value,
-    mcp_effect: Option<ToolEffect>,
-) -> (ToolApproval, ToolApproval) {
-    let auto = check_tool(tool, args, ApprovalMode::Auto, Some(root()), mcp_effect);
-    let confirm = check_tool(tool, args, ApprovalMode::Confirm, Some(root()), mcp_effect);
+fn check_both(tool: &str, args: &serde_json::Value) -> (ToolApproval, ToolApproval) {
+    let auto = check_tool(tool, args, ApprovalMode::Auto, Some(root()));
+    let confirm = check_tool(tool, args, ApprovalMode::Confirm, Some(root()));
     (auto, confirm)
 }
 
@@ -47,7 +40,7 @@ fn check_both(
 #[test]
 fn matrix_read_inside_project() {
     let args = serde_json::json!({"path": "src/main.rs"});
-    let (auto, confirm) = check_both("Read", &args, None);
+    let (auto, confirm) = check_both("Read", &args);
     assert_eq!(auto, ToolApproval::AutoApprove);
     assert_eq!(confirm, ToolApproval::AutoApprove);
 }
@@ -59,8 +52,7 @@ fn matrix_read_inside_project() {
 #[test]
 fn matrix_read_outside_project() {
     let args = serde_json::json!({"path": "/etc/passwd"});
-    let (auto, confirm) = check_both("Read", &args, None);
-    // Read is always ReadOnly at the approval level
+    let (auto, confirm) = check_both("Read", &args);
     assert_eq!(auto, ToolApproval::AutoApprove);
     assert_eq!(confirm, ToolApproval::AutoApprove);
 }
@@ -70,7 +62,7 @@ fn matrix_read_outside_project() {
 #[test]
 fn matrix_write_inside_project() {
     let args = serde_json::json!({"path": "src/main.rs"});
-    let (auto, confirm) = check_both("Write", &args, None);
+    let (auto, confirm) = check_both("Write", &args);
     assert_eq!(auto, ToolApproval::AutoApprove);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
@@ -80,8 +72,7 @@ fn matrix_write_inside_project() {
 #[test]
 fn matrix_write_outside_project() {
     let args = serde_json::json!({"path": "/etc/hosts"});
-    let (auto, confirm) = check_both("Write", &args, None);
-    // Hardcoded floor: outside project → NeedsConfirmation
+    let (auto, confirm) = check_both("Write", &args);
     assert_eq!(auto, ToolApproval::NeedsConfirmation);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
@@ -91,8 +82,7 @@ fn matrix_write_outside_project() {
 #[test]
 fn matrix_delete_files() {
     let args = serde_json::json!({"file_path": "old.rs"});
-    let (auto, confirm) = check_both("Delete", &args, None);
-    // Delete is Destructive
+    let (auto, confirm) = check_both("Delete", &args);
     assert_eq!(auto, ToolApproval::NeedsConfirmation);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
@@ -102,7 +92,7 @@ fn matrix_delete_files() {
 #[test]
 fn matrix_safe_bash() {
     let args = serde_json::json!({"command": "git status"});
-    let (auto, confirm) = check_both("Bash", &args, None);
+    let (auto, confirm) = check_both("Bash", &args);
     assert_eq!(auto, ToolApproval::AutoApprove);
     assert_eq!(confirm, ToolApproval::AutoApprove);
 }
@@ -112,7 +102,7 @@ fn matrix_safe_bash() {
 #[test]
 fn matrix_bash_write_side_effect() {
     let args = serde_json::json!({"command": "echo hello > output.txt"});
-    let (auto, confirm) = check_both("Bash", &args, None);
+    let (auto, confirm) = check_both("Bash", &args);
     assert_eq!(auto, ToolApproval::AutoApprove);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
@@ -122,8 +112,8 @@ fn matrix_bash_write_side_effect() {
 #[test]
 fn matrix_destructive_bash() {
     let args = serde_json::json!({"command": "rm -rf target/"});
-    let (auto, confirm) = check_both("Bash", &args, None);
-    assert_eq!(auto, ToolApproval::NeedsConfirmation); // destructive floor
+    let (auto, confirm) = check_both("Bash", &args);
+    assert_eq!(auto, ToolApproval::NeedsConfirmation);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
 
@@ -132,8 +122,7 @@ fn matrix_destructive_bash() {
 #[test]
 fn matrix_bash_path_escape() {
     let args = serde_json::json!({"command": "cd /tmp && ls"});
-    let (auto, confirm) = check_both("Bash", &args, None);
-    // Path lint triggers NeedsConfirmation floor
+    let (auto, confirm) = check_both("Bash", &args);
     assert_eq!(auto, ToolApproval::NeedsConfirmation);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
@@ -143,69 +132,37 @@ fn matrix_bash_path_escape() {
 #[test]
 fn matrix_invoke_agent() {
     let args = serde_json::json!({"agent_name": "reviewer", "prompt": "review"});
-    let (auto, confirm) = check_both("InvokeAgent", &args, None);
-    // InvokeAgent is ReadOnly (sub-agents inherit parent's mode)
+    let (auto, confirm) = check_both("InvokeAgent", &args);
     assert_eq!(auto, ToolApproval::AutoApprove);
     assert_eq!(confirm, ToolApproval::AutoApprove);
 }
 
-// ── Row 11: MCP tool (readOnly: true) ──
-
-#[test]
-fn matrix_mcp_readonly_true() {
-    let args = serde_json::json!({});
-    let (auto, confirm) = check_both("github.list_issues", &args, Some(ToolEffect::ReadOnly));
-    assert_eq!(auto, ToolApproval::AutoApprove);
-    assert_eq!(confirm, ToolApproval::AutoApprove);
-}
-
-// ── Row 12: MCP tool (readOnly: false/unset) ──
-
-#[test]
-fn matrix_mcp_readonly_false() {
-    let args = serde_json::json!({});
-    let (auto, confirm) = check_both("filesystem.write", &args, Some(ToolEffect::LocalMutation));
-    assert_eq!(auto, ToolApproval::AutoApprove);
-    assert_eq!(confirm, ToolApproval::NeedsConfirmation);
-}
-
-// ── Row 13: MemoryWrite ──
+// ── Row 11: MemoryWrite ──
 
 #[test]
 fn matrix_memory_write() {
     let args = serde_json::json!({"content": "remember this"});
-    let (auto, confirm) = check_both("MemoryWrite", &args, None);
+    let (auto, confirm) = check_both("MemoryWrite", &args);
     assert_eq!(auto, ToolApproval::AutoApprove);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
 
-// ── Row 14: WebFetch (GET) ──
+// ── Row 12: WebFetch (GET) ──
 
 #[test]
 fn matrix_web_fetch() {
     let args = serde_json::json!({"url": "https://example.com"});
-    let (auto, confirm) = check_both("WebFetch", &args, None);
+    let (auto, confirm) = check_both("WebFetch", &args);
     assert_eq!(auto, ToolApproval::AutoApprove);
     assert_eq!(confirm, ToolApproval::AutoApprove);
 }
 
-// ── Row 15: gh issue create (LocalMutation bash — no longer RemoteAction) ──
+// ── Row 13: gh issue create (LocalMutation bash) ──
 
 #[test]
 fn matrix_gh_issue_create() {
     let args = serde_json::json!({"command": "gh issue create --title 'bug'"});
-    let (auto, confirm) = check_both("Bash", &args, None);
-    // gh CLI is LocalMutation (simplified: no RemoteAction category for bash)
+    let (auto, confirm) = check_both("Bash", &args);
     assert_eq!(auto, ToolApproval::AutoApprove);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
-}
-
-// ── Row 16: MCP tool (config override: RemoteAction) ──
-
-#[test]
-fn matrix_mcp_config_override_remote_action() {
-    let args = serde_json::json!({});
-    let (auto, confirm) = check_both("github.create_issue", &args, Some(ToolEffect::RemoteAction));
-    assert_eq!(auto, ToolApproval::AutoApprove);
-    assert_eq!(confirm, ToolApproval::AutoApprove);
 }

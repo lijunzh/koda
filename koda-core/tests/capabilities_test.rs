@@ -9,7 +9,6 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "/diff",
     "/exit",
     "/expand",
-    "/mcp",
     "/memory",
     "/model",
     "/provider",
@@ -34,10 +33,8 @@ fn test_all_commands_documented_in_capabilities() {
 #[test]
 fn test_capabilities_mentions_key_features() {
     let must_mention = [
-        "MCP",
         "Memory",
         "@file",
-        ".mcp.json",
         "MEMORY.md",
         "CLAUDE.md",
         "auto",
@@ -79,7 +76,6 @@ fn test_user_guide_covers_key_sections() {
         "File References",
         "Memory System",
         "Agents",
-        "MCP Servers",
         "Git Checkpointing",
         "Headless Mode",
         "Security Model",

@@ -47,7 +47,7 @@ pub(crate) fn can_parallelize(
     let all_approved = !tool_calls.iter().any(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            approval::check_tool(&tc.function_name, &args, mode, Some(project_root), None,),
+            approval::check_tool(&tc.function_name, &args, mode, Some(project_root)),
             ToolApproval::NeedsConfirmation | ToolApproval::Blocked
         )
     });
@@ -220,7 +220,7 @@ pub(crate) async fn execute_tools_split_batch(
     let (parallel, sequential): (Vec<_>, Vec<_>) = tool_calls.iter().partition(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            approval::check_tool(&tc.function_name, &args, mode, Some(project_root), None,),
+            approval::check_tool(&tc.function_name, &args, mode, Some(project_root),),
             ToolApproval::AutoApprove
         )
     });
@@ -362,13 +362,8 @@ pub(crate) async fn execute_tools_sequential(
         });
 
         // Check approval for this tool call
-        let approval = approval::check_tool(
-            &tc.function_name,
-            &parsed_args,
-            mode,
-            Some(project_root),
-            None,
-        );
+        let approval =
+            approval::check_tool(&tc.function_name, &parsed_args, mode, Some(project_root));
 
         match approval {
             ToolApproval::AutoApprove => {
@@ -630,13 +625,8 @@ pub(crate) async fn execute_sub_agent(
             // Sub-agents inherit the parent's approval mode
             let parsed_args: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or_default();
-            let approval = approval::check_tool(
-                &tc.function_name,
-                &parsed_args,
-                mode,
-                Some(project_root),
-                None,
-            );
+            let approval =
+                approval::check_tool(&tc.function_name, &parsed_args, mode, Some(project_root));
 
             let output = match approval {
                 ToolApproval::AutoApprove => {

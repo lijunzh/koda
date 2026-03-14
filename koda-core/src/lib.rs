@@ -36,8 +36,6 @@ pub mod inference_helpers;
 pub mod keystore;
 /// Guardrail against runaway tool-call loops.
 pub mod loop_guard;
-/// MCP (Model Context Protocol) server connections and tool routing.
-pub mod mcp;
 /// Project memory — `MEMORY.md` / `CLAUDE.md` read/write.
 pub mod memory;
 /// Hardcoded context-window lookup table (fallback when API doesn't report).

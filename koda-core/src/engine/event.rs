@@ -340,11 +340,6 @@ pub enum SlashCommand {
         /// Approval mode name.
         mode: String,
     },
-    /// MCP server management command.
-    McpCommand {
-        /// Raw MCP subcommand arguments.
-        args: String,
-    },
     /// Show token usage for this session.
     Cost,
     /// View or save memory.
