@@ -316,13 +316,26 @@ Both `koda-ast` and `koda-email` use the same MCP integration test pattern:
 This pattern should be reused for any future MCP servers added to the workspace.
 See `koda-ast/tests/mcp_integration_test.rs` for the reference implementation.
 
-### Adding a new MCP server checklist
+### Adding a new first-party capability checklist
 
-1. Create `koda-<name>/` workspace member with `src/main.rs`, `Cargo.toml`
+For capabilities that ship in the koda workspace (same release cycle):
+
+1. Create `koda-<name>/` workspace member with `src/lib.rs` + `src/main.rs`, `Cargo.toml`
 2. Add to workspace `members` in root `Cargo.toml`
-3. Register tools in `koda-core/src/mcp/capability_registry.rs`
-4. Add `--version` flag to `main()`
-5. Write MCP integration tests in `tests/mcp_integration_test.rs`
-6. Update `release.yml`: version verify, build, package, publish, Homebrew
-7. Sync version with workspace (currently 0.1.9)
-8. Update this file (claude.md)
+3. Export `pub fn tool_definitions()` from the library crate
+4. Add `koda-<name>` as a dependency of `koda-core` in `Cargo.toml`
+5. Register tools via `tool_definitions()` in `ToolRegistry::new()`
+6. Add match arms in `ToolRegistry::execute()` for each tool
+7. Add `--version` flag to `main.rs` (MCP wrapper)
+8. Write MCP integration tests in `tests/mcp_integration_test.rs`
+9. Update `release.yml`: version verify, build, package, publish, Homebrew
+10. Sync version with workspace (currently 0.1.9)
+11. Update this file (CLAUDE.md)
+
+### Adding a new third-party MCP server checklist
+
+For external capabilities (different release cycle, auto-provisioned):
+
+1. Add an entry to `koda-core/src/mcp/capability_registry.rs`
+2. Register tool definitions in `capability_registry::tool_definitions()`
+3. Update this file (CLAUDE.md)
