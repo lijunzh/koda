@@ -7,7 +7,7 @@ pub mod config;
 pub mod imap_client;
 pub mod smtp_client;
 
-/// Tool definition metadata for consumers (koda-cli, capability_registry).
+/// Tool definition metadata for consumers (koda-core ToolRegistry).
 ///
 /// This is the single source of truth for email tool schemas.
 /// Both the MCP wrapper (`main.rs`) and direct integrations use this.
