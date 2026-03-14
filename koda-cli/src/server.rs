@@ -56,7 +56,7 @@ pub async fn run_stdio_server(project_root: PathBuf, mut config: KodaConfig) -> 
         .query_and_apply_capabilities(tmp_provider.as_ref())
         .await;
 
-    // Build agent (tools, MCP, system prompt)
+    // Build agent (tools, system prompt)
     let agent = Arc::new(KodaAgent::new(&config, project_root.clone()).await?);
 
     let pending_approvals = Arc::new(Mutex::new(HashMap::new()));

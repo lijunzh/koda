@@ -121,37 +121,6 @@ pub fn print_update_notice(current: &str, latest: &str) {
     tui_output::write_blank();
 }
 
-/// Print MCP server connection status.
-pub fn print_mcp_status(statuses: &[(String, Result<usize, String>)]) {
-    if statuses.is_empty() {
-        return;
-    }
-    tui_output::write_line(&Line::from(vec![Span::styled(
-        format!(
-            "  \u{1f50c} Connecting to {} MCP server(s)...",
-            statuses.len()
-        ),
-        WARM_ACCENT,
-    )]));
-    for (name, result) in statuses {
-        match result {
-            Ok(tool_count) => {
-                tui_output::write_line(&Line::from(vec![
-                    Span::styled("  \u{2713} ", Style::new().fg(Color::Green)),
-                    Span::raw(format!("{name} — {tool_count} tool(s)")),
-                ]));
-            }
-            Err(msg) => {
-                tui_output::write_line(&Line::from(vec![
-                    Span::styled("  \u{2717} ", Style::new().fg(Color::Red)),
-                    Span::raw(format!("{name} — {msg}")),
-                ]));
-            }
-        }
-    }
-    tui_output::write_blank();
-}
-
 /// Print session resume hint (after raw mode ends).
 pub fn print_resume_hint(session_id: &str) {
     tui_output::write_line(&Line::styled(

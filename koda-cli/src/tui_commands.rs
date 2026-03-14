@@ -113,11 +113,6 @@ pub async fn handle_slash_command(
             crate::tui_wizards::handle_purge(terminal, session, age_filter.as_deref()).await;
             SlashAction::Continue
         }
-        ReplAction::McpCommand(ref args) => {
-            crate::tui_wizards::handle_mcp(terminal, args, &agent.mcp_registry, project_root).await;
-            SlashAction::Continue
-        }
-
         ReplAction::Expand(n) => {
             handle_expand(terminal, renderer, n);
             SlashAction::Continue

@@ -182,19 +182,6 @@ mod repl_commands {
     }
 
     #[test]
-    fn mcp_bare_returns_mcp_command() {
-        assert!(matches!(dispatch("/mcp"), ReplAction::McpCommand(_)));
-    }
-
-    #[test]
-    fn mcp_with_arg_returns_mcp_command() {
-        assert!(matches!(dispatch("/mcp status"), ReplAction::McpCommand(_)));
-        if let ReplAction::McpCommand(arg) = dispatch("/mcp status") {
-            assert_eq!(arg, "status");
-        }
-    }
-
-    #[test]
     fn agent_returns_list_agents() {
         assert!(matches!(dispatch("/agent"), ReplAction::ListAgents));
     }
@@ -336,7 +323,6 @@ mod completions {
         "/cost",
         "/diff",
         "/help",
-        "/mcp",
         "/memory",
         "/model",
         "/provider",
@@ -349,7 +335,7 @@ mod completions {
 
     #[test]
     fn test_expected_commands_present() {
-        assert_eq!(EXPECTED_COMMANDS.len(), 11, "Expected 11 slash commands");
+        assert_eq!(EXPECTED_COMMANDS.len(), 10, "Expected 10 slash commands");
         for cmd in EXPECTED_COMMANDS {
             assert!(
                 EXPECTED_COMMANDS.contains(cmd),

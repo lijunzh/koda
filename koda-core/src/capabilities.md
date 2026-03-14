@@ -6,7 +6,7 @@ Refer to this when the user asks "what can you do?" or about features.
 
 /agent — list sub-agents | /compact — reclaim context
 /diff — git diff/review/commit | /exit — quit | /expand — show full tool output
-/mcp — MCP server management | /memory — persistent memory | /model — switch model
+/memory — persistent memory | /model — switch model
 /provider — switch provider | /purge — delete archived history
 /sessions — resume/delete sessions | /skills — list skills
 /undo — undo last turn | /verbose — toggle full tool output
@@ -43,8 +43,6 @@ Expert instruction modules — zero cost, instant activation via `ActivateSkill`
 
 - Project: `MEMORY.md` (also reads `CLAUDE.md`, `AGENTS.md`) | Global: `~/.config/koda/memory.md`
 
-### MCP
+### First-Party Libraries
 
-External tool servers configured in `.mcp.json` (project) or `~/.config/koda/mcp.json` (global).
-MCP tools appear with namespaced names like `github.create_issue`.
-Auto-provisioned: `koda-ast` (AST analysis), `koda-email` (email via IMAP/SMTP).
+Direct library integrations (no IPC): `koda-ast` (AST analysis), `koda-email` (email via IMAP/SMTP).

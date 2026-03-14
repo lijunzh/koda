@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Koda is a high-performance AI coding agent built in Rust (edition 2024). Four-crate workspace:
 - `koda-core` (library) — pure engine with zero terminal deps
 - `koda-cli` (binary `koda`) — CLI frontend with ratatui TUI
-- `koda-ast` (binary `koda-ast`) — MCP server for tree-sitter AST analysis
-- `koda-email` (binary `koda-email`) — MCP server for email via IMAP/SMTP
+- `koda-ast` (binary `koda-ast`) — tree-sitter AST analysis (library + standalone MCP server)
+- `koda-email` (binary `koda-email`) — email via IMAP/SMTP (library + standalone MCP server)
 
 See [DESIGN.md](DESIGN.md) for architectural decisions. See [#70](https://github.com/lijunzh/koda/issues/70) for the TUI design.
 
@@ -40,7 +40,7 @@ how mutations are gated:
 
 **When to update docs with a PR:**
 - User-facing feature added/changed → update root README + relevant crate README
-- MCP tool added/changed → update the crate README's tool/protocol section
+- Tool added/changed in koda-ast/koda-email → update the crate README's tool/protocol section
 - Architecture or design decision → add numbered entry to DESIGN.md with rationale
 - New crate → must ship with a README.md (required for crates.io)
 - Keep feature coverage symmetric — if AST and email have equivalent capabilities, they get equivalent documentation
@@ -60,8 +60,8 @@ cargo build --release -p koda-cli        # Release build (CLI only)
 cargo test --workspace --features koda-core/test-support  # Run all tests (incl. E2E)
 cargo test -p koda-core --features test-support          # Engine tests only
 cargo test -p koda-cli                                   # CLI tests only
-cargo test -p koda-ast                                   # AST MCP server tests
-cargo test -p koda-email                                 # Email MCP server tests
+cargo test -p koda-ast                                   # AST library + server tests
+cargo test -p koda-email                                 # Email library + server tests
 cargo test -p koda-core --test perf_test                 # Run a specific test file
 cargo fmt --all                          # Format all crates
 cargo fmt --all --check                  # Check formatting (CI enforced)
@@ -79,7 +79,7 @@ koda/
 ├── koda-core/              # Engine library (zero terminal deps)
 │   ├── src/
 │   │   ├── lib.rs          # Crate root
-│   │   ├── agent.rs        # KodaAgent (shared config: tools, prompt, MCP)
+│   │   ├── agent.rs        # KodaAgent (shared config: tools, prompt)
 │   │   ├── session.rs      # KodaSession (per-conversation: DB, provider, settings)
 │   │   ├── inference.rs    # Streaming inference loop + tool execution
 │   │   ├── inference_helpers.rs # Token estimation, message assembly, overflow detection
@@ -99,7 +99,6 @@ koda/
 │   │   ├── engine/         # EngineEvent, EngineCommand, EngineSink trait
 │   │   ├── providers/      # LLM providers (Anthropic, Gemini, OpenAI-compat, mock)
 │   │   ├── tools/          # Built-in tools (Bash, Read, Write, Edit, Glob, Grep, etc.)
-│   │   ├── mcp/            # MCP client (registry, config, capability_registry)
 │   │   ├── db.rs           # SQLite persistence (WAL mode, parameterized queries)
 │   │   └── config.rs       # Agent/provider config
 │   └── tests/              # Engine integration tests
@@ -109,7 +108,7 @@ koda/
 │   │   ├── tui_app.rs      # Main TUI event loop (ratatui Viewport::Inline)
 │   │   ├── tui_render.rs   # EngineEvent → ratatui Line/Span rendering
 │   │   ├── tui_commands.rs # Slash command dispatch (/help, /model, /sessions, etc.)
-│   │   ├── tui_wizards.rs  # Interactive wizards (/provider, /compact, /mcp, /agent)
+│   │   ├── tui_wizards.rs  # Interactive wizards (/provider, /compact, /agent)
 │   │   ├── tui_output.rs   # Output bridge: emit_line (ratatui) + write_line (crossterm)
 │   │   ├── tui_viewport.rs # Viewport layout + menu_area rendering
 │   │   ├── tui_types.rs    # MenuContent, UiEvent, shared TUI types
@@ -137,18 +136,18 @@ koda/
 │   │       ├── status_bar.rs# Model, mode, context meter, elapsed time
 │   │       └── text_input.rs# Inline text input (masked for API keys)
 │   └── tests/              # CLI integration tests
-├── koda-ast/               # MCP server: tree-sitter AST analysis
+├── koda-ast/               # Tree-sitter AST analysis (library + standalone MCP server)
 │   ├── src/
-│   │   ├── main.rs         # MCP server (rmcp, stdio transport)
+│   │   ├── main.rs         # Standalone MCP server (rmcp, stdio transport)
 │   │   └── ast.rs          # Tree-sitter analysis (Rust, Python, JS, TS)
-│   └── tests/              # MCP integration tests
-├── koda-email/             # MCP server: email via IMAP/SMTP
+│   └── tests/              # Integration tests
+├── koda-email/             # Email via IMAP/SMTP (library + standalone MCP server)
 │   ├── src/
-│   │   ├── main.rs         # MCP server (rmcp, stdio transport)
+│   │   ├── main.rs         # Standalone MCP server (rmcp, stdio transport)
 │   │   ├── config.rs       # Credential loading from KODA_EMAIL_* env vars
 │   │   ├── imap_client.rs  # IMAP read/search (sync imap crate + spawn_blocking)
 │   │   └── smtp_client.rs  # SMTP sending via lettre
-│   └── tests/              # MCP integration tests (two-layer)
+│   └── tests/              # Integration tests (two-layer)
 └── DESIGN.md               # Architecture decisions
 ```
 
@@ -179,7 +178,7 @@ Approval flows through async channels: engine emits `ApprovalRequest`, client se
 
 ### Key Types
 
-- **`KodaAgent`** — Shared resources (tools, system prompt, MCP). `Arc`-shareable.
+- **`KodaAgent`** — Shared resources (tools, system prompt). `Arc`-shareable.
 - **`KodaSession`** — Per-conversation state (DB, provider, settings). Has `run_turn()`.
 - **`EngineSink`** — Trait with single method: `fn emit(&self, event: EngineEvent)`.
 - **`CliSink`** — Channel-forwarding sink. Sends events to the TUI event loop via `UiEvent`.
@@ -216,8 +215,8 @@ cargo test --workspace --features koda-core/test-support
 # Individual crate tests
 cargo test -p koda-core --features test-support   # Engine (unit + E2E)
 cargo test -p koda-cli                             # CLI (unit + integration)
-cargo test -p koda-ast                             # AST MCP (unit + MCP protocol)
-cargo test -p koda-email                           # Email MCP (unit + MCP protocol)
+cargo test -p koda-ast                             # AST (unit + protocol)
+cargo test -p koda-email                           # Email (unit + protocol)
 
 # Live/opt-in tests (require external services)
 KODA_TEST_LMSTUDIO=1 cargo test -p koda-cli --test smoke_test -- --ignored
@@ -258,25 +257,25 @@ from production builds to keep `koda-core`'s public API clean.
 - `tests/smoke_test.rs` — headless prompt, tool use, session resume against LM Studio
 - Gated by `KODA_TEST_LMSTUDIO=1` env var; never runs in CI
 
-#### koda-ast (MCP server)
+#### koda-ast
 
 **Unit tests** — co-located in `src/`:
 - AST parsing, call graph extraction, language detection
 
-**MCP integration tests** — spawn binary, send JSON-RPC over stdio:
+**Integration tests** — spawn binary, send JSON-RPC over stdio:
 - `tests/mcp_integration_test.rs`:
   - `test_mcp_initialize` — server starts, reports capabilities
   - `test_mcp_tools_list` — AstAnalysis tool present
   - `test_mcp_analyze_file` — analyzes a real Rust file
   - `test_mcp_file_not_found` — graceful error for missing file
 
-#### koda-email (MCP server)
+#### koda-email
 
 Two-layer test strategy:
 
 **Layer 1 — Always run (no external deps):**
 
-Unit tests + MCP protocol tests. These verify the server starts,
+Unit tests + protocol tests. These verify the server starts,
 tools are registered, schemas are well-formed, and missing credentials
 produce helpful setup instructions instead of crashes.
 
@@ -304,16 +303,16 @@ cargo test -p koda-email -- --ignored
 - `test_live_email_read` — fetches real emails via IMAP
 - `test_live_email_search` — searches real mailbox
 
-### MCP integration test pattern
+### Integration test pattern (MCP servers)
 
-Both `koda-ast` and `koda-email` use the same MCP integration test pattern:
-1. Spawn the MCP server binary as a child process
+Both `koda-ast` and `koda-email` binaries use the same integration test pattern:
+1. Spawn the server binary as a child process
 2. Pipe JSON-RPC messages over stdin/stdout
 3. Send `initialize` + `notifications/initialized` handshake
 4. Call `tools/list` or `tools/call` and assert on responses
 5. Kill the child process
 
-This pattern should be reused for any future MCP servers added to the workspace.
+This pattern should be reused for any future standalone servers added to the workspace.
 See `koda-ast/tests/mcp_integration_test.rs` for the reference implementation.
 
 ### Adding a new first-party capability checklist
@@ -326,16 +325,10 @@ For capabilities that ship in the koda workspace (same release cycle):
 4. Add `koda-<name>` as a dependency of `koda-core` in `Cargo.toml`
 5. Register tools via `tool_definitions()` in `ToolRegistry::new()`
 6. Add match arms in `ToolRegistry::execute()` for each tool
-7. Add `--version` flag to `main.rs` (MCP wrapper)
-8. Write MCP integration tests in `tests/mcp_integration_test.rs`
+7. Add `--version` flag to `main.rs` (standalone server wrapper)
+8. Write integration tests in `tests/mcp_integration_test.rs`
 9. Update `release.yml`: version verify, build, package, publish, Homebrew
 10. Sync version with workspace (currently 0.1.9)
 11. Update this file (CLAUDE.md)
 
-### Adding a new third-party MCP server checklist
 
-For external capabilities (different release cycle, auto-provisioned):
-
-1. Add an entry to `koda-core/src/mcp/capability_registry.rs`
-2. Register tool definitions in `capability_registry::tool_definitions()`
-3. Update this file (CLAUDE.md)

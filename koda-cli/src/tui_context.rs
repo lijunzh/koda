@@ -156,7 +156,6 @@ impl TuiContext {
 
         let agent =
             Arc::new(koda_core::agent::KodaAgent::new(&config, project_root.clone()).await?);
-        crate::startup::print_mcp_status(&agent.mcp_statuses);
 
         let session = KodaSession::new(
             session_id,
@@ -300,10 +299,6 @@ impl TuiContext {
     /// Clean up terminal and print exit info.
     pub async fn cleanup(&mut self) {
         restore_terminal(&mut self.terminal, self.viewport_height);
-        {
-            let mut mcp = self.agent.mcp_registry.write().await;
-            mcp.shutdown();
-        }
         crate::startup::print_resume_hint(&self.session.id);
     }
 

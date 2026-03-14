@@ -12,7 +12,7 @@
 pub enum ToolEffect {
     /// No side-effects: file reads, grep, git status.
     ReadOnly,
-    /// Side-effects on remote services only: GitHub API, WebFetch POST, MCP remote tools.
+    /// Side-effects on remote services only: GitHub API, WebFetch POST.
     RemoteAction,
     /// Mutates local filesystem or state: Write, Edit, Delete, MemoryWrite.
     LocalMutation,
@@ -48,7 +48,7 @@ pub fn classify_tool(name: &str) -> ToolEffect {
         "EmailRead" | "EmailSearch" => ToolEffect::ReadOnly,
         "EmailSend" => ToolEffect::RemoteAction,
 
-        // Unknown tools (including MCP) — default to LocalMutation (conservative)
+        // Unknown tools — default to LocalMutation (conservative)
         _ => ToolEffect::LocalMutation,
     }
 }
@@ -130,8 +130,6 @@ pub struct ToolRegistry {
     project_root: PathBuf,
     definitions: HashMap<String, ToolDefinition>,
     read_cache: FileReadCache,
-    /// Connected MCP servers providing additional tools.
-    mcp_registry: Option<std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpRegistry>>>,
     /// Undo stack for file mutations.
     pub undo: std::sync::Mutex<crate::undo::UndoStack>,
     /// Discovered skills.
@@ -180,7 +178,7 @@ impl ToolRegistry {
         // RecallContext — on-demand history retrieval
         let recall_def = recall::definition();
         definitions.insert(recall_def.name.clone(), recall_def);
-        // First-party library tools (direct calls, no MCP IPC)
+        // First-party library tools (direct calls)
         for td in koda_ast::tool_definitions() {
             definitions.insert(
                 td.name.to_string(),
@@ -202,33 +200,18 @@ impl ToolRegistry {
             );
         }
 
-        // Auto-provisionable MCP tools (registered so the LLM knows they exist)
-        for def in crate::mcp::capability_registry::tool_definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-
         let skill_registry = crate::skills::SkillRegistry::discover(&project_root);
 
         Self {
             project_root,
             definitions,
             read_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            mcp_registry: None,
             undo: std::sync::Mutex::new(crate::undo::UndoStack::new()),
             skill_registry,
             db: std::sync::RwLock::new(None),
             session_id: std::sync::RwLock::new(None),
             caps: OutputCaps::for_context(max_context_tokens),
         }
-    }
-
-    /// Attach an MCP registry for external tool support.
-    pub fn with_mcp_registry(
-        mut self,
-        registry: std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpRegistry>>,
-    ) -> Self {
-        self.mcp_registry = Some(registry);
-        self
     }
 
     /// Share an existing file-read cache (e.g. from the parent agent).
@@ -255,7 +238,7 @@ impl ToolRegistry {
         }
     }
 
-    /// Get all built-in tool names (excludes MCP tools).
+    /// Get all built-in tool names.
     /// Used by wiring tests to verify every tool is properly integrated.
     pub fn all_builtin_tool_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.definitions.keys().cloned().collect();
@@ -263,7 +246,7 @@ impl ToolRegistry {
         names
     }
 
-    /// Check whether a tool name is known (built-in or MCP).
+    /// Check whether a tool name is known.
     pub fn has_tool(&self, name: &str) -> bool {
         self.definitions.contains_key(name)
     }
@@ -301,46 +284,19 @@ impl ToolRegistry {
     }
 
     /// Get tool definitions, optionally filtered by an allow-list.
-    /// Includes MCP tools merged with built-in tools.
     pub fn get_definitions(&self, allowed: &[String]) -> Vec<ToolDefinition> {
-        let mut defs: Vec<ToolDefinition> = if !allowed.is_empty() {
+        if !allowed.is_empty() {
             allowed
                 .iter()
                 .filter_map(|name| self.definitions.get(name).cloned())
                 .collect()
         } else {
             self.definitions.values().cloned().collect()
-        };
-
-        // Merge MCP tool definitions (always included)
-        if let Some(ref mcp) = self.mcp_registry
-            && let Ok(registry) = mcp.try_read()
-        {
-            defs.extend(registry.all_tool_definitions());
         }
-
-        defs
     }
 
     /// Execute a tool by name with the given JSON arguments.
     pub async fn execute(&self, name: &str, arguments: &str) -> ToolResult {
-        // Check if this is an MCP tool (contains '.' separator and belongs to an MCP server)
-        if let Some(ref mcp) = self.mcp_registry {
-            let is_mcp = {
-                let registry = mcp.read().await;
-                registry.is_mcp_tool(name)
-            };
-            if is_mcp {
-                let registry = mcp.read().await;
-                return match registry.call_tool(name, arguments).await {
-                    Ok(output) => ToolResult { output },
-                    Err(e) => ToolResult {
-                        output: format!("MCP Error: {e}"),
-                    },
-                };
-            }
-        }
-
         let args: Value = match serde_json::from_str(arguments) {
             Ok(v) => v,
             Err(e) => {
@@ -434,7 +390,7 @@ impl ToolRegistry {
                 }
             }
 
-            // First-party library tools — direct calls, no MCP IPC
+            // First-party library tools — direct calls
             "AstAnalysis" => {
                 let action = args["action"].as_str().unwrap_or("");
                 let file_path = args["file_path"].as_str().unwrap_or("");
@@ -488,75 +444,7 @@ impl ToolRegistry {
                 };
             }
 
-            other => {
-                // Auto-provision: check capability registry for MCP servers
-                // that provide this tool
-                if let Some(entry) = crate::mcp::capability_registry::find_server_for_tool(other) {
-                    // Try to auto-connect the MCP server
-                    if let Some(ref mcp) = self.mcp_registry {
-                        if crate::mcp::capability_registry::binary_exists(entry.command) {
-                            let config = crate::mcp::capability_registry::to_mcp_config(entry);
-                            let mut registry = mcp.write().await;
-                            match registry
-                                .add_server(entry.server_name.to_string(), config)
-                                .await
-                            {
-                                Ok(()) => {
-                                    tracing::info!(
-                                        "Auto-provisioned MCP server '{}' for tool '{}'",
-                                        entry.server_name,
-                                        other
-                                    );
-                                    // Retry the tool call through the now-connected MCP server
-                                    let namespaced = format!("{}.{}", entry.server_name, other);
-                                    drop(registry);
-                                    let registry = mcp.read().await;
-                                    return match registry.call_tool(&namespaced, arguments).await {
-                                        Ok(output) => ToolResult { output },
-                                        Err(e) => ToolResult {
-                                            output: format!("MCP Error: {e}"),
-                                        },
-                                    };
-                                }
-                                Err(e) => {
-                                    return ToolResult {
-                                        output: format!(
-                                            "Failed to start MCP server '{}': {e}\n\
-                                             Install: {}",
-                                            entry.server_name, entry.install_hint
-                                        ),
-                                    };
-                                }
-                            }
-                        } else {
-                            return ToolResult {
-                                output: format!(
-                                    "Tool '{}' is available via the '{}' MCP server, \
-                                     but '{}' is not installed.\n\
-                                     Description: {}\n\
-                                     Install: {}\n\
-                                     Then restart koda to use it.",
-                                    other,
-                                    entry.server_name,
-                                    entry.command,
-                                    entry.description,
-                                    entry.install_hint
-                                ),
-                            };
-                        }
-                    } else {
-                        // MCP registry not available (e.g., test mode)
-                        return ToolResult {
-                            output: format!(
-                                "Tool '{}' is available via the '{}' MCP server.\n\
-                                 Install: {}",
-                                other, entry.server_name, entry.install_hint
-                            ),
-                        };
-                    }
-                }
-                Err(anyhow::anyhow!("Unknown tool: {other}"))
-            }
+            other => Err(anyhow::anyhow!("Unknown tool: {other}")),
         };
 
         match result {

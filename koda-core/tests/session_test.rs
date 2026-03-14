@@ -71,8 +71,6 @@ impl Env {
             tool_defs: ToolRegistry::new(self.root.clone(), self.config.max_context_tokens)
                 .get_definitions(&[]),
             system_prompt: "You are a test assistant.".to_string(),
-            mcp_registry: Arc::new(tokio::sync::RwLock::new(koda_core::mcp::McpRegistry::new())),
-            mcp_statuses: vec![],
         });
 
         // Wire the DB+session into the ToolRegistry so RecallContext works.

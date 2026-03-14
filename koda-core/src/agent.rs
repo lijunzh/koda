@@ -1,7 +1,7 @@
 //! KodaAgent — shared, immutable agent resources.
 //!
 //! Holds everything that's constant across turns within a session:
-//! tools, system prompt, MCP registry, project root. Shareable via `Arc`
+//! tools, system prompt, project root. Shareable via `Arc`
 //! for parallel sub-agents.
 //!
 //! Note: `KodaConfig` is NOT stored here because the REPL allows
@@ -9,18 +9,12 @@
 //! caller side and is passed to `KodaSession` per-turn.
 
 use crate::config::KodaConfig;
-use crate::mcp::McpRegistry;
 use crate::memory;
 use crate::providers::ToolDefinition;
 use crate::tools::ToolRegistry;
 
 use anyhow::Result;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-
-/// MCP server connection status entry (for client rendering).
-pub type McpStatus = (String, Result<usize, String>);
 
 /// Shared agent resources. Immutable after construction.
 ///
@@ -28,32 +22,20 @@ pub type McpStatus = (String, Result<usize, String>);
 pub struct KodaAgent {
     /// Project root directory.
     pub project_root: PathBuf,
-    /// Tool registry with all built-in and MCP tools.
+    /// Tool registry with all built-in tools.
     pub tools: ToolRegistry,
     /// Pre-computed tool definitions for the LLM.
     pub tool_defs: Vec<ToolDefinition>,
     /// Assembled system prompt.
     pub system_prompt: String,
-    /// Shared MCP server registry.
-    pub mcp_registry: Arc<RwLock<McpRegistry>>,
-    /// MCP server connection results from init (for client rendering).
-    pub mcp_statuses: Vec<McpStatus>,
 }
 
 impl KodaAgent {
     /// Build a new agent from config and project root.
     ///
-    /// Initializes tools, MCP servers, system prompt, and tool definitions.
+    /// Initializes tools, system prompt, and tool definitions.
     pub async fn new(config: &KodaConfig, project_root: PathBuf) -> Result<Self> {
-        let mcp_registry = Arc::new(RwLock::new(McpRegistry::new()));
-        let mcp_statuses;
-        {
-            let mut mcp = mcp_registry.write().await;
-            mcp_statuses = mcp.start_from_config(&project_root).await;
-        }
-
-        let tools = ToolRegistry::new(project_root.clone(), config.max_context_tokens)
-            .with_mcp_registry(mcp_registry.clone());
+        let tools = ToolRegistry::new(project_root.clone(), config.max_context_tokens);
         let tool_defs = tools.get_definitions(&config.allowed_tools);
 
         let semantic_memory = memory::load(&project_root)?;
@@ -69,8 +51,6 @@ impl KodaAgent {
             tools,
             tool_defs,
             system_prompt,
-            mcp_registry,
-            mcp_statuses,
         })
     }
 }

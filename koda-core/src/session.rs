@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 pub struct KodaSession {
     /// Unique session identifier.
     pub id: String,
-    /// Shared agent configuration (tools, MCP, system prompt).
+    /// Shared agent configuration (tools, system prompt).
     pub agent: Arc<KodaAgent>,
     /// Database handle for message persistence.
     pub db: Database,

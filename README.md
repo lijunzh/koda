@@ -13,12 +13,12 @@ powered by the same engine. This focus drives every design decision:
 - **Everything just works.** `cargo install koda-cli` and you're done.
   No Node.js, no Python, no Docker. Core tools (file ops, search, shell, web
   fetch, memory, agents) are compiled in — always available, zero config.
-- **Auto-provisioned capabilities.** Beyond the core, koda auto-installs
-  MCP servers on demand. Ask about your email? Koda installs the email
-  integration transparently. You never configure plumbing.
-- **MCP is the extension model.** Need GitHub API, databases, Slack? Connect
-  external MCP servers via `.mcp.json`, or let koda auto-discover them.
-  Koda stays lean; the ecosystem handles the long tail.
+- **Auto-provisioned capabilities.** Beyond the core, koda ships first-party
+  library integrations (AST analysis, email) that activate on demand. You
+  never configure plumbing.
+- **Extensible architecture.** First-party capabilities are direct library
+  calls for speed and reliability. Each also ships as a standalone MCP
+  server for use in other editors.
 - **Ask Koda what it can do.** Just ask — "what can you do?" Koda's
   capabilities are embedded in its system prompt, so it can always describe
   its own tools, commands, and features accurately.
@@ -49,7 +49,7 @@ echo "explain this" | koda        # Piped input
 ## Features
 
 - **20+ built-in tools** — file ops, search, shell, web fetch, memory, agents, AST analysis, email, context recall
-- **MCP support** — connect to any [MCP server](https://modelcontextprotocol.io) via `.mcp.json` (same format as Claude Code / Cursor)
+- **First-party integrations** — AST analysis (tree-sitter) and email (IMAP/SMTP) as direct library calls; also available as standalone MCP servers
 - **14 LLM providers** — LM Studio, OpenAI, Anthropic, Gemini, Groq, Grok, Ollama, DeepSeek, Mistral, MiniMax, OpenRouter, Together, Fireworks, vLLM
 - **User-defined agents** — create specialized agents via JSON configs (testgen, releaser, planner, etc.)
 - **Smart context** — queries context window from provider API at startup (falls back to lookup table), rate limit retry with backoff, auto-compact
@@ -100,11 +100,10 @@ Use `/skills` to list available skills, or ask Koda to "use the code review skil
 Koda natively understands the structure of your codebase using embedded `tree-sitter` parsers.
 - **Auto-provisioned:** just ask koda to analyze code structure — no setup needed.
 - **Built-in languages:** Rust, Python, JavaScript, TypeScript — instant function/class extraction and call graphs.
-- **Extending with MCP:** Need Go, C++, or Java? Connect a community Tree-sitter MCP server via `.mcp.json`.
 
 ### 📧 Email Integration
 
-Koda connects to your email via IMAP/SMTP through the koda-email MCP server.
+Koda connects to your email via IMAP/SMTP through the built-in koda-email integration.
 - **Auto-provisioned:** just ask "check my email" — koda sets it up.
 - **Any provider:** Gmail, Outlook, FastMail, self-hosted.
 - **Read, search, send:** full email workflow from the CLI.
@@ -118,7 +117,6 @@ Koda connects to your email via IMAP/SMTP through the koda-email MCP server.
 | `/compact` | Summarize conversation to reclaim context |
 | `/cost` | Show token usage for this session |
 | `/diff` | Show/review uncommitted changes |
-| `/mcp` | MCP servers: status, add, remove, restart |
 | `/memory` | View/save project & global memory |
 | `/model` | Pick a model (↑↓ arrow keys) |
 | `/provider` | Switch LLM provider |
@@ -142,32 +140,6 @@ Koda connects to your email via IMAP/SMTP through the koda-email MCP server.
 | **Ctrl+D** | At prompt (empty) | Exit Koda |
 | **↑/↓** | At prompt | Browse command history |
 
-## MCP (Model Context Protocol)
-
-Koda connects to external [MCP servers](https://modelcontextprotocol.io) for additional tools.
-Create a `.mcp.json` in your project root (same format as Claude Code / Cursor):
-
-```json
-{
-  "mcpServers": {
-    "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp"]
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_TOKEN": "$GITHUB_TOKEN" }
-    }
-  }
-}
-```
-
-Servers auto-connect on startup. MCP tools appear alongside built-in tools with
-namespaced names (e.g. `github.create_issue`). Manage at runtime with `/mcp`.
-
-User-level servers go in `~/.config/koda/mcp.json` (merged, project overrides).
-
 ## Architecture
 
 Koda is a Cargo workspace with four crates:
@@ -176,8 +148,8 @@ Koda is a Cargo workspace with four crates:
 koda/
 ├── koda-core/     # Engine library (providers, tools, inference, DB) — zero terminal deps
 ├── koda-cli/      # CLI binary (REPL, display, approval UI)
-├── koda-ast/      # MCP server: tree-sitter AST analysis
-└── koda-email/    # MCP server: email via IMAP/SMTP
+├── koda-ast/      # Tree-sitter AST analysis (library + standalone MCP server)
+└── koda-email/    # Email via IMAP/SMTP (library + standalone MCP server)
 ```
 
 The engine communicates through `EngineEvent` (output) and `EngineCommand` (input) enums

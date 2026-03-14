@@ -130,10 +130,9 @@ pub fn check_tool(
     args: &serde_json::Value,
     mode: ApprovalMode,
     project_root: Option<&Path>,
-    mcp_effect: Option<ToolEffect>,
 ) -> ToolApproval {
-    // Classify the tool's effect (MCP override takes precedence)
-    let effect = mcp_effect.unwrap_or_else(|| resolve_effect(tool_name, args));
+    // Classify the tool's effect
+    let effect = resolve_effect(tool_name, args);
 
     // Read-only tools always auto-approve in every mode
     if effect == ToolEffect::ReadOnly {
@@ -302,13 +301,7 @@ mod tests {
     fn test_read_tools_always_approved() {
         for tool in READ_ONLY_TOOLS {
             assert_eq!(
-                check_tool(
-                    tool,
-                    &serde_json::json!({}),
-                    ApprovalMode::Confirm,
-                    None,
-                    None,
-                ),
+                check_tool(tool, &serde_json::json!({}), ApprovalMode::Confirm, None),
                 ToolApproval::AutoApprove,
                 "{tool} should auto-approve even in Confirm mode"
             );
@@ -319,13 +312,7 @@ mod tests {
     fn test_write_tools_need_confirmation_in_confirm() {
         for tool in ["Write", "Edit", "Delete", "MemoryWrite"] {
             assert_eq!(
-                check_tool(
-                    tool,
-                    &serde_json::json!({}),
-                    ApprovalMode::Confirm,
-                    None,
-                    None,
-                ),
+                check_tool(tool, &serde_json::json!({}), ApprovalMode::Confirm, None),
                 ToolApproval::NeedsConfirmation,
                 "{tool} should need confirmation in Confirm mode"
             );
@@ -336,7 +323,7 @@ mod tests {
     fn test_auto_approves_non_destructive() {
         for tool in ["Write", "Edit", "Bash", "WebFetch"] {
             assert_eq!(
-                check_tool(tool, &serde_json::json!({}), ApprovalMode::Auto, None, None,),
+                check_tool(tool, &serde_json::json!({}), ApprovalMode::Auto, None),
                 ToolApproval::AutoApprove,
             );
         }
@@ -345,13 +332,7 @@ mod tests {
     #[test]
     fn test_auto_confirms_destructive_ops() {
         assert_eq!(
-            check_tool(
-                "Delete",
-                &serde_json::json!({}),
-                ApprovalMode::Auto,
-                None,
-                None,
-            ),
+            check_tool("Delete", &serde_json::json!({}), ApprovalMode::Auto, None,),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -360,7 +341,7 @@ mod tests {
     fn test_safe_bash_auto_approved_in_confirm() {
         let args = serde_json::json!({"command": "git status"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Confirm, None, None,),
+            check_tool("Bash", &args, ApprovalMode::Confirm, None),
             ToolApproval::AutoApprove,
         );
     }
@@ -369,7 +350,7 @@ mod tests {
     fn test_dev_workflow_bash_needs_confirmation_in_confirm() {
         let args = serde_json::json!({"command": "cargo test --release"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Confirm, None, None,),
+            check_tool("Bash", &args, ApprovalMode::Confirm, None),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -379,7 +360,7 @@ mod tests {
         let args = serde_json::json!({"command": "rm -rf target/"});
         for mode in [ApprovalMode::Auto, ApprovalMode::Confirm] {
             assert_eq!(
-                check_tool("Bash", &args, mode, None, None,),
+                check_tool("Bash", &args, mode, None),
                 ToolApproval::NeedsConfirmation,
             );
         }
@@ -388,13 +369,7 @@ mod tests {
     #[test]
     fn test_write_needs_confirmation_in_confirm() {
         assert_eq!(
-            check_tool(
-                "Write",
-                &serde_json::json!({}),
-                ApprovalMode::Confirm,
-                None,
-                None,
-            ),
+            check_tool("Write", &serde_json::json!({}), ApprovalMode::Confirm, None,),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -404,7 +379,7 @@ mod tests {
         let args = serde_json::json!({"agent_name": "reviewer", "prompt": "review this"});
         for mode in [ApprovalMode::Auto, ApprovalMode::Confirm] {
             assert_eq!(
-                check_tool("InvokeAgent", &args, mode, None, None,),
+                check_tool("InvokeAgent", &args, mode, None),
                 ToolApproval::AutoApprove,
             );
         }
@@ -417,7 +392,7 @@ mod tests {
         let root = Path::new("/home/user/project");
         let args = serde_json::json!({"path": "/etc/hosts"});
         assert_eq!(
-            check_tool("Write", &args, ApprovalMode::Auto, Some(root), None,),
+            check_tool("Write", &args, ApprovalMode::Auto, Some(root),),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -427,7 +402,7 @@ mod tests {
         let root = Path::new("/home/user/project");
         let args = serde_json::json!({"path": "src/main.rs"});
         assert_eq!(
-            check_tool("Write", &args, ApprovalMode::Auto, Some(root), None,),
+            check_tool("Write", &args, ApprovalMode::Auto, Some(root),),
             ToolApproval::AutoApprove,
         );
     }
@@ -437,7 +412,7 @@ mod tests {
         let root = Path::new("/home/user/project");
         let args = serde_json::json!({"path": "../../../etc/passwd"});
         assert_eq!(
-            check_tool("Edit", &args, ApprovalMode::Auto, Some(root), None,),
+            check_tool("Edit", &args, ApprovalMode::Auto, Some(root),),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -447,7 +422,7 @@ mod tests {
         let root = Path::new("/home/user/project");
         let args = serde_json::json!({"command": "cd /tmp && ls"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Auto, Some(root), None,),
+            check_tool("Bash", &args, ApprovalMode::Auto, Some(root),),
             ToolApproval::NeedsConfirmation,
         );
     }
@@ -457,7 +432,7 @@ mod tests {
         let root = Path::new("/home/user/project");
         let args = serde_json::json!({"command": "cd src && ls"});
         assert_eq!(
-            check_tool("Bash", &args, ApprovalMode::Auto, Some(root), None,),
+            check_tool("Bash", &args, ApprovalMode::Auto, Some(root),),
             ToolApproval::AutoApprove,
         );
     }
@@ -466,7 +441,7 @@ mod tests {
     fn test_no_project_root_skips_path_check() {
         let args = serde_json::json!({"path": "/etc/hosts"});
         assert_eq!(
-            check_tool("Write", &args, ApprovalMode::Auto, None, None,),
+            check_tool("Write", &args, ApprovalMode::Auto, None),
             ToolApproval::AutoApprove,
         );
     }

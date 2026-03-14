@@ -1,4 +1,4 @@
-//! Native TUI wizard handlers for /provider, /compact, /mcp, /trust.
+//! Native TUI wizard handlers for /provider, /compact, /trust.
 //!
 //! Extracted from tui_commands.rs to keep files under 600 lines.
 //! All output rendered through tui_output::write_line(&).
@@ -21,7 +21,7 @@ type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 use tui_output::{dim_msg, err_msg, ok_msg, warn_msg};
 
 // Re-export style constants from tui_output for inline use
-use tui_output::{BOLD, CYAN, DIM, GREEN as OK};
+use tui_output::{BOLD, CYAN, DIM};
 
 // ── Provider (native TUI) ───────────────────────────────────
 
@@ -173,147 +173,6 @@ pub(crate) fn format_bytes(bytes: i64) -> String {
         format!("{bytes}B")
     }
 }
-
-// ── MCP (native TUI) ───────────────────────────────────────────
-
-#[allow(unused_variables)]
-pub(crate) async fn handle_mcp(
-    terminal: &mut Term,
-    args: &str,
-    mcp_registry: &Arc<RwLock<koda_core::mcp::McpRegistry>>,
-    project_root: &std::path::Path,
-) {
-    let parts: Vec<&str> = args.splitn(3, ' ').collect();
-    let sub = parts.first().map(|s| s.trim()).unwrap_or("");
-
-    match sub {
-        "" | "status" => {
-            let registry = mcp_registry.read().await;
-            let servers = registry.server_info();
-            tui_output::write_blank();
-            if servers.is_empty() {
-                dim_msg("No MCP servers connected.".into());
-                dim_msg("Add servers via .mcp.json or /mcp add <name> <command> [args...]".into());
-            } else {
-                tui_output::write_line(&Line::styled("  \u{1f50c} MCP Servers", BOLD));
-                tui_output::write_blank();
-                for server in &servers {
-                    let cmd = if server.args.is_empty() {
-                        server.command.clone()
-                    } else {
-                        format!("{} {}", server.command, server.args.join(" "))
-                    };
-                    tui_output::write_line(&Line::from(vec![
-                        Span::styled("  \u{25cf} ", OK),
-                        Span::styled(&server.name, BOLD),
-                        Span::raw(format!(" \u{2014} {} tool(s)", server.tool_count)),
-                    ]));
-                    dim_msg(format!("    {cmd}"));
-                    for tool_name in &server.tool_names {
-                        tui_output::write_line(&Line::from(vec![
-                            Span::styled("    \u{2022} ", CYAN),
-                            Span::raw(tool_name.clone()),
-                        ]));
-                    }
-                }
-            }
-            tui_output::write_blank();
-        }
-
-        "add" => {
-            let rest = args.strip_prefix("add").unwrap_or("").trim();
-            let add_parts: Vec<&str> = rest.splitn(2, ' ').collect();
-            if add_parts.len() < 2 {
-                warn_msg("Usage: /mcp add <name> <command> [args...]".into());
-                dim_msg(
-                    "Example: /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem /tmp".into(),
-                );
-                return;
-            }
-            let name = add_parts[0].to_string();
-            let cmd_parts: Vec<&str> = add_parts[1].split_whitespace().collect();
-            let command = cmd_parts[0].to_string();
-            let cmd_args: Vec<String> = cmd_parts[1..].iter().map(|s| s.to_string()).collect();
-
-            let config = koda_core::mcp::config::McpServerConfig {
-                command,
-                args: cmd_args,
-                env: std::collections::HashMap::new(),
-                timeout: None,
-            };
-
-            if let Err(e) =
-                koda_core::mcp::config::save_server_to_project(project_root, &name, &config)
-            {
-                err_msg(format!("Failed to save config: {e}"));
-                return;
-            }
-
-            tui_output::write_line(&Line::styled(
-                format!("  \u{1f50c} Connecting to '{name}'..."),
-                CYAN,
-            ));
-            let mut registry = mcp_registry.write().await;
-            match registry.add_server(name.clone(), config).await {
-                Ok(()) => {
-                    let tool_count = registry
-                        .server_info()
-                        .iter()
-                        .find(|s| s.name == name)
-                        .map(|s| s.tool_count)
-                        .unwrap_or(0);
-                    ok_msg(format!(
-                        "Added '{name}' ({tool_count} tools). Saved to .mcp.json"
-                    ));
-                }
-                Err(e) => err_msg(format!("Failed to connect: {e}")),
-            }
-        }
-
-        "remove" => {
-            let name = args.strip_prefix("remove").unwrap_or("").trim();
-            if name.is_empty() {
-                warn_msg("Usage: /mcp remove <name>".into());
-                return;
-            }
-            let mut registry = mcp_registry.write().await;
-            if registry.remove_server(name) {
-                let _ = koda_core::mcp::config::remove_server_from_project(project_root, name);
-                ok_msg(format!("Removed MCP server '{name}'"));
-            } else {
-                err_msg(format!("MCP server '{name}' not found"));
-            }
-        }
-
-        "restart" => {
-            let name = args.strip_prefix("restart").unwrap_or("").trim();
-            let mut registry = mcp_registry.write().await;
-            if name.is_empty() {
-                tui_output::write_line(&Line::styled(
-                    "  \u{1f50c} Restarting all MCP servers...",
-                    CYAN,
-                ));
-                registry.restart_all(project_root).await;
-                ok_msg("Done".into());
-            } else {
-                tui_output::write_line(&Line::styled(
-                    format!("  \u{1f50c} Restarting '{name}'..."),
-                    CYAN,
-                ));
-                match registry.restart_server(name, project_root).await {
-                    Ok(()) => ok_msg(format!("Restarted '{name}'")),
-                    Err(e) => err_msg(format!("Failed: {e}")),
-                }
-            }
-        }
-
-        other => {
-            warn_msg(format!("Unknown MCP command: {other}"));
-            dim_msg("Usage: /mcp [status|add|remove|restart]".into());
-        }
-    }
-}
-
 // ── Agents (native TUI) ──────────────────────────────────
 
 #[allow(unused_variables)]

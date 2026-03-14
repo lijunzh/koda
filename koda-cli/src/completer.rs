@@ -14,7 +14,6 @@ pub const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/diff", "Show git diff (review, commit)"),
     ("/exit", "Quit the session"),
     ("/expand", "Show full output of last tool call"),
-    ("/mcp", "MCP servers: status / add / remove"),
     ("/memory", "View/save project & global memory"),
     ("/model", "Pick a model interactively"),
     ("/provider", "Switch LLM provider"),
