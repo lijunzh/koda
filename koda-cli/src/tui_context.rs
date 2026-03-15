@@ -7,7 +7,6 @@
 use crate::input;
 use crate::sink::UiEvent;
 use crate::tui_commands::{self, SlashAction};
-use crate::tui_history;
 use crate::tui_output;
 use crate::tui_render::TuiRenderer;
 use crate::tui_types::{
@@ -233,7 +232,7 @@ impl TuiContext {
             should_quit: false,
             silent_compact_deferred: false,
             inference_start: None,
-            history: tui_history::load_history(),
+            history: load_history(),
             history_idx: None,
             completer,
             config,
@@ -894,7 +893,7 @@ impl TuiContext {
                                                             self.textarea.select_all();
                                                             self.textarea.cut();
                                                             self.history.push(text.clone());
-                                                            tui_history::save_history(&self.history);
+                                                            save_history(&self.history);
                                                             self.history_idx = None;
                                                             self.input_queue.push_back(text);
                                                         }
@@ -1486,7 +1485,7 @@ impl TuiContext {
                                     self.textarea.select_all();
                                     self.textarea.cut();
                                     self.history.push(text.clone());
-                                    tui_history::save_history(&self.history);
+                                    save_history(&self.history);
                                     self.history_idx = None;
                                     let mode = approval::read_mode(&self.shared_mode);
                                     let icon = match mode {
@@ -1633,4 +1632,42 @@ impl TuiContext {
 
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Command history persistence
+// ---------------------------------------------------------------------------
+
+const MAX_HISTORY: usize = 500;
+
+fn history_file_path() -> std::path::PathBuf {
+    let config_dir = std::env::var("XDG_CONFIG_HOME")
+        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config")))
+        .or_else(|_| std::env::var("USERPROFILE").map(|h| format!("{h}/.config")))
+        .unwrap_or_else(|_| ".".to_string());
+    std::path::PathBuf::from(config_dir)
+        .join("koda")
+        .join("history")
+}
+
+fn load_history() -> Vec<String> {
+    let path = history_file_path();
+    match std::fs::read_to_string(&path) {
+        Ok(content) => content
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn save_history(history: &[String]) {
+    let path = history_file_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let start = history.len().saturating_sub(MAX_HISTORY);
+    let content = history[start..].join("\n");
+    let _ = std::fs::write(&path, content);
 }
