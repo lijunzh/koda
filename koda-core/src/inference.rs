@@ -63,14 +63,12 @@ async fn assemble_context(
     let mut messages = assemble_messages(system_message, &history);
 
     // Attach pending images to the last user message (first iteration only)
-    if iteration == 0 {
-        if let Some(imgs) = pending_images {
-            if !imgs.is_empty() {
-                if let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user") {
-                    last_user.images = Some(imgs.to_vec());
-                }
-            }
-        }
+    if iteration == 0
+        && let Some(imgs) = pending_images
+        && !imgs.is_empty()
+        && let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user")
+    {
+        last_user.images = Some(imgs.to_vec());
     }
 
     let context_used = estimate_tokens(&messages);
@@ -83,6 +81,7 @@ async fn assemble_context(
 /// before sending to the provider. Re-assembles context after successful compaction.
 ///
 /// Returns the (possibly updated) message vec.
+#[allow(clippy::too_many_arguments)]
 async fn preflight_compact_if_needed(
     messages: Vec<ChatMessage>,
     db: &Database,
@@ -200,6 +199,7 @@ async fn try_with_rate_limit(
 ///
 /// Returns `Ok(Some((rx, messages)))` on success (receiver + updated messages),
 /// `Ok(None)` if cancelled during retry, or `Err` if compaction/retry fails.
+#[allow(clippy::too_many_arguments)]
 async fn try_overflow_recovery(
     original_err: anyhow::Error,
     db: &Database,
@@ -511,7 +511,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         .await?;
 
         // Pre-flight budget check: if context is critically high, compact first
-        let mut messages = preflight_compact_if_needed(
+        let messages = preflight_compact_if_needed(
             messages,
             db,
             session_id,
@@ -572,10 +572,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 )
                 .await?
                 {
-                    Some((rx, updated)) => {
-                        messages = updated;
-                        rx
-                    }
+                    Some((rx, _updated)) => rx,
                     None => {
                         sink.emit(EngineEvent::SpinnerStop);
                         sink.emit(EngineEvent::Warn {
