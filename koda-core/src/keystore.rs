@@ -116,7 +116,16 @@ fn dirs_config_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var("APPDATA").ok().map(PathBuf::from))
 }
 
-/// Mask a key for display: "sk-ant-abc...xyz"
+/// Mask a key for display: shows first 4 and last 4 characters.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::keystore::mask_key;
+///
+/// assert_eq!(mask_key("sk-ant-api03-longkey1234"), "sk-a...1234");
+/// assert_eq!(mask_key("short"), "****");
+/// ```
 pub fn mask_key(key: &str) -> String {
     if key.len() > 8 {
         format!("{}...{}", &key[..4], &key[key.len() - 4..])

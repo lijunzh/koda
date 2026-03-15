@@ -34,6 +34,29 @@ pub enum Truncated<'a> {
 ///
 /// Returns `Truncated::Full` if output is within the threshold,
 /// or `Truncated::Split` with head/tail lines and hidden count.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::truncate::truncate_for_display;
+/// use koda_core::truncate::Truncated;
+///
+/// // Short output is returned as-is
+/// let short = "line1\nline2\nline3";
+/// assert!(matches!(truncate_for_display(short), Truncated::Full(_)));
+///
+/// // Long output is split into head + tail
+/// let long = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+/// match truncate_for_display(&long) {
+///     Truncated::Split { head, tail, hidden, total } => {
+///         assert_eq!(total, 100);
+///         assert_eq!(head.len(), 20);
+///         assert_eq!(tail.len(), 20);
+///         assert_eq!(hidden, 60);
+///     }
+///     _ => panic!("expected Split"),
+/// }
+/// ```
 pub fn truncate_for_display(output: &str) -> Truncated<'_> {
     let lines: Vec<&str> = output.lines().collect();
     let total = lines.len();

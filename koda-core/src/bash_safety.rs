@@ -152,12 +152,26 @@ const DANGEROUS_PATTERNS: &[&str] = &[
 
 /// Classify a bash command's effect.
 ///
+/// Classify a bash command by its side-effect severity.
+///
 /// Returns the *most dangerous* effect found across all pipeline/chain
 /// segments:
 /// 1. Dangerous patterns → Destructive
 /// 2. Write side-effects (`>`, `>>`, `| tee`) → LocalMutation
 /// 3. Read-only prefix match → ReadOnly
 /// 4. Everything else → LocalMutation (conservative default)
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::bash_safety::classify_bash_command;
+/// use koda_core::tools::ToolEffect;
+///
+/// assert_eq!(classify_bash_command("ls -la"), ToolEffect::ReadOnly);
+/// assert_eq!(classify_bash_command("git status"), ToolEffect::ReadOnly);
+/// assert_eq!(classify_bash_command("cargo build"), ToolEffect::LocalMutation);
+/// assert_eq!(classify_bash_command("rm -rf /"), ToolEffect::Destructive);
+/// ```
 pub fn classify_bash_command(command: &str) -> ToolEffect {
     let trimmed = command.trim();
     if trimmed.is_empty() {
@@ -281,6 +295,15 @@ fn matches_prefix_list(seg: &str, prefixes: &[&str]) -> bool {
 
 /// Split a command into segments on `|`, `&&`, `||`, `;`.
 /// Respects single and double quotes.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::bash_safety::split_command_segments;
+///
+/// assert_eq!(split_command_segments("ls | grep foo"), vec!["ls ", " grep foo"]);
+/// assert_eq!(split_command_segments("a && b || c"), vec!["a ", " b ", " c"]);
+/// ```
 pub fn split_command_segments(command: &str) -> Vec<&str> {
     let mut segments = Vec::new();
     let mut start = 0;
@@ -323,6 +346,15 @@ pub fn split_command_segments(command: &str) -> Vec<&str> {
 }
 
 /// Strip leading environment variable assignments (e.g., `FOO=bar command`).
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::bash_safety::strip_env_vars;
+///
+/// assert_eq!(strip_env_vars("FOO=bar cargo build"), "cargo build");
+/// assert_eq!(strip_env_vars("ls -la"), "ls -la");
+/// ```
 pub fn strip_env_vars(segment: &str) -> String {
     let mut rest = segment;
     loop {

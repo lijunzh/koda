@@ -26,6 +26,19 @@ impl BashPathLint {
 }
 
 /// Lint a bash command for paths that escape project_root.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use koda_core::bash_path_lint::lint_bash_paths;
+///
+/// let lint = lint_bash_paths("cat src/main.rs", Path::new("/project"));
+/// assert!(!lint.has_warnings());
+///
+/// let lint = lint_bash_paths("cat /etc/passwd", Path::new("/project"));
+/// assert!(lint.has_warnings());
+/// ```
 pub fn lint_bash_paths(command: &str, project_root: &Path) -> BashPathLint {
     let mut lint = BashPathLint::default();
     let trimmed = command.trim();
