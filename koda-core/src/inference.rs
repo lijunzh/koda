@@ -6,14 +6,16 @@
 use crate::approval::ApprovalMode;
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
-use crate::engine::{EngineCommand, EngineEvent};
+use crate::engine::{EngineCommand, EngineEvent, EngineSink};
 use crate::inference_helpers::{
     PREFLIGHT_COMPACT_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages, estimate_tokens,
     is_context_overflow_error, is_rate_limit_error, rate_limit_backoff,
 };
 use crate::loop_guard::LoopDetector;
 use crate::persistence::Persistence;
-use crate::providers::{ChatMessage, ImageData, LlmProvider, StreamChunk, ToolCall};
+use crate::providers::{
+    ChatMessage, ImageData, LlmProvider, StreamChunk, TokenUsage, ToolCall, ToolDefinition,
+};
 use crate::settings::Settings;
 use crate::tool_dispatch::{
     can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
@@ -25,6 +27,367 @@ use std::path::Path;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+// ---------------------------------------------------------------------------
+// Inference loop helpers (tightly coupled to inference_loop — live here)
+// ---------------------------------------------------------------------------
+
+/// Result of collecting a streamed LLM response.
+struct StreamResult {
+    /// Accumulated text content from the response.
+    text: String,
+    /// Tool calls requested by the model.
+    tool_calls: Vec<ToolCall>,
+    /// Token usage statistics.
+    usage: TokenUsage,
+    /// Total character count of text deltas.
+    char_count: usize,
+    /// Whether the stream was interrupted by cancellation.
+    interrupted: bool,
+}
+
+/// Load conversation history, assemble messages with the system prompt,
+/// attach pending images (first iteration only), and update context tracking.
+///
+/// This is the single source of truth for context assembly — called on initial
+/// build, after pre-flight compaction, and after overflow recovery.
+async fn assemble_context(
+    db: &Database,
+    session_id: &str,
+    system_message: &ChatMessage,
+    pending_images: Option<&[ImageData]>,
+    iteration: u32,
+    max_context_tokens: usize,
+) -> Result<Vec<ChatMessage>> {
+    let history = db.load_context(session_id).await?;
+    let mut messages = assemble_messages(system_message, &history);
+
+    // Attach pending images to the last user message (first iteration only)
+    if iteration == 0
+        && let Some(imgs) = pending_images
+        && !imgs.is_empty()
+        && let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user")
+    {
+        last_user.images = Some(imgs.to_vec());
+    }
+
+    let context_used = estimate_tokens(&messages);
+    crate::context::update(context_used, max_context_tokens);
+
+    Ok(messages)
+}
+
+/// Pre-flight budget check: if context usage exceeds the threshold, compact
+/// before sending to the provider. Re-assembles context after successful compaction.
+///
+/// Returns the (possibly updated) message vec.
+#[allow(clippy::too_many_arguments)]
+async fn preflight_compact_if_needed(
+    messages: Vec<ChatMessage>,
+    db: &Database,
+    session_id: &str,
+    system_message: &ChatMessage,
+    pending_images: Option<&[ImageData]>,
+    iteration: u32,
+    config: &KodaConfig,
+    provider: &dyn LlmProvider,
+    sink: &dyn EngineSink,
+) -> Result<Vec<ChatMessage>> {
+    let ctx_pct = crate::context::percentage();
+    if ctx_pct < PREFLIGHT_COMPACT_THRESHOLD {
+        return Ok(messages);
+    }
+
+    tracing::warn!("Pre-flight: context at {ctx_pct}%, attempting auto-compact");
+    sink.emit(EngineEvent::Info {
+        message: format!("\u{1f4e6} Context at {ctx_pct}% \u{2014} compacting before sending..."),
+    });
+
+    match crate::compact::compact_session_with_provider(
+        db,
+        session_id,
+        config.max_context_tokens,
+        &config.model_settings,
+        provider,
+    )
+    .await
+    {
+        Ok(Ok(result)) => {
+            sink.emit(EngineEvent::Info {
+                message: format!(
+                    "\u{2705} Compacted {} messages (~{} token summary)",
+                    result.deleted, result.summary_tokens
+                ),
+            });
+            assemble_context(
+                db,
+                session_id,
+                system_message,
+                pending_images,
+                iteration,
+                config.max_context_tokens,
+            )
+            .await
+        }
+        Ok(Err(skip)) => {
+            tracing::info!("Pre-flight compact skipped: {skip:?}");
+            if matches!(skip, crate::compact::CompactSkip::HistoryTooLarge) {
+                sink.emit(EngineEvent::Warn {
+                    message: "\u{26a0}\u{fe0f} Context is full but history is too large for \
+                              this model to summarize. Start a new session (/session) or \
+                              switch to a model with a larger context window."
+                        .to_string(),
+                });
+            }
+            Ok(messages)
+        }
+        Err(e) => {
+            tracing::warn!("Pre-flight compact failed: {e:#}");
+            sink.emit(EngineEvent::Warn {
+                message: format!("Compact failed: {e:#}. Continuing anyway..."),
+            });
+            Ok(messages)
+        }
+    }
+}
+
+/// Attempt to start a chat stream with exponential backoff on rate limits.
+///
+/// Returns `Ok(Some(rx))` on success, `Ok(None)` if cancelled during retries,
+/// or `Err` for non-retriable failures.
+async fn try_with_rate_limit(
+    provider: &dyn LlmProvider,
+    messages: &[ChatMessage],
+    tool_defs: &[ToolDefinition],
+    model_settings: &crate::config::ModelSettings,
+    cancel: &CancellationToken,
+    sink: &dyn EngineSink,
+) -> Result<Option<mpsc::Receiver<StreamChunk>>> {
+    let mut last_err = None;
+    for attempt in 0..RATE_LIMIT_MAX_RETRIES {
+        let result = tokio::select! {
+            result = provider.chat_stream(messages, tool_defs, model_settings) => result,
+            _ = cancel.cancelled() => return Ok(None),
+        };
+        match result {
+            Ok(rx) => return Ok(Some(rx)),
+            Err(e) if is_rate_limit_error(&e) && attempt + 1 < RATE_LIMIT_MAX_RETRIES => {
+                let delay = rate_limit_backoff(attempt);
+                sink.emit(EngineEvent::SpinnerStop);
+                sink.emit(EngineEvent::Warn {
+                    message: format!("\u{23f3} Rate limited. Retrying in {}s...", delay.as_secs()),
+                });
+                tracing::warn!(
+                    "Rate limit (attempt {}/{}): {e:#}",
+                    attempt + 1,
+                    RATE_LIMIT_MAX_RETRIES
+                );
+                tokio::time::sleep(delay).await;
+                sink.emit(EngineEvent::SpinnerStart {
+                    message: format!("Retrying (attempt {})...", attempt + 2),
+                });
+                last_err = Some(e);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Rate limit retries exhausted")))
+}
+
+/// Recover from a context overflow error: compact the session, re-assemble
+/// context, and retry the provider call once.
+///
+/// Returns `Ok(Some((rx, messages)))` on success (receiver + updated messages),
+/// `Ok(None)` if cancelled during retry, or `Err` if compaction/retry fails.
+#[allow(clippy::too_many_arguments)]
+async fn try_overflow_recovery(
+    original_err: anyhow::Error,
+    db: &Database,
+    session_id: &str,
+    system_message: &ChatMessage,
+    pending_images: Option<&[ImageData]>,
+    iteration: u32,
+    config: &KodaConfig,
+    provider: &dyn LlmProvider,
+    tool_defs: &[ToolDefinition],
+    cancel: &CancellationToken,
+    sink: &dyn EngineSink,
+) -> Result<Option<(mpsc::Receiver<StreamChunk>, Vec<ChatMessage>)>> {
+    sink.emit(EngineEvent::SpinnerStop);
+    sink.emit(EngineEvent::Warn {
+        message: "\u{26a0}\u{fe0f} Provider rejected request (context overflow). \
+             Compacting and retrying..."
+            .to_string(),
+    });
+    tracing::warn!("Context overflow from provider: {original_err:#}");
+
+    match crate::compact::compact_session_with_provider(
+        db,
+        session_id,
+        config.max_context_tokens,
+        &config.model_settings,
+        provider,
+    )
+    .await
+    {
+        Ok(Ok(result)) => {
+            sink.emit(EngineEvent::Info {
+                message: format!(
+                    "\u{2705} Compacted {} messages. Retrying...",
+                    result.deleted
+                ),
+            });
+        }
+        _ => {
+            return Err(original_err)
+                .context("LLM inference failed (context overflow, compaction unsuccessful)");
+        }
+    }
+
+    let messages = assemble_context(
+        db,
+        session_id,
+        system_message,
+        pending_images,
+        iteration,
+        config.max_context_tokens,
+    )
+    .await?;
+
+    sink.emit(EngineEvent::SpinnerStart {
+        message: "Retrying...".into(),
+    });
+    let rx = tokio::select! {
+        result = provider.chat_stream(&messages, tool_defs, &config.model_settings) => {
+            result.context("LLM inference failed after compaction retry")?
+        }
+        _ = cancel.cancelled() => return Ok(None),
+    };
+    Ok(Some((rx, messages)))
+}
+
+/// Collect a streamed LLM response, emitting engine events for thinking/text/tool calls.
+///
+/// Handles thinking ↔ response state transitions, cancellation via `CancellationToken`,
+/// and spinner lifecycle. Returns a `StreamResult` — the caller is responsible for
+/// persistence and early-return on interruption.
+async fn collect_stream(
+    rx: &mut mpsc::Receiver<StreamChunk>,
+    sink: &dyn EngineSink,
+    cancel: &CancellationToken,
+) -> StreamResult {
+    let mut full_text = String::new();
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
+    let mut usage = TokenUsage::default();
+    let mut first_token = true;
+    let mut char_count: usize = 0;
+    let mut native_think_buf = String::new();
+    let mut response_banner_shown = false;
+    let mut thinking_banner_shown = false;
+    let mut interrupted = false;
+
+    loop {
+        let chunk = tokio::select! {
+            c = rx.recv() => c,
+            _ = cancel.cancelled() => {
+                interrupted = true;
+                None
+            }
+        };
+
+        if interrupted || cancel.is_cancelled() {
+            sink.emit(EngineEvent::SpinnerStop);
+            if !full_text.is_empty() {
+                sink.emit(EngineEvent::TextDone);
+            }
+            sink.emit(EngineEvent::Warn {
+                message: "Interrupted".into(),
+            });
+            return StreamResult {
+                text: full_text,
+                tool_calls,
+                usage,
+                char_count,
+                interrupted: true,
+            };
+        }
+
+        let Some(chunk) = chunk else { break };
+
+        match chunk {
+            StreamChunk::TextDelta(delta) => {
+                if first_token {
+                    if !native_think_buf.is_empty() {
+                        sink.emit(EngineEvent::SpinnerStop);
+                        sink.emit(EngineEvent::ThinkingDone);
+                        native_think_buf.clear();
+                        thinking_banner_shown = true;
+                    }
+                    sink.emit(EngineEvent::SpinnerStop);
+                    first_token = false;
+                }
+
+                if !response_banner_shown && !delta.trim().is_empty() {
+                    sink.emit(EngineEvent::ResponseStart);
+                    response_banner_shown = true;
+                }
+
+                full_text.push_str(&delta);
+                char_count += delta.len();
+                sink.emit(EngineEvent::TextDelta {
+                    text: delta.clone(),
+                });
+            }
+            StreamChunk::ThinkingDelta(delta) => {
+                if !thinking_banner_shown {
+                    sink.emit(EngineEvent::SpinnerStop);
+                    sink.emit(EngineEvent::ThinkingStart);
+                    thinking_banner_shown = true;
+                }
+                sink.emit(EngineEvent::ThinkingDelta {
+                    text: delta.clone(),
+                });
+                native_think_buf.push_str(&delta);
+            }
+            StreamChunk::ToolCalls(tcs) => {
+                if !native_think_buf.is_empty() {
+                    sink.emit(EngineEvent::SpinnerStop);
+                    sink.emit(EngineEvent::ThinkingDone);
+                    native_think_buf.clear();
+                }
+                sink.emit(EngineEvent::SpinnerStop);
+                tool_calls = tcs;
+            }
+            StreamChunk::Done(u) => {
+                if !native_think_buf.is_empty() {
+                    sink.emit(EngineEvent::SpinnerStop);
+                    sink.emit(EngineEvent::ThinkingDone);
+                    native_think_buf.clear();
+                }
+                usage = u;
+                break;
+            }
+        }
+    }
+
+    sink.emit(EngineEvent::TextDone);
+
+    if first_token {
+        sink.emit(EngineEvent::SpinnerStop);
+    }
+
+    StreamResult {
+        text: full_text,
+        tool_calls,
+        usage,
+        char_count,
+        interrupted: false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Inference loop
+// ---------------------------------------------------------------------------
 
 /// All parameters for the inference loop, bundled into a single struct.
 pub struct InferenceContext<'a> {
@@ -43,7 +406,7 @@ pub struct InferenceContext<'a> {
     /// Tool registry with all available tools.
     pub tools: &'a ToolRegistry,
     /// Pre-computed tool definitions sent to the LLM.
-    pub tool_defs: &'a [crate::providers::ToolDefinition],
+    pub tool_defs: &'a [ToolDefinition],
     /// Images attached to the current prompt (consumed on first turn).
     pub pending_images: Option<Vec<ImageData>>,
     /// Current approval mode.
@@ -51,7 +414,7 @@ pub struct InferenceContext<'a> {
     /// User settings (may be mutated for auto-compact).
     pub settings: &'a mut Settings,
     /// Event sink for streaming output to the client.
-    pub sink: &'a dyn crate::engine::EngineSink,
+    pub sink: &'a dyn EngineSink,
     /// Cancellation token for graceful interruption.
     pub cancel: CancellationToken,
     /// Channel for receiving client commands (approval responses, etc.).
@@ -136,126 +499,57 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let system_prompt_full = format!("{base_system_prompt}{progress}{git_line}");
         let system_message = ChatMessage::text("system", &system_prompt_full);
 
-        // Assemble context
-        let history = db.load_context(session_id).await?;
-        let mut messages = assemble_messages(&system_message, &history);
-
-        // Attach pending images to the last user message (first iteration only)
-        if iteration == 0
-            && let Some(ref imgs) = pending_images
-            && !imgs.is_empty()
-            && let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user")
-        {
-            last_user.images = Some(imgs.clone());
-        }
-
-        // Track context window usage
-        let context_used = estimate_tokens(&messages);
-        crate::context::update(context_used, config.max_context_tokens);
+        // Assemble context (load history, attach images, track usage)
+        let messages = assemble_context(
+            db,
+            session_id,
+            &system_message,
+            pending_images.as_deref(),
+            iteration,
+            config.max_context_tokens,
+        )
+        .await?;
 
         // Pre-flight budget check: if context is critically high, compact first
-        let ctx_pct = crate::context::percentage();
-        if ctx_pct >= PREFLIGHT_COMPACT_THRESHOLD {
-            tracing::warn!("Pre-flight: context at {ctx_pct}%, attempting auto-compact");
-            sink.emit(EngineEvent::Info {
-                message: format!(
-                    "\u{1f4e6} Context at {ctx_pct}% \u{2014} compacting before sending..."
-                ),
-            });
-            match crate::compact::compact_session_with_provider(
-                db,
-                session_id,
-                config.max_context_tokens,
-                &config.model_settings,
-                provider,
-            )
-            .await
-            {
-                Ok(Ok(result)) => {
-                    sink.emit(EngineEvent::Info {
-                        message: format!(
-                            "\u{2705} Compacted {} messages (~{} token summary)",
-                            result.deleted, result.summary_tokens
-                        ),
-                    });
-                    // Re-assemble with compacted history
-                    let history = db.load_context(session_id).await?;
-                    messages = assemble_messages(&system_message, &history);
-                    // Re-attach images if first iteration
-                    if iteration == 0
-                        && let Some(ref imgs) = pending_images
-                        && !imgs.is_empty()
-                        && let Some(last_user) =
-                            messages.iter_mut().rev().find(|m| m.role == "user")
-                    {
-                        last_user.images = Some(imgs.clone());
-                    }
-                    let new_used = estimate_tokens(&messages);
-                    crate::context::update(new_used, config.max_context_tokens);
-                }
-                Ok(Err(skip)) => {
-                    tracing::info!("Pre-flight compact skipped: {skip:?}");
-                    if matches!(skip, crate::compact::CompactSkip::HistoryTooLarge) {
-                        sink.emit(EngineEvent::Warn {
-                            message: "\u{26a0}\u{fe0f} Context is full but history is too large for this model to summarize. \
-                                      Start a new session (/session) or switch to a model with a larger context window."
-                                .to_string(),
-                        });
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Pre-flight compact failed: {e:#}");
-                    sink.emit(EngineEvent::Warn {
-                        message: format!("Compact failed: {e:#}. Continuing anyway..."),
-                    });
-                }
-            }
-        }
+        let messages = preflight_compact_if_needed(
+            messages,
+            db,
+            session_id,
+            &system_message,
+            pending_images.as_deref(),
+            iteration,
+            config,
+            provider,
+            sink,
+        )
+        .await?;
 
         // Stream the response (with rate limit retry)
         sink.emit(EngineEvent::SpinnerStart {
             message: "Thinking...".into(),
         });
 
-        let stream_result = 'retry: {
-            let mut last_err = None;
-            for attempt in 0..RATE_LIMIT_MAX_RETRIES {
-                let result = tokio::select! {
-                    result = provider.chat_stream(&messages, tool_defs, &config.model_settings) => result,
-                    _ = cancel.cancelled() => {
-                        sink.emit(EngineEvent::SpinnerStop);
-                        sink.emit(EngineEvent::Warn {
-                            message: "Interrupted".into(),
-                        });
-                        return Ok(());
-                    }
-                };
-                match result {
-                    Ok(rx) => break 'retry Ok(rx),
-                    Err(e) if is_rate_limit_error(&e) && attempt + 1 < RATE_LIMIT_MAX_RETRIES => {
-                        let delay = rate_limit_backoff(attempt);
-                        sink.emit(EngineEvent::SpinnerStop);
-                        sink.emit(EngineEvent::Warn {
-                            message: format!(
-                                "\u{23f3} Rate limited. Retrying in {}s...",
-                                delay.as_secs()
-                            ),
-                        });
-                        tracing::warn!(
-                            "Rate limit (attempt {}/{}): {e:#}",
-                            attempt + 1,
-                            RATE_LIMIT_MAX_RETRIES
-                        );
-                        tokio::time::sleep(delay).await;
-                        sink.emit(EngineEvent::SpinnerStart {
-                            message: format!("Retrying (attempt {})...", attempt + 2),
-                        });
-                        last_err = Some(e);
-                    }
-                    Err(e) => break 'retry Err(e),
-                }
+        let stream_result = try_with_rate_limit(
+            provider,
+            &messages,
+            tool_defs,
+            &config.model_settings,
+            &cancel,
+            sink,
+        )
+        .await;
+
+        // Handle cancellation during rate limit retries
+        let stream_result = match stream_result {
+            Ok(Some(rx)) => Ok(rx),
+            Ok(None) => {
+                sink.emit(EngineEvent::SpinnerStop);
+                sink.emit(EngineEvent::Warn {
+                    message: "Interrupted".into(),
+                });
+                return Ok(());
             }
-            Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Rate limit retries exhausted")))
+            Err(e) => Err(e),
         };
 
         // Graceful recovery: if the provider returns a context-overflow error,
@@ -263,62 +557,23 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let mut rx = match stream_result {
             Ok(rx) => rx,
             Err(e) if is_context_overflow_error(&e) => {
-                sink.emit(EngineEvent::SpinnerStop);
-                sink.emit(EngineEvent::Warn {
-                    message:
-                        "\u{26a0}\u{fe0f} Provider rejected request (context overflow). Compacting and retrying..."
-                            .to_string(),
-                });
-                tracing::warn!("Context overflow from provider: {e:#}");
-
-                // Try to compact
-                match crate::compact::compact_session_with_provider(
+                match try_overflow_recovery(
+                    e,
                     db,
                     session_id,
-                    config.max_context_tokens,
-                    &config.model_settings,
+                    &system_message,
+                    pending_images.as_deref(),
+                    iteration,
+                    config,
                     provider,
+                    tool_defs,
+                    &cancel,
+                    sink,
                 )
-                .await
+                .await?
                 {
-                    Ok(Ok(result)) => {
-                        sink.emit(EngineEvent::Info {
-                            message: format!(
-                                "\u{2705} Compacted {} messages. Retrying...",
-                                result.deleted
-                            ),
-                        });
-                    }
-                    _ => {
-                        // Compaction failed or was skipped — can't recover
-                        return Err(e).context(
-                            "LLM inference failed (context overflow, compaction unsuccessful)",
-                        );
-                    }
-                }
-
-                // Re-assemble messages with compacted history
-                let history = db.load_context(session_id).await?;
-                messages = assemble_messages(&system_message, &history);
-                if iteration == 0
-                    && let Some(ref imgs) = pending_images
-                    && !imgs.is_empty()
-                    && let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user")
-                {
-                    last_user.images = Some(imgs.clone());
-                }
-                let new_used = estimate_tokens(&messages);
-                crate::context::update(new_used, config.max_context_tokens);
-
-                // Retry once
-                sink.emit(EngineEvent::SpinnerStart {
-                    message: "Retrying...".into(),
-                });
-                tokio::select! {
-                    result = provider.chat_stream(&messages, tool_defs, &config.model_settings) => {
-                        result.context("LLM inference failed after compaction retry")?
-                    }
-                    _ = cancel.cancelled() => {
+                    Some((rx, _updated)) => rx,
+                    None => {
                         sink.emit(EngineEvent::SpinnerStop);
                         sink.emit(EngineEvent::Warn {
                             message: "Interrupted".into(),
@@ -333,129 +588,29 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         };
 
         // Collect the streamed response
-        let mut full_text = String::new();
-        let mut tool_calls: Vec<ToolCall> = Vec::new();
-        let mut usage = crate::providers::TokenUsage::default();
-        let mut first_token = true;
-        let mut char_count: usize = 0;
-        let mut native_think_buf = String::new();
-        let mut response_banner_shown = false;
-        let mut thinking_banner_shown = false;
-        let mut interrupted = false;
+        let stream_result = collect_stream(&mut rx, sink, &cancel).await;
 
-        loop {
-            let chunk = tokio::select! {
-                c = rx.recv() => c,
-                _ = cancel.cancelled() => {
-                    interrupted = true;
-                    None
-                }
-            };
-
-            if interrupted || cancel.is_cancelled() {
-                sink.emit(EngineEvent::SpinnerStop);
-                if !full_text.is_empty() {
-                    sink.emit(EngineEvent::TextDone);
-                }
-                sink.emit(EngineEvent::Warn {
-                    message: "Interrupted".into(),
-                });
-                if !full_text.is_empty() {
-                    db.insert_message(
-                        session_id,
-                        &Role::Assistant,
-                        Some(&full_text),
-                        None,
-                        None,
-                        None,
-                    )
-                    .await?;
-                }
-
-                return Ok(());
+        if stream_result.interrupted {
+            if !stream_result.text.is_empty() {
+                db.insert_message(
+                    session_id,
+                    &Role::Assistant,
+                    Some(&stream_result.text),
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
             }
-
-            let Some(chunk) = chunk else { break };
-
-            match chunk {
-                StreamChunk::TextDelta(delta) => {
-                    if first_token {
-                        // Close any open thinking block (content already streamed)
-                        if !native_think_buf.is_empty() {
-                            sink.emit(EngineEvent::SpinnerStop);
-                            sink.emit(EngineEvent::ThinkingDone);
-                            native_think_buf.clear();
-                            thinking_banner_shown = true;
-                        }
-                        sink.emit(EngineEvent::SpinnerStop);
-                        first_token = false;
-                    }
-
-                    // Show response banner if coming from thinking
-                    if thinking_banner_shown && !response_banner_shown && !delta.trim().is_empty() {
-                        sink.emit(EngineEvent::ResponseStart);
-                        response_banner_shown = true;
-                    }
-
-                    // Show response banner on first non-empty text
-                    if !response_banner_shown && !delta.trim().is_empty() {
-                        sink.emit(EngineEvent::ResponseStart);
-                        response_banner_shown = true;
-                    }
-
-                    full_text.push_str(&delta);
-                    char_count += delta.len();
-                    sink.emit(EngineEvent::TextDelta {
-                        text: delta.clone(),
-                    });
-                }
-                StreamChunk::ThinkingDelta(delta) => {
-                    // Buffer thinking — emit as a block when text or tool calls start
-                    if !thinking_banner_shown {
-                        sink.emit(EngineEvent::SpinnerStop);
-                        sink.emit(EngineEvent::ThinkingStart);
-                        thinking_banner_shown = true;
-                    }
-                    sink.emit(EngineEvent::ThinkingDelta {
-                        text: delta.clone(),
-                    });
-                    native_think_buf.push_str(&delta);
-                }
-                StreamChunk::ToolCalls(tcs) => {
-                    if !native_think_buf.is_empty() {
-                        sink.emit(EngineEvent::SpinnerStop);
-                        sink.emit(EngineEvent::ThinkingDone);
-                        native_think_buf.clear();
-                    }
-                    sink.emit(EngineEvent::SpinnerStop);
-                    tool_calls = tcs;
-                }
-                StreamChunk::Done(u) => {
-                    // Close any open thinking block (content already streamed)
-                    if !native_think_buf.is_empty() {
-                        sink.emit(EngineEvent::SpinnerStop);
-                        sink.emit(EngineEvent::ThinkingDone);
-                        native_think_buf.clear();
-                    }
-                    usage = u;
-                    break;
-                }
-            }
+            return Ok(());
         }
 
-        // Flush remaining text
-        sink.emit(EngineEvent::TextDone);
-
-        // If we never showed the AGENT RESPONSE banner (no text or only thinking),
-        // and there's non-thinking text, show it now
-        // (This is handled inline during streaming above)
-
-        if first_token {
-            sink.emit(EngineEvent::SpinnerStop);
-        }
+        let full_text = stream_result.text;
+        let tool_calls = stream_result.tool_calls;
+        let usage = stream_result.usage;
+        let char_count = stream_result.char_count;
 
         // Empty response after tool use — retry once before giving up.
-        // Don't save the empty message so the model sees the same context on retry.
         if tool_calls.is_empty()
             && made_tool_calls
             && full_text.trim().is_empty()
@@ -469,7 +624,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             continue;
         }
 
-        // Log the assistant response
+        // Persist the assistant response
         let content = if full_text.is_empty() {
             None
         } else {
@@ -493,9 +648,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
 
         // If no tool calls, we already streamed the response — done
         if tool_calls.is_empty() {
-            // Detect why the model stopped
             if usage.stop_reason == "max_tokens" {
-                // Model was truncated — it didn't finish, it ran out of output tokens
                 sink.emit(EngineEvent::Warn {
                     message: format!(
                         "Model {} hit max_tokens limit — response was truncated. \
@@ -503,8 +656,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                         config.model,
                     ),
                 });
-                // Don't end the turn — continue so the model can try again
-                // with the truncated response in context
                 continue;
             } else if made_tool_calls && full_text.trim().is_empty() {
                 sink.emit(EngineEvent::Warn {
@@ -521,7 +672,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             total_thinking_tokens += usage.thinking_tokens;
             total_char_count += char_count;
 
-            // Use provider token count, or estimate from char count
             let display_tokens = if total_completion_tokens > 0 {
                 total_completion_tokens
             } else {
@@ -577,8 +727,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             )
             .await?;
         } else if tool_calls.len() > 1 {
-            // Mixed batch: some tools need confirmation, but parallelizable
-            // ones (like InvokeAgent) can still run concurrently.
             execute_tools_split_batch(
                 &tool_calls,
                 project_root,
