@@ -293,7 +293,138 @@ struct StreamMessageInfo {
     usage: Option<AnthropicUsage>,
 }
 
-// ── Implementation ───────────────────────────────────────────
+// ── ChunkParser implementation ──────────────────────────────────
+
+use super::stream_collector::ChunkParser;
+
+/// Anthropic SSE chunk parser.
+///
+/// Processes `content_block_start/delta`, `message_start/delta/stop` events
+/// and accumulates tool calls + usage across the stream.
+pub(crate) struct AnthropicChunkParser {
+    tool_calls: Vec<(String, String, String)>, // (id, name, args_json)
+    usage: TokenUsage,
+    thinking_indices: std::collections::HashSet<usize>,
+}
+
+impl AnthropicChunkParser {
+    pub fn new() -> Self {
+        Self {
+            tool_calls: Vec::new(),
+            usage: TokenUsage::default(),
+            thinking_indices: std::collections::HashSet::new(),
+        }
+    }
+}
+
+impl ChunkParser for AnthropicChunkParser {
+    fn process_line(&mut self, data: &str) -> Vec<StreamChunk> {
+        // First, try to detect thinking blocks from raw JSON.
+        // `ContentBlock` doesn't have a "thinking" variant, so `StreamEvent`
+        // deserialization fails when `content_block.type == "thinking"`.
+        // We parse raw JSON separately to register thinking block indices.
+        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(data) {
+            if raw.get("type").and_then(|t| t.as_str()) == Some("content_block_start") {
+                if let Some(idx) = raw.get("index").and_then(|i| i.as_u64()) {
+                    if let Some(cb) = raw.get("content_block")
+                        && cb.get("type").and_then(|t| t.as_str()) == Some("thinking")
+                    {
+                        self.thinking_indices.insert(idx as usize);
+                    }
+                }
+            }
+        }
+
+        let Ok(event) = serde_json::from_str::<StreamEvent>(data) else {
+            return vec![];
+        };
+
+        let mut chunks = Vec::new();
+
+        match event.event_type.as_str() {
+            "content_block_start" => {
+                // Tool use block starting
+                if let Some(ContentBlock::ToolUse { id, name, .. }) = event.content_block {
+                    let idx = event.index.unwrap_or(self.tool_calls.len());
+                    while self.tool_calls.len() <= idx {
+                        self.tool_calls
+                            .push((String::new(), String::new(), String::new()));
+                    }
+                    self.tool_calls[idx].0 = id;
+                    self.tool_calls[idx].1 = name;
+                }
+            }
+            "content_block_delta" => {
+                if let Some(delta) = event.delta {
+                    let idx = event.index.unwrap_or(0);
+                    let is_thinking = self.thinking_indices.contains(&idx);
+
+                    if is_thinking {
+                        if let Some(text) = delta.thinking.or(delta.text)
+                            && !text.is_empty()
+                        {
+                            chunks.push(StreamChunk::ThinkingDelta(text));
+                        }
+                    } else if let Some(text) = delta.text
+                        && !text.is_empty()
+                    {
+                        chunks.push(StreamChunk::TextDelta(text));
+                    }
+                    // Tool use input JSON delta
+                    if let Some(partial) = delta.partial_json
+                        && idx < self.tool_calls.len()
+                    {
+                        self.tool_calls[idx].2.push_str(&partial);
+                    }
+                }
+            }
+            "message_delta" => {
+                if let Some(u) = event.usage {
+                    self.usage.completion_tokens = u.output_tokens;
+                }
+                if let Some(delta) = &event.delta
+                    && let Some(reason) = &delta.stop_reason
+                {
+                    self.usage.stop_reason = reason.clone();
+                }
+            }
+            "message_start" => {
+                if let Some(msg) = event.message
+                    && let Some(u) = msg.usage
+                {
+                    self.usage.prompt_tokens = u.input_tokens;
+                    self.usage.cache_read_tokens = u.cache_read_input_tokens;
+                    self.usage.cache_creation_tokens = u.cache_creation_input_tokens;
+                }
+            }
+            _ => {} // message_stop, content_block_stop, ping, etc.
+        }
+
+        chunks
+    }
+
+    fn finish(&mut self) -> Vec<StreamChunk> {
+        let mut chunks = Vec::new();
+        if !self.tool_calls.is_empty() {
+            let tcs = self
+                .tool_calls
+                .drain(..)
+                .filter(|(id, _, _)| !id.is_empty())
+                .map(|(id, name, args)| ToolCall {
+                    id,
+                    function_name: name,
+                    arguments: args,
+                    thought_signature: None,
+                })
+                .collect();
+            chunks.push(StreamChunk::ToolCalls(tcs));
+        }
+        chunks.push(StreamChunk::Done(std::mem::take(&mut self.usage)));
+        chunks
+    }
+}
+
+// ── Implementation ───────────────────────────────────────────────
 
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
@@ -542,135 +673,10 @@ impl LlmProvider for AnthropicProvider {
             anyhow::bail!("Anthropic API returned {status}: {body}");
         }
 
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
-        let mut byte_stream = resp.bytes_stream();
-
-        tokio::spawn(async move {
-            use futures_util::StreamExt;
-
-            let mut buffer = String::new();
-            let mut tool_calls: Vec<(String, String, String)> = Vec::new(); // (id, name, args_json)
-            let mut final_usage = TokenUsage::default();
-            let mut thinking_indices: std::collections::HashSet<usize> =
-                std::collections::HashSet::new();
-
-            while let Some(chunk_result) = byte_stream.next().await {
-                let Ok(bytes) = chunk_result else { break };
-                buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-                while let Some(line_end) = buffer.find('\n') {
-                    let line = buffer[..line_end].trim().to_string();
-                    buffer.drain(..=line_end);
-
-                    // Skip empty lines and event type lines
-                    let Some(json_str) = line.strip_prefix("data: ") else {
-                        continue;
-                    };
-
-                    // End of stream
-                    if json_str.trim() == "[DONE]" {
-                        continue;
-                    }
-
-                    let Ok(event) = serde_json::from_str::<StreamEvent>(json_str) else {
-                        continue;
-                    };
-
-                    match event.event_type.as_str() {
-                        "content_block_start" => {
-                            // Detect thinking blocks by checking the raw JSON
-                            if let Some(idx) = event.index
-                                && let Ok(raw) = serde_json::from_str::<serde_json::Value>(json_str)
-                                && let Some(cb) = raw.get("content_block")
-                                && cb.get("type").and_then(|t| t.as_str()) == Some("thinking")
-                            {
-                                thinking_indices.insert(idx);
-                            }
-                            // A new content block is starting — could be text or tool_use
-                            if let Some(ContentBlock::ToolUse { id, name, .. }) =
-                                event.content_block
-                            {
-                                let idx = event.index.unwrap_or(tool_calls.len());
-                                while tool_calls.len() <= idx {
-                                    tool_calls.push((String::new(), String::new(), String::new()));
-                                }
-                                tool_calls[idx].0 = id;
-                                tool_calls[idx].1 = name;
-                            }
-                        }
-                        "content_block_delta" => {
-                            if let Some(delta) = event.delta {
-                                let idx = event.index.unwrap_or(0);
-                                let is_thinking = thinking_indices.contains(&idx);
-
-                                // Thinking delta (Anthropic sends "thinking" field)
-                                if is_thinking {
-                                    if let Some(text) = delta.thinking.or(delta.text)
-                                        && !text.is_empty()
-                                    {
-                                        let _ = tx.send(StreamChunk::ThinkingDelta(text)).await;
-                                    }
-                                } else {
-                                    // Text delta
-                                    if let Some(text) = delta.text
-                                        && !text.is_empty()
-                                    {
-                                        let _ = tx.send(StreamChunk::TextDelta(text)).await;
-                                    }
-                                }
-                                // Tool use input JSON delta
-                                if let Some(partial) = delta.partial_json
-                                    && idx < tool_calls.len()
-                                {
-                                    tool_calls[idx].2.push_str(&partial);
-                                }
-                            }
-                        }
-                        "message_delta" => {
-                            // Final usage info + stop reason
-                            if let Some(u) = event.usage {
-                                final_usage.completion_tokens = u.output_tokens;
-                            }
-                            if let Some(delta) = &event.delta
-                                && let Some(reason) = &delta.stop_reason
-                            {
-                                final_usage.stop_reason = reason.clone();
-                            }
-                        }
-                        "message_start" => {
-                            // Capture input token usage
-                            if let Some(msg) = event.message
-                                && let Some(u) = msg.usage
-                            {
-                                final_usage.prompt_tokens = u.input_tokens;
-                                final_usage.cache_read_tokens = u.cache_read_input_tokens;
-                                final_usage.cache_creation_tokens = u.cache_creation_input_tokens;
-                            }
-                        }
-                        "message_stop" => {
-                            // Stream complete
-                        }
-                        _ => {} // content_block_stop, ping, etc.
-                    }
-                }
-            }
-
-            // Send accumulated tool calls if any
-            if !tool_calls.is_empty() {
-                let tcs = tool_calls
-                    .drain(..)
-                    .filter(|(id, _, _)| !id.is_empty())
-                    .map(|(id, name, args)| ToolCall {
-                        id,
-                        function_name: name,
-                        arguments: args,
-                        thought_signature: None,
-                    })
-                    .collect();
-                let _ = tx.send(StreamChunk::ToolCalls(tcs)).await;
-            }
-            let _ = tx.send(StreamChunk::Done(final_usage)).await;
-        });
+        let rx = super::stream_collector::spawn_sse_collector(
+            resp,
+            Box::new(AnthropicChunkParser::new()),
+        );
 
         Ok(rx)
     }

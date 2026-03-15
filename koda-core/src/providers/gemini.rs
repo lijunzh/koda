@@ -289,7 +289,95 @@ struct GeminiModelInfo {
     output_token_limit: Option<usize>,
 }
 
-// ── Implementation ───────────────────────────────────────────
+// ── ChunkParser implementation ──────────────────────────────────
+
+use super::stream_collector::ChunkParser;
+
+/// Gemini SSE chunk parser.
+///
+/// Gemini sends complete JSON snapshot objects per SSE event (not incremental
+/// deltas like Anthropic/OpenAI). Each event contains the full candidate content
+/// plus usage metadata.
+pub(crate) struct GeminiChunkParser {
+    tool_calls: Vec<ToolCall>,
+    usage: TokenUsage,
+    tc_counter: u32,
+}
+
+impl GeminiChunkParser {
+    pub fn new() -> Self {
+        Self {
+            tool_calls: Vec::new(),
+            usage: TokenUsage::default(),
+            tc_counter: 0,
+        }
+    }
+}
+
+impl ChunkParser for GeminiChunkParser {
+    fn process_line(&mut self, data: &str) -> Vec<StreamChunk> {
+        let Ok(event) = serde_json::from_str::<GenerateResponse>(data) else {
+            return vec![];
+        };
+
+        let mut chunks = Vec::new();
+
+        // Extract usage (last event has final totals)
+        if let Some(usage) = &event.usage_metadata {
+            self.usage.prompt_tokens = usage.prompt_token_count;
+            self.usage.completion_tokens = usage.candidates_token_count;
+            self.usage.cache_read_tokens = usage.cached_content_token_count;
+            self.usage.thinking_tokens = usage.thoughts_token_count;
+            usage.log_cache_stats();
+        }
+
+        if let Some(candidates) = &event.candidates {
+            for candidate in candidates {
+                if let Some(reason) = &candidate.finish_reason {
+                    self.usage.stop_reason = reason.to_lowercase();
+                }
+                if let Some(content) = &candidate.content
+                    && let Some(parts) = &content.parts
+                {
+                    for part in parts {
+                        if let Some(text) = &part.text
+                            && !text.is_empty()
+                        {
+                            if part.thought == Some(true) {
+                                chunks.push(StreamChunk::ThinkingDelta(text.clone()));
+                            } else {
+                                chunks.push(StreamChunk::TextDelta(text.clone()));
+                            }
+                        }
+                        if let Some(fc) = &part.function_call {
+                            self.tc_counter += 1;
+                            self.tool_calls.push(ToolCall {
+                                id: format!("gemini_tc_{}", self.tc_counter),
+                                function_name: fc.name.clone(),
+                                arguments: serde_json::to_string(&fc.args)
+                                    .unwrap_or_default(),
+                                thought_signature: part.thought_signature.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        chunks
+    }
+
+    fn finish(&mut self) -> Vec<StreamChunk> {
+        let mut chunks = Vec::new();
+        if !self.tool_calls.is_empty() {
+            chunks.push(StreamChunk::ToolCalls(std::mem::take(&mut self.tool_calls)));
+        }
+        chunks.push(StreamChunk::Done(std::mem::take(&mut self.usage)));
+        chunks
+    }
+}
+
+// ── Implementation ───────────────────────────────────────────────
 
 #[async_trait]
 impl LlmProvider for GeminiProvider {
@@ -441,89 +529,10 @@ impl LlmProvider for GeminiProvider {
             anyhow::bail!("Gemini API returned {status}: {body}");
         }
 
-        let (tx, rx) = tokio::sync::mpsc::channel(32);
-        let mut byte_stream = resp.bytes_stream();
-
-        tokio::spawn(async move {
-            use futures_util::StreamExt;
-
-            let mut buffer = String::new();
-            let mut tool_calls: Vec<ToolCall> = Vec::new();
-            let mut final_usage = TokenUsage::default();
-            let mut tc_counter = 0u32;
-
-            while let Some(chunk_result) = byte_stream.next().await {
-                let Ok(bytes) = chunk_result else { break };
-                buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-                while let Some(line_end) = buffer.find('\n') {
-                    let line = buffer[..line_end].trim().to_string();
-                    buffer.drain(..=line_end);
-
-                    let Some(json_str) = line.strip_prefix("data: ") else {
-                        continue;
-                    };
-
-                    let Ok(event) = serde_json::from_str::<GenerateResponse>(json_str) else {
-                        continue;
-                    };
-
-                    // Extract usage from each chunk (last one has final totals)
-                    if let Some(usage) = &event.usage_metadata {
-                        final_usage.prompt_tokens = usage.prompt_token_count;
-                        final_usage.completion_tokens = usage.candidates_token_count;
-                        final_usage.cache_read_tokens = usage.cached_content_token_count;
-                        final_usage.thinking_tokens = usage.thoughts_token_count;
-                        usage.log_cache_stats();
-                    }
-
-                    // Extract content parts + finish reason
-                    if let Some(candidates) = &event.candidates {
-                        for candidate in candidates {
-                            // Capture finish reason (last one wins)
-                            if let Some(reason) = &candidate.finish_reason {
-                                // Gemini uses "MAX_TOKENS", normalize to lowercase
-                                final_usage.stop_reason = reason.to_lowercase();
-                            }
-                            if let Some(content) = &candidate.content
-                                && let Some(parts) = &content.parts
-                            {
-                                for part in parts {
-                                    if let Some(text) = &part.text
-                                        && !text.is_empty()
-                                    {
-                                        // Thinking parts go to ThinkingDelta, regular text to TextDelta
-                                        if part.thought == Some(true) {
-                                            let _ = tx
-                                                .send(StreamChunk::ThinkingDelta(text.clone()))
-                                                .await;
-                                        } else {
-                                            let _ =
-                                                tx.send(StreamChunk::TextDelta(text.clone())).await;
-                                        }
-                                    }
-                                    if let Some(fc) = &part.function_call {
-                                        tc_counter += 1;
-                                        tool_calls.push(ToolCall {
-                                            id: format!("gemini_tc_{tc_counter}"),
-                                            function_name: fc.name.clone(),
-                                            arguments: serde_json::to_string(&fc.args)
-                                                .unwrap_or_default(),
-                                            thought_signature: part.thought_signature.clone(),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if !tool_calls.is_empty() {
-                let _ = tx.send(StreamChunk::ToolCalls(tool_calls)).await;
-            }
-            let _ = tx.send(StreamChunk::Done(final_usage)).await;
-        });
+        let rx = super::stream_collector::spawn_sse_collector(
+            resp,
+            Box::new(GeminiChunkParser::new()),
+        );
 
         Ok(rx)
     }

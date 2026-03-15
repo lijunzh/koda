@@ -10,6 +10,8 @@ pub mod gemini;
 pub mod openai_compat;
 /// Streaming XML tag filter for think/reasoning tags.
 pub mod stream_tag_filter;
+/// Shared SSE stream collector for all providers.
+pub mod stream_collector;
 
 /// Mock provider for deterministic testing.
 pub mod mock;

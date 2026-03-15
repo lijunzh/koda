@@ -170,7 +170,119 @@ struct StreamToolCallFunction {
     arguments: Option<String>,
 }
 
-// ── Implementation ───────────────────────────────────────────
+// ── ChunkParser implementation ──────────────────────────────────
+
+use super::stream_collector::ChunkParser;
+
+/// OpenAI-compatible SSE chunk parser.
+///
+/// Handles the OpenAI streaming format with `choices[].delta` incremental fields,
+/// reasoning content (o1/o3/o4-mini), and `<think>` tag filtering for models
+/// that wrap reasoning in XML tags.
+pub(crate) struct OpenAiChunkParser {
+    tool_calls: Vec<(String, String, String)>, // (id, name, args)
+    usage: TokenUsage,
+    think_filter: super::stream_tag_filter::StreamTagFilter,
+}
+
+impl OpenAiChunkParser {
+    pub fn new() -> Self {
+        Self {
+            tool_calls: Vec::new(),
+            usage: TokenUsage::default(),
+            think_filter: super::stream_tag_filter::StreamTagFilter::new(),
+        }
+    }
+}
+
+impl ChunkParser for OpenAiChunkParser {
+    fn process_line(&mut self, data: &str) -> Vec<StreamChunk> {
+        let Ok(chunk) = serde_json::from_str::<StreamChatResponse>(data) else {
+            return vec![];
+        };
+
+        let mut chunks = Vec::new();
+
+        // Capture usage if present
+        if let Some(u) = &chunk.usage {
+            self.usage = usage_from_response(u);
+        }
+
+        for choice in &chunk.choices {
+            // Capture finish_reason
+            if let Some(reason) = &choice.finish_reason {
+                self.usage.stop_reason = if reason == "length" {
+                    "max_tokens".to_string()
+                } else {
+                    reason.clone()
+                };
+            }
+
+            // Reasoning content (o1/o3/o4-mini)
+            if let Some(reasoning) = &choice.delta.reasoning_content
+                && !reasoning.is_empty()
+            {
+                chunks.push(StreamChunk::ThinkingDelta(reasoning.clone()));
+            }
+
+            // Text delta — run through <think> tag filter
+            if let Some(content) = &choice.delta.content
+                && !content.is_empty()
+            {
+                chunks.extend(
+                    self.think_filter
+                        .process(StreamChunk::TextDelta(content.clone())),
+                );
+            }
+
+            // Tool call deltas — accumulate
+            if let Some(tcs) = &choice.delta.tool_calls {
+                for tc in tcs {
+                    let idx = tc.index.unwrap_or(0);
+                    while self.tool_calls.len() <= idx {
+                        self.tool_calls
+                            .push((String::new(), String::new(), String::new()));
+                    }
+                    if let Some(id) = &tc.id {
+                        self.tool_calls[idx].0 = id.clone();
+                    }
+                    if let Some(f) = &tc.function {
+                        if let Some(name) = &f.name {
+                            self.tool_calls[idx].1.push_str(name);
+                        }
+                        if let Some(args) = &f.arguments {
+                            self.tool_calls[idx].2.push_str(args);
+                        }
+                    }
+                }
+            }
+        }
+
+        chunks
+    }
+
+    fn finish(&mut self) -> Vec<StreamChunk> {
+        let mut chunks = Vec::new();
+        if !self.tool_calls.is_empty() {
+            let tcs = self
+                .tool_calls
+                .drain(..)
+                .map(|(id, name, args)| ToolCall {
+                    id,
+                    function_name: name,
+                    arguments: args,
+                    thought_signature: None,
+                })
+                .collect();
+            chunks.push(StreamChunk::ToolCalls(tcs));
+        }
+        chunks.extend(self.think_filter.flush());
+        chunks.push(StreamChunk::Done(std::mem::take(&mut self.usage)));
+        chunks
+    }
+}
+
+// ── Implementation ───────────────────────────────────────────────
 
 impl OpenAiCompatProvider {
     /// Build a ChatRequest from messages, tools, model, and optional stream flag.
@@ -355,134 +467,10 @@ impl LlmProvider for OpenAiCompatProvider {
             anyhow::bail!("LLM API returned {status}: {body}");
         }
 
-        let (tx, rx) = mpsc::channel(64);
-
-        // Spawn a task to read SSE chunks and send them to the channel
-        let mut byte_stream = resp.bytes_stream();
-        tokio::spawn(async move {
-            use futures_util::StreamExt;
-
-            let mut buffer = String::new();
-            let mut tool_calls: Vec<(String, String, String)> = Vec::new(); // (id, name, args)
-            let mut final_usage = TokenUsage::default();
-            let mut think_filter = super::stream_tag_filter::StreamTagFilter::new();
-
-            while let Some(chunk_result) = byte_stream.next().await {
-                let Ok(bytes) = chunk_result else { break };
-                buffer.push_str(&String::from_utf8_lossy(&bytes));
-
-                // Process complete SSE lines
-                while let Some(line_end) = buffer.find('\n') {
-                    let line = buffer[..line_end].trim().to_string();
-                    buffer.drain(..=line_end);
-
-                    if line == "data: [DONE]" {
-                        // Stream complete — send tool calls if any, then Done
-                        if !tool_calls.is_empty() {
-                            let tcs = tool_calls
-                                .drain(..)
-                                .map(|(id, name, args)| ToolCall {
-                                    id,
-                                    function_name: name,
-                                    arguments: args,
-                                    thought_signature: None,
-                                })
-                                .collect();
-                            let _ = tx.send(StreamChunk::ToolCalls(tcs)).await;
-                        }
-                        for filtered in think_filter.flush() {
-                            let _ = tx.send(filtered).await;
-                        }
-                        let _ = tx.send(StreamChunk::Done(final_usage.clone())).await;
-                        return;
-                    }
-
-                    let Some(json_str) = line.strip_prefix("data: ") else {
-                        continue;
-                    };
-
-                    let Ok(chunk) = serde_json::from_str::<StreamChatResponse>(json_str) else {
-                        continue;
-                    };
-
-                    // Capture usage if present
-                    if let Some(u) = &chunk.usage {
-                        final_usage = usage_from_response(u);
-                    }
-
-                    for choice in &chunk.choices {
-                        // Capture finish_reason ("stop", "length", "tool_calls", etc.)
-                        if let Some(reason) = &choice.finish_reason {
-                            // OpenAI uses "length" for max_tokens, normalize
-                            final_usage.stop_reason = if reason == "length" {
-                                "max_tokens".to_string()
-                            } else {
-                                reason.clone()
-                            };
-                        }
-
-                        // Reasoning content (o1/o3/o4-mini)
-                        if let Some(reasoning) = &choice.delta.reasoning_content
-                            && !reasoning.is_empty()
-                        {
-                            let _ = tx.send(StreamChunk::ThinkingDelta(reasoning.clone())).await;
-                        }
-
-                        // Text delta — run through <think> tag filter
-                        if let Some(content) = &choice.delta.content
-                            && !content.is_empty()
-                        {
-                            for filtered in
-                                think_filter.process(StreamChunk::TextDelta(content.clone()))
-                            {
-                                let _ = tx.send(filtered).await;
-                            }
-                        }
-
-                        // Tool call deltas — accumulate
-                        if let Some(tcs) = &choice.delta.tool_calls {
-                            for tc in tcs {
-                                let idx = tc.index.unwrap_or(0);
-                                // Grow the vec if needed
-                                while tool_calls.len() <= idx {
-                                    tool_calls.push((String::new(), String::new(), String::new()));
-                                }
-                                if let Some(id) = &tc.id {
-                                    tool_calls[idx].0 = id.clone();
-                                }
-                                if let Some(f) = &tc.function {
-                                    if let Some(name) = &f.name {
-                                        tool_calls[idx].1.push_str(name);
-                                    }
-                                    if let Some(args) = &f.arguments {
-                                        tool_calls[idx].2.push_str(args);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Stream ended without [DONE] — send accumulated data
-            if !tool_calls.is_empty() {
-                let tcs = tool_calls
-                    .drain(..)
-                    .map(|(id, name, args)| ToolCall {
-                        id,
-                        function_name: name,
-                        arguments: args,
-                        thought_signature: None,
-                    })
-                    .collect();
-                let _ = tx.send(StreamChunk::ToolCalls(tcs)).await;
-            }
-            // Flush any remaining content in the <think> tag filter
-            for filtered in think_filter.flush() {
-                let _ = tx.send(filtered).await;
-            }
-            let _ = tx.send(StreamChunk::Done(final_usage)).await;
-        });
+        let rx = super::stream_collector::spawn_sse_collector(
+            resp,
+            Box::new(OpenAiChunkParser::new()),
+        );
 
         Ok(rx)
     }
