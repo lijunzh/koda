@@ -8,6 +8,8 @@ pub mod anthropic;
 pub mod gemini;
 /// OpenAI-compatible provider (LM Studio, Ollama, vLLM, OpenRouter, etc.).
 pub mod openai_compat;
+/// Shared SSE stream collector for all providers.
+pub mod stream_collector;
 /// Streaming XML tag filter for think/reasoning tags.
 pub mod stream_tag_filter;
 
