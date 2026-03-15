@@ -65,6 +65,11 @@ impl KeyStore {
 
         #[cfg(not(unix))]
         {
+            // TODO: Windows ACL — std::fs::write inherits parent directory ACLs,
+            // which typically grants read access to the Users group. API keys are
+            // readable by any local user. Low risk for single-user dev machines,
+            // but if koda ever runs on shared workstations or as a service,
+            // restrict the DACL to the current user SID via SetNamedSecurityInfoW.
             std::fs::write(&path, &content)?;
         }
 
