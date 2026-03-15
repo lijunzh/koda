@@ -9,6 +9,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-03-14
+
+### Fixed
+- **Security: drop `sqlx-mysql` transitive dependency** — sqlx default features
+  pulled in `sqlx-mysql`, which transitively brought in the `rsa` crate
+  (RUSTSEC-2023-0071, timing side-channel). Koda only uses SQLite — set
+  `default-features = false` on sqlx, removing `rsa`, `sqlx-mysql`, and ~460
+  lines from Cargo.lock. `cargo audit` now shows 0 vulnerabilities (#459)
+
+### Changed
+- **Refactor: decompose `inference_loop()`** — extracted token estimation,
+  message assembly, overflow detection, and rate-limit helpers into focused
+  functions in `inference_helpers.rs` (#455)
+- **Refactor: extract `ChunkParser` trait** — unified SSE stream collection
+  across all three providers (Anthropic, Gemini, OpenAI-compat) into a shared
+  `stream_collector.rs` with per-provider `ChunkParser` implementations (#457)
+- **Refactor: extract TUI event loop handlers** — decomposed the 1,200-line
+  `tui_context.rs` into `tui_handlers_inference.rs` for inference event
+  processing (#458)
+
+### Added
+- **Doc-tests** — 7 doc-tests on key pure public APIs: `classify_bash_command`,
+  `split_command_segments`, `strip_env_vars`, `mask_key`, `rate_limit_backoff`,
+  `truncate_for_display`, `lint_bash_paths` (#461)
+- **Dependabot** — enabled vulnerability alerts; created missing `ci`,
+  `dependencies`, and `rust` labels for dependabot PRs
+
+### Documentation
+- **CLAUDE.md** — rebuilt architecture tree from filesystem (removed 5 stale
+  files, added ~15 missing files from v0.1.9–v0.1.10 refactors) (#459)
+- **Windows keystore ACL** — documented that `keys.toml` on Windows inherits
+  parent directory ACLs (low risk for single-user machines) (#460)
+
 ## [0.1.10] - 2026-03-14
 
 ### Removed
