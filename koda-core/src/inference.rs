@@ -8,8 +8,8 @@ use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent};
 use crate::inference_helpers::{
-    PREFLIGHT_COMPACT_THRESHOLD, assemble_context, collect_stream,
-    is_context_overflow_error, try_overflow_recovery, try_with_rate_limit,
+    assemble_context, collect_stream, is_context_overflow_error,
+    preflight_compact_if_needed, try_overflow_recovery, try_with_rate_limit,
 };
 use crate::loop_guard::LoopDetector;
 use crate::persistence::Persistence;
@@ -148,59 +148,18 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         .await?;
 
         // Pre-flight budget check: if context is critically high, compact first
-        let ctx_pct = crate::context::percentage();
-        if ctx_pct >= PREFLIGHT_COMPACT_THRESHOLD {
-            tracing::warn!("Pre-flight: context at {ctx_pct}%, attempting auto-compact");
-            sink.emit(EngineEvent::Info {
-                message: format!(
-                    "\u{1f4e6} Context at {ctx_pct}% \u{2014} compacting before sending..."
-                ),
-            });
-            match crate::compact::compact_session_with_provider(
-                db,
-                session_id,
-                config.max_context_tokens,
-                &config.model_settings,
-                provider,
-            )
-            .await
-            {
-                Ok(Ok(result)) => {
-                    sink.emit(EngineEvent::Info {
-                        message: format!(
-                            "\u{2705} Compacted {} messages (~{} token summary)",
-                            result.deleted, result.summary_tokens
-                        ),
-                    });
-                    // Re-assemble with compacted history
-                    messages = assemble_context(
-                        db,
-                        session_id,
-                        &system_message,
-                        pending_images.as_deref(),
-                        iteration,
-                        config.max_context_tokens,
-                    )
-                    .await?;
-                }
-                Ok(Err(skip)) => {
-                    tracing::info!("Pre-flight compact skipped: {skip:?}");
-                    if matches!(skip, crate::compact::CompactSkip::HistoryTooLarge) {
-                        sink.emit(EngineEvent::Warn {
-                            message: "\u{26a0}\u{fe0f} Context is full but history is too large for this model to summarize. \
-                                      Start a new session (/session) or switch to a model with a larger context window."
-                                .to_string(),
-                        });
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Pre-flight compact failed: {e:#}");
-                    sink.emit(EngineEvent::Warn {
-                        message: format!("Compact failed: {e:#}. Continuing anyway..."),
-                    });
-                }
-            }
-        }
+        let mut messages = preflight_compact_if_needed(
+            messages,
+            db,
+            session_id,
+            &system_message,
+            pending_images.as_deref(),
+            iteration,
+            config,
+            provider,
+            sink,
+        )
+        .await?;
 
         // Stream the response (with rate limit retry)
         sink.emit(EngineEvent::SpinnerStart {

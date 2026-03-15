@@ -98,6 +98,79 @@ pub fn is_context_overflow_error(err: &anyhow::Error) -> bool {
         || (msg.contains("413") && msg.contains("too large"))
 }
 
+/// Pre-flight budget check: if context usage exceeds the threshold, compact
+/// before sending to the provider. Re-assembles context after successful compaction.
+///
+/// Returns the (possibly updated) message vec.
+pub async fn preflight_compact_if_needed(
+    messages: Vec<ChatMessage>,
+    db: &crate::db::Database,
+    session_id: &str,
+    system_message: &ChatMessage,
+    pending_images: Option<&[crate::providers::ImageData]>,
+    iteration: u32,
+    config: &crate::config::KodaConfig,
+    provider: &dyn crate::providers::LlmProvider,
+    sink: &dyn crate::engine::EngineSink,
+) -> anyhow::Result<Vec<ChatMessage>> {
+    let ctx_pct = crate::context::percentage();
+    if ctx_pct < PREFLIGHT_COMPACT_THRESHOLD {
+        return Ok(messages);
+    }
+
+    tracing::warn!("Pre-flight: context at {ctx_pct}%, attempting auto-compact");
+    sink.emit(crate::engine::EngineEvent::Info {
+        message: format!("\u{1f4e6} Context at {ctx_pct}% \u{2014} compacting before sending..."),
+    });
+
+    match crate::compact::compact_session_with_provider(
+        db,
+        session_id,
+        config.max_context_tokens,
+        &config.model_settings,
+        provider,
+    )
+    .await
+    {
+        Ok(Ok(result)) => {
+            sink.emit(crate::engine::EngineEvent::Info {
+                message: format!(
+                    "\u{2705} Compacted {} messages (~{} token summary)",
+                    result.deleted, result.summary_tokens
+                ),
+            });
+            // Re-assemble with compacted history
+            assemble_context(
+                db,
+                session_id,
+                system_message,
+                pending_images,
+                iteration,
+                config.max_context_tokens,
+            )
+            .await
+        }
+        Ok(Err(skip)) => {
+            tracing::info!("Pre-flight compact skipped: {skip:?}");
+            if matches!(skip, crate::compact::CompactSkip::HistoryTooLarge) {
+                sink.emit(crate::engine::EngineEvent::Warn {
+                    message: "\u{26a0}\u{fe0f} Context is full but history is too large for this model to summarize. \
+                              Start a new session (/session) or switch to a model with a larger context window."
+                        .to_string(),
+                });
+            }
+            Ok(messages)
+        }
+        Err(e) => {
+            tracing::warn!("Pre-flight compact failed: {e:#}");
+            sink.emit(crate::engine::EngineEvent::Warn {
+                message: format!("Compact failed: {e:#}. Continuing anyway..."),
+            });
+            Ok(messages)
+        }
+    }
+}
+
 /// Recover from a context overflow error: compact the session, re-assemble
 /// context, and retry the provider call once.
 ///
