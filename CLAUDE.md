@@ -80,69 +80,100 @@ koda/
 │   ├── src/
 │   │   ├── lib.rs          # Crate root
 │   │   ├── agent.rs        # KodaAgent (shared config: tools, prompt)
-│   │   ├── session.rs      # KodaSession (per-conversation: DB, provider, settings)
+│   │   ├── approval.rs     # Approval modes + tool confirmation gates
+│   │   ├── bash_path_lint.rs # Heuristic path-escape detection for bash commands
+│   │   ├── bash_safety.rs  # Bash command safety classification
+│   │   ├── compact.rs      # Session compaction (summarize old messages)
+│   │   ├── config.rs       # Agent/provider config + provider metadata
+│   │   ├── context.rs      # Context window token tracking
+│   │   ├── db.rs           # SQLite persistence (WAL mode, parameterized queries)
+│   │   ├── git.rs          # Git checkpointing + rollback
 │   │   ├── inference.rs    # Streaming inference loop + tool execution
 │   │   ├── inference_helpers.rs # Token estimation, message assembly, overflow detection
-│   │   ├── compact.rs      # Session compaction (summarize old messages)
-│   │   ├── approval.rs     # Approval modes + bash command safety classification
-│   │   ├── context.rs      # Context window token tracking
 │   │   ├── keystore.rs     # Secure API key storage (~/.config/koda/keys.toml, 0600)
 │   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
 │   │   ├── memory.rs       # Semantic memory (global + project tiers → system prompt)
 │   │   ├── model_context.rs# Model → context window size lookup table (fallback)
 │   │   ├── output_caps.rs  # Output cap scaling based on context window size
+│   │   ├── persistence.rs  # Persistence trait — the database contract
 │   │   ├── preview.rs      # Pre-confirmation diff previews for Edit/Write
-│   │   ├── git.rs          # Git checkpointing + rollback
-│   │   ├── settings.rs     # Runtime settings (approval mode, etc.)
+│   │   ├── progress.rs     # Progress reporting helpers for long operations
+│   │   ├── prompt.rs       # System prompt construction
 │   │   ├── runtime_env.rs  # Thread-safe runtime env for API keys
+│   │   ├── session.rs      # KodaSession (per-conversation: DB, provider, settings)
+│   │   ├── settings.rs     # Runtime settings (approval mode, etc.)
+│   │   ├── skills.rs       # Skill discovery and activation
+│   │   ├── sub_agent_cache.rs # Sub-agent provider/model config cache
+│   │   ├── tool_dispatch.rs# Tool dispatch — routes tool calls to the registry
+│   │   ├── truncate.rs     # Token-safe output truncation
+│   │   ├── undo.rs         # Undo stack for file mutations
 │   │   ├── version.rs      # Background version checker (queries crates.io)
 │   │   ├── engine/         # EngineEvent, EngineCommand, EngineSink trait
-│   │   ├── providers/      # LLM providers (Anthropic, Gemini, OpenAI-compat, mock)
-│   │   ├── tools/          # Built-in tools (Bash, Read, Write, Edit, Glob, Grep, etc.)
-│   │   ├── db.rs           # SQLite persistence (WAL mode, parameterized queries)
-│   │   └── config.rs       # Agent/provider config
+│   │   ├── providers/      # LLM providers
+│   │   │   ├── mod.rs      # LlmProvider trait, ChatMessage, HTTP client builder
+│   │   │   ├── anthropic.rs# Anthropic Claude (prompt caching, extended thinking)
+│   │   │   ├── gemini.rs   # Google Gemini (context caching, key-in-URL)
+│   │   │   ├── openai_compat.rs # OpenAI-compatible (GPT, DeepSeek, local models)
+│   │   │   ├── mock.rs     # Mock provider for tests
+│   │   │   ├── stream_collector.rs # ChunkParser trait + shared SSE stream collector
+│   │   │   └── stream_tag_filter.rs # Strip XML tool tags from streaming text
+│   │   └── tools/          # Built-in tools
+│   │       ├── mod.rs      # ToolRegistry, ToolEffect, tool definitions
+│   │       ├── agent.rs    # Sub-agent invocation tool
+│   │       ├── file_tools.rs # Read, Write, Edit, Delete
+│   │       ├── glob_tool.rs# Glob file search
+│   │       ├── grep.rs     # Ripgrep-based text search
+│   │       ├── memory.rs   # MemoryRead, MemoryWrite
+│   │       ├── recall.rs   # RecallContext (session history)
+│   │       ├── shell.rs    # Bash command execution
+│   │       ├── skill_tools.rs # ListSkills, ActivateSkill
+│   │       └── web_fetch.rs# WebFetch (URL content retrieval)
 │   └── tests/              # Engine integration tests
 ├── koda-cli/               # CLI binary
 │   ├── src/
 │   │   ├── main.rs         # CLI entry point (clap)
+│   │   ├── lib.rs          # Crate root (exports acp_adapter)
 │   │   ├── tui_app.rs      # Main TUI event loop (ratatui Viewport::Inline)
+│   │   ├── tui_context.rs  # TUI shared mutable state struct
+│   │   ├── tui_handlers_inference.rs # Inference event handling (extracted from context)
 │   │   ├── tui_render.rs   # EngineEvent → ratatui Line/Span rendering
 │   │   ├── tui_commands.rs # Slash command dispatch (/help, /model, /sessions, etc.)
 │   │   ├── tui_wizards.rs  # Interactive wizards (/provider, /compact, /agent)
 │   │   ├── tui_output.rs   # Output bridge: emit_line (ratatui) + write_line (crossterm)
 │   │   ├── tui_viewport.rs # Viewport layout + menu_area rendering
-│   │   ├── tui_types.rs    # MenuContent, UiEvent, shared TUI types
-│   │   ├── tui_context.rs  # TUI context state
-│   │   ├── tui_history.rs  # Command history persistence
+│   │   ├── tui_types.rs    # MenuContent, PromptMode, TuiState, shared TUI types
 │   │   ├── md_render.rs    # Streaming markdown → ratatui renderer
 │   │   ├── completer.rs    # Tab completion (/commands, @files, /model names)
-│   │   ├── cost.rs         # Cost estimation per model
 │   │   ├── diff_render.rs  # Diff preview → ratatui renderer (syntax highlighted)
 │   │   ├── highlight.rs    # Syntax highlighting via syntect
 │   │   ├── startup.rs      # Startup banner rendering
 │   │   ├── repl.rs         # Slash command parsing + provider/model lists
 │   │   ├── input.rs        # @file reference processing + image loading
 │   │   ├── headless.rs     # Single-prompt headless mode
-│   │   ├── headless_sink.rs# HeadlessSink (println-based, auto-approve)
 │   │   ├── sink.rs         # CliSink (channel forwarding for TUI)
 │   │   ├── server.rs       # ACP server over stdio JSON-RPC
 │   │   ├── acp_adapter.rs  # ACP protocol adapter
 │   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
 │   │   ├── tool_history.rs # Tool output history for /expand
-│   │   ├── lib.rs          # Crate root (exports acp_adapter)
 │   │   └── widgets/        # TUI widgets
-│   │       ├── approval.rs # Inline approval prompt (approve/reject/feedback)
-│   │       ├── slash_menu.rs# Slash command dropdown (ratatui-native, see DESIGN.md §14)
-│   │       ├── status_bar.rs# Model, mode, context meter, elapsed time
-│   │       └── text_input.rs# Inline text input (masked for API keys)
+│   │       ├── mod.rs      # Widget module root
+│   │       ├── dropdown.rs # Generic dropdown widget
+│   │       ├── file_menu.rs# @file autocomplete menu
+│   │       ├── model_menu.rs # Model picker menu
+│   │       ├── provider_menu.rs # Provider picker menu
+│   │       ├── session_menu.rs # Session picker menu
+│   │       ├── slash_menu.rs# Slash command dropdown (see DESIGN.md §14)
+│   │       └── status_bar.rs# Model, mode, context meter, elapsed time
 │   └── tests/              # CLI integration tests
 ├── koda-ast/               # Tree-sitter AST analysis (library + standalone MCP server)
 │   ├── src/
+│   │   ├── lib.rs          # Library entry point
 │   │   ├── main.rs         # Standalone MCP server (rmcp, stdio transport)
 │   │   └── ast.rs          # Tree-sitter analysis (Rust, Python, JS, TS)
 │   └── tests/              # Integration tests
 ├── koda-email/             # Email via IMAP/SMTP (library + standalone MCP server)
 │   ├── src/
+│   │   ├── lib.rs          # Library entry point
 │   │   ├── main.rs         # Standalone MCP server (rmcp, stdio transport)
 │   │   ├── config.rs       # Credential loading from KODA_EMAIL_* env vars
 │   │   ├── imap_client.rs  # IMAP read/search (sync imap crate + spawn_blocking)
