@@ -8,7 +8,9 @@ use crate::input;
 use crate::sink::UiEvent;
 use crate::tui_context::{TuiContext, save_history};
 use crate::tui_types::{MenuContent, PromptMode, TuiState};
-use crate::tui_viewport::{draw_viewport, drain_pending_resizes, emit_above, scroll_past_and_reinit};
+use crate::tui_viewport::{
+    drain_pending_resizes, draw_viewport, emit_above, scroll_past_and_reinit,
+};
 
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use futures_util::StreamExt;
@@ -42,7 +44,9 @@ impl TuiContext {
 
         // Run the inference turn as a pinned future
         {
-            let turn = self.session.run_turn(&self.config, pending_images, &cli_sink, cmd_rx);
+            let turn = self
+                .session
+                .run_turn(&self.config, pending_images, &cli_sink, cmd_rx);
             tokio::pin!(turn);
 
             loop {
@@ -329,17 +333,13 @@ async fn handle_inference_key_inline(
         };
         if let Some(a) = action {
             *menu = MenuContent::None;
-            let _ = cmd_tx
-                .send(EngineCommand::LoopDecision { action: a })
-                .await;
+            let _ = cmd_tx.send(EngineCommand::LoopDecision { action: a }).await;
         }
         return;
     }
 
     // Feedback text input during inference
-    if matches!(prompt_mode, PromptMode::WizardInput { .. })
-        && pending_approval_id.is_some()
-    {
+    if matches!(prompt_mode, PromptMode::WizardInput { .. }) && pending_approval_id.is_some() {
         match key.code {
             KeyCode::Enter => {
                 let feedback = textarea.lines().join("\n");
@@ -354,10 +354,7 @@ async fn handle_inference_key_inline(
                         ApprovalDecision::RejectWithFeedback { feedback }
                     };
                     let _ = cmd_tx
-                        .send(EngineCommand::ApprovalResponse {
-                            id: aid,
-                            decision,
-                        })
+                        .send(EngineCommand::ApprovalResponse { id: aid, decision })
                         .await;
                 }
             }

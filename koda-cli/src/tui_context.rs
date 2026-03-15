@@ -13,8 +13,8 @@ use crate::tui_types::{
     MIN_VIEWPORT_HEIGHT, MenuContent, PromptMode, ProviderWizard, Term, TuiState,
 };
 use crate::tui_viewport::{
-    draw_viewport, drain_pending_resizes, emit_above, init_terminal,
-    maybe_resize_viewport, restore_terminal, scroll_past_and_reinit,
+    drain_pending_resizes, draw_viewport, emit_above, init_terminal, maybe_resize_viewport,
+    restore_terminal, scroll_past_and_reinit,
 };
 
 use anyhow::Result;
@@ -329,27 +329,23 @@ impl TuiContext {
             }
 
             // ── Dispatch queued / pending commands ───────────
-            if self.tui_state == TuiState::Idle {
-                if let Some(raw) = self.dequeue_input() {
-                    match self.dispatch_command(&raw).await {
-                        CommandOutcome::NoInput => {}
-                        CommandOutcome::Handled => continue,
-                        CommandOutcome::Quit => {
-                            self.should_quit = true;
-                            continue;
-                        }
-                        CommandOutcome::StartInference { pending_images } => {
-                            self.run_inference_turn(
-                                pending_images, ui_tx, ui_rx, cmd_tx, cmd_rx,
-                            )
+            if self.tui_state == TuiState::Idle
+                && let Some(raw) = self.dequeue_input()
+            {
+                match self.dispatch_command(&raw).await {
+                    CommandOutcome::NoInput => {}
+                    CommandOutcome::Handled => continue,
+                    CommandOutcome::Quit => {
+                        self.should_quit = true;
+                        continue;
+                    }
+                    CommandOutcome::StartInference { pending_images } => {
+                        self.run_inference_turn(pending_images, ui_tx, ui_rx, cmd_tx, cmd_rx)
                             .await?;
-                            continue;
-                        }
+                        continue;
                     }
                 }
             }
-
-            self.draw()?;
 
             // ── Idle: wait for keyboard input ────────────────
             tokio::select! {
@@ -461,10 +457,8 @@ impl TuiContext {
                         is_current: m.id == self.config.model,
                     })
                     .collect();
-                let mut dd = crate::widgets::dropdown::DropdownState::new(
-                    items,
-                    "\u{1f43b} Select a model",
-                );
+                let mut dd =
+                    crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Select a model");
                 if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
                     dd.selected = idx;
                     let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
@@ -499,18 +493,18 @@ impl TuiContext {
         let providers = crate::repl::PROVIDERS;
         let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
             .iter()
-            .map(|(key, name, desc)| crate::widgets::provider_menu::ProviderItem {
-                key,
-                name,
-                description: desc,
-                is_current: koda_core::config::ProviderType::from_url_or_name("", Some(key))
-                    == self.config.provider_type,
-            })
+            .map(
+                |(key, name, desc)| crate::widgets::provider_menu::ProviderItem {
+                    key,
+                    name,
+                    description: desc,
+                    is_current: koda_core::config::ProviderType::from_url_or_name("", Some(key))
+                        == self.config.provider_type,
+                },
+            )
             .collect();
-        let mut dd = crate::widgets::dropdown::DropdownState::new(
-            items,
-            "\u{1f43b} Select a provider",
-        );
+        let mut dd =
+            crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Select a provider");
         if let Some(idx) = dd.filtered.iter().position(|p| p.is_current) {
             dd.selected = idx;
             let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
@@ -575,10 +569,8 @@ impl TuiContext {
                         is_current: s.id == self.session.id,
                     })
                     .collect();
-                let mut dd = crate::widgets::dropdown::DropdownState::new(
-                    items,
-                    "\u{1f43b} Sessions",
-                );
+                let mut dd =
+                    crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Sessions");
                 if let Some(idx) = dd.filtered.iter().position(|s| s.is_current) {
                     dd.selected = idx;
                     let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
@@ -669,7 +661,14 @@ impl TuiContext {
         if let Err(e) = self
             .session
             .db
-            .insert_message(&self.session.id, &Role::User, Some(&user_message), None, None, None)
+            .insert_message(
+                &self.session.id,
+                &Role::User,
+                Some(&user_message),
+                None,
+                None,
+                None,
+            )
             .await
         {
             tracing::warn!("Failed to persist user message: {e}");
@@ -748,14 +747,11 @@ impl TuiContext {
         }
     }
 
-    async fn handle_idle_key(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-    ) -> anyhow::Result<bool> {
-        if !self.menu.is_none() {
-            if let Some(consumed) = self.handle_menu_key(key).await {
-                return Ok(consumed);
-            }
+    async fn handle_idle_key(&mut self, key: crossterm::event::KeyEvent) -> anyhow::Result<bool> {
+        if !self.menu.is_none()
+            && let Some(consumed) = self.handle_menu_key(key).await
+        {
+            return Ok(consumed);
         }
 
         match (key.code, key.modifiers) {
@@ -849,17 +845,12 @@ impl TuiContext {
 
     // ── Menu navigation ───────────────────────────────────────
 
-    async fn handle_menu_key(
-        &mut self,
-        key: crossterm::event::KeyEvent,
-    ) -> Option<bool> {
+    async fn handle_menu_key(&mut self, key: crossterm::event::KeyEvent) -> Option<bool> {
         let is_up = key.code == KeyCode::Up
-            || (key.code == KeyCode::Char('k')
-                && key.modifiers.contains(KeyModifiers::CONTROL));
+            || (key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL));
         let is_down = key.code == KeyCode::Down
             || key.code == KeyCode::Tab
-            || (key.code == KeyCode::Char('j')
-                && key.modifiers.contains(KeyModifiers::CONTROL));
+            || (key.code == KeyCode::Char('j') && key.modifiers.contains(KeyModifiers::CONTROL));
 
         if is_up {
             self.menu_navigate(-1);
@@ -945,8 +936,7 @@ impl TuiContext {
             MenuContent::Provider(dd) => {
                 if let Some(item) = dd.selected_item() {
                     let key = item.key;
-                    let ptype =
-                        koda_core::config::ProviderType::from_url_or_name("", Some(key));
+                    let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
                     let base_url = ptype.default_base_url().to_string();
                     let provider_name = item.name.to_string();
 
@@ -958,10 +948,8 @@ impl TuiContext {
                         } else {
                             format!("API key for {}", ptype)
                         };
-                        self.menu = MenuContent::WizardTrail(vec![(
-                            "Provider".into(),
-                            provider_name,
-                        )]);
+                        self.menu =
+                            MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
                         self.prompt_mode = PromptMode::WizardInput {
                             label,
                             masked: true,
@@ -974,10 +962,8 @@ impl TuiContext {
                         self.textarea.select_all();
                         self.textarea.cut();
                     } else {
-                        self.menu = MenuContent::WizardTrail(vec![(
-                            "Provider".into(),
-                            provider_name,
-                        )]);
+                        self.menu =
+                            MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
                         self.prompt_mode = PromptMode::WizardInput {
                             label: format!("{} URL", ptype),
                             masked: false,
@@ -1009,10 +995,7 @@ impl TuiContext {
                         emit_above(
                             &mut self.terminal,
                             Line::from(vec![
-                                Span::styled(
-                                    "  \u{2714} ",
-                                    Style::default().fg(Color::Green),
-                                ),
+                                Span::styled("  \u{2714} ", Style::default().fg(Color::Green)),
                                 Span::raw("Resumed session "),
                                 Span::styled(short, Style::default().fg(Color::Cyan)),
                             ]),
@@ -1169,10 +1152,9 @@ impl TuiContext {
         let trimmed = after_input.trim_end();
 
         if trimmed.starts_with('/') && !trimmed.contains(' ') {
-            if let Some(dd) = crate::widgets::slash_menu::from_input(
-                crate::completer::SLASH_COMMANDS,
-                trimmed,
-            ) {
+            if let Some(dd) =
+                crate::widgets::slash_menu::from_input(crate::completer::SLASH_COMMANDS, trimmed)
+            {
                 self.menu = MenuContent::Slash(dd);
             } else if matches!(self.menu, MenuContent::Slash(_)) {
                 self.menu = MenuContent::None;
@@ -1180,8 +1162,7 @@ impl TuiContext {
         } else if let Some(at_pos) = crate::completer::find_last_at_token(trimmed) {
             let partial = &trimmed[at_pos + 1..];
             let prefix = &trimmed[..at_pos];
-            let matches =
-                crate::completer::list_path_matches_public(&self.project_root, partial);
+            let matches = crate::completer::list_path_matches_public(&self.project_root, partial);
             if !matches.is_empty() {
                 let items: Vec<crate::widgets::file_menu::FileItem> = matches
                     .iter()
@@ -1190,10 +1171,7 @@ impl TuiContext {
                         is_dir: p.ends_with('/'),
                     })
                     .collect();
-                let dd = crate::widgets::dropdown::DropdownState::new(
-                    items,
-                    "\u{1f4c2} Files",
-                );
+                let dd = crate::widgets::dropdown::DropdownState::new(items, "\u{1f4c2} Files");
                 self.menu = MenuContent::File {
                     dropdown: dd,
                     prefix: prefix.to_string(),
@@ -1201,10 +1179,7 @@ impl TuiContext {
             } else if matches!(self.menu, MenuContent::File { .. }) {
                 self.menu = MenuContent::None;
             }
-        } else if matches!(
-            self.menu,
-            MenuContent::Slash(_) | MenuContent::File { .. }
-        ) {
+        } else if matches!(self.menu, MenuContent::Slash(_) | MenuContent::File { .. }) {
             self.menu = MenuContent::None;
         }
     }
