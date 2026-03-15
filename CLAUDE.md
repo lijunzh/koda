@@ -203,6 +203,11 @@ Tools use PascalCase names. `mod.rs` has the registry, dispatcher, and `safe_res
 - Engine → client: `EngineSink::emit(EngineEvent)`
 - Client → engine: `mpsc::Receiver<EngineCommand>`
 - Cancellation: `tokio_util::sync::CancellationToken`
+- Cohesion over line count: don't split a file just because it's long.
+  Split when pieces have genuinely independent responsibilities. An
+  800-line file with one cohesive flow beats two 400-line files that
+  require cross-file context-switching. Test: if you must read file B
+  every time you read file A, they should be the same file.
 
 ## Test Structure
 
