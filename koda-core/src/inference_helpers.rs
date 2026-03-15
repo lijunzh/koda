@@ -73,6 +73,17 @@ pub const RATE_LIMIT_MAX_RETRIES: u32 = 5;
 
 /// Compute exponential backoff delay for a retry attempt (1-indexed).
 /// Returns duration in seconds: 2, 4, 8, 16, 32 (capped at 32s).
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::inference_helpers::rate_limit_backoff;
+/// use std::time::Duration;
+///
+/// assert_eq!(rate_limit_backoff(1), Duration::from_secs(2));
+/// assert_eq!(rate_limit_backoff(3), Duration::from_secs(8));
+/// assert_eq!(rate_limit_backoff(10), Duration::from_secs(32)); // capped
+/// ```
 pub fn rate_limit_backoff(attempt: u32) -> std::time::Duration {
     let secs = 2u64.pow(attempt).min(32);
     std::time::Duration::from_secs(secs)
