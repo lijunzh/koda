@@ -8,7 +8,7 @@ use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent};
 use crate::inference_helpers::{
-    PREFLIGHT_COMPACT_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages, estimate_tokens,
+    PREFLIGHT_COMPACT_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_context, estimate_tokens,
     is_context_overflow_error, is_rate_limit_error, rate_limit_backoff,
 };
 use crate::loop_guard::LoopDetector;
@@ -136,22 +136,16 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let system_prompt_full = format!("{base_system_prompt}{progress}{git_line}");
         let system_message = ChatMessage::text("system", &system_prompt_full);
 
-        // Assemble context
-        let history = db.load_context(session_id).await?;
-        let mut messages = assemble_messages(&system_message, &history);
-
-        // Attach pending images to the last user message (first iteration only)
-        if iteration == 0
-            && let Some(ref imgs) = pending_images
-            && !imgs.is_empty()
-            && let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user")
-        {
-            last_user.images = Some(imgs.clone());
-        }
-
-        // Track context window usage
-        let context_used = estimate_tokens(&messages);
-        crate::context::update(context_used, config.max_context_tokens);
+        // Assemble context (load history, attach images, track usage)
+        let mut messages = assemble_context(
+            db,
+            session_id,
+            &system_message,
+            pending_images.as_deref(),
+            iteration,
+            config.max_context_tokens,
+        )
+        .await?;
 
         // Pre-flight budget check: if context is critically high, compact first
         let ctx_pct = crate::context::percentage();
@@ -179,19 +173,15 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                         ),
                     });
                     // Re-assemble with compacted history
-                    let history = db.load_context(session_id).await?;
-                    messages = assemble_messages(&system_message, &history);
-                    // Re-attach images if first iteration
-                    if iteration == 0
-                        && let Some(ref imgs) = pending_images
-                        && !imgs.is_empty()
-                        && let Some(last_user) =
-                            messages.iter_mut().rev().find(|m| m.role == "user")
-                    {
-                        last_user.images = Some(imgs.clone());
-                    }
-                    let new_used = estimate_tokens(&messages);
-                    crate::context::update(new_used, config.max_context_tokens);
+                    messages = assemble_context(
+                        db,
+                        session_id,
+                        &system_message,
+                        pending_images.as_deref(),
+                        iteration,
+                        config.max_context_tokens,
+                    )
+                    .await?;
                 }
                 Ok(Err(skip)) => {
                     tracing::info!("Pre-flight compact skipped: {skip:?}");
@@ -298,17 +288,15 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 }
 
                 // Re-assemble messages with compacted history
-                let history = db.load_context(session_id).await?;
-                messages = assemble_messages(&system_message, &history);
-                if iteration == 0
-                    && let Some(ref imgs) = pending_images
-                    && !imgs.is_empty()
-                    && let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user")
-                {
-                    last_user.images = Some(imgs.clone());
-                }
-                let new_used = estimate_tokens(&messages);
-                crate::context::update(new_used, config.max_context_tokens);
+                messages = assemble_context(
+                    db,
+                    session_id,
+                    &system_message,
+                    pending_images.as_deref(),
+                    iteration,
+                    config.max_context_tokens,
+                )
+                .await?;
 
                 // Retry once
                 sink.emit(EngineEvent::SpinnerStart {

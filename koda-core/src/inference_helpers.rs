@@ -1,6 +1,7 @@
 //! Helper functions for inference — context estimation, message assembly,
 //! error classification.
 
+use crate::persistence::Persistence;
 use crate::providers::{ChatMessage, ToolCall};
 
 /// Pre-flight context budget threshold (percentage).
@@ -37,7 +38,7 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
 }
 
 /// Assemble messages from DB history into ChatMessage vec.
-pub fn assemble_messages(
+fn assemble_messages(
     system_message: &ChatMessage,
     history: &[crate::db::Message],
 ) -> Vec<ChatMessage> {
@@ -93,6 +94,40 @@ pub fn is_context_overflow_error(err: &anyhow::Error) -> bool {
         || msg.contains("exceeds the model")
         || msg.contains("request too large")
         || (msg.contains("413") && msg.contains("too large"))
+}
+
+/// Load conversation history, assemble messages with the system prompt,
+/// attach pending images (first iteration only), and update context tracking.
+///
+/// This is the single source of truth for context assembly — called on initial
+/// build, after pre-flight compaction, and after overflow recovery.
+pub async fn assemble_context(
+    db: &crate::db::Database,
+    session_id: &str,
+    system_message: &ChatMessage,
+    pending_images: Option<&[crate::providers::ImageData]>,
+    iteration: u32,
+    max_context_tokens: usize,
+) -> anyhow::Result<Vec<ChatMessage>> {
+    let history = db.load_context(session_id).await?;
+    let mut messages = assemble_messages(system_message, &history);
+
+    // Attach pending images to the last user message (first iteration only)
+    if iteration == 0 {
+        if let Some(imgs) = pending_images {
+            if !imgs.is_empty() {
+                if let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user") {
+                    last_user.images = Some(imgs.to_vec());
+                }
+            }
+        }
+    }
+
+    // Track context window usage
+    let context_used = estimate_tokens(&messages);
+    crate::context::update(context_used, max_context_tokens);
+
+    Ok(messages)
 }
 
 #[cfg(test)]
