@@ -8,8 +8,8 @@ use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent};
 use crate::inference_helpers::{
-    assemble_context, collect_stream, is_context_overflow_error,
-    preflight_compact_if_needed, try_overflow_recovery, try_with_rate_limit,
+    assemble_context, collect_stream, is_context_overflow_error, preflight_compact_if_needed,
+    try_overflow_recovery, try_with_rate_limit,
 };
 use crate::loop_guard::LoopDetector;
 use crate::persistence::Persistence;

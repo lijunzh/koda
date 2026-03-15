@@ -217,7 +217,10 @@ pub async fn try_overflow_recovery(
     {
         Ok(Ok(result)) => {
             sink.emit(crate::engine::EngineEvent::Info {
-                message: format!("\u{2705} Compacted {} messages. Retrying...", result.deleted),
+                message: format!(
+                    "\u{2705} Compacted {} messages. Retrying...",
+                    result.deleted
+                ),
             });
         }
         _ => {
@@ -274,10 +277,7 @@ pub async fn try_with_rate_limit(
                 let delay = rate_limit_backoff(attempt);
                 sink.emit(crate::engine::EngineEvent::SpinnerStop);
                 sink.emit(crate::engine::EngineEvent::Warn {
-                    message: format!(
-                        "\u{23f3} Rate limited. Retrying in {}s...",
-                        delay.as_secs()
-                    ),
+                    message: format!("\u{23f3} Rate limited. Retrying in {}s...", delay.as_secs()),
                 });
                 tracing::warn!(
                     "Rate limit (attempt {}/{}): {e:#}",
