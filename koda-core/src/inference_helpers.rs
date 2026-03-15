@@ -3,6 +3,8 @@
 
 use crate::persistence::Persistence;
 use crate::providers::{ChatMessage, ToolCall};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// Pre-flight context budget threshold (percentage).
 /// If context usage exceeds this before calling the provider, auto-compact first.
@@ -94,6 +96,144 @@ pub fn is_context_overflow_error(err: &anyhow::Error) -> bool {
         || msg.contains("exceeds the model")
         || msg.contains("request too large")
         || (msg.contains("413") && msg.contains("too large"))
+}
+
+/// Result of collecting a streamed LLM response.
+pub struct StreamResult {
+    /// Accumulated text content from the response.
+    pub text: String,
+    /// Tool calls requested by the model.
+    pub tool_calls: Vec<ToolCall>,
+    /// Token usage statistics.
+    pub usage: crate::providers::TokenUsage,
+    /// Total character count of text deltas.
+    pub char_count: usize,
+    /// Whether the stream was interrupted by cancellation.
+    pub interrupted: bool,
+}
+
+/// Collect a streamed LLM response, emitting engine events for thinking/text/tool calls.
+///
+/// Handles thinking ↔ response state transitions, cancellation via `CancellationToken`,
+/// and spinner lifecycle. Returns a `StreamResult` — the caller is responsible for
+/// persistence and early-return on interruption.
+pub async fn collect_stream(
+    rx: &mut mpsc::Receiver<crate::providers::StreamChunk>,
+    sink: &dyn crate::engine::EngineSink,
+    cancel: &CancellationToken,
+) -> StreamResult {
+    use crate::providers::StreamChunk;
+
+    let mut full_text = String::new();
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
+    let mut usage = crate::providers::TokenUsage::default();
+    let mut first_token = true;
+    let mut char_count: usize = 0;
+    let mut native_think_buf = String::new();
+    let mut response_banner_shown = false;
+    let mut thinking_banner_shown = false;
+    let mut interrupted = false;
+
+    loop {
+        let chunk = tokio::select! {
+            c = rx.recv() => c,
+            _ = cancel.cancelled() => {
+                interrupted = true;
+                None
+            }
+        };
+
+        if interrupted || cancel.is_cancelled() {
+            sink.emit(crate::engine::EngineEvent::SpinnerStop);
+            if !full_text.is_empty() {
+                sink.emit(crate::engine::EngineEvent::TextDone);
+            }
+            sink.emit(crate::engine::EngineEvent::Warn {
+                message: "Interrupted".into(),
+            });
+            return StreamResult {
+                text: full_text,
+                tool_calls,
+                usage,
+                char_count,
+                interrupted: true,
+            };
+        }
+
+        let Some(chunk) = chunk else { break };
+
+        match chunk {
+            StreamChunk::TextDelta(delta) => {
+                if first_token {
+                    // Close any open thinking block (content already streamed)
+                    if !native_think_buf.is_empty() {
+                        sink.emit(crate::engine::EngineEvent::SpinnerStop);
+                        sink.emit(crate::engine::EngineEvent::ThinkingDone);
+                        native_think_buf.clear();
+                        thinking_banner_shown = true;
+                    }
+                    sink.emit(crate::engine::EngineEvent::SpinnerStop);
+                    first_token = false;
+                }
+
+                // Show response banner on first non-empty text
+                if !response_banner_shown && !delta.trim().is_empty() {
+                    sink.emit(crate::engine::EngineEvent::ResponseStart);
+                    response_banner_shown = true;
+                }
+
+                full_text.push_str(&delta);
+                char_count += delta.len();
+                sink.emit(crate::engine::EngineEvent::TextDelta {
+                    text: delta.clone(),
+                });
+            }
+            StreamChunk::ThinkingDelta(delta) => {
+                if !thinking_banner_shown {
+                    sink.emit(crate::engine::EngineEvent::SpinnerStop);
+                    sink.emit(crate::engine::EngineEvent::ThinkingStart);
+                    thinking_banner_shown = true;
+                }
+                sink.emit(crate::engine::EngineEvent::ThinkingDelta {
+                    text: delta.clone(),
+                });
+                native_think_buf.push_str(&delta);
+            }
+            StreamChunk::ToolCalls(tcs) => {
+                if !native_think_buf.is_empty() {
+                    sink.emit(crate::engine::EngineEvent::SpinnerStop);
+                    sink.emit(crate::engine::EngineEvent::ThinkingDone);
+                    native_think_buf.clear();
+                }
+                sink.emit(crate::engine::EngineEvent::SpinnerStop);
+                tool_calls = tcs;
+            }
+            StreamChunk::Done(u) => {
+                if !native_think_buf.is_empty() {
+                    sink.emit(crate::engine::EngineEvent::SpinnerStop);
+                    sink.emit(crate::engine::EngineEvent::ThinkingDone);
+                    native_think_buf.clear();
+                }
+                usage = u;
+                break;
+            }
+        }
+    }
+
+    // Flush remaining text
+    sink.emit(crate::engine::EngineEvent::TextDone);
+
+    if first_token {
+        sink.emit(crate::engine::EngineEvent::SpinnerStop);
+    }
+
+    StreamResult {
+        text: full_text,
+        tool_calls,
+        usage,
+        char_count,
+        interrupted: false,
+    }
 }
 
 /// Load conversation history, assemble messages with the system prompt,

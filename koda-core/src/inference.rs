@@ -8,12 +8,12 @@ use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent};
 use crate::inference_helpers::{
-    PREFLIGHT_COMPACT_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_context, estimate_tokens,
+    PREFLIGHT_COMPACT_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_context, collect_stream,
     is_context_overflow_error, is_rate_limit_error, rate_limit_backoff,
 };
 use crate::loop_guard::LoopDetector;
 use crate::persistence::Persistence;
-use crate::providers::{ChatMessage, ImageData, LlmProvider, StreamChunk, ToolCall};
+use crate::providers::{ChatMessage, ImageData, LlmProvider};
 use crate::settings::Settings;
 use crate::tool_dispatch::{
     can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
@@ -321,126 +321,28 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         };
 
         // Collect the streamed response
-        let mut full_text = String::new();
-        let mut tool_calls: Vec<ToolCall> = Vec::new();
-        let mut usage = crate::providers::TokenUsage::default();
-        let mut first_token = true;
-        let mut char_count: usize = 0;
-        let mut native_think_buf = String::new();
-        let mut response_banner_shown = false;
-        let mut thinking_banner_shown = false;
-        let mut interrupted = false;
+        let stream_result = collect_stream(&mut rx, sink, &cancel).await;
 
-        loop {
-            let chunk = tokio::select! {
-                c = rx.recv() => c,
-                _ = cancel.cancelled() => {
-                    interrupted = true;
-                    None
-                }
-            };
-
-            if interrupted || cancel.is_cancelled() {
-                sink.emit(EngineEvent::SpinnerStop);
-                if !full_text.is_empty() {
-                    sink.emit(EngineEvent::TextDone);
-                }
-                sink.emit(EngineEvent::Warn {
-                    message: "Interrupted".into(),
-                });
-                if !full_text.is_empty() {
-                    db.insert_message(
-                        session_id,
-                        &Role::Assistant,
-                        Some(&full_text),
-                        None,
-                        None,
-                        None,
-                    )
-                    .await?;
-                }
-
-                return Ok(());
+        if stream_result.interrupted {
+            // Persist partial text if any, then exit
+            if !stream_result.text.is_empty() {
+                db.insert_message(
+                    session_id,
+                    &Role::Assistant,
+                    Some(&stream_result.text),
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
             }
-
-            let Some(chunk) = chunk else { break };
-
-            match chunk {
-                StreamChunk::TextDelta(delta) => {
-                    if first_token {
-                        // Close any open thinking block (content already streamed)
-                        if !native_think_buf.is_empty() {
-                            sink.emit(EngineEvent::SpinnerStop);
-                            sink.emit(EngineEvent::ThinkingDone);
-                            native_think_buf.clear();
-                            thinking_banner_shown = true;
-                        }
-                        sink.emit(EngineEvent::SpinnerStop);
-                        first_token = false;
-                    }
-
-                    // Show response banner if coming from thinking
-                    if thinking_banner_shown && !response_banner_shown && !delta.trim().is_empty() {
-                        sink.emit(EngineEvent::ResponseStart);
-                        response_banner_shown = true;
-                    }
-
-                    // Show response banner on first non-empty text
-                    if !response_banner_shown && !delta.trim().is_empty() {
-                        sink.emit(EngineEvent::ResponseStart);
-                        response_banner_shown = true;
-                    }
-
-                    full_text.push_str(&delta);
-                    char_count += delta.len();
-                    sink.emit(EngineEvent::TextDelta {
-                        text: delta.clone(),
-                    });
-                }
-                StreamChunk::ThinkingDelta(delta) => {
-                    // Buffer thinking — emit as a block when text or tool calls start
-                    if !thinking_banner_shown {
-                        sink.emit(EngineEvent::SpinnerStop);
-                        sink.emit(EngineEvent::ThinkingStart);
-                        thinking_banner_shown = true;
-                    }
-                    sink.emit(EngineEvent::ThinkingDelta {
-                        text: delta.clone(),
-                    });
-                    native_think_buf.push_str(&delta);
-                }
-                StreamChunk::ToolCalls(tcs) => {
-                    if !native_think_buf.is_empty() {
-                        sink.emit(EngineEvent::SpinnerStop);
-                        sink.emit(EngineEvent::ThinkingDone);
-                        native_think_buf.clear();
-                    }
-                    sink.emit(EngineEvent::SpinnerStop);
-                    tool_calls = tcs;
-                }
-                StreamChunk::Done(u) => {
-                    // Close any open thinking block (content already streamed)
-                    if !native_think_buf.is_empty() {
-                        sink.emit(EngineEvent::SpinnerStop);
-                        sink.emit(EngineEvent::ThinkingDone);
-                        native_think_buf.clear();
-                    }
-                    usage = u;
-                    break;
-                }
-            }
+            return Ok(());
         }
 
-        // Flush remaining text
-        sink.emit(EngineEvent::TextDone);
-
-        // If we never showed the AGENT RESPONSE banner (no text or only thinking),
-        // and there's non-thinking text, show it now
-        // (This is handled inline during streaming above)
-
-        if first_token {
-            sink.emit(EngineEvent::SpinnerStop);
-        }
+        let full_text = stream_result.text;
+        let tool_calls = stream_result.tool_calls;
+        let usage = stream_result.usage;
+        let char_count = stream_result.char_count;
 
         // Empty response after tool use — retry once before giving up.
         // Don't save the empty message so the model sees the same context on retry.
