@@ -98,6 +98,52 @@ pub fn is_context_overflow_error(err: &anyhow::Error) -> bool {
         || (msg.contains("413") && msg.contains("too large"))
 }
 
+/// Attempt to start a chat stream with exponential backoff on rate limits.
+///
+/// Returns `Ok(Some(rx))` on success, `Ok(None)` if cancelled during retries,
+/// or `Err` for non-retriable failures.
+pub async fn try_with_rate_limit(
+    provider: &dyn crate::providers::LlmProvider,
+    messages: &[ChatMessage],
+    tool_defs: &[crate::providers::ToolDefinition],
+    model_settings: &crate::config::ModelSettings,
+    cancel: &CancellationToken,
+    sink: &dyn crate::engine::EngineSink,
+) -> Result<Option<mpsc::Receiver<crate::providers::StreamChunk>>, anyhow::Error> {
+    let mut last_err = None;
+    for attempt in 0..RATE_LIMIT_MAX_RETRIES {
+        let result = tokio::select! {
+            result = provider.chat_stream(messages, tool_defs, model_settings) => result,
+            _ = cancel.cancelled() => return Ok(None),
+        };
+        match result {
+            Ok(rx) => return Ok(Some(rx)),
+            Err(e) if is_rate_limit_error(&e) && attempt + 1 < RATE_LIMIT_MAX_RETRIES => {
+                let delay = rate_limit_backoff(attempt);
+                sink.emit(crate::engine::EngineEvent::SpinnerStop);
+                sink.emit(crate::engine::EngineEvent::Warn {
+                    message: format!(
+                        "\u{23f3} Rate limited. Retrying in {}s...",
+                        delay.as_secs()
+                    ),
+                });
+                tracing::warn!(
+                    "Rate limit (attempt {}/{}): {e:#}",
+                    attempt + 1,
+                    RATE_LIMIT_MAX_RETRIES
+                );
+                tokio::time::sleep(delay).await;
+                sink.emit(crate::engine::EngineEvent::SpinnerStart {
+                    message: format!("Retrying (attempt {})...", attempt + 2),
+                });
+                last_err = Some(e);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Rate limit retries exhausted")))
+}
+
 /// Result of collecting a streamed LLM response.
 pub struct StreamResult {
     /// Accumulated text content from the response.
