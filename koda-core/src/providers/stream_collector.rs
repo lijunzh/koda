@@ -10,7 +10,7 @@
 //! 5. Emit `Done` with token usage when the stream ends
 //!
 //! This module extracts steps 1–2 and the finalization into shared code,
-//! delegating steps 3–4 to provider-specific [`ChunkParser`] implementations.
+/// delegating steps 3–4 to provider-specific `ChunkParser` implementations.
 
 use super::StreamChunk;
 use tokio::sync::mpsc;
@@ -125,10 +125,7 @@ mod tests {
 
     /// Drive a parser through raw SSE text without an HTTP response.
     /// Used for unit-testing parsers in isolation.
-    async fn drive_parser(
-        parser: Box<dyn ChunkParser>,
-        sse_text: &str,
-    ) -> Vec<StreamChunk> {
+    async fn drive_parser(parser: Box<dyn ChunkParser>, sse_text: &str) -> Vec<StreamChunk> {
         let mut parser = parser;
         let mut chunks = Vec::new();
 

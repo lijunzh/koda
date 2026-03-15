@@ -323,16 +323,13 @@ impl ChunkParser for AnthropicChunkParser {
         // `ContentBlock` doesn't have a "thinking" variant, so `StreamEvent`
         // deserialization fails when `content_block.type == "thinking"`.
         // We parse raw JSON separately to register thinking block indices.
-        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(data) {
-            if raw.get("type").and_then(|t| t.as_str()) == Some("content_block_start") {
-                if let Some(idx) = raw.get("index").and_then(|i| i.as_u64()) {
-                    if let Some(cb) = raw.get("content_block")
-                        && cb.get("type").and_then(|t| t.as_str()) == Some("thinking")
-                    {
-                        self.thinking_indices.insert(idx as usize);
-                    }
-                }
-            }
+        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(data)
+            && raw.get("type").and_then(|t| t.as_str()) == Some("content_block_start")
+            && let Some(idx) = raw.get("index").and_then(|i| i.as_u64())
+            && let Some(cb) = raw.get("content_block")
+            && cb.get("type").and_then(|t| t.as_str()) == Some("thinking")
+        {
+            self.thinking_indices.insert(idx as usize);
         }
 
         let Ok(event) = serde_json::from_str::<StreamEvent>(data) else {

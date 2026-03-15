@@ -467,10 +467,8 @@ impl LlmProvider for OpenAiCompatProvider {
             anyhow::bail!("LLM API returned {status}: {body}");
         }
 
-        let rx = super::stream_collector::spawn_sse_collector(
-            resp,
-            Box::new(OpenAiChunkParser::new()),
-        );
+        let rx =
+            super::stream_collector::spawn_sse_collector(resp, Box::new(OpenAiChunkParser::new()));
 
         Ok(rx)
     }

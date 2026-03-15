@@ -354,8 +354,7 @@ impl ChunkParser for GeminiChunkParser {
                             self.tool_calls.push(ToolCall {
                                 id: format!("gemini_tc_{}", self.tc_counter),
                                 function_name: fc.name.clone(),
-                                arguments: serde_json::to_string(&fc.args)
-                                    .unwrap_or_default(),
+                                arguments: serde_json::to_string(&fc.args).unwrap_or_default(),
                                 thought_signature: part.thought_signature.clone(),
                             });
                         }
@@ -529,10 +528,8 @@ impl LlmProvider for GeminiProvider {
             anyhow::bail!("Gemini API returned {status}: {body}");
         }
 
-        let rx = super::stream_collector::spawn_sse_collector(
-            resp,
-            Box::new(GeminiChunkParser::new()),
-        );
+        let rx =
+            super::stream_collector::spawn_sse_collector(resp, Box::new(GeminiChunkParser::new()));
 
         Ok(rx)
     }
