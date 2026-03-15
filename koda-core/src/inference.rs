@@ -9,7 +9,7 @@ use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent};
 use crate::inference_helpers::{
     PREFLIGHT_COMPACT_THRESHOLD, assemble_context, collect_stream,
-    is_context_overflow_error, try_with_rate_limit,
+    is_context_overflow_error, try_overflow_recovery, try_with_rate_limit,
 };
 use crate::loop_guard::LoopDetector;
 use crate::persistence::Persistence;
@@ -236,60 +236,27 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let mut rx = match stream_result {
             Ok(rx) => rx,
             Err(e) if is_context_overflow_error(&e) => {
-                sink.emit(EngineEvent::SpinnerStop);
-                sink.emit(EngineEvent::Warn {
-                    message:
-                        "\u{26a0}\u{fe0f} Provider rejected request (context overflow). Compacting and retrying..."
-                            .to_string(),
-                });
-                tracing::warn!("Context overflow from provider: {e:#}");
-
-                // Try to compact
-                match crate::compact::compact_session_with_provider(
-                    db,
-                    session_id,
-                    config.max_context_tokens,
-                    &config.model_settings,
-                    provider,
-                )
-                .await
-                {
-                    Ok(Ok(result)) => {
-                        sink.emit(EngineEvent::Info {
-                            message: format!(
-                                "\u{2705} Compacted {} messages. Retrying...",
-                                result.deleted
-                            ),
-                        });
-                    }
-                    _ => {
-                        // Compaction failed or was skipped — can't recover
-                        return Err(e).context(
-                            "LLM inference failed (context overflow, compaction unsuccessful)",
-                        );
-                    }
-                }
-
-                // Re-assemble messages with compacted history
-                messages = assemble_context(
+                match try_overflow_recovery(
+                    e,
                     db,
                     session_id,
                     &system_message,
                     pending_images.as_deref(),
                     iteration,
-                    config.max_context_tokens,
+                    config,
+                    provider,
+                    tool_defs,
+                    &cancel,
+                    sink,
                 )
-                .await?;
-
-                // Retry once
-                sink.emit(EngineEvent::SpinnerStart {
-                    message: "Retrying...".into(),
-                });
-                tokio::select! {
-                    result = provider.chat_stream(&messages, tool_defs, &config.model_settings) => {
-                        result.context("LLM inference failed after compaction retry")?
+                .await?
+                {
+                    Some((rx, updated)) => {
+                        messages = updated;
+                        rx
                     }
-                    _ = cancel.cancelled() => {
+                    None => {
+                        // Cancelled during overflow recovery retry
                         sink.emit(EngineEvent::SpinnerStop);
                         sink.emit(EngineEvent::Warn {
                             message: "Interrupted".into(),

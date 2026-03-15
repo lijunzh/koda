@@ -98,6 +98,85 @@ pub fn is_context_overflow_error(err: &anyhow::Error) -> bool {
         || (msg.contains("413") && msg.contains("too large"))
 }
 
+/// Recover from a context overflow error: compact the session, re-assemble
+/// context, and retry the provider call once.
+///
+/// Returns `Ok(Some((rx, messages)))` on success (receiver + updated messages),
+/// `Ok(None)` if cancelled during retry, or `Err` if compaction/retry fails.
+pub async fn try_overflow_recovery(
+    original_err: anyhow::Error,
+    db: &crate::db::Database,
+    session_id: &str,
+    system_message: &ChatMessage,
+    pending_images: Option<&[crate::providers::ImageData]>,
+    iteration: u32,
+    config: &crate::config::KodaConfig,
+    provider: &dyn crate::providers::LlmProvider,
+    tool_defs: &[crate::providers::ToolDefinition],
+    cancel: &CancellationToken,
+    sink: &dyn crate::engine::EngineSink,
+) -> Result<
+    Option<(
+        mpsc::Receiver<crate::providers::StreamChunk>,
+        Vec<ChatMessage>,
+    )>,
+    anyhow::Error,
+> {
+    use anyhow::Context;
+
+    sink.emit(crate::engine::EngineEvent::SpinnerStop);
+    sink.emit(crate::engine::EngineEvent::Warn {
+        message:
+            "\u{26a0}\u{fe0f} Provider rejected request (context overflow). Compacting and retrying..."
+                .to_string(),
+    });
+    tracing::warn!("Context overflow from provider: {original_err:#}");
+
+    // Try to compact
+    match crate::compact::compact_session_with_provider(
+        db,
+        session_id,
+        config.max_context_tokens,
+        &config.model_settings,
+        provider,
+    )
+    .await
+    {
+        Ok(Ok(result)) => {
+            sink.emit(crate::engine::EngineEvent::Info {
+                message: format!("\u{2705} Compacted {} messages. Retrying...", result.deleted),
+            });
+        }
+        _ => {
+            return Err(original_err)
+                .context("LLM inference failed (context overflow, compaction unsuccessful)");
+        }
+    }
+
+    // Re-assemble messages with compacted history
+    let messages = assemble_context(
+        db,
+        session_id,
+        system_message,
+        pending_images,
+        iteration,
+        config.max_context_tokens,
+    )
+    .await?;
+
+    // Retry once
+    sink.emit(crate::engine::EngineEvent::SpinnerStart {
+        message: "Retrying...".into(),
+    });
+    let rx = tokio::select! {
+        result = provider.chat_stream(&messages, tool_defs, &config.model_settings) => {
+            result.context("LLM inference failed after compaction retry")?
+        }
+        _ = cancel.cancelled() => return Ok(None),
+    };
+    Ok(Some((rx, messages)))
+}
+
 /// Attempt to start a chat stream with exponential backoff on rate limits.
 ///
 /// Returns `Ok(Some(rx))` on success, `Ok(None)` if cancelled during retries,
