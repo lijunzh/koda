@@ -1,0 +1,369 @@
+//! Render historical DB messages into styled `Line`s for the scroll buffer.
+//!
+//! Used on session resume: loads prior conversation from the database and
+//! renders it into the same visual format as live inference output.
+//! Keeps the history view compact — tool results are summarized, not
+//! replayed in full.
+
+use koda_core::persistence::{Message, Role};
+use ratatui::{
+    style::{Color, Style, Modifier},
+    text::{Line, Span},
+};
+
+use crate::tui_output::{BOLD, DIM};
+
+/// Maximum lines of tool output to show inline in history replay.
+const TOOL_OUTPUT_PREVIEW_LINES: usize = 3;
+
+/// Convert a slice of historical messages into styled `Line`s.
+///
+/// Renders user messages with a `❯` prompt, assistant text with a `───`
+/// separator, tool calls as `● ToolName detail`, and tool results as
+/// abbreviated summaries.
+pub fn render_history_messages(messages: &[Message]) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    for msg in messages {
+        match msg.role {
+            Role::System => {
+                // System prompt is internal — skip
+            }
+            Role::User => {
+                render_user_message(&mut lines, msg);
+            }
+            Role::Assistant => {
+                render_assistant_message(&mut lines, msg);
+            }
+            Role::Tool => {
+                render_tool_result(&mut lines, msg);
+            }
+        }
+    }
+
+    if !lines.is_empty() {
+        // Visual separator between history and new conversation
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "\u{2500}\u{2500}\u{2500} session resumed \u{2500}\u{2500}\u{2500}",
+                DIM,
+            ),
+        ]));
+        lines.push(Line::default());
+    }
+
+    lines
+}
+
+/// Render a user message: `  ❯ message text`
+fn render_user_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
+    lines.push(Line::default());
+    if let Some(ref content) = msg.content {
+        // Show first line with prompt indicator, rest indented
+        let mut iter = content.lines();
+        if let Some(first) = iter.next() {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "  \u{276f} ",
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(first.to_string(), BOLD),
+            ]));
+        }
+        for rest in iter {
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::raw(rest.to_string()),
+            ]));
+        }
+    }
+}
+
+/// Render an assistant response: separator + text + any tool call headers.
+fn render_assistant_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
+    // Response separator
+    lines.push(Line::styled(
+        "  \u{2500}\u{2500}\u{2500}",
+        DIM,
+    ));
+
+    // Text content (markdown rendered as plain styled text for history)
+    if let Some(ref content) = msg.content {
+        if !content.is_empty() {
+            for line in content.lines() {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::raw(line.to_string()),
+                ]));
+            }
+        }
+    }
+
+    // Tool calls (if any) — show as headers
+    if let Some(ref tc_json) = msg.tool_calls {
+        render_tool_call_headers(lines, tc_json);
+    }
+}
+
+/// Parse tool_calls JSON and render `● ToolName detail` headers.
+fn render_tool_call_headers(lines: &mut Vec<Line<'static>>, tc_json: &str) {
+    // Tool calls are stored as JSON arrays (OpenAI format)
+    let calls: Vec<serde_json::Value> = match serde_json::from_str(tc_json) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    for call in &calls {
+        let name = call["function"]["name"]
+            .as_str()
+            .unwrap_or("unknown");
+        let args = call["function"]["arguments"]
+            .as_str()
+            .unwrap_or("{}");
+
+        let detail = tool_detail_summary(name, args);
+        let dot_color = tool_dot_color(name);
+
+        lines.push(Line::from(vec![
+            Span::styled("\u{25cf} ", Style::default().fg(dot_color)),
+            Span::styled(name.to_string(), BOLD),
+            Span::raw(" "),
+            Span::styled(detail, DIM),
+        ]));
+    }
+}
+
+/// Render a tool result message (abbreviated).
+fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message) {
+    let content = msg.content.as_deref().unwrap_or("");
+    let total_lines = content.lines().count();
+
+    if total_lines == 0 {
+        lines.push(Line::from(vec![
+            Span::styled("  \u{2514} ", DIM),
+            Span::styled("(empty)", DIM),
+        ]));
+        return;
+    }
+
+    if total_lines <= TOOL_OUTPUT_PREVIEW_LINES {
+        // Short output — show in full
+        for line in content.lines() {
+            lines.push(Line::from(vec![
+                Span::styled("  \u{2502} ", DIM),
+                Span::raw(line.to_string()),
+            ]));
+        }
+    } else {
+        // Long output — show preview + count
+        for line in content.lines().take(TOOL_OUTPUT_PREVIEW_LINES) {
+            lines.push(Line::from(vec![
+                Span::styled("  \u{2502} ", DIM),
+                Span::raw(line.to_string()),
+            ]));
+        }
+        let hidden = total_lines - TOOL_OUTPUT_PREVIEW_LINES;
+        lines.push(Line::from(vec![
+            Span::styled("  \u{2514} ", DIM),
+            Span::styled(
+                format!("... {hidden} more line(s)"),
+                DIM,
+            ),
+        ]));
+    }
+}
+
+/// Extract a human-readable detail string from tool args.
+///
+/// E.g., Read({"file_path": "src/main.rs"}) → "src/main.rs"
+fn tool_detail_summary(name: &str, args_json: &str) -> String {
+    let args: serde_json::Value = serde_json::from_str(args_json)
+        .unwrap_or(serde_json::Value::Null);
+
+    match name {
+        "Read" | "Write" | "Edit" | "Delete" => {
+            args["file_path"].as_str().unwrap_or("").to_string()
+        }
+        "Bash" => {
+            let cmd = args["command"].as_str().unwrap_or("");
+            if cmd.len() > 60 {
+                format!("{}...", &cmd[..57])
+            } else {
+                cmd.to_string()
+            }
+        }
+        "Grep" => {
+            let pattern = args["search_string"].as_str()
+                .or_else(|| args["pattern"].as_str())
+                .unwrap_or("");
+            let dir = args["directory"].as_str().unwrap_or(".");
+            format!("{pattern} in {dir}")
+        }
+        "List" => {
+            args["directory"].as_str()
+                .or_else(|| args["path"].as_str())
+                .unwrap_or(".")
+                .to_string()
+        }
+        "WebFetch" => {
+            args["url"].as_str().unwrap_or("").to_string()
+        }
+        _ => {
+            // Generic: show first string value found
+            if let Some(obj) = args.as_object() {
+                for (_, v) in obj.iter().take(1) {
+                    if let Some(s) = v.as_str() {
+                        let truncated = if s.len() > 60 {
+                            format!("{}...", &s[..57])
+                        } else {
+                            s.to_string()
+                        };
+                        return truncated;
+                    }
+                }
+            }
+            String::new()
+        }
+    }
+}
+
+/// Color for the tool call dot indicator.
+fn tool_dot_color(name: &str) -> Color {
+    match name {
+        "Read" | "Grep" | "List" | "Glob" => Color::Cyan,
+        "Write" | "Edit" => Color::Yellow,
+        "Delete" => Color::Red,
+        "Bash" => Color::Green,
+        "WebFetch" => Color::Blue,
+        _ => Color::Magenta,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(role: Role, content: &str) -> Message {
+        Message {
+            id: 0,
+            session_id: "test".into(),
+            role,
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            thinking_tokens: None,
+        }
+    }
+
+    #[test]
+    fn test_empty_messages() {
+        let lines = render_history_messages(&[]);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn test_user_message_rendering() {
+        let messages = vec![msg(Role::User, "hello world")];
+        let lines = render_history_messages(&messages);
+        // Should have: blank line + prompt line + separator lines
+        assert!(lines.len() >= 2);
+        let prompt_line = &lines[1];
+        let text: String = prompt_line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("hello world"));
+        assert!(text.contains('\u{276f}'));
+    }
+
+    #[test]
+    fn test_assistant_message_rendering() {
+        let messages = vec![
+            msg(Role::User, "hello"),
+            msg(Role::Assistant, "Hi there!"),
+        ];
+        let lines = render_history_messages(&messages);
+        // Should contain the assistant separator and text
+        let all_text: String = lines.iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(all_text.contains("Hi there!"));
+        assert!(all_text.contains("\u{2500}\u{2500}\u{2500}"));
+    }
+
+    #[test]
+    fn test_tool_result_short() {
+        let messages = vec![
+            msg(Role::Tool, "line 1\nline 2"),
+        ];
+        let lines = render_history_messages(&messages);
+        let all_text: String = lines.iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(all_text.contains("line 1"));
+        assert!(all_text.contains("line 2"));
+        // No "more lines" summary for short output
+        assert!(!all_text.contains("more line"));
+    }
+
+    #[test]
+    fn test_tool_result_long_truncated() {
+        let long_output: String = (0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let messages = vec![
+            msg(Role::Tool, &long_output),
+        ];
+        let lines = render_history_messages(&messages);
+        let all_text: String = lines.iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(all_text.contains("line 0"));
+        assert!(all_text.contains("more line"));
+    }
+
+    #[test]
+    fn test_system_messages_skipped() {
+        let messages = vec![
+            msg(Role::System, "You are a helpful assistant"),
+            msg(Role::User, "hello"),
+        ];
+        let lines = render_history_messages(&messages);
+        let all_text: String = lines.iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(!all_text.contains("helpful assistant"));
+    }
+
+    #[test]
+    fn test_tool_detail_summary() {
+        assert_eq!(
+            tool_detail_summary("Read", r#"{"file_path": "src/main.rs"}"#),
+            "src/main.rs"
+        );
+        assert_eq!(
+            tool_detail_summary("Bash", r#"{"command": "ls -la"}"#),
+            "ls -la"
+        );
+        assert_eq!(
+            tool_detail_summary("Grep", r#"{"search_string": "foo", "directory": "src"}"#),
+            "foo in src"
+        );
+    }
+
+    #[test]
+    fn test_session_resumed_separator() {
+        let messages = vec![msg(Role::User, "hello")];
+        let lines = render_history_messages(&messages);
+        let all_text: String = lines.iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(all_text.contains("session resumed"));
+    }
+}

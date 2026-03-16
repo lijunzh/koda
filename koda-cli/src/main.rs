@@ -6,6 +6,7 @@ mod completer;
 mod diff_render;
 mod headless;
 mod highlight;
+mod history_render;
 mod input;
 mod md_render;
 mod onboarding;

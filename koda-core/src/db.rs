@@ -232,6 +232,38 @@ impl Database {
             .map(|(p,)| std::path::PathBuf::from(p))
             .collect())
     }
+
+    /// Load a page of messages older than `before_id` (for virtual scroll).
+    ///
+    /// Returns up to `limit` messages with `id < before_id`, ordered
+    /// newest-first so the caller can reverse them for display.
+    /// Only non-compacted messages are returned.
+    pub async fn load_messages_before(
+        &self,
+        session_id: &str,
+        before_id: i64,
+        limit: i64,
+    ) -> Result<Vec<Message>> {
+        let rows: Vec<MessageRow> = sqlx::query_as(
+            "SELECT id, session_id, role, content, tool_calls, tool_call_id,
+                    prompt_tokens, completion_tokens,
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens
+             FROM messages
+             WHERE session_id = ? AND id < ? AND compacted_at IS NULL
+             ORDER BY id DESC
+             LIMIT ?",
+        )
+        .bind(session_id)
+        .bind(before_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Reverse to chronological order
+        let mut messages: Vec<Message> = rows.into_iter().map(|r| r.into()).collect();
+        messages.reverse();
+        Ok(messages)
+    }
 }
 
 // ── Private helpers ─────────────────────────────────────────────────────────

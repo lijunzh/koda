@@ -27,6 +27,11 @@ pub struct ScrollBuffer {
     /// Disengages when the user scrolls up; re-engages when they
     /// scroll back to the bottom.
     sticky_bottom: bool,
+
+    /// Oldest DB message ID currently rendered in the buffer.
+    /// Used by virtual scroll to know which page to fetch next.
+    /// `None` means no DB messages have been loaded yet.
+    oldest_message_id: Option<i64>,
 }
 
 impl ScrollBuffer {
@@ -35,6 +40,7 @@ impl ScrollBuffer {
             lines: VecDeque::with_capacity(capacity.min(4096)),
             scroll_offset: 0,
             sticky_bottom: true,
+            oldest_message_id: None,
         }
     }
 
@@ -97,6 +103,17 @@ impl ScrollBuffer {
         }
     }
 
+    /// Returns `true` when the user has scrolled to the very top of the
+    /// buffer. Used to trigger loading older messages from the DB.
+    pub fn at_top(&self, term_width: usize, viewport_height: usize) -> bool {
+        if self.lines.is_empty() {
+            return false;
+        }
+        let total = self.total_visual_lines(term_width);
+        let max_offset = total.saturating_sub(viewport_height);
+        self.scroll_offset >= max_offset && max_offset > 0
+    }
+
     /// Return all lines in the buffer.
     ///
     /// Used by `render_history()` which passes everything to
@@ -148,6 +165,16 @@ impl ScrollBuffer {
     /// Whether sticky bottom is active.
     pub fn is_sticky(&self) -> bool {
         self.sticky_bottom
+    }
+
+    /// Get the oldest DB message ID rendered in this buffer.
+    pub fn oldest_message_id(&self) -> Option<i64> {
+        self.oldest_message_id
+    }
+
+    /// Set the oldest DB message ID (called after rendering history).
+    pub fn set_oldest_message_id(&mut self, id: i64) {
+        self.oldest_message_id = Some(id);
     }
 
     /// Clear all lines and reset scroll state.

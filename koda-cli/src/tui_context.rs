@@ -223,6 +223,19 @@ impl TuiContext {
             ));
         }
 
+        // Load and render historical conversation on session resume
+        let (history_lines, oldest_msg_id) = {
+            use koda_core::persistence::Persistence;
+            match session.db.load_context(&session.id).await {
+                Ok(msgs) if !msgs.is_empty() => {
+                    let oldest_id = msgs.first().map(|m| m.id);
+                    let lines = crate::history_render::render_history_messages(&msgs);
+                    (lines, oldest_id)
+                }
+                _ => (Vec::new(), None),
+            }
+        };
+
         Ok(Self {
             terminal,
             textarea,
@@ -230,6 +243,12 @@ impl TuiContext {
             scroll_buffer: {
                 let mut buf = ScrollBuffer::new(2500);
                 buf.push_lines(startup_lines);
+                if !history_lines.is_empty() {
+                    buf.push_lines(history_lines);
+                }
+                if let Some(id) = oldest_msg_id {
+                    buf.set_oldest_message_id(id);
+                }
                 buf
             },
             crossterm_events: EventStream::new(),
