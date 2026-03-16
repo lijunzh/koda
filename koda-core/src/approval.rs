@@ -180,10 +180,9 @@ pub fn check_tool_with_tracker(
         && let Some(tracker) = file_tracker
         && let Some(root) = project_root
         && let Some(abs_path) = crate::file_tracker::resolve_file_path_from_args(args, root)
+        && tracker.is_owned(&abs_path)
     {
-        if tracker.is_owned(&abs_path) {
-            return ToolApproval::AutoApprove;
-        }
+        return ToolApproval::AutoApprove;
     }
 
     // Apply the ToolEffect × ApprovalMode matrix

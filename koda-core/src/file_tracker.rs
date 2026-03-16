@@ -67,19 +67,19 @@ impl FileTracker {
     ///
     /// The path should be the resolved absolute path.
     pub async fn track_created(&mut self, path: PathBuf) {
-        if self.owned.insert(path.clone()) {
-            if let Err(e) = self.db.insert_owned_file(&self.session_id, &path).await {
-                tracing::warn!("file_tracker: failed to persist owned file {:?}: {e}", path);
-            }
+        if self.owned.insert(path.clone())
+            && let Err(e) = self.db.insert_owned_file(&self.session_id, &path).await
+        {
+            tracing::warn!("file_tracker: failed to persist owned file {:?}: {e}", path);
         }
     }
 
     /// Remove a file from the owned set (after successful deletion).
     pub async fn untrack(&mut self, path: &Path) {
-        if self.owned.remove(path) {
-            if let Err(e) = self.db.delete_owned_file(&self.session_id, path).await {
-                tracing::warn!("file_tracker: failed to remove owned file {:?}: {e}", path);
-            }
+        if self.owned.remove(path)
+            && let Err(e) = self.db.delete_owned_file(&self.session_id, path).await
+        {
+            tracing::warn!("file_tracker: failed to remove owned file {:?}: {e}", path);
         }
     }
 
@@ -216,7 +216,7 @@ mod tests {
 
     #[tokio::test]
     async fn cross_session_resume_preserves_ownership_for_approval() {
-        use crate::approval::{check_tool_with_tracker, ApprovalMode, ToolApproval};
+        use crate::approval::{ApprovalMode, ToolApproval, check_tool_with_tracker};
 
         let (db, _dir) = test_db().await;
         let session_id = "resume-test";
