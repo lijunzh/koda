@@ -7,6 +7,7 @@ use crate::approval::{self, ApprovalMode, Settings, ToolApproval};
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
+use crate::file_tracker::FileTracker;
 use crate::loop_guard;
 use crate::memory;
 use crate::persistence::Persistence;
@@ -17,7 +18,7 @@ use crate::sub_agent_cache::SubAgentCache;
 use crate::tools::{self, ToolRegistry};
 
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -37,6 +38,51 @@ fn truncate_for_history(output: &str, max_chars: usize) -> String {
         &output[..end],
         output.len() - end
     )
+}
+
+/// Resolve the file path from a tool call's arguments.
+///
+/// Used by the file lifecycle tracker to record which paths
+/// Koda creates or deletes (#465).
+fn resolve_tool_path(tool_name: &str, args: &serde_json::Value, project_root: &Path) -> Option<PathBuf> {
+    if !matches!(tool_name, "Write" | "Edit" | "Delete") {
+        return None;
+    }
+    let path_str = args
+        .get("path")
+        .or(args.get("file_path"))
+        .and_then(|v| v.as_str())?;
+    let requested = Path::new(path_str);
+    let abs_path = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        project_root.join(requested)
+    };
+    Some(abs_path)
+}
+
+/// Update file lifecycle tracker after a successful tool execution (#465).
+///
+/// - Write → track as owned (Koda created it)
+/// - Delete → untrack (file no longer exists)
+async fn track_file_lifecycle(
+    tool_name: &str,
+    args: &serde_json::Value,
+    project_root: &Path,
+    file_tracker: &mut FileTracker,
+    result: &str,
+) {
+    // Only track successful operations (result doesn't start with "Error")
+    if result.starts_with("Error") || result.starts_with("Failed") {
+        return;
+    }
+    if let Some(path) = resolve_tool_path(tool_name, args, project_root) {
+        match tool_name {
+            "Write" => file_tracker.track_created(path).await,
+            "Delete" => file_tracker.untrack(&path).await,
+            _ => {}
+        }
+    }
 }
 
 pub(crate) fn can_parallelize(
@@ -133,6 +179,7 @@ pub(crate) async fn execute_tools_parallel(
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
+    file_tracker: &mut FileTracker,
 ) -> Result<()> {
     let count = tool_calls.len();
     sink.emit(EngineEvent::Info {
@@ -191,6 +238,17 @@ pub(crate) async fn execute_tools_parallel(
             &result,
         )
         .await;
+        // File lifecycle tracking (#465)
+        let parsed_args: serde_json::Value =
+            serde_json::from_str(&tool_calls[i].arguments).unwrap_or_default();
+        track_file_lifecycle(
+            &tool_calls[i].function_name,
+            &parsed_args,
+            project_root,
+            file_tracker,
+            &result,
+        )
+        .await;
     }
     Ok(())
 }
@@ -215,6 +273,7 @@ pub(crate) async fn execute_tools_split_batch(
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     sub_agent_cache: &SubAgentCache,
+    file_tracker: &mut FileTracker,
 ) -> Result<()> {
     // Partition into parallelizable vs sequential
     let (parallel, sequential): (Vec<_>, Vec<_>) = tool_calls.iter().partition(|tc| {
@@ -280,6 +339,17 @@ pub(crate) async fn execute_tools_split_batch(
                 &result,
             )
             .await;
+            // File lifecycle tracking (#465)
+            let parsed_args: serde_json::Value =
+                serde_json::from_str(&parallel[j].arguments).unwrap_or_default();
+            track_file_lifecycle(
+                &parallel[j].function_name,
+                &parsed_args,
+                project_root,
+                file_tracker,
+                &result,
+            )
+            .await;
         }
     } else {
         // 0–1 parallelizable tools — just run sequentially
@@ -298,6 +368,7 @@ pub(crate) async fn execute_tools_split_batch(
                 cancel.clone(),
                 cmd_rx,
                 sub_agent_cache,
+                file_tracker,
             )
             .await?;
         }
@@ -319,6 +390,7 @@ pub(crate) async fn execute_tools_split_batch(
             cancel.clone(),
             cmd_rx,
             sub_agent_cache,
+            file_tracker,
         )
         .await?;
     }
@@ -341,6 +413,7 @@ pub(crate) async fn execute_tools_sequential(
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     sub_agent_cache: &SubAgentCache,
+    file_tracker: &mut FileTracker,
 ) -> Result<()> {
     for tc in tool_calls {
         // Check for interrupt before each tool
@@ -361,9 +434,14 @@ pub(crate) async fn execute_tools_sequential(
             is_sub_agent: false,
         });
 
-        // Check approval for this tool call
-        let approval =
-            approval::check_tool(&tc.function_name, &parsed_args, mode, Some(project_root));
+        // Check approval for this tool call (with file ownership awareness, #465)
+        let approval = approval::check_tool_with_tracker(
+            &tc.function_name,
+            &parsed_args,
+            mode,
+            Some(project_root),
+            Some(file_tracker),
+        );
 
         match approval {
             ToolApproval::AutoApprove => {
@@ -471,6 +549,15 @@ pub(crate) async fn execute_tools_sequential(
         // Track progress for file mutations and test results
         crate::progress::track_progress(db, session_id, &tc.function_name, &tc.arguments, &result)
             .await;
+        // File lifecycle tracking (#465)
+        track_file_lifecycle(
+            &tc.function_name,
+            &parsed_args,
+            project_root,
+            file_tracker,
+            &result,
+        )
+        .await;
     }
     Ok(())
 }

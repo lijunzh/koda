@@ -7,6 +7,7 @@ use crate::approval::ApprovalMode;
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent, EngineSink};
+use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
     PREFLIGHT_COMPACT_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages, estimate_tokens,
     is_context_overflow_error, is_rate_limit_error, rate_limit_backoff,
@@ -419,6 +420,8 @@ pub struct InferenceContext<'a> {
     pub cancel: CancellationToken,
     /// Channel for receiving client commands (approval responses, etc.).
     pub cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
+    /// File lifecycle tracker for ownership-aware approval (#465).
+    pub file_tracker: &'a mut FileTracker,
 }
 
 /// Run the inference loop: send messages, stream responses, dispatch tool calls.
@@ -438,6 +441,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         sink,
         cancel,
         cmd_rx,
+        file_tracker,
     } = ctx;
 
     // Hard cap is configurable per-agent; user can extend it interactively.
@@ -724,6 +728,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 sink,
                 cancel.clone(),
                 &sub_agent_cache,
+                file_tracker,
             )
             .await?;
         } else if tool_calls.len() > 1 {
@@ -740,6 +745,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 cancel.clone(),
                 cmd_rx,
                 &sub_agent_cache,
+                file_tracker,
             )
             .await?;
         } else {
@@ -756,6 +762,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 cancel.clone(),
                 cmd_rx,
                 &sub_agent_cache,
+                file_tracker,
             )
             .await?;
         }
