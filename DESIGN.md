@@ -298,11 +298,25 @@ compatible with Claude Code. Teams using both tools get one file, not two.
 approval mode) remains a valid future feature but is orthogonal to project
 rules and should be tracked separately.
 
-### 14. Interaction System — Inline, Never Fullscreen (v0.1.4)
+### 14. Interaction System — Conversation-First (v0.1.4, updated v0.1.11)
 
-**Decision**: All interactive UI (dropdowns, approvals, wizards) renders in a
-fixed `menu_area` below the status bar inside the ratatui viewport. The
-conversation is always visible. No fullscreen takeover, ever.
+**Decision**: The conversation is the primary surface. All interactive UI
+(dropdowns, approvals, wizards) renders inline within the conversation — never
+as fullscreen modals or stepped wizards that obscure the chat history.
+
+**Viewport evolution**: v0.1.4–v0.1.10 used `Viewport::Inline` (terminal-native
+scrollback). v0.1.11 switches to `Viewport::Fullscreen` (alternate screen buffer
+with app-managed scrollback) to eliminate two fundamental bugs: DSR cursor
+position timeouts ([#470]) and resize ghost fragments ([#418]). The interaction
+model is unchanged — conversation stays primary, interactions happen within it.
+See [#472] for the migration design.
+
+The original "Never Fullscreen" language (v0.1.4) rejected fullscreen *modals*
+— Goose's stepped wizards and Code Puppy's fullscreen forms that hide the
+conversation. `Viewport::Fullscreen` is different: the same layout (scrollback +
+input + status + menu_area) now owns the entire terminal instead of a sliding
+inline window. The conversation is always visible. The principle was always
+"conversation-first," not "inline viewport."
 
 **Rationale**: *The conversation is the primary surface. Interactions happen
 within it, not on top of it.* This is the common thread across Claude Code
@@ -313,12 +327,22 @@ this — users find them tedious and disorienting.
 - Per-command state machine enums, not a generic wizard framework (YAGNI)
 - Power-user escape hatch: positional args skip wizards entirely
 - No "go back" — Esc to cancel and restart is fine for 2–4 step flows
+- Render cache backed by DB — scrollback is a `VecDeque<Line>` viewport
+  cache, not a standalone buffer. DB is the source of truth. Virtual scroll
+  fetches older messages from DB on demand. No arbitrary buffer cap.
+- Single rendering path: all output → render cache → `draw()` (no dual-path)
+- Native clipboard (`arboard`) for copy — essential UX since alternate screen
+  breaks terminal-native mouse selection for multi-page content
 
 For the viewport layout diagram and interaction patterns, see
 [docs/user-guide.md](docs/user-guide.md#slash-commands).
 
 **Competitive analysis**: [#230](https://github.com/lijunzh/koda/issues/230)
-**Implementation**: [#229](https://github.com/lijunzh/koda/pull/229)
+**Implementation**: [#229](https://github.com/lijunzh/koda/pull/229), [#472]
+
+[#470]: https://github.com/lijunzh/koda/issues/470
+[#418]: https://github.com/lijunzh/koda/issues/418
+[#472]: https://github.com/lijunzh/koda/issues/472
 
 ### 15. No `?` Help Overlay — The Dropdown Is Help (v0.1.4)
 
