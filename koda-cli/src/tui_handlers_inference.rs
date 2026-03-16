@@ -68,6 +68,7 @@ impl TuiContext {
                         self.renderer.last_turn_stats.as_ref(),
                         &self.menu,
                         &self.scroll_buffer,
+                        self.mouse_selection.as_ref(),
                     );
                 });
 

@@ -37,7 +37,8 @@ pub(crate) fn draw_viewport(
     last_turn: Option<&crate::widgets::status_bar::TurnStats>,
     menu: &MenuContent,
     scroll_buffer: &ScrollBuffer,
-) {
+    selection: Option<&crate::mouse_select::Selection>,
+) -> ratatui::layout::Rect {
     let area = frame.area();
     let input_height = textarea.lines().len().max(1) as u16;
 
@@ -65,8 +66,8 @@ pub(crate) fn draw_viewport(
         ])
         .areas(area);
 
-    // ── History panel (scrollable) ────────────────────────
-    render_history(frame, scroll_buffer, history_area);
+    // ── History panel (scrollable) ────────────────────
+    render_history(frame, scroll_buffer, history_area, selection);
 
     // ── Top separator: ──────────── 🐻 ─ ─────────────────────
     let sep_width = sep_row.width.saturating_sub(5) as usize;
@@ -137,8 +138,10 @@ pub(crate) fn draw_viewport(
     }
     frame.render_widget(sb, status_row);
 
-    // ── Menu overlay (below status bar) ───────────────────
+    // ── Menu overlay (below status bar) ───────────────
     render_menu(frame, menu, menu_area);
+
+    history_area
 }
 
 /// Render the history panel from the scroll buffer.
@@ -151,13 +154,26 @@ fn render_history(
     frame: &mut ratatui::Frame,
     buffer: &ScrollBuffer,
     area: ratatui::layout::Rect,
+    selection: Option<&crate::mouse_select::Selection>,
 ) {
     let height = area.height as usize;
     let width = area.width as usize;
 
     // Collect all lines and let Paragraph handle wrapping + scrolling
-    let lines: Vec<Line<'_>> = buffer.all_lines().cloned().collect();
+    let mut lines: Vec<Line<'_>> = buffer.all_lines().cloned().collect();
     let scroll_pos = buffer.paragraph_scroll(height, width);
+
+    // Apply selection highlighting if active
+    if let Some(sel) = selection {
+        lines = crate::mouse_select::apply_selection_highlight(
+            lines,
+            sel,
+            scroll_pos.0,
+            width,
+            area.y,
+        );
+    }
+
     let paragraph = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .scroll(scroll_pos);

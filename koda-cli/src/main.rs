@@ -5,6 +5,7 @@
 mod ansi_parse;
 mod completer;
 mod diff_render;
+mod mouse_select;
 mod headless;
 mod highlight;
 mod history_render;

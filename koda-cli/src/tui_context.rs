@@ -67,6 +67,11 @@ pub(crate) struct TuiContext {
     pub history: Vec<String>,
     pub history_idx: Option<usize>,
     pub completer: crate::completer::InputCompleter,
+    pub mouse_selection: Option<crate::mouse_select::Selection>,
+    /// Y-coordinate of the history area top edge (for mouse mapping).
+    pub history_area_y: u16,
+    /// Height of the history area in rows.
+    pub history_area_height: u16,
 
     // ── Session state (shared references) ────────────────────
     // Lock discipline for `provider: Arc<RwLock<_>>`:
@@ -266,6 +271,9 @@ impl TuiContext {
             history: load_history(),
             history_idx: None,
             completer,
+            mouse_selection: None,
+            history_area_y: 0,
+            history_area_height: 0,
             config,
             provider,
             session,
@@ -291,9 +299,11 @@ impl TuiContext {
         let scroll_buffer = &self.scroll_buffer;
         let textarea = &self.textarea;
         let config = &self.config;
+        let selection = self.mouse_selection.as_ref();
 
+        let mut history_rect = None;
         if let Err(e) = self.terminal.draw(|f| {
-            draw_viewport(
+            history_rect = Some(draw_viewport(
                 f,
                 textarea,
                 &config.model,
@@ -306,9 +316,14 @@ impl TuiContext {
                 last_turn,
                 menu,
                 scroll_buffer,
-            );
+                selection,
+            ));
         }) {
             tracing::debug!("draw skipped: {e}");
+        }
+        if let Some(rect) = history_rect {
+            self.history_area_y = rect.y;
+            self.history_area_height = rect.height;
         }
         Ok(())
     }
@@ -1131,11 +1146,75 @@ impl TuiContext {
     // ── Mouse handling ────────────────────────────────────────
 
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
-        use crossterm::event::MouseEventKind;
+        use crate::mouse_select::{Selection, VisualPos};
+        use crossterm::event::{MouseButton, MouseEventKind};
+
         let (w, h) = self.term_dims();
+        let hist_y = self.history_area_y;
+        let hist_h = self.history_area_height;
+
+        // Check if mouse is in the history area
+        let in_history = mouse.row >= hist_y && mouse.row < hist_y + hist_h;
+
         match mouse.kind {
             MouseEventKind::ScrollUp => self.scroll_buffer.scroll_up(3, w, h),
             MouseEventKind::ScrollDown => self.scroll_buffer.scroll_down(3),
+
+            MouseEventKind::Down(MouseButton::Left) if in_history => {
+                let row = mouse.row.saturating_sub(hist_y);
+                self.mouse_selection = Some(Selection {
+                    anchor: VisualPos { row, col: mouse.column },
+                    cursor: VisualPos { row, col: mouse.column },
+                });
+            }
+
+            MouseEventKind::Drag(MouseButton::Left) if in_history => {
+                if let Some(sel) = &mut self.mouse_selection {
+                    let row = mouse.row.saturating_sub(hist_y);
+                    sel.cursor = VisualPos { row, col: mouse.column };
+                }
+            }
+
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(sel) = self.mouse_selection.take() {
+                    // Only copy if the selection spans more than a click
+                    if sel.anchor != sel.cursor {
+                        let lines: Vec<Line<'_>> =
+                            self.scroll_buffer.all_lines().cloned().collect();
+                        let scroll_pos = self
+                            .scroll_buffer
+                            .paragraph_scroll(hist_h as usize, w);
+                        let visible = crate::mouse_select::extract_visible_text(
+                            &lines,
+                            scroll_pos.0,
+                            w,
+                            hist_h as usize,
+                        );
+                        let text =
+                            crate::mouse_select::extract_selected_text(&visible, &sel);
+                        if !text.is_empty() {
+                            match crate::mouse_select::copy_to_clipboard(&text) {
+                                Ok(msg) => {
+                                    self.scroll_buffer.push(Line::from(vec![
+                                        Span::styled(
+                                            "  \u{1f4cb} ",
+                                            Style::default().fg(Color::Green),
+                                        ),
+                                        Span::styled(
+                                            msg,
+                                            Style::default().fg(Color::Green),
+                                        ),
+                                    ]));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("clipboard copy failed: {e}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             _ => {}
         }
     }
