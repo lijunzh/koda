@@ -75,6 +75,7 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
     let cancel = CancellationToken::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     let mut settings = koda_core::approval::Settings::load();
+    let mut file_tracker = koda_core::file_tracker::FileTracker::new(&session_id, db.clone()).await;
 
     // Cancel after 100ms — well before SlowProvider's 60s sleep
     let cancel_clone = cancel.clone();
@@ -100,6 +101,7 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
         sink: &sink,
         cancel,
         cmd_rx: &mut cmd_rx,
+        file_tracker: &mut file_tracker,
     })
     .await;
 

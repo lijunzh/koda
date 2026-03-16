@@ -70,6 +70,12 @@ impl FileTracker {
     pub fn len(&self) -> usize {
         self.owned.len()
     }
+
+    /// Whether the tracker has no owned files.
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.owned.is_empty()
+    }
 }
 
 #[cfg(test)]
