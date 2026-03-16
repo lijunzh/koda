@@ -21,6 +21,7 @@ mod tui_handlers_inference;
 mod tui_output;
 mod tui_render;
 mod tui_types;
+mod scroll_buffer;
 mod tui_viewport;
 mod tui_wizards;
 mod widgets;
