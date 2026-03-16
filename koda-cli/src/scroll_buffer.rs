@@ -30,9 +30,9 @@ pub struct ScrollBuffer {
 }
 
 impl ScrollBuffer {
-    pub fn new() -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
-            lines: VecDeque::with_capacity(512),
+            lines: VecDeque::with_capacity(capacity.min(4096)),
             scroll_offset: 0,
             sticky_bottom: true,
         }
@@ -119,6 +119,7 @@ impl ScrollBuffer {
     }
 
     /// Whether the buffer is empty.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty()
     }
@@ -134,6 +135,7 @@ impl ScrollBuffer {
     }
 
     /// Clear all lines and reset scroll state.
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.lines.clear();
         self.scroll_offset = 0;
@@ -228,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_push_and_visible() {
-        let mut buf = ScrollBuffer::new();
+        let mut buf = ScrollBuffer::new(2500);
         for i in 0..10 {
             buf.push(make_line(&format!("line {i}")));
         }
@@ -244,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_sticky_bottom() {
-        let mut buf = ScrollBuffer::new();
+        let mut buf = ScrollBuffer::new(2500);
         for i in 0..5 {
             buf.push(make_line(&format!("line {i}")));
         }
@@ -260,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_scroll_up_breaks_sticky() {
-        let mut buf = ScrollBuffer::new();
+        let mut buf = ScrollBuffer::new(2500);
         for i in 0..10 {
             buf.push(make_line(&format!("line {i}")));
         }
@@ -276,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_scroll_down_restores_sticky() {
-        let mut buf = ScrollBuffer::new();
+        let mut buf = ScrollBuffer::new(2500);
         for i in 0..10 {
             buf.push(make_line(&format!("line {i}")));
         }
@@ -291,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_scroll_up_clamped() {
-        let mut buf = ScrollBuffer::new();
+        let mut buf = ScrollBuffer::new(2500);
         for i in 0..5 {
             buf.push(make_line(&format!("line {i}")));
         }
@@ -302,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_eviction() {
-        let mut buf = ScrollBuffer::new();
+        let mut buf = ScrollBuffer::new(2500);
         for i in 0..MAX_CACHE_LINES + 100 {
             buf.push(make_line(&format!("line {i}")));
         }
@@ -317,13 +319,13 @@ mod tests {
 
     #[test]
     fn test_visible_empty_buffer() {
-        let buf = ScrollBuffer::new();
+        let buf = ScrollBuffer::new(2500);
         assert!(buf.visible_lines(10).is_empty());
     }
 
     #[test]
     fn test_visible_height_larger_than_buffer() {
-        let mut buf = ScrollBuffer::new();
+        let mut buf = ScrollBuffer::new(2500);
         buf.push(make_line("only line"));
         let visible = buf.visible_lines(100);
         assert_eq!(visible.len(), 1);
@@ -331,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_scroll_to_top_and_bottom() {
-        let mut buf = ScrollBuffer::new();
+        let mut buf = ScrollBuffer::new(2500);
         for i in 0..20 {
             buf.push(make_line(&format!("line {i}")));
         }
@@ -347,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_last_code_block() {
-        let mut buf = ScrollBuffer::new();
+        let mut buf = ScrollBuffer::new(2500);
         buf.push(make_line("some text"));
         buf.push(make_line("```rust"));
         buf.push(make_line("  fn main() {}"));
@@ -361,14 +363,14 @@ mod tests {
 
     #[test]
     fn test_last_code_block_none() {
-        let mut buf = ScrollBuffer::new();
+        let mut buf = ScrollBuffer::new(2500);
         buf.push(make_line("no code here"));
         assert!(buf.last_code_block().is_none());
     }
 
     #[test]
     fn test_last_response() {
-        let mut buf = ScrollBuffer::new();
+        let mut buf = ScrollBuffer::new(2500);
         buf.push(make_line("user message"));
         buf.push(make_line("  ───"));
         buf.push(make_line("  response line 1"));
@@ -381,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_push_lines_batch() {
-        let mut buf = ScrollBuffer::new();
+        let mut buf = ScrollBuffer::new(2500);
         let batch: Vec<Line<'static>> = (0..5).map(|i| make_line(&format!("line {i}"))).collect();
         buf.push_lines(batch);
         assert_eq!(buf.len(), 5);
@@ -389,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_eviction_adjusts_scroll_offset() {
-        let mut buf = ScrollBuffer::new();
+        let mut buf = ScrollBuffer::new(2500);
         // Fill to capacity
         for i in 0..MAX_CACHE_LINES {
             buf.push(make_line(&format!("line {i}")));

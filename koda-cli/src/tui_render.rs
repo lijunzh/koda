@@ -3,18 +3,15 @@
 //! All output is rendered as `ratatui::text::Line` / `Span` and written
 //! above the viewport via `insert_before()`. No ANSI strings.
 
+use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output::{self, AMBER, BOLD, CYAN, DIM, MAGENTA, ORANGE, RED, YELLOW};
 use crate::widgets::status_bar::TurnStats;
 use koda_core::engine::EngineEvent;
 use ratatui::{
-    Terminal,
-    backend::CrosstermBackend,
     style::{Color, Style},
     text::{Line, Span},
 };
 use std::collections::HashMap;
-
-type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 
 /// TUI-aware renderer that outputs above the viewport.
 pub struct TuiRenderer {
@@ -60,8 +57,8 @@ impl TuiRenderer {
         }
     }
 
-    /// Render an engine event above the viewport using native ratatui types.
-    pub fn render_to_terminal(&mut self, event: EngineEvent, terminal: &mut Term) {
+    /// Render an engine event into the scroll buffer.
+    pub fn render_to_buffer(&mut self, event: EngineEvent, buffer: &mut ScrollBuffer) {
         match event {
             EngineEvent::TextDelta { text } => {
                 self.text_buf.push_str(&text);
@@ -74,14 +71,14 @@ impl TuiRenderer {
                         continue;
                     }
                     self.has_emitted_text = true;
-                    tui_output::emit_line(terminal, self.md.render_line(&line_text));
+                    tui_output::emit_line(buffer, self.md.render_line(&line_text));
                 }
             }
             EngineEvent::TextDone => {
                 // Flush remaining partial line
                 if !self.text_buf.is_empty() {
                     let remaining = std::mem::take(&mut self.text_buf);
-                    tui_output::emit_line(terminal, self.md.render_line(&remaining));
+                    tui_output::emit_line(buffer, self.md.render_line(&remaining));
                 }
                 self.response_started = false;
                 self.has_emitted_text = false;
@@ -91,7 +88,7 @@ impl TuiRenderer {
             EngineEvent::ThinkingStart => {
                 self.think_buf.clear();
                 tui_output::emit_line(
-                    terminal,
+                    buffer,
                     Line::from(vec![
                         Span::raw("  "),
                         Span::styled("\u{1f4ad} Thinking...", DIM),
@@ -104,7 +101,7 @@ impl TuiRenderer {
                     let line_text = self.think_buf[..pos].to_string();
                     self.think_buf = self.think_buf[pos + 1..].to_string();
                     tui_output::emit_line(
-                        terminal,
+                        buffer,
                         Line::from(vec![
                             Span::styled("  \u{2502} ", DIM),
                             Span::styled(line_text, DIM),
@@ -116,7 +113,7 @@ impl TuiRenderer {
                 if !self.think_buf.is_empty() {
                     let remaining = std::mem::take(&mut self.think_buf);
                     tui_output::emit_line(
-                        terminal,
+                        buffer,
                         Line::from(vec![
                             Span::styled("  \u{2502} ", DIM),
                             Span::styled(remaining, DIM),
@@ -126,7 +123,7 @@ impl TuiRenderer {
             }
             EngineEvent::ResponseStart => {
                 self.response_started = true;
-                tui_output::emit_line(terminal, Line::styled("  \u{2500}\u{2500}\u{2500}", DIM));
+                tui_output::emit_line(buffer, Line::styled("  \u{2500}\u{2500}\u{2500}", DIM));
             }
             EngineEvent::ToolCallStart {
                 id,
@@ -140,11 +137,11 @@ impl TuiRenderer {
                 let indent = if is_sub_agent { "  " } else { "" };
                 let (dot_style, detail) = tool_call_styles(&name, &args);
                 tui_output::emit_line(
-                    terminal,
+                    buffer,
                     Line::from(vec![
                         Span::raw(indent),
                         Span::styled("\u{25cf} ", dot_style),
-                        Span::styled(&name, BOLD),
+                        Span::styled(name, BOLD),
                         Span::raw(" "),
                         Span::styled(detail, DIM),
                     ]),
@@ -164,20 +161,20 @@ impl TuiRenderer {
                     // Compact: just show line count
                     let line_count = output.lines().count();
                     tui_output::emit_line(
-                        terminal,
+                        buffer,
                         Line::from(vec![
                             Span::styled("  \u{2514} ", DIM),
                             Span::styled(format!("{name}: {line_count} line(s)"), DIM),
                         ]),
                     );
                 } else {
-                    render_tool_output(terminal, &name, &output, self.verbose, file_ext.as_deref());
+                    render_tool_output(buffer, &name, &output, self.verbose, file_ext.as_deref());
                 }
                 self.preview_shown = false;
             }
             EngineEvent::SubAgentStart { agent_name } => {
                 tui_output::emit_line(
-                    terminal,
+                    buffer,
                     Line::from(vec![
                         Span::raw("  "),
                         Span::styled(format!("\u{1f916} Sub-agent: {agent_name}"), MAGENTA),
@@ -197,7 +194,7 @@ impl TuiRenderer {
                 preview,
             } => {
                 tui_output::emit_line(
-                    terminal,
+                    buffer,
                     Line::from(vec![
                         Span::raw("  "),
                         Span::styled(format!("\u{1f50d} Would execute: {detail}"), YELLOW),
@@ -205,7 +202,7 @@ impl TuiRenderer {
                 );
                 if let Some(preview) = preview {
                     let diff_lines = crate::diff_render::render_lines(&preview);
-                    tui_output::emit_lines(terminal, &diff_lines);
+                    tui_output::emit_lines(buffer, &diff_lines);
                 }
             }
             EngineEvent::Footer {
@@ -235,13 +232,13 @@ impl TuiRenderer {
             }
             EngineEvent::Info { message } => {
                 tui_output::emit_line(
-                    terminal,
+                    buffer,
                     Line::from(vec![Span::raw("  "), Span::styled(message, CYAN)]),
                 );
             }
             EngineEvent::Warn { message } => {
                 tui_output::emit_line(
-                    terminal,
+                    buffer,
                     Line::from(vec![
                         Span::raw("  "),
                         Span::styled(format!("\u{26a0} {message}"), YELLOW),
@@ -250,7 +247,7 @@ impl TuiRenderer {
             }
             EngineEvent::Error { message } => {
                 tui_output::emit_line(
-                    terminal,
+                    buffer,
                     Line::from(vec![
                         Span::raw("  "),
                         Span::styled(format!("\u{2717} {message}"), RED),
@@ -318,7 +315,7 @@ fn extract_file_extension(args_json: &str) -> Option<String> {
 }
 
 fn render_tool_output(
-    terminal: &mut Term,
+    buffer: &mut ScrollBuffer,
     name: &str,
     output: &str,
     verbose: bool,
@@ -345,18 +342,18 @@ fn render_tool_output(
     };
 
     let render_line =
-        |terminal: &mut Term, line: &str, hl: &mut Option<crate::highlight::CodeHighlighter>| {
+        |buffer: &mut ScrollBuffer, line: &str, hl: &mut Option<crate::highlight::CodeHighlighter>| {
             if name == "Grep" {
-                render_grep_line(terminal, line);
+                render_grep_line(buffer, line);
             } else if name == "List" {
-                render_list_line(terminal, line);
+                render_list_line(buffer, line);
             } else if let Some(h) = hl.as_mut() {
                 let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
                 spans.extend(h.highlight_spans(line));
-                tui_output::emit_line(terminal, Line::from(spans));
+                tui_output::emit_line(buffer, Line::from(spans));
             } else if is_diff_tool && line.starts_with('+') {
                 tui_output::emit_line(
-                    terminal,
+                    buffer,
                     Line::from(vec![
                         Span::styled("  \u{2502} ", DIM),
                         Span::styled(line.to_string(), Style::default().fg(Color::Green)),
@@ -364,7 +361,7 @@ fn render_tool_output(
                 );
             } else if is_diff_tool && line.starts_with('-') {
                 tui_output::emit_line(
-                    terminal,
+                    buffer,
                     Line::from(vec![
                         Span::styled("  \u{2502} ", DIM),
                         Span::styled(line.to_string(), Style::default().fg(Color::Red)),
@@ -372,7 +369,7 @@ fn render_tool_output(
                 );
             } else if is_diff_tool && line.starts_with('@') {
                 tui_output::emit_line(
-                    terminal,
+                    buffer,
                     Line::from(vec![
                         Span::styled("  \u{2502} ", DIM),
                         Span::styled(line.to_string(), Style::default().fg(Color::Cyan)),
@@ -380,7 +377,7 @@ fn render_tool_output(
                 );
             } else {
                 tui_output::emit_line(
-                    terminal,
+                    buffer,
                     Line::from(vec![
                         Span::styled("  \u{2502} ", DIM),
                         Span::raw(line.to_string()),
@@ -392,7 +389,7 @@ fn render_tool_output(
     if verbose {
         // Show everything in verbose mode
         for line in output.lines() {
-            render_line(terminal, line, &mut highlighter);
+            render_line(buffer, line, &mut highlighter);
         }
         return;
     }
@@ -400,7 +397,7 @@ fn render_tool_output(
     match truncate_for_display(output) {
         Truncated::Full(_) => {
             for line in output.lines() {
-                render_line(terminal, line, &mut highlighter);
+                render_line(buffer, line, &mut highlighter);
             }
         }
         Truncated::Split {
@@ -410,17 +407,17 @@ fn render_tool_output(
             total,
         } => {
             for line in &head {
-                render_line(terminal, line, &mut highlighter);
+                render_line(buffer, line, &mut highlighter);
             }
             tui_output::emit_line(
-                terminal,
+                buffer,
                 Line::from(vec![Span::styled(
                     koda_core::truncate::separator(hidden, total),
                     DIM,
                 )]),
             );
             for line in &tail {
-                render_line(terminal, line, &mut highlighter);
+                render_line(buffer, line, &mut highlighter);
             }
         }
     }
@@ -455,7 +452,7 @@ fn collapse_blank_lines(text: &str) -> String {
 ///
 /// List output format: `d path/to/dir` (directory) or `  path/to/file` (file).
 /// Directories are shown in bold, files colored by extension.
-fn render_list_line(terminal: &mut Term, line: &str) {
+fn render_list_line(buffer: &mut ScrollBuffer, line: &str) {
     let is_dir = line.starts_with("d ");
     let path_str = if is_dir {
         &line[2..]
@@ -485,7 +482,7 @@ fn render_list_line(terminal: &mut Term, line: &str) {
 
     let prefix = if is_dir { "\u{1f4c1} " } else { "   " };
     tui_output::emit_line(
-        terminal,
+        buffer,
         Line::from(vec![
             Span::styled("  \u{2502} ", DIM),
             Span::raw(prefix),
@@ -498,14 +495,14 @@ fn render_list_line(terminal: &mut Term, line: &str) {
 ///
 /// Grep output format: `file_path:line_number:content`
 /// We highlight the file path in cyan and the line number in yellow.
-fn render_grep_line(terminal: &mut Term, line: &str) {
+fn render_grep_line(buffer: &mut ScrollBuffer, line: &str) {
     // Parse file:line:content format
     if let Some((file_and_line, content)) = line.split_once(':').and_then(|(file, rest)| {
         rest.split_once(':')
             .map(|(lineno, content)| (format!("{file}:{lineno}"), content))
     }) {
         tui_output::emit_line(
-            terminal,
+            buffer,
             Line::from(vec![
                 Span::styled("  \u{2502} ", DIM),
                 Span::styled(file_and_line, Style::default().fg(Color::Cyan)),
@@ -516,7 +513,7 @@ fn render_grep_line(terminal: &mut Term, line: &str) {
     } else {
         // Fallback: render as-is
         tui_output::emit_line(
-            terminal,
+            buffer,
             Line::from(vec![
                 Span::styled("  \u{2502} ", DIM),
                 Span::raw(line.to_string()),

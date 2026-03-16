@@ -5,17 +5,12 @@
 //! See #209.
 
 use crate::input;
+use crate::scroll_buffer::ScrollBuffer;
 use crate::sink::UiEvent;
 use crate::tui_commands::{self, SlashAction};
-use crate::tui_output;
 use crate::tui_render::TuiRenderer;
-use crate::tui_types::{
-    MIN_VIEWPORT_HEIGHT, MenuContent, PromptMode, ProviderWizard, Term, TuiState,
-};
-use crate::tui_viewport::{
-    drain_pending_resizes, draw_viewport, emit_above, init_terminal, maybe_resize_viewport,
-    restore_terminal, scroll_past_and_reinit,
-};
+use crate::tui_types::{MenuContent, PromptMode, ProviderWizard, Term, TuiState};
+use crate::tui_viewport::{draw_viewport, init_terminal, restore_terminal};
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
@@ -52,7 +47,7 @@ pub(crate) struct TuiContext {
     pub terminal: Term,
     pub textarea: TextArea<'static>,
     pub renderer: TuiRenderer,
-    pub viewport_height: u16,
+    pub scroll_buffer: ScrollBuffer,
     pub crossterm_events: EventStream,
 
     // ── Interaction state ─────────────────────────────────────
@@ -156,15 +151,14 @@ impl TuiContext {
             config.query_and_apply_capabilities(prov.as_ref()).await;
         }
 
-        // Print startup UI BEFORE entering raw mode
+        // Collect startup lines (will be pushed into scroll buffer after init)
         let recent = db.recent_user_messages(3).await.unwrap_or_default();
-        crate::startup::print_banner(&config, &recent);
-        crate::startup::print_model_warning(&config);
+        let mut startup_lines = crate::startup::collect_startup_lines(&config, &recent);
 
         if let Ok(Some(latest)) = version_check.await
             && let Some((current, latest)) = koda_core::version::update_available(&latest)
         {
-            crate::startup::print_update_notice(current, &latest);
+            startup_lines.extend(crate::startup::update_notice_lines(current, &latest));
         }
 
         let agent =
@@ -179,13 +173,12 @@ impl TuiContext {
         )
         .await;
 
-        crate::startup::print_purge_nudge_if_needed(&db).await;
+        crate::startup::purge_nudge(&db, &mut startup_lines).await;
 
         let shared_mode = approval::new_shared_mode(ApprovalMode::Auto);
 
         // Terminal + textarea
-        let viewport_height = MIN_VIEWPORT_HEIGHT;
-        let terminal = init_terminal(viewport_height)?;
+        let terminal = init_terminal()?;
 
         let mut textarea = TextArea::default();
         textarea.set_cursor_line_style(Style::default());
@@ -234,7 +227,11 @@ impl TuiContext {
             terminal,
             textarea,
             renderer,
-            viewport_height,
+            scroll_buffer: {
+                let mut buf = ScrollBuffer::new(2500);
+                buf.push_lines(startup_lines);
+                buf
+            },
             crossterm_events: EventStream::new(),
             tui_state: TuiState::Idle,
             menu,
@@ -259,19 +256,10 @@ impl TuiContext {
         })
     }
 
-    /// Draw the viewport (resize if textarea grew/shrank).
+    /// Draw the fullscreen viewport.
     pub fn draw(&mut self) -> Result<()> {
         let mode = approval::read_mode(&self.shared_mode);
         let ctx = koda_core::context::percentage() as u32;
-
-        maybe_resize_viewport(
-            &mut self.terminal,
-            &self.textarea,
-            &mut self.viewport_height,
-        )?;
-
-        let config = &self.config;
-        let textarea = &self.textarea;
         let tui_state = self.tui_state;
         let prompt_mode = &self.prompt_mode;
         let queue_len = self.input_queue.len();
@@ -281,10 +269,10 @@ impl TuiContext {
             .unwrap_or(0);
         let last_turn = self.renderer.last_turn_stats.as_ref();
         let menu = &self.menu;
+        let scroll_buffer = &self.scroll_buffer;
+        let textarea = &self.textarea;
+        let config = &self.config;
 
-        // draw() triggers autoresize() which calls get_cursor_position() (DSR query).
-        // During/after terminal resize, DSR can time out. Swallow the error —
-        // the next draw will retry once the terminal has settled.
         if let Err(e) = self.terminal.draw(|f| {
             draw_viewport(
                 f,
@@ -298,21 +286,22 @@ impl TuiContext {
                 elapsed,
                 last_turn,
                 menu,
+                scroll_buffer,
             );
         }) {
-            tracing::debug!("draw skipped (resize settling): {e}");
+            tracing::debug!("draw skipped: {e}");
         }
         Ok(())
     }
 
-    /// Write a message line above the viewport.
-    pub fn emit(&mut self, line: Line<'_>) {
-        emit_above(&mut self.terminal, line);
+    /// Push a message line into the scroll buffer.
+    pub fn emit(&mut self, line: Line<'static>) {
+        self.scroll_buffer.push(line);
     }
 
     /// Clean up terminal and print exit info.
     pub async fn cleanup(&mut self) {
-        restore_terminal(&mut self.terminal, self.viewport_height);
+        restore_terminal(&mut self.terminal);
         crate::startup::print_resume_hint(&self.session.id);
     }
 
@@ -376,8 +365,7 @@ impl TuiContext {
                 ApprovalMode::Confirm => "🔒",
                 ApprovalMode::Auto => "⚡",
             };
-            emit_above(
-                &mut self.terminal,
+            self.scroll_buffer.push(
                 Line::from(vec![
                     Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
                     Span::raw(queued.clone()),
@@ -420,7 +408,7 @@ impl TuiContext {
         }
 
         let action = tui_commands::handle_slash_command(
-            &mut self.terminal,
+            &mut self.scroll_buffer,
             input,
             &mut self.config,
             &self.provider,
@@ -439,8 +427,7 @@ impl TuiContext {
                 CommandOutcome::Handled
             }
             SlashAction::Quit => {
-                tui_output::emit_line(
-                    &mut self.terminal,
+                self.scroll_buffer.push(
                     Line::styled("\u{1f43b} Goodbye!", Style::default().fg(Color::Cyan)),
                 );
                 CommandOutcome::Quit
@@ -473,8 +460,7 @@ impl TuiContext {
                 self.menu = MenuContent::Model(dd);
             }
             Ok(_) => {
-                emit_above(
-                    &mut self.terminal,
+                self.scroll_buffer.push(
                     Line::styled(
                         "  \u{26a0} No models available",
                         Style::default().fg(Color::Yellow),
@@ -482,8 +468,7 @@ impl TuiContext {
                 );
             }
             Err(e) => {
-                emit_above(
-                    &mut self.terminal,
+                self.scroll_buffer.push(
                     Line::styled(
                         format!("  \u{2717} Failed to list models: {e}"),
                         Style::default().fg(Color::Red),
@@ -585,8 +570,7 @@ impl TuiContext {
                 self.menu = MenuContent::Session(dd);
             }
             Ok(_) => {
-                emit_above(
-                    &mut self.terminal,
+                self.scroll_buffer.push(
                     Line::styled(
                         "  No other sessions found.",
                         Style::default().fg(Color::DarkGray),
@@ -594,8 +578,7 @@ impl TuiContext {
                 );
             }
             Err(e) => {
-                emit_above(
-                    &mut self.terminal,
+                self.scroll_buffer.push(
                     Line::styled(
                         format!("  \u{2717} Error: {e}"),
                         Style::default().fg(Color::Red),
@@ -606,11 +589,8 @@ impl TuiContext {
     }
 
     async fn reinit_after_slash(&mut self) {
-        self.viewport_height = MIN_VIEWPORT_HEIGHT;
-        self.crossterm_events = EventStream::new();
-        if let Ok(term) = init_terminal(self.viewport_height) {
-            self.terminal = term;
-        }
+        // Fullscreen mode: no terminal reinit needed.
+        // Just refresh completer state and model name.
         {
             let prov = self.provider.read().await;
             if let Ok(models) = prov.list_models().await {
@@ -619,7 +599,6 @@ impl TuiContext {
             }
         }
         self.renderer.model = self.config.model.clone();
-        let _ = self.draw();
     }
 
     async fn prepare_inference_start(&mut self, input: &str) -> CommandOutcome {
@@ -627,8 +606,7 @@ impl TuiContext {
         processed.paste_blocks = std::mem::take(&mut self.paste_blocks);
 
         for (i, _img) in processed.images.iter().enumerate() {
-            emit_above(
-                &mut self.terminal,
+            self.scroll_buffer.push(
                 Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
@@ -642,8 +620,7 @@ impl TuiContext {
         let mut user_message =
             if let Some(context) = input::format_context_files(&processed.context_files) {
                 for f in &processed.context_files {
-                    emit_above(
-                        &mut self.terminal,
+                    self.scroll_buffer.push(
                         Line::from(vec![
                             Span::raw("  "),
                             Span::styled(
@@ -697,12 +674,10 @@ impl TuiContext {
     async fn handle_idle_event(&mut self, ev: Event) -> anyhow::Result<bool> {
         match ev {
             Event::Resize(_, _) => {
-                let _ = drain_pending_resizes(&mut self.crossterm_events);
-                scroll_past_and_reinit(
-                    &mut self.terminal,
-                    &mut self.crossterm_events,
-                    self.viewport_height,
-                )?;
+                // Fullscreen: just redraw, terminal handles the rest.
+            }
+            Event::Mouse(mouse) => {
+                self.handle_mouse(mouse);
             }
             Event::Paste(text) => {
                 self.handle_idle_paste(&text);
@@ -727,8 +702,7 @@ impl TuiContext {
                 char_count,
             });
             let label = format!("\u{1f4cb} Pasted text ({char_count} chars)");
-            emit_above(
-                &mut self.terminal,
+            self.scroll_buffer.push(
                 Line::from(vec![
                     Span::raw("  "),
                     Span::styled(label, Style::default().fg(Color::Yellow)),
@@ -741,8 +715,7 @@ impl TuiContext {
             } else {
                 preview
             };
-            emit_above(
-                &mut self.terminal,
+            self.scroll_buffer.push(
                 Line::from(vec![
                     Span::raw("    "),
                     Span::styled(preview, Style::default().fg(Color::DarkGray)),
@@ -789,11 +762,25 @@ impl TuiContext {
                 }
             }
             (KeyCode::Char('l'), m) if m.contains(KeyModifiers::CONTROL) => {
-                scroll_past_and_reinit(
-                    &mut self.terminal,
-                    &mut self.crossterm_events,
-                    self.viewport_height,
-                )?;
+                // Ctrl+L: jump to bottom (re-engage sticky)
+                self.scroll_buffer.scroll_to_bottom();
+            }
+            // Scroll keys
+            (KeyCode::PageUp, _) => {
+                self.scroll_buffer.scroll_up(20);
+            }
+            (KeyCode::PageDown, _) => {
+                self.scroll_buffer.scroll_down(20);
+            }
+            (KeyCode::Home, _) => {
+                self.scroll_buffer.scroll_to_top();
+            }
+            (KeyCode::End, _) => {
+                self.scroll_buffer.scroll_to_bottom();
+            }
+            // Clipboard: Ctrl+Y = copy last code block
+            (KeyCode::Char('y'), m) if m.contains(KeyModifiers::CONTROL) => {
+                self.copy_to_clipboard(m.contains(KeyModifiers::SHIFT));
             }
             (KeyCode::BackTab, _) => {
                 approval::cycle_mode(&self.shared_mode);
@@ -835,8 +822,7 @@ impl TuiContext {
                 ApprovalMode::Confirm => "\u{1f512}",
                 ApprovalMode::Auto => "\u{26a1}",
             };
-            emit_above(
-                &mut self.terminal,
+            self.scroll_buffer.push(
                 Line::from(vec![
                     Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
                     Span::raw(text.clone()),
@@ -927,8 +913,7 @@ impl TuiContext {
                             .await;
                     }
                     crate::tui_wizards::save_provider(&self.config);
-                    emit_above(
-                        &mut self.terminal,
+                    self.scroll_buffer.push(
                         Line::styled(
                             format!("  \u{2714} Model set to: {model_id}"),
                             Style::default().fg(Color::Green),
@@ -985,8 +970,7 @@ impl TuiContext {
             MenuContent::Session(dd) => {
                 if let Some(item) = dd.selected_item() {
                     if item.is_current {
-                        emit_above(
-                            &mut self.terminal,
+                        self.scroll_buffer.push(
                             Line::styled(
                                 "  Already in this session.",
                                 Style::default().fg(Color::DarkGray),
@@ -996,8 +980,7 @@ impl TuiContext {
                         let target_id = item.id.clone();
                         let short = item.short_id.clone();
                         self.session.id = target_id;
-                        emit_above(
-                            &mut self.terminal,
+                        self.scroll_buffer.push(
                             Line::from(vec![
                                 Span::styled("  \u{2714} ", Style::default().fg(Color::Green)),
                                 Span::raw("Resumed session "),
@@ -1038,8 +1021,7 @@ impl TuiContext {
                     env_name,
                 } => {
                     if value.is_empty() && !koda_core::runtime_env::is_set(&env_name) {
-                        emit_above(
-                            &mut self.terminal,
+                        self.scroll_buffer.push(
                             Line::styled(
                                 "  \u{2716} No API key provided.",
                                 Style::default().fg(Color::Red),
@@ -1056,8 +1038,7 @@ impl TuiContext {
                             let _ = store.save();
                         }
                         let masked = koda_core::keystore::mask_key(&value);
-                        emit_above(
-                            &mut self.terminal,
+                        self.scroll_buffer.push(
                             Line::styled(
                                 format!("  \u{2714} {env_name} set to {masked}"),
                                 Style::default().fg(Color::Green),
@@ -1107,8 +1088,7 @@ impl TuiContext {
                 .set_model_names(models.iter().map(|m| m.id.clone()).collect());
         }
         self.renderer.model = self.config.model.clone();
-        emit_above(
-            &mut self.terminal,
+        self.scroll_buffer.push(
             Line::styled(
                 format!(
                     "  \u{2714} Provider: {} ({})",
@@ -1120,6 +1100,67 @@ impl TuiContext {
     }
 
     // ── History navigation ──────────────────────────────────────
+
+    // ── Mouse handling ────────────────────────────────────────
+
+    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        use crossterm::event::MouseEventKind;
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.scroll_buffer.scroll_up(3),
+            MouseEventKind::ScrollDown => self.scroll_buffer.scroll_down(3),
+            _ => {}
+        }
+    }
+
+    // ── Clipboard ─────────────────────────────────────────────
+
+    fn copy_to_clipboard(&mut self, shift: bool) {
+        let text = if shift {
+            self.scroll_buffer.last_response()
+        } else {
+            self.scroll_buffer.last_code_block()
+        };
+        match text {
+            Some(content) => {
+                match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(&content)) {
+                    Ok(()) => {
+                        let label = if shift { "response" } else { "code block" };
+                        let preview: String = content.chars().take(60).collect();
+                        self.scroll_buffer.push(Line::from(vec![
+                            Span::styled("  \u{1f4cb} ", Style::default().fg(Color::Green)),
+                            Span::styled(
+                                format!("Copied {label} to clipboard"),
+                                Style::default().fg(Color::Green),
+                            ),
+                            Span::styled(
+                                format!(" ({preview}…)"),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                        ]));
+                    }
+                    Err(e) => {
+                        self.scroll_buffer.push(Line::styled(
+                            format!("  \u{2717} Clipboard error: {e}"),
+                            Style::default().fg(Color::Red),
+                        ));
+                    }
+                }
+            }
+            None => {
+                let label = if shift {
+                    "No response to copy."
+                } else {
+                    "No code block to copy."
+                };
+                self.scroll_buffer.push(Line::styled(
+                    format!("  {label}"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+        }
+    }
+
+    // ── History ────────────────────────────────────────────────
 
     fn history_up(&mut self) {
         if !self.history.is_empty() {
