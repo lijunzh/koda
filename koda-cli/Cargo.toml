@@ -57,6 +57,10 @@ tokio-tungstenite = "0.28"
 futures-util = "0.3.32"
 rpassword = "7.4.0"
 
+[[bench]]
+name = "render_bench"
+harness = false
+
 [dev-dependencies]
 tempfile = "3"
 koda-core = { path = "../koda-core", version = "0.1.12", features = ["test-support"] }
