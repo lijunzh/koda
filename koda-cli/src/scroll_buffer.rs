@@ -65,9 +65,10 @@ impl ScrollBuffer {
         }
     }
 
-    /// Scroll up by `n` lines. Disengages sticky bottom.
-    pub fn scroll_up(&mut self, n: usize) {
-        let max_offset = self.lines.len().saturating_sub(1);
+    /// Scroll up by `n` visual lines. Disengages sticky bottom.
+    pub fn scroll_up(&mut self, n: usize, term_width: usize, viewport_height: usize) {
+        let total = self.total_visual_lines(term_width);
+        let max_offset = total.saturating_sub(viewport_height);
         self.scroll_offset = (self.scroll_offset + n).min(max_offset);
         self.sticky_bottom = false;
     }
@@ -88,29 +89,44 @@ impl ScrollBuffer {
     }
 
     /// Jump to the top of the buffer.
-    pub fn scroll_to_top(&mut self) {
+    pub fn scroll_to_top(&mut self, term_width: usize, viewport_height: usize) {
         if !self.lines.is_empty() {
-            self.scroll_offset = self.lines.len().saturating_sub(1);
+            let total = self.total_visual_lines(term_width);
+            self.scroll_offset = total.saturating_sub(viewport_height);
             self.sticky_bottom = false;
         }
     }
 
-    /// Return the slice of lines visible in a viewport of `height` rows.
+    /// Return all lines in the buffer.
     ///
-    /// Lines are returned bottom-up: the last element is the bottommost
-    /// visible line. The caller renders them top-to-bottom.
-    pub fn visible_lines(&self, height: usize) -> Vec<&Line<'static>> {
-        if self.lines.is_empty() || height == 0 {
-            return Vec::new();
-        }
+    /// Used by `render_history()` which passes everything to
+    /// `Paragraph::wrap().scroll()` — ratatui handles the visual
+    /// line math for word-wrapped content.
+    pub fn all_lines(&self) -> impl Iterator<Item = &Line<'static>> {
+        self.lines.iter()
+    }
 
-        let total = self.lines.len();
-        // Bottom of visible window (exclusive)
-        let bottom = total.saturating_sub(self.scroll_offset);
-        // Top of visible window (inclusive)
-        let top = bottom.saturating_sub(height);
+    /// Compute the total number of visual (wrapped) lines at a given
+    /// terminal width. Used for scrollbar state and offset clamping.
+    pub fn total_visual_lines(&self, term_width: usize) -> usize {
+        let w = term_width.max(1);
+        self.lines
+            .iter()
+            .map(|l| visual_height(l, w))
+            .sum()
+    }
 
-        (top..bottom).map(|i| &self.lines[i]).collect()
+    /// Compute the Paragraph scroll-from-top offset for the current
+    /// scroll position. Returns `(row_offset, 0)` for `Paragraph::scroll()`.
+    ///
+    /// `scroll_offset` is visual lines from the bottom.
+    /// Paragraph wants visual lines from the top.
+    pub fn paragraph_scroll(&self, viewport_height: usize, term_width: usize) -> (u16, u16) {
+        let total = self.total_visual_lines(term_width);
+        let from_top = total
+            .saturating_sub(viewport_height)
+            .saturating_sub(self.scroll_offset);
+        (from_top as u16, 0)
     }
 
     /// Total number of lines in the buffer.
@@ -212,6 +228,24 @@ impl ScrollBuffer {
             }
         }
     }
+
+    /// Prepend lines at the top of the buffer (for DB-backed virtual scroll).
+    ///
+    /// Used when the user scrolls past the top of the cache and older
+    /// messages are fetched from the DB and re-rendered.
+    #[allow(dead_code)] // wired in a follow-up PR
+    pub fn prepend_lines(&mut self, lines: impl IntoIterator<Item = Line<'static>>) {
+        let lines: Vec<_> = lines.into_iter().collect();
+        let count = lines.len();
+        // Push in reverse so they appear in the original order at the front
+        for line in lines.into_iter().rev() {
+            self.lines.push_front(line);
+        }
+        // Adjust scroll offset to keep the viewport stable
+        // (content shifted down by `count` logical lines)
+        self.scroll_offset += count;
+        self.enforce_capacity();
+    }
 }
 
 /// Extract plain text from a `Line` by concatenating all span contents.
@@ -219,13 +253,41 @@ fn line_text(line: &Line<'_>) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
+/// Compute how many visual rows a `Line` occupies at the given terminal width.
+///
+/// A 200-char line in an 80-column terminal wraps to 3 visual rows.
+/// Empty lines always occupy 1 row.
+fn visual_height(line: &Line<'_>, term_width: usize) -> usize {
+    let w = line.width();
+    if w == 0 {
+        1
+    } else {
+        w.div_ceil(term_width)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::text::Span;
 
+    const W: usize = 80; // test terminal width
+    const H: usize = 50; // test viewport height
+
     fn make_line(text: &str) -> Line<'static> {
         Line::from(Span::raw(text.to_string()))
+    }
+
+    /// Collect the visible lines via paragraph_scroll logic.
+    /// For tests with short lines that don't wrap, this matches the old visible_lines().
+    fn visible_text(buf: &ScrollBuffer, height: usize) -> Vec<String> {
+        let lines: Vec<Line<'_>> = buf.all_lines().cloned().collect();
+        let total_visual = buf.total_visual_lines(W);
+        let from_top = total_visual
+            .saturating_sub(height)
+            .saturating_sub(buf.offset());
+        // Simulate what Paragraph would show
+        lines.iter().skip(from_top).take(height).map(line_text).collect()
     }
 
     #[test]
@@ -237,11 +299,11 @@ mod tests {
         assert_eq!(buf.len(), 10);
 
         // Viewport of 3 lines at bottom
-        let visible = buf.visible_lines(3);
+        let visible = visible_text(&buf, 3);
         assert_eq!(visible.len(), 3);
-        assert_eq!(line_text(visible[0]), "line 7");
-        assert_eq!(line_text(visible[1]), "line 8");
-        assert_eq!(line_text(visible[2]), "line 9");
+        assert_eq!(visible[0], "line 7");
+        assert_eq!(visible[1], "line 8");
+        assert_eq!(visible[2], "line 9");
     }
 
     #[test]
@@ -256,8 +318,8 @@ mod tests {
         // New lines keep us at bottom
         buf.push(make_line("line 5"));
         assert_eq!(buf.offset(), 0);
-        let visible = buf.visible_lines(2);
-        assert_eq!(line_text(visible[1]), "line 5");
+        let visible = visible_text(&buf, 2);
+        assert_eq!(visible[1], "line 5");
     }
 
     #[test]
@@ -267,13 +329,10 @@ mod tests {
             buf.push(make_line(&format!("line {i}")));
         }
 
-        buf.scroll_up(3);
+        // Use viewport smaller than content so scroll has room
+        buf.scroll_up(3, W, 5);
         assert!(!buf.is_sticky());
         assert_eq!(buf.offset(), 3);
-
-        let visible = buf.visible_lines(3);
-        assert_eq!(line_text(visible[0]), "line 4");
-        assert_eq!(line_text(visible[2]), "line 6");
     }
 
     #[test]
@@ -283,7 +342,7 @@ mod tests {
             buf.push(make_line(&format!("line {i}")));
         }
 
-        buf.scroll_up(5);
+        buf.scroll_up(5, W, 5);
         assert!(!buf.is_sticky());
 
         buf.scroll_down(5);
@@ -298,8 +357,9 @@ mod tests {
             buf.push(make_line(&format!("line {i}")));
         }
 
-        buf.scroll_up(100);
-        assert_eq!(buf.offset(), 4); // max is len - 1
+        // Viewport height 3, 5 lines total → max offset = 5-3 = 2
+        buf.scroll_up(100, W, 3);
+        assert_eq!(buf.offset(), 2);
     }
 
     #[test]
@@ -309,26 +369,16 @@ mod tests {
             buf.push(make_line(&format!("line {i}")));
         }
         assert_eq!(buf.len(), MAX_CACHE_LINES);
-        // Oldest lines should be evicted
-        let visible = buf.visible_lines(1);
-        assert_eq!(
-            line_text(visible[0]),
-            format!("line {}", MAX_CACHE_LINES + 99)
-        );
+        // Latest line should be at the bottom
+        let visible = visible_text(&buf, 1);
+        assert_eq!(visible[0], format!("line {}", MAX_CACHE_LINES + 99));
     }
 
     #[test]
-    fn test_visible_empty_buffer() {
+    fn test_empty_buffer() {
         let buf = ScrollBuffer::new(2500);
-        assert!(buf.visible_lines(10).is_empty());
-    }
-
-    #[test]
-    fn test_visible_height_larger_than_buffer() {
-        let mut buf = ScrollBuffer::new(2500);
-        buf.push(make_line("only line"));
-        let visible = buf.visible_lines(100);
-        assert_eq!(visible.len(), 1);
+        assert_eq!(buf.all_lines().count(), 0);
+        assert_eq!(buf.total_visual_lines(80), 0);
     }
 
     #[test]
@@ -338,9 +388,10 @@ mod tests {
             buf.push(make_line(&format!("line {i}")));
         }
 
-        buf.scroll_to_top();
+        // 20 lines, viewport 10 → max offset = 10
+        buf.scroll_to_top(W, 10);
         assert!(!buf.is_sticky());
-        assert_eq!(buf.offset(), 19);
+        assert_eq!(buf.offset(), 10);
 
         buf.scroll_to_bottom();
         assert!(buf.is_sticky());
@@ -397,7 +448,7 @@ mod tests {
             buf.push(make_line(&format!("line {i}")));
         }
         // Scroll up
-        buf.scroll_up(100);
+        buf.scroll_up(100, W, H);
         let offset_before = buf.offset();
 
         // Push more lines, triggering eviction
@@ -408,5 +459,79 @@ mod tests {
         // Offset should have been adjusted down
         assert!(buf.offset() < offset_before);
         assert_eq!(buf.len(), MAX_CACHE_LINES);
+    }
+
+    // ── Visual line math ──
+
+    #[test]
+    fn test_visual_height_short_line() {
+        let line = make_line("hello"); // 5 chars
+        assert_eq!(visual_height(&line, 80), 1);
+    }
+
+    #[test]
+    fn test_visual_height_wrapping_line() {
+        // 160 chars in an 80-column terminal = 2 visual lines
+        let line = make_line(&"x".repeat(160));
+        assert_eq!(visual_height(&line, 80), 2);
+    }
+
+    #[test]
+    fn test_visual_height_empty_line() {
+        let line = make_line("");
+        assert_eq!(visual_height(&line, 80), 1);
+    }
+
+    #[test]
+    fn test_total_visual_lines() {
+        let mut buf = ScrollBuffer::new(2500);
+        buf.push(make_line("short")); // 1 visual line
+        buf.push(make_line(&"x".repeat(160))); // 2 visual lines
+        buf.push(make_line("")); // 1 visual line
+        assert_eq!(buf.total_visual_lines(80), 4);
+    }
+
+    #[test]
+    fn test_paragraph_scroll_at_bottom() {
+        let mut buf = ScrollBuffer::new(2500);
+        for i in 0..20 {
+            buf.push(make_line(&format!("line {i}")));
+        }
+        // At bottom: offset=0, viewport=10, total=20
+        // → scroll from top = 20 - 10 - 0 = 10
+        let (row, _) = buf.paragraph_scroll(10, 80);
+        assert_eq!(row, 10);
+    }
+
+    #[test]
+    fn test_paragraph_scroll_at_top() {
+        let mut buf = ScrollBuffer::new(2500);
+        for i in 0..20 {
+            buf.push(make_line(&format!("line {i}")));
+        }
+        buf.scroll_to_top(80, 10);
+        // At top: offset=10, viewport=10, total=20
+        // → scroll from top = 20 - 10 - 10 = 0
+        let (row, _) = buf.paragraph_scroll(10, 80);
+        assert_eq!(row, 0);
+    }
+
+    // ── Prepend ──
+
+    #[test]
+    fn test_prepend_lines() {
+        let mut buf = ScrollBuffer::new(2500);
+        buf.push(make_line("current"));
+        buf.scroll_up(0, W, H); // stay at bottom
+
+        let old_lines = vec![make_line("old1"), make_line("old2")];
+        buf.prepend_lines(old_lines);
+
+        assert_eq!(buf.len(), 3);
+        // Offset adjusted by prepend count
+        assert_eq!(buf.offset(), 2);
+        // First line is now "old1"
+        let first = line_text(buf.all_lines().next().unwrap());
+        assert_eq!(first, "old1");
     }
 }

@@ -142,23 +142,33 @@ pub(crate) fn draw_viewport(
 }
 
 /// Render the history panel from the scroll buffer.
+///
+/// Passes **all** buffer lines to `Paragraph::wrap().scroll()` so ratatui
+/// handles visual-line math for wrapped content. Scroll offset is in
+/// visual lines (not logical lines), ensuring consistent behavior
+/// regardless of line wrapping.
 fn render_history(
     frame: &mut ratatui::Frame,
     buffer: &ScrollBuffer,
     area: ratatui::layout::Rect,
 ) {
     let height = area.height as usize;
-    let visible = buffer.visible_lines(height);
+    let width = area.width as usize;
 
-    // Convert references to owned lines for Paragraph
-    let lines: Vec<Line<'_>> = visible.into_iter().cloned().collect();
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    // Collect all lines and let Paragraph handle wrapping + scrolling
+    let lines: Vec<Line<'_>> = buffer.all_lines().cloned().collect();
+    let scroll_pos = buffer.paragraph_scroll(height, width);
+    let paragraph = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll(scroll_pos);
     frame.render_widget(paragraph, area);
 
-    // Scrollbar (only when buffer has more content than viewport)
-    if buffer.len() > height {
-        let mut scrollbar_state = ScrollbarState::new(buffer.len().saturating_sub(height))
-            .position(buffer.len().saturating_sub(height).saturating_sub(buffer.offset()));
+    // Scrollbar — uses visual line counts for accurate thumb position
+    let total_visual = buffer.total_visual_lines(width);
+    if total_visual > height {
+        let scrollable = total_visual.saturating_sub(height);
+        let position = scrollable.saturating_sub(buffer.offset());
+        let mut scrollbar_state = ScrollbarState::new(scrollable).position(position);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)

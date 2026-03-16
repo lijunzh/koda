@@ -767,13 +767,15 @@ impl TuiContext {
             }
             // Scroll keys
             (KeyCode::PageUp, _) => {
-                self.scroll_buffer.scroll_up(20);
+                let (w, h) = self.term_dims();
+                self.scroll_buffer.scroll_up(20, w, h);
             }
             (KeyCode::PageDown, _) => {
                 self.scroll_buffer.scroll_down(20);
             }
             (KeyCode::Home, _) => {
-                self.scroll_buffer.scroll_to_top();
+                let (w, h) = self.term_dims();
+                self.scroll_buffer.scroll_to_top(w, h);
             }
             (KeyCode::End, _) => {
                 self.scroll_buffer.scroll_to_bottom();
@@ -1101,12 +1103,19 @@ impl TuiContext {
 
     // ── History navigation ──────────────────────────────────────
 
+    /// Terminal (width, height) for scroll math.
+    fn term_dims(&self) -> (usize, usize) {
+        let size = self.terminal.size().unwrap_or_default();
+        (size.width as usize, size.height as usize)
+    }
+
     // ── Mouse handling ────────────────────────────────────────
 
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
         use crossterm::event::MouseEventKind;
+        let (w, h) = self.term_dims();
         match mouse.kind {
-            MouseEventKind::ScrollUp => self.scroll_buffer.scroll_up(3),
+            MouseEventKind::ScrollUp => self.scroll_buffer.scroll_up(3, w, h),
             MouseEventKind::ScrollDown => self.scroll_buffer.scroll_down(3),
             _ => {}
         }
