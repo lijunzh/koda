@@ -422,6 +422,46 @@ mod display_regression {
     }
 }
 
+mod event_loop_structure {
+    /// Regression test for the v0.1.11 frozen-input bug.
+    ///
+    /// The idle event loop in `run_event_loop` MUST call `self.draw()` before
+    /// blocking on `tokio::select!` for keyboard events. Without it the
+    /// viewport never redraws after keystrokes and input appears frozen.
+    ///
+    /// This is a source-level structural assertion — the only reliable way to
+    /// guard against accidental removal during refactors.
+    #[test]
+    fn draw_called_before_idle_select_in_event_loop() {
+        let source = include_str!("../src/tui_context.rs");
+
+        // Locate run_event_loop
+        let fn_start = source
+            .find("async fn run_event_loop")
+            .expect("run_event_loop function not found in tui_context.rs");
+        let body = &source[fn_start..];
+
+        // Find the idle select! block (the one with crossterm_events.next())
+        let select_marker = "self.crossterm_events.next()";
+        let select_pos = body
+            .find(select_marker)
+            .expect("idle select! with crossterm_events.next() not found in run_event_loop");
+
+        // self.draw() must appear (uncommented) between fn start and the select!
+        let before_select = &body[..select_pos];
+        let has_active_draw = before_select.lines().any(|line| {
+            let trimmed = line.trim();
+            !trimmed.starts_with("//") && trimmed.contains("self.draw()")
+        });
+        assert!(
+            has_active_draw,
+            "self.draw() must be called (uncommented) before the idle tokio::select! in \
+             run_event_loop. Without it the viewport never redraws and input appears \
+             frozen (v0.1.11 bug)."
+        );
+    }
+}
+
 mod provider_key_flow {
     #[test]
     fn test_same_provider_should_prompt_for_key() {
