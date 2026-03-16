@@ -179,17 +179,8 @@ pub fn check_tool_with_tracker(
     if tool_name == "Delete"
         && let Some(tracker) = file_tracker
         && let Some(root) = project_root
-        && let Some(p) = args
-            .get("path")
-            .or(args.get("file_path"))
-            .and_then(|v| v.as_str())
+        && let Some(abs_path) = crate::file_tracker::resolve_file_path_from_args(args, root)
     {
-        let requested = Path::new(p);
-        let abs_path = if requested.is_absolute() {
-            requested.to_path_buf()
-        } else {
-            root.join(requested)
-        };
         if tracker.is_owned(&abs_path) {
             return ToolApproval::AutoApprove;
         }

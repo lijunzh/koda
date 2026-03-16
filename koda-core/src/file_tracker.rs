@@ -16,6 +16,28 @@ use std::path::{Path, PathBuf};
 
 use crate::db::Database;
 
+/// Extract and resolve a file path from tool call arguments.
+///
+/// Looks for `"path"` or `"file_path"` in the JSON args, then resolves
+/// relative paths against `project_root`. Used by both the approval
+/// system and the file lifecycle tracker (#465).
+pub(crate) fn resolve_file_path_from_args(
+    args: &serde_json::Value,
+    project_root: &Path,
+) -> Option<PathBuf> {
+    let path_str = args
+        .get("path")
+        .or(args.get("file_path"))
+        .and_then(|v| v.as_str())?;
+    let requested = Path::new(path_str);
+    let abs_path = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        project_root.join(requested)
+    };
+    Some(abs_path)
+}
+
 /// Tracks files created by Koda in the current session.
 ///
 /// In-memory `HashSet` for fast lookups, with DB persistence for
@@ -46,14 +68,18 @@ impl FileTracker {
     /// The path should be the resolved absolute path.
     pub async fn track_created(&mut self, path: PathBuf) {
         if self.owned.insert(path.clone()) {
-            let _ = self.db.insert_owned_file(&self.session_id, &path).await;
+            if let Err(e) = self.db.insert_owned_file(&self.session_id, &path).await {
+                tracing::warn!("file_tracker: failed to persist owned file {:?}: {e}", path);
+            }
         }
     }
 
     /// Remove a file from the owned set (after successful deletion).
     pub async fn untrack(&mut self, path: &Path) {
         if self.owned.remove(path) {
-            let _ = self.db.delete_owned_file(&self.session_id, path).await;
+            if let Err(e) = self.db.delete_owned_file(&self.session_id, path).await {
+                tracing::warn!("file_tracker: failed to remove owned file {:?}: {e}", path);
+            }
         }
     }
 
@@ -168,5 +194,63 @@ mod tests {
         let path = PathBuf::from("/tmp/never_tracked.md");
         tracker.untrack(&path).await; // should not panic
         assert_eq!(tracker.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn absolute_path_ownership() {
+        let (db, _dir) = test_db().await;
+        let mut tracker = FileTracker::new("test-session", db).await;
+
+        let abs = PathBuf::from("/home/user/project/output.csv");
+        tracker.track_created(abs.clone()).await;
+        assert!(tracker.is_owned(&abs));
+
+        // Same absolute path via different PathBuf instance still matches
+        let abs2 = PathBuf::from("/home/user/project/output.csv");
+        assert!(tracker.is_owned(&abs2));
+
+        // Different path is not owned
+        let other = PathBuf::from("/home/user/project/readme.md");
+        assert!(!tracker.is_owned(&other));
+    }
+
+    #[tokio::test]
+    async fn cross_session_resume_preserves_ownership_for_approval() {
+        use crate::approval::{check_tool_with_tracker, ApprovalMode, ToolApproval};
+
+        let (db, _dir) = test_db().await;
+        let session_id = "resume-test";
+        let root = Path::new("/home/user/project");
+        let owned_path = root.join("ephemeral.md");
+
+        // Session 1: track a created file, then "crash"
+        {
+            let mut tracker = FileTracker::new(session_id, db.clone()).await;
+            tracker.track_created(owned_path.clone()).await;
+            assert!(tracker.is_owned(&owned_path));
+        }
+
+        // Session 2: resume — tracker should load from DB and still
+        // auto-approve deletion of the owned file
+        {
+            let tracker = FileTracker::new(session_id, db.clone()).await;
+            assert!(
+                tracker.is_owned(&owned_path),
+                "Resumed tracker should still own the file"
+            );
+
+            let args = serde_json::json!({"path": "ephemeral.md"});
+            assert_eq!(
+                check_tool_with_tracker(
+                    "Delete",
+                    &args,
+                    ApprovalMode::Auto,
+                    Some(root),
+                    Some(&tracker),
+                ),
+                ToolApproval::AutoApprove,
+                "Delete of resumed owned file should auto-approve"
+            );
+        }
     }
 }

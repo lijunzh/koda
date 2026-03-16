@@ -881,3 +881,63 @@ async fn test_activate_skill_missing_parameter() {
         "should report missing parameter: {output}"
     );
 }
+
+/// E2E: Write creates a file, then Delete of that file auto-approves
+/// without user confirmation because Koda owns it (#465).
+#[tokio::test]
+async fn test_write_then_delete_auto_approves_owned_file() {
+    let env = Env::new().await;
+    let target = env.root.join("ephemeral_draft.md");
+    env.insert_user_message("create then cleanup").await;
+
+    // Mock: Write the file, then Delete it, then respond with text.
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "Write",
+            serde_json::json!({
+                "path": target.to_string_lossy(),
+                "content": "draft content"
+            }),
+        ),
+        MockResponse::tool_call(
+            "Delete",
+            serde_json::json!({"path": target.to_string_lossy()}),
+        ),
+        MockResponse::Text("Cleaned up.".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    // Write should have executed
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, EngineEvent::ToolCallResult { name, .. } if name == "Write")),
+        "expected Write tool result"
+    );
+
+    // Delete should have auto-approved (no NeedsConfirmation / approval prompt)
+    // — it should appear as a successful ToolCallResult, not blocked.
+    let delete_result = events.iter().find_map(|e| {
+        if let EngineEvent::ToolCallResult { output, name, .. } = e
+            && name == "Delete"
+        {
+            return Some(output.clone());
+        }
+        None
+    });
+    assert!(
+        delete_result.is_some(),
+        "Delete should have executed (auto-approved for owned file)"
+    );
+    // The file should no longer exist
+    assert!(
+        !target.exists(),
+        "ephemeral file should be deleted after cleanup"
+    );
+
+    // Final text response should be present
+    assert!(
+        events.iter().any(|e| matches!(e, EngineEvent::TextDone)),
+        "expected TextDone after cleanup"
+    );
+}

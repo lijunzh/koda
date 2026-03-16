@@ -43,26 +43,16 @@ fn truncate_for_history(output: &str, max_chars: usize) -> String {
 /// Resolve the file path from a tool call's arguments.
 ///
 /// Used by the file lifecycle tracker to record which paths
-/// Koda creates or deletes (#465).
+/// Koda creates or deletes (#465). Only relevant for Write and Delete.
 fn resolve_tool_path(
     tool_name: &str,
     args: &serde_json::Value,
     project_root: &Path,
 ) -> Option<PathBuf> {
-    if !matches!(tool_name, "Write" | "Edit" | "Delete") {
+    if !matches!(tool_name, "Write" | "Delete") {
         return None;
     }
-    let path_str = args
-        .get("path")
-        .or(args.get("file_path"))
-        .and_then(|v| v.as_str())?;
-    let requested = Path::new(path_str);
-    let abs_path = if requested.is_absolute() {
-        requested.to_path_buf()
-    } else {
-        project_root.join(requested)
-    };
-    Some(abs_path)
+    crate::file_tracker::resolve_file_path_from_args(args, project_root)
 }
 
 /// Update file lifecycle tracker after a successful tool execution (#465).
