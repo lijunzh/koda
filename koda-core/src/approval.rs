@@ -176,25 +176,22 @@ pub fn check_tool_with_tracker(
     }
 
     // File lifecycle: Koda-owned files bypass destructive gate (#465)
-    if tool_name == "Delete" {
-        if let Some(tracker) = file_tracker {
-            if let Some(root) = project_root {
-                let path_arg = args
-                    .get("path")
-                    .or(args.get("file_path"))
-                    .and_then(|v| v.as_str());
-                if let Some(p) = path_arg {
-                    let requested = Path::new(p);
-                    let abs_path = if requested.is_absolute() {
-                        requested.to_path_buf()
-                    } else {
-                        root.join(requested)
-                    };
-                    if tracker.is_owned(&abs_path) {
-                        return ToolApproval::AutoApprove;
-                    }
-                }
-            }
+    if tool_name == "Delete"
+        && let Some(tracker) = file_tracker
+        && let Some(root) = project_root
+        && let Some(p) = args
+            .get("path")
+            .or(args.get("file_path"))
+            .and_then(|v| v.as_str())
+    {
+        let requested = Path::new(p);
+        let abs_path = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            root.join(requested)
+        };
+        if tracker.is_owned(&abs_path) {
+            return ToolApproval::AutoApprove;
         }
     }
 
@@ -566,13 +563,7 @@ mod tests {
         let root = Path::new("/home/user/project");
         let args = serde_json::json!({"path": "some_file.rs"});
         assert_eq!(
-            check_tool_with_tracker(
-                "Delete",
-                &args,
-                ApprovalMode::Auto,
-                Some(root),
-                None,
-            ),
+            check_tool_with_tracker("Delete", &args, ApprovalMode::Auto, Some(root), None,),
             ToolApproval::NeedsConfirmation,
             "Without tracker, Delete should still need confirmation"
         );

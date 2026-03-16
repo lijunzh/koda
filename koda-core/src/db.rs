@@ -199,13 +199,11 @@ impl Database {
 impl Database {
     /// Record that Koda created a file in this session.
     pub async fn insert_owned_file(&self, session_id: &str, path: &Path) -> Result<()> {
-        sqlx::query(
-            "INSERT OR IGNORE INTO owned_files (session_id, path) VALUES (?, ?)",
-        )
-        .bind(session_id)
-        .bind(path.to_string_lossy().as_ref())
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("INSERT OR IGNORE INTO owned_files (session_id, path) VALUES (?, ?)")
+            .bind(session_id)
+            .bind(path.to_string_lossy().as_ref())
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

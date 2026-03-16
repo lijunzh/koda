@@ -44,7 +44,11 @@ fn truncate_for_history(output: &str, max_chars: usize) -> String {
 ///
 /// Used by the file lifecycle tracker to record which paths
 /// Koda creates or deletes (#465).
-fn resolve_tool_path(tool_name: &str, args: &serde_json::Value, project_root: &Path) -> Option<PathBuf> {
+fn resolve_tool_path(
+    tool_name: &str,
+    args: &serde_json::Value,
+    project_root: &Path,
+) -> Option<PathBuf> {
     if !matches!(tool_name, "Write" | "Edit" | "Delete") {
         return None;
     }

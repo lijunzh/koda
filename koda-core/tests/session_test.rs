@@ -61,7 +61,10 @@ impl Env {
     /// Bypasses `KodaSession::new()` (which calls `create_provider` internally)
     /// so tests can supply a pre-configured MockProvider.  A fresh ToolRegistry
     /// is created each call because ToolRegistry does not implement Clone.
-    async fn make_session(&self, provider: Box<dyn LlmProvider>) -> (KodaSession, CancellationToken) {
+    async fn make_session(
+        &self,
+        provider: Box<dyn LlmProvider>,
+    ) -> (KodaSession, CancellationToken) {
         let cancel = CancellationToken::new();
         let tools = ToolRegistry::new(self.root.clone(), self.config.max_context_tokens);
 
@@ -78,11 +81,8 @@ impl Env {
             .tools
             .set_session(Arc::new(self.db.clone()), self.session_id.clone());
 
-        let file_tracker = koda_core::file_tracker::FileTracker::new(
-            &self.session_id,
-            self.db.clone(),
-        )
-        .await;
+        let file_tracker =
+            koda_core::file_tracker::FileTracker::new(&self.session_id, self.db.clone()).await;
 
         let session = KodaSession {
             id: self.session_id.clone(),
