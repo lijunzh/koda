@@ -9,6 +9,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-03-16
+
+### Fixed
+- **Input frozen on launch** — the #458 refactor accidentally dropped the
+  `self.draw()` call before the idle `tokio::select!` in the event loop.
+  Without it, the viewport never redraws after keystrokes, making the
+  textarea appear completely unresponsive. Hotfix release — v0.1.11 is
+  unusable.
+
 ## [0.1.11] - 2026-03-14
 
 ### Fixed

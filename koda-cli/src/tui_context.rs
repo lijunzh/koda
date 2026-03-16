@@ -347,6 +347,9 @@ impl TuiContext {
                 }
             }
 
+            // Redraw viewport (resize if textarea grew/shrank)
+            self.draw()?;
+
             // ── Idle: wait for keyboard input ────────────────
             tokio::select! {
                 Some(Ok(ev)) = self.crossterm_events.next() => {
