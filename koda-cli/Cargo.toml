@@ -46,7 +46,7 @@ unicode-width = "0.2"
 arboard = "3"
 
 # ANSI escape code parsing for tool output
-ansi-to-tui = "7"
+ansi-to-tui = "8"
 
 # Logging (subscriber for CLI configuration)
 tracing = "0.1"

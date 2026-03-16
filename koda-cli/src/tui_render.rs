@@ -6,6 +6,7 @@
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output::{self, AMBER, BOLD, CYAN, DIM, MAGENTA, ORANGE, RED, YELLOW};
 use crate::widgets::status_bar::TurnStats;
+use ansi_to_tui::IntoText;
 use koda_core::engine::EngineEvent;
 use ratatui::{
     style::{Color, Style},
@@ -376,13 +377,13 @@ fn render_tool_output(
                     ]),
                 );
             } else {
-                tui_output::emit_line(
-                    buffer,
-                    Line::from(vec![
-                        Span::styled("  \u{2502} ", DIM),
-                        Span::raw(line.to_string()),
-                    ]),
-                );
+                // Parse ANSI escape codes into native ratatui Spans.
+                // Colored output from tools (cargo, git, pytest, etc.)
+                // renders with proper styles instead of raw escape codes.
+                let content_spans = parse_ansi_spans(line);
+                let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
+                spans.extend(content_spans);
+                tui_output::emit_line(buffer, Line::from(spans));
             }
         };
 
@@ -421,6 +422,57 @@ fn render_tool_output(
             }
         }
     }
+}
+
+/// Parse ANSI escape codes in a single line into ratatui `Span`s.
+///
+/// Uses `ansi-to-tui` to convert escape sequences (colors, bold, etc.)
+/// into native ratatui styles. Plain text without ANSI passes through
+/// as a single unstyled span — zero overhead for non-colored output.
+fn parse_ansi_spans(line: &str) -> Vec<Span<'static>> {
+    // Fast path: no escape codes → skip parsing entirely
+    if !line.contains('\x1b') {
+        return vec![Span::raw(line.to_string())];
+    }
+
+    // Parse ANSI → ratatui Text (may produce multiple Lines for embedded \n)
+    match line.as_bytes().into_text() {
+        Ok(text) => {
+            // Flatten all lines' spans into a single line
+            // (we're processing line-by-line, so typically 1 Line)
+            text.lines
+                .into_iter()
+                .flat_map(|l| l.spans)
+                .map(|s| Span::styled(s.content.into_owned(), s.style))
+                .collect()
+        }
+        Err(_) => {
+            // Fallback: strip escapes and render plain
+            let stripped = strip_ansi_escapes(line);
+            vec![Span::raw(stripped)]
+        }
+    }
+}
+
+/// Fallback ANSI stripper for malformed escape sequences.
+/// Removes all `\x1b[...m` style codes.
+fn strip_ansi_escapes(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip until 'm' or end
+            while let Some(&next) = chars.peek() {
+                chars.next();
+                if next == 'm' {
+                    break;
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 /// Collapse runs of consecutive blank lines down to at most 1.
@@ -544,5 +596,45 @@ mod tests {
     #[test]
     fn test_collapse_all_blank() {
         assert_eq!(collapse_blank_lines("\n\n\n\n"), "\n");
+    }
+
+    // ── ANSI parsing tests ──
+
+    #[test]
+    fn test_parse_ansi_plain_text() {
+        let spans = parse_ansi_spans("hello world");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), "hello world");
+    }
+
+    #[test]
+    fn test_parse_ansi_colored_text() {
+        // Red text: \x1b[31mERROR\x1b[0m
+        let input = "\x1b[31mERROR\x1b[0m: something failed";
+        let spans = parse_ansi_spans(input);
+        assert!(spans.len() >= 2, "should produce multiple spans: {spans:?}");
+        // First span should contain "ERROR" with red styling
+        assert_eq!(spans[0].content.as_ref(), "ERROR");
+        assert_eq!(spans[0].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn test_parse_ansi_no_escape_fast_path() {
+        // No \x1b → fast path, single raw span
+        let spans = parse_ansi_spans("just plain text");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), "just plain text");
+    }
+
+    #[test]
+    fn test_strip_ansi_escapes_fallback() {
+        let input = "\x1b[1;32mOK\x1b[0m done";
+        let stripped = strip_ansi_escapes(input);
+        assert_eq!(stripped, "OK done");
+    }
+
+    #[test]
+    fn test_strip_ansi_empty() {
+        assert_eq!(strip_ansi_escapes(""), "");
     }
 }
