@@ -178,7 +178,59 @@ impl Database {
             }
         }
 
+        // File lifecycle tracking (#465): files created by Koda in a session.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS owned_files (
+                session_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(session_id, path)
+            );",
+        )
+        .execute(pool)
+        .await?;
+
         Ok(())
+    }
+}
+
+// ── File lifecycle tracking (#465) ──────────────────────────────────────────
+
+impl Database {
+    /// Record that Koda created a file in this session.
+    pub async fn insert_owned_file(&self, session_id: &str, path: &Path) -> Result<()> {
+        sqlx::query("INSERT OR IGNORE INTO owned_files (session_id, path) VALUES (?, ?)")
+            .bind(session_id)
+            .bind(path.to_string_lossy().as_ref())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Remove a file from the owned set.
+    pub async fn delete_owned_file(&self, session_id: &str, path: &Path) -> Result<()> {
+        sqlx::query("DELETE FROM owned_files WHERE session_id = ? AND path = ?")
+            .bind(session_id)
+            .bind(path.to_string_lossy().as_ref())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Load all owned file paths for a session (used on session resume).
+    pub async fn load_owned_files(
+        &self,
+        session_id: &str,
+    ) -> Result<std::collections::HashSet<std::path::PathBuf>> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT path FROM owned_files WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(p,)| std::path::PathBuf::from(p))
+            .collect())
     }
 }
 

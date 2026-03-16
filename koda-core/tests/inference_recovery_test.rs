@@ -67,6 +67,8 @@ impl Env {
         let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
         let mut settings = Settings::load();
         let tool_defs = self.tool_defs();
+        let mut file_tracker =
+            koda_core::file_tracker::FileTracker::new(&self.session_id, self.db.clone()).await;
 
         let result = inference::inference_loop(InferenceContext {
             project_root: &self.root,
@@ -83,6 +85,7 @@ impl Env {
             sink: &sink,
             cancel: CancellationToken::new(),
             cmd_rx: &mut cmd_rx,
+            file_tracker: &mut file_tracker,
         })
         .await;
 

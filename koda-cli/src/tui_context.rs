@@ -176,7 +176,8 @@ impl TuiContext {
             db.clone(),
             &config,
             ApprovalMode::Auto,
-        );
+        )
+        .await;
 
         crate::startup::print_purge_nudge_if_needed(&db).await;
 
