@@ -9,6 +9,7 @@ use crate::approval::ApprovalMode;
 use crate::config::KodaConfig;
 use crate::db::Database;
 use crate::engine::{EngineCommand, EngineSink};
+use crate::file_tracker::FileTracker;
 use crate::inference::InferenceContext;
 use crate::providers::{self, ImageData, LlmProvider};
 use crate::settings::Settings;
@@ -37,11 +38,13 @@ pub struct KodaSession {
     pub settings: Settings,
     /// Cancellation token for graceful shutdown.
     pub cancel: CancellationToken,
+    /// File lifecycle tracker — tracks files created by Koda (#465).
+    pub file_tracker: FileTracker,
 }
 
 impl KodaSession {
     /// Create a new session from an agent, config, and database.
-    pub fn new(
+    pub async fn new(
         id: String,
         agent: Arc<KodaAgent>,
         db: Database,
@@ -52,6 +55,7 @@ impl KodaSession {
         let settings = Settings::load();
         // Wire db+session into ToolRegistry for RecallContext
         agent.tools.set_session(Arc::new(db.clone()), id.clone());
+        let file_tracker = FileTracker::new(&id, db.clone()).await;
         Self {
             id,
             agent,
@@ -60,6 +64,7 @@ impl KodaSession {
             mode,
             settings,
             cancel: CancellationToken::new(),
+            file_tracker,
         }
     }
 
@@ -95,6 +100,7 @@ impl KodaSession {
             sink,
             cancel: self.cancel.clone(),
             cmd_rx,
+            file_tracker: &mut self.file_tracker,
         })
         .await;
 

@@ -74,6 +74,8 @@ impl Env {
         let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
         let mut settings = Settings::load();
         let tool_defs = self.tool_defs();
+        let mut file_tracker =
+            koda_core::file_tracker::FileTracker::new(&self.session_id, self.db.clone()).await;
 
         let result = inference::inference_loop(InferenceContext {
             project_root: &self.root,
@@ -90,6 +92,7 @@ impl Env {
             sink: &sink,
             cancel: CancellationToken::new(),
             cmd_rx: &mut cmd_rx,
+            file_tracker: &mut file_tracker,
         })
         .await;
 
@@ -245,6 +248,8 @@ async fn test_provider_error_emits_error_event() {
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     let mut settings = Settings::load();
     let tool_defs = env.tool_defs();
+    let mut file_tracker =
+        koda_core::file_tracker::FileTracker::new(&env.session_id, env.db.clone()).await;
 
     let result = inference::inference_loop(InferenceContext {
         project_root: &env.root,
@@ -261,6 +266,7 @@ async fn test_provider_error_emits_error_event() {
         sink: &sink,
         cancel: CancellationToken::new(),
         cmd_rx: &mut cmd_rx,
+        file_tracker: &mut file_tracker,
     })
     .await;
 
@@ -350,6 +356,8 @@ async fn test_cancel_during_streaming() {
     let mut settings = Settings::load();
     let tool_defs = env.tool_defs();
     let cancel = CancellationToken::new();
+    let mut file_tracker =
+        koda_core::file_tracker::FileTracker::new(&env.session_id, env.db.clone()).await;
 
     // Cancel after 100ms
     let cancel_clone = cancel.clone();
@@ -374,6 +382,7 @@ async fn test_cancel_during_streaming() {
         sink: &sink,
         cancel,
         cmd_rx: &mut cmd_rx,
+        file_tracker: &mut file_tracker,
     })
     .await;
 
@@ -870,5 +879,65 @@ async fn test_activate_skill_missing_parameter() {
     assert!(
         output.contains("Missing"),
         "should report missing parameter: {output}"
+    );
+}
+
+/// E2E: Write creates a file, then Delete of that file auto-approves
+/// without user confirmation because Koda owns it (#465).
+#[tokio::test]
+async fn test_write_then_delete_auto_approves_owned_file() {
+    let env = Env::new().await;
+    let target = env.root.join("ephemeral_draft.md");
+    env.insert_user_message("create then cleanup").await;
+
+    // Mock: Write the file, then Delete it, then respond with text.
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "Write",
+            serde_json::json!({
+                "path": target.to_string_lossy(),
+                "content": "draft content"
+            }),
+        ),
+        MockResponse::tool_call(
+            "Delete",
+            serde_json::json!({"path": target.to_string_lossy()}),
+        ),
+        MockResponse::Text("Cleaned up.".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    // Write should have executed
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, EngineEvent::ToolCallResult { name, .. } if name == "Write")),
+        "expected Write tool result"
+    );
+
+    // Delete should have auto-approved (no NeedsConfirmation / approval prompt)
+    // — it should appear as a successful ToolCallResult, not blocked.
+    let delete_result = events.iter().find_map(|e| {
+        if let EngineEvent::ToolCallResult { output, name, .. } = e
+            && name == "Delete"
+        {
+            return Some(output.clone());
+        }
+        None
+    });
+    assert!(
+        delete_result.is_some(),
+        "Delete should have executed (auto-approved for owned file)"
+    );
+    // The file should no longer exist
+    assert!(
+        !target.exists(),
+        "ephemeral file should be deleted after cleanup"
+    );
+
+    // Final text response should be present
+    assert!(
+        events.iter().any(|e| matches!(e, EngineEvent::TextDone)),
+        "expected TextDone after cleanup"
     );
 }

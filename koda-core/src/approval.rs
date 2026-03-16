@@ -8,6 +8,7 @@
 //! further refined by [`crate::bash_safety::classify_bash_command`].
 
 use crate::bash_safety::classify_bash_command;
+use crate::file_tracker::FileTracker;
 use crate::tools::ToolEffect;
 use path_clean::PathClean;
 use std::path::Path;
@@ -125,11 +126,27 @@ pub enum ToolApproval {
 /// Additional hardcoded floors:
 /// - Writes outside project root → NeedsConfirmation (#218)
 /// - Bash path escapes → NeedsConfirmation
+/// - Delete of Koda-owned file → AutoApprove (#465)
 pub fn check_tool(
     tool_name: &str,
     args: &serde_json::Value,
     mode: ApprovalMode,
     project_root: Option<&Path>,
+) -> ToolApproval {
+    check_tool_with_tracker(tool_name, args, mode, project_root, None)
+}
+
+/// Like [`check_tool`] but with an optional file tracker for ownership checks.
+///
+/// When a `FileTracker` is provided and the tool is `Delete` targeting a file
+/// that Koda created in this session, the destructive classification is
+/// downgraded to auto-approve (net-zero effect: Koda created it, Koda removes it).
+pub fn check_tool_with_tracker(
+    tool_name: &str,
+    args: &serde_json::Value,
+    mode: ApprovalMode,
+    project_root: Option<&Path>,
+    file_tracker: Option<&FileTracker>,
 ) -> ToolApproval {
     // Classify the tool's effect
     let effect = resolve_effect(tool_name, args);
@@ -156,6 +173,16 @@ pub fn check_tool(
                 return ToolApproval::NeedsConfirmation;
             }
         }
+    }
+
+    // File lifecycle: Koda-owned files bypass destructive gate (#465)
+    if tool_name == "Delete"
+        && let Some(tracker) = file_tracker
+        && let Some(root) = project_root
+        && let Some(abs_path) = crate::file_tracker::resolve_file_path_from_args(args, root)
+        && tracker.is_owned(&abs_path)
+    {
+        return ToolApproval::AutoApprove;
     }
 
     // Apply the ToolEffect × ApprovalMode matrix
@@ -443,6 +470,92 @@ mod tests {
         assert_eq!(
             check_tool("Write", &args, ApprovalMode::Auto, None),
             ToolApproval::AutoApprove,
+        );
+    }
+
+    // ── File lifecycle (#465) tests ──
+
+    #[tokio::test]
+    async fn test_delete_owned_file_auto_approved() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = crate::db::Database::open(&dir.path().join("test.db"))
+            .await
+            .unwrap();
+        let mut tracker = FileTracker::new("test-sess", db).await;
+        let root = Path::new("/home/user/project");
+        let owned_path = root.join("temp_output.md");
+        tracker.track_created(owned_path).await;
+
+        let args = serde_json::json!({"path": "temp_output.md"});
+        assert_eq!(
+            check_tool_with_tracker(
+                "Delete",
+                &args,
+                ApprovalMode::Auto,
+                Some(root),
+                Some(&tracker),
+            ),
+            ToolApproval::AutoApprove,
+            "Delete of Koda-owned file should auto-approve"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_unowned_file_needs_confirmation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = crate::db::Database::open(&dir.path().join("test.db"))
+            .await
+            .unwrap();
+        let tracker = FileTracker::new("test-sess", db).await;
+        let root = Path::new("/home/user/project");
+
+        let args = serde_json::json!({"path": "user_file.rs"});
+        assert_eq!(
+            check_tool_with_tracker(
+                "Delete",
+                &args,
+                ApprovalMode::Auto,
+                Some(root),
+                Some(&tracker),
+            ),
+            ToolApproval::NeedsConfirmation,
+            "Delete of unowned file should still need confirmation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_owned_file_confirm_mode_auto_approved() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = crate::db::Database::open(&dir.path().join("test.db"))
+            .await
+            .unwrap();
+        let mut tracker = FileTracker::new("test-sess", db).await;
+        let root = Path::new("/home/user/project");
+        let owned_path = root.join("scratch.txt");
+        tracker.track_created(owned_path).await;
+
+        let args = serde_json::json!({"path": "scratch.txt"});
+        assert_eq!(
+            check_tool_with_tracker(
+                "Delete",
+                &args,
+                ApprovalMode::Confirm,
+                Some(root),
+                Some(&tracker),
+            ),
+            ToolApproval::AutoApprove,
+            "Delete of Koda-owned file should auto-approve even in Confirm mode"
+        );
+    }
+
+    #[test]
+    fn test_no_tracker_falls_back_to_normal() {
+        let root = Path::new("/home/user/project");
+        let args = serde_json::json!({"path": "some_file.rs"});
+        assert_eq!(
+            check_tool_with_tracker("Delete", &args, ApprovalMode::Auto, Some(root), None,),
+            ToolApproval::NeedsConfirmation,
+            "Without tracker, Delete should still need confirmation"
         );
     }
 }
