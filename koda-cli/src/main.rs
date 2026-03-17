@@ -2,14 +2,18 @@
 //!
 //! CLI entry point. The binary is named `koda` for ergonomics.
 
+mod ansi_parse;
 mod completer;
 mod diff_render;
 mod headless;
 mod highlight;
+mod history_render;
 mod input;
 mod md_render;
+mod mouse_select;
 mod onboarding;
 mod repl;
+mod scroll_buffer;
 mod server;
 mod sink;
 mod startup;

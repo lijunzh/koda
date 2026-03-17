@@ -5,17 +5,12 @@
 //! See #209.
 
 use crate::input;
+use crate::scroll_buffer::ScrollBuffer;
 use crate::sink::UiEvent;
 use crate::tui_commands::{self, SlashAction};
-use crate::tui_output;
 use crate::tui_render::TuiRenderer;
-use crate::tui_types::{
-    MIN_VIEWPORT_HEIGHT, MenuContent, PromptMode, ProviderWizard, Term, TuiState,
-};
-use crate::tui_viewport::{
-    drain_pending_resizes, draw_viewport, emit_above, init_terminal, maybe_resize_viewport,
-    restore_terminal, scroll_past_and_reinit,
-};
+use crate::tui_types::{MenuContent, PromptMode, ProviderWizard, Term, TuiState};
+use crate::tui_viewport::{draw_viewport, init_terminal, restore_terminal};
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
@@ -52,7 +47,7 @@ pub(crate) struct TuiContext {
     pub terminal: Term,
     pub textarea: TextArea<'static>,
     pub renderer: TuiRenderer,
-    pub viewport_height: u16,
+    pub scroll_buffer: ScrollBuffer,
     pub crossterm_events: EventStream,
 
     // ── Interaction state ─────────────────────────────────────
@@ -72,6 +67,11 @@ pub(crate) struct TuiContext {
     pub history: Vec<String>,
     pub history_idx: Option<usize>,
     pub completer: crate::completer::InputCompleter,
+    pub mouse_selection: Option<crate::mouse_select::Selection>,
+    /// Y-coordinate of the history area top edge (for mouse mapping).
+    pub history_area_y: u16,
+    /// Height of the history area in rows.
+    pub history_area_height: u16,
 
     // ── Session state (shared references) ────────────────────
     // Lock discipline for `provider: Arc<RwLock<_>>`:
@@ -156,15 +156,14 @@ impl TuiContext {
             config.query_and_apply_capabilities(prov.as_ref()).await;
         }
 
-        // Print startup UI BEFORE entering raw mode
+        // Collect startup lines (will be pushed into scroll buffer after init)
         let recent = db.recent_user_messages(3).await.unwrap_or_default();
-        crate::startup::print_banner(&config, &recent);
-        crate::startup::print_model_warning(&config);
+        let mut startup_lines = crate::startup::collect_startup_lines(&config, &recent);
 
         if let Ok(Some(latest)) = version_check.await
             && let Some((current, latest)) = koda_core::version::update_available(&latest)
         {
-            crate::startup::print_update_notice(current, &latest);
+            startup_lines.extend(crate::startup::update_notice_lines(current, &latest));
         }
 
         let agent =
@@ -179,13 +178,12 @@ impl TuiContext {
         )
         .await;
 
-        crate::startup::print_purge_nudge_if_needed(&db).await;
+        crate::startup::purge_nudge(&db, &mut startup_lines).await;
 
         let shared_mode = approval::new_shared_mode(ApprovalMode::Auto);
 
         // Terminal + textarea
-        let viewport_height = MIN_VIEWPORT_HEIGHT;
-        let terminal = init_terminal(viewport_height)?;
+        let terminal = init_terminal()?;
 
         let mut textarea = TextArea::default();
         textarea.set_cursor_line_style(Style::default());
@@ -230,11 +228,34 @@ impl TuiContext {
             ));
         }
 
+        // Load and render historical conversation on session resume
+        let (history_lines, oldest_msg_id) = {
+            use koda_core::persistence::Persistence;
+            match session.db.load_context(&session.id).await {
+                Ok(msgs) if !msgs.is_empty() => {
+                    let oldest_id = msgs.first().map(|m| m.id);
+                    let lines = crate::history_render::render_history_messages(&msgs);
+                    (lines, oldest_id)
+                }
+                _ => (Vec::new(), None),
+            }
+        };
+
         Ok(Self {
             terminal,
             textarea,
             renderer,
-            viewport_height,
+            scroll_buffer: {
+                let mut buf = ScrollBuffer::new(2500);
+                buf.push_lines(startup_lines);
+                if !history_lines.is_empty() {
+                    buf.push_lines(history_lines);
+                }
+                if let Some(id) = oldest_msg_id {
+                    buf.set_oldest_message_id(id);
+                }
+                buf
+            },
             crossterm_events: EventStream::new(),
             tui_state: TuiState::Idle,
             menu,
@@ -250,6 +271,9 @@ impl TuiContext {
             history: load_history(),
             history_idx: None,
             completer,
+            mouse_selection: None,
+            history_area_y: 0,
+            history_area_height: 0,
             config,
             provider,
             session,
@@ -259,19 +283,10 @@ impl TuiContext {
         })
     }
 
-    /// Draw the viewport (resize if textarea grew/shrank).
+    /// Draw the fullscreen viewport.
     pub fn draw(&mut self) -> Result<()> {
         let mode = approval::read_mode(&self.shared_mode);
         let ctx = koda_core::context::percentage() as u32;
-
-        maybe_resize_viewport(
-            &mut self.terminal,
-            &self.textarea,
-            &mut self.viewport_height,
-        )?;
-
-        let config = &self.config;
-        let textarea = &self.textarea;
         let tui_state = self.tui_state;
         let prompt_mode = &self.prompt_mode;
         let queue_len = self.input_queue.len();
@@ -281,12 +296,14 @@ impl TuiContext {
             .unwrap_or(0);
         let last_turn = self.renderer.last_turn_stats.as_ref();
         let menu = &self.menu;
+        let scroll_buffer = &self.scroll_buffer;
+        let textarea = &self.textarea;
+        let config = &self.config;
+        let selection = self.mouse_selection.as_ref();
 
-        // draw() triggers autoresize() which calls get_cursor_position() (DSR query).
-        // During/after terminal resize, DSR can time out. Swallow the error —
-        // the next draw will retry once the terminal has settled.
+        let mut history_rect = None;
         if let Err(e) = self.terminal.draw(|f| {
-            draw_viewport(
+            history_rect = Some(draw_viewport(
                 f,
                 textarea,
                 &config.model,
@@ -298,21 +315,27 @@ impl TuiContext {
                 elapsed,
                 last_turn,
                 menu,
-            );
+                scroll_buffer,
+                selection,
+            ));
         }) {
-            tracing::debug!("draw skipped (resize settling): {e}");
+            tracing::debug!("draw skipped: {e}");
+        }
+        if let Some(rect) = history_rect {
+            self.history_area_y = rect.y;
+            self.history_area_height = rect.height;
         }
         Ok(())
     }
 
-    /// Write a message line above the viewport.
-    pub fn emit(&mut self, line: Line<'_>) {
-        emit_above(&mut self.terminal, line);
+    /// Push a message line into the scroll buffer.
+    pub fn emit(&mut self, line: Line<'static>) {
+        self.scroll_buffer.push(line);
     }
 
     /// Clean up terminal and print exit info.
     pub async fn cleanup(&mut self) {
-        restore_terminal(&mut self.terminal, self.viewport_height);
+        restore_terminal(&mut self.terminal);
         crate::startup::print_resume_hint(&self.session.id);
     }
 
@@ -376,13 +399,10 @@ impl TuiContext {
                 ApprovalMode::Confirm => "🔒",
                 ApprovalMode::Auto => "⚡",
             };
-            emit_above(
-                &mut self.terminal,
-                Line::from(vec![
-                    Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
-                    Span::raw(queued.clone()),
-                ]),
-            );
+            self.scroll_buffer.push(Line::from(vec![
+                Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
+                Span::raw(queued.clone()),
+            ]));
             return Some(queued);
         }
         None
@@ -420,7 +440,7 @@ impl TuiContext {
         }
 
         let action = tui_commands::handle_slash_command(
-            &mut self.terminal,
+            &mut self.scroll_buffer,
             input,
             &mut self.config,
             &self.provider,
@@ -439,10 +459,10 @@ impl TuiContext {
                 CommandOutcome::Handled
             }
             SlashAction::Quit => {
-                tui_output::emit_line(
-                    &mut self.terminal,
-                    Line::styled("\u{1f43b} Goodbye!", Style::default().fg(Color::Cyan)),
-                );
+                self.scroll_buffer.push(Line::styled(
+                    "\u{1f43b} Goodbye!",
+                    Style::default().fg(Color::Cyan),
+                ));
                 CommandOutcome::Quit
             }
         }
@@ -473,22 +493,16 @@ impl TuiContext {
                 self.menu = MenuContent::Model(dd);
             }
             Ok(_) => {
-                emit_above(
-                    &mut self.terminal,
-                    Line::styled(
-                        "  \u{26a0} No models available",
-                        Style::default().fg(Color::Yellow),
-                    ),
-                );
+                self.scroll_buffer.push(Line::styled(
+                    "  \u{26a0} No models available",
+                    Style::default().fg(Color::Yellow),
+                ));
             }
             Err(e) => {
-                emit_above(
-                    &mut self.terminal,
-                    Line::styled(
-                        format!("  \u{2717} Failed to list models: {e}"),
-                        Style::default().fg(Color::Red),
-                    ),
-                );
+                self.scroll_buffer.push(Line::styled(
+                    format!("  \u{2717} Failed to list models: {e}"),
+                    Style::default().fg(Color::Red),
+                ));
             }
         }
     }
@@ -585,32 +599,23 @@ impl TuiContext {
                 self.menu = MenuContent::Session(dd);
             }
             Ok(_) => {
-                emit_above(
-                    &mut self.terminal,
-                    Line::styled(
-                        "  No other sessions found.",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                );
+                self.scroll_buffer.push(Line::styled(
+                    "  No other sessions found.",
+                    Style::default().fg(Color::DarkGray),
+                ));
             }
             Err(e) => {
-                emit_above(
-                    &mut self.terminal,
-                    Line::styled(
-                        format!("  \u{2717} Error: {e}"),
-                        Style::default().fg(Color::Red),
-                    ),
-                );
+                self.scroll_buffer.push(Line::styled(
+                    format!("  \u{2717} Error: {e}"),
+                    Style::default().fg(Color::Red),
+                ));
             }
         }
     }
 
     async fn reinit_after_slash(&mut self) {
-        self.viewport_height = MIN_VIEWPORT_HEIGHT;
-        self.crossterm_events = EventStream::new();
-        if let Ok(term) = init_terminal(self.viewport_height) {
-            self.terminal = term;
-        }
+        // Fullscreen mode: no terminal reinit needed.
+        // Just refresh completer state and model name.
         {
             let prov = self.provider.read().await;
             if let Ok(models) = prov.list_models().await {
@@ -619,7 +624,6 @@ impl TuiContext {
             }
         }
         self.renderer.model = self.config.model.clone();
-        let _ = self.draw();
     }
 
     async fn prepare_inference_start(&mut self, input: &str) -> CommandOutcome {
@@ -627,31 +631,25 @@ impl TuiContext {
         processed.paste_blocks = std::mem::take(&mut self.paste_blocks);
 
         for (i, _img) in processed.images.iter().enumerate() {
-            emit_above(
-                &mut self.terminal,
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        format!("\u{1f5bc} Image {}", i + 1),
-                        Style::default().fg(Color::Magenta),
-                    ),
-                ]),
-            );
+            self.scroll_buffer.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("\u{1f5bc} Image {}", i + 1),
+                    Style::default().fg(Color::Magenta),
+                ),
+            ]));
         }
 
         let mut user_message =
             if let Some(context) = input::format_context_files(&processed.context_files) {
                 for f in &processed.context_files {
-                    emit_above(
-                        &mut self.terminal,
-                        Line::from(vec![
-                            Span::raw("  "),
-                            Span::styled(
-                                format!("\u{1f4ce} {}", f.path),
-                                Style::default().fg(Color::Cyan),
-                            ),
-                        ]),
-                    );
+                    self.scroll_buffer.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("\u{1f4ce} {}", f.path),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                    ]));
                 }
                 format!("{}\n\n{context}", processed.prompt)
             } else {
@@ -697,12 +695,10 @@ impl TuiContext {
     async fn handle_idle_event(&mut self, ev: Event) -> anyhow::Result<bool> {
         match ev {
             Event::Resize(_, _) => {
-                let _ = drain_pending_resizes(&mut self.crossterm_events);
-                scroll_past_and_reinit(
-                    &mut self.terminal,
-                    &mut self.crossterm_events,
-                    self.viewport_height,
-                )?;
+                // Fullscreen: just redraw, terminal handles the rest.
+            }
+            Event::Mouse(mouse) => {
+                self.handle_mouse(mouse);
             }
             Event::Paste(text) => {
                 self.handle_idle_paste(&text);
@@ -727,13 +723,10 @@ impl TuiContext {
                 char_count,
             });
             let label = format!("\u{1f4cb} Pasted text ({char_count} chars)");
-            emit_above(
-                &mut self.terminal,
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(label, Style::default().fg(Color::Yellow)),
-                ]),
-            );
+            self.scroll_buffer.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(label, Style::default().fg(Color::Yellow)),
+            ]));
             let preview: String = text.chars().take(80).collect();
             let preview = preview.replace('\n', "\u{21b5}");
             let preview = if char_count > 80 {
@@ -741,13 +734,10 @@ impl TuiContext {
             } else {
                 preview
             };
-            emit_above(
-                &mut self.terminal,
-                Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(preview, Style::default().fg(Color::DarkGray)),
-                ]),
-            );
+            self.scroll_buffer.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(preview, Style::default().fg(Color::DarkGray)),
+            ]));
         }
     }
 
@@ -789,11 +779,27 @@ impl TuiContext {
                 }
             }
             (KeyCode::Char('l'), m) if m.contains(KeyModifiers::CONTROL) => {
-                scroll_past_and_reinit(
-                    &mut self.terminal,
-                    &mut self.crossterm_events,
-                    self.viewport_height,
-                )?;
+                // Ctrl+L: jump to bottom (re-engage sticky)
+                self.scroll_buffer.scroll_to_bottom();
+            }
+            // Scroll keys
+            (KeyCode::PageUp, _) => {
+                let (w, h) = self.term_dims();
+                self.scroll_buffer.scroll_up(20, w, h);
+            }
+            (KeyCode::PageDown, _) => {
+                self.scroll_buffer.scroll_down(20);
+            }
+            (KeyCode::Home, _) => {
+                let (w, h) = self.term_dims();
+                self.scroll_buffer.scroll_to_top(w, h);
+            }
+            (KeyCode::End, _) => {
+                self.scroll_buffer.scroll_to_bottom();
+            }
+            // Clipboard: Ctrl+Y = copy last code block
+            (KeyCode::Char('y'), m) if m.contains(KeyModifiers::CONTROL) => {
+                self.copy_to_clipboard(m.contains(KeyModifiers::SHIFT));
             }
             (KeyCode::BackTab, _) => {
                 approval::cycle_mode(&self.shared_mode);
@@ -835,13 +841,10 @@ impl TuiContext {
                 ApprovalMode::Confirm => "\u{1f512}",
                 ApprovalMode::Auto => "\u{26a1}",
             };
-            emit_above(
-                &mut self.terminal,
-                Line::from(vec![
-                    Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
-                    Span::raw(text.clone()),
-                ]),
-            );
+            self.scroll_buffer.push(Line::from(vec![
+                Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
+                Span::raw(text.clone()),
+            ]));
             self.pending_command = Some(text);
         }
         Ok(true)
@@ -927,13 +930,10 @@ impl TuiContext {
                             .await;
                     }
                     crate::tui_wizards::save_provider(&self.config);
-                    emit_above(
-                        &mut self.terminal,
-                        Line::styled(
-                            format!("  \u{2714} Model set to: {model_id}"),
-                            Style::default().fg(Color::Green),
-                        ),
-                    );
+                    self.scroll_buffer.push(Line::styled(
+                        format!("  \u{2714} Model set to: {model_id}"),
+                        Style::default().fg(Color::Green),
+                    ));
                     self.renderer.model = model_id;
                 }
             }
@@ -985,25 +985,19 @@ impl TuiContext {
             MenuContent::Session(dd) => {
                 if let Some(item) = dd.selected_item() {
                     if item.is_current {
-                        emit_above(
-                            &mut self.terminal,
-                            Line::styled(
-                                "  Already in this session.",
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                        );
+                        self.scroll_buffer.push(Line::styled(
+                            "  Already in this session.",
+                            Style::default().fg(Color::DarkGray),
+                        ));
                     } else {
                         let target_id = item.id.clone();
                         let short = item.short_id.clone();
                         self.session.id = target_id;
-                        emit_above(
-                            &mut self.terminal,
-                            Line::from(vec![
-                                Span::styled("  \u{2714} ", Style::default().fg(Color::Green)),
-                                Span::raw("Resumed session "),
-                                Span::styled(short, Style::default().fg(Color::Cyan)),
-                            ]),
-                        );
+                        self.scroll_buffer.push(Line::from(vec![
+                            Span::styled("  \u{2714} ", Style::default().fg(Color::Green)),
+                            Span::raw("Resumed session "),
+                            Span::styled(short, Style::default().fg(Color::Cyan)),
+                        ]));
                     }
                 }
             }
@@ -1038,13 +1032,10 @@ impl TuiContext {
                     env_name,
                 } => {
                     if value.is_empty() && !koda_core::runtime_env::is_set(&env_name) {
-                        emit_above(
-                            &mut self.terminal,
-                            Line::styled(
-                                "  \u{2716} No API key provided.",
-                                Style::default().fg(Color::Red),
-                            ),
-                        );
+                        self.scroll_buffer.push(Line::styled(
+                            "  \u{2716} No API key provided.",
+                            Style::default().fg(Color::Red),
+                        ));
                         self.prompt_mode = PromptMode::Chat;
                         self.menu = MenuContent::None;
                         return;
@@ -1056,13 +1047,10 @@ impl TuiContext {
                             let _ = store.save();
                         }
                         let masked = koda_core::keystore::mask_key(&value);
-                        emit_above(
-                            &mut self.terminal,
-                            Line::styled(
-                                format!("  \u{2714} {env_name} set to {masked}"),
-                                Style::default().fg(Color::Green),
-                            ),
-                        );
+                        self.scroll_buffer.push(Line::styled(
+                            format!("  \u{2714} {env_name} set to {masked}"),
+                            Style::default().fg(Color::Green),
+                        ));
                     }
                     self.apply_provider(provider_type, base_url).await;
                 }
@@ -1107,19 +1095,151 @@ impl TuiContext {
                 .set_model_names(models.iter().map(|m| m.id.clone()).collect());
         }
         self.renderer.model = self.config.model.clone();
-        emit_above(
-            &mut self.terminal,
-            Line::styled(
-                format!(
-                    "  \u{2714} Provider: {} ({})",
-                    self.config.provider_type, self.config.model
-                ),
-                Style::default().fg(Color::Green),
+        self.scroll_buffer.push(Line::styled(
+            format!(
+                "  \u{2714} Provider: {} ({})",
+                self.config.provider_type, self.config.model
             ),
-        );
+            Style::default().fg(Color::Green),
+        ));
     }
 
     // ── History navigation ──────────────────────────────────────
+
+    /// Terminal (width, height) for scroll math.
+    fn term_dims(&self) -> (usize, usize) {
+        let size = self.terminal.size().unwrap_or_default();
+        (size.width as usize, size.height as usize)
+    }
+
+    // ── Mouse handling ────────────────────────────────────────
+
+    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        use crate::mouse_select::{Selection, VisualPos};
+        use crossterm::event::{MouseButton, MouseEventKind};
+
+        let (w, h) = self.term_dims();
+        let hist_y = self.history_area_y;
+        let hist_h = self.history_area_height;
+
+        // Check if mouse is in the history area
+        let in_history = mouse.row >= hist_y && mouse.row < hist_y + hist_h;
+
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.scroll_buffer.scroll_up(3, w, h),
+            MouseEventKind::ScrollDown => self.scroll_buffer.scroll_down(3),
+
+            MouseEventKind::Down(MouseButton::Left) if in_history => {
+                let row = mouse.row.saturating_sub(hist_y);
+                self.mouse_selection = Some(Selection {
+                    anchor: VisualPos {
+                        row,
+                        col: mouse.column,
+                    },
+                    cursor: VisualPos {
+                        row,
+                        col: mouse.column,
+                    },
+                });
+            }
+
+            MouseEventKind::Drag(MouseButton::Left) if in_history => {
+                if let Some(sel) = &mut self.mouse_selection {
+                    let row = mouse.row.saturating_sub(hist_y);
+                    sel.cursor = VisualPos {
+                        row,
+                        col: mouse.column,
+                    };
+                }
+            }
+
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(sel) = self.mouse_selection.take() {
+                    // Only copy if the selection spans more than a click
+                    if sel.anchor != sel.cursor {
+                        let lines: Vec<Line<'_>> =
+                            self.scroll_buffer.all_lines().cloned().collect();
+                        let scroll_pos = self.scroll_buffer.paragraph_scroll(hist_h as usize, w);
+                        let visible = crate::mouse_select::extract_visible_text(
+                            &lines,
+                            scroll_pos.0,
+                            w,
+                            hist_h as usize,
+                        );
+                        let text = crate::mouse_select::extract_selected_text(&visible, &sel);
+                        if !text.is_empty() {
+                            match crate::mouse_select::copy_to_clipboard(&text) {
+                                Ok(msg) => {
+                                    self.scroll_buffer.push(Line::from(vec![
+                                        Span::styled(
+                                            "  \u{1f4cb} ",
+                                            Style::default().fg(Color::Green),
+                                        ),
+                                        Span::styled(msg, Style::default().fg(Color::Green)),
+                                    ]));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("clipboard copy failed: {e}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    // ── Clipboard ─────────────────────────────────────────────
+
+    fn copy_to_clipboard(&mut self, shift: bool) {
+        let text = if shift {
+            self.scroll_buffer.last_response()
+        } else {
+            self.scroll_buffer.last_code_block()
+        };
+        match text {
+            Some(content) => {
+                match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(&content)) {
+                    Ok(()) => {
+                        let label = if shift { "response" } else { "code block" };
+                        let preview: String = content.chars().take(60).collect();
+                        self.scroll_buffer.push(Line::from(vec![
+                            Span::styled("  \u{1f4cb} ", Style::default().fg(Color::Green)),
+                            Span::styled(
+                                format!("Copied {label} to clipboard"),
+                                Style::default().fg(Color::Green),
+                            ),
+                            Span::styled(
+                                format!(" ({preview}…)"),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                        ]));
+                    }
+                    Err(e) => {
+                        self.scroll_buffer.push(Line::styled(
+                            format!("  \u{2717} Clipboard error: {e}"),
+                            Style::default().fg(Color::Red),
+                        ));
+                    }
+                }
+            }
+            None => {
+                let label = if shift {
+                    "No response to copy."
+                } else {
+                    "No code block to copy."
+                };
+                self.scroll_buffer.push(Line::styled(
+                    format!("  {label}"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+        }
+    }
+
+    // ── History ────────────────────────────────────────────────
 
     fn history_up(&mut self) {
         if !self.history.is_empty() {

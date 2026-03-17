@@ -42,6 +42,12 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm",
 ratatui-textarea = "0.8"
 unicode-width = "0.2"
 
+# Clipboard (for Ctrl+Y copy)
+arboard = "3"
+
+# ANSI escape code parsing for tool output
+ansi-to-tui = "8"
+
 # Logging (subscriber for CLI configuration)
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -56,6 +62,10 @@ agent-client-protocol-schema = { version = "0.11", features = ["unstable_session
 tokio-tungstenite = "0.28"
 futures-util = "0.3.32"
 rpassword = "7.4.0"
+
+[[bench]]
+name = "render_bench"
+harness = false
 
 [dev-dependencies]
 tempfile = "3"
