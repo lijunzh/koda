@@ -19,8 +19,8 @@ reviews:
       instructions: |
         This is a Rust project using async/await with tokio.
         Focus on: unsafe code, unwrap() in non-test code, error handling,
-        lifetime issues, and potential panics. Check that files stay under
-        600 lines. Verify tests exist for new public functions.
+        lifetime issues, and potential panics. Verify tests exist for
+        new public functions.
     - path: "**/Cargo.toml"
       instructions: |
         Check for: duplicate dependencies, unnecessarily broad version ranges,
