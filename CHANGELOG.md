@@ -9,6 +9,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-03-17
+
+### Fixed
+- **Model output truncated after tool calls** — `CliSink` used `try_send()`
+  on a bounded 256-slot channel. When the TUI couldn't drain fast enough
+  (e.g., slow terminal redraw during large tool output), `TextDelta` events
+  were silently dropped, causing responses to appear cut off (sometimes to a
+  single character). Switched to an unbounded channel — the engine produces
+  events sequentially and is I/O-bound on LLM streaming, so backlog is
+  naturally small.
+- **Mouse copy unstable during inference** — the `to_buffer_row` closure
+  recalculated scroll position on every Drag event. During inference (sticky
+  mode), buffer growth shifted coordinates between MouseDown and MouseUp,
+  causing wrong or empty text to be copied. Scroll position is now captured
+  once at MouseDown and stored in the `Selection` struct.
+- **Scroll position miscalculated** — `scroll_up()` used the full terminal
+  height instead of the history area height, both in the idle and inference
+  event loops. This caused `max_offset` to be too small.
+- **`last_response()` matched markdown HRs** — the separator check accepted
+  any line of `─` chars (≥3), including 60-char markdown HRs. Now matches
+  exactly 3 `─` characters (the ResponseStart separator).
+- **Ctrl+Shift+Y broken on macOS** — most macOS terminals don't distinguish
+  Ctrl+Shift+Y from Ctrl+Y. Added **Ctrl+U** as a reliable alternative for
+  "copy last response".
+- **Drag-selection couldn't cross page boundary** — the `in_history` guard
+  on Drag events silently dropped them when the cursor left the viewport.
+  Removed the guard; added auto-scroll (1 row/event) at viewport edges.
+
+### Changed
+- **Code quality: `tui_context.rs` split** — the 1,355-line god-struct was
+  split into `tui_context/{mod.rs, events.rs, menus.rs}` (all under 600
+  lines). The `db.rs` monolith was split into `db/{mod.rs, queries.rs,
+  tests.rs}`.
+- **History navigation refactored** — extracted pure `history_up_index()` /
+  `history_down_index()` functions for testability.
+
+### Added
+- 10 new unit tests for `tui_context::events` (history persistence,
+  truncation, index navigation).
+- 8 new unit tests for mouse selection and scroll buffer (cross-page
+  selection, rendered content detection, markdown HR regression).
+- `cargo audit` verified clean (0 vulnerabilities, 1 allowed warning for
+  unmaintained `bincode` via `syntect`).
+
 ## [0.1.12] - 2026-03-16
 
 ### Fixed

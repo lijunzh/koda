@@ -327,11 +327,7 @@ impl TuiContext {
     // ── History ────────────────────────────────────────────────
 
     fn history_up(&mut self) {
-        if !self.history.is_empty() {
-            let idx = match self.history_idx {
-                None => self.history.len() - 1,
-                Some(i) => i.saturating_sub(1),
-            };
+        if let Some(idx) = history_up_index(self.history_idx, self.history.len()) {
             self.history_idx = Some(idx);
             self.textarea.select_all();
             self.textarea.cut();
@@ -340,17 +336,12 @@ impl TuiContext {
     }
 
     fn history_down(&mut self) {
-        if let Some(idx) = self.history_idx {
-            if idx + 1 < self.history.len() {
-                self.history_idx = Some(idx + 1);
-                self.textarea.select_all();
-                self.textarea.cut();
-                self.textarea.insert_str(&self.history[idx + 1]);
-            } else {
-                self.history_idx = None;
-                self.textarea.select_all();
-                self.textarea.cut();
-            }
+        let next = history_down_index(self.history_idx, self.history.len());
+        self.history_idx = next;
+        self.textarea.select_all();
+        self.textarea.cut();
+        if let Some(idx) = next {
+            self.textarea.insert_str(&self.history[idx]);
         }
     }
 
@@ -410,8 +401,11 @@ fn history_file_path() -> std::path::PathBuf {
 }
 
 pub(crate) fn load_history() -> Vec<String> {
-    let path = history_file_path();
-    match std::fs::read_to_string(&path) {
+    load_history_from(&history_file_path())
+}
+
+fn load_history_from(path: &std::path::Path) -> Vec<String> {
+    match std::fs::read_to_string(path) {
         Ok(content) => content
             .lines()
             .filter(|l| !l.is_empty())
@@ -422,11 +416,129 @@ pub(crate) fn load_history() -> Vec<String> {
 }
 
 pub(crate) fn save_history(history: &[String]) {
-    let path = history_file_path();
+    save_history_to(history, &history_file_path());
+}
+
+fn save_history_to(history: &[String], path: &std::path::Path) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let start = history.len().saturating_sub(MAX_HISTORY);
     let content = history[start..].join("\n");
-    let _ = std::fs::write(&path, content);
+    let _ = std::fs::write(path, content);
+}
+
+// ---------------------------------------------------------------------------
+// Pure helper: history index navigation
+// ---------------------------------------------------------------------------
+
+/// Compute the next history index when pressing Up (older).
+///
+/// Returns `None` if the history is empty.
+pub(crate) fn history_up_index(current: Option<usize>, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    Some(match current {
+        None => len - 1,
+        Some(i) => i.saturating_sub(1),
+    })
+}
+
+/// Compute the next history index when pressing Down (newer).
+///
+/// Returns `None` when moving past the most recent entry (back to
+/// empty input).
+pub(crate) fn history_down_index(current: Option<usize>, len: usize) -> Option<usize> {
+    match current {
+        Some(i) if i + 1 < len => Some(i + 1),
+        _ => None,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Tests
+// ═══════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── History index navigation ──────────────────────────────
+
+    #[test]
+    fn test_history_up_from_none() {
+        assert_eq!(history_up_index(None, 5), Some(4));
+    }
+
+    #[test]
+    fn test_history_up_from_middle() {
+        assert_eq!(history_up_index(Some(3), 5), Some(2));
+    }
+
+    #[test]
+    fn test_history_up_at_top() {
+        // Saturates at 0
+        assert_eq!(history_up_index(Some(0), 5), Some(0));
+    }
+
+    #[test]
+    fn test_history_up_empty() {
+        assert_eq!(history_up_index(None, 0), None);
+    }
+
+    #[test]
+    fn test_history_down_from_middle() {
+        assert_eq!(history_down_index(Some(2), 5), Some(3));
+    }
+
+    #[test]
+    fn test_history_down_at_bottom() {
+        // Past the last entry → back to empty input
+        assert_eq!(history_down_index(Some(4), 5), None);
+    }
+
+    #[test]
+    fn test_history_down_from_none() {
+        assert_eq!(history_down_index(None, 5), None);
+    }
+
+    // ── History file persistence ──────────────────────────────
+
+    #[test]
+    fn test_history_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("koda").join("history");
+
+        let input = vec!["hello".into(), "world".into(), "/model gpt-4".into()];
+        save_history_to(&input, &path);
+
+        let loaded = load_history_from(&path);
+        assert_eq!(loaded, input);
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_history_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("koda").join("history");
+
+        let big: Vec<String> = (0..MAX_HISTORY + 100).map(|i| format!("cmd {i}")).collect();
+        save_history_to(&big, &path);
+
+        let loaded = load_history_from(&path);
+        assert_eq!(loaded.len(), MAX_HISTORY);
+        // Should keep the LATEST entries (tail)
+        assert_eq!(loaded[0], format!("cmd {}", 100));
+        assert_eq!(loaded[MAX_HISTORY - 1], format!("cmd {}", MAX_HISTORY + 99));
+    }
+
+    #[test]
+    fn test_load_history_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent").join("history");
+
+        let loaded = load_history_from(&path);
+        assert!(loaded.is_empty());
+    }
 }
