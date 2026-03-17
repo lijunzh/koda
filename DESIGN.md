@@ -377,6 +377,62 @@ thinking IS the planning.
 
 **Archive**: Tag `v0.1.4-phase-system` preserves the full implementation.
 
+### 20. File Lifecycle Tracking (v0.1.11)
+
+**Decision**: Track file create/edit/delete ownership per turn to auto-approve
+deleting files that koda created in the same turn.
+
+**Rationale**: A common pattern — scaffold a temp file, use it, delete it —
+requires two confirmation prompts. The second ("approve delete?") is redundant
+when koda just created the file moments ago. The file tracker
+(`file_tracker.rs`) records which files were created/edited per turn.
+`check_tool()` in `approval.rs` queries the tracker: if a Delete targets a
+file koda created this turn, it's auto-approved.
+
+**Implementation choices**:
+- Paths are canonicalized (`std::fs::canonicalize()` + `path_clean::clean()`
+  fallback for not-yet-created files) to prevent `./foo/../bar.txt` vs
+  `bar.txt` mismatches
+- Success is tracked via `ToolResult.success: bool` (set by
+  `ToolRegistry::execute()`) — failed writes don't register ownership
+- Tracker resets per turn via `reset()` — no cross-turn state leakage
+- In-memory only — no persistence needed since ownership is turn-scoped
+
+**Design reference**: [#465](https://github.com/lijunzh/koda/issues/465),
+[#474](https://github.com/lijunzh/koda/issues/474),
+[#476](https://github.com/lijunzh/koda/issues/476)
+
+### 21. Fullscreen Viewport (v0.1.11)
+
+**Decision**: Switch from `Viewport::Inline` (terminal-native scrollback) to
+`Viewport::Fullscreen` (alternate screen buffer with app-managed scrollback).
+
+**Rationale**: Inline viewport had two fundamental bugs that couldn't be fixed
+within the inline model:
+- **DSR cursor position timeouts** ([#470]): `Viewport::Inline` relies on a
+  terminal DSR query to determine cursor position. Some terminals
+  (particularly over SSH or slow connections) fail to respond, causing
+  multi-second hangs at startup.
+- **Resize ghost fragments** ([#418]): When the terminal resizes, inline
+  viewport content already "scrolled off" into the terminal's native
+  scrollback can't be cleared — causing visual corruption.
+
+**What changed**:
+- `scroll_buffer.rs`: app-managed `VecDeque<Line>` with visual-line-aware
+  scrolling replaces terminal-native scrollback
+- `mouse_select.rs`: click-drag text selection + `arboard` clipboard copy
+  (essential — alternate screen disables terminal mouse selection)
+- `ansi_parse.rs`: ANSI escape → ratatui Span conversion for tool output
+- `history_render.rs`: session history replay into scroll buffer
+- Single rendering path: all output → `ScrollBuffer` → `draw_viewport()`
+
+**Design reference**: [#472]
+
+**What didn't change**: The interaction model. Conversation is still the
+primary surface. Menus, approvals, and wizards still render in `menu_area`.
+The layout is the same — just managed by the app instead of the terminal.
+
+
 ### 17. Folder-Scoped Permissions (v0.1.4)
 
 **Decision**: Writes outside `project_root` always require explicit
@@ -443,6 +499,8 @@ violate the principles are tracked as issues for future cleanup.
 | §16 Phase system retired | Clear Boundaries | Removed 4,308 lines of planning that reimplemented what the model does |
 | §17 Folder-scoped permissions | Software for One | Hardcoded safety floors, not configurable trust levels |
 | §18 Security model | Software for One | ToolEffect classification is compile-time; approval modes are the only runtime knob |
+| §20 File lifecycle tracking | Clear Boundaries | Tracker is engine-side (`koda-core`); approval queries it via trait — no UI coupling |
+| §21 Fullscreen viewport | Clear Boundaries | Rendering path simplified from dual (insert_before + write_line) to single (ScrollBuffer → draw) |
 
 ### Violations (tracked for cleanup)
 
