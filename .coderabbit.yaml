@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+reviews:
+  # High-level review settings
+  profile: chill            # Less noisy than "assertive" — flags real issues, not style nits
+  request_changes_workflow: false  # Comment only, don't block PRs
+  high_level_summary: true
+  poem: false               # Fun but noisy on a fast-moving repo
+
+  # What to review
+  auto_review:
+    enabled: true
+    drafts: false           # Skip draft PRs
+
+  # Path-based review instructions
+  path_instructions:
+    - path: "**/*.rs"
+      instructions: |
+        This is a Rust project using async/await with tokio.
+        Focus on: unsafe code, unwrap() in non-test code, error handling,
+        lifetime issues, and potential panics. Check that files stay under
+        600 lines. Verify tests exist for new public functions.
+    - path: "**/Cargo.toml"
+      instructions: |
+        Check for: duplicate dependencies, unnecessarily broad version ranges,
+        and unused features. Flag any new dependencies that seem heavyweight.
+
+chat:
+  auto_reply: true
