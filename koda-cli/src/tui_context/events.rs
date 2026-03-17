@@ -216,10 +216,26 @@ impl TuiContext {
                 });
             }
 
-            MouseEventKind::Drag(MouseButton::Left) if in_history => {
+            MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(sel) = &mut self.mouse_selection {
-                    let screen_row = mouse.row.saturating_sub(hist_y);
-                    // Reuse the scroll position captured at MouseDown
+                    // Auto-scroll when dragging above or below the history area
+                    if mouse.row < hist_y {
+                        self.scroll_buffer.scroll_up(1, w, hist_h as usize);
+                    } else if mouse.row >= hist_y + hist_h {
+                        self.scroll_buffer.scroll_down(1);
+                    }
+
+                    // Refresh scroll position after possible auto-scroll so
+                    // the cursor tracks the new viewport, while the anchor
+                    // (already in buffer space) stays pinned.
+                    sel.scroll_from_top = self.scroll_buffer.paragraph_scroll(hist_h as usize, w).0;
+
+                    // Clamp screen row to the history area bounds
+                    let screen_row = mouse
+                        .row
+                        .max(hist_y)
+                        .min(hist_y + hist_h.saturating_sub(1))
+                        .saturating_sub(hist_y);
                     let buffer_row = screen_row.saturating_add(sel.scroll_from_top);
                     sel.cursor = VisualPos {
                         row: buffer_row,
