@@ -19,6 +19,8 @@ pub struct StatusBar<'a> {
     elapsed_secs: u64,
     /// Last turn stats (shown after inference completes).
     last_turn: Option<&'a TurnStats>,
+    /// Scroll position info (offset, total) — shown when not at bottom.
+    scroll_info: Option<(usize, usize)>,
 }
 
 /// Stats from the most recent inference turn.
@@ -42,6 +44,7 @@ impl<'a> StatusBar<'a> {
             queue_len: 0,
             elapsed_secs: 0,
             last_turn: None,
+            scroll_info: None,
         }
     }
 
@@ -57,6 +60,11 @@ impl<'a> StatusBar<'a> {
 
     pub fn with_last_turn(mut self, stats: &'a TurnStats) -> Self {
         self.last_turn = Some(stats);
+        self
+    }
+
+    pub fn with_scroll_info(mut self, offset: usize, total: usize) -> Self {
+        self.scroll_info = Some((offset, total));
         self
     }
 }
@@ -152,6 +160,18 @@ impl Widget for StatusBar<'_> {
                     stats.tokens_out, time, stats.rate
                 ),
                 Style::default().fg(Color::DarkGray),
+            ));
+        }
+
+        // Scroll position (when not at bottom)
+        if let Some((offset, total)) = self.scroll_info {
+            spans.push(Span::styled(
+                "\u{2502}",
+                Style::default().fg(Color::Rgb(60, 60, 60)),
+            ));
+            spans.push(Span::styled(
+                format!(" \u{2191}{offset}/{total} "),
+                Style::default().fg(Color::Yellow),
             ));
         }
 

@@ -1,12 +1,11 @@
 //! Slash command handler for the TUI event loop.
 //!
-//! All output rendered through `tui_output::write_line(&)` with native
-//! ratatui `Line`/`Span` styling. Stays in raw mode.
+//! All output flows through the `ScrollBuffer` render cache.
 
 use crate::repl::ReplAction;
+use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
 use crate::tui_render::TuiRenderer;
-use crate::tui_types::Term;
 use koda_core::persistence::Persistence;
 
 use koda_core::agent::KodaAgent;
@@ -23,20 +22,13 @@ pub enum SlashAction {
     Quit,
 }
 
-// ── Style helpers (crossterm direct writes) ─────────────────
-//
-// All slash command output goes through write_line/write_blank
-// (crossterm \r\n), NOT insert_before. This avoids cursor conflicts
-// with select_inline which also uses crossterm.
+use tui_output::{BOLD, CYAN, DIM};
 
-use tui_output::{BOLD, CYAN, DIM, GREEN as OK};
-use tui_output::{dim_msg, err_msg, ok_msg, warn_msg};
-
-// ── Main handler ────────────────────────────────────────────
+// ── Main handler ────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments, unused_variables)]
 pub async fn handle_slash_command(
-    terminal: &mut Term,
+    buffer: &mut ScrollBuffer,
     input: &str,
     config: &mut KodaConfig,
     provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
@@ -58,47 +50,33 @@ pub async fn handle_slash_command(
                 config.query_and_apply_capabilities(prov.as_ref()).await;
             }
             crate::tui_wizards::save_provider(config);
-            ok_msg(format!("Model set to: {model}"));
+            tui_output::ok_msg(buffer, format!("Model set to: {model}"));
             SlashAction::Continue
         }
-        ReplAction::PickModel => {
-            // Handled inline by tui_app.rs MenuContent::Model dropdown
-            SlashAction::Continue
-        }
-        ReplAction::SetupProvider(_ptype, _base_url) => {
-            // Handled inline by tui_app.rs ProviderWizard
-            SlashAction::Continue
-        }
-        ReplAction::PickProvider => {
-            // Handled inline by tui_app.rs MenuContent::Provider dropdown
-            SlashAction::Continue
-        }
+        ReplAction::PickModel => SlashAction::Continue,
+        ReplAction::SetupProvider(_ptype, _base_url) => SlashAction::Continue,
+        ReplAction::PickProvider => SlashAction::Continue,
         ReplAction::ShowHelp => {
-            // /help is now handled by the auto-dropdown on /
-            // Just show the tips line for backward compatibility
-            tui_output::write_line(&Line::styled("  Type / to see available commands", DIM));
+            tui_output::dim_msg(buffer, "Type / to see available commands".into());
             SlashAction::Continue
         }
         ReplAction::Undo => {
             match agent.tools.undo.lock() {
                 Ok(mut undo) => match undo.undo() {
-                    Some(summary) => ok_msg(summary),
-                    None => warn_msg("Nothing to undo.".to_string()),
+                    Some(summary) => tui_output::ok_msg(buffer, summary),
+                    None => tui_output::warn_msg(buffer, "Nothing to undo.".to_string()),
                 },
-                Err(e) => err_msg(format!("Undo error: {e}")),
+                Err(e) => tui_output::err_msg(buffer, format!("Undo error: {e}")),
             }
             SlashAction::Continue
         }
-        ReplAction::ListSessions => {
-            // Handled inline by tui_app.rs MenuContent::Session dropdown
-            SlashAction::Continue
-        }
+        ReplAction::ListSessions => SlashAction::Continue,
         ReplAction::DeleteSession(ref id) => {
-            handle_delete_session(terminal, session, id, project_root).await;
+            handle_delete_session(buffer, session, id, project_root).await;
             SlashAction::Continue
         }
         ReplAction::ResumeSession(ref id) => {
-            handle_resume_session(terminal, session, id, project_root).await;
+            handle_resume_session(buffer, session, id, project_root).await;
             SlashAction::Continue
         }
         ReplAction::InjectPrompt(prompt) => {
@@ -106,15 +84,15 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
         ReplAction::Compact => {
-            crate::tui_wizards::handle_compact(terminal, session, config, provider).await;
+            crate::tui_wizards::handle_compact(buffer, session, config, provider).await;
             SlashAction::Continue
         }
         ReplAction::Purge(ref age_filter) => {
-            crate::tui_wizards::handle_purge(terminal, session, age_filter.as_deref()).await;
+            crate::tui_wizards::handle_purge(buffer, session, age_filter.as_deref()).await;
             SlashAction::Continue
         }
         ReplAction::Expand(n) => {
-            handle_expand(terminal, renderer, n);
+            handle_expand(buffer, renderer, n);
             SlashAction::Continue
         }
         ReplAction::Verbose(v) => {
@@ -123,26 +101,26 @@ pub async fn handle_slash_command(
                 None => !renderer.verbose,
             };
             let state = if renderer.verbose { "on" } else { "off" };
-            tui_output::write_line(&Line::styled(
-                format!("  Verbose tool output: {state}"),
-                CYAN,
-            ));
+            tui_output::emit_line(
+                buffer,
+                Line::styled(format!("  Verbose tool output: {state}"), CYAN),
+            );
             SlashAction::Continue
         }
         ReplAction::ListAgents => {
-            crate::tui_wizards::handle_list_agents(terminal, project_root);
+            crate::tui_wizards::handle_list_agents(buffer, project_root);
             SlashAction::Continue
         }
         ReplAction::ShowDiff => {
-            crate::tui_wizards::handle_diff(terminal);
+            crate::tui_wizards::handle_diff(buffer);
             SlashAction::Continue
         }
         ReplAction::MemoryCommand(ref arg) => {
-            crate::tui_wizards::handle_memory(terminal, arg.as_deref(), project_root);
+            crate::tui_wizards::handle_memory(buffer, arg.as_deref(), project_root);
             SlashAction::Continue
         }
         ReplAction::ListSkills(ref query) => {
-            crate::tui_wizards::handle_list_skills(terminal, query.as_deref(), &agent.tools);
+            crate::tui_wizards::handle_list_skills(buffer, query.as_deref(), &agent.tools);
             SlashAction::Continue
         }
         ReplAction::Handled => SlashAction::Continue,
@@ -150,103 +128,119 @@ pub async fn handle_slash_command(
     }
 }
 
-// ── Sub-handlers ───────────────────────────────────────────
+// ── Sub-handlers ────────────────────────────────────────
 
-#[allow(unused_variables)]
 async fn handle_delete_session(
-    terminal: &mut Term,
+    buffer: &mut ScrollBuffer,
     session: &KodaSession,
     id: &str,
     project_root: &std::path::Path,
 ) {
     if id == session.id {
-        err_msg("Cannot delete the current session.".into());
+        tui_output::err_msg(buffer, "Cannot delete the current session.".into());
     } else {
         match session.db.list_sessions(100, project_root).await {
             Ok(sessions) => {
                 let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(id)).collect();
                 match matches.len() {
-                    0 => err_msg(format!("No session found matching '{id}'.")),
+                    0 => tui_output::err_msg(buffer, format!("No session found matching '{id}'.")),
                     1 => {
                         let full_id = &matches[0].id;
                         match session.db.delete_session(full_id).await {
-                            Ok(true) => ok_msg(format!("Deleted session {}", &full_id[..8])),
-                            Ok(false) => err_msg("Session not found.".into()),
-                            Err(e) => err_msg(format!("Error: {e}")),
+                            Ok(true) => tui_output::ok_msg(
+                                buffer,
+                                format!("Deleted session {}", &full_id[..8]),
+                            ),
+                            Ok(false) => tui_output::err_msg(buffer, "Session not found.".into()),
+                            Err(e) => tui_output::err_msg(buffer, format!("Error: {e}")),
                         }
                     }
-                    n => err_msg(format!(
-                        "Ambiguous: '{id}' matches {n} sessions. Be more specific."
-                    )),
+                    n => tui_output::err_msg(
+                        buffer,
+                        format!("Ambiguous: '{id}' matches {n} sessions. Be more specific."),
+                    ),
                 }
             }
-            Err(e) => err_msg(format!("Error: {e}")),
+            Err(e) => tui_output::err_msg(buffer, format!("Error: {e}")),
         }
     }
 }
 
-#[allow(unused_variables)]
 async fn handle_resume_session(
-    terminal: &mut Term,
+    buffer: &mut ScrollBuffer,
     session: &mut KodaSession,
     id: &str,
     project_root: &std::path::Path,
 ) {
+    use tui_output::GREEN;
     if session.id.starts_with(id) {
-        dim_msg("Already in this session.".into());
+        tui_output::dim_msg(buffer, "Already in this session.".into());
     } else {
         match session.db.list_sessions(100, project_root).await {
             Ok(sessions) => {
                 let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(id)).collect();
                 match matches.len() {
-                    0 => err_msg(format!("No session found matching '{id}'.")),
+                    0 => tui_output::err_msg(buffer, format!("No session found matching '{id}'.")),
                     1 => {
                         let target = &matches[0];
                         session.id = target.id.clone();
-                        tui_output::write_line(&Line::from(vec![
-                            Span::styled("  \u{2713} ", OK),
-                            Span::raw("Resumed session "),
-                            Span::styled(&target.id[..8], CYAN),
-                            Span::styled(
-                                format!("  {}  {} msgs", target.created_at, target.message_count),
-                                DIM,
-                            ),
-                        ]));
+                        let short_id = target.id[..8].to_string();
+                        let detail =
+                            format!("  {}  {} msgs", target.created_at, target.message_count);
+                        tui_output::emit_line(
+                            buffer,
+                            Line::from(vec![
+                                Span::styled("  \u{2713} ", GREEN),
+                                Span::raw("Resumed session "),
+                                Span::styled(short_id, CYAN),
+                                Span::styled(detail, DIM),
+                            ]),
+                        );
                     }
-                    n => err_msg(format!(
-                        "Ambiguous: '{id}' matches {n} sessions. Be more specific."
-                    )),
+                    n => tui_output::err_msg(
+                        buffer,
+                        format!("Ambiguous: '{id}' matches {n} sessions. Be more specific."),
+                    ),
                 }
             }
-            Err(e) => err_msg(format!("Error: {e}")),
+            Err(e) => tui_output::err_msg(buffer, format!("Error: {e}")),
         }
     }
 }
 
-fn handle_expand(_terminal: &mut Term, renderer: &TuiRenderer, n: usize) {
+fn handle_expand(buffer: &mut ScrollBuffer, renderer: &TuiRenderer, n: usize) {
     match renderer.tool_history.get(n) {
         Some(record) => {
-            tui_output::write_blank();
-            tui_output::write_line(&Line::from(vec![
-                Span::styled(format!("  \u{1f50d} Expand: {}", record.tool_name), BOLD),
-                Span::styled(format!(" ({} lines)", record.output.lines().count()), DIM),
-            ]));
+            tui_output::blank(buffer);
+            tui_output::emit_line(
+                buffer,
+                Line::from(vec![
+                    Span::styled(format!("  \u{1f50d} Expand: {}", record.tool_name), BOLD),
+                    Span::styled(format!(" ({} lines)", record.output.lines().count()), DIM),
+                ]),
+            );
             for line in record.output.lines() {
-                tui_output::write_line(&Line::from(vec![
-                    Span::styled("  \u{2502} ", DIM),
-                    Span::raw(line.to_string()),
-                ]));
+                tui_output::emit_line(
+                    buffer,
+                    Line::from(vec![
+                        Span::styled("  \u{2502} ", DIM),
+                        Span::raw(line.to_string()),
+                    ]),
+                );
             }
-            tui_output::write_blank();
+            tui_output::blank(buffer);
         }
         None => {
             let total = renderer.tool_history.len();
             if total == 0 {
-                dim_msg("No tool outputs recorded yet.".into());
+                tui_output::dim_msg(buffer, "No tool outputs recorded yet.".into());
             } else {
-                warn_msg(format!(
-                    "No tool output #{n}. Have {total} recorded (use /expand 1\u{2013}{total})."
-                ));
+                tui_output::warn_msg(
+                    buffer,
+                    format!(
+                        "No tool output #{n}. Have {total} recorded (use /expand 1\u{2013}{total})."
+                    ),
+                );
             }
         }
     }

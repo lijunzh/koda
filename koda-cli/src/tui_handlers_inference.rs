@@ -5,12 +5,11 @@
 //! engine event rendering, feedback input, post-turn compaction.
 
 use crate::input;
+use crate::scroll_buffer::ScrollBuffer;
 use crate::sink::UiEvent;
 use crate::tui_context::{TuiContext, save_history};
 use crate::tui_types::{MenuContent, PromptMode, TuiState};
-use crate::tui_viewport::{
-    drain_pending_resizes, draw_viewport, emit_above, scroll_past_and_reinit,
-};
+use crate::tui_viewport::draw_viewport;
 
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use futures_util::StreamExt;
@@ -68,14 +67,15 @@ impl TuiContext {
                             .unwrap_or(0),
                         self.renderer.last_turn_stats.as_ref(),
                         &self.menu,
+                        &self.scroll_buffer,
+                        self.mouse_selection.as_ref(),
                     );
                 });
 
                 tokio::select! {
                     result = &mut turn => {
                         if let Err(e) = result {
-                            emit_above(
-                                &mut self.terminal,
+                            self.scroll_buffer.push(
                                 Line::from(vec![
                                     Span::raw("  "),
                                     Span::styled(
@@ -92,22 +92,7 @@ impl TuiContext {
                         // (turn holds &mut self.session, so we can't call &mut self methods)
                         match ev {
                             Event::Resize(_, _) => {
-                                let _ = drain_pending_resizes(&mut self.crossterm_events);
-                                scroll_past_and_reinit(
-                                    &mut self.terminal,
-                                    &mut self.crossterm_events,
-                                    self.viewport_height,
-                                )?;
-                                emit_above(
-                                    &mut self.terminal,
-                                    Line::from(vec![
-                                        Span::styled("  \u{26a0} ", Style::default().fg(Color::Yellow)),
-                                        Span::styled(
-                                            "Terminal resized \u{2014} visual artifacts may appear above. Press Ctrl+L to refresh.",
-                                            Style::default().fg(Color::DarkGray),
-                                        ),
-                                    ]),
-                                );
+                                // Fullscreen: just redraw on next loop.
                             }
                             Event::Paste(text) => {
                                 let char_count = text.chars().count();
@@ -142,7 +127,7 @@ impl TuiContext {
                     Some(ui_event) = ui_rx.recv() => {
                         handle_inference_ui_inline(
                             ui_event,
-                            &mut self.terminal,
+                            &mut self.scroll_buffer,
                             &mut self.menu,
                             &mut self.renderer,
                         );
@@ -170,7 +155,7 @@ impl TuiContext {
 
         // Drain remaining UI events
         while let Ok(UiEvent::Engine(e)) = ui_rx.try_recv() {
-            self.renderer.render_to_terminal(e, &mut self.terminal);
+            self.renderer.render_to_buffer(e, &mut self.scroll_buffer);
         }
 
         // Auto-compact
@@ -196,8 +181,7 @@ impl TuiContext {
 
         if pending {
             if !self.silent_compact_deferred {
-                emit_above(
-                    &mut self.terminal,
+                self.scroll_buffer.push(
                     Line::from(vec![
                         Span::raw("  "),
                         Span::styled(
@@ -214,16 +198,13 @@ impl TuiContext {
         }
 
         self.silent_compact_deferred = false;
-        emit_above(
-            &mut self.terminal,
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    format!("\u{1f43b} Context at {ctx_pct}% \u{2014} auto-compacting..."),
-                    Style::default().fg(Color::Cyan),
-                ),
-            ]),
-        );
+        self.scroll_buffer.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("\u{1f43b} Context at {ctx_pct}% \u{2014} auto-compacting..."),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
 
         match koda_core::compact::compact_session(
             &self.session.db,
@@ -235,26 +216,20 @@ impl TuiContext {
         .await
         {
             Ok(Ok(result)) => {
-                emit_above(
-                    &mut self.terminal,
-                    Line::styled(
-                        format!(
-                            "  \u{2713} Compacted {} messages \u{2192} ~{} tokens",
-                            result.deleted, result.summary_tokens
-                        ),
-                        Style::default().fg(Color::Green),
+                self.scroll_buffer.push(Line::styled(
+                    format!(
+                        "  \u{2713} Compacted {} messages \u{2192} ~{} tokens",
+                        result.deleted, result.summary_tokens
                     ),
-                );
+                    Style::default().fg(Color::Green),
+                ));
             }
             Ok(Err(_skip)) => {} // silently skip
             Err(e) => {
-                emit_above(
-                    &mut self.terminal,
-                    Line::styled(
-                        format!("  \u{2717} Auto-compact failed: {e:#}"),
-                        Style::default().fg(Color::Red),
-                    ),
-                );
+                self.scroll_buffer.push(Line::styled(
+                    format!("  \u{2717} Auto-compact failed: {e:#}"),
+                    Style::default().fg(Color::Red),
+                ));
             }
         }
     }
@@ -419,7 +394,7 @@ async fn handle_inference_key_inline(
 /// Handle a UI event during inference (field-level borrows).
 fn handle_inference_ui_inline(
     ui_event: UiEvent,
-    terminal: &mut crate::tui_types::Term,
+    buffer: &mut ScrollBuffer,
     menu: &mut MenuContent,
     renderer: &mut crate::tui_render::TuiRenderer,
 ) {
@@ -436,7 +411,7 @@ fn handle_inference_ui_inline(
             if let Some(ref prev) = preview {
                 let diff_lines = crate::diff_render::render_lines(prev);
                 for line in &diff_lines {
-                    emit_above(terminal, line.clone());
+                    buffer.push(line.clone());
                 }
             }
             *menu = MenuContent::Approval {
@@ -446,32 +421,26 @@ fn handle_inference_ui_inline(
             };
         }
         UiEvent::Engine(EngineEvent::LoopCapReached { cap, recent_tools }) => {
-            emit_above(
-                terminal,
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        format!("\u{26a0} Hard cap reached ({cap} iterations)"),
-                        Style::default().fg(Color::Yellow),
-                    ),
-                ]),
-            );
+            buffer.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("\u{26a0} Hard cap reached ({cap} iterations)"),
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]));
             for name in &recent_tools {
-                emit_above(
-                    terminal,
-                    Line::from(vec![
-                        Span::raw("    "),
-                        Span::styled(
-                            format!("\u{25cf} {name}"),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                    ]),
-                );
+                buffer.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        format!("\u{25cf} {name}"),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
             }
             *menu = MenuContent::LoopCap;
         }
         UiEvent::Engine(event) => {
-            renderer.render_to_terminal(event, terminal);
+            renderer.render_to_buffer(event, buffer);
         }
     }
 }

@@ -144,6 +144,11 @@ impl<T: DropdownItem> DropdownState<T> {
     pub fn is_empty(&self) -> bool {
         self.filtered.is_empty()
     }
+
+    /// Number of visible rows this dropdown will occupy (including title + padding).
+    pub fn visible_count(&self) -> usize {
+        MAX_VISIBLE.min(self.filtered.len()) + 2 // items + title + padding
+    }
 }
 
 // ── Rendering ─────────────────────────────────────────
