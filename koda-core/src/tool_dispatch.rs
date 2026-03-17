@@ -55,19 +55,21 @@ fn resolve_tool_path(
     crate::file_tracker::resolve_file_path_from_args(args, project_root)
 }
 
-/// Update file lifecycle tracker after a successful tool execution (#465).
+/// Update file lifecycle tracker after a tool execution (#465).
 ///
 /// - Write → track as owned (Koda created it)
 /// - Delete → untrack (file no longer exists)
+///
+/// Only tracks when `success` is true, using the structured boolean
+/// from `ToolResult` rather than fragile string-prefix matching (#476).
 async fn track_file_lifecycle(
     tool_name: &str,
     args: &serde_json::Value,
     project_root: &Path,
     file_tracker: &mut FileTracker,
-    result: &str,
+    success: bool,
 ) {
-    // Only track successful operations (result doesn't start with "Error")
-    if result.starts_with("Error") || result.starts_with("Failed") {
+    if !success {
         return;
     }
     if let Some(path) = resolve_tool_path(tool_name, args, project_root) {
@@ -113,7 +115,7 @@ pub(crate) fn can_parallelize(
     !has_conflict
 }
 
-/// Execute a single tool call, returning (tool_call_id, result).
+/// Execute a single tool call, returning (tool_call_id, result_output, success).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_one_tool(
     tc: &ToolCall,
@@ -126,8 +128,8 @@ pub(crate) async fn execute_one_tool(
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
-) -> (String, String) {
-    let result = if tc.function_name == "InvokeAgent" {
+) -> (String, String, bool) {
+    let (result, success) = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
         let mut sub_settings = Settings::default();
         match execute_sub_agent(
@@ -146,8 +148,8 @@ pub(crate) async fn execute_one_tool(
         )
         .await
         {
-            Ok(output) => output,
-            Err(e) => format!("Error invoking sub-agent: {e}"),
+            Ok(output) => (output, true),
+            Err(e) => (format!("Error invoking sub-agent: {e}"), false),
         }
     } else {
         // Invalidate sub-agent cache on file mutations
@@ -155,9 +157,9 @@ pub(crate) async fn execute_one_tool(
             sub_agent_cache.invalidate();
         }
         let r = tools.execute(&tc.function_name, &tc.arguments).await;
-        r.output
+        (r.output, r.success)
     };
-    (tc.id.clone(), result)
+    (tc.id.clone(), result, success)
 }
 
 /// Run multiple tool calls concurrently and store results.
@@ -201,7 +203,7 @@ pub(crate) async fn execute_tools_parallel(
     let results = futures_util::future::join_all(futures).await;
 
     // Emit banner + result together so each tool's output is visually grouped
-    for (i, (tc_id, result)) in results.into_iter().enumerate() {
+    for (i, (tc_id, result, success)) in results.into_iter().enumerate() {
         sink.emit(EngineEvent::ToolCallStart {
             id: tc_id.clone(),
             name: tool_calls[i].function_name.clone(),
@@ -232,7 +234,7 @@ pub(crate) async fn execute_tools_parallel(
             &result,
         )
         .await;
-        // File lifecycle tracking (#465)
+        // File lifecycle tracking (#465, #476)
         let parsed_args: serde_json::Value =
             serde_json::from_str(&tool_calls[i].arguments).unwrap_or_default();
         track_file_lifecycle(
@@ -240,7 +242,7 @@ pub(crate) async fn execute_tools_parallel(
             &parsed_args,
             project_root,
             file_tracker,
-            &result,
+            success,
         )
         .await;
     }
@@ -303,7 +305,7 @@ pub(crate) async fn execute_tools_split_batch(
             .collect();
         let results = futures_util::future::join_all(futures).await;
 
-        for (j, (tc_id, result)) in results.into_iter().enumerate() {
+        for (j, (tc_id, result, success)) in results.into_iter().enumerate() {
             sink.emit(EngineEvent::ToolCallStart {
                 id: tc_id.clone(),
                 name: parallel[j].function_name.clone(),
@@ -333,7 +335,7 @@ pub(crate) async fn execute_tools_split_batch(
                 &result,
             )
             .await;
-            // File lifecycle tracking (#465)
+            // File lifecycle tracking (#465, #476)
             let parsed_args: serde_json::Value =
                 serde_json::from_str(&parallel[j].arguments).unwrap_or_default();
             track_file_lifecycle(
@@ -341,7 +343,7 @@ pub(crate) async fn execute_tools_split_batch(
                 &parsed_args,
                 project_root,
                 file_tracker,
-                &result,
+                success,
             )
             .await;
         }
@@ -511,7 +513,7 @@ pub(crate) async fn execute_tools_sequential(
             }
         }
 
-        let (_, result) = execute_one_tool(
+        let (_, result, success) = execute_one_tool(
             tc,
             project_root,
             config,
@@ -543,13 +545,13 @@ pub(crate) async fn execute_tools_sequential(
         // Track progress for file mutations and test results
         crate::progress::track_progress(db, session_id, &tc.function_name, &tc.arguments, &result)
             .await;
-        // File lifecycle tracking (#465)
+        // File lifecycle tracking (#465, #476)
         track_file_lifecycle(
             &tc.function_name,
             &parsed_args,
             project_root,
             file_tracker,
-            &result,
+            success,
         )
         .await;
     }

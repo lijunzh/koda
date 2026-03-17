@@ -104,6 +104,7 @@ macro_rules! require_email_config {
                         "Email not configured: {e:#}\n\n{}",
                         koda_email::config::EmailConfig::setup_instructions()
                     ),
+                    success: false,
                 };
             }
         }
@@ -123,6 +124,12 @@ pub type FileReadCache = Arc<std::sync::Mutex<HashMap<String, (u64, SystemTime)>
 pub struct ToolResult {
     /// The tool's output string.
     pub output: String,
+    /// Whether the tool executed successfully.
+    ///
+    /// Set automatically by `ToolRegistry::execute()` — `Ok(…)` → `true`,
+    /// `Err(…)` → `false`. Individual tools never set this directly;
+    /// they just return `Result<String>`.
+    pub success: bool,
 }
 
 /// The tool registry: maps tool names to their definitions and handlers.
@@ -302,6 +309,7 @@ impl ToolRegistry {
             Err(e) => {
                 return ToolResult {
                     output: format!("Invalid JSON arguments: {e}"),
+                    success: false,
                 };
             }
         };
@@ -441,6 +449,7 @@ impl ToolRegistry {
                 // This branch should not be reached in normal flow.
                 return ToolResult {
                     output: "InvokeAgent is handled by the inference loop.".to_string(),
+                    success: false,
                 };
             }
 
@@ -448,9 +457,13 @@ impl ToolRegistry {
         };
 
         match result {
-            Ok(output) => ToolResult { output },
+            Ok(output) => ToolResult {
+                output,
+                success: true,
+            },
             Err(e) => ToolResult {
                 output: format!("Error: {e}"),
+                success: false,
             },
         }
     }
