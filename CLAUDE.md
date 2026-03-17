@@ -109,7 +109,11 @@ koda/
 │   │   ├── truncate.rs     # Token-safe output truncation
 │   │   ├── undo.rs         # Undo stack for file mutations
 │   │   ├── version.rs      # Background version checker (queries crates.io)
+│   │   ├── file_tracker.rs # File lifecycle tracker — auto-approve cleanup of Koda-created files
 │   │   ├── engine/         # EngineEvent, EngineCommand, EngineSink trait
+│   │   │   ├── mod.rs      # Module root + re-exports
+│   │   │   ├── event.rs    # EngineEvent + EngineCommand protocol types
+│   │   │   └── sink.rs     # EngineSink trait (how clients receive events)
 │   │   ├── providers/      # LLM providers
 │   │   │   ├── mod.rs      # LlmProvider trait, ChatMessage, HTTP client builder
 │   │   │   ├── anthropic.rs# Anthropic Claude (prompt caching, extended thinking)
@@ -150,7 +154,11 @@ koda/
 │   │   ├── md_render.rs    # Streaming markdown → ratatui renderer
 │   │   ├── completer.rs    # Tab completion (/commands, @files, /model names)
 │   │   ├── diff_render.rs  # Diff preview → ratatui renderer (syntax highlighted)
+│   │   ├── ansi_parse.rs   # ANSI escape code → ratatui Span conversion
 │   │   ├── highlight.rs    # Syntax highlighting via syntect
+│   │   ├── history_render.rs # Render DB messages → styled Lines for session resume
+│   │   ├── mouse_select.rs # Mouse text selection + clipboard copy in fullscreen
+│   │   ├── scroll_buffer.rs # Render cache + virtual scrolling for fullscreen history
 │   │   ├── startup.rs      # Startup banner rendering
 │   │   ├── repl.rs         # Slash command parsing + provider/model lists
 │   │   ├── input.rs        # @file reference processing + image loading
@@ -194,6 +202,8 @@ koda/
 The TUI uses `ratatui::Viewport::Fullscreen` (alternate screen buffer) with
 app-managed scrollback. All output flows through a single rendering path:
 `EngineEvent` → `tui_render.rs` → `ScrollBuffer` → `draw_viewport()`.
+Mouse capture is enabled for scroll wheel; text selection is handled by
+`mouse_select.rs` with automatic clipboard copy.
 
 **Viewport layout** (see DESIGN.md §14):
 ```
