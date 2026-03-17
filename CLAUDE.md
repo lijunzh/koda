@@ -86,7 +86,10 @@ koda/
 │   │   ├── compact.rs      # Session compaction (summarize old messages)
 │   │   ├── config.rs       # Agent/provider config + provider metadata
 │   │   ├── context.rs      # Context window token tracking
-│   │   ├── db.rs           # SQLite persistence (WAL mode, parameterized queries)
+│   │   ├── db/             # SQLite persistence (split into submodules)
+│   │   │   ├── mod.rs      # Database struct, migrations, schema (WAL mode)
+│   │   │   ├── queries.rs  # Persistence trait impl (all SQL queries)
+│   │   │   └── tests.rs    # Database integration tests
 │   │   ├── file_tracker.rs # File lifecycle tracking (create/edit/delete ownership)
 │   │   ├── git.rs          # Git checkpointing + rollback
 │   │   ├── inference.rs    # Streaming inference loop + tool execution
@@ -139,7 +142,10 @@ koda/
 │   │   ├── main.rs         # CLI entry point (clap)
 │   │   ├── lib.rs          # Crate root (exports acp_adapter)
 │   │   ├── tui_app.rs      # Main TUI event loop (ratatui Viewport::Fullscreen)
-│   │   ├── tui_context.rs  # TUI shared mutable state struct
+│   │   ├── tui_context/    # TUI shared mutable state (split into submodules)
+│   │   │   ├── mod.rs      # TuiContext struct, event loop, command dispatch
+│   │   │   ├── events.rs   # Key/mouse handling, clipboard, history persistence
+│   │   │   └── menus.rs    # Model/provider/session pickers, provider wizard
 │   │   ├── tui_handlers_inference.rs # Inference event handling (extracted from context)
 │   │   ├── tui_render.rs   # EngineEvent → ratatui Line/Span rendering
 │   │   ├── tui_commands.rs # Slash command dispatch (/help, /model, /sessions, etc.)
@@ -154,16 +160,12 @@ koda/
 │   │   ├── md_render.rs    # Streaming markdown → ratatui renderer
 │   │   ├── completer.rs    # Tab completion (/commands, @files, /model names)
 │   │   ├── diff_render.rs  # Diff preview → ratatui renderer (syntax highlighted)
-│   │   ├── ansi_parse.rs   # ANSI escape code → ratatui Span conversion
 │   │   ├── highlight.rs    # Syntax highlighting via syntect
-│   │   ├── history_render.rs # Render DB messages → styled Lines for session resume
-│   │   ├── mouse_select.rs # Mouse text selection + clipboard copy in fullscreen
-│   │   ├── scroll_buffer.rs # Render cache + virtual scrolling for fullscreen history
 │   │   ├── startup.rs      # Startup banner rendering
 │   │   ├── repl.rs         # Slash command parsing + provider/model lists
 │   │   ├── input.rs        # @file reference processing + image loading
 │   │   ├── headless.rs     # Single-prompt headless mode
-│   │   ├── sink.rs         # CliSink (channel forwarding for TUI)
+│   │   ├── sink.rs         # CliSink (unbounded channel forwarding for TUI)
 │   │   ├── server.rs       # ACP server over stdio JSON-RPC
 │   │   ├── acp_adapter.rs  # ACP protocol adapter
 │   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
