@@ -35,6 +35,11 @@ pub(crate) struct Selection {
     pub anchor: VisualPos,
     /// Current drag position (cursor).
     pub cursor: VisualPos,
+    /// The scroll-from-top offset captured at MouseDown time.
+    ///
+    /// Used to convert screen rows → buffer rows consistently across
+    /// the entire drag (immune to buffer growth during inference).
+    pub scroll_from_top: u16,
 }
 
 impl Selection {
@@ -232,6 +237,7 @@ mod tests {
         let sel = Selection {
             anchor: VisualPos { row: 5, col: 10 },
             cursor: VisualPos { row: 2, col: 3 },
+            scroll_from_top: 0,
         };
         let (start, end) = sel.ordered();
         assert_eq!(start.row, 2);
@@ -243,6 +249,7 @@ mod tests {
         let sel = Selection {
             anchor: VisualPos { row: 2, col: 0 },
             cursor: VisualPos { row: 5, col: 10 },
+            scroll_from_top: 0,
         };
         assert!(!sel.contains_row(1));
         assert!(sel.contains_row(2));
@@ -292,6 +299,7 @@ mod tests {
         let sel = Selection {
             anchor: VisualPos { row: 0, col: 6 },
             cursor: VisualPos { row: 0, col: 10 },
+            scroll_from_top: 0,
         };
         let text = extract_selected_text(&rows, &sel);
         assert_eq!(text, "world");
@@ -307,6 +315,7 @@ mod tests {
         let sel = Selection {
             anchor: VisualPos { row: 0, col: 6 },
             cursor: VisualPos { row: 2, col: 4 },
+            scroll_from_top: 0,
         };
         let text = extract_selected_text(&rows, &sel);
         assert_eq!(text, "line\nsecond line\nthird");
@@ -319,6 +328,7 @@ mod tests {
         let sel = Selection {
             anchor: VisualPos { row: 0, col: 0 },
             cursor: VisualPos { row: 1, col: 4 },
+            scroll_from_top: 0,
         };
         let text = extract_selected_text(&rows, &sel);
         assert_eq!(text, "hello\nworld");
@@ -369,6 +379,7 @@ mod tests {
         let sel = Selection {
             anchor: VisualPos { row: 2, col: 0 },
             cursor: VisualPos { row: 8, col: 5 },
+            scroll_from_top: 0,
         };
         let text = extract_selected_text(&all_rows, &sel);
         assert!(text.contains("line 2"));

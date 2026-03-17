@@ -115,9 +115,12 @@ impl TuiContext {
             (KeyCode::End, _) => {
                 self.scroll_buffer.scroll_to_bottom();
             }
-            // Clipboard: Ctrl+Y = copy last code block
+            // Clipboard: Ctrl+Y = copy last code block, Ctrl+U = copy last response
             (KeyCode::Char('y'), m) if m.contains(KeyModifiers::CONTROL) => {
                 self.copy_to_clipboard(m.contains(KeyModifiers::SHIFT));
+            }
+            (KeyCode::Char('u'), m) if m.contains(KeyModifiers::CONTROL) => {
+                self.copy_to_clipboard(true);
             }
             (KeyCode::BackTab, _) => {
                 approval::cycle_mode(&self.shared_mode);
@@ -182,27 +185,24 @@ impl TuiContext {
         use crate::mouse_select::{Selection, VisualPos};
         use crossterm::event::{MouseButton, MouseEventKind};
 
-        let (w, h) = self.term_dims();
+        let (w, _) = self.term_dims();
         let hist_y = self.history_area_y;
         let hist_h = self.history_area_height;
 
         // Check if mouse is in the history area
         let in_history = mouse.row >= hist_y && mouse.row < hist_y + hist_h;
 
-        // Convert a screen row (relative to history area) to buffer-space row
-        // by adding the current scroll-from-top offset.
-        let to_buffer_row = |screen_row: u16| -> u16 {
-            let scroll_from_top = self.scroll_buffer.paragraph_scroll(hist_h as usize, w).0;
-            screen_row.saturating_add(scroll_from_top)
-        };
-
         match mouse.kind {
-            MouseEventKind::ScrollUp => self.scroll_buffer.scroll_up(3, w, h),
+            MouseEventKind::ScrollUp => self.scroll_buffer.scroll_up(3, w, hist_h as usize),
             MouseEventKind::ScrollDown => self.scroll_buffer.scroll_down(3),
 
             MouseEventKind::Down(MouseButton::Left) if in_history => {
+                // Capture scroll position ONCE at click time; reuse for all
+                // subsequent Drag events so coordinates stay stable even if
+                // new lines are pushed during inference.
+                let scroll_from_top = self.scroll_buffer.paragraph_scroll(hist_h as usize, w).0;
                 let screen_row = mouse.row.saturating_sub(hist_y);
-                let buffer_row = to_buffer_row(screen_row);
+                let buffer_row = screen_row.saturating_add(scroll_from_top);
                 self.mouse_selection = Some(Selection {
                     anchor: VisualPos {
                         row: buffer_row,
@@ -212,13 +212,15 @@ impl TuiContext {
                         row: buffer_row,
                         col: mouse.column,
                     },
+                    scroll_from_top,
                 });
             }
 
             MouseEventKind::Drag(MouseButton::Left) if in_history => {
                 if let Some(sel) = &mut self.mouse_selection {
                     let screen_row = mouse.row.saturating_sub(hist_y);
-                    let buffer_row = to_buffer_row(screen_row);
+                    // Reuse the scroll position captured at MouseDown
+                    let buffer_row = screen_row.saturating_add(sel.scroll_from_top);
                     sel.cursor = VisualPos {
                         row: buffer_row,
                         col: mouse.column,
