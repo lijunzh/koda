@@ -78,12 +78,8 @@ impl MenuContent {
 pub(crate) enum PromptMode {
     /// Normal chat input: ⚡> █
     Chat,
-    /// Wizard text input: label: █ (or label: ••••█ when masked)
-    WizardInput {
-        label: String,
-        #[allow(dead_code)] // TODO: implement textarea masking for API keys
-        masked: bool,
-    },
+    /// Wizard text input: label: █
+    WizardInput { label: String },
 }
 
 /// Provider setup wizard state machine.
