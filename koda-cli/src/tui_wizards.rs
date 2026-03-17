@@ -296,11 +296,7 @@ pub(crate) fn handle_diff(buffer: &mut ScrollBuffer) {
             .and_then(|o| {
                 if o.status.success() {
                     let s = String::from_utf8_lossy(&o.stdout).to_string();
-                    if s.trim().is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
+                    if s.trim().is_empty() { None } else { Some(s) }
                 } else {
                     None
                 }
@@ -328,8 +324,14 @@ pub(crate) fn handle_diff(buffer: &mut ScrollBuffer) {
         tui_output::dim_msg(buffer, line.to_string());
     }
     tui_output::blank(buffer);
-    tui_output::dim_msg(buffer, "/diff review   \u{2014} ask Koda to review the changes".into());
-    tui_output::dim_msg(buffer, "/diff commit   \u{2014} generate a commit message".into());
+    tui_output::dim_msg(
+        buffer,
+        "/diff review   \u{2014} ask Koda to review the changes".into(),
+    );
+    tui_output::dim_msg(
+        buffer,
+        "/diff commit   \u{2014} generate a commit message".into(),
+    );
 }
 
 // ── Memory (native TUI) ──────────────────────────────
@@ -358,10 +360,7 @@ pub(crate) fn handle_memory(
             } else {
                 match koda_core::memory::append(project_root, entry) {
                     Ok(()) => {
-                        tui_output::ok_msg(
-                            buffer,
-                            "Saved to project memory (MEMORY.md)".into(),
-                        )
+                        tui_output::ok_msg(buffer, "Saved to project memory (MEMORY.md)".into())
                     }
                     Err(e) => tui_output::err_msg(buffer, format!("Error: {e}")),
                 }
@@ -375,10 +374,7 @@ pub(crate) fn handle_memory(
             match active {
                 Some(f) => tui_output::emit_line(
                     buffer,
-                    Line::from(vec![
-                        Span::raw("  Project: "),
-                        Span::styled(f, CYAN),
-                    ]),
+                    Line::from(vec![Span::raw("  Project: "), Span::styled(f, CYAN)]),
                 ),
                 None => tui_output::dim_msg(
                     buffer,
@@ -394,8 +390,14 @@ pub(crate) fn handle_memory(
             );
             tui_output::blank(buffer);
             tui_output::dim_msg(buffer, "Commands:".into());
-            tui_output::dim_msg(buffer, "  /memory add <text>      Save to project MEMORY.md".into());
-            tui_output::dim_msg(buffer, "  /memory global <text>   Save to global memory".into());
+            tui_output::dim_msg(
+                buffer,
+                "  /memory add <text>      Save to project MEMORY.md".into(),
+            );
+            tui_output::dim_msg(
+                buffer,
+                "  /memory global <text>   Save to global memory".into(),
+            );
             tui_output::blank(buffer);
             tui_output::dim_msg(
                 buffer,

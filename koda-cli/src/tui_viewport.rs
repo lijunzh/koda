@@ -6,7 +6,7 @@
 //! See #472 for the fullscreen migration RFC.
 
 use crate::scroll_buffer::ScrollBuffer;
-use crate::tui_types::{MenuContent, PromptMode, TuiState, Term};
+use crate::tui_types::{MenuContent, PromptMode, Term, TuiState};
 use crate::widgets::status_bar::StatusBar;
 
 use anyhow::Result;
@@ -55,16 +55,22 @@ pub(crate) fn draw_viewport(
     };
 
     // Layout: History | Separator | Input | Separator | Status | Menu
-    let [history_area, sep_row, input_rows, bot_sep_row, status_row, menu_area] =
-        Layout::vertical([
-            Constraint::Min(1),            // history: fill remaining space
-            Constraint::Length(1),          // top separator
-            Constraint::Length(input_height), // input textarea
-            Constraint::Length(1),          // bottom separator
-            Constraint::Length(1),          // status bar
-            Constraint::Length(menu_height), // dropdown menu (0 when inactive)
-        ])
-        .areas(area);
+    let [
+        history_area,
+        sep_row,
+        input_rows,
+        bot_sep_row,
+        status_row,
+        menu_area,
+    ] = Layout::vertical([
+        Constraint::Min(1),               // history: fill remaining space
+        Constraint::Length(1),            // top separator
+        Constraint::Length(input_height), // input textarea
+        Constraint::Length(1),            // bottom separator
+        Constraint::Length(1),            // status bar
+        Constraint::Length(menu_height),  // dropdown menu (0 when inactive)
+    ])
+    .areas(area);
 
     // ── History panel (scrollable) ────────────────────
     render_history(frame, scroll_buffer, history_area, selection);
@@ -165,13 +171,8 @@ fn render_history(
 
     // Apply selection highlighting if active
     if let Some(sel) = selection {
-        lines = crate::mouse_select::apply_selection_highlight(
-            lines,
-            sel,
-            scroll_pos.0,
-            width,
-            area.y,
-        );
+        lines =
+            crate::mouse_select::apply_selection_highlight(lines, sel, scroll_pos.0, width, area.y);
     }
 
     let paragraph = Paragraph::new(lines)

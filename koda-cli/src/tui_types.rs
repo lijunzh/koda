@@ -8,7 +8,6 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 /// Ratatui terminal backed by stdout.
 pub(crate) type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 
-/// Minimum viewport height — large enough to fit the slash menu overlay.
 // Viewport height constants removed — fullscreen mode (#472)
 
 // ── Type aliases for dropdown menus ─────────────────────────

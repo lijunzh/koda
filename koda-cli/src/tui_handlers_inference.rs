@@ -198,15 +198,13 @@ impl TuiContext {
         }
 
         self.silent_compact_deferred = false;
-        self.scroll_buffer.push(
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    format!("\u{1f43b} Context at {ctx_pct}% \u{2014} auto-compacting..."),
-                    Style::default().fg(Color::Cyan),
-                ),
-            ]),
-        );
+        self.scroll_buffer.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("\u{1f43b} Context at {ctx_pct}% \u{2014} auto-compacting..."),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
 
         match koda_core::compact::compact_session(
             &self.session.db,
@@ -218,24 +216,20 @@ impl TuiContext {
         .await
         {
             Ok(Ok(result)) => {
-                self.scroll_buffer.push(
-                    Line::styled(
-                        format!(
-                            "  \u{2713} Compacted {} messages \u{2192} ~{} tokens",
-                            result.deleted, result.summary_tokens
-                        ),
-                        Style::default().fg(Color::Green),
+                self.scroll_buffer.push(Line::styled(
+                    format!(
+                        "  \u{2713} Compacted {} messages \u{2192} ~{} tokens",
+                        result.deleted, result.summary_tokens
                     ),
-                );
+                    Style::default().fg(Color::Green),
+                ));
             }
             Ok(Err(_skip)) => {} // silently skip
             Err(e) => {
-                self.scroll_buffer.push(
-                    Line::styled(
-                        format!("  \u{2717} Auto-compact failed: {e:#}"),
-                        Style::default().fg(Color::Red),
-                    ),
-                );
+                self.scroll_buffer.push(Line::styled(
+                    format!("  \u{2717} Auto-compact failed: {e:#}"),
+                    Style::default().fg(Color::Red),
+                ));
             }
         }
     }

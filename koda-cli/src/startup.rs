@@ -20,7 +20,11 @@ pub fn build_banner_lines(
 ) -> Vec<Line<'static>> {
     let ver = env!("CARGO_PKG_VERSION");
 
-    const BEAR: [&str; 3] = ["\u{259e}\u{2580}\u{259a}\u{2584}\u{2584}\u{259e}\u{2580}\u{259a}", "\u{258c}\u{00b7}\u{2590}\u{2580}\u{258c}\u{00b7}\u{2590} ", "\u{2580}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2580}"];
+    const BEAR: [&str; 3] = [
+        "\u{259e}\u{2580}\u{259a}\u{2584}\u{2584}\u{259e}\u{2580}\u{259a}",
+        "\u{258c}\u{00b7}\u{2590}\u{2580}\u{258c}\u{00b7}\u{2590} ",
+        "\u{2580}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2580}",
+    ];
 
     vec![
         Line::default(),
@@ -131,9 +135,7 @@ pub fn purge_nudge_lines(size_str: &str) -> Vec<Line<'static>> {
 
 /// Print session resume hint (after raw mode ends, to stdout).
 pub fn print_resume_hint(session_id: &str) {
-    println!(
-        "\nResume this session with:\n  koda --resume {session_id}"
-    );
+    println!("\nResume this session with:\n  koda --resume {session_id}");
 }
 
 /// Nudge threshold: 500MB of compacted data.

@@ -90,10 +90,7 @@ pub(crate) fn extract_visible_text(
 }
 
 /// Extract the selected text from visible rows.
-pub(crate) fn extract_selected_text(
-    visible_rows: &[String],
-    selection: &Selection,
-) -> String {
+pub(crate) fn extract_selected_text(visible_rows: &[String], selection: &Selection) -> String {
     let (start, end) = selection.ordered();
     let mut result = String::new();
 

@@ -147,15 +147,11 @@ async fn handle_delete_session(
                     1 => {
                         let full_id = &matches[0].id;
                         match session.db.delete_session(full_id).await {
-                            Ok(true) => {
-                                tui_output::ok_msg(
-                                    buffer,
-                                    format!("Deleted session {}", &full_id[..8]),
-                                )
-                            }
-                            Ok(false) => {
-                                tui_output::err_msg(buffer, "Session not found.".into())
-                            }
+                            Ok(true) => tui_output::ok_msg(
+                                buffer,
+                                format!("Deleted session {}", &full_id[..8]),
+                            ),
+                            Ok(false) => tui_output::err_msg(buffer, "Session not found.".into()),
                             Err(e) => tui_output::err_msg(buffer, format!("Error: {e}")),
                         }
                     }
@@ -184,17 +180,13 @@ async fn handle_resume_session(
             Ok(sessions) => {
                 let matches: Vec<_> = sessions.iter().filter(|s| s.id.starts_with(id)).collect();
                 match matches.len() {
-                    0 => {
-                        tui_output::err_msg(buffer, format!("No session found matching '{id}'."))
-                    }
+                    0 => tui_output::err_msg(buffer, format!("No session found matching '{id}'.")),
                     1 => {
                         let target = &matches[0];
                         session.id = target.id.clone();
                         let short_id = target.id[..8].to_string();
-                        let detail = format!(
-                            "  {}  {} msgs",
-                            target.created_at, target.message_count
-                        );
+                        let detail =
+                            format!("  {}  {} msgs", target.created_at, target.message_count);
                         tui_output::emit_line(
                             buffer,
                             Line::from(vec![

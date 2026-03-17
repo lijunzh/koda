@@ -399,12 +399,10 @@ impl TuiContext {
                 ApprovalMode::Confirm => "🔒",
                 ApprovalMode::Auto => "⚡",
             };
-            self.scroll_buffer.push(
-                Line::from(vec![
-                    Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
-                    Span::raw(queued.clone()),
-                ]),
-            );
+            self.scroll_buffer.push(Line::from(vec![
+                Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
+                Span::raw(queued.clone()),
+            ]));
             return Some(queued);
         }
         None
@@ -461,9 +459,10 @@ impl TuiContext {
                 CommandOutcome::Handled
             }
             SlashAction::Quit => {
-                self.scroll_buffer.push(
-                    Line::styled("\u{1f43b} Goodbye!", Style::default().fg(Color::Cyan)),
-                );
+                self.scroll_buffer.push(Line::styled(
+                    "\u{1f43b} Goodbye!",
+                    Style::default().fg(Color::Cyan),
+                ));
                 CommandOutcome::Quit
             }
         }
@@ -494,20 +493,16 @@ impl TuiContext {
                 self.menu = MenuContent::Model(dd);
             }
             Ok(_) => {
-                self.scroll_buffer.push(
-                    Line::styled(
-                        "  \u{26a0} No models available",
-                        Style::default().fg(Color::Yellow),
-                    ),
-                );
+                self.scroll_buffer.push(Line::styled(
+                    "  \u{26a0} No models available",
+                    Style::default().fg(Color::Yellow),
+                ));
             }
             Err(e) => {
-                self.scroll_buffer.push(
-                    Line::styled(
-                        format!("  \u{2717} Failed to list models: {e}"),
-                        Style::default().fg(Color::Red),
-                    ),
-                );
+                self.scroll_buffer.push(Line::styled(
+                    format!("  \u{2717} Failed to list models: {e}"),
+                    Style::default().fg(Color::Red),
+                ));
             }
         }
     }
@@ -604,20 +599,16 @@ impl TuiContext {
                 self.menu = MenuContent::Session(dd);
             }
             Ok(_) => {
-                self.scroll_buffer.push(
-                    Line::styled(
-                        "  No other sessions found.",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                );
+                self.scroll_buffer.push(Line::styled(
+                    "  No other sessions found.",
+                    Style::default().fg(Color::DarkGray),
+                ));
             }
             Err(e) => {
-                self.scroll_buffer.push(
-                    Line::styled(
-                        format!("  \u{2717} Error: {e}"),
-                        Style::default().fg(Color::Red),
-                    ),
-                );
+                self.scroll_buffer.push(Line::styled(
+                    format!("  \u{2717} Error: {e}"),
+                    Style::default().fg(Color::Red),
+                ));
             }
         }
     }
@@ -640,29 +631,25 @@ impl TuiContext {
         processed.paste_blocks = std::mem::take(&mut self.paste_blocks);
 
         for (i, _img) in processed.images.iter().enumerate() {
-            self.scroll_buffer.push(
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        format!("\u{1f5bc} Image {}", i + 1),
-                        Style::default().fg(Color::Magenta),
-                    ),
-                ]),
-            );
+            self.scroll_buffer.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("\u{1f5bc} Image {}", i + 1),
+                    Style::default().fg(Color::Magenta),
+                ),
+            ]));
         }
 
         let mut user_message =
             if let Some(context) = input::format_context_files(&processed.context_files) {
                 for f in &processed.context_files {
-                    self.scroll_buffer.push(
-                        Line::from(vec![
-                            Span::raw("  "),
-                            Span::styled(
-                                format!("\u{1f4ce} {}", f.path),
-                                Style::default().fg(Color::Cyan),
-                            ),
-                        ]),
-                    );
+                    self.scroll_buffer.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("\u{1f4ce} {}", f.path),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                    ]));
                 }
                 format!("{}\n\n{context}", processed.prompt)
             } else {
@@ -736,12 +723,10 @@ impl TuiContext {
                 char_count,
             });
             let label = format!("\u{1f4cb} Pasted text ({char_count} chars)");
-            self.scroll_buffer.push(
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(label, Style::default().fg(Color::Yellow)),
-                ]),
-            );
+            self.scroll_buffer.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(label, Style::default().fg(Color::Yellow)),
+            ]));
             let preview: String = text.chars().take(80).collect();
             let preview = preview.replace('\n', "\u{21b5}");
             let preview = if char_count > 80 {
@@ -749,12 +734,10 @@ impl TuiContext {
             } else {
                 preview
             };
-            self.scroll_buffer.push(
-                Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(preview, Style::default().fg(Color::DarkGray)),
-                ]),
-            );
+            self.scroll_buffer.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(preview, Style::default().fg(Color::DarkGray)),
+            ]));
         }
     }
 
@@ -858,12 +841,10 @@ impl TuiContext {
                 ApprovalMode::Confirm => "\u{1f512}",
                 ApprovalMode::Auto => "\u{26a1}",
             };
-            self.scroll_buffer.push(
-                Line::from(vec![
-                    Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
-                    Span::raw(text.clone()),
-                ]),
-            );
+            self.scroll_buffer.push(Line::from(vec![
+                Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
+                Span::raw(text.clone()),
+            ]));
             self.pending_command = Some(text);
         }
         Ok(true)
@@ -949,12 +930,10 @@ impl TuiContext {
                             .await;
                     }
                     crate::tui_wizards::save_provider(&self.config);
-                    self.scroll_buffer.push(
-                        Line::styled(
-                            format!("  \u{2714} Model set to: {model_id}"),
-                            Style::default().fg(Color::Green),
-                        ),
-                    );
+                    self.scroll_buffer.push(Line::styled(
+                        format!("  \u{2714} Model set to: {model_id}"),
+                        Style::default().fg(Color::Green),
+                    ));
                     self.renderer.model = model_id;
                 }
             }
@@ -1006,23 +985,19 @@ impl TuiContext {
             MenuContent::Session(dd) => {
                 if let Some(item) = dd.selected_item() {
                     if item.is_current {
-                        self.scroll_buffer.push(
-                            Line::styled(
-                                "  Already in this session.",
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                        );
+                        self.scroll_buffer.push(Line::styled(
+                            "  Already in this session.",
+                            Style::default().fg(Color::DarkGray),
+                        ));
                     } else {
                         let target_id = item.id.clone();
                         let short = item.short_id.clone();
                         self.session.id = target_id;
-                        self.scroll_buffer.push(
-                            Line::from(vec![
-                                Span::styled("  \u{2714} ", Style::default().fg(Color::Green)),
-                                Span::raw("Resumed session "),
-                                Span::styled(short, Style::default().fg(Color::Cyan)),
-                            ]),
-                        );
+                        self.scroll_buffer.push(Line::from(vec![
+                            Span::styled("  \u{2714} ", Style::default().fg(Color::Green)),
+                            Span::raw("Resumed session "),
+                            Span::styled(short, Style::default().fg(Color::Cyan)),
+                        ]));
                     }
                 }
             }
@@ -1057,12 +1032,10 @@ impl TuiContext {
                     env_name,
                 } => {
                     if value.is_empty() && !koda_core::runtime_env::is_set(&env_name) {
-                        self.scroll_buffer.push(
-                            Line::styled(
-                                "  \u{2716} No API key provided.",
-                                Style::default().fg(Color::Red),
-                            ),
-                        );
+                        self.scroll_buffer.push(Line::styled(
+                            "  \u{2716} No API key provided.",
+                            Style::default().fg(Color::Red),
+                        ));
                         self.prompt_mode = PromptMode::Chat;
                         self.menu = MenuContent::None;
                         return;
@@ -1074,12 +1047,10 @@ impl TuiContext {
                             let _ = store.save();
                         }
                         let masked = koda_core::keystore::mask_key(&value);
-                        self.scroll_buffer.push(
-                            Line::styled(
-                                format!("  \u{2714} {env_name} set to {masked}"),
-                                Style::default().fg(Color::Green),
-                            ),
-                        );
+                        self.scroll_buffer.push(Line::styled(
+                            format!("  \u{2714} {env_name} set to {masked}"),
+                            Style::default().fg(Color::Green),
+                        ));
                     }
                     self.apply_provider(provider_type, base_url).await;
                 }
@@ -1124,15 +1095,13 @@ impl TuiContext {
                 .set_model_names(models.iter().map(|m| m.id.clone()).collect());
         }
         self.renderer.model = self.config.model.clone();
-        self.scroll_buffer.push(
-            Line::styled(
-                format!(
-                    "  \u{2714} Provider: {} ({})",
-                    self.config.provider_type, self.config.model
-                ),
-                Style::default().fg(Color::Green),
+        self.scroll_buffer.push(Line::styled(
+            format!(
+                "  \u{2714} Provider: {} ({})",
+                self.config.provider_type, self.config.model
             ),
-        );
+            Style::default().fg(Color::Green),
+        ));
     }
 
     // ── History navigation ──────────────────────────────────────
@@ -1163,15 +1132,24 @@ impl TuiContext {
             MouseEventKind::Down(MouseButton::Left) if in_history => {
                 let row = mouse.row.saturating_sub(hist_y);
                 self.mouse_selection = Some(Selection {
-                    anchor: VisualPos { row, col: mouse.column },
-                    cursor: VisualPos { row, col: mouse.column },
+                    anchor: VisualPos {
+                        row,
+                        col: mouse.column,
+                    },
+                    cursor: VisualPos {
+                        row,
+                        col: mouse.column,
+                    },
                 });
             }
 
             MouseEventKind::Drag(MouseButton::Left) if in_history => {
                 if let Some(sel) = &mut self.mouse_selection {
                     let row = mouse.row.saturating_sub(hist_y);
-                    sel.cursor = VisualPos { row, col: mouse.column };
+                    sel.cursor = VisualPos {
+                        row,
+                        col: mouse.column,
+                    };
                 }
             }
 
@@ -1181,17 +1159,14 @@ impl TuiContext {
                     if sel.anchor != sel.cursor {
                         let lines: Vec<Line<'_>> =
                             self.scroll_buffer.all_lines().cloned().collect();
-                        let scroll_pos = self
-                            .scroll_buffer
-                            .paragraph_scroll(hist_h as usize, w);
+                        let scroll_pos = self.scroll_buffer.paragraph_scroll(hist_h as usize, w);
                         let visible = crate::mouse_select::extract_visible_text(
                             &lines,
                             scroll_pos.0,
                             w,
                             hist_h as usize,
                         );
-                        let text =
-                            crate::mouse_select::extract_selected_text(&visible, &sel);
+                        let text = crate::mouse_select::extract_selected_text(&visible, &sel);
                         if !text.is_empty() {
                             match crate::mouse_select::copy_to_clipboard(&text) {
                                 Ok(msg) => {
@@ -1200,10 +1175,7 @@ impl TuiContext {
                                             "  \u{1f4cb} ",
                                             Style::default().fg(Color::Green),
                                         ),
-                                        Span::styled(
-                                            msg,
-                                            Style::default().fg(Color::Green),
-                                        ),
+                                        Span::styled(msg, Style::default().fg(Color::Green)),
                                     ]));
                                 }
                                 Err(e) => {

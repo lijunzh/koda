@@ -3,10 +3,10 @@
 //! All output is rendered as `ratatui::text::Line` / `Span` and written
 //! above the viewport via `insert_before()`. No ANSI strings.
 
+use crate::ansi_parse::parse_ansi_spans;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output::{self, AMBER, BOLD, CYAN, DIM, MAGENTA, ORANGE, RED, YELLOW};
 use crate::widgets::status_bar::TurnStats;
-use crate::ansi_parse::parse_ansi_spans;
 use koda_core::engine::EngineEvent;
 use ratatui::{
     style::{Color, Style},
@@ -342,50 +342,51 @@ fn render_tool_output(
         None
     };
 
-    let render_line =
-        |buffer: &mut ScrollBuffer, line: &str, hl: &mut Option<crate::highlight::CodeHighlighter>| {
-            if name == "Grep" {
-                render_grep_line(buffer, line);
-            } else if name == "List" {
-                render_list_line(buffer, line);
-            } else if let Some(h) = hl.as_mut() {
-                let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
-                spans.extend(h.highlight_spans(line));
-                tui_output::emit_line(buffer, Line::from(spans));
-            } else if is_diff_tool && line.starts_with('+') {
-                tui_output::emit_line(
-                    buffer,
-                    Line::from(vec![
-                        Span::styled("  \u{2502} ", DIM),
-                        Span::styled(line.to_string(), Style::default().fg(Color::Green)),
-                    ]),
-                );
-            } else if is_diff_tool && line.starts_with('-') {
-                tui_output::emit_line(
-                    buffer,
-                    Line::from(vec![
-                        Span::styled("  \u{2502} ", DIM),
-                        Span::styled(line.to_string(), Style::default().fg(Color::Red)),
-                    ]),
-                );
-            } else if is_diff_tool && line.starts_with('@') {
-                tui_output::emit_line(
-                    buffer,
-                    Line::from(vec![
-                        Span::styled("  \u{2502} ", DIM),
-                        Span::styled(line.to_string(), Style::default().fg(Color::Cyan)),
-                    ]),
-                );
-            } else {
-                // Parse ANSI escape codes into native ratatui Spans.
-                // Colored output from tools (cargo, git, pytest, etc.)
-                // renders with proper styles instead of raw escape codes.
-                let content_spans = parse_ansi_spans(line);
-                let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
-                spans.extend(content_spans);
-                tui_output::emit_line(buffer, Line::from(spans));
-            }
-        };
+    let render_line = |buffer: &mut ScrollBuffer,
+                       line: &str,
+                       hl: &mut Option<crate::highlight::CodeHighlighter>| {
+        if name == "Grep" {
+            render_grep_line(buffer, line);
+        } else if name == "List" {
+            render_list_line(buffer, line);
+        } else if let Some(h) = hl.as_mut() {
+            let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
+            spans.extend(h.highlight_spans(line));
+            tui_output::emit_line(buffer, Line::from(spans));
+        } else if is_diff_tool && line.starts_with('+') {
+            tui_output::emit_line(
+                buffer,
+                Line::from(vec![
+                    Span::styled("  \u{2502} ", DIM),
+                    Span::styled(line.to_string(), Style::default().fg(Color::Green)),
+                ]),
+            );
+        } else if is_diff_tool && line.starts_with('-') {
+            tui_output::emit_line(
+                buffer,
+                Line::from(vec![
+                    Span::styled("  \u{2502} ", DIM),
+                    Span::styled(line.to_string(), Style::default().fg(Color::Red)),
+                ]),
+            );
+        } else if is_diff_tool && line.starts_with('@') {
+            tui_output::emit_line(
+                buffer,
+                Line::from(vec![
+                    Span::styled("  \u{2502} ", DIM),
+                    Span::styled(line.to_string(), Style::default().fg(Color::Cyan)),
+                ]),
+            );
+        } else {
+            // Parse ANSI escape codes into native ratatui Spans.
+            // Colored output from tools (cargo, git, pytest, etc.)
+            // renders with proper styles instead of raw escape codes.
+            let content_spans = parse_ansi_spans(line);
+            let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
+            spans.extend(content_spans);
+            tui_output::emit_line(buffer, Line::from(spans));
+        }
+    };
 
     if verbose {
         // Show everything in verbose mode
@@ -423,7 +424,6 @@ fn render_tool_output(
         }
     }
 }
-
 
 /// Collapse runs of consecutive blank lines down to at most 1.
 ///
@@ -547,5 +547,4 @@ mod tests {
     fn test_collapse_all_blank() {
         assert_eq!(collapse_blank_lines("\n\n\n\n"), "\n");
     }
-
 }

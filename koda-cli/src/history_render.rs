@@ -7,7 +7,7 @@
 
 use koda_core::persistence::{Message, Role};
 use ratatui::{
-    style::{Color, Style, Modifier},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 
@@ -67,7 +67,9 @@ fn render_user_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
             lines.push(Line::from(vec![
                 Span::styled(
                     "  \u{276f} ",
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(first.to_string(), BOLD),
             ]));
@@ -84,20 +86,17 @@ fn render_user_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
 /// Render an assistant response: separator + text + any tool call headers.
 fn render_assistant_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
     // Response separator
-    lines.push(Line::styled(
-        "  \u{2500}\u{2500}\u{2500}",
-        DIM,
-    ));
+    lines.push(Line::styled("  \u{2500}\u{2500}\u{2500}", DIM));
 
     // Text content (markdown rendered as plain styled text for history)
-    if let Some(ref content) = msg.content {
-        if !content.is_empty() {
-            for line in content.lines() {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::raw(line.to_string()),
-                ]));
-            }
+    if let Some(ref content) = msg.content
+        && !content.is_empty()
+    {
+        for line in content.lines() {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::raw(line.to_string()),
+            ]));
         }
     }
 
@@ -116,12 +115,8 @@ fn render_tool_call_headers(lines: &mut Vec<Line<'static>>, tc_json: &str) {
     };
 
     for call in &calls {
-        let name = call["function"]["name"]
-            .as_str()
-            .unwrap_or("unknown");
-        let args = call["function"]["arguments"]
-            .as_str()
-            .unwrap_or("{}");
+        let name = call["function"]["name"].as_str().unwrap_or("unknown");
+        let args = call["function"]["arguments"].as_str().unwrap_or("{}");
 
         let detail = tool_detail_summary(name, args);
         let dot_color = tool_dot_color(name);
@@ -167,10 +162,7 @@ fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message) {
         let hidden = total_lines - TOOL_OUTPUT_PREVIEW_LINES;
         lines.push(Line::from(vec![
             Span::styled("  \u{2514} ", DIM),
-            Span::styled(
-                format!("... {hidden} more line(s)"),
-                DIM,
-            ),
+            Span::styled(format!("... {hidden} more line(s)"), DIM),
         ]));
     }
 }
@@ -179,8 +171,8 @@ fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message) {
 ///
 /// E.g., Read({"file_path": "src/main.rs"}) → "src/main.rs"
 fn tool_detail_summary(name: &str, args_json: &str) -> String {
-    let args: serde_json::Value = serde_json::from_str(args_json)
-        .unwrap_or(serde_json::Value::Null);
+    let args: serde_json::Value =
+        serde_json::from_str(args_json).unwrap_or(serde_json::Value::Null);
 
     match name {
         "Read" | "Write" | "Edit" | "Delete" => {
@@ -195,21 +187,19 @@ fn tool_detail_summary(name: &str, args_json: &str) -> String {
             }
         }
         "Grep" => {
-            let pattern = args["search_string"].as_str()
+            let pattern = args["search_string"]
+                .as_str()
                 .or_else(|| args["pattern"].as_str())
                 .unwrap_or("");
             let dir = args["directory"].as_str().unwrap_or(".");
             format!("{pattern} in {dir}")
         }
-        "List" => {
-            args["directory"].as_str()
-                .or_else(|| args["path"].as_str())
-                .unwrap_or(".")
-                .to_string()
-        }
-        "WebFetch" => {
-            args["url"].as_str().unwrap_or("").to_string()
-        }
+        "List" => args["directory"]
+            .as_str()
+            .or_else(|| args["path"].as_str())
+            .unwrap_or(".")
+            .to_string(),
+        "WebFetch" => args["url"].as_str().unwrap_or("").to_string(),
         _ => {
             // Generic: show first string value found
             if let Some(obj) = args.as_object() {
@@ -274,20 +264,22 @@ mod tests {
         // Should have: blank line + prompt line + separator lines
         assert!(lines.len() >= 2);
         let prompt_line = &lines[1];
-        let text: String = prompt_line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let text: String = prompt_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         assert!(text.contains("hello world"));
         assert!(text.contains('\u{276f}'));
     }
 
     #[test]
     fn test_assistant_message_rendering() {
-        let messages = vec![
-            msg(Role::User, "hello"),
-            msg(Role::Assistant, "Hi there!"),
-        ];
+        let messages = vec![msg(Role::User, "hello"), msg(Role::Assistant, "Hi there!")];
         let lines = render_history_messages(&messages);
         // Should contain the assistant separator and text
-        let all_text: String = lines.iter()
+        let all_text: String = lines
+            .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect();
@@ -297,11 +289,10 @@ mod tests {
 
     #[test]
     fn test_tool_result_short() {
-        let messages = vec![
-            msg(Role::Tool, "line 1\nline 2"),
-        ];
+        let messages = vec![msg(Role::Tool, "line 1\nline 2")];
         let lines = render_history_messages(&messages);
-        let all_text: String = lines.iter()
+        let all_text: String = lines
+            .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect();
@@ -313,12 +304,14 @@ mod tests {
 
     #[test]
     fn test_tool_result_long_truncated() {
-        let long_output: String = (0..20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let messages = vec![
-            msg(Role::Tool, &long_output),
-        ];
+        let long_output: String = (0..20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let messages = vec![msg(Role::Tool, &long_output)];
         let lines = render_history_messages(&messages);
-        let all_text: String = lines.iter()
+        let all_text: String = lines
+            .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect();
@@ -333,7 +326,8 @@ mod tests {
             msg(Role::User, "hello"),
         ];
         let lines = render_history_messages(&messages);
-        let all_text: String = lines.iter()
+        let all_text: String = lines
+            .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect();
@@ -360,7 +354,8 @@ mod tests {
     fn test_session_resumed_separator() {
         let messages = vec![msg(Role::User, "hello")];
         let lines = render_history_messages(&messages);
-        let all_text: String = lines.iter()
+        let all_text: String = lines
+            .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect();

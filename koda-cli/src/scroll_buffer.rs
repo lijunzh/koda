@@ -128,10 +128,7 @@ impl ScrollBuffer {
     /// terminal width. Used for scrollbar state and offset clamping.
     pub fn total_visual_lines(&self, term_width: usize) -> usize {
         let w = term_width.max(1);
-        self.lines
-            .iter()
-            .map(|l| visual_height(l, w))
-            .sum()
+        self.lines.iter().map(|l| visual_height(l, w)).sum()
     }
 
     /// Compute the Paragraph scroll-from-top offset for the current
@@ -288,11 +285,7 @@ fn line_text(line: &Line<'_>) -> String {
 /// Empty lines always occupy 1 row.
 fn visual_height(line: &Line<'_>, term_width: usize) -> usize {
     let w = line.width();
-    if w == 0 {
-        1
-    } else {
-        w.div_ceil(term_width)
-    }
+    if w == 0 { 1 } else { w.div_ceil(term_width) }
 }
 
 #[cfg(test)]
@@ -316,7 +309,12 @@ mod tests {
             .saturating_sub(height)
             .saturating_sub(buf.offset());
         // Simulate what Paragraph would show
-        lines.iter().skip(from_top).take(height).map(line_text).collect()
+        lines
+            .iter()
+            .skip(from_top)
+            .take(height)
+            .map(line_text)
+            .collect()
     }
 
     #[test]

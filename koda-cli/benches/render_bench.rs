@@ -17,11 +17,7 @@ fn main() {
     let total_lines: usize = messages.iter().map(|m| m.lines().count()).sum();
 
     println!("=== Render Cache Re-rendering Benchmark ===");
-    println!(
-        "Messages: {}, Total lines: {}",
-        messages.len(),
-        total_lines
-    );
+    println!("Messages: {}, Total lines: {}", messages.len(), total_lines);
     println!();
 
     // Warm up
@@ -94,10 +90,7 @@ fn main() {
         );
         println!("   Consider capping cache size or lazy rendering.");
     } else {
-        println!(
-            "❌ Full rebuild {:?} — exceeds frame budget.",
-            per_iter
-        );
+        println!("❌ Full rebuild {:?} — exceeds frame budget.", per_iter);
         println!("   Need incremental rendering or background thread.");
     }
 
@@ -107,10 +100,7 @@ fn main() {
             per_page
         );
     } else {
-        println!(
-            "⚠️  Page render {:?} — may cause scroll jank.",
-            per_page
-        );
+        println!("⚠️  Page render {:?} — may cause scroll jank.", per_page);
     }
 }
 
@@ -143,9 +133,9 @@ fn render_single(text: &str) -> Vec<Vec<StyledSpan>> {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct StyledSpan {
     text: String,
-    #[allow(dead_code)]
     style: u8, // simplified style tag
 }
 
@@ -268,11 +258,9 @@ fn wrap_lines(lines: &[String], max_width: usize) -> Vec<String> {
             let mut remaining = line.as_str();
             while remaining.len() > max_width {
                 // Find last space within width
-                let break_at = remaining[..max_width]
-                    .rfind(' ')
-                    .unwrap_or(max_width);
+                let break_at = remaining[..max_width].rfind(' ').unwrap_or(max_width);
                 wrapped.push(remaining[..break_at].to_string());
-                remaining = &remaining[break_at..].trim_start();
+                remaining = remaining[break_at..].trim_start();
             }
             if !remaining.is_empty() {
                 wrapped.push(remaining.to_string());
