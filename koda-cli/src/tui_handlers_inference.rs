@@ -29,8 +29,8 @@ impl TuiContext {
     pub(crate) async fn run_inference_turn(
         &mut self,
         pending_images: Option<Vec<koda_core::providers::ImageData>>,
-        ui_tx: &mpsc::Sender<UiEvent>,
-        ui_rx: &mut mpsc::Receiver<UiEvent>,
+        ui_tx: &mpsc::UnboundedSender<UiEvent>,
+        ui_rx: &mut mpsc::UnboundedReceiver<UiEvent>,
         cmd_tx: &mpsc::Sender<EngineCommand>,
         cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     ) -> anyhow::Result<()> {
@@ -110,12 +110,13 @@ impl TuiContext {
                                 // Handle scroll wheel during inference so the
                                 // user can browse history while output streams.
                                 use crossterm::event::MouseEventKind;
-                                let (w, h) = crossterm::terminal::size()
+                                let (w, _) = crossterm::terminal::size()
                                     .map(|(c, r)| (c as usize, r as usize))
                                     .unwrap_or((80, 24));
+                                let hist_h = self.history_area_height as usize;
                                 match mouse.kind {
                                     MouseEventKind::ScrollUp => {
-                                        self.scroll_buffer.scroll_up(3, w, h);
+                                        self.scroll_buffer.scroll_up(3, w, hist_h);
                                     }
                                     MouseEventKind::ScrollDown => {
                                         self.scroll_buffer.scroll_down(3);
@@ -172,7 +173,7 @@ impl TuiContext {
 
     // ── Post-turn cleanup ──────────────────────────────────────
 
-    async fn post_turn_cleanup(&mut self, ui_rx: &mut mpsc::Receiver<UiEvent>) {
+    async fn post_turn_cleanup(&mut self, ui_rx: &mut mpsc::UnboundedReceiver<UiEvent>) {
         self.tui_state = TuiState::Idle;
         self.inference_start = None;
         self.session.cancel = tokio_util::sync::CancellationToken::new();

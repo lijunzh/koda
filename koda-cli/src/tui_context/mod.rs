@@ -353,8 +353,8 @@ impl TuiContext {
     /// The main event loop.
     pub async fn run_event_loop(
         &mut self,
-        ui_tx: &mpsc::Sender<UiEvent>,
-        ui_rx: &mut mpsc::Receiver<UiEvent>,
+        ui_tx: &mpsc::UnboundedSender<UiEvent>,
+        ui_rx: &mut mpsc::UnboundedReceiver<UiEvent>,
         cmd_tx: &mpsc::Sender<EngineCommand>,
         cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     ) -> Result<()> {

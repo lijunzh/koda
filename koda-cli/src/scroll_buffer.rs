@@ -237,14 +237,18 @@ impl ScrollBuffer {
     /// Extract the last assistant response from the buffer.
     ///
     /// Scans backward for the response separator ("───") and returns
-    /// everything after it. Used by Ctrl+Shift+Y (copy last response).
+    /// everything after it. Used by Ctrl+U / Ctrl+Shift+Y (copy last response).
+    ///
+    /// The separator is exactly 3 `─` characters (emitted by ResponseStart).
+    /// Markdown HRs (60+ dashes) are explicitly excluded.
     pub fn last_response(&self) -> Option<String> {
         let mut sep_idx = None;
 
         for (i, line) in self.lines.iter().enumerate().rev() {
             let text = line_text(line);
-            // Response separator is "  ───" (the ResponseStart line)
-            if text.trim().chars().all(|c| c == '─') && text.trim().len() >= 3 {
+            let trimmed = text.trim();
+            // Match exactly 3 ─ chars (ResponseStart), not markdown HRs (60 ─ chars)
+            if trimmed.chars().all(|c| c == '─') && trimmed.chars().count() == 3 {
                 sep_idx = Some(i);
                 break;
             }
@@ -499,6 +503,31 @@ mod tests {
         assert!(response.contains("response line 2"));
     }
 
+    /// Verify that `last_response()` skips markdown HRs (60 dashes)
+    /// and only matches the ResponseStart separator (exactly 3 dashes).
+    #[test]
+    fn test_last_response_skips_markdown_hr() {
+        let mut buf = ScrollBuffer::new(2500);
+        buf.push(make_line("user message"));
+        buf.push(make_line("  ───")); // ResponseStart
+        buf.push(make_line("  first paragraph"));
+        // Markdown HR: rendered as 60 ─ chars by md_render
+        let hr = format!("  {}", "─".repeat(60));
+        buf.push(make_line(&hr));
+        buf.push(make_line("  second paragraph"));
+
+        let response = buf.last_response().unwrap();
+        // Should include BOTH paragraphs (found ResponseStart, not the HR)
+        assert!(
+            response.contains("first paragraph"),
+            "Should include content before HR: {response}"
+        );
+        assert!(
+            response.contains("second paragraph"),
+            "Should include content after HR: {response}"
+        );
+    }
+
     #[test]
     fn test_push_lines_batch() {
         let mut buf = ScrollBuffer::new(2500);
@@ -616,6 +645,77 @@ mod tests {
         buf.clamp_offset(W, 10); // viewport bigger than content
         assert_eq!(buf.offset(), 0);
         assert!(buf.is_sticky());
+    }
+
+    /// Test code block detection with markdown-rendered content.
+    ///
+    /// The actual TUI renders fences as `Span::raw("  ") + Span::styled("```rust", DIM)`.
+    /// `last_code_block()` must find these despite the leading indent.
+    #[test]
+    fn test_last_code_block_rendered() {
+        use ratatui::style::{Color, Style};
+        let dim = Style::default().fg(Color::DarkGray);
+
+        let mut buf = ScrollBuffer::new(2500);
+        buf.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Some intro text".to_string(), Style::default()),
+        ]));
+        buf.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("```rust".to_string(), dim),
+        ]));
+        buf.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                "fn main() {}".to_string(),
+                Style::default().fg(Color::Green),
+            ),
+        ]));
+        buf.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("```".to_string(), dim),
+        ]));
+        buf.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("After block".to_string(), Style::default()),
+        ]));
+
+        let code = buf.last_code_block();
+        assert!(
+            code.is_some(),
+            "Should detect code block in rendered content"
+        );
+        let code = code.unwrap();
+        assert!(code.contains("fn main()"), "Code block content: {code}");
+    }
+
+    /// Test response detection with markdown-rendered separator.
+    ///
+    /// The TUI renders ResponseStart as `Span::styled("  ───", DIM)`.
+    #[test]
+    fn test_last_response_rendered() {
+        use ratatui::style::{Color, Style};
+        let dim = Style::default().fg(Color::DarkGray);
+
+        let mut buf = ScrollBuffer::new(2500);
+        buf.push(Line::from(vec![Span::raw("user question".to_string())]));
+        buf.push(Line::styled("  ───".to_string(), dim));
+        buf.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("The answer is 42.".to_string(), Style::default()),
+        ]));
+
+        let resp = buf.last_response();
+        assert!(
+            resp.is_some(),
+            "Should detect response separator in rendered content"
+        );
+        let resp = resp.unwrap();
+        assert!(
+            resp.contains("The answer is 42"),
+            "Response content: {resp}"
+        );
     }
 
     #[test]

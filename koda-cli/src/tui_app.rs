@@ -56,7 +56,7 @@ pub async fn run(
     }
 
     // Channels stay in run() — consumed by tokio::select! in different ways
-    let (ui_tx, mut ui_rx) = mpsc::channel::<UiEvent>(256);
+    let (ui_tx, mut ui_rx) = mpsc::unbounded_channel::<UiEvent>();
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(32);
 
     // Initial viewport draw
