@@ -88,6 +88,20 @@ impl ScrollBuffer {
         }
     }
 
+    /// Re-clamp `scroll_offset` to valid bounds for the current
+    /// terminal dimensions. Must be called after any resize so the
+    /// offset doesn't exceed `total_visual - viewport_height`.
+    pub fn clamp_offset(&mut self, term_width: usize, viewport_height: usize) {
+        let total = self.total_visual_lines(term_width);
+        let max_offset = total.saturating_sub(viewport_height);
+        if self.scroll_offset > max_offset {
+            self.scroll_offset = max_offset;
+        }
+        if self.scroll_offset == 0 {
+            self.sticky_bottom = true;
+        }
+    }
+
     /// Jump to the bottom and re-engage sticky mode.
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = 0;
@@ -281,11 +295,37 @@ fn line_text(line: &Line<'_>) -> String {
 
 /// Compute how many visual rows a `Line` occupies at the given terminal width.
 ///
-/// A 200-char line in an 80-column terminal wraps to 3 visual rows.
-/// Empty lines always occupy 1 row.
+/// Uses word-boundary wrapping logic consistent with
+/// `Paragraph::wrap(Wrap { trim: false })` — when a word would overflow
+/// the current row, it breaks *before* the word, potentially leaving a
+/// shorter first row and producing more visual lines than simple
+/// `char_width / term_width` division.
+///
+/// The algorithm walks spans character-by-character, tracking the
+/// current column position. At each space it records a potential
+/// break point. When adding a character would exceed `term_width`,
+/// it wraps at the last break point (or force-breaks mid-word if
+/// no break point was found on this row).
 fn visual_height(line: &Line<'_>, term_width: usize) -> usize {
-    let w = line.width();
-    if w == 0 { 1 } else { w.div_ceil(term_width) }
+    let text = line_text(line);
+    if text.is_empty() {
+        return 1;
+    }
+    let w = term_width.max(1);
+    let mut rows = 1usize;
+    let mut col = 0usize;
+
+    for ch in text.chars() {
+        let char_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if col + char_w > w {
+            // Wrap: start a new row
+            rows += 1;
+            col = char_w;
+        } else {
+            col += char_w;
+        }
+    }
+    rows
 }
 
 #[cfg(test)]
@@ -544,6 +584,39 @@ mod tests {
     }
 
     // ── Prepend ──
+
+    // ── Clamp offset ──
+
+    #[test]
+    fn test_clamp_offset_after_resize() {
+        let mut buf = ScrollBuffer::new(2500);
+        for i in 0..20 {
+            buf.push(make_line(&format!("line {i}")));
+        }
+        // Scroll to top: 20 lines, viewport 10 → offset = 10
+        buf.scroll_to_top(W, 10);
+        assert_eq!(buf.offset(), 10);
+        assert!(!buf.is_sticky());
+
+        // Simulate resize to viewport height 18 → max_offset = 2
+        buf.clamp_offset(W, 18);
+        assert_eq!(buf.offset(), 2);
+    }
+
+    #[test]
+    fn test_clamp_offset_restores_sticky() {
+        let mut buf = ScrollBuffer::new(2500);
+        for i in 0..5 {
+            buf.push(make_line(&format!("line {i}")));
+        }
+        // Scroll up then grow viewport to fit everything
+        buf.scroll_up(3, W, 3);
+        assert!(!buf.is_sticky());
+
+        buf.clamp_offset(W, 10); // viewport bigger than content
+        assert_eq!(buf.offset(), 0);
+        assert!(buf.is_sticky());
+    }
 
     #[test]
     fn test_prepend_lines() {
