@@ -49,7 +49,14 @@ impl TuiContext {
             tokio::pin!(turn);
 
             loop {
-                // Redraw viewport (swallow DSR timeout errors during resize)
+                // Clamp scroll offset before drawing (resize may have
+                // changed wrapping, making the old offset invalid).
+                let (term_w, term_h) = crossterm::terminal::size()
+                    .map(|(c, r)| (c as usize, r as usize))
+                    .unwrap_or((80, 24));
+                self.scroll_buffer.clamp_offset(term_w, term_h);
+
+                // Redraw viewport
                 let mode = approval::read_mode(&self.shared_mode);
                 let ctx = koda_core::context::percentage() as u32;
                 let _ = self.terminal.draw(|f| {
@@ -93,6 +100,28 @@ impl TuiContext {
                         match ev {
                             Event::Resize(_, _) => {
                                 // Fullscreen: just redraw on next loop.
+                                // Clamp scroll offset for the new dimensions.
+                                let (w, h) = crossterm::terminal::size()
+                                    .map(|(c, r)| (c as usize, r as usize))
+                                    .unwrap_or((80, 24));
+                                self.scroll_buffer.clamp_offset(w, h);
+                            }
+                            Event::Mouse(mouse) => {
+                                // Handle scroll wheel during inference so the
+                                // user can browse history while output streams.
+                                use crossterm::event::MouseEventKind;
+                                let (w, h) = crossterm::terminal::size()
+                                    .map(|(c, r)| (c as usize, r as usize))
+                                    .unwrap_or((80, 24));
+                                match mouse.kind {
+                                    MouseEventKind::ScrollUp => {
+                                        self.scroll_buffer.scroll_up(3, w, h);
+                                    }
+                                    MouseEventKind::ScrollDown => {
+                                        self.scroll_buffer.scroll_down(3);
+                                    }
+                                    _ => {}
+                                }
                             }
                             Event::Paste(text) => {
                                 let char_count = text.chars().count();
