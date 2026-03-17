@@ -163,7 +163,7 @@ pub async fn read_file(
     // Stale-read optimization: if the file hasn't changed since the last time this session read it,
     // we don't need to re-read and re-stream it to the LLM. It's already in the conversation context.
     {
-        let cache_guard = cache.lock().unwrap();
+        let cache_guard = cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(&(cached_size, cached_mtime)) = cache_guard.get(&cache_key)
             && cached_size == size
             && cached_mtime == mtime
@@ -222,7 +222,7 @@ pub async fn read_file(
 
     // Update the cache after a successful read
     {
-        let mut cache_guard = cache.lock().unwrap();
+        let mut cache_guard = cache.lock().unwrap_or_else(|e| e.into_inner());
         cache_guard.insert(cache_key, (size, mtime));
     }
 

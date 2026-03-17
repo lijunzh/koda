@@ -434,9 +434,8 @@ impl TuiContext {
             self.open_provider_picker();
             return CommandOutcome::Handled;
         }
-        if input.trim().starts_with("/provider ") {
-            let name = input.trim().strip_prefix("/provider ").unwrap().trim();
-            self.start_provider_wizard(name);
+        if let Some(name) = input.trim().strip_prefix("/provider ") {
+            self.start_provider_wizard(name.trim());
             return CommandOutcome::Handled;
         }
         if input.trim() == "/sessions" {
