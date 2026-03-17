@@ -38,6 +38,7 @@ pub async fn handle_slash_command(
     project_root: &std::path::Path,
     agent: &Arc<KodaAgent>,
     pending_command: &mut Option<String>,
+    menu: &mut crate::tui_types::MenuContent,
 ) -> SlashAction {
     match crate::repl::handle_command(input, config, provider).await {
         ReplAction::Quit => SlashAction::Quit,
@@ -88,7 +89,7 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
         ReplAction::Purge(ref age_filter) => {
-            crate::tui_wizards::handle_purge(buffer, session, age_filter.as_deref()).await;
+            crate::tui_wizards::handle_purge(buffer, session, age_filter.as_deref(), menu).await;
             SlashAction::Continue
         }
         ReplAction::Expand(n) => {

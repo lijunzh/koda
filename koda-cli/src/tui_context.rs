@@ -454,6 +454,7 @@ impl TuiContext {
             &self.project_root,
             &self.agent,
             &mut self.pending_command,
+            &mut self.menu,
         )
         .await;
 
@@ -855,6 +856,24 @@ impl TuiContext {
     // ── Menu navigation ───────────────────────────────────────
 
     async fn handle_menu_key(&mut self, key: crossterm::event::KeyEvent) -> Option<bool> {
+        // Purge confirmation: only y/n/Esc are meaningful.
+        if let MenuContent::PurgeConfirm { min_age_days, .. } = &self.menu {
+            let days = *min_age_days;
+            match key.code {
+                KeyCode::Char('y' | 'Y') => {
+                    crate::tui_wizards::execute_purge(&mut self.scroll_buffer, &self.session, days)
+                        .await;
+                    self.menu = MenuContent::None;
+                }
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                    crate::tui_output::dim_msg(&mut self.scroll_buffer, "Purge cancelled.".into());
+                    self.menu = MenuContent::None;
+                }
+                _ => {}
+            }
+            return Some(true);
+        }
+
         let is_up = key.code == KeyCode::Up
             || (key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL));
         let is_down = key.code == KeyCode::Down
@@ -904,6 +923,7 @@ impl TuiContext {
             MenuContent::File { dropdown: dd, .. } => nav!(dd),
             MenuContent::Approval { .. }
             | MenuContent::LoopCap
+            | MenuContent::PurgeConfirm { .. }
             | MenuContent::WizardTrail(_)
             | MenuContent::None => {}
         }
@@ -1009,6 +1029,7 @@ impl TuiContext {
             }
             MenuContent::Approval { .. }
             | MenuContent::LoopCap
+            | MenuContent::PurgeConfirm { .. }
             | MenuContent::WizardTrail(_)
             | MenuContent::None => {}
         }
