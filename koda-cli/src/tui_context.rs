@@ -551,10 +551,7 @@ impl TuiContext {
                 format!("API key for {}", ptype)
             };
             self.menu = MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
-            self.prompt_mode = PromptMode::WizardInput {
-                label,
-                masked: true,
-            };
+            self.prompt_mode = PromptMode::WizardInput { label };
             self.provider_wizard = Some(ProviderWizard::NeedApiKey {
                 provider_type: ptype,
                 base_url,
@@ -566,7 +563,6 @@ impl TuiContext {
             self.menu = MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
             self.prompt_mode = PromptMode::WizardInput {
                 label: format!("{} URL", ptype),
-                masked: false,
             };
             self.provider_wizard = Some(ProviderWizard::NeedUrl {
                 provider_type: ptype,
@@ -960,10 +956,7 @@ impl TuiContext {
                         };
                         self.menu =
                             MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
-                        self.prompt_mode = PromptMode::WizardInput {
-                            label,
-                            masked: true,
-                        };
+                        self.prompt_mode = PromptMode::WizardInput { label };
                         self.provider_wizard = Some(ProviderWizard::NeedApiKey {
                             provider_type: ptype,
                             base_url,
@@ -976,7 +969,6 @@ impl TuiContext {
                             MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
                         self.prompt_mode = PromptMode::WizardInput {
                             label: format!("{} URL", ptype),
-                            masked: false,
                         };
                         self.provider_wizard = Some(ProviderWizard::NeedUrl {
                             provider_type: ptype,

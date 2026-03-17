@@ -298,7 +298,6 @@ async fn handle_inference_key_inline(
             KeyCode::Char('f') | KeyCode::Char('F') => {
                 *prompt_mode = PromptMode::WizardInput {
                     label: "Feedback".into(),
-                    masked: false,
                 };
                 *menu = MenuContent::WizardTrail(vec![(
                     "Action".into(),
