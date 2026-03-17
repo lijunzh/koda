@@ -14,13 +14,19 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use path_clean::PathClean;
+
 use crate::db::Database;
 
 /// Extract and resolve a file path from tool call arguments.
 ///
 /// Looks for `"path"` or `"file_path"` in the JSON args, then resolves
-/// relative paths against `project_root`. Used by both the approval
-/// system and the file lifecycle tracker (#465).
+/// relative paths against `project_root`. The result is cleaned
+/// (normalized) so that `./foo/../bar.txt` and `bar.txt` resolve to
+/// the same path, preventing duplicate tracking (#474).
+///
+/// Uses `canonicalize()` when the file already exists (resolves symlinks),
+/// falling back to `PathClean::clean()` for new files that don't exist yet.
 pub(crate) fn resolve_file_path_from_args(
     args: &serde_json::Value,
     project_root: &Path,
@@ -35,7 +41,9 @@ pub(crate) fn resolve_file_path_from_args(
     } else {
         project_root.join(requested)
     };
-    Some(abs_path)
+    // Prefer canonicalize (resolves symlinks, e.g. macOS /var → /private/var)
+    // but fall back to clean() for files that don't exist yet (Write creates them).
+    Some(abs_path.canonicalize().unwrap_or_else(|_| abs_path.clean()))
 }
 
 /// Tracks files created by Koda in the current session.
