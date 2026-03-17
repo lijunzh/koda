@@ -87,6 +87,7 @@ koda/
 │   │   ├── config.rs       # Agent/provider config + provider metadata
 │   │   ├── context.rs      # Context window token tracking
 │   │   ├── db.rs           # SQLite persistence (WAL mode, parameterized queries)
+│   │   ├── file_tracker.rs # File lifecycle tracking (create/edit/delete ownership)
 │   │   ├── git.rs          # Git checkpointing + rollback
 │   │   ├── inference.rs    # Streaming inference loop + tool execution
 │   │   ├── inference_helpers.rs # Token estimation, message assembly, overflow detection
@@ -133,15 +134,19 @@ koda/
 │   ├── src/
 │   │   ├── main.rs         # CLI entry point (clap)
 │   │   ├── lib.rs          # Crate root (exports acp_adapter)
-│   │   ├── tui_app.rs      # Main TUI event loop (ratatui Viewport::Inline)
+│   │   ├── tui_app.rs      # Main TUI event loop (ratatui Viewport::Fullscreen)
 │   │   ├── tui_context.rs  # TUI shared mutable state struct
 │   │   ├── tui_handlers_inference.rs # Inference event handling (extracted from context)
 │   │   ├── tui_render.rs   # EngineEvent → ratatui Line/Span rendering
 │   │   ├── tui_commands.rs # Slash command dispatch (/help, /model, /sessions, etc.)
 │   │   ├── tui_wizards.rs  # Interactive wizards (/provider, /compact, /agent)
-│   │   ├── tui_output.rs   # Output bridge: emit_line (ratatui) + write_line (crossterm)
-│   │   ├── tui_viewport.rs # Viewport layout + menu_area rendering
+│   │   ├── tui_output.rs   # Output bridge: scroll_buffer push helpers
+│   │   ├── tui_viewport.rs # Fullscreen viewport layout + rendering
 │   │   ├── tui_types.rs    # MenuContent, PromptMode, TuiState, shared TUI types
+│   │   ├── scroll_buffer.rs# App-managed scrollback buffer with visual-line scroll
+│   │   ├── mouse_select.rs # Mouse text selection + clipboard copy
+│   │   ├── ansi_parse.rs   # ANSI escape code → ratatui Span conversion
+│   │   ├── history_render.rs # Session history → scroll_buffer replay
 │   │   ├── md_render.rs    # Streaming markdown → ratatui renderer
 │   │   ├── completer.rs    # Tab completion (/commands, @files, /model names)
 │   │   ├── diff_render.rs  # Diff preview → ratatui renderer (syntax highlighted)
@@ -154,7 +159,7 @@ koda/
 │   │   ├── server.rs       # ACP server over stdio JSON-RPC
 │   │   ├── acp_adapter.rs  # ACP protocol adapter
 │   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
-│   │   ├── tool_history.rs # Tool output history for /expand
+│   │   └── tool_history.rs # Tool output history for /expand
 │   │   └── widgets/        # TUI widgets
 │   │       ├── mod.rs      # Widget module root
 │   │       ├── dropdown.rs # Generic dropdown widget
@@ -186,22 +191,25 @@ koda/
 
 `main.rs` → `tui_app.rs` (TUI event loop) → `KodaSession::run_turn()` → `inference_loop()` (streaming LLM + tools)
 
-The TUI uses `ratatui::Viewport::Inline` with a fixed 12-line viewport.
-Engine output is rendered above the viewport via `insert_before()`. Slash commands use
-crossterm direct writes (`write_line()`). These two rendering paths must never be mixed
-within a single operation.
+The TUI uses `ratatui::Viewport::Fullscreen` (alternate screen buffer) with
+app-managed scrollback. All output flows through a single rendering path:
+`EngineEvent` → `tui_render.rs` → `ScrollBuffer` → `draw_viewport()`.
 
 **Viewport layout** (see DESIGN.md §14):
 ```
-[output scrollback]          ← insert_before()
+[history panel]                ← ScrollBuffer: scrollable, mouse-selectable
 ─── 🐻 ─                        ← separator
-⚡> input                      ← fixed position, sized to content
+⚡> input                      ← tui-textarea, sized to content
 ──────────────────────────────
-model │ auto │ 0%               ← status bar (hugs input)
+model │ auto │ ████ 42% │ 🐻 12s  ← status bar
 [menu_area]                    ← dropdown / approval / wizard (Min(0))
 ```
 
-All interactive UI renders in `menu_area`. The prompt and status bar never move.
+All interactive UI renders in `menu_area`. The history panel fills the
+remaining vertical space. Mouse scroll works during inference. Native
+clipboard (`arboard`) handles copy since alternate screen disables
+terminal-native mouse selection.
+
 See DESIGN.md §14 for the interaction system design and competitive analysis.
 
 The engine communicates through `EngineEvent` (output) and `EngineCommand` (input) enums.
@@ -228,9 +236,9 @@ Tools use PascalCase names. `mod.rs` has the registry, dispatcher, and `safe_res
 - All I/O is async (`tokio`)
 - Tool names: PascalCase; module names: snake_case
 - `koda-core` has zero terminal deps (no crossterm, no ratatui)
-- Two rendering paths in koda-cli (never mix within one operation):
-  - `emit_line()` / `emit_above()` — ratatui `insert_before()` for engine output
-  - `write_line()` — crossterm direct writes for slash commands
+- Single rendering path in koda-cli:
+  - All output → `ScrollBuffer` → `draw_viewport()` (fullscreen alternate screen)
+  - No `insert_before()`, no dual-path rendering
 - Engine → client: `EngineSink::emit(EngineEvent)`
 - Client → engine: `mpsc::Receiver<EngineCommand>`
 - Cancellation: `tokio_util::sync::CancellationToken`
@@ -366,5 +374,4 @@ For capabilities that ship in the koda workspace (same release cycle):
 9. Update `release.yml`: version verify, build, package, publish, Homebrew
 10. Sync version with workspace (currently 0.1.10)
 11. Update this file (CLAUDE.md)
-
 

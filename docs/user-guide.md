@@ -149,6 +149,12 @@ Koda gates tool execution with two approval modes. Cycle with **Shift+Tab**.
 - Destructive bash commands (`rm -rf`, `git push --force`) always require confirmation
 - Bash commands that escape the project (`cd /tmp`, absolute paths outside project) always require confirmation
 
+**File ownership tracking**: When koda creates a file during a turn, it tracks
+ownership. If the model subsequently deletes that same file in the same turn,
+the deletion is auto-approved (no double-confirmation). This prevents the
+annoying pattern where creating a temporary file and then cleaning it up
+requires two approvals.
+
 **Approval hotkeys** (shown inline when a tool needs confirmation):
 - `y` — approve
 - `n` — reject
@@ -176,6 +182,11 @@ Type `/` to open the command palette with descriptions. Tab to complete.
 | `/skills` | List available skills (search with `/skills <query>`) |
 | `/undo` | Undo last turn's file changes |
 | `/verbose` | Toggle full tool output display |
+
+**Scrolling & selection**: Mouse scroll works in the history panel (including
+during inference). Click-drag to select text, which copies to the system
+clipboard via `arboard`. This is essential since the alternate screen buffer
+disables terminal-native mouse selection.
 
 **Power-user shortcuts**: Commands accept inline arguments to skip wizards.
 For example, `/provider anthropic` switches instantly if an API key is
