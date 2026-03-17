@@ -56,12 +56,14 @@ echo "explain this" | koda        # Piped input
 - **Git checkpointing** — auto-snapshots before each turn for safe rollback
 - **Approval modes** — auto (default) / confirm (confirm writes) via `Shift+Tab`
 - **Per-tool safety gates** — destructive ops and outside-project writes always need confirmation; local mutations auto-approved in auto mode
+- **File ownership tracking** — files created by koda in a turn can be auto-approved for deletion in the same turn (no double-confirmation)
 - **Folder-scoped permissions** — writes outside `project_root` always require confirmation; bash commands with path escapes are flagged
 - **Diff preview** — see exactly what changes before approving Edit, Write, Delete
 - **Loop detection** — catches repeated tool calls with configurable iteration caps
 - **Parallel execution** — concurrent tool calls and sub-agent orchestration
 - **Extended thinking** — structured thinking block display with configurable budgets
 - **Image analysis** — `@image.png` or drag-and-drop for multi-modal input
+- **Fullscreen TUI** — alternate screen buffer with app-managed scrollback, mouse scroll during inference, native clipboard copy
 - **Git integration** — `/diff` review, commit message generation
 - **Headless mode** — `koda -p "prompt"` with JSON output for CI/CD
 - **Persistent memory** — project (`MEMORY.md`) and global (`~/.config/koda/memory.md`)
@@ -139,6 +141,8 @@ Koda connects to your email via IMAP/SMTP through the built-in koda-email integr
 | **Shift+Tab** | At prompt | Cycle mode (auto ↔ confirm) |
 | **Ctrl+D** | At prompt (empty) | Exit Koda |
 | **↑/↓** | At prompt | Browse command history |
+| **Mouse scroll** | History panel | Scroll output (works during inference) |
+| **Click+drag** | History panel | Select text for clipboard copy |
 
 ## Architecture
 
@@ -198,7 +202,7 @@ Use `/compact` manually, or let auto-compact handle it. The `/cost` command show
 ## Development
 
 ```bash
-cargo test --workspace --features koda-core/test-support  # Run all 432 tests
+cargo test --workspace --features koda-core/test-support  # Run all tests
 cargo clippy --workspace      # Lint
 cargo run -p koda-cli         # Run locally
 ```
