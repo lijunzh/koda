@@ -77,6 +77,8 @@ const READ_ONLY_PREFIXES: &[&str] = &[
     "uniq ",
     "cut ",
     "awk ",
+    // Safety: bare `sed` writes to stdout only (ReadOnly). `sed -i` (in-place
+    // edit) is caught by DANGEROUS_PATTERNS below, so this classification is correct.
     "sed ",
     "tr ",
     "diff ",
