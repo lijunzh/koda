@@ -14,10 +14,15 @@ use ratatui::{
     text::{Line, Span},
 };
 
-/// A position in the history panel, in visual (screen) coordinates.
+/// A position in the history panel.
+///
+/// `row` is in **buffer space** (absolute visual row index across the
+/// entire scroll buffer, accounting for line wrapping). This makes
+/// selections stable across scroll operations — the anchor doesn't
+/// become stale when the viewport moves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VisualPos {
-    /// Row within the history area (0 = top of visible area).
+    /// Absolute visual row in the scroll buffer (0 = first row).
     pub row: u16,
     /// Column (0-based).
     pub col: u16,
@@ -30,6 +35,11 @@ pub(crate) struct Selection {
     pub anchor: VisualPos,
     /// Current drag position (cursor).
     pub cursor: VisualPos,
+    /// The scroll-from-top offset captured at MouseDown time.
+    ///
+    /// Used to convert screen rows → buffer rows consistently across
+    /// the entire drag (immune to buffer growth during inference).
+    pub scroll_from_top: u16,
 }
 
 impl Selection {
@@ -52,12 +62,36 @@ impl Selection {
     }
 }
 
+/// Build ALL visual rows from logical lines, accounting for line wrapping.
+///
+/// Returns one String per visual row across the entire scroll buffer.
+/// Used for buffer-space text extraction during copy operations.
+pub(crate) fn build_all_visual_rows(lines: &[Line<'_>], viewport_width: usize) -> Vec<String> {
+    let mut visual_rows: Vec<String> = Vec::new();
+    let w = viewport_width.max(1);
+
+    for line in lines {
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        if text.is_empty() {
+            visual_rows.push(String::new());
+        } else {
+            let chars: Vec<char> = text.chars().collect();
+            for chunk in chars.chunks(w) {
+                visual_rows.push(chunk.iter().collect());
+            }
+        }
+    }
+
+    visual_rows
+}
+
 /// Extract the plain text content visible in the history area.
 ///
 /// Returns one String per visual row, accounting for line wrapping.
 /// The returned vec has exactly `viewport_height` entries (or fewer
 /// if the buffer is shorter than the viewport).
-pub(crate) fn extract_visible_text(
+#[cfg(test)]
+fn extract_visible_text(
     lines: &[Line<'_>],
     scroll_from_top: u16,
     viewport_width: usize,
@@ -89,17 +123,21 @@ pub(crate) fn extract_visible_text(
     }
 }
 
-/// Extract the selected text from visible rows.
-pub(crate) fn extract_selected_text(visible_rows: &[String], selection: &Selection) -> String {
+/// Extract the selected text from a vec of visual rows.
+///
+/// `rows` can be either the full buffer (from `build_all_visual_rows`) or
+/// a viewport slice (from `extract_visible_text`). The selection's row
+/// indices must be in the same coordinate space as `rows`.
+pub(crate) fn extract_selected_text(rows: &[String], selection: &Selection) -> String {
     let (start, end) = selection.ordered();
     let mut result = String::new();
 
     for row in start.row..=end.row {
         let idx = row as usize;
-        if idx >= visible_rows.len() {
+        if idx >= rows.len() {
             break;
         }
-        let line = &visible_rows[idx];
+        let line = &rows[idx];
         let chars: Vec<char> = line.chars().collect();
 
         let col_start = if row == start.row {
@@ -128,11 +166,11 @@ pub(crate) fn extract_selected_text(visible_rows: &[String], selection: &Selecti
 /// Apply selection highlighting to lines being rendered.
 ///
 /// Returns modified lines with inverted styles on selected regions.
-/// `history_y` is the y-coordinate of the history area's top edge.
+/// Selection coordinates are in **buffer space** (absolute visual rows).
 pub(crate) fn apply_selection_highlight<'a>(
     lines: Vec<Line<'a>>,
     selection: &Selection,
-    scroll_from_top: u16,
+    _scroll_from_top: u16,
     viewport_width: usize,
     _history_y: u16,
 ) -> Vec<Line<'a>> {
@@ -153,16 +191,11 @@ pub(crate) fn apply_selection_highlight<'a>(
             text.chars().count().div_ceil(viewport_width.max(1))
         } as u16;
 
-        // Check if any visual row of this logical line is in the selection
-        let line_start_vis = visual_row.saturating_sub(scroll_from_top);
-        let line_end_vis = (visual_row + rows_this_line).saturating_sub(scroll_from_top + 1);
-
-        let in_selection = visual_row + rows_this_line > scroll_from_top
-            && line_end_vis >= sel_start.row
-            && line_start_vis <= sel_end.row;
+        // Selection is in buffer space — compare directly against visual_row
+        let line_end = visual_row + rows_this_line - 1;
+        let in_selection = line_end >= sel_start.row && visual_row <= sel_end.row;
 
         if in_selection {
-            // Highlight entire line (simpler than char-level within wrapped lines)
             let highlighted_spans: Vec<Span<'a>> = line
                 .spans
                 .into_iter()
@@ -204,6 +237,7 @@ mod tests {
         let sel = Selection {
             anchor: VisualPos { row: 5, col: 10 },
             cursor: VisualPos { row: 2, col: 3 },
+            scroll_from_top: 0,
         };
         let (start, end) = sel.ordered();
         assert_eq!(start.row, 2);
@@ -215,6 +249,7 @@ mod tests {
         let sel = Selection {
             anchor: VisualPos { row: 2, col: 0 },
             cursor: VisualPos { row: 5, col: 10 },
+            scroll_from_top: 0,
         };
         assert!(!sel.contains_row(1));
         assert!(sel.contains_row(2));
@@ -264,6 +299,7 @@ mod tests {
         let sel = Selection {
             anchor: VisualPos { row: 0, col: 6 },
             cursor: VisualPos { row: 0, col: 10 },
+            scroll_from_top: 0,
         };
         let text = extract_selected_text(&rows, &sel);
         assert_eq!(text, "world");
@@ -279,6 +315,7 @@ mod tests {
         let sel = Selection {
             anchor: VisualPos { row: 0, col: 6 },
             cursor: VisualPos { row: 2, col: 4 },
+            scroll_from_top: 0,
         };
         let text = extract_selected_text(&rows, &sel);
         assert_eq!(text, "line\nsecond line\nthird");
@@ -291,8 +328,65 @@ mod tests {
         let sel = Selection {
             anchor: VisualPos { row: 0, col: 0 },
             cursor: VisualPos { row: 1, col: 4 },
+            scroll_from_top: 0,
         };
         let text = extract_selected_text(&rows, &sel);
         assert_eq!(text, "hello\nworld");
+    }
+
+    #[test]
+    fn test_build_all_visual_rows_basic() {
+        let lines = vec![
+            make_line("line one"),
+            make_line("line two"),
+            make_line("line three"),
+        ];
+        let rows = build_all_visual_rows(&lines, 80);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], "line one");
+        assert_eq!(rows[2], "line three");
+    }
+
+    #[test]
+    fn test_build_all_visual_rows_with_wrapping() {
+        let lines = vec![make_line("abcdefghij12345")];
+        let rows = build_all_visual_rows(&lines, 10);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], "abcdefghij");
+        assert_eq!(rows[1], "12345");
+    }
+
+    #[test]
+    fn test_build_all_visual_rows_empty_lines() {
+        let lines = vec![make_line("hello"), make_line(""), make_line("world")];
+        let rows = build_all_visual_rows(&lines, 80);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], "hello");
+        assert_eq!(rows[1], "");
+        assert_eq!(rows[2], "world");
+    }
+
+    /// Simulates a cross-page selection: anchor at buffer row 2, cursor at
+    /// buffer row 8, with a viewport that only shows 5 rows at a time.
+    /// The selection should capture all rows 2–8 regardless of viewport.
+    #[test]
+    fn test_cross_page_selection() {
+        let lines: Vec<Line<'_>> = (0..20).map(|i| make_line(&format!("line {i}"))).collect();
+        let all_rows = build_all_visual_rows(&lines, 80);
+        assert_eq!(all_rows.len(), 20);
+
+        // Selection spans rows 2–8 in buffer space (would cross viewport boundary)
+        let sel = Selection {
+            anchor: VisualPos { row: 2, col: 0 },
+            cursor: VisualPos { row: 8, col: 5 },
+            scroll_from_top: 0,
+        };
+        let text = extract_selected_text(&all_rows, &sel);
+        assert!(text.contains("line 2"));
+        assert!(text.contains("line 5"));
+        assert!(text.contains("line 8"));
+        assert!(!text.contains("line 1\n"));
+        assert!(!text.contains("line 9"));
+        assert_eq!(text.lines().count(), 7); // rows 2,3,4,5,6,7,8
     }
 }

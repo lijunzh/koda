@@ -115,9 +115,12 @@ impl TuiContext {
             (KeyCode::End, _) => {
                 self.scroll_buffer.scroll_to_bottom();
             }
-            // Clipboard: Ctrl+Y = copy last code block
+            // Clipboard: Ctrl+Y = copy last code block, Ctrl+U = copy last response
             (KeyCode::Char('y'), m) if m.contains(KeyModifiers::CONTROL) => {
                 self.copy_to_clipboard(m.contains(KeyModifiers::SHIFT));
+            }
+            (KeyCode::Char('u'), m) if m.contains(KeyModifiers::CONTROL) => {
+                self.copy_to_clipboard(true);
             }
             (KeyCode::BackTab, _) => {
                 approval::cycle_mode(&self.shared_mode);
@@ -182,7 +185,7 @@ impl TuiContext {
         use crate::mouse_select::{Selection, VisualPos};
         use crossterm::event::{MouseButton, MouseEventKind};
 
-        let (w, h) = self.term_dims();
+        let (w, _) = self.term_dims();
         let hist_y = self.history_area_y;
         let hist_h = self.history_area_height;
 
@@ -190,28 +193,52 @@ impl TuiContext {
         let in_history = mouse.row >= hist_y && mouse.row < hist_y + hist_h;
 
         match mouse.kind {
-            MouseEventKind::ScrollUp => self.scroll_buffer.scroll_up(3, w, h),
+            MouseEventKind::ScrollUp => self.scroll_buffer.scroll_up(3, w, hist_h as usize),
             MouseEventKind::ScrollDown => self.scroll_buffer.scroll_down(3),
 
             MouseEventKind::Down(MouseButton::Left) if in_history => {
-                let row = mouse.row.saturating_sub(hist_y);
+                // Capture scroll position ONCE at click time; reuse for all
+                // subsequent Drag events so coordinates stay stable even if
+                // new lines are pushed during inference.
+                let scroll_from_top = self.scroll_buffer.paragraph_scroll(hist_h as usize, w).0;
+                let screen_row = mouse.row.saturating_sub(hist_y);
+                let buffer_row = screen_row.saturating_add(scroll_from_top);
                 self.mouse_selection = Some(Selection {
                     anchor: VisualPos {
-                        row,
+                        row: buffer_row,
                         col: mouse.column,
                     },
                     cursor: VisualPos {
-                        row,
+                        row: buffer_row,
                         col: mouse.column,
                     },
+                    scroll_from_top,
                 });
             }
 
-            MouseEventKind::Drag(MouseButton::Left) if in_history => {
+            MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(sel) = &mut self.mouse_selection {
-                    let row = mouse.row.saturating_sub(hist_y);
+                    // Auto-scroll when dragging above or below the history area
+                    if mouse.row < hist_y {
+                        self.scroll_buffer.scroll_up(1, w, hist_h as usize);
+                    } else if mouse.row >= hist_y + hist_h {
+                        self.scroll_buffer.scroll_down(1);
+                    }
+
+                    // Refresh scroll position after possible auto-scroll so
+                    // the cursor tracks the new viewport, while the anchor
+                    // (already in buffer space) stays pinned.
+                    sel.scroll_from_top = self.scroll_buffer.paragraph_scroll(hist_h as usize, w).0;
+
+                    // Clamp screen row to the history area bounds
+                    let screen_row = mouse
+                        .row
+                        .max(hist_y)
+                        .min(hist_y + hist_h.saturating_sub(1))
+                        .saturating_sub(hist_y);
+                    let buffer_row = screen_row.saturating_add(sel.scroll_from_top);
                     sel.cursor = VisualPos {
-                        row,
+                        row: buffer_row,
                         col: mouse.column,
                     };
                 }
@@ -223,14 +250,8 @@ impl TuiContext {
                     if sel.anchor != sel.cursor {
                         let lines: Vec<Line<'_>> =
                             self.scroll_buffer.all_lines().cloned().collect();
-                        let scroll_pos = self.scroll_buffer.paragraph_scroll(hist_h as usize, w);
-                        let visible = crate::mouse_select::extract_visible_text(
-                            &lines,
-                            scroll_pos.0,
-                            w,
-                            hist_h as usize,
-                        );
-                        let text = crate::mouse_select::extract_selected_text(&visible, &sel);
+                        let all_rows = crate::mouse_select::build_all_visual_rows(&lines, w);
+                        let text = crate::mouse_select::extract_selected_text(&all_rows, &sel);
                         if !text.is_empty() {
                             match crate::mouse_select::copy_to_clipboard(&text) {
                                 Ok(msg) => {
