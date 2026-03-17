@@ -1,0 +1,421 @@
+//! Menu navigation, dropdown pickers, and wizard state machines.
+//!
+//! All methods are `impl TuiContext` extensions for menu/wizard interaction.
+
+use super::*;
+
+impl TuiContext {
+    // ── Dropdown openers ─────────────────────────────────────────
+
+    pub(crate) async fn open_model_picker(&mut self) {
+        let prov = self.provider.read().await;
+        match prov.list_models().await {
+            Ok(models) if !models.is_empty() => {
+                let items: Vec<crate::widgets::model_menu::ModelItem> = models
+                    .iter()
+                    .map(|m| crate::widgets::model_menu::ModelItem {
+                        id: m.id.clone(),
+                        is_current: m.id == self.config.model,
+                    })
+                    .collect();
+                let mut dd =
+                    crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Select a model");
+                if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
+                    dd.selected = idx;
+                    let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
+                    if idx >= max_vis {
+                        dd.scroll_offset = idx + 1 - max_vis;
+                    }
+                }
+                self.menu = MenuContent::Model(dd);
+            }
+            Ok(_) => {
+                self.scroll_buffer.push(Line::styled(
+                    "  \u{26a0} No models available",
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            Err(e) => {
+                self.scroll_buffer.push(Line::styled(
+                    format!("  \u{2717} Failed to list models: {e}"),
+                    Style::default().fg(Color::Red),
+                ));
+            }
+        }
+    }
+
+    pub(crate) fn open_provider_picker(&mut self) {
+        let providers = crate::repl::PROVIDERS;
+        let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
+            .iter()
+            .map(
+                |(key, name, desc)| crate::widgets::provider_menu::ProviderItem {
+                    key,
+                    name,
+                    description: desc,
+                    is_current: koda_core::config::ProviderType::from_url_or_name("", Some(key))
+                        == self.config.provider_type,
+                },
+            )
+            .collect();
+        let mut dd =
+            crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Select a provider");
+        if let Some(idx) = dd.filtered.iter().position(|p| p.is_current) {
+            dd.selected = idx;
+            let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
+            if idx >= max_vis {
+                dd.scroll_offset = idx + 1 - max_vis;
+            }
+        }
+        self.menu = MenuContent::Provider(dd);
+    }
+
+    pub(crate) fn start_provider_wizard(&mut self, name: &str) {
+        let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(name));
+        let base_url = ptype.default_base_url().to_string();
+        let provider_name = ptype.to_string();
+
+        if ptype.requires_api_key() {
+            let env_name = ptype.env_key_name().to_string();
+            let has_key = koda_core::runtime_env::is_set(&env_name);
+            let label = if has_key {
+                format!("API key for {} (Enter to keep current)", ptype)
+            } else {
+                format!("API key for {}", ptype)
+            };
+            self.menu = MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
+            self.prompt_mode = PromptMode::WizardInput { label };
+            self.provider_wizard = Some(ProviderWizard::NeedApiKey {
+                provider_type: ptype,
+                base_url,
+                env_name,
+            });
+            self.textarea.select_all();
+            self.textarea.cut();
+        } else {
+            self.menu = MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
+            self.prompt_mode = PromptMode::WizardInput {
+                label: format!("{} URL", ptype),
+            };
+            self.provider_wizard = Some(ProviderWizard::NeedUrl {
+                provider_type: ptype,
+            });
+            self.textarea.select_all();
+            self.textarea.cut();
+            self.textarea.insert_str(&base_url);
+        }
+    }
+
+    pub(crate) async fn open_session_picker(&mut self) {
+        match self.session.db.list_sessions(10, &self.project_root).await {
+            Ok(sessions) if !sessions.is_empty() => {
+                let items: Vec<crate::widgets::session_menu::SessionItem> = sessions
+                    .iter()
+                    .map(|s| crate::widgets::session_menu::SessionItem {
+                        id: s.id.clone(),
+                        short_id: s.id[..8.min(s.id.len())].to_string(),
+                        created_at: s.created_at.clone(),
+                        message_count: s.message_count,
+                        total_tokens: s.total_tokens,
+                        is_current: s.id == self.session.id,
+                    })
+                    .collect();
+                let mut dd =
+                    crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Sessions");
+                if let Some(idx) = dd.filtered.iter().position(|s| s.is_current) {
+                    dd.selected = idx;
+                    let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
+                    if idx >= max_vis {
+                        dd.scroll_offset = idx + 1 - max_vis;
+                    }
+                }
+                self.menu = MenuContent::Session(dd);
+            }
+            Ok(_) => {
+                self.scroll_buffer.push(Line::styled(
+                    "  No other sessions found.",
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            Err(e) => {
+                self.scroll_buffer.push(Line::styled(
+                    format!("  \u{2717} Error: {e}"),
+                    Style::default().fg(Color::Red),
+                ));
+            }
+        }
+    }
+
+    // ── Menu navigation ───────────────────────────────────────
+
+    pub(crate) async fn handle_menu_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+    ) -> Option<bool> {
+        // Purge confirmation: only y/n/Esc are meaningful.
+        if let MenuContent::PurgeConfirm { min_age_days, .. } = &self.menu {
+            let days = *min_age_days;
+            match key.code {
+                KeyCode::Char('y' | 'Y') => {
+                    crate::tui_wizards::execute_purge(&mut self.scroll_buffer, &self.session, days)
+                        .await;
+                    self.menu = MenuContent::None;
+                }
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                    crate::tui_output::dim_msg(&mut self.scroll_buffer, "Purge cancelled.".into());
+                    self.menu = MenuContent::None;
+                }
+                _ => {}
+            }
+            return Some(true);
+        }
+
+        let is_up = key.code == KeyCode::Up
+            || (key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL));
+        let is_down = key.code == KeyCode::Down
+            || key.code == KeyCode::Tab
+            || (key.code == KeyCode::Char('j') && key.modifiers.contains(KeyModifiers::CONTROL));
+
+        if is_up {
+            self.menu_navigate(-1);
+            return Some(true);
+        }
+        if is_down {
+            self.menu_navigate(1);
+            return Some(true);
+        }
+
+        match key.code {
+            KeyCode::Enter => {
+                self.handle_menu_select().await;
+                return Some(true);
+            }
+            KeyCode::Esc => {
+                self.menu = MenuContent::None;
+                if matches!(self.prompt_mode, PromptMode::WizardInput { .. }) {
+                    self.prompt_mode = PromptMode::Chat;
+                    self.provider_wizard = None;
+                    self.textarea.select_all();
+                    self.textarea.cut();
+                }
+                return Some(true);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    fn menu_navigate(&mut self, dir: i8) {
+        macro_rules! nav {
+            ($dd:expr) => {
+                if dir < 0 { $dd.up() } else { $dd.down() }
+            };
+        }
+        match &mut self.menu {
+            MenuContent::Slash(dd) => nav!(dd),
+            MenuContent::Model(dd) => nav!(dd),
+            MenuContent::Provider(dd) => nav!(dd),
+            MenuContent::Session(dd) => nav!(dd),
+            MenuContent::File { dropdown: dd, .. } => nav!(dd),
+            MenuContent::Approval { .. }
+            | MenuContent::LoopCap
+            | MenuContent::PurgeConfirm { .. }
+            | MenuContent::WizardTrail(_)
+            | MenuContent::None => {}
+        }
+    }
+
+    pub(crate) async fn handle_menu_select(&mut self) {
+        match &self.menu {
+            MenuContent::Slash(dd) => {
+                if let Some(item) = dd.selected_item() {
+                    let cmd = item.command.to_string();
+                    self.textarea.select_all();
+                    self.textarea.cut();
+                    self.textarea.insert_str(&cmd);
+                }
+            }
+            MenuContent::Model(dd) => {
+                if let Some(item) = dd.selected_item() {
+                    let model_id = item.id.clone();
+                    self.config.model = model_id.clone();
+                    self.config.model_settings.model = model_id.clone();
+                    self.config.recalculate_model_derived();
+                    {
+                        let prov = self.provider.read().await;
+                        self.config
+                            .query_and_apply_capabilities(prov.as_ref())
+                            .await;
+                    }
+                    crate::tui_wizards::save_provider(&self.config);
+                    self.scroll_buffer.push(Line::styled(
+                        format!("  \u{2714} Model set to: {model_id}"),
+                        Style::default().fg(Color::Green),
+                    ));
+                    self.renderer.model = model_id;
+                }
+            }
+            MenuContent::Provider(dd) => {
+                if let Some(item) = dd.selected_item() {
+                    let key = item.key;
+                    let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
+                    let base_url = ptype.default_base_url().to_string();
+                    let provider_name = item.name.to_string();
+
+                    if ptype.requires_api_key() {
+                        let env_name = ptype.env_key_name().to_string();
+                        let has_key = koda_core::runtime_env::is_set(&env_name);
+                        let label = if has_key {
+                            format!("API key for {} (Enter to keep current)", ptype)
+                        } else {
+                            format!("API key for {}", ptype)
+                        };
+                        self.menu =
+                            MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
+                        self.prompt_mode = PromptMode::WizardInput { label };
+                        self.provider_wizard = Some(ProviderWizard::NeedApiKey {
+                            provider_type: ptype,
+                            base_url,
+                            env_name,
+                        });
+                        self.textarea.select_all();
+                        self.textarea.cut();
+                    } else {
+                        self.menu =
+                            MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
+                        self.prompt_mode = PromptMode::WizardInput {
+                            label: format!("{} URL", ptype),
+                        };
+                        self.provider_wizard = Some(ProviderWizard::NeedUrl {
+                            provider_type: ptype,
+                        });
+                        self.textarea.select_all();
+                        self.textarea.cut();
+                        self.textarea.insert_str(&base_url);
+                    }
+                }
+                return;
+            }
+            MenuContent::Session(dd) => {
+                if let Some(item) = dd.selected_item() {
+                    if item.is_current {
+                        self.scroll_buffer.push(Line::styled(
+                            "  Already in this session.",
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    } else {
+                        let target_id = item.id.clone();
+                        let short = item.short_id.clone();
+                        self.session.id = target_id;
+                        self.scroll_buffer.push(Line::from(vec![
+                            Span::styled("  \u{2714} ", Style::default().fg(Color::Green)),
+                            Span::raw("Resumed session "),
+                            Span::styled(short, Style::default().fg(Color::Cyan)),
+                        ]));
+                    }
+                }
+            }
+            MenuContent::File { dropdown, prefix } => {
+                if let Some(item) = dropdown.selected_item() {
+                    let replacement = format!("{}@{}", prefix, item.path);
+                    self.textarea.select_all();
+                    self.textarea.cut();
+                    self.textarea.insert_str(&replacement);
+                }
+            }
+            MenuContent::Approval { .. }
+            | MenuContent::LoopCap
+            | MenuContent::PurgeConfirm { .. }
+            | MenuContent::WizardTrail(_)
+            | MenuContent::None => {}
+        }
+        self.menu = MenuContent::None;
+    }
+
+    // ── Wizard submit ──────────────────────────────────────────
+
+    pub(crate) async fn handle_wizard_submit(&mut self) {
+        let value = self.textarea.lines().join("");
+        self.textarea.select_all();
+        self.textarea.cut();
+
+        if let Some(wizard) = self.provider_wizard.take() {
+            match wizard {
+                ProviderWizard::NeedApiKey {
+                    provider_type,
+                    base_url,
+                    env_name,
+                } => {
+                    if value.is_empty() && !koda_core::runtime_env::is_set(&env_name) {
+                        self.scroll_buffer.push(Line::styled(
+                            "  \u{2716} No API key provided.",
+                            Style::default().fg(Color::Red),
+                        ));
+                        self.prompt_mode = PromptMode::Chat;
+                        self.menu = MenuContent::None;
+                        return;
+                    }
+                    if !value.is_empty() {
+                        koda_core::runtime_env::set(&env_name, &value);
+                        if let Ok(mut store) = koda_core::keystore::KeyStore::load() {
+                            store.set(&env_name, &value);
+                            let _ = store.save();
+                        }
+                        let masked = koda_core::keystore::mask_key(&value);
+                        self.scroll_buffer.push(Line::styled(
+                            format!("  \u{2714} {env_name} set to {masked}"),
+                            Style::default().fg(Color::Green),
+                        ));
+                    }
+                    self.apply_provider(provider_type, base_url).await;
+                }
+                ProviderWizard::NeedUrl { provider_type } => {
+                    let url = if value.is_empty() {
+                        provider_type.default_base_url().to_string()
+                    } else {
+                        value
+                    };
+                    self.apply_provider(provider_type, url).await;
+                }
+            }
+        }
+        self.prompt_mode = PromptMode::Chat;
+        self.menu = MenuContent::None;
+    }
+
+    async fn apply_provider(
+        &mut self,
+        provider_type: koda_core::config::ProviderType,
+        base_url: String,
+    ) {
+        self.config.provider_type = provider_type.clone();
+        self.config.base_url = base_url.clone();
+        self.config.model = provider_type.default_model().to_string();
+        self.config.model_settings.model = self.config.model.clone();
+        self.config.recalculate_model_derived();
+        *self.provider.write().await = koda_core::providers::create_provider(&self.config);
+        crate::tui_wizards::save_provider(&self.config);
+
+        let prov = self.provider.read().await;
+        if let Ok(models) = prov.list_models().await {
+            if let Some(first) = models.first() {
+                self.config.model = first.id.clone();
+                self.config.model_settings.model = self.config.model.clone();
+                self.config.recalculate_model_derived();
+            }
+            self.config
+                .query_and_apply_capabilities(prov.as_ref())
+                .await;
+            self.completer
+                .set_model_names(models.iter().map(|m| m.id.clone()).collect());
+        }
+        self.renderer.model = self.config.model.clone();
+        self.scroll_buffer.push(Line::styled(
+            format!(
+                "  \u{2714} Provider: {} ({})",
+                self.config.provider_type, self.config.model
+            ),
+            Style::default().fg(Color::Green),
+        ));
+    }
+}

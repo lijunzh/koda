@@ -433,7 +433,7 @@ mod event_loop_structure {
     /// guard against accidental removal during refactors.
     #[test]
     fn draw_called_before_idle_select_in_event_loop() {
-        let source = include_str!("../src/tui_context.rs");
+        let source = include_str!("../src/tui_context/mod.rs");
 
         // Locate run_event_loop
         let fn_start = source
