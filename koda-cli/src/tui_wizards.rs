@@ -5,6 +5,8 @@
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
 
+use crate::tui_types::MenuContent;
+
 use koda_core::config::KodaConfig;
 use koda_core::providers::LlmProvider;
 use koda_core::session::KodaSession;
@@ -80,6 +82,7 @@ pub(crate) async fn handle_purge(
     buffer: &mut ScrollBuffer,
     session: &KodaSession,
     age_filter: Option<&str>,
+    menu: &mut MenuContent,
 ) {
     use koda_core::persistence::Persistence;
 
@@ -121,39 +124,32 @@ pub(crate) async fn handle_purge(
         String::new()
     };
 
+    let detail = format!(
+        "{} compacted messages across {} sessions ({size_str}), oldest from {oldest_str}{age_str}",
+        stats.message_count, stats.session_count
+    );
+
     tui_output::emit_line(
         buffer,
         Line::from(vec![
             Span::styled("  \u{1f9f9} ", BOLD),
-            Span::styled(
-                format!(
-                    "{} compacted messages across {} sessions ({size_str}), oldest from {oldest_str}{age_str}",
-                    stats.message_count, stats.session_count
-                ),
-                CYAN,
-            ),
+            Span::styled(detail.clone(), CYAN),
         ]),
     );
 
-    // FIXME(#472): blocking read() inside fullscreen event loop.
-    // This works because raw mode is still active, but the UI won't
-    // redraw until confirmation. Move to menu-based confirmation later.
-    tui_output::dim_msg(
-        buffer,
-        "Permanently delete? This cannot be undone. [y/N] ".into(),
-    );
-
-    use crossterm::event::{self, Event, KeyCode};
-    let confirmed = loop {
-        if let Ok(Event::Key(key)) = event::read() {
-            break matches!(key.code, KeyCode::Char('y' | 'Y'));
-        }
+    *menu = MenuContent::PurgeConfirm {
+        min_age_days,
+        detail,
     };
+}
 
-    if !confirmed {
-        tui_output::dim_msg(buffer, "Purge cancelled.".into());
-        return;
-    }
+/// Execute the purge after user confirms via menu.
+pub(crate) async fn execute_purge(
+    buffer: &mut ScrollBuffer,
+    session: &KodaSession,
+    min_age_days: u32,
+) {
+    use koda_core::persistence::Persistence;
 
     match session.db.purge_compacted(min_age_days).await {
         Ok(deleted) => tui_output::ok_msg(buffer, format!("Purged {deleted} archived messages.")),

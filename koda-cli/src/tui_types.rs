@@ -63,6 +63,8 @@ pub(crate) enum MenuContent {
     },
     /// Loop cap hotkey bar — continue or stop after iteration limit.
     LoopCap,
+    /// Purge confirmation bar — \[y\] confirm / \[n\] cancel.
+    PurgeConfirm { min_age_days: u32, detail: String },
 }
 
 impl MenuContent {
