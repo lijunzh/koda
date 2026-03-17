@@ -45,6 +45,7 @@ impl Selection {
     }
 
     /// Check if a visual row is within the selection range.
+    #[allow(dead_code)] // used in render path, will be wired for per-row highlighting
     pub fn contains_row(&self, row: u16) -> bool {
         let (start, end) = self.ordered();
         row >= start.row && row <= end.row
@@ -136,7 +137,7 @@ pub(crate) fn apply_selection_highlight<'a>(
     selection: &Selection,
     scroll_from_top: u16,
     viewport_width: usize,
-    history_y: u16,
+    _history_y: u16,
 ) -> Vec<Line<'a>> {
     let (sel_start, sel_end) = selection.ordered();
     let highlight = Style::default()

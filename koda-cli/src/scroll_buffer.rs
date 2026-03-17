@@ -105,6 +105,7 @@ impl ScrollBuffer {
 
     /// Returns `true` when the user has scrolled to the very top of the
     /// buffer. Used to trigger loading older messages from the DB.
+    #[allow(dead_code)] // wired when virtual scroll pagination lands
     pub fn at_top(&self, term_width: usize, viewport_height: usize) -> bool {
         if self.lines.is_empty() {
             return false;
@@ -168,6 +169,7 @@ impl ScrollBuffer {
     }
 
     /// Get the oldest DB message ID rendered in this buffer.
+    #[allow(dead_code)] // wired when virtual scroll pagination lands
     pub fn oldest_message_id(&self) -> Option<i64> {
         self.oldest_message_id
     }
