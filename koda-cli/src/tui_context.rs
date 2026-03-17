@@ -285,6 +285,11 @@ impl TuiContext {
 
     /// Draw the fullscreen viewport.
     pub fn draw(&mut self) -> Result<()> {
+        // Clamp scroll offset to valid bounds before rendering.
+        // Necessary after terminal resize changes wrapping math.
+        let (w, h) = self.term_dims();
+        self.scroll_buffer.clamp_offset(w, h);
+
         let mode = approval::read_mode(&self.shared_mode);
         let ctx = koda_core::context::percentage() as u32;
         let tui_state = self.tui_state;
@@ -695,7 +700,9 @@ impl TuiContext {
     async fn handle_idle_event(&mut self, ev: Event) -> anyhow::Result<bool> {
         match ev {
             Event::Resize(_, _) => {
-                // Fullscreen: just redraw, terminal handles the rest.
+                // Clamp scroll offset for the new terminal dimensions.
+                let (w, h) = self.term_dims();
+                self.scroll_buffer.clamp_offset(w, h);
             }
             Event::Mouse(mouse) => {
                 self.handle_mouse(mouse);
