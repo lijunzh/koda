@@ -1023,4 +1023,58 @@ mod tests {
         let out = verify_syntax_post_edit("not json", Path::new("/tmp"), "ok");
         assert_eq!(out, "ok");
     }
+
+    /// Simulate the realistic flow: start with valid code, apply a bad edit,
+    /// verify the hook catches the regression.
+    #[test]
+    fn test_verify_syntax_edit_introduces_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+
+        // Start with valid code
+        std::fs::write(&file, "fn hello() { println!(\"hi\"); }\n").unwrap();
+        let args = serde_json::json!({"path": file.to_str().unwrap()}).to_string();
+        let out = verify_syntax_post_edit(&args, dir.path(), "✓ Edited lib.rs");
+        assert!(
+            !out.contains("syntax error"),
+            "should be clean before edit: {out}"
+        );
+
+        // Simulate a bad edit that breaks the syntax
+        std::fs::write(&file, "fn hello( { println!(\"hi\"); }\n").unwrap();
+        let out = verify_syntax_post_edit(&args, dir.path(), "✓ Edited lib.rs");
+        assert!(
+            out.contains("syntax error"),
+            "should catch regression: {out}"
+        );
+        assert!(
+            out.contains("Fix the syntax errors"),
+            "should instruct LLM: {out}"
+        );
+    }
+
+    /// Opposite flow: start with broken code, apply a fix, verify clean result.
+    #[test]
+    fn test_verify_syntax_edit_fixes_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+
+        // Start with broken code
+        std::fs::write(&file, "fn hello( { println!(\"hi\"); }\n").unwrap();
+        let args = serde_json::json!({"path": file.to_str().unwrap()}).to_string();
+        let out = verify_syntax_post_edit(&args, dir.path(), "✓ Edited lib.rs");
+        assert!(
+            out.contains("syntax error"),
+            "should be broken before fix: {out}"
+        );
+
+        // Fix the syntax
+        std::fs::write(&file, "fn hello() { println!(\"hi\"); }\n").unwrap();
+        let out = verify_syntax_post_edit(&args, dir.path(), "✓ Edited lib.rs");
+        assert!(
+            !out.contains("syntax error"),
+            "should be clean after fix: {out}"
+        );
+        assert_eq!(out, "✓ Edited lib.rs");
+    }
 }
