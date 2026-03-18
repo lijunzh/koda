@@ -135,6 +135,40 @@ pub fn purge_nudge_lines(size_str: &str) -> Vec<Line<'static>> {
     ])]
 }
 
+/// Build home-directory footgun warning lines.
+///
+/// Returns empty vec when project root is NOT the home directory.
+pub fn home_dir_warning_lines(project_root: &std::path::Path) -> Vec<Line<'static>> {
+    let home = match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+        Ok(h) => h,
+        Err(_) => return vec![],
+    };
+    let home_path = match std::fs::canonicalize(&home) {
+        Ok(p) => p,
+        Err(_) => return vec![],
+    };
+    if project_root != home_path {
+        return vec![];
+    }
+    vec![
+        Line::from(vec![
+            Span::styled("  \u{26a0}\u{fe0f}  ", Style::new().fg(Color::Yellow)),
+            Span::styled(
+                format!(
+                    "Project root is your home directory ({}).",
+                    project_root.display()
+                ),
+                Style::new().fg(Color::Yellow),
+            ),
+        ]),
+        Line::styled(
+            "     koda can modify any file in this tree. Consider running from a project subdirectory.",
+            Style::new().fg(Color::Yellow),
+        ),
+        Line::default(),
+    ]
+}
+
 /// Print session resume hint (after raw mode ends, to stdout).
 pub fn print_resume_hint(session_id: &str) {
     println!("\nResume this session with:\n  koda --resume {session_id}");
@@ -186,6 +220,35 @@ pub(crate) fn lines_to_text(lines: &[Line]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_dir_warning_when_at_home() {
+        // Use a path that definitely is NOT the home dir so we get empty.
+        let lines = home_dir_warning_lines(std::path::Path::new("/tmp/definitely-not-home"));
+        assert!(
+            lines.is_empty(),
+            "Should produce no warning for non-home dir"
+        );
+    }
+
+    #[test]
+    fn home_dir_warning_contains_text() {
+        // When project_root == home, we should get warning lines.
+        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))
+            && let Ok(home_path) = std::fs::canonicalize(&home)
+        {
+            let lines = home_dir_warning_lines(&home_path);
+            let text = lines_to_text(&lines);
+            assert!(
+                text.contains("home directory"),
+                "Warning should mention home directory"
+            );
+            assert!(
+                text.contains("subdirectory"),
+                "Warning should suggest subdirectory"
+            );
+        }
+    }
 
     #[test]
     fn banner_contains_model_name() {
