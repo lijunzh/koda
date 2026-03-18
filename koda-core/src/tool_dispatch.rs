@@ -55,6 +55,33 @@ fn resolve_tool_path(
     crate::file_tracker::resolve_file_path_from_args(args, project_root)
 }
 
+/// Post-edit AST syntax check (#467).
+///
+/// After a successful Write/Edit, parse the file with tree-sitter and
+/// append any syntax errors to the tool result. This gives the LLM
+/// immediate feedback to self-correct without user intervention.
+///
+/// Returns the original result unmodified if:
+/// - the file extension isn't supported by koda-ast
+/// - the file can't be read (e.g., binary)
+/// - the file parses cleanly (no errors)
+fn verify_syntax_post_edit(arguments: &str, project_root: &Path, result: &str) -> String {
+    let args: serde_json::Value = match serde_json::from_str(arguments) {
+        Ok(v) => v,
+        Err(_) => return result.to_string(),
+    };
+    let path = match crate::file_tracker::resolve_file_path_from_args(&args, project_root) {
+        Some(p) => p,
+        None => return result.to_string(),
+    };
+    match koda_ast::syntax_check(&path) {
+        Some(errors) => {
+            format!("{result}\n\n{errors}\nFix the syntax errors above before proceeding.")
+        }
+        None => result.to_string(),
+    }
+}
+
 /// Update file lifecycle tracker after a tool execution (#465).
 ///
 /// - Write → track as owned (Koda created it)
@@ -159,6 +186,14 @@ pub(crate) async fn execute_one_tool(
         let r = tools.execute(&tc.function_name, &tc.arguments).await;
         (r.output, r.success)
     };
+
+    // Post-edit AST verification (#467): if Write/Edit succeeded, check syntax.
+    let result = if success && matches!(tc.function_name.as_str(), "Write" | "Edit") {
+        verify_syntax_post_edit(&tc.arguments, project_root, &result)
+    } else {
+        result
+    };
+
     (tc.id.clone(), result, success)
 }
 
@@ -947,5 +982,99 @@ mod tests {
             ApprovalMode::Auto,
             Path::new("/test/project")
         ));
+    }
+
+    // ── verify_syntax_post_edit tests (#467) ──────────────────────
+
+    #[test]
+    fn test_verify_syntax_clean_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ok.rs");
+        std::fs::write(&file, "fn main() {}").unwrap();
+        let args = serde_json::json!({"path": file.to_str().unwrap()}).to_string();
+        let out = verify_syntax_post_edit(&args, dir.path(), "✓ Wrote ok.rs");
+        assert!(!out.contains("syntax error"), "got: {out}");
+        assert!(out.starts_with("✓ Wrote ok.rs"));
+    }
+
+    #[test]
+    fn test_verify_syntax_broken_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("bad.rs");
+        std::fs::write(&file, "fn main() { let x = ; }").unwrap();
+        let args = serde_json::json!({"path": file.to_str().unwrap()}).to_string();
+        let out = verify_syntax_post_edit(&args, dir.path(), "✓ Wrote bad.rs");
+        assert!(out.contains("syntax error"), "got: {out}");
+        assert!(out.contains("Fix the syntax errors"), "got: {out}");
+    }
+
+    #[test]
+    fn test_verify_syntax_unsupported_ext() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("data.csv");
+        std::fs::write(&file, "a,b,c").unwrap();
+        let args = serde_json::json!({"path": file.to_str().unwrap()}).to_string();
+        let out = verify_syntax_post_edit(&args, dir.path(), "✓ Wrote data.csv");
+        assert_eq!(out, "✓ Wrote data.csv");
+    }
+
+    #[test]
+    fn test_verify_syntax_bad_json_args() {
+        let out = verify_syntax_post_edit("not json", Path::new("/tmp"), "ok");
+        assert_eq!(out, "ok");
+    }
+
+    /// Simulate the realistic flow: start with valid code, apply a bad edit,
+    /// verify the hook catches the regression.
+    #[test]
+    fn test_verify_syntax_edit_introduces_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+
+        // Start with valid code
+        std::fs::write(&file, "fn hello() { println!(\"hi\"); }\n").unwrap();
+        let args = serde_json::json!({"path": file.to_str().unwrap()}).to_string();
+        let out = verify_syntax_post_edit(&args, dir.path(), "✓ Edited lib.rs");
+        assert!(
+            !out.contains("syntax error"),
+            "should be clean before edit: {out}"
+        );
+
+        // Simulate a bad edit that breaks the syntax
+        std::fs::write(&file, "fn hello( { println!(\"hi\"); }\n").unwrap();
+        let out = verify_syntax_post_edit(&args, dir.path(), "✓ Edited lib.rs");
+        assert!(
+            out.contains("syntax error"),
+            "should catch regression: {out}"
+        );
+        assert!(
+            out.contains("Fix the syntax errors"),
+            "should instruct LLM: {out}"
+        );
+    }
+
+    /// Opposite flow: start with broken code, apply a fix, verify clean result.
+    #[test]
+    fn test_verify_syntax_edit_fixes_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("lib.rs");
+
+        // Start with broken code
+        std::fs::write(&file, "fn hello( { println!(\"hi\"); }\n").unwrap();
+        let args = serde_json::json!({"path": file.to_str().unwrap()}).to_string();
+        let out = verify_syntax_post_edit(&args, dir.path(), "✓ Edited lib.rs");
+        assert!(
+            out.contains("syntax error"),
+            "should be broken before fix: {out}"
+        );
+
+        // Fix the syntax
+        std::fs::write(&file, "fn hello() { println!(\"hi\"); }\n").unwrap();
+        let out = verify_syntax_post_edit(&args, dir.path(), "✓ Edited lib.rs");
+        assert!(
+            !out.contains("syntax error"),
+            "should be clean after fix: {out}"
+        );
+        assert_eq!(out, "✓ Edited lib.rs");
     }
 }
