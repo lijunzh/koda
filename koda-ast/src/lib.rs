@@ -10,7 +10,7 @@ pub mod ast;
 use std::path::{Path, PathBuf};
 
 /// Re-export core analysis functions at the crate root for convenience.
-pub use ast::{analyze_file, get_call_graph};
+pub use ast::{analyze_file, get_call_graph, syntax_check};
 
 /// Tool definition metadata for consumers (koda-core ToolRegistry).
 ///
