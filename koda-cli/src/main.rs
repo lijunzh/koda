@@ -177,7 +177,6 @@ async fn main() -> Result<()> {
 
     tracing::info!("Koda starting. Project root: {:?}", project_root);
 
-
     // Load and inject stored API keys (env vars take precedence)
     match koda_core::keystore::KeyStore::load() {
         Ok(store) => store.inject_into_env(),

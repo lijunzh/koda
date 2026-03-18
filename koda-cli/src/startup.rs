@@ -154,7 +154,10 @@ pub fn home_dir_warning_lines(project_root: &std::path::Path) -> Vec<Line<'stati
         Line::from(vec![
             Span::styled("  \u{26a0}\u{fe0f}  ", Style::new().fg(Color::Yellow)),
             Span::styled(
-                format!("Project root is your home directory ({}).", project_root.display()),
+                format!(
+                    "Project root is your home directory ({}).",
+                    project_root.display()
+                ),
                 Style::new().fg(Color::Yellow),
             ),
         ]),
@@ -222,7 +225,10 @@ mod tests {
     fn home_dir_warning_when_at_home() {
         // Use a path that definitely is NOT the home dir so we get empty.
         let lines = home_dir_warning_lines(std::path::Path::new("/tmp/definitely-not-home"));
-        assert!(lines.is_empty(), "Should produce no warning for non-home dir");
+        assert!(
+            lines.is_empty(),
+            "Should produce no warning for non-home dir"
+        );
     }
 
     #[test]
@@ -232,8 +238,14 @@ mod tests {
             if let Ok(home_path) = std::fs::canonicalize(&home) {
                 let lines = home_dir_warning_lines(&home_path);
                 let text = lines_to_text(&lines);
-                assert!(text.contains("home directory"), "Warning should mention home directory");
-                assert!(text.contains("subdirectory"), "Warning should suggest subdirectory");
+                assert!(
+                    text.contains("home directory"),
+                    "Warning should mention home directory"
+                );
+                assert!(
+                    text.contains("subdirectory"),
+                    "Warning should suggest subdirectory"
+                );
             }
         }
     }
