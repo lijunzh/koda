@@ -290,14 +290,23 @@ from production builds to keep `koda-core`'s public API clean.
 - Context tracking, loop detection, config defaults, bash safety, etc.
 
 **E2E tests** (mock provider, CI) — require `test-support` feature:
-- `tests/e2e_test.rs` — full inference loop with real tools in sandboxed temp dirs
+- `tests/e2e_harness/mod.rs` — shared `Env` test harness (temp dir, DB, config)
+- `tests/e2e_test.rs` — core pipeline: text streaming, tool calls, errors, history, cancel
+- `tests/e2e_tools_test.rs` — tool coverage: Glob, Grep, Edit, Delete, AST verification
+- `tests/e2e_agent_test.rs` — sub-agent invocation + cache hit
+- `tests/e2e_skills_test.rs` — skills, compaction, file ownership
 - `tests/cancel_test.rs` — Ctrl+C interruption during inference
 
 **Integration tests** — no feature flag:
 - `tests/file_tools_test.rs` — path safety, file CRUD
 - `tests/new_tools_test.rs` — glob, tool naming
+- `tests/guarantee_matrix_test.rs` — approval mode × tool effect matrix
+- `tests/inference_recovery_test.rs` — rate-limit retry, context overflow
+- `tests/session_test.rs` — session lifecycle, TurnStart/TurnEnd events
+- `tests/purge_test.rs` — /purge feature (compacted stats, age filter)
 - `tests/perf_test.rs` — DB, grep, markdown throughput
 - `tests/capabilities_test.rs` — capabilities.md freshness
+- `tests/tool_wiring_test.rs` — every tool routable + approval-handled
 
 #### koda-cli
 
@@ -309,8 +318,8 @@ from production builds to keep `koda-core`'s public API clean.
 - `tests/regression_test.rs` — REPL dispatch, input processing
 - `tests/server_test.rs` — ACP server integration (JSON-RPC lifecycle)
 
-**Live smoke tests** (`#[ignore]`, local only):
-- `tests/smoke_test.rs` — headless prompt, tool use, session resume against LM Studio
+**Smoke tests** (MockProvider, CI-safe):
+- `tests/smoke_test.rs` — headless mode: text responses, tool use, session resume, `--resume` flag
 - Gated by `KODA_TEST_LMSTUDIO=1` env var; never runs in CI
 
 #### koda-ast

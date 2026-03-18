@@ -9,6 +9,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-03-18
+
+### Added
+- **Post-edit AST syntax verification** (#467, #504) — after Write/Edit, koda-ast
+  automatically parses the file with tree-sitter and appends syntax errors to the
+  tool result. The LLM gets immediate feedback to self-correct without user
+  intervention. Supports Rust, Python, TypeScript, JavaScript, Go, and more.
+- **`--resume` CLI flag** (#505, #507) — `--resume <id>` is now the primary flag
+  for session resumption (`--session` remains as an alias, `-s` as the short form).
+- **Keyboard shortcuts documentation** — user guide now includes a full key binding
+  reference table.
+- **E2E test suite expansion** (#508) — 13 new end-to-end tests covering Grep,
+  Edit, Delete, AST verification, multi-tool execution, and CLI flag regressions.
+  Split the 943-line `e2e_test.rs` into 5 focused files (all under 600 lines).
+
+### Fixed
+- **`tool_use.input` must be a JSON object** (#501, #502) — Anthropic API returned
+  400 errors when the LLM produced empty/null/non-object `arguments`. The provider
+  now coerces non-object values to `{}` before sending.
+- **Shift+Enter removed, Alt+Enter standardized** (#503, #506) — Shift+Enter was
+  unreliable across terminals. Alt+Enter is now the sole newline-insertion key,
+  consistently handled in idle, inference, and wizard-input contexts.
+
+### Changed
+- **Dependencies** — bumped clap 4.5→4.6, tokio-tungstenite 0.28→0.29,
+  unicode-width 0.2.0→0.2.2, tracing-subscriber 0.3.22→0.3.23,
+  once_cell 1.21.3→1.21.4, softprops/action-gh-release 2.5→2.6.
+
 ## [0.1.13] - 2026-03-17
 
 ### Fixed
