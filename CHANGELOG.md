@@ -392,7 +392,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - `@file` paths: `@src/m` + Tab → dropdown with filesystem walking (case-insensitive)
   - `/model` names: `/model gpt` + Tab → dropdown with substring matching
 - **Compaction module** — `koda-core::compact` with pure logic, zero UI deps. Shared by TUI and headless modes
-- **Alt+Enter** for multi-line input (Shift+Enter on terminals with kitty protocol)
+- **Alt+Enter** for multi-line input
 
 ### Fixed
 - **TUI auto-compaction** — was calling `println!` inside raw mode, corrupting the viewport

@@ -15,6 +15,7 @@ Shift+Tab — cycle approval mode (auto/confirm)
 ### Input
 
 - `@file.rs` attaches file context, `@image.png` for multi-modal analysis
+- `Alt+Enter` inserts a newline for multi-line prompts
 - Piped input: `echo "explain" | koda` or `koda -p "prompt"` for headless/CI
 
 ### Approval
