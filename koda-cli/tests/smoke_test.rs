@@ -242,3 +242,121 @@ fn mock_session_resume() {
         "Resumed session should keep same ID"
     );
 }
+
+/// Regression: --resume flag must work as an alias for --session (#505/#507).
+#[test]
+fn mock_session_resume_via_resume_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Turn 1: create session
+    let output1 = Command::new(koda_bin())
+        .args([
+            "-p",
+            "turn one",
+            "--provider",
+            "mock",
+            "--output-format",
+            "json",
+            "--project-root",
+        ])
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", r#"[{"text":"first"}]"#)
+        .output()
+        .expect("Turn 1 failed");
+
+    let stdout1 = String::from_utf8_lossy(&output1.stdout);
+    let json1 = extract_json(&stdout1);
+    let session_id = json1["session_id"].as_str().expect("No session_id");
+
+    // Turn 2: resume via --resume (not --session)
+    let output2 = Command::new(koda_bin())
+        .args([
+            "-p",
+            "turn two",
+            "--provider",
+            "mock",
+            "--output-format",
+            "json",
+            "--resume",
+            session_id,
+            "--project-root",
+        ])
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", r#"[{"text":"second via resume"}]"#)
+        .output()
+        .expect("Turn 2 with --resume failed");
+
+    let stdout2 = String::from_utf8_lossy(&output2.stdout);
+    let stderr2 = String::from_utf8_lossy(&output2.stderr);
+    assert!(
+        output2.status.success(),
+        "--resume should work as --session alias.\nstderr: {stderr2}"
+    );
+    let json2 = extract_json(&stdout2);
+    assert_eq!(json2["success"], true);
+    assert_eq!(
+        json2["session_id"].as_str().unwrap(),
+        session_id,
+        "--resume should resume the same session"
+    );
+}
+
+/// Regression: -s short flag must work for --resume (#505).
+#[test]
+fn mock_session_resume_via_short_s_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Turn 1
+    let output1 = Command::new(koda_bin())
+        .args([
+            "-p",
+            "turn one",
+            "--provider",
+            "mock",
+            "--output-format",
+            "json",
+            "--project-root",
+        ])
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", r#"[{"text":"first"}]"#)
+        .output()
+        .expect("Turn 1 failed");
+
+    let stdout1 = String::from_utf8_lossy(&output1.stdout);
+    let json1 = extract_json(&stdout1);
+    let session_id = json1["session_id"].as_str().expect("No session_id");
+
+    // Turn 2: resume via -s
+    let output2 = Command::new(koda_bin())
+        .args([
+            "-p",
+            "turn two",
+            "--provider",
+            "mock",
+            "--output-format",
+            "json",
+            "-s",
+            session_id,
+            "--project-root",
+        ])
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", r#"[{"text":"second via -s"}]"#)
+        .output()
+        .expect("Turn 2 with -s failed");
+
+    assert!(
+        output2.status.success(),
+        "-s should work as --resume alias.\nstderr: {}",
+        String::from_utf8_lossy(&output2.stderr)
+    );
+    let json2 = extract_json(&String::from_utf8_lossy(&output2.stdout));
+    assert_eq!(
+        json2["session_id"].as_str().unwrap(),
+        session_id,
+        "-s should resume the same session"
+    );
+}
