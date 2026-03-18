@@ -191,7 +191,7 @@ jobs:
           cat release_body.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2.5.0
+        uses: softprops/action-gh-release@v2.6.1
         with:
           body_path: release_body.md
           files: |
