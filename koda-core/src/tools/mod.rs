@@ -303,8 +303,14 @@ impl ToolRegistry {
     }
 
     /// Execute a tool by name with the given JSON arguments.
+    ///
+    /// Empty or whitespace-only `arguments` are treated as `{}` (no args)
+    /// so that tools can fall through to their own defaults instead of
+    /// surfacing a raw JSON parse error.  See #513.
     pub async fn execute(&self, name: &str, arguments: &str) -> ToolResult {
-        let args: Value = match serde_json::from_str(arguments) {
+        let raw = arguments.trim();
+        let raw = if raw.is_empty() { "{}" } else { raw };
+        let args: Value = match serde_json::from_str(raw) {
             Ok(v) => v,
             Err(e) => {
                 return ToolResult {
