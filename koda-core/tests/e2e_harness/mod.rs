@@ -93,5 +93,4 @@ impl Env {
         assert!(result.is_ok(), "inference_loop failed: {:?}", result.err());
         sink.events()
     }
-
 }

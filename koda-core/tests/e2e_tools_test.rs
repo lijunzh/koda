@@ -51,8 +51,16 @@ async fn test_glob_tool_in_sandbox() {
 async fn test_grep_tool_in_sandbox() {
     let env = Env::new().await;
 
-    std::fs::write(env.root.join("hello.rs"), "fn main() { println!(\"hello\"); }").unwrap();
-    std::fs::write(env.root.join("bye.rs"), "fn goodbye() { println!(\"bye\"); }").unwrap();
+    std::fs::write(
+        env.root.join("hello.rs"),
+        "fn main() { println!(\"hello\"); }",
+    )
+    .unwrap();
+    std::fs::write(
+        env.root.join("bye.rs"),
+        "fn goodbye() { println!(\"bye\"); }",
+    )
+    .unwrap();
 
     env.insert_user_message("search for println").await;
 
@@ -76,8 +84,14 @@ async fn test_grep_tool_in_sandbox() {
             None
         })
         .expect("expected Grep tool result");
-    assert!(output.contains("hello.rs"), "should find match in hello.rs: {output}");
-    assert!(output.contains("bye.rs"), "should find match in bye.rs: {output}");
+    assert!(
+        output.contains("hello.rs"),
+        "should find match in hello.rs: {output}"
+    );
+    assert!(
+        output.contains("bye.rs"),
+        "should find match in bye.rs: {output}"
+    );
 }
 
 #[tokio::test]
