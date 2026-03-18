@@ -163,6 +163,26 @@ requires two approvals.
 
 ---
 
+## Keyboard Shortcuts
+
+| Key | Context | Action |
+|-----|---------|--------|
+| **Enter** | At prompt | Submit prompt |
+| **Alt+Enter** | At prompt | Insert newline (multi-line input) |
+| **Tab** | At prompt | Autocomplete (`@file`, `/command`) |
+| **Shift+Tab** | Anywhere | Cycle approval mode (auto ↔ confirm) |
+| **Esc** | At prompt | Clear input |
+| **Esc** | During inference | Cancel current turn |
+| **Ctrl+C** | Anywhere | Cancel / interrupt |
+| **Ctrl+D** | Empty prompt | Quit koda |
+| **Ctrl+L** | Anywhere | Scroll to bottom |
+| **Ctrl+Y** | Anywhere | Copy last code block |
+| **Ctrl+U** | Anywhere | Copy last response |
+| **↑ / ↓** | At prompt | History navigation |
+| **PageUp / PageDown** | Anywhere | Scroll output |
+
+---
+
 ## Slash Commands
 
 Type `/` to open the command palette with descriptions. Tab to complete.
