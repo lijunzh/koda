@@ -45,10 +45,7 @@ fn test_cli_help() {
     assert!(output.status.success(), "koda --help should succeed");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--agent"), "Help should mention --agent");
-    assert!(
-        stdout.contains("--resume"),
-        "Help should mention --resume"
-    );
+    assert!(stdout.contains("--resume"), "Help should mention --resume");
     assert!(
         stdout.contains("--provider"),
         "Help should mention --provider"
