@@ -165,6 +165,7 @@ impl TuiContext {
         // Collect startup lines (will be pushed into scroll buffer after init)
         let recent = db.recent_user_messages(3).await.unwrap_or_default();
         let mut startup_lines = crate::startup::collect_startup_lines(&config, &recent);
+        startup_lines.extend(crate::startup::home_dir_warning_lines(&project_root));
 
         if let Ok(Some(latest)) = version_check.await
             && let Some((current, latest)) = koda_core::version::update_available(&latest)
