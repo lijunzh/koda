@@ -28,6 +28,21 @@ async fn test_all_tools_routable_in_dispatcher() {
     }
 }
 
+/// Empty/whitespace-only arguments should be treated as `{}`, not error.
+/// Regression test for #513.
+#[tokio::test]
+async fn test_empty_args_default_to_empty_object() {
+    let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"), 100_000);
+    for input in ["", "  ", "\n", "\t "] {
+        let result = registry.execute("List", input).await;
+        assert!(
+            !result.output.contains("Invalid JSON"),
+            "Empty args '{input:?}' should not produce a JSON parse error. Got: {}",
+            result.output
+        );
+    }
+}
+
 /// Every tool must be classified in the approval system.
 /// It should be either in READ_ONLY_TOOLS (auto-approved) or
 /// return NeedsConfirmation/AutoApproved — never panic or crash.
