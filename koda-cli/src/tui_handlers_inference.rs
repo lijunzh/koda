@@ -344,8 +344,11 @@ async fn handle_inference_key_inline(
 
     // Feedback text input during inference
     if matches!(prompt_mode, PromptMode::WizardInput { .. }) && pending_approval_id.is_some() {
-        match key.code {
-            KeyCode::Enter => {
+        match (key.code, key.modifiers) {
+            (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
+                textarea.insert_newline();
+            }
+            (KeyCode::Enter, KeyModifiers::NONE) => {
                 let feedback = textarea.lines().join("\n");
                 textarea.select_all();
                 textarea.cut();
@@ -362,7 +365,7 @@ async fn handle_inference_key_inline(
                         .await;
                 }
             }
-            KeyCode::Esc => {
+            (KeyCode::Esc, _) => {
                 textarea.select_all();
                 textarea.cut();
                 *prompt_mode = PromptMode::Chat;
@@ -385,6 +388,9 @@ async fn handle_inference_key_inline(
 
     // General keys during inference
     match (key.code, key.modifiers) {
+        (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
+            textarea.insert_newline();
+        }
         (KeyCode::Enter, KeyModifiers::NONE) => {
             let text = textarea.lines().join("\n");
             if !text.trim().is_empty() {

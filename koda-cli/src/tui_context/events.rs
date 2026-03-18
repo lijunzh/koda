@@ -67,9 +67,7 @@ impl TuiContext {
         }
 
         match (key.code, key.modifiers) {
-            (KeyCode::Enter, m)
-                if m.contains(KeyModifiers::SHIFT) || m.contains(KeyModifiers::ALT) =>
-            {
+            (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
                 self.textarea.insert_newline();
             }
             (KeyCode::Enter, KeyModifiers::NONE) => {

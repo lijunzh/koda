@@ -500,7 +500,7 @@ mod tests {
         assert_eq!(find_last_at_token("email@domain"), None); // no space before @
         assert_eq!(find_last_at_token("a @b @c"), Some(5)); // last @
         assert_eq!(find_last_at_token("no at here"), None);
-        // @ after newline (multi-line input via Shift+Enter)
+        // @ after newline (multi-line input via Alt+Enter)
         assert_eq!(find_last_at_token("line1\n@file"), Some(6));
         assert_eq!(find_last_at_token("a\nb\n@c"), Some(4));
     }
