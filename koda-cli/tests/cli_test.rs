@@ -46,8 +46,8 @@ fn test_cli_help() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--agent"), "Help should mention --agent");
     assert!(
-        stdout.contains("--session"),
-        "Help should mention --session"
+        stdout.contains("--resume"),
+        "Help should mention --resume"
     );
     assert!(
         stdout.contains("--provider"),
