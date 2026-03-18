@@ -715,8 +715,13 @@ impl AnthropicProvider {
                     blocks.push(ContentBlock::Text { text: text.clone() });
                 }
                 for tc in tcs {
-                    let input: serde_json::Value =
-                        serde_json::from_str(&tc.arguments).unwrap_or_default();
+                    // Anthropic requires tool_use.input to be a JSON object (dict).
+                    // If arguments is empty/malformed or parses to a non-object
+                    // (e.g. null, string), fall back to `{}` to avoid 400 errors (#501).
+                    let input: serde_json::Value = serde_json::from_str(&tc.arguments)
+                        .ok()
+                        .filter(|v: &serde_json::Value| v.is_object())
+                        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
                     blocks.push(ContentBlock::ToolUse {
                         id: tc.id.clone(),
                         name: tc.function_name.clone(),
@@ -905,6 +910,56 @@ mod tests {
                 }
             }
             _ => panic!("Expected Blocks content"),
+        }
+    }
+
+    /// Regression: tool_use.input must always be a dict, never null (#501).
+    #[test]
+    fn test_convert_tool_use_input_always_dict() {
+        let p = make_provider();
+
+        // Case 1: empty string arguments
+        // Case 2: null JSON
+        // Case 3: JSON string (not object)
+        // Case 4: valid object (should pass through)
+        let cases = [
+            ("".to_string(), serde_json::json!({})),
+            ("null".to_string(), serde_json::json!({})),
+            ("\"just a string\"".to_string(), serde_json::json!({})),
+            ("42".to_string(), serde_json::json!({})),
+            (
+                r#"{"file":"main.rs"}"#.to_string(),
+                serde_json::json!({"file": "main.rs"}),
+            ),
+        ];
+
+        for (i, (args, expected)) in cases.iter().enumerate() {
+            let messages = vec![ChatMessage {
+                role: "assistant".into(),
+                content: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: format!("tc_{i}"),
+                    function_name: "TestTool".into(),
+                    arguments: args.clone(),
+                    thought_signature: None,
+                }]),
+                tool_call_id: None,
+                images: None,
+            }];
+            let converted = p.convert_messages(&messages);
+            match &converted[0].content {
+                AnthropicContent::Blocks(blocks) => match &blocks[0] {
+                    ContentBlock::ToolUse { input, .. } => {
+                        assert!(
+                            input.is_object(),
+                            "Case {i} (args={args:?}): input must be an object, got {input}"
+                        );
+                        assert_eq!(input, expected, "Case {i} (args={args:?})");
+                    }
+                    _ => panic!("Case {i}: expected ToolUse block"),
+                },
+                _ => panic!("Case {i}: expected Blocks content"),
+            }
         }
     }
 
