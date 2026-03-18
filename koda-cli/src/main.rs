@@ -60,7 +60,7 @@ struct Cli {
     agent: String,
 
     /// Session ID to resume (omit to start a new session)
-    #[arg(short, long)]
+    #[arg(short, long = "resume", alias = "session")]
     session: Option<String>,
 
     /// Project root directory (defaults to current directory)
