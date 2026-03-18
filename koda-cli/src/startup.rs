@@ -234,19 +234,19 @@ mod tests {
     #[test]
     fn home_dir_warning_contains_text() {
         // When project_root == home, we should get warning lines.
-        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-            if let Ok(home_path) = std::fs::canonicalize(&home) {
-                let lines = home_dir_warning_lines(&home_path);
-                let text = lines_to_text(&lines);
-                assert!(
-                    text.contains("home directory"),
-                    "Warning should mention home directory"
-                );
-                assert!(
-                    text.contains("subdirectory"),
-                    "Warning should suggest subdirectory"
-                );
-            }
+        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"))
+            && let Ok(home_path) = std::fs::canonicalize(&home)
+        {
+            let lines = home_dir_warning_lines(&home_path);
+            let text = lines_to_text(&lines);
+            assert!(
+                text.contains("home directory"),
+                "Warning should mention home directory"
+            );
+            assert!(
+                text.contains("subdirectory"),
+                "Warning should suggest subdirectory"
+            );
         }
     }
 
