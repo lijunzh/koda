@@ -42,9 +42,23 @@ jobs:
           fi
           echo "✅ Tag v$TAG matches koda-core ($CORE_VER), koda-cli ($CLI_VER), koda-ast ($AST_VER), and koda-email ($EMAIL_VER)"
 
+  # Cross-platform tests before shipping binaries.
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --features koda-core/test-support
+
   build:
     name: Build ${{ matrix.target }}
-    needs: [verify-version]
+    needs: [verify-version, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
