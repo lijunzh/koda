@@ -9,6 +9,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-03-18
+
+### Fixed
+- **Startup warnings invisible in fullscreen TUI** (#510, #512) — the home-directory
+  warning was printed via `eprintln!` before the TUI took over the screen, so users
+  never saw it. Warnings are now rendered as styled lines in the TUI scroll buffer,
+  consistent with all other startup messages.
+- **Empty tool arguments cause JSON parse error** (#513, #514) — when the LLM
+  (observed with Anthropic) returned empty or whitespace-only `arguments` for a
+  tool call, koda surfaced a raw "Invalid JSON arguments: EOF" error and wasted
+  a retry round-trip. Empty args now default to `{}` so tools fall through to
+  their own defaults.
+
 ## [0.1.14] - 2026-03-18
 
 ### Added

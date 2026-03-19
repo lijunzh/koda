@@ -26,6 +26,10 @@ powered by the same engine. This focus drives every design decision:
 ## Install
 
 ```bash
+# Homebrew (macOS / Linux)
+brew tap lijunzh/koda
+brew install koda
+
 # From crates.io
 cargo install koda-cli
 
