@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    tags: ["v*"]        # Release needs CI on the tagged commit
   pull_request:
     branches: [main]    # PR status checks
   workflow_call:        # Called by other workflows
@@ -48,10 +46,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
