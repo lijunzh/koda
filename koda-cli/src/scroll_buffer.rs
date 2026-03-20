@@ -299,74 +299,10 @@ fn line_text(line: &Line<'_>) -> String {
 
 /// Compute how many visual rows a `Line` occupies at the given terminal width.
 ///
-/// Uses word-boundary wrapping logic consistent with
-/// `Paragraph::wrap(Wrap { trim: false })` — when a word would overflow
-/// the current row, it breaks *before* the word, potentially leaving a
-/// shorter first row and producing more visual lines than simple
-/// `char_width / term_width` division.
-///
-/// The algorithm processes the text word-by-word (split on whitespace).
-/// If a word fits on the current row (with a space prefix if not first),
-/// it's added. If a word doesn't fit:
-///   - Row has content → start a new row with this word
-///   - Row is empty (word longer than width) → force-break mid-word
+/// Delegates to `wrap_util::visual_line_count` — the single source of truth
+/// for word-boundary wrapping consistent with `Wrap { trim: false }`.
 fn visual_height(line: &Line<'_>, term_width: usize) -> usize {
-    let text = line_text(line);
-    if text.is_empty() {
-        return 1;
-    }
-    let w = term_width.max(1);
-    let mut rows = 1usize;
-    let mut col = 0usize;
-
-    // Process word-by-word to match ratatui's Wrap { trim: false } behavior.
-    // We iterate characters but track word boundaries (spaces).
-    let mut word_start_col = 0usize; // col at start of current word
-    let mut in_word = false;
-
-    for ch in text.chars() {
-        let char_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        let is_space = ch == ' ' || ch == '\t';
-
-        if is_space {
-            // Space: just advance, marking end of word
-            in_word = false;
-            if col + char_w > w {
-                rows += 1;
-                col = char_w;
-            } else {
-                col += char_w;
-            }
-            word_start_col = col;
-        } else {
-            if !in_word {
-                // Starting a new word: check if it's worth staying on this row
-                word_start_col = col;
-                in_word = true;
-            }
-
-            if col + char_w > w {
-                if word_start_col > 0 && word_start_col <= w {
-                    // Word doesn't fit but row had prior content:
-                    // wrap *before* this word (at word_start_col)
-                    rows += 1;
-                    // Recalculate: the word chars from word_start_col
-                    // to now are on the new row
-                    let word_len_so_far = col - word_start_col;
-                    col = word_len_so_far + char_w;
-                    word_start_col = 0;
-                } else {
-                    // Word is at column 0 (longer than width): force-break
-                    rows += 1;
-                    col = char_w;
-                    word_start_col = 0;
-                }
-            } else {
-                col += char_w;
-            }
-        }
-    }
-    rows
+    crate::wrap_util::visual_line_count(&line_text(line), term_width)
 }
 
 #[cfg(test)]
