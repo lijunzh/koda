@@ -94,52 +94,9 @@ fn logical_to_visual(
 
 /// Compute how many visual lines a text line occupies at a given width.
 ///
-/// Uses word-boundary wrapping consistent with `Wrap { trim: false }`.
+/// Delegates to `wrap_util::visual_line_count` — single source of truth.
 fn visual_line_count(line: &str, width: usize) -> usize {
-    if line.is_empty() {
-        return 1;
-    }
-    let w = width.max(1);
-    let mut rows = 1usize;
-    let mut col = 0usize;
-    let mut word_start_col = 0usize;
-    let mut in_word = false;
-
-    for ch in line.chars() {
-        let char_w = ch.width().unwrap_or(0);
-        let is_space = ch == ' ' || ch == '\t';
-
-        if is_space {
-            in_word = false;
-            if col + char_w > w {
-                rows += 1;
-                col = char_w;
-            } else {
-                col += char_w;
-            }
-            word_start_col = col;
-        } else {
-            if !in_word {
-                word_start_col = col;
-                in_word = true;
-            }
-            if col + char_w > w {
-                if word_start_col > 0 && word_start_col <= w {
-                    rows += 1;
-                    let word_len_so_far = col - word_start_col;
-                    col = word_len_so_far + char_w;
-                    word_start_col = 0;
-                } else {
-                    rows += 1;
-                    col = char_w;
-                    word_start_col = 0;
-                }
-            } else {
-                col += char_w;
-            }
-        }
-    }
-    rows
+    crate::wrap_util::visual_line_count(line, width)
 }
 
 /// For a given cursor column position in a line, compute:
