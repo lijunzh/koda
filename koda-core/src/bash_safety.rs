@@ -95,7 +95,7 @@ const READ_ONLY_PREFIXES: &[&str] = &[
     "false",
     "test ",
     "[ ",
-    // GitHub CLI read-only (#518)
+    // GitHub CLI read-only (#518, #525)
     "gh issue view",
     "gh issue list",
     "gh issue status",
@@ -105,10 +105,12 @@ const READ_ONLY_PREFIXES: &[&str] = &[
     "gh pr checks",
     "gh pr diff",
     "gh repo view",
+    "gh repo clone",
     "gh release list",
     "gh release view",
     "gh run view",
     "gh run list",
+    "gh run watch",
 ];
 
 // ── Dangerous patterns (always need confirmation) ────────────
@@ -162,10 +164,31 @@ const DANGEROUS_PATTERNS: &[&str] = &[
     // Package publishing
     "npm publish",
     "cargo publish",
-    // GitHub CLI destructive (#518)
+    // Interpreter-based command execution (prompt injection vector)
+    "python -c ",
+    "python -c'",
+    "python3 -c ",
+    "python3 -c'",
+    "perl -e ",
+    "perl -e'",
+    "ruby -e ",
+    "ruby -e'",
+    "node -e ",
+    "node -e'",
+    // Nested shells (bypass classifier)
+    "sh -c ",
+    "sh -c'",
+    "bash -c ",
+    "bash -c'",
+    // Git destructive (missing variant)
+    "git clean -f",
+    // GitHub CLI destructive (#518, #525)
     "gh pr merge",
     "gh issue delete",
     "gh repo delete",
+    "gh release delete",
+    "gh api",
+    "gh auth ",
 ];
 
 // ── Classification ───────────────────────────────────────────
@@ -465,6 +488,9 @@ mod tests {
             "gh release view v1.0",
             "gh run view 123",
             "gh run list",
+            // #525 additions
+            "gh repo clone owner/repo",
+            "gh run watch 123",
         ] {
             assert_eq!(
                 classify_bash_command(cmd),
@@ -491,6 +517,15 @@ mod tests {
             "gh issue close 42",
             "gh pr create --title 'feat'",
             "gh pr edit 42 --title 'new title'",
+            // #525: additional gh mutation commands
+            "gh pr review 42 --approve",
+            "gh pr comment 42 --body 'looks good'",
+            "gh pr close 42",
+            "gh pr reopen 42",
+            "gh issue close 42",
+            "gh issue reopen 42",
+            "gh release create v1.0",
+            "gh workflow run ci.yml",
             "curl https://api.example.com",
             "wget https://example.com/file.txt",
         ] {
@@ -517,6 +552,23 @@ mod tests {
             "gh pr merge 42 --squash",
             "gh issue delete 42",
             "gh repo delete owner/repo",
+            // Interpreter-based execution (#525)
+            "python -c 'import os; os.remove(\"/tmp/x\")'",
+            "python3 -c 'import shutil; shutil.rmtree(\"/tmp\")'",
+            "perl -e 'unlink(\"/tmp/x\")'",
+            "ruby -e 'File.delete(\"/tmp/x\")'",
+            "node -e 'require(\"fs\").rmSync(\"/tmp\")'",
+            // Nested shell bypass (#525)
+            "sh -c 'rm -rf /'",
+            "bash -c 'dangerous command'",
+            // GitHub CLI destructive (#525)
+            "gh api -X DELETE /repos/owner/repo",
+            "gh api --method DELETE /repos/owner/repo",
+            "gh release delete v1.0",
+            "gh auth login --with-token",
+            // Git clean variants (#525)
+            "git clean -f",
+            "git clean -fd",
         ] {
             assert_eq!(
                 classify_bash_command(cmd),

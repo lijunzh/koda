@@ -9,6 +9,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-03-20
+
+### Security
+- **EmailSend reclassified to LocalMutation** (#525) — previously classified as
+  RemoteAction (auto-approved in all modes), EmailSend now requires confirmation
+  in Confirm mode to prevent prompt-injection data exfiltration.
+- **Bash classifier hardening** (#525) — added interpreter commands (`python -c`,
+  `perl -e`, `ruby -e`, `node -e`), nested shells (`sh -c`, `bash -c`),
+  `gh api`, `gh auth`, `gh release delete`, and `git clean -f` to
+  DANGEROUS_PATTERNS. These bypass vectors now require user confirmation.
+- **Bash timeout capped at 300s** (#525) — prevents LLM-controlled DoS via
+  arbitrarily large timeout values.
+- **DNS rebinding SSRF protection** (#526) — after URL validation passes,
+  the hostname is now resolved and all resulting IPs are checked against
+  private/internal ranges before the HTTP request is made. Prevents TOCTOU
+  attacks where DNS re-resolves to 169.254.169.254 etc.
+- **Symlink read bypass** (#526) — `read_file` now canonicalizes the resolved
+  path and verifies it still falls within the project root, preventing symlink
+  traversal attacks (e.g. `project/link → /etc/passwd`).
+- **IMAP search injection** (#529) — user-supplied search queries are now
+  sanitized (backslashes and double-quotes escaped) before interpolation
+  into IMAP SEARCH commands.
+
+### Fixed
+- **Scroll buffer eviction drift** (#528) — `enforce_capacity()` now subtracts
+  the visual height (wrapped line count) of each evicted line instead of a flat
+  1, preventing scroll position drift with long wrapped lines.
+- **`paragraph_scroll()` u16 overflow** (#528) — visual line offset is now
+  clamped to `u16::MAX` to prevent silent truncation at narrow terminal widths
+  with large buffers.
+- **Missing `gh` CLI classifications** (#525) — added `gh repo clone`,
+  `gh run watch` (read-only), `gh pr review/comment/close/reopen`,
+  `gh issue close/reopen`, `gh release create`, `gh workflow run` (mutation).
+
+### Changed
+- **DRY: shared word-wrap algorithm** (#527) — extracted duplicate word-boundary
+  wrapping logic from `scroll_buffer` and `wrap_input` into a single
+  `wrap_util::visual_line_count()` function.
+- **Deduplicate `config_dir`** (#529) — `keystore.rs` now delegates to
+  `db::config_dir()` instead of maintaining its own platform-detection code.
+
 ## [0.1.15] - 2026-03-18
 
 ### Fixed

@@ -147,6 +147,24 @@ pub async fn read_file(
         .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
     let resolved = safe_resolve_path(project_root, path_str)?;
 
+    // Symlink traversal protection (#526): safe_resolve_path uses lexical
+    // normalization (path_clean) which can't detect symlinks. Since reads
+    // target existing files, we can canonicalize and verify the real path
+    // is still inside the project root.
+    if resolved.exists() {
+        let canon = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+        let canon_root = project_root
+            .canonicalize()
+            .unwrap_or_else(|_| project_root.to_path_buf());
+        if !canon.starts_with(&canon_root) {
+            anyhow::bail!(
+                "Path escapes project root via symlink. Requested: {path_str:?}, \
+                 Real path: {}",
+                canon.display()
+            );
+        }
+    }
+
     let start_line = args["start_line"].as_u64();
     let num_lines = args["num_lines"].as_u64();
 
