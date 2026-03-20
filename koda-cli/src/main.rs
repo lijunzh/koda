@@ -27,6 +27,7 @@ mod tui_render;
 mod tui_types;
 mod tui_viewport;
 mod tui_wizards;
+mod wrap_input;
 mod widgets;
 
 use anyhow::{Context, Result};
