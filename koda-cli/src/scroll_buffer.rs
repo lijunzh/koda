@@ -32,6 +32,11 @@ pub struct ScrollBuffer {
     /// Used by virtual scroll to know which page to fetch next.
     /// `None` means no DB messages have been loaded yet.
     oldest_message_id: Option<i64>,
+
+    /// Cached terminal width for eviction offset adjustment.
+    /// Updated on scroll operations and used by `enforce_capacity()`
+    /// to compute visual height of evicted lines.
+    cached_term_width: usize,
 }
 
 impl ScrollBuffer {
@@ -41,6 +46,7 @@ impl ScrollBuffer {
             scroll_offset: 0,
             sticky_bottom: true,
             oldest_message_id: None,
+            cached_term_width: 80,
         }
     }
 
@@ -73,6 +79,7 @@ impl ScrollBuffer {
 
     /// Scroll up by `n` visual lines. Disengages sticky bottom.
     pub fn scroll_up(&mut self, n: usize, term_width: usize, viewport_height: usize) {
+        self.cached_term_width = term_width;
         let total = self.total_visual_lines(term_width);
         let max_offset = total.saturating_sub(viewport_height);
         self.scroll_offset = (self.scroll_offset + n).min(max_offset);
@@ -92,6 +99,7 @@ impl ScrollBuffer {
     /// terminal dimensions. Must be called after any resize so the
     /// offset doesn't exceed `total_visual - viewport_height`.
     pub fn clamp_offset(&mut self, term_width: usize, viewport_height: usize) {
+        self.cached_term_width = term_width;
         let total = self.total_visual_lines(term_width);
         let max_offset = total.saturating_sub(viewport_height);
         if self.scroll_offset > max_offset {
@@ -110,6 +118,7 @@ impl ScrollBuffer {
 
     /// Jump to the top of the buffer.
     pub fn scroll_to_top(&mut self, term_width: usize, viewport_height: usize) {
+        self.cached_term_width = term_width;
         if !self.lines.is_empty() {
             let total = self.total_visual_lines(term_width);
             self.scroll_offset = total.saturating_sub(viewport_height);
@@ -155,7 +164,8 @@ impl ScrollBuffer {
         let from_top = total
             .saturating_sub(viewport_height)
             .saturating_sub(self.scroll_offset);
-        (from_top as u16, 0)
+        // Clamp to u16::MAX to prevent silent truncation (#528).
+        (from_top.min(u16::MAX as usize) as u16, 0)
     }
 
     /// Total number of lines in the buffer.
@@ -263,12 +273,18 @@ impl ScrollBuffer {
     }
 
     /// Evict oldest lines if we exceed capacity.
+    ///
+    /// Adjusts `scroll_offset` by the evicted line's visual height
+    /// (not a flat 1) to prevent scroll position drift when wrapped
+    /// lines are evicted (#528).
     fn enforce_capacity(&mut self) {
+        let w = self.cached_term_width.max(1);
         while self.lines.len() > MAX_CACHE_LINES {
-            self.lines.pop_front();
-            // Adjust scroll offset since lines shifted
-            if self.scroll_offset > 0 {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+            if let Some(evicted) = self.lines.pop_front()
+                && self.scroll_offset > 0
+            {
+                let vis = visual_height(&evicted, w);
+                self.scroll_offset = self.scroll_offset.saturating_sub(vis);
             }
         }
     }
@@ -299,74 +315,10 @@ fn line_text(line: &Line<'_>) -> String {
 
 /// Compute how many visual rows a `Line` occupies at the given terminal width.
 ///
-/// Uses word-boundary wrapping logic consistent with
-/// `Paragraph::wrap(Wrap { trim: false })` — when a word would overflow
-/// the current row, it breaks *before* the word, potentially leaving a
-/// shorter first row and producing more visual lines than simple
-/// `char_width / term_width` division.
-///
-/// The algorithm processes the text word-by-word (split on whitespace).
-/// If a word fits on the current row (with a space prefix if not first),
-/// it's added. If a word doesn't fit:
-///   - Row has content → start a new row with this word
-///   - Row is empty (word longer than width) → force-break mid-word
+/// Delegates to `wrap_util::visual_line_count` — the single source of truth
+/// for word-boundary wrapping consistent with `Wrap { trim: false }`.
 fn visual_height(line: &Line<'_>, term_width: usize) -> usize {
-    let text = line_text(line);
-    if text.is_empty() {
-        return 1;
-    }
-    let w = term_width.max(1);
-    let mut rows = 1usize;
-    let mut col = 0usize;
-
-    // Process word-by-word to match ratatui's Wrap { trim: false } behavior.
-    // We iterate characters but track word boundaries (spaces).
-    let mut word_start_col = 0usize; // col at start of current word
-    let mut in_word = false;
-
-    for ch in text.chars() {
-        let char_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        let is_space = ch == ' ' || ch == '\t';
-
-        if is_space {
-            // Space: just advance, marking end of word
-            in_word = false;
-            if col + char_w > w {
-                rows += 1;
-                col = char_w;
-            } else {
-                col += char_w;
-            }
-            word_start_col = col;
-        } else {
-            if !in_word {
-                // Starting a new word: check if it's worth staying on this row
-                word_start_col = col;
-                in_word = true;
-            }
-
-            if col + char_w > w {
-                if word_start_col > 0 && word_start_col <= w {
-                    // Word doesn't fit but row had prior content:
-                    // wrap *before* this word (at word_start_col)
-                    rows += 1;
-                    // Recalculate: the word chars from word_start_col
-                    // to now are on the new row
-                    let word_len_so_far = col - word_start_col;
-                    col = word_len_so_far + char_w;
-                    word_start_col = 0;
-                } else {
-                    // Word is at column 0 (longer than width): force-break
-                    rows += 1;
-                    col = char_w;
-                    word_start_col = 0;
-                }
-            } else {
-                col += char_w;
-            }
-        }
-    }
-    rows
+    crate::wrap_util::visual_line_count(&line_text(line), term_width)
 }
 
 #[cfg(test)]

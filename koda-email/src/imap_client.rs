@@ -105,8 +105,11 @@ fn search_emails_sync(
 /// - Plain text → searches subject + body via OR
 /// - "from:user@example.com" → FROM filter
 /// - "subject:keyword" → SUBJECT filter
+///
+/// Input is sanitized to prevent IMAP search injection (#529):
+/// backslashes and double-quotes are escaped.
 fn build_search_query(query: &str) -> String {
-    let q = query.trim();
+    let q = sanitize_imap_string(query.trim());
 
     if let Some(addr) = q.strip_prefix("from:") {
         return format!("FROM \"{}\"", addr.trim());
@@ -117,6 +120,11 @@ fn build_search_query(query: &str) -> String {
 
     // Default: search subject OR body
     format!("OR SUBJECT \"{}\" BODY \"{}\"", q, q)
+}
+
+/// Escape backslashes and double-quotes for safe IMAP string interpolation.
+fn sanitize_imap_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Fetch messages by sequence range and parse into summaries.
@@ -223,6 +231,33 @@ mod tests {
             build_search_query("subject:quarterly review"),
             "SUBJECT \"quarterly review\""
         );
+    }
+
+    #[test]
+    fn test_build_search_query_escapes_quotes() {
+        // Injected quotes should be escaped to prevent IMAP injection (#529).
+        // Input: hello" BODY "injected
+        // Without sanitization this would break out of the SUBJECT string
+        // and inject a separate BODY clause.
+        let result = build_search_query("hello\" BODY \"injected");
+        // The escaped output should contain \" (backslash-quote) inside the string
+        assert!(
+            result.contains(r#"\""#),
+            "Should contain escaped quotes: {result}"
+        );
+        // Verify the overall structure is still a single OR SUBJECT/BODY pair
+        // (not broken into separate clauses)
+        assert!(
+            result.starts_with("OR SUBJECT \""),
+            "Should start with OR SUBJECT: {result}"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_imap_string() {
+        assert_eq!(sanitize_imap_string("hello"), "hello");
+        assert_eq!(sanitize_imap_string("say \"hi\""), "say \\\"hi\\\"");
+        assert_eq!(sanitize_imap_string("back\\slash"), "back\\\\slash");
     }
 
     #[test]
