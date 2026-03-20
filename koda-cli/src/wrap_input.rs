@@ -151,9 +151,7 @@ fn cursor_visual_offset(line: &str, cursor_col: usize, width: usize) -> (usize, 
     let mut col = 0usize;
     let mut word_start_col = 0usize;
     let mut in_word = false;
-    let mut char_idx = 0usize;
-
-    for ch in line.chars() {
+    for (char_idx, ch) in line.chars().enumerate() {
         if char_idx == cursor_col {
             return (visual_row, col);
         }
@@ -190,7 +188,6 @@ fn cursor_visual_offset(line: &str, cursor_col: usize, width: usize) -> (usize, 
                 col += char_w;
             }
         }
-        char_idx += 1;
     }
 
     // Cursor at end of line
@@ -260,7 +257,7 @@ mod tests {
     #[test]
     fn test_wrapped_height_long_line() {
         let mut ta = TextArea::default();
-        ta.insert_str(&"x".repeat(200));
+        ta.insert_str("x".repeat(200));
         // 1 logical line, 200 chars / 80 = 3 visual lines
         assert_eq!(wrapped_height(&ta, 80), 3);
     }
