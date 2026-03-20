@@ -110,9 +110,7 @@ fn write_or_replace_section(path: &Path, entry: &str) -> Result<()> {
     };
 
     let new_content = match heading {
-        Some(ref h) if section_exists(&existing, h) => {
-            replace_section(&existing, h, entry)
-        }
+        Some(ref h) if section_exists(&existing, h) => replace_section(&existing, h, entry),
         _ => {
             // No heading or heading not found → append
             let mut buf = existing;
@@ -357,9 +355,18 @@ mod tests {
         let result = replace_section(content, "## Workflow Preferences", replacement);
         assert!(result.contains("- new item1"), "Should contain new content");
         assert!(result.contains("- new item3"), "Should contain new content");
-        assert!(!result.contains("- old item1"), "Should not contain old content");
-        assert!(result.contains("## Other Section"), "Should preserve other sections");
-        assert!(result.contains("- keep this"), "Should preserve other section content");
+        assert!(
+            !result.contains("- old item1"),
+            "Should not contain old content"
+        );
+        assert!(
+            result.contains("## Other Section"),
+            "Should preserve other sections"
+        );
+        assert!(
+            result.contains("- keep this"),
+            "Should preserve other section content"
+        );
     }
 
     #[test]
@@ -368,7 +375,10 @@ mod tests {
         let replacement = "## Second\n- new";
         let result = replace_section(content, "## Second", replacement);
         assert!(result.contains("## First"), "Should preserve first section");
-        assert!(result.contains("- a"), "Should preserve first section content");
+        assert!(
+            result.contains("- a"),
+            "Should preserve first section content"
+        );
         assert!(result.contains("- new"), "Should contain replacement");
         assert!(!result.contains("- old"), "Should not contain old content");
     }
@@ -379,12 +389,22 @@ mod tests {
         let existing = "## Workflow Preferences\n- old item\n";
         std::fs::write(tmp.path().join("MEMORY.md"), existing).unwrap();
 
-        append(tmp.path(), "## Workflow Preferences\n- updated item\n- new item").unwrap();
+        append(
+            tmp.path(),
+            "## Workflow Preferences\n- updated item\n- new item",
+        )
+        .unwrap();
 
         let content = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
-        assert!(content.contains("- updated item"), "Should contain new content");
+        assert!(
+            content.contains("- updated item"),
+            "Should contain new content"
+        );
         assert!(content.contains("- new item"), "Should contain new content");
-        assert!(!content.contains("- old item"), "Should not contain old content");
+        assert!(
+            !content.contains("- old item"),
+            "Should not contain old content"
+        );
         // Should only have one copy of the heading
         assert_eq!(
             content.matches("## Workflow Preferences").count(),
