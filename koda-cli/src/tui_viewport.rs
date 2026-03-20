@@ -40,7 +40,11 @@ pub(crate) fn draw_viewport(
     selection: Option<&crate::mouse_select::Selection>,
 ) -> ratatui::layout::Rect {
     let area = frame.area();
-    let input_height = textarea.lines().len().max(1) as u16;
+
+    // Compute wrapped input height (word-wrap aware, #517)
+    let prompt_width_estimate = 4u16; // rough estimate for prompt chars
+    let avail_input_width = area.width.saturating_sub(prompt_width_estimate) as usize;
+    let input_height = crate::wrap_input::wrapped_height(textarea, avail_input_width).max(1) as u16;
 
     // Determine menu height (only when active)
     let menu_height = match menu {
@@ -115,7 +119,12 @@ pub(crate) fn draw_viewport(
         Paragraph::new(prompt_text).style(Style::default().fg(color)),
         prompt_area,
     );
-    frame.render_widget(textarea, text_area);
+
+    // Render input with word-wrapping (#517)
+    let cursor_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::REVERSED);
+    crate::wrap_input::render_wrapped_input(textarea, text_area, frame.buffer_mut(), cursor_style);
 
     // ── Bottom separator ────────────────────────────────
     let bot_width = bot_sep_row.width as usize;
