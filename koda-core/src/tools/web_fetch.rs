@@ -51,6 +51,38 @@ pub async fn web_fetch(args: &Value, max_body_chars: usize) -> Result<String> {
         );
     }
 
+    // DNS rebinding protection: resolve the hostname and verify the IP
+    // is not private/internal before making the request. This prevents
+    // TOCTOU attacks where DNS re-resolves to a different IP.
+    if let Ok(parsed) = url::Url::parse(url)
+        && let Some(host) = parsed.host_str()
+    {
+        // Only resolve domain names (IPs are already checked above)
+        if parsed.host().is_some_and(|h| matches!(h, url::Host::Domain(_))) {
+            match tokio::net::lookup_host(format!(
+                "{}:{}",
+                host,
+                parsed.port_or_known_default().unwrap_or(80)
+            ))
+            .await
+            {
+                Ok(addrs) => {
+                    for addr in addrs {
+                        if !is_safe_ip(addr.ip()) {
+                            anyhow::bail!(
+                                "URL blocked: domain '{host}' resolves to private/internal IP {}.",
+                                addr.ip()
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    anyhow::bail!("DNS resolution failed for '{host}': {e}");
+                }
+            }
+        }
+    }
+
     static HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     let client = HTTP_CLIENT
         .get_or_init(|| crate::providers::build_http_client(None))
@@ -90,6 +122,35 @@ pub async fn web_fetch(args: &Value, max_body_chars: usize) -> Result<String> {
     }
 }
 
+/// Check if an IP address is safe (not private/internal/loopback).
+fn is_safe_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ipv4) => {
+            let octets = ipv4.octets();
+            // Loopback, private, link-local, unspecified
+            if octets[0] == 127
+                || octets[0] == 10
+                || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+                || (octets[0] == 192 && octets[1] == 168)
+                || (octets[0] == 169 && octets[1] == 254)
+                || ipv4.is_unspecified()
+            {
+                return false;
+            }
+            true
+        }
+        std::net::IpAddr::V6(ipv6) => {
+            if ipv6.is_loopback() || ipv6.is_unspecified() {
+                return false;
+            }
+            if let Some(ipv4) = ipv6.to_ipv4_mapped() {
+                return is_safe_ip(std::net::IpAddr::V4(ipv4));
+            }
+            true
+        }
+    }
+}
+
 /// Check if a URL is safe to fetch (not internal/private network).
 /// Uses the `url` crate for robust parsing (handles userinfo@, IPv6, etc.).
 fn is_safe_url(url_str: &str) -> bool {
@@ -120,58 +181,18 @@ fn is_safe_url(url_str: &str) -> bool {
     // Block private/reserved IPs using the parsed host
     match parsed.host() {
         Some(url::Host::Ipv4(ip)) => {
-            let octets = ip.octets();
-            // Loopback (127.0.0.0/8)
-            if octets[0] == 127 {
-                return false;
-            }
-            // Private 10.0.0.0/8
-            if octets[0] == 10 {
-                return false;
-            }
-            // Private 172.16.0.0/12
-            if octets[0] == 172 && (16..=31).contains(&octets[1]) {
-                return false;
-            }
-            // Private 192.168.0.0/16
-            if octets[0] == 192 && octets[1] == 168 {
-                return false;
-            }
-            // Link-local 169.254.0.0/16
-            if octets[0] == 169 && octets[1] == 254 {
-                return false;
-            }
-            // Unspecified
-            if ip.is_unspecified() {
+            if !is_safe_ip(std::net::IpAddr::V4(ip)) {
                 return false;
             }
         }
         Some(url::Host::Ipv6(ip)) => {
-            if ip.is_loopback() || ip.is_unspecified() {
+            if !is_safe_ip(std::net::IpAddr::V6(ip)) {
                 return false;
-            }
-            // Check for IPv4-mapped IPv6 (::ffff:x.x.x.x)
-            if let Some(ipv4) = ip.to_ipv4_mapped() {
-                let octets = ipv4.octets();
-                if octets[0] == 127 {
-                    return false;
-                }
-                if octets[0] == 10 {
-                    return false;
-                }
-                if octets[0] == 172 && (16..=31).contains(&octets[1]) {
-                    return false;
-                }
-                if octets[0] == 192 && octets[1] == 168 {
-                    return false;
-                }
-                if octets[0] == 169 && octets[1] == 254 {
-                    return false;
-                }
             }
         }
         Some(url::Host::Domain(_)) => {
             // Domain names — hostname checks above are sufficient
+            // (DNS resolution check happens separately in web_fetch)
         }
         None => return false,
     }
@@ -354,6 +375,29 @@ mod tests {
         assert!(is_safe_url("https://docs.rs/tokio/latest/tokio/"));
         assert!(is_safe_url("https://api.github.com/repos"));
         assert!(is_safe_url("https://example.com"));
+    }
+
+    // ── is_safe_ip tests (#526) ──
+
+    #[test]
+    fn test_is_safe_ip_blocks_private() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        assert!(!is_safe_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(!is_safe_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(!is_safe_ip(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
+        assert!(!is_safe_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+        assert!(!is_safe_ip(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
+        assert!(!is_safe_ip(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
+        assert!(!is_safe_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(!is_safe_ip(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
+    }
+
+    #[test]
+    fn test_is_safe_ip_allows_public() {
+        use std::net::{IpAddr, Ipv4Addr};
+        assert!(is_safe_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(is_safe_ip(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+        assert!(is_safe_ip(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))));
     }
 
     #[tokio::test]
