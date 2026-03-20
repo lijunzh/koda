@@ -376,7 +376,12 @@ mod tests {
     /// gh read-only commands should auto-approve even in Confirm mode (#518).
     #[test]
     fn test_gh_read_only_auto_approved() {
-        for cmd in ["gh issue view 42", "gh pr view 99", "gh pr list", "gh issue list"] {
+        for cmd in [
+            "gh issue view 42",
+            "gh pr view 99",
+            "gh pr list",
+            "gh issue list",
+        ] {
             let args = serde_json::json!({"command": cmd});
             assert_eq!(
                 check_tool("Bash", &args, ApprovalMode::Confirm, None),
@@ -389,7 +394,11 @@ mod tests {
     /// gh destructive commands need confirmation even in Auto mode (#518).
     #[test]
     fn test_gh_destructive_needs_confirmation() {
-        for cmd in ["gh pr merge 42 --squash", "gh issue delete 42", "gh repo delete owner/repo"] {
+        for cmd in [
+            "gh pr merge 42 --squash",
+            "gh issue delete 42",
+            "gh repo delete owner/repo",
+        ] {
             let args = serde_json::json!({"command": cmd});
             assert_eq!(
                 check_tool("Bash", &args, ApprovalMode::Auto, None),
@@ -402,7 +411,11 @@ mod tests {
     /// gh mutation commands (create/edit/close) auto-approve in Auto, confirm in Confirm (#518).
     #[test]
     fn test_gh_mutation_auto_approved_in_auto() {
-        for cmd in ["gh issue create --title 'bug'", "gh issue edit 42", "gh pr create"] {
+        for cmd in [
+            "gh issue create --title 'bug'",
+            "gh issue edit 42",
+            "gh pr create",
+        ] {
             let args = serde_json::json!({"command": cmd});
             assert_eq!(
                 check_tool("Bash", &args, ApprovalMode::Auto, None),
