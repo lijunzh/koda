@@ -95,6 +95,20 @@ const READ_ONLY_PREFIXES: &[&str] = &[
     "false",
     "test ",
     "[ ",
+    // GitHub CLI read-only (#518)
+    "gh issue view",
+    "gh issue list",
+    "gh issue status",
+    "gh pr view",
+    "gh pr list",
+    "gh pr status",
+    "gh pr checks",
+    "gh pr diff",
+    "gh repo view",
+    "gh release list",
+    "gh release view",
+    "gh run view",
+    "gh run list",
 ];
 
 // ── Dangerous patterns (always need confirmation) ────────────
@@ -148,6 +162,10 @@ const DANGEROUS_PATTERNS: &[&str] = &[
     // Package publishing
     "npm publish",
     "cargo publish",
+    // GitHub CLI destructive (#518)
+    "gh pr merge",
+    "gh issue delete",
+    "gh repo delete",
 ];
 
 // ── Classification ───────────────────────────────────────────
@@ -433,6 +451,20 @@ mod tests {
             "rg pattern src/",
             "grep foo bar.txt",
             "git log --oneline",
+            // GitHub CLI read-only (#518)
+            "gh issue view 42",
+            "gh issue list",
+            "gh issue status",
+            "gh pr view 99",
+            "gh pr list",
+            "gh pr status",
+            "gh pr checks 42",
+            "gh pr diff 42",
+            "gh repo view owner/repo",
+            "gh release list",
+            "gh release view v1.0",
+            "gh run view 123",
+            "gh run list",
         ] {
             assert_eq!(
                 classify_bash_command(cmd),
@@ -455,7 +487,10 @@ mod tests {
             "npm install",
             "make",
             "gh issue create --title 'bug'",
-            "gh pr merge 42 --squash",
+            "gh issue edit 42 --title 'new title'",
+            "gh issue close 42",
+            "gh pr create --title 'feat'",
+            "gh pr edit 42 --title 'new title'",
             "curl https://api.example.com",
             "wget https://example.com/file.txt",
         ] {
@@ -479,6 +514,9 @@ mod tests {
             "sed -i 's/foo/bar/g' file.txt",
             "npm publish",
             "cargo publish",
+            "gh pr merge 42 --squash",
+            "gh issue delete 42",
+            "gh repo delete owner/repo",
         ] {
             assert_eq!(
                 classify_bash_command(cmd),
