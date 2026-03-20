@@ -32,6 +32,11 @@ pub struct ScrollBuffer {
     /// Used by virtual scroll to know which page to fetch next.
     /// `None` means no DB messages have been loaded yet.
     oldest_message_id: Option<i64>,
+
+    /// Cached terminal width for eviction offset adjustment.
+    /// Updated on scroll operations and used by `enforce_capacity()`
+    /// to compute visual height of evicted lines.
+    cached_term_width: usize,
 }
 
 impl ScrollBuffer {
@@ -41,6 +46,7 @@ impl ScrollBuffer {
             scroll_offset: 0,
             sticky_bottom: true,
             oldest_message_id: None,
+            cached_term_width: 80,
         }
     }
 
@@ -73,6 +79,7 @@ impl ScrollBuffer {
 
     /// Scroll up by `n` visual lines. Disengages sticky bottom.
     pub fn scroll_up(&mut self, n: usize, term_width: usize, viewport_height: usize) {
+        self.cached_term_width = term_width;
         let total = self.total_visual_lines(term_width);
         let max_offset = total.saturating_sub(viewport_height);
         self.scroll_offset = (self.scroll_offset + n).min(max_offset);
@@ -92,6 +99,7 @@ impl ScrollBuffer {
     /// terminal dimensions. Must be called after any resize so the
     /// offset doesn't exceed `total_visual - viewport_height`.
     pub fn clamp_offset(&mut self, term_width: usize, viewport_height: usize) {
+        self.cached_term_width = term_width;
         let total = self.total_visual_lines(term_width);
         let max_offset = total.saturating_sub(viewport_height);
         if self.scroll_offset > max_offset {
@@ -110,6 +118,7 @@ impl ScrollBuffer {
 
     /// Jump to the top of the buffer.
     pub fn scroll_to_top(&mut self, term_width: usize, viewport_height: usize) {
+        self.cached_term_width = term_width;
         if !self.lines.is_empty() {
             let total = self.total_visual_lines(term_width);
             self.scroll_offset = total.saturating_sub(viewport_height);
@@ -155,7 +164,8 @@ impl ScrollBuffer {
         let from_top = total
             .saturating_sub(viewport_height)
             .saturating_sub(self.scroll_offset);
-        (from_top as u16, 0)
+        // Clamp to u16::MAX to prevent silent truncation (#528).
+        (from_top.min(u16::MAX as usize) as u16, 0)
     }
 
     /// Total number of lines in the buffer.
@@ -263,12 +273,18 @@ impl ScrollBuffer {
     }
 
     /// Evict oldest lines if we exceed capacity.
+    ///
+    /// Adjusts `scroll_offset` by the evicted line's visual height
+    /// (not a flat 1) to prevent scroll position drift when wrapped
+    /// lines are evicted (#528).
     fn enforce_capacity(&mut self) {
+        let w = self.cached_term_width.max(1);
         while self.lines.len() > MAX_CACHE_LINES {
-            self.lines.pop_front();
-            // Adjust scroll offset since lines shifted
-            if self.scroll_offset > 0 {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+            if let Some(evicted) = self.lines.pop_front() {
+                if self.scroll_offset > 0 {
+                    let vis = visual_height(&evicted, w);
+                    self.scroll_offset = self.scroll_offset.saturating_sub(vis);
+                }
             }
         }
     }
