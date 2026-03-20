@@ -10,6 +10,8 @@ use std::path::Path;
 use tokio::process::Command;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
+/// Hard ceiling to prevent LLM-controlled DoS via huge timeout values.
+const MAX_TIMEOUT_SECS: u64 = 300;
 
 /// Return tool definitions for the LLM.
 pub fn definitions() -> Vec<ToolDefinition> {
@@ -46,7 +48,10 @@ pub async fn run_shell_command(
     let command = args["command"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
-    let timeout_secs = args["timeout"].as_u64().unwrap_or(DEFAULT_TIMEOUT_SECS);
+    let timeout_secs = args["timeout"]
+        .as_u64()
+        .unwrap_or(DEFAULT_TIMEOUT_SECS)
+        .min(MAX_TIMEOUT_SECS);
 
     tracing::info!("Running shell command: [{} chars]", command.len());
 
@@ -167,5 +172,16 @@ mod tests {
         let capped = cap_output(&input, 256);
         // Exactly at limit, no truncation
         assert!(!capped.contains("truncated"));
+    }
+
+    #[test]
+    fn test_timeout_capped_at_max() {
+        // Verify the timeout is clamped to MAX_TIMEOUT_SECS
+        let args = serde_json::json!({"command": "echo hi", "timeout": 99999});
+        let timeout_secs = args["timeout"]
+            .as_u64()
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .min(MAX_TIMEOUT_SECS);
+        assert_eq!(timeout_secs, MAX_TIMEOUT_SECS);
     }
 }
