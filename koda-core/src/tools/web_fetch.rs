@@ -58,7 +58,10 @@ pub async fn web_fetch(args: &Value, max_body_chars: usize) -> Result<String> {
         && let Some(host) = parsed.host_str()
     {
         // Only resolve domain names (IPs are already checked above)
-        if parsed.host().is_some_and(|h| matches!(h, url::Host::Domain(_))) {
+        if parsed
+            .host()
+            .is_some_and(|h| matches!(h, url::Host::Domain(_)))
+        {
             match tokio::net::lookup_host(format!(
                 "{}:{}",
                 host,

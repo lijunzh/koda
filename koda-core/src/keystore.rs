@@ -101,7 +101,6 @@ impl KeyStore {
     }
 }
 
-
 /// Mask a key for display: shows first 4 and last 4 characters.
 ///
 /// # Examples

@@ -553,7 +553,7 @@ mod tests {
             "gh issue delete 42",
             "gh repo delete owner/repo",
             // Interpreter-based execution (#525)
-            "python -c 'import os; os.remove(\"/tmp/x\")'" ,
+            "python -c 'import os; os.remove(\"/tmp/x\")'",
             "python3 -c 'import shutil; shutil.rmtree(\"/tmp\")'",
             "perl -e 'unlink(\"/tmp/x\")'",
             "ruby -e 'File.delete(\"/tmp/x\")'",
