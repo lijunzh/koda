@@ -305,11 +305,11 @@ fn line_text(line: &Line<'_>) -> String {
 /// shorter first row and producing more visual lines than simple
 /// `char_width / term_width` division.
 ///
-/// The algorithm walks spans character-by-character, tracking the
-/// current column position. At each space it records a potential
-/// break point. When adding a character would exceed `term_width`,
-/// it wraps at the last break point (or force-breaks mid-word if
-/// no break point was found on this row).
+/// The algorithm processes the text word-by-word (split on whitespace).
+/// If a word fits on the current row (with a space prefix if not first),
+/// it's added. If a word doesn't fit:
+///   - Row has content → start a new row with this word
+///   - Row is empty (word longer than width) → force-break mid-word
 fn visual_height(line: &Line<'_>, term_width: usize) -> usize {
     let text = line_text(line);
     if text.is_empty() {
@@ -319,14 +319,51 @@ fn visual_height(line: &Line<'_>, term_width: usize) -> usize {
     let mut rows = 1usize;
     let mut col = 0usize;
 
+    // Process word-by-word to match ratatui's Wrap { trim: false } behavior.
+    // We iterate characters but track word boundaries (spaces).
+    let mut word_start_col = 0usize; // col at start of current word
+    let mut in_word = false;
+
     for ch in text.chars() {
         let char_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if col + char_w > w {
-            // Wrap: start a new row
-            rows += 1;
-            col = char_w;
+        let is_space = ch == ' ' || ch == '\t';
+
+        if is_space {
+            // Space: just advance, marking end of word
+            in_word = false;
+            if col + char_w > w {
+                rows += 1;
+                col = char_w;
+            } else {
+                col += char_w;
+            }
+            word_start_col = col;
         } else {
-            col += char_w;
+            if !in_word {
+                // Starting a new word: check if it's worth staying on this row
+                word_start_col = col;
+                in_word = true;
+            }
+
+            if col + char_w > w {
+                if word_start_col > 0 && word_start_col <= w {
+                    // Word doesn't fit but row had prior content:
+                    // wrap *before* this word (at word_start_col)
+                    rows += 1;
+                    // Recalculate: the word chars from word_start_col
+                    // to now are on the new row
+                    let word_len_so_far = col - word_start_col;
+                    col = word_len_so_far + char_w;
+                    word_start_col = 0;
+                } else {
+                    // Word is at column 0 (longer than width): force-break
+                    rows += 1;
+                    col = char_w;
+                    word_start_col = 0;
+                }
+            } else {
+                col += char_w;
+            }
         }
     }
     rows
@@ -576,6 +613,66 @@ mod tests {
     fn test_visual_height_empty_line() {
         let line = make_line("");
         assert_eq!(visual_height(&line, 80), 1);
+    }
+
+    // ── Word-wrap regression tests (#520) ──
+
+    #[test]
+    fn test_visual_height_word_wrap_breaks_before_word() {
+        // 76 chars of 'a' + space + 6-char word = 83 chars
+        // Character wrap: row 1 = 80 chars, row 2 = 3 chars = 2 rows
+        // Word wrap: row 1 = 76 chars + space (77), row 2 = 6-char word = 2 rows
+        let text = format!("{}  foobar", "a".repeat(76));
+        let line = make_line(&text);
+        assert_eq!(visual_height(&line, 80), 2);
+    }
+
+    #[test]
+    fn test_visual_height_word_wrap_longer_word() {
+        // 78 chars + space + 5-char word = 84 chars
+        // Character wrap: row 1 = 80 chars, row 2 = 4 chars = 2 rows
+        // Word wrap: row 1 = 78+space (79), word "hello" doesn't fit (79+5=84>80)
+        //   -> wrap before "hello": row 1 = 79, row 2 = 5 = 2 rows
+        let text = format!("{} hello", "x".repeat(78));
+        let line = make_line(&text);
+        assert_eq!(visual_height(&line, 80), 2);
+    }
+
+    #[test]
+    fn test_visual_height_word_wrap_three_rows() {
+        // Two long words that each nearly fill a row + a short word
+        // "<75 a's> <75 b's> end"
+        let text = format!("{} {} end", "a".repeat(75), "b".repeat(75));
+        let line = make_line(&text);
+        // Row 1: 75 a's + space (76), "b"*75 doesn't fit (76+75=151>80)
+        // Row 2: 75 b's + space (76), "end" fits (76+3=79<=80) -> actually...
+        // Wait: row 2 starts with 75 b's = 75, + space = 76, + "end" = 79 <= 80
+        // So: 2 rows
+        // Actually: row 1 = "aaa... " (76), b's don't fit, wrap
+        // row 2 = "bbb... end" (75+1+3=79)
+        // = 2 rows
+        assert_eq!(visual_height(&line, 80), 2);
+    }
+
+    #[test]
+    fn test_visual_height_single_word_longer_than_width() {
+        // Single word with no spaces, 200 chars at width 80
+        // Must force-break: ceil(200/80) = 3 rows
+        let line = make_line(&"x".repeat(200));
+        assert_eq!(visual_height(&line, 80), 3);
+    }
+
+    #[test]
+    fn test_visual_height_exact_width() {
+        // Exactly 80 chars = 1 row, not 2
+        let line = make_line(&"x".repeat(80));
+        assert_eq!(visual_height(&line, 80), 1);
+    }
+
+    #[test]
+    fn test_visual_height_exact_width_plus_one() {
+        let line = make_line(&"x".repeat(81));
+        assert_eq!(visual_height(&line, 80), 2);
     }
 
     #[test]
