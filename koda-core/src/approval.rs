@@ -127,6 +127,8 @@ pub enum ToolApproval {
 /// - Writes outside project root → NeedsConfirmation (#218)
 /// - Bash path escapes → NeedsConfirmation
 /// - Delete of Koda-owned file → AutoApprove (#465)
+/// - EmailSend → LocalMutation (not RemoteAction) to prevent
+///   prompt-injection data exfiltration (#525)
 pub fn check_tool(
     tool_name: &str,
     args: &serde_json::Value,
@@ -337,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_write_tools_need_confirmation_in_confirm() {
-        for tool in ["Write", "Edit", "Delete", "MemoryWrite"] {
+        for tool in ["Write", "Edit", "Delete", "MemoryWrite", "EmailSend"] {
             assert_eq!(
                 check_tool(tool, &serde_json::json!({}), ApprovalMode::Confirm, None),
                 ToolApproval::NeedsConfirmation,

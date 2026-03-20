@@ -46,7 +46,7 @@ pub fn classify_tool(name: &str) -> ToolEffect {
 
         // Email tools
         "EmailRead" | "EmailSearch" => ToolEffect::ReadOnly,
-        "EmailSend" => ToolEffect::RemoteAction,
+        "EmailSend" => ToolEffect::LocalMutation,
 
         // Unknown tools — default to LocalMutation (conservative)
         _ => ToolEffect::LocalMutation,
