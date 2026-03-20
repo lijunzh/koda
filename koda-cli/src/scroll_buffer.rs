@@ -280,11 +280,11 @@ impl ScrollBuffer {
     fn enforce_capacity(&mut self) {
         let w = self.cached_term_width.max(1);
         while self.lines.len() > MAX_CACHE_LINES {
-            if let Some(evicted) = self.lines.pop_front() {
-                if self.scroll_offset > 0 {
-                    let vis = visual_height(&evicted, w);
-                    self.scroll_offset = self.scroll_offset.saturating_sub(vis);
-                }
+            if let Some(evicted) = self.lines.pop_front()
+                && self.scroll_offset > 0
+            {
+                let vis = visual_height(&evicted, w);
+                self.scroll_offset = self.scroll_offset.saturating_sub(vis);
             }
         }
     }
