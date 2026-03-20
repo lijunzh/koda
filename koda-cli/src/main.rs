@@ -29,6 +29,7 @@ mod tui_viewport;
 mod tui_wizards;
 mod widgets;
 mod wrap_input;
+mod wrap_util;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
