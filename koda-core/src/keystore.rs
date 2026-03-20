@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-const CONFIG_DIR: &str = "koda";
 const KEYS_FILE: &str = "keys.toml";
 
 /// Stored API keys, keyed by env var name (e.g. "ANTHROPIC_API_KEY").
@@ -97,24 +96,11 @@ impl KeyStore {
 
     /// Path to the keys file: ~/.config/koda/keys.toml
     pub fn keys_path() -> Result<PathBuf> {
-        let config_dir = dirs_config_dir().context("Could not determine config directory")?;
-        Ok(config_dir.join(CONFIG_DIR).join(KEYS_FILE))
+        let config_dir = crate::db::config_dir()?;
+        Ok(config_dir.join(KEYS_FILE))
     }
 }
 
-/// Cross-platform config directory.
-fn dirs_config_dir() -> Option<PathBuf> {
-    // $XDG_CONFIG_HOME or ~/.config on unix, AppData on windows
-    std::env::var("XDG_CONFIG_HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| PathBuf::from(h).join(".config"))
-        })
-        .or_else(|| std::env::var("APPDATA").ok().map(PathBuf::from))
-}
 
 /// Mask a key for display: shows first 4 and last 4 characters.
 ///
