@@ -4,7 +4,15 @@
 //! They are serde-serializable so they can be sent over in-process channels
 //! (CLI mode) or over the wire (ACP server mode).
 //!
-//! # Design Principles
+//! ## Design (docs/design.md)
+//!
+//! - **Engine as a Library, Not a Process (P2, P3)**: The engine communicates
+//!   exclusively through these enums. Zero IO in the engine crate.
+//! - **Async Approval Flow (P3)**: `ApprovalRequest` / `ApprovalResponse` is
+//!   async request/response, not a blocking call. Works identically over
+//!   in-process channels or network transport.
+//!
+//! ### Principles
 //!
 //! - **Semantic, not presentational**: Events describe *what happened*, not
 //!   *how to render it*. The client decides formatting.

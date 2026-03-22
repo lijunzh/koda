@@ -6,6 +6,13 @@
 //!
 //! Tool effects are classified via [`crate::tools::ToolEffect`] and bash commands are
 //! further refined by [`crate::bash_safety::classify_bash_command`].
+//!
+//! ## Design (docs/design.md)
+//!
+//! - **Security Model (P2)**: Two modes + hardcoded floors. Hardcoded floors
+//!   override mode settings for destructive ops — this is not configurable.
+//! - **File Lifecycle Tracking (P2)**: Auto-approve deleting files koda
+//!   created in the same turn. See [`crate::file_tracker::FileTracker`].
 
 use crate::bash_safety::classify_bash_command;
 use crate::file_tracker::FileTracker;

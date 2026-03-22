@@ -5,6 +5,15 @@
 //!
 //! Design: simple allowlist for safe commands, blocklist for dangerous ones,
 //! everything else defaults to LocalMutation. No hand-rolled parser.
+//!
+//! ## Design (docs/design.md)
+//!
+//! - **Folder-Scoped Permissions (P2)**: Bash commands are linted for path
+//!   escapes before execution. This is heuristic — complex pipelines can
+//!   bypass it. The principled fix is kernel-level sandboxing (v1.0 concern).
+//! - **Security Model (P2)**: Three classification tiers feed into the
+//!   approval flow. The LLM is semi-trusted (capable of mistakes, not
+//!   adversarial).
 
 use crate::tools::ToolEffect;
 
