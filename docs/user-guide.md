@@ -1,7 +1,7 @@
 # Koda User Guide
 
 Workflow-oriented documentation for getting things done with Koda.
-For architecture and design decisions, see [DESIGN.md](../DESIGN.md).
+For architecture and design decisions, see [design.md](design.md).
 For developer docs (building, testing, contributing), see [CLAUDE.md](../CLAUDE.md).
 
 ## Table of Contents
@@ -250,7 +250,7 @@ Both tiers are injected into the system prompt at session start. Use
 `/memory` to view or manually edit memory.
 
 **Recommended**: Put project rules in `CLAUDE.md` (works with both Koda and
-Claude Code). See [DESIGN.md §13](../DESIGN.md) for rationale.
+Claude Code). See [design.md](design.md) for rationale.
 
 ---
 
@@ -361,4 +361,4 @@ The security model focuses on preventing accidental blast radius.
 - Complex shell pipelines that evade heuristic parsing
 - Auto mode sub-agents with unconstrained `FullProject` scope
 
-For the full security analysis, see [DESIGN.md §18](../DESIGN.md).
+For the full security analysis, see [design.md](design.md#security-model).

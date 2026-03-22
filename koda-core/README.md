@@ -36,7 +36,7 @@ let (evt_tx, mut evt_rx) = mpsc::channel::<EngineEvent>(64);
 // See koda-cli for a complete implementation.
 ```
 
-See [DESIGN.md](https://github.com/lijunzh/koda/blob/main/DESIGN.md) for
+See [docs/design.md](https://github.com/lijunzh/koda/blob/main/docs/design.md) for
 architectural decisions.
 
 ## License
