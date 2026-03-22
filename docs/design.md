@@ -125,9 +125,11 @@ need a second one yet.
 
 ### Engine as a Library, Not a Process (P2, P3)
 
-The engine is a Rust library crate (`koda-core`) with zero IO.
-It communicates exclusively through `EngineEvent` (output) and `EngineCommand`
-(input) enums. See `koda-core/src/engine/event.rs` for the protocol definition.
+The engine is a Rust library crate (`koda-core`). It communicates
+exclusively through `EngineEvent` (output) and `EngineCommand` (input)
+enums — it never touches stdout, stdin, or stderr. Filesystem access
+for configuration, memory, and tool execution is direct (assumes POSIX).
+See `koda-core/src/engine/event.rs` for the protocol definition.
 
 Studied four projects:
 - **xi-editor**: Used stdio JSON-RPC. Discontinued. Lesson: protocol becomes
