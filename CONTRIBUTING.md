@@ -2,6 +2,13 @@
 
 Koda is a personal AI assistant built in Rust. Contributions are welcome.
 
+## Development Philosophy
+
+Make it work, make it right, make it fast — in that order. Ship working code
+first, refactor to clean design second, optimize for performance only when
+measured. This applies to architecture too — don't design for scale that
+doesn't exist yet.
+
 ## Quick Start
 
 ```bash

@@ -26,7 +26,7 @@ koda server --stdio       # ACP server over stdio (for editor integration)
 Principles are truths we enforce on the product. They may not be correct for
 everyone, but we follow them anyway.
 
-### 1. Software for One
+### P1: Software for One
 
 AI changes how software is built. We no longer need configurable software
 that caters to a broad audience through options and flags. Instead, we build
@@ -49,35 +49,34 @@ This is not a limitation. It is a superpower:
   "extensibility for later" — trait abstractions and plugin systems have a
   cost even when idle
 
-### 2. Clear Boundaries
+### P2: Build for the world six months from now
 
-Every component has a sharp boundary — what it does, what it doesn't,
-and where responsibility transfers to the next component.
+AI capabilities are compounding. Design for what models and tools will be
+able to do, not what they can do today. Don't build workarounds for current
+limitations — they'll be obsolete before they're stable.
 
-- **Engine** (`koda-core`): communicate with the LLM, curate context,
-  execute tools, manage safety. Zero terminal deps. Zero UI opinions
+- **Let the model drive.** The model plans, reasons, and decides which tools
+  to call. The engine executes — it does not reimplement planning,
+  verification, or decision-making in application code. Today's model
+  limitations are tomorrow's non-issues
+- **Don't scaffold around weakness.** Model tiers, capability probes, and
+  verbose fallback prompts are building for today. Delete them
+- **Expand the surface.** Email, calendar, knowledge management — these
+  are bets on where AI will be, not where it is
+
+Corollaries for component boundaries:
+- **Engine** (`koda-core`): mechanical execution. Zero terminal deps. Zero
+  UI opinions. Curate context, execute tools, manage safety
 - **UI** (`koda-cli`): deliver the best UX. Render events, capture input,
   present approvals. Zero inference decisions
-- **Model**: plan, reason, decide which tools to call. The engine does NOT
-  reimplement planning, verification, or decision-making in application code
-- **Provider**: koda targets a single model family. Don't adapt to different
-  model capabilities at runtime. If a model can't meet the contract, it
-  fails — the engine doesn't bend to accommodate it
-
-These boundaries are load-bearing. Breaking them causes the exact class of
-bugs that motivated removing the phase system and the model tier system.
-
-### 3. Make It Work, Make It Right, Make It Fast
-
-Don't optimize prematurely. Ship working code first, refactor to clean
-design second, optimize for performance only when measured. This applies
-to architecture too — don't design for scale that doesn't exist yet.
+- **Provider**: meets the tool-use contract or fails — the engine doesn't
+  bend to accommodate it
 
 ---
 
 ## Architecture
 
-### Engine as a Library, Not a Process
+### Engine as a Library, Not a Process (P1, P2)
 
 The engine is a Rust library crate (`koda-core`) with zero IO.
 It communicates exclusively through `EngineEvent` (output) and `EngineCommand`
@@ -94,14 +93,14 @@ Studied four projects:
 **Zed's approach wins**: engine and primary client in the same binary. Server
 mode is optional for external clients.
 
-### ACP (Agent Client Protocol)
+### ACP (Agent Client Protocol) (P2)
 
 Koda's server mode will speak ACP. Both Zed and Goose independently converged
 on ACP (`@agentclientprotocol/sdk`). ACP defines session management, streaming
 messages, tool calls with permissions, and status updates — exactly what
 Koda needs. Adopting ACP gives us Zed integration for free.
 
-### Extensibility: Thin Core + First-Party Libraries
+### Extensibility: Thin Core + First-Party Libraries (P1, P2)
 
 The core binary contains only essential tools (file ops, shell, search, web
 fetch, memory, agents). Domain-specific capabilities are split into first-party
@@ -141,7 +140,7 @@ by external consumers.
 servers. Use Node/Python when critical libraries only exist in those ecosystems.
 See [#123](https://github.com/lijunzh/koda/issues/123) for tradeoff analysis.
 
-### Monolithic Database Module
+### Monolithic Database Module (P1)
 
 `db/` stays as a cohesive module. Do not split into sub-modules by domain
 (sessions, messages, compaction, metadata). The code is tightly cohesive:
@@ -154,7 +153,7 @@ embeddings, knowledge graph, email/calendar), those should be *new files*
 alongside `db/` (e.g. `vector_store.rs`), not splits of the existing module.
 Split by domain divergence, not by line count.
 
-### Database Backend: SQLite + Persistence Trait
+### Database Backend: SQLite + Persistence Trait (P2)
 
 Keep SQLite for now. The `Persistence` trait lets the backend be swapped
 later and enables trait-based testing (mock DB). Cost is minimal (~50 lines).
@@ -167,7 +166,7 @@ vector embeddings, graph relationships, or multi-device sync.
 
 ## Execution Model
 
-### Async Approval Flow
+### Async Approval Flow (P2)
 
 Tool approval is an async request/response, not a blocking function call.
 In server mode, the approval decision comes from a remote client. The engine
@@ -175,7 +174,7 @@ emits `EngineEvent::ApprovalRequest` and awaits
 `EngineCommand::ApprovalResponse` — works identically over in-process
 channels or network transport.
 
-### Tool Dispatch: Match Statement, Not Trait Registry
+### Tool Dispatch: Match Statement, Not Trait Registry (P1)
 
 Tools are dispatched via a `match` statement in `ToolRegistry::execute()`,
 not via a `Tool` trait with dynamic dispatch. Rust's exhaustive matching
@@ -192,7 +191,7 @@ on the ToolRegistry, set via `.with_session()`. No sentinel strings.
 locations per tool (definitions, match arm, module import) is a bottleneck,
 convert to a `Tool` trait + `ToolContext`. Do both together, not piecemeal.
 
-### Context Window Auto-Detection
+### Context Window Auto-Detection (P2)
 
 Context windows are queried from the **provider API** at startup. The
 hardcoded lookup table (`model_context.rs`) is the fallback.
@@ -207,14 +206,14 @@ controls context size. LM Studio's `/api/v0/models` reports
 `query_and_apply_capabilities()` runs in all entry points (TUI, headless,
 ACP server, model switch, provider setup).
 
-### Rate Limit Retry
+### Rate Limit Retry (P1)
 
 Exponential backoff retry for 429/rate-limit errors. Up to 5 attempts with
 delays of 2, 4, 8, 16, 32 seconds. Long sessions with Opus hit rate limits
 regularly. Previously, a 429 killed the session. Now the user sees a
 countdown and the request automatically retries.
 
-### Sub-Agent Model Routing
+### Sub-Agent Model Routing (P1, P2)
 
 Sub-agents respect their own provider/model config when explicitly set. The
 parent's base_url is only inherited if the sub-agent uses the same provider.
@@ -228,7 +227,7 @@ calls to potentially different providers.
 
 ## Interaction
 
-### No `.koda.md` — Use `CLAUDE.md`
+### No `.koda.md` — Use `CLAUDE.md` (P1)
 
 Koda will NOT introduce a `.koda.md` project rules file. User-authored
 project instructions go in `CLAUDE.md`.
@@ -239,7 +238,7 @@ Koda already reads `CLAUDE.md` via the `memory.rs` fallback chain
 - Force users to maintain two files with overlapping content
 - Violate DRY at the ecosystem level — one file should serve both tools
 
-### Conversation-First Interaction
+### Conversation-First Interaction (P1)
 
 The conversation is the primary surface. All interactive UI (dropdowns,
 approvals, wizards) renders inline within the conversation — never as
@@ -269,7 +268,7 @@ For the viewport layout diagram and interaction patterns, see
 
 [#472]: https://github.com/lijunzh/koda/issues/472
 
-### The Dropdown Is Help
+### The Dropdown Is Help (P1)
 
 Removed the `?` keyboard shortcut overlay and `/help` command. The slash
 dropdown with descriptions IS the help system.
@@ -279,7 +278,7 @@ auto-dropdown) created redundant complexity and viewport resize bugs. The
 auto-dropdown on `/` shows all commands with descriptions — that is help.
 Keyboard shortcuts moved to the startup banner header.
 
-### Fullscreen Viewport
+### Fullscreen Viewport (P1)
 
 Switch from `Viewport::Inline` (terminal-native scrollback) to
 `Viewport::Fullscreen` (alternate screen buffer with app-managed scrollback).
@@ -314,7 +313,7 @@ The layout is the same — just managed by the app instead of the terminal.
 
 ## Safety
 
-### Folder-Scoped Permissions
+### Folder-Scoped Permissions (P1)
 
 Writes outside `project_root` always require explicit confirmation,
 regardless of approval mode. Bash commands are linted for path escapes
@@ -327,7 +326,7 @@ radius, not targeted attacks.
 
 For operational details, see [user-guide.md](user-guide.md#security-model).
 
-### Security Model
+### Security Model (P1)
 
 Per-tool safety classification with two approval modes and hardcoded floors
 that override mode settings for high-risk operations.
@@ -351,7 +350,7 @@ For approval mode tables, tool effect matrix, and operational details, see
 2. Shell command parsing is heuristic — complex pipelines can bypass
 3. Outside-project writes in Confirm mode show confirm prompt instead of clean block
 
-### File Lifecycle Tracking
+### File Lifecycle Tracking (P1)
 
 Track file create/edit/delete ownership per turn to auto-approve deleting
 files that koda created in the same turn.
