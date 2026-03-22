@@ -67,10 +67,18 @@ mod db_perf {
         let elapsed = start.elapsed();
         let per_insert = elapsed.as_micros() / 10;
 
+        // Windows CI runners are significantly slower for SQLite I/O; use a
+        // relaxed threshold there — still catches catastrophic regressions.
+        #[cfg(target_os = "windows")]
+        let threshold = 500_000u128; // 500ms
+        #[cfg(not(target_os = "windows"))]
+        let threshold = 50_000u128; // 50ms
+
         assert!(
-            per_insert < 50_000,
-            "insert_message took {}µs avg (should be <50000µs)",
-            per_insert
+            per_insert < threshold,
+            "insert_message took {}µs avg (should be <{}µs)",
+            per_insert,
+            threshold
         );
     }
 }
