@@ -4,6 +4,14 @@
 //! depends on this trait, not the concrete SQLite implementation.
 //!
 //! The default implementation is `Database` in `db.rs`.
+//!
+//! ## Design (docs/design.md)
+//!
+//! - **Database Backend: SQLite + Persistence Trait (P3)**: This trait
+//!   exists because P3 says the storage backend will change. But there's
+//!   only one real implementation because P1 says we don't need a second
+//!   one yet. When P1 and P3 conflict: P1 wins on timing, P3 wins on
+//!   architecture.
 
 use anyhow::Result;
 use std::path::Path;

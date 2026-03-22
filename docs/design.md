@@ -18,6 +18,27 @@ designed for broad adoption with configuration surfaces for many users.
 Koda is the opposite: hyper-specific, opinionated, and changeable with a
 few prompts and a recompile.
 
+What koda specifically rejects from existing tools:
+
+- **Cursor/Windsurf**: Extension and plugin systems, marketplace
+  ecosystems, multi-user configuration surfaces. These create complexity
+  that serves breadth of adoption, not depth of capability. Koda compiles
+  decisions in, it doesn't configure them at runtime (P1)
+- **Claude Code/Codex**: Vendor lock-in to a single provider. Tight
+  coupling to one company's API means the tool's ceiling is set by that
+  company's roadmap. Koda treats providers as interchangeable (P1)
+- **Goose**: Stepped wizards and fullscreen forms that obscure the
+  conversation. Multi-frontend architecture (Electron, Ink TUI, CLI)
+  that adds process management overhead for frontends that don't get
+  used. Koda keeps the conversation as the primary surface and ships
+  one binary (P2)
+- **Aider**: Git-centric workflow that couples the tool to a specific
+  development methodology. Koda is a general assistant, not a git
+  workflow tool (P3)
+
+These aren't aesthetic preferences — each rejection traces to a
+principle.
+
 ## Execution Modes
 
 ```bash
@@ -57,8 +78,11 @@ and a recompile.
 ### P2: Simple enough to own alone
 
 One person builds it, one person maintains it, one person debugs it.
-Every design choice must be easy to reason about. Acceptable rough edges
-are better than polished complexity.
+This is the principle that prevents koda from becoming Cursor. Cursor is
+capable but complex — extension systems, agent modes, model routing
+tiers, configuration surfaces. Koda chooses simplicity: fewer concepts,
+one binary, match dispatch, two approval modes. We'd rather be slightly
+less capable than incomprehensible.
 
 - **Easy to reason about.** If you can't hold the component's behavior in
   your head, it's too complex. Clear component boundaries — engine, UI,
@@ -85,6 +109,15 @@ limitations — they'll be obsolete before they're stable.
   verbose fallback prompts are building for today. Delete them
 - **Expand the surface.** Email, calendar, knowledge management — these
   are bets on where AI will be, not where it is
+
+### When principles conflict
+
+P1 says "build only what we need." P3 says "expand the surface." These
+can conflict. When they do: P1 wins on **timing** (don't build it yet),
+but P3 wins on **architecture** (design so it's easy to add). The
+`Persistence` trait exists because P3 says the storage backend will
+change — but there's only one implementation because P1 says we don't
+need a second one yet.
 
 ---
 
