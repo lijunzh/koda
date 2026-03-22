@@ -32,6 +32,7 @@ use tokio_util::sync::CancellationToken;
 /// Post-execution recording: emit result event, persist to DB, track progress
 /// and file lifecycle. Called after every successful tool execution regardless
 /// of execution strategy (parallel, split-batch, or sequential).
+#[allow(clippy::too_many_arguments)]
 async fn record_tool_result(
     tc: &ToolCall,
     result: &str,
@@ -58,16 +59,8 @@ async fn record_tool_result(
         None,
     )
     .await?;
-    crate::progress::track_progress(
-        db,
-        session_id,
-        &tc.function_name,
-        &tc.arguments,
-        result,
-    )
-    .await;
-    let parsed_args: serde_json::Value =
-        serde_json::from_str(&tc.arguments).unwrap_or_default();
+    crate::progress::track_progress(db, session_id, &tc.function_name, &tc.arguments, result).await;
+    let parsed_args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
     track_file_lifecycle(
         &tc.function_name,
         &parsed_args,
