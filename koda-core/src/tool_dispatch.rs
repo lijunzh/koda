@@ -1,7 +1,14 @@
 //! Tool execution dispatch — sequential, parallel, and sub-agent.
 //!
-//! Extracted from inference.rs for clarity. Handles tool call
-//! execution, approval flow, and sub-agent delegation.
+//! Handles tool call execution, approval flow, and sub-agent delegation.
+//!
+//! ## Design (docs/design.md)
+//!
+//! - **Tool Dispatch: Match Statement (P2)**: Tools are dispatched via a
+//!   `match` in `ToolRegistry::execute()`, not a `HashMap<String, Box<dyn Tool>>`.
+//!   Rust's exhaustive matching catches missing handlers at compile time.
+//! - **Sub-Agent Model Routing (P1, P3)**: Sub-agents respect their own
+//!   provider/model config. The parent's prompt cache is unaffected.
 
 use crate::approval::{self, ApprovalMode, Settings, ToolApproval};
 use crate::config::KodaConfig;

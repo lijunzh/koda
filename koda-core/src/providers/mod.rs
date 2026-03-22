@@ -1,6 +1,14 @@
 //! LLM provider abstraction layer.
 //!
 //! Defines a common trait for all providers and re-exports the default.
+//!
+//! ## Design (docs/design.md)
+//!
+//! - **Any model, any provider (P1)**: 15 provider types, cloud and local.
+//!   No vendor lock-in. The tool serves the person, not the platform.
+//! - **Context Window Auto-Detection (P1, P3)**: Capabilities are queried
+//!   from the provider API at startup. Hardcoded lookup is the fallback,
+//!   not the primary source.
 
 /// Anthropic Claude API provider.
 pub mod anthropic;
