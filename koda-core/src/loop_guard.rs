@@ -118,19 +118,6 @@ impl LoopContinuation {
     }
 }
 
-/// Returns the number of additional iterations granted (0 = stop).
-///
-/// The `prompt_fn` callback is responsible for asking the user (terminal,
-/// server, or headless). It receives `(cap, recent_tool_names)` and returns
-/// the user's choice.
-pub fn ask_continue_or_stop(
-    cap: u32,
-    recent_names: &[String],
-    prompt_fn: &dyn Fn(u32, &[String]) -> LoopContinuation,
-) -> u32 {
-    prompt_fn(cap, recent_names).extra_iterations()
-}
-
 // ── Tests ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
