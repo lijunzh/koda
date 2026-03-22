@@ -79,7 +79,60 @@ impl TuiContext {
                     );
                 });
 
+                // Biased: prioritise terminal input so mouse/keyboard events
+                // are never starved by a flood of engine TextDelta events.
+                // Without this, rapid streaming causes `ui_rx` to win the
+                // select race repeatedly, letting mouse escape sequences
+                // pile up in the terminal buffer until the crossterm parser
+                // mis-frames them as individual key events (#540).
                 tokio::select! {
+                    biased;
+
+                    Some(Ok(ev)) = self.crossterm_events.next() => {
+                        handle_crossterm_event_inline(
+                            ev,
+                            &cancel_token,
+                            cmd_tx,
+                            &mut self.scroll_buffer,
+                            self.history_area_height as usize,
+                            &mut self.menu,
+                            &mut self.prompt_mode,
+                            &mut self.pending_approval_id,
+                            &mut self.textarea,
+                            &self.shared_mode,
+                            &mut self.completer,
+                            &mut self.history,
+                            &mut self.history_idx,
+                            &mut self.input_queue,
+                            &mut self.paste_blocks,
+                        ).await;
+                    }
+                    Some(ui_event) = ui_rx.recv() => {
+                        // Extract context usage before rendering
+                        if let UiEvent::Engine(EngineEvent::ContextUsage { used, max }) = &ui_event {
+                            self.context_pct = if *max > 0 { (used * 100 / max) as u32 } else { 0 };
+                        }
+                        handle_inference_ui_inline(
+                            ui_event,
+                            &mut self.scroll_buffer,
+                            &mut self.menu,
+                            &mut self.renderer,
+                        );
+                        // Batch-drain queued engine events to reduce redraws.
+                        // Each loop iteration triggers a full terminal.draw(),
+                        // so draining N events → 1 redraw instead of N redraws.
+                        while let Ok(extra) = ui_rx.try_recv() {
+                            if let UiEvent::Engine(EngineEvent::ContextUsage { used, max }) = &extra {
+                                self.context_pct = if *max > 0 { (used * 100 / max) as u32 } else { 0 };
+                            }
+                            handle_inference_ui_inline(
+                                extra,
+                                &mut self.scroll_buffer,
+                                &mut self.menu,
+                                &mut self.renderer,
+                            );
+                        }
+                    }
                     result = &mut turn => {
                         if let Err(e) = result {
                             self.scroll_buffer.push(
@@ -93,78 +146,6 @@ impl TuiContext {
                             );
                         }
                         break;
-                    }
-                    Some(Ok(ev)) = self.crossterm_events.next() => {
-                        // Inline: field-level borrows to satisfy borrow checker
-                        // (turn holds &mut self.session, so we can't call &mut self methods)
-                        match ev {
-                            Event::Resize(_, _) => {
-                                // Fullscreen: just redraw on next loop.
-                                // Clamp scroll offset for the new dimensions.
-                                let (w, h) = crossterm::terminal::size()
-                                    .map(|(c, r)| (c as usize, r as usize))
-                                    .unwrap_or((80, 24));
-                                self.scroll_buffer.clamp_offset(w, h);
-                            }
-                            Event::Mouse(mouse) => {
-                                // Handle scroll wheel during inference so the
-                                // user can browse history while output streams.
-                                use crossterm::event::MouseEventKind;
-                                let (w, _) = crossterm::terminal::size()
-                                    .map(|(c, r)| (c as usize, r as usize))
-                                    .unwrap_or((80, 24));
-                                let hist_h = self.history_area_height as usize;
-                                match mouse.kind {
-                                    MouseEventKind::ScrollUp => {
-                                        self.scroll_buffer.scroll_up(3, w, hist_h);
-                                    }
-                                    MouseEventKind::ScrollDown => {
-                                        self.scroll_buffer.scroll_down(3);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            Event::Paste(text) => {
-                                let char_count = text.chars().count();
-                                if char_count < input::PASTE_BLOCK_THRESHOLD {
-                                    self.textarea.insert_str(&text);
-                                } else {
-                                    self.paste_blocks.push(input::PasteBlock {
-                                        content: text,
-                                        char_count,
-                                    });
-                                }
-                            }
-                            Event::Key(key) => {
-                                handle_inference_key_inline(
-                                    key,
-                                    &cancel_token,
-                                    cmd_tx,
-                                    &mut self.menu,
-                                    &mut self.prompt_mode,
-                                    &mut self.pending_approval_id,
-                                    &mut self.textarea,
-                                    &self.shared_mode,
-                                    &mut self.completer,
-                                    &mut self.history,
-                                    &mut self.history_idx,
-                                    &mut self.input_queue,
-                                ).await;
-                            }
-                            _ => {}
-                        }
-                    }
-                    Some(ui_event) = ui_rx.recv() => {
-                        // Extract context usage before rendering
-                        if let UiEvent::Engine(EngineEvent::ContextUsage { used, max }) = &ui_event {
-                            self.context_pct = if *max > 0 { (used * 100 / max) as u32 } else { 0 };
-                        }
-                        handle_inference_ui_inline(
-                            ui_event,
-                            &mut self.scroll_buffer,
-                            &mut self.menu,
-                            &mut self.renderer,
-                        );
                     }
                 }
             }
@@ -280,6 +261,80 @@ impl TuiContext {
 // Free functions that take individual fields to avoid &mut self borrow
 // conflicts with the pinned `turn` future.
 // ─────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────
+
+/// Route a crossterm event during inference (field-level borrows).
+///
+/// Extracted from the inline `tokio::select!` arm so the select body
+/// stays small and readable.
+#[allow(clippy::too_many_arguments)]
+async fn handle_crossterm_event_inline(
+    ev: Event,
+    cancel_token: &tokio_util::sync::CancellationToken,
+    cmd_tx: &mpsc::Sender<EngineCommand>,
+    scroll_buffer: &mut ScrollBuffer,
+    hist_h: usize,
+    menu: &mut MenuContent,
+    prompt_mode: &mut PromptMode,
+    pending_approval_id: &mut Option<String>,
+    textarea: &mut ratatui_textarea::TextArea<'static>,
+    shared_mode: &koda_core::approval::SharedMode,
+    completer: &mut crate::completer::InputCompleter,
+    history: &mut Vec<String>,
+    history_idx: &mut Option<usize>,
+    input_queue: &mut std::collections::VecDeque<String>,
+    paste_blocks: &mut Vec<input::PasteBlock>,
+) {
+    use crossterm::event::MouseEventKind;
+    match ev {
+        Event::Resize(_, _) => {
+            let (w, h) = crossterm::terminal::size()
+                .map(|(c, r)| (c as usize, r as usize))
+                .unwrap_or((80, 24));
+            scroll_buffer.clamp_offset(w, h);
+        }
+        Event::Mouse(mouse) => {
+            let (w, _) = crossterm::terminal::size()
+                .map(|(c, r)| (c as usize, r as usize))
+                .unwrap_or((80, 24));
+            match mouse.kind {
+                MouseEventKind::ScrollUp => scroll_buffer.scroll_up(3, w, hist_h),
+                MouseEventKind::ScrollDown => scroll_buffer.scroll_down(3),
+                _ => {}
+            }
+        }
+        Event::Paste(text) => {
+            let char_count = text.chars().count();
+            if char_count < input::PASTE_BLOCK_THRESHOLD {
+                textarea.insert_str(&text);
+            } else {
+                paste_blocks.push(input::PasteBlock {
+                    content: text,
+                    char_count,
+                });
+            }
+        }
+        Event::Key(key) => {
+            handle_inference_key_inline(
+                key,
+                cancel_token,
+                cmd_tx,
+                menu,
+                prompt_mode,
+                pending_approval_id,
+                textarea,
+                shared_mode,
+                completer,
+                history,
+                history_idx,
+                input_queue,
+            )
+            .await;
+        }
+        _ => {}
+    }
+}
 
 /// Handle a key event during inference (field-level borrows).
 #[allow(clippy::too_many_arguments)]
