@@ -117,6 +117,18 @@ pub enum EngineEvent {
     },
 
     // ── Session metadata ──────────────────────────────────────────────
+    /// Context window usage updated after assembling messages.
+    ///
+    /// Emitted once per inference turn so the client can display
+    /// context percentage and trigger auto-compaction without reading
+    /// engine-internal global state.
+    ContextUsage {
+        /// Tokens used in the current context window.
+        used: usize,
+        /// Maximum context window size.
+        max: usize,
+    },
+
     /// Progress/status update for the persistent status bar.
     StatusUpdate {
         /// Current model identifier.

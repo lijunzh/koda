@@ -67,6 +67,7 @@ async fn assemble_context(
     pending_images: Option<&[ImageData]>,
     iteration: u32,
     max_context_tokens: usize,
+    sink: &dyn EngineSink,
 ) -> Result<Vec<ChatMessage>> {
     let history = db.load_context(session_id).await?;
     let mut messages = assemble_messages(system_message, &history);
@@ -82,6 +83,10 @@ async fn assemble_context(
 
     let context_used = estimate_tokens(&messages);
     crate::context::update(context_used, max_context_tokens);
+    sink.emit(EngineEvent::ContextUsage {
+        used: context_used,
+        max: max_context_tokens,
+    });
 
     Ok(messages)
 }
@@ -135,6 +140,7 @@ async fn preflight_compact_if_needed(
                 pending_images,
                 iteration,
                 config.max_context_tokens,
+                sink,
             )
             .await
         }
@@ -260,6 +266,7 @@ async fn try_overflow_recovery(
         pending_images,
         iteration,
         config.max_context_tokens,
+        sink,
     )
     .await?;
 
@@ -519,6 +526,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             pending_images.as_deref(),
             iteration,
             config.max_context_tokens,
+            sink,
         )
         .await?;
 
