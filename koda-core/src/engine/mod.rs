@@ -4,7 +4,7 @@
 //! `EngineCommand` (input) enums. This decoupling allows the same engine
 //! to power the CLI, a future ACP server, VS Code extension, or desktop app.
 //!
-//! See `DESIGN.md` for the full architectural rationale.
+//! See `docs/design.md` for the full architectural rationale.
 
 /// Event and command enums — the engine's public protocol.
 pub mod event;

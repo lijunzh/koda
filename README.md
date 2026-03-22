@@ -161,7 +161,7 @@ koda/
 ```
 
 The engine communicates through `EngineEvent` (output) and `EngineCommand` (input) enums
-over async channels. See [DESIGN.md](DESIGN.md) for architectural decisions.
+over async channels. See [docs/design.md](docs/design.md) for architectural decisions.
 
 ## Getting the Most Out of Koda
 
@@ -198,10 +198,14 @@ Use `/compact` manually, or let auto-compact handle it. The `/cost` command show
 
 ## Documentation
 
-- **[DESIGN.md](DESIGN.md)** — Design decisions and rationale
-- **[CHANGELOG.md](CHANGELOG.md)** — Release history
-- **[CLAUDE.md](CLAUDE.md)** — Developer guide for AI assistants
-- **[GitHub Issues](https://github.com/lijunzh/koda/issues)** — Roadmap and release tracking
+| Document | Audience | Content |
+|---|---|---|
+| [**User Guide**](docs/user-guide.md) | Users | Workflow docs, commands, security |
+| [**Design**](docs/design.md) | Contributors | Principles, architecture, decisions |
+| [**CLAUDE.md**](CLAUDE.md) | AI assistants | Workspace layout, developer reference |
+| [**Contributing**](CONTRIBUTING.md) | Contributors | Setup, conventions, release process |
+| [**Changelog**](CHANGELOG.md) | Everyone | Version history |
+| [**API Reference**](https://docs.rs/koda-core) | Developers | Full Rust API docs |
 
 ## Development
 

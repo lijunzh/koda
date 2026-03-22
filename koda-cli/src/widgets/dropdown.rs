@@ -3,7 +3,7 @@
 //! Reusable dropdown with type-to-filter, scroll, and fixed-height
 //! rendering. Used by slash commands, `/model`, `/provider`, etc.
 //!
-//! See DESIGN.md §14 for the interaction system design.
+//! See docs/design.md (Interaction section) for the interaction system design.
 
 use ratatui::{
     style::{Color, Modifier, Style},
