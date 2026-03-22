@@ -208,6 +208,7 @@ impl EngineSink for HeadlessSink {
             EngineEvent::SpinnerStart { .. } => {}
             EngineEvent::SpinnerStop => {}
             EngineEvent::StatusUpdate { .. } => {}
+            EngineEvent::ContextUsage { .. } => {}
             EngineEvent::TurnStart { .. } => {}
             EngineEvent::TurnEnd { .. } => {}
             EngineEvent::Footer {

@@ -184,6 +184,7 @@ impl TuiRenderer {
             }
             EngineEvent::ApprovalRequest { .. }
             | EngineEvent::StatusUpdate { .. }
+            | EngineEvent::ContextUsage { .. }
             | EngineEvent::TurnStart { .. }
             | EngineEvent::TurnEnd { .. }
             | EngineEvent::LoopCapReached { .. } => {

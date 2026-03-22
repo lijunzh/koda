@@ -58,7 +58,7 @@ impl TuiContext {
 
                 // Redraw viewport
                 let mode = approval::read_mode(&self.shared_mode);
-                let ctx = koda_core::context::percentage() as u32;
+                let ctx = self.context_pct;
                 let _ = self.terminal.draw(|f| {
                     draw_viewport(
                         f,
@@ -155,6 +155,10 @@ impl TuiContext {
                         }
                     }
                     Some(ui_event) = ui_rx.recv() => {
+                        // Extract context usage before rendering
+                        if let UiEvent::Engine(EngineEvent::ContextUsage { used, max }) = &ui_event {
+                            self.context_pct = if *max > 0 { (used * 100 / max) as u32 } else { 0 };
+                        }
                         handle_inference_ui_inline(
                             ui_event,
                             &mut self.scroll_buffer,
@@ -185,6 +189,9 @@ impl TuiContext {
 
         // Drain remaining UI events
         while let Ok(UiEvent::Engine(e)) = ui_rx.try_recv() {
+            if let EngineEvent::ContextUsage { used, max } = &e {
+                self.context_pct = if *max > 0 { (used * 100 / max) as u32 } else { 0 };
+            }
             self.renderer.render_to_buffer(e, &mut self.scroll_buffer);
         }
 
@@ -197,7 +204,7 @@ impl TuiContext {
             return;
         }
 
-        let ctx_pct = koda_core::context::percentage();
+        let ctx_pct = self.context_pct as usize;
         if ctx_pct < self.config.auto_compact_threshold {
             return;
         }

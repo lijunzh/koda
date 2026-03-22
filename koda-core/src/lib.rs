@@ -20,8 +20,8 @@ pub mod bash_safety;
 pub mod compact;
 /// Global configuration: provider, model, model settings, CLI flags.
 pub mod config;
-/// Context window management and token budgeting.
-pub mod context;
+/// Context window management and token budgeting (engine-internal).
+pub(crate) mod context;
 /// SQLite persistence layer — sessions, messages, usage tracking.
 pub mod db;
 /// Engine protocol: `EngineEvent` / `EngineCommand` enums.
