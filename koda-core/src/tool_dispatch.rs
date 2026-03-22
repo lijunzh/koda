@@ -29,6 +29,56 @@ use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// Post-execution recording: emit result event, persist to DB, track progress
+/// and file lifecycle. Called after every successful tool execution regardless
+/// of execution strategy (parallel, split-batch, or sequential).
+async fn record_tool_result(
+    tc: &ToolCall,
+    result: &str,
+    success: bool,
+    db: &Database,
+    session_id: &str,
+    max_result_chars: usize,
+    project_root: &Path,
+    file_tracker: &mut FileTracker,
+    sink: &dyn crate::engine::EngineSink,
+) -> Result<()> {
+    sink.emit(EngineEvent::ToolCallResult {
+        id: tc.id.clone(),
+        name: tc.function_name.clone(),
+        output: result.to_string(),
+    });
+    let stored = truncate_for_history(result, max_result_chars);
+    db.insert_message(
+        session_id,
+        &Role::Tool,
+        Some(&stored),
+        None,
+        Some(&tc.id),
+        None,
+    )
+    .await?;
+    crate::progress::track_progress(
+        db,
+        session_id,
+        &tc.function_name,
+        &tc.arguments,
+        result,
+    )
+    .await;
+    let parsed_args: serde_json::Value =
+        serde_json::from_str(&tc.arguments).unwrap_or_default();
+    track_file_lifecycle(
+        &tc.function_name,
+        &parsed_args,
+        project_root,
+        file_tracker,
+        success,
+    )
+    .await;
+    Ok(())
+}
+
 /// Truncate a tool result for storage in conversation history.
 /// The `max_chars` limit is set by `OutputCaps::tool_result_chars`.
 fn truncate_for_history(output: &str, max_chars: usize) -> String {
@@ -252,41 +302,18 @@ pub(crate) async fn execute_tools_parallel(
             args: serde_json::from_str(&tool_calls[i].arguments).unwrap_or_default(),
             is_sub_agent: false,
         });
-        sink.emit(EngineEvent::ToolCallResult {
-            id: tc_id.clone(),
-            name: tool_calls[i].function_name.clone(),
-            output: result.clone(),
-        });
-        let stored = truncate_for_history(&result, tools.caps.tool_result_chars);
-        db.insert_message(
-            session_id,
-            &Role::Tool,
-            Some(&stored),
-            None,
-            Some(&tc_id),
-            None,
-        )
-        .await?;
-        // Track progress for file mutations and test results
-        crate::progress::track_progress(
+        record_tool_result(
+            &tool_calls[i],
+            &result,
+            success,
             db,
             session_id,
-            &tool_calls[i].function_name,
-            &tool_calls[i].arguments,
-            &result,
-        )
-        .await;
-        // File lifecycle tracking (#465, #476)
-        let parsed_args: serde_json::Value =
-            serde_json::from_str(&tool_calls[i].arguments).unwrap_or_default();
-        track_file_lifecycle(
-            &tool_calls[i].function_name,
-            &parsed_args,
+            tools.caps.tool_result_chars,
             project_root,
             file_tracker,
-            success,
+            sink,
         )
-        .await;
+        .await?;
     }
     Ok(())
 }
@@ -354,40 +381,18 @@ pub(crate) async fn execute_tools_split_batch(
                 args: serde_json::from_str(&parallel[j].arguments).unwrap_or_default(),
                 is_sub_agent: false,
             });
-            sink.emit(EngineEvent::ToolCallResult {
-                id: tc_id.clone(),
-                name: parallel[j].function_name.clone(),
-                output: result.clone(),
-            });
-            let stored = truncate_for_history(&result, tools.caps.tool_result_chars);
-            db.insert_message(
-                session_id,
-                &Role::Tool,
-                Some(&stored),
-                None,
-                Some(&tc_id),
-                None,
-            )
-            .await?;
-            crate::progress::track_progress(
+            record_tool_result(
+                parallel[j],
+                &result,
+                success,
                 db,
                 session_id,
-                &parallel[j].function_name,
-                &parallel[j].arguments,
-                &result,
-            )
-            .await;
-            // File lifecycle tracking (#465, #476)
-            let parsed_args: serde_json::Value =
-                serde_json::from_str(&parallel[j].arguments).unwrap_or_default();
-            track_file_lifecycle(
-                &parallel[j].function_name,
-                &parsed_args,
+                tools.caps.tool_result_chars,
                 project_root,
                 file_tracker,
-                success,
+                sink,
             )
-            .await;
+            .await?;
         }
     } else {
         // 0–1 parallelizable tools — just run sequentially
@@ -568,34 +573,18 @@ pub(crate) async fn execute_tools_sequential(
             sub_agent_cache,
         )
         .await;
-        sink.emit(EngineEvent::ToolCallResult {
-            id: tc.id.clone(),
-            name: tc.function_name.clone(),
-            output: result.clone(),
-        });
-
-        let stored = truncate_for_history(&result, tools.caps.tool_result_chars);
-        db.insert_message(
+        record_tool_result(
+            tc,
+            &result,
+            success,
+            db,
             session_id,
-            &Role::Tool,
-            Some(&stored),
-            None,
-            Some(&tc.id),
-            None,
-        )
-        .await?;
-        // Track progress for file mutations and test results
-        crate::progress::track_progress(db, session_id, &tc.function_name, &tc.arguments, &result)
-            .await;
-        // File lifecycle tracking (#465, #476)
-        track_file_lifecycle(
-            &tc.function_name,
-            &parsed_args,
+            tools.caps.tool_result_chars,
             project_root,
             file_tracker,
-            success,
+            sink,
         )
-        .await;
+        .await?;
     }
     Ok(())
 }
