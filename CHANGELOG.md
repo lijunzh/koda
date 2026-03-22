@@ -9,6 +9,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-03-22
+
+### Fixed
+- **Mouse scroll escape sequences leaking into prompt** (#540) — during
+  inference streaming, `tokio::select!` used random fairness, letting engine
+  events starve terminal input processing. Mouse escape sequences piled up
+  and leaked into the prompt as raw text. Fixed with biased select (terminal
+  input first) and batch-draining engine events to reduce redraws.
+
+### Changed
+- **Remove hardcoded planning instructions from system prompt** (#530, P3) —
+  the Planning section was scaffolding from the Claude 3 Opus era. Modern models
+  (Claude 4.x, GPT-4.1, Gemini 2.5) plan natively. Users who need planning
+  instructions for weaker local models can add them to `CLAUDE.md`.
+- **Context usage via EngineEvent protocol** (#532, P2) — context window
+  tracking now flows through `EngineEvent::ContextUsage` instead of global
+  `AtomicUsize` statics. The `context` module is now `pub(crate)`. CLI reads
+  context percentage from local state updated by events, not from engine globals.
+- **DRY: extract `record_tool_result` helper** (#533, P2) — the 5-step
+  post-execution sequence (emit result, truncate, persist, track progress,
+  track file lifecycle) was duplicated across three execution strategies.
+  Now lives in a single function.
+- **Clarify "zero IO" in design.md** (#534, P2) — replaced misleading "zero IO"
+  with precise statement: zero stdio, direct filesystem access, assumes POSIX.
+
+### Removed
+- **Dead code: `ask_continue_or_stop`** (#531, P1) — replaced by async
+  `EngineEvent::LoopCapReached` / `EngineCommand::LoopDecision` flow. Zero callers.
+
 ## [0.1.16] - 2026-03-20
 
 ### Security
