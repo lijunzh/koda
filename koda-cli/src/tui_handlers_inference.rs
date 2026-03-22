@@ -190,7 +190,11 @@ impl TuiContext {
         // Drain remaining UI events
         while let Ok(UiEvent::Engine(e)) = ui_rx.try_recv() {
             if let EngineEvent::ContextUsage { used, max } = &e {
-                self.context_pct = if *max > 0 { (used * 100 / max) as u32 } else { 0 };
+                self.context_pct = if *max > 0 {
+                    (used * 100 / max) as u32
+                } else {
+                    0
+                };
             }
             self.renderer.render_to_buffer(e, &mut self.scroll_buffer);
         }
