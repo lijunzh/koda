@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Koda is a high-performance AI coding agent built in Rust (edition 2024). Four-crate workspace:
+Koda is a personal AI assistant built in Rust (edition 2024) — not a product,
+not a platform. See [docs/design.md](docs/design.md) for principles (P1: Personal,
+P2: Simple enough to own alone, P3: Build for the world six months from now).
+
+Four-crate workspace:
 - `koda-core` (library) — pure engine with zero terminal deps
 - `koda-cli` (binary `koda`) — CLI frontend with ratatui TUI
 - `koda-ast` (binary `koda-ast`) — tree-sitter AST analysis (library + standalone MCP server)
