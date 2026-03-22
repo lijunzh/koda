@@ -70,6 +70,8 @@ pub(crate) struct TuiContext {
     pub should_quit: bool,
     pub silent_compact_deferred: bool,
     pub inference_start: Option<std::time::Instant>,
+    /// Context window usage percentage (0-100), updated via EngineEvent::ContextUsage.
+    pub context_pct: u32,
     pub history: Vec<String>,
     pub history_idx: Option<usize>,
     pub completer: crate::completer::InputCompleter,
@@ -275,6 +277,7 @@ impl TuiContext {
             should_quit: false,
             silent_compact_deferred: false,
             inference_start: None,
+            context_pct: 0,
             history: load_history(),
             history_idx: None,
             completer,
@@ -298,7 +301,7 @@ impl TuiContext {
         self.scroll_buffer.clamp_offset(w, h);
 
         let mode = approval::read_mode(&self.shared_mode);
-        let ctx = koda_core::context::percentage() as u32;
+        let ctx = self.context_pct;
         let tui_state = self.tui_state;
         let prompt_mode = &self.prompt_mode;
         let queue_len = self.input_queue.len();
