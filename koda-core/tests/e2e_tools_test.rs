@@ -266,10 +266,10 @@ async fn test_write_valid_rust_no_ast_warning() {
     );
 }
 
-/// Regression: Write of broken Rust → tool result SHOULD contain
-/// a syntax error warning appended by the post-edit hook (#504).
+/// Regression: Write of broken Rust should still return the normal Write result.
+/// Post-edit AST verification was removed in #544, so no syntax warning is appended.
 #[tokio::test]
-async fn test_write_broken_rust_gets_ast_warning() {
+async fn test_write_broken_rust_has_no_ast_warning() {
     let env = Env::new().await;
     let target = env.root.join("broken.rs");
 
@@ -283,8 +283,7 @@ async fn test_write_broken_rust_gets_ast_warning() {
                 "content": "fn main() {\n    let x = \n}\n"  // missing expr
             }),
         ),
-        // After seeing the error, LLM responds
-        MockResponse::Text("Oops, syntax error detected.".into()),
+        MockResponse::Text("Write completed.".into()),
     ]);
     let events = env.run_inference(&provider).await;
 
@@ -301,14 +300,19 @@ async fn test_write_broken_rust_gets_ast_warning() {
         .expect("expected Write tool result");
 
     assert!(
-        write_output.contains("SYNTAX ERROR") || write_output.contains("syntax error"),
-        "broken Rust should trigger AST warning in tool result: {write_output}"
+        !write_output.contains("SYNTAX ERROR") && !write_output.contains("syntax error"),
+        "broken Rust should not trigger AST warning in tool result: {write_output}"
+    );
+    assert!(
+        write_output.contains("Written") || write_output.contains("Wrote"),
+        "should still report successful write output: {write_output}"
     );
 }
 
-/// Regression: Edit that introduces a syntax error → AST warning.
+/// Regression: Edit that introduces a syntax error should still return
+/// the normal Edit result without post-edit AST warnings.
 #[tokio::test]
-async fn test_edit_introduces_syntax_error_gets_warning() {
+async fn test_edit_introduces_syntax_error_has_no_ast_warning() {
     let env = Env::new().await;
     let target = env.root.join("fixme.rs");
     std::fs::write(&target, "fn main() {\n    println!(\"ok\");\n}\n").unwrap();
@@ -325,7 +329,7 @@ async fn test_edit_introduces_syntax_error_gets_warning() {
                 ]
             }),
         ),
-        MockResponse::Text("Syntax error introduced.".into()),
+        MockResponse::Text("Edit completed.".into()),
     ]);
     let events = env.run_inference(&provider).await;
 
@@ -342,12 +346,16 @@ async fn test_edit_introduces_syntax_error_gets_warning() {
         .expect("expected Edit tool result");
 
     assert!(
-        edit_output.contains("SYNTAX ERROR") || edit_output.contains("syntax error"),
-        "edit introducing syntax error should be flagged: {edit_output}"
+        !edit_output.contains("SYNTAX ERROR") && !edit_output.contains("syntax error"),
+        "edit introducing syntax error should not be flagged by AST: {edit_output}"
+    );
+    assert!(
+        edit_output.contains("Applied 1 edit(s)"),
+        "should still report successful edit output: {edit_output}"
     );
 }
 
-/// Non-Rust files (e.g., .csv) should NOT trigger AST verification.
+/// Non-Rust files (e.g., .csv) should not trigger any AST verification.
 #[tokio::test]
 async fn test_write_non_parseable_file_no_ast_check() {
     let env = Env::new().await;
