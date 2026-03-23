@@ -9,12 +9,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-03-23
+
 ### Fixed
 - **Remove post-edit AST syntax verification** (#544) — `verify_syntax_post_edit()`
   no longer runs after Write/Edit. Tree-sitter false positives (for example,
   valid Rust 2024 `&raw[...]`) were worse than no check at all because they
   derailed the model into trying to "fix" correct code. Compiler/runtime checks
   remain the authoritative validation path.
+- **Relax insert_message perf threshold on Windows CI** (#543) — avoids flaky
+  perf-test failures caused by slower Windows CI timing variance.
 
 ## [0.1.17] - 2026-03-22
 
