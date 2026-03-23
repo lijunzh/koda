@@ -938,5 +938,4 @@ mod tests {
             Path::new("/test/project")
         ));
     }
-
 }
