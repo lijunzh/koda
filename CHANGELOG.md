@@ -9,6 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- **Remove post-edit AST syntax verification** (#544) — `verify_syntax_post_edit()`
+  no longer runs after Write/Edit. Tree-sitter false positives (for example,
+  valid Rust 2024 `&raw[...]`) were worse than no check at all because they
+  derailed the model into trying to "fix" correct code. Compiler/runtime checks
+  remain the authoritative validation path.
+
 ## [0.1.17] - 2026-03-22
 
 ### Fixed
