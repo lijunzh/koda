@@ -626,7 +626,10 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         }
 
         let full_text = stream_result.text;
-        let tool_calls = stream_result.tool_calls;
+        // Normalize tool names from model output to canonical PascalCase (#548).
+        // Models (especially local/small ones) may emit lowercase or snake_case
+        // names; this must happen before dispatch, approval, or persistence.
+        let tool_calls = crate::tool_normalize::normalize_tool_calls(stream_result.tool_calls);
         let usage = stream_result.usage;
         let char_count = stream_result.char_count;
 

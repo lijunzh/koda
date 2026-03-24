@@ -66,6 +66,8 @@ pub mod skills;
 pub mod sub_agent_cache;
 /// Tool dispatch — routes tool calls from inference to the registry.
 pub mod tool_dispatch;
+/// Tool name normalization — maps model-emitted variants to canonical PascalCase.
+pub mod tool_normalize;
 /// Tool registry, definitions, execution, and path safety.
 pub mod tools;
 /// Token-safe output truncation.
