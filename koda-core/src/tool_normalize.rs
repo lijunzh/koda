@@ -244,7 +244,15 @@ mod tests {
     fn ambiguous_names_not_mapped() {
         // These could plausibly map to multiple tools.
         // Better to surface "Unknown tool" than silently misroute.
-        for name in ["search", "execute", "exec", "patch", "terminal", "find_files", "fetch"] {
+        for name in [
+            "search",
+            "execute",
+            "exec",
+            "patch",
+            "terminal",
+            "find_files",
+            "fetch",
+        ] {
             let result = normalize_tool_name(name);
             assert_eq!(
                 result, name,
@@ -323,8 +331,7 @@ mod tests {
 
     #[test]
     fn all_alias_targets_are_canonical() {
-        let canonical_set: std::collections::HashSet<&str> =
-            CANONICAL.iter().copied().collect();
+        let canonical_set: std::collections::HashSet<&str> = CANONICAL.iter().copied().collect();
         for (alias, &target) in ALIASES.iter() {
             assert!(
                 canonical_set.contains(target),
