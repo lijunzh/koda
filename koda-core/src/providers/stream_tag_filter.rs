@@ -86,6 +86,8 @@ const TAG_PAIRS: &[TagPair] = &[
 
 /// Special tokens to strip (standalone, not paired).
 const SPECIAL_TOKENS: &[&str] = &[
+    "<|begin_of_box|>",
+    "<|end_of_box|>",
     "<|endoftext|>",
     "<|im_start|>",
     "<|assistant|>",
@@ -98,8 +100,8 @@ const SPECIAL_TOKENS: &[&str] = &[
 /// Maximum byte length of any open tag, close tag, or special token.
 /// Used to size the hold-back buffer for chunk-boundary detection.
 ///
-/// `</function_call>` = 16 bytes (the longest).
-const MAX_TAG_LEN: usize = 16;
+/// `<|begin_of_box|>` = 17 bytes (the longest).
+const MAX_TAG_LEN: usize = 17;
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -622,5 +624,39 @@ mod tests {
     fn empty_tool_call_block() {
         let all = run_filter(&["before<tool_call></tool_call>after"]);
         assert_eq!(collect_text(&all), "beforeafter");
+    }
+
+    // ── Box token stripping (issue #550) ────────────────────
+
+    #[test]
+    fn begin_of_box_stripped() {
+        let all = run_filter(&["Hello<|begin_of_box|>world"]);
+        assert_eq!(collect_text(&all), "Helloworld");
+    }
+
+    #[test]
+    fn end_of_box_stripped() {
+        let all = run_filter(&["Hello<|end_of_box|>world"]);
+        assert_eq!(collect_text(&all), "Helloworld");
+    }
+
+    #[test]
+    fn both_box_tokens_stripped() {
+        let all = run_filter(&["<|begin_of_box|>content here<|end_of_box|>"]);
+        assert_eq!(collect_text(&all), "content here");
+    }
+
+    #[test]
+    fn box_token_across_chunks() {
+        let all = run_filter(&["Hello<|begin_", "of_box|>world"]);
+        assert_eq!(collect_text(&all), "Helloworld");
+    }
+
+    #[test]
+    fn multiple_box_tokens_in_response() {
+        let all = run_filter(&[
+            "<|begin_of_box|>first<|end_of_box|> middle <|begin_of_box|>second<|end_of_box|>",
+        ]);
+        assert_eq!(collect_text(&all), "first middle second");
     }
 }
