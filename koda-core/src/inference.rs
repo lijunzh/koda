@@ -627,8 +627,11 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
 
         let full_text = stream_result.text;
         // Normalize tool names from model output to canonical PascalCase (#548).
-        // Models (especially local/small ones) may emit lowercase or snake_case
-        // names; this must happen before dispatch, approval, or persistence.
+        // Models (especially local/small ones via OpenAI-compat APIs) may emit
+        // lowercase or snake_case names ("list", "read_file"). This runs for all
+        // providers — the canonical fast-path is a single HashMap lookup — and
+        // must happen here (not in providers) so dispatch, approval, loop guard,
+        // undo, and persistence all see consistent canonical names.
         let tool_calls = crate::tool_normalize::normalize_tool_calls(stream_result.tool_calls);
         let usage = stream_result.usage;
         let char_count = stream_result.char_count;

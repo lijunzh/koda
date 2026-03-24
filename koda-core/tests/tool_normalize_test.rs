@@ -26,6 +26,7 @@ async fn normalized_lowercase_names_are_routable() {
         "memoryread",
         "memorywrite",
         "listagents",
+        "invokeagent",
         "listskills",
         "activateskill",
         "recallcontext",

@@ -48,21 +48,29 @@ const CANONICAL: &[&str] = &[
 /// Static alias map: lowercased variant → canonical name.
 ///
 /// Built once on first access.  Includes:
-/// - lowercase of every canonical name  (`"list"` → `"List"`)
-/// - common snake_case alternatives     (`"list_files"` → `"List"`)
-/// - common camelCase alternatives       (`"listFiles"` → `"List"`)
+/// - self-mappings for every canonical name (lowercased key → itself)
+/// - unambiguous snake_case alternatives   (`"list_files"` → `"List"`)
+///
+/// **Only unambiguous aliases are included.** If a name could plausibly
+/// map to more than one tool (e.g. `"search"` → Grep or Glob?), it is
+/// intentionally omitted — surfacing an `Unknown tool` error is better
+/// than silently misrouting to the wrong tool.
 static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
     let mut m = HashMap::new();
 
-    // Auto-generate lowercase mappings for every canonical name.
+    // Self-mappings: canonical names (lowercased) → themselves.
+    // This lets normalize_tool_name() do a single O(1) lookup for
+    // every path, including the fast-path where the name is already
+    // canonical.
     for &name in CANONICAL {
         m.insert(name.to_lowercase(), name);
     }
 
-    // ── Additional snake_case / camelCase aliases ────────────────
+    // ── Unambiguous snake_case / camelCase aliases ───────────────
     //
-    // These cover names models commonly hallucinate based on training
-    // data from other tool-calling frameworks.
+    // Only include aliases where the mapping is unambiguous.
+    // If a short name could plausibly mean multiple tools, leave it
+    // out — an "Unknown tool" error is better than silent misrouting.
 
     // File tools
     m.insert("list_files".into(), "List");
@@ -82,7 +90,6 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
     m.insert("edit_file".into(), "Edit");
     m.insert("editfile".into(), "Edit");
     m.insert("file_edit".into(), "Edit");
-    m.insert("patch".into(), "Edit");
 
     m.insert("delete_file".into(), "Delete");
     m.insert("deletefile".into(), "Delete");
@@ -91,26 +98,19 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
 
     // Search tools
     m.insert("grep_search".into(), "Grep");
-    m.insert("search".into(), "Grep");
     m.insert("ripgrep".into(), "Grep");
     m.insert("rg".into(), "Grep");
 
     m.insert("glob_search".into(), "Glob");
     m.insert("glob_pattern".into(), "Glob");
-    m.insert("find_files".into(), "Glob");
 
-    // Shell
+    // Shell — only unambiguous aliases
     m.insert("shell".into(), "Bash");
     m.insert("run_command".into(), "Bash");
     m.insert("run_shell_command".into(), "Bash");
-    m.insert("execute".into(), "Bash");
-    m.insert("exec".into(), "Bash");
-    m.insert("terminal".into(), "Bash");
 
     // Web
     m.insert("web_fetch".into(), "WebFetch");
-    m.insert("webfetch".into(), "WebFetch");
-    m.insert("fetch".into(), "WebFetch");
     m.insert("http_get".into(), "WebFetch");
     m.insert("curl".into(), "WebFetch");
 
@@ -121,16 +121,13 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
     // Agent tools
     m.insert("list_agents".into(), "ListAgents");
     m.insert("invoke_agent".into(), "InvokeAgent");
-    m.insert("invokeagent".into(), "InvokeAgent");
 
     // Skill tools
     m.insert("list_skills".into(), "ListSkills");
     m.insert("activate_skill".into(), "ActivateSkill");
-    m.insert("activateskill".into(), "ActivateSkill");
 
     // AST
     m.insert("ast_analysis".into(), "AstAnalysis");
-    m.insert("astanalysis".into(), "AstAnalysis");
     m.insert("analyze_ast".into(), "AstAnalysis");
 
     // Email
@@ -140,7 +137,6 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
 
     // Recall
     m.insert("recall_context".into(), "RecallContext");
-    m.insert("recallcontext".into(), "RecallContext");
     m.insert("recall".into(), "RecallContext");
 
     m
@@ -151,12 +147,9 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
 /// Returns the canonical name if a mapping exists, otherwise returns
 /// the input unchanged (so the dispatcher can surface a proper error).
 pub fn normalize_tool_name(name: &str) -> String {
-    // Fast path: already canonical (avoids allocation + lookup)
-    if CANONICAL.contains(&name) {
-        return name.to_string();
-    }
-
-    // Lookup by lowercased input
+    // Single O(1) lookup: lowercase the input and check the alias map.
+    // Canonical names are self-mapped (e.g. "list" → "List"), so this
+    // handles both the fast-path and the alias-path in one operation.
     let lower = name.to_lowercase();
     if let Some(&canonical) = ALIASES.get(&lower) {
         return canonical.to_string();
@@ -240,11 +233,24 @@ mod tests {
         assert_eq!(normalize_tool_name("ls"), "List");
         assert_eq!(normalize_tool_name("rm"), "Delete");
         assert_eq!(normalize_tool_name("rg"), "Grep");
-        assert_eq!(normalize_tool_name("search"), "Grep");
         assert_eq!(normalize_tool_name("shell"), "Bash");
-        assert_eq!(normalize_tool_name("exec"), "Bash");
-        assert_eq!(normalize_tool_name("fetch"), "WebFetch");
+        assert_eq!(normalize_tool_name("curl"), "WebFetch");
         assert_eq!(normalize_tool_name("recall"), "RecallContext");
+    }
+
+    // ── Ambiguous names are NOT mapped (silent misrouting prevention) ──
+
+    #[test]
+    fn ambiguous_names_not_mapped() {
+        // These could plausibly map to multiple tools.
+        // Better to surface "Unknown tool" than silently misroute.
+        for name in ["search", "execute", "exec", "patch", "terminal", "find_files", "fetch"] {
+            let result = normalize_tool_name(name);
+            assert_eq!(
+                result, name,
+                "'{name}' should NOT be mapped — it's ambiguous"
+            );
+        }
     }
 
     // ── Case insensitivity ──────────────────────────────────────
@@ -309,6 +315,20 @@ mod tests {
                 normalize_tool_name(&lower),
                 name,
                 "Missing lowercase alias for '{name}'"
+            );
+        }
+    }
+
+    // ── Every alias target must be a canonical tool name ────────
+
+    #[test]
+    fn all_alias_targets_are_canonical() {
+        let canonical_set: std::collections::HashSet<&str> =
+            CANONICAL.iter().copied().collect();
+        for (alias, &target) in ALIASES.iter() {
+            assert!(
+                canonical_set.contains(target),
+                "Alias '{alias}' maps to '{target}' which is not in CANONICAL"
             );
         }
     }
