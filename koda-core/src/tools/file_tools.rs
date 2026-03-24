@@ -126,7 +126,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     },
                     "recursive": {
                         "type": "boolean",
-                        "description": "Whether to recurse into subdirectories (default: true)"
+                        "description": "Whether to recurse into subdirectories (default: false)"
                     }
                 }
             }),
@@ -398,7 +398,7 @@ fn count_dir_entries(path: &Path) -> usize {
 /// Entry cap is set by `OutputCaps` (context-scaled).
 pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -> Result<String> {
     let path_str = args["path"].as_str().unwrap_or(".");
-    let recursive = args["recursive"].as_bool().unwrap_or(true);
+    let recursive = args["recursive"].as_bool().unwrap_or(false);
     let resolved = safe_resolve_path(project_root, path_str)?;
 
     let mut entries = Vec::new();
