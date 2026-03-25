@@ -9,6 +9,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-03-24
+
+### Fixed
+- **Filter `<|begin_of_box|>` / `<|end_of_box|>` tokens from streamed output**
+  (#550) — these special tokens were leaking into user-visible assistant
+  responses. Added to the `SPECIAL_TOKENS` list in `stream_tag_filter.rs` and
+  bumped `MAX_TAG_LEN` from 16 to 17. Includes regression tests for
+  single-chunk, cross-chunk, and multi-token scenarios.
+- **Default `List` tool to non-recursive listing** (#551) — a bare `ls` was
+  producing a full recursive project dump. Flipped the `recursive` parameter
+  default from `true` to `false` so omitting the parameter gives a shell-style
+  top-level listing. Models can still explicitly set `recursive=true`.
+- **Normalize tool names from model output to canonical PascalCase** (#548) —
+  models sometimes emit tool names in varying cases (e.g. `read`, `READ`,
+  `read_file`). Tool dispatch now normalizes to canonical names before lookup.
+
 ## [0.1.18] - 2026-03-23
 
 ### Fixed
