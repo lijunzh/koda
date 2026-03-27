@@ -4,10 +4,44 @@
 //! Dynamic targets (`cd $VAR`, `cd $(cmd)`) are intentionally ignored.
 
 use path_clean::PathClean;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::bash_safety::split_command_segments;
 use crate::bash_safety::strip_env_vars;
+
+/// Whether `resolved` is a path that is safe to access outside the project root.
+///
+/// Safe paths include:
+/// - Temp directories: `/tmp`, `$TMPDIR` (on macOS `/tmp` → `/private/tmp`,
+///   `$TMPDIR` → `/private/var/folders/.../T/`)
+/// - Device files: `/dev/null`, `/dev/stdout`, `/dev/stderr`
+pub fn is_safe_external_path(resolved: &Path) -> bool {
+    // Device files — not real filesystem writes
+    if resolved.starts_with("/dev/") {
+        return true;
+    }
+
+    // Canonical /tmp (covers /private/tmp on macOS via symlink)
+    let canonical_tmp = PathBuf::from("/tmp")
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from("/tmp"));
+    if resolved.starts_with(&canonical_tmp) || resolved.starts_with("/tmp") {
+        return true;
+    }
+
+    // $TMPDIR (e.g. /var/folders/.../T/ on macOS)
+    if let Ok(tmpdir) = std::env::var("TMPDIR") {
+        let tmpdir_path = PathBuf::from(&tmpdir);
+        let canonical_tmpdir = tmpdir_path
+            .canonicalize()
+            .unwrap_or_else(|_| tmpdir_path.clone());
+        if resolved.starts_with(&canonical_tmpdir) || resolved.starts_with(&tmpdir_path) {
+            return true;
+        }
+    }
+
+    false
+}
 
 /// Result of linting a bash command for path escapes.
 #[derive(Debug, Clone, Default)]
@@ -63,7 +97,7 @@ pub fn lint_bash_paths(command: &str, project_root: &Path) -> BashPathLint {
                     } else {
                         project_root.join(&p).clean()
                     };
-                    if !resolved.starts_with(project_root) {
+                    if !resolved.starts_with(project_root) && !is_safe_external_path(&resolved) {
                         lint.outside_paths.push(p);
                     }
                 }
@@ -77,13 +111,13 @@ pub fn lint_bash_paths(command: &str, project_root: &Path) -> BashPathLint {
             }
             if token.starts_with('/') {
                 let resolved = Path::new(token).to_path_buf().clean();
-                if !resolved.starts_with(project_root) {
+                if !resolved.starts_with(project_root) && !is_safe_external_path(&resolved) {
                     lint.outside_paths.push(token.to_string());
                 }
             }
             if token.contains("..") {
                 let resolved = project_root.join(token).clean();
-                if !resolved.starts_with(project_root) {
+                if !resolved.starts_with(project_root) && !is_safe_external_path(&resolved) {
                     lint.outside_paths.push(token.to_string());
                 }
             }
@@ -155,9 +189,9 @@ mod tests {
 
     #[test]
     fn test_lint_cd_outside_project() {
-        let lint = lint_bash_paths("cd /tmp && ls", &project());
+        let lint = lint_bash_paths("cd /etc && ls", &project());
         assert!(lint.has_warnings());
-        assert!(lint.outside_paths.contains(&"/tmp".to_string()));
+        assert!(lint.outside_paths.contains(&"/etc".to_string()));
     }
 
     #[test]
@@ -211,8 +245,40 @@ mod tests {
 
     #[test]
     fn test_lint_deduplicates() {
-        let lint = lint_bash_paths("cp /tmp/a /tmp/b", &project());
+        let lint = lint_bash_paths("cp /etc/a /etc/b", &project());
         assert!(lint.has_warnings());
         assert_eq!(lint.outside_paths.len(), 2);
+    }
+
+    // ── Temp path allowlist (#560) ──
+
+    #[test]
+    fn test_lint_tmp_path_allowed() {
+        let lint = lint_bash_paths("cat /tmp/issue-draft.md", &project());
+        assert!(!lint.has_warnings());
+    }
+
+    #[test]
+    fn test_lint_cd_tmp_allowed() {
+        let lint = lint_bash_paths("cd /tmp && ls", &project());
+        assert!(!lint.has_warnings());
+    }
+
+    #[test]
+    fn test_lint_tmp_subdir_allowed() {
+        let lint = lint_bash_paths("cp file.txt /tmp/koda/output.md", &project());
+        assert!(!lint.has_warnings());
+    }
+
+    #[test]
+    fn test_lint_dev_null_allowed() {
+        let lint = lint_bash_paths("echo test > /dev/null", &project());
+        assert!(!lint.has_warnings());
+    }
+
+    #[test]
+    fn test_lint_etc_still_blocked() {
+        let lint = lint_bash_paths("cat /etc/passwd", &project());
+        assert!(lint.has_warnings());
     }
 }

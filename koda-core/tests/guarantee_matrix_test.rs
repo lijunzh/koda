@@ -13,7 +13,7 @@
 //!  6. Safe bash (git status, grep)
 //!  7. Bash with write side-effect (echo > file)
 //!  8. Destructive bash (rm -rf, git push --force)
-//!  9. Bash with path escape (cd /tmp)
+//!  9. Bash with path escape (cd /etc)
 //! 10. Sub-agent invocation (InvokeAgent)
 //! 11. MemoryWrite
 //! 12. WebFetch (GET)
@@ -121,7 +121,8 @@ fn matrix_destructive_bash() {
 
 #[test]
 fn matrix_bash_path_escape() {
-    let args = serde_json::json!({"command": "cd /tmp && ls"});
+    // /etc is still blocked; /tmp is now allowed (#560)
+    let args = serde_json::json!({"command": "cd /etc && ls"});
     let (auto, confirm) = check_both("Bash", &args);
     assert_eq!(auto, ToolApproval::NeedsConfirmation);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);

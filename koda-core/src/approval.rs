@@ -230,6 +230,8 @@ fn resolve_effect(tool_name: &str, args: &serde_json::Value) -> ToolEffect {
 
 /// Whether a file tool targets a path outside the project root (#218).
 /// Hardcoded floor: always NeedsConfirmation regardless of mode.
+///
+/// Temp directories (`/tmp`, `$TMPDIR`) are explicitly allowed (#560).
 fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &Path) -> bool {
     let path_arg = match tool_name {
         "Write" | "Edit" | "Delete" => args
@@ -260,7 +262,12 @@ fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &
             let canon_root = project_root
                 .canonicalize()
                 .unwrap_or_else(|_| project_root.to_path_buf());
-            !resolved.starts_with(&canon_root)
+            let outside = !resolved.starts_with(&canon_root);
+            // Allow temp directories (#560)
+            if outside && crate::bash_path_lint::is_safe_external_path(&resolved) {
+                return false;
+            }
+            outside
         }
         None => false,
     }
@@ -513,7 +520,7 @@ mod tests {
     #[test]
     fn test_bash_cd_outside_needs_confirmation() {
         let root = Path::new("/home/user/project");
-        let args = serde_json::json!({"command": "cd /tmp && ls"});
+        let args = serde_json::json!({"command": "cd /etc && ls"});
         assert_eq!(
             check_tool("Bash", &args, ApprovalMode::Auto, Some(root),),
             ToolApproval::NeedsConfirmation,
@@ -536,6 +543,41 @@ mod tests {
         assert_eq!(
             check_tool("Write", &args, ApprovalMode::Auto, None),
             ToolApproval::AutoApprove,
+        );
+    }
+
+    // ── Temp path allowlist (#560) ──
+
+    #[test]
+    fn test_write_to_tmp_auto_approved() {
+        let root = Path::new("/home/user/project");
+        let args = serde_json::json!({"path": "/tmp/issue-draft.md"});
+        assert_eq!(
+            check_tool("Write", &args, ApprovalMode::Auto, Some(root)),
+            ToolApproval::AutoApprove,
+            "/tmp writes should auto-approve"
+        );
+    }
+
+    #[test]
+    fn test_bash_cd_tmp_auto_approved() {
+        let root = Path::new("/home/user/project");
+        let args = serde_json::json!({"command": "cd /tmp && ls"});
+        assert_eq!(
+            check_tool("Bash", &args, ApprovalMode::Auto, Some(root)),
+            ToolApproval::AutoApprove,
+            "cd /tmp should auto-approve"
+        );
+    }
+
+    #[test]
+    fn test_write_to_etc_still_blocked() {
+        let root = Path::new("/home/user/project");
+        let args = serde_json::json!({"path": "/etc/hosts"});
+        assert_eq!(
+            check_tool("Write", &args, ApprovalMode::Auto, Some(root)),
+            ToolApproval::NeedsConfirmation,
+            "/etc writes should still need confirmation"
         );
     }
 
