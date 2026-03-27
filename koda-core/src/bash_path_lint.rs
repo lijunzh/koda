@@ -104,8 +104,11 @@ pub fn lint_bash_paths(command: &str, project_root: &Path) -> BashPathLint {
             }
         }
 
-        // Check for absolute path arguments (not cd)
-        for token in seg.split_whitespace().skip(1) {
+        // Check for absolute path arguments (not cd).
+        // Strip quoted strings first so paths inside commit messages,
+        // echo strings, etc. are not falsely flagged (#562).
+        let unquoted = strip_quoted_strings(seg);
+        for token in unquoted.split_whitespace().skip(1) {
             if token.starts_with('-') {
                 continue;
             }
@@ -134,6 +137,41 @@ enum CdTarget {
     Home,
     Dynamic,
     Path(String),
+}
+
+/// Replace content inside matched single/double quotes with spaces.
+///
+/// This prevents paths embedded in commit messages, echo strings, and
+/// heredoc bodies from being falsely flagged as path escapes (#562).
+///
+/// ```text
+/// git commit -m "allow /tmp and /dev/*"  →  git commit -m "                    "
+/// echo 'fixed /etc/hosts'               →  echo '                '
+/// ```
+fn strip_quoted_strings(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\'' || c == '"' {
+            result.push(c); // keep the opening quote
+            // Replace everything until the matching close quote with spaces
+            let mut found_close = false;
+            for inner in chars.by_ref() {
+                if inner == c {
+                    result.push(c); // keep the closing quote
+                    found_close = true;
+                    break;
+                }
+                result.push(' ');
+            }
+            if !found_close {
+                // Unterminated quote — already replaced content, just continue
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 /// Extract the target of a `cd` command from a segment.
@@ -280,5 +318,52 @@ mod tests {
     fn test_lint_etc_still_blocked() {
         let lint = lint_bash_paths("cat /etc/passwd", &project());
         assert!(lint.has_warnings());
+    }
+
+    // ── Quote-aware path lint (#562) ──
+
+    #[test]
+    fn test_lint_path_in_commit_message_ignored() {
+        let lint = lint_bash_paths(
+            r#"git commit -m "allow /tmp and /dev/* and /etc/hosts""#,
+            &project(),
+        );
+        assert!(!lint.has_warnings());
+    }
+
+    #[test]
+    fn test_lint_path_in_single_quotes_ignored() {
+        let lint = lint_bash_paths("echo 'fixed /etc/hosts parsing'", &project());
+        assert!(!lint.has_warnings());
+    }
+
+    #[test]
+    fn test_lint_path_outside_quotes_still_flagged() {
+        let lint = lint_bash_paths(r#"cp /etc/hosts "destination.txt""#, &project());
+        assert!(lint.has_warnings());
+        assert!(lint.outside_paths.contains(&"/etc/hosts".to_string()));
+    }
+
+    #[test]
+    fn test_lint_merge_with_message() {
+        let lint = lint_bash_paths(
+            r#"git merge fix/branch -m "feat: allow /tmp, $TMPDIR, and /dev/* (#560)""#,
+            &project(),
+        );
+        assert!(!lint.has_warnings());
+    }
+
+    #[test]
+    fn test_strip_quoted_strings() {
+        assert_eq!(
+            strip_quoted_strings(r#"git commit -m "allow /tmp""#),
+            r#"git commit -m "          ""#
+        );
+        assert_eq!(
+            strip_quoted_strings("echo 'path /etc/hosts'"),
+            "echo '               '"
+        );
+        // Unquoted content preserved
+        assert_eq!(strip_quoted_strings("cp /etc/a /etc/b"), "cp /etc/a /etc/b");
     }
 }
