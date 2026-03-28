@@ -9,6 +9,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-03-28
+
+### Added
+- **Allow `/tmp`, `$TMPDIR`, and `/dev/*` without confirmation** (#560) —
+  temporary directories and device files are now auto-approved in Auto mode,
+  removing unnecessary confirmation prompts for common scratch-space operations.
+
+### Fixed
+- **Skip paths inside quoted strings in bash path lint** (#562) —
+  `lint_bash_paths()` now ignores paths embedded within single- or double-quoted
+  strings, eliminating false-positive "outside project" warnings for commands
+  like `grep "pattern" /some/path`.
+
 ## [0.1.19] - 2026-03-24
 
 ### Fixed
