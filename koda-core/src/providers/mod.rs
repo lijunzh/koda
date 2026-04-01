@@ -147,6 +147,33 @@ fn is_localhost_url(url: &str) -> bool {
     lower.contains("://localhost") || lower.contains("://127.0.0.1") || lower.contains("://[::1]")
 }
 
+/// Check whether TLS certificate verification should be skipped.
+///
+/// # Safety rationale
+///
+/// This returns `true` ONLY when both conditions are met:
+/// 1. `KODA_ACCEPT_INVALID_CERTS` env var is explicitly set to `"1"` or `"true"`
+/// 2. The provider URL points to localhost (127.0.0.1, ::1, or `localhost`)
+///
+/// This is needed for local LLM servers (LM Studio, Ollama, vLLM) that use
+/// self-signed certificates. Remote providers NEVER skip TLS verification.
+fn should_skip_tls_verification(base_url: Option<&str>) -> bool {
+    let wants_skip = crate::runtime_env::get("KODA_ACCEPT_INVALID_CERTS")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    if !wants_skip {
+        return false;
+    }
+    let is_local = base_url.is_some_and(is_localhost_url);
+    if !is_local {
+        tracing::warn!(
+            "KODA_ACCEPT_INVALID_CERTS is set but provider URL is not localhost — ignoring. \
+             TLS bypass is only allowed for local providers (localhost/127.0.0.1)."
+        );
+    }
+    is_local
+}
+
 /// Build a reqwest client with proper proxy configuration.
 ///
 /// - Reads HTTPS_PROXY / HTTP_PROXY from env
@@ -190,18 +217,9 @@ pub fn build_http_client(base_url: Option<&str>) -> reqwest::Client {
 
     // Accept self-signed certs only for localhost (LM Studio, Ollama, vLLM).
     // The env var is still required, but it's now scoped to local addresses.
-    let wants_skip_tls = crate::runtime_env::get("KODA_ACCEPT_INVALID_CERTS")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
-    let is_local = base_url.is_some_and(is_localhost_url);
-    if wants_skip_tls && is_local {
+    if should_skip_tls_verification(base_url) {
         tracing::info!("TLS certificate validation disabled for local provider.");
-        builder = builder.danger_accept_invalid_certs(true);
-    } else if wants_skip_tls {
-        tracing::warn!(
-            "KODA_ACCEPT_INVALID_CERTS is set but provider URL is not localhost — ignoring. \
-             TLS bypass is only allowed for local providers (localhost/127.0.0.1)."
-        );
+        builder = builder.danger_accept_invalid_certs(true); // lgtm[rust/disabled-certificate-check]
     }
 
     builder.build().unwrap_or_else(|_| reqwest::Client::new())
