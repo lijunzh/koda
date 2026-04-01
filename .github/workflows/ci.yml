@@ -5,6 +5,9 @@ on:
     branches: [main]    # PR status checks
   workflow_call:        # Called by other workflows
 
+permissions:
+  contents: read        # Least-privilege for all jobs
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
