@@ -48,16 +48,46 @@ struct CachedContentState {
 
 impl GeminiProvider {
     /// Create a new Gemini provider with the given API key and optional base URL.
+    ///
+    /// **Security:** The official Gemini API sends the API key as a `?key=`
+    /// query parameter, so HTTPS is enforced for `googleapis.com`. Custom
+    /// URLs (home-network LLM servers, local proxies, etc.) are left as-is.
     pub fn new(api_key: String, base_url: Option<&str>) -> Self {
+        let raw_url = base_url
+            .unwrap_or("https://generativelanguage.googleapis.com")
+            .trim_end_matches('/');
+        let url = Self::enforce_gemini_api_https(raw_url);
         Self {
             client: super::build_http_client(base_url),
-            base_url: base_url
-                .unwrap_or("https://generativelanguage.googleapis.com")
-                .trim_end_matches('/')
-                .to_string(),
+            base_url: url,
             api_key,
             cached_content: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Enforce HTTPS only for the official Gemini API (`googleapis.com`).
+    ///
+    /// The Gemini API key is sent as a `?key=` query parameter, which would
+    /// expose it in plaintext over HTTP. Custom URLs (home-network servers,
+    /// local proxies, etc.) are trusted as-is — users running their own
+    /// infrastructure know their network security posture.
+    fn enforce_gemini_api_https(url: &str) -> String {
+        let is_google_api = url.to_lowercase().contains("googleapis.com");
+        if !is_google_api {
+            return url.to_string();
+        }
+        if url.starts_with("https://") {
+            return url.to_string();
+        }
+        if let Some(rest) = url.strip_prefix("http://") {
+            tracing::warn!(
+                "Gemini API URL uses HTTP — upgrading to HTTPS to protect API key. \
+                 The Gemini API key is sent as a query parameter and MUST use HTTPS."
+            );
+            return format!("https://{rest}");
+        }
+        // No scheme at all — assume HTTPS for Google API
+        format!("https://{url}")
     }
 
     /// Build a Gemini API URL with the API key as a query parameter.
@@ -769,6 +799,67 @@ mod tests {
 
     fn make_provider() -> GeminiProvider {
         GeminiProvider::new("fake-key".into(), None)
+    }
+
+    // ── HTTPS enforcement tests ──────────────────────────────
+
+    #[test]
+    fn test_enforce_https_already_https() {
+        let url =
+            GeminiProvider::enforce_gemini_api_https("https://generativelanguage.googleapis.com");
+        assert_eq!(url, "https://generativelanguage.googleapis.com");
+    }
+
+    #[test]
+    fn test_enforce_https_upgrades_google_api_http() {
+        let url =
+            GeminiProvider::enforce_gemini_api_https("http://generativelanguage.googleapis.com");
+        assert_eq!(url, "https://generativelanguage.googleapis.com");
+    }
+
+    #[test]
+    fn test_enforce_https_allows_localhost_http() {
+        let url = GeminiProvider::enforce_gemini_api_https("http://localhost:8080");
+        assert_eq!(url, "http://localhost:8080");
+    }
+
+    #[test]
+    fn test_enforce_https_allows_home_network_http() {
+        let url = GeminiProvider::enforce_gemini_api_https("http://192.168.1.50:8080");
+        assert_eq!(url, "http://192.168.1.50:8080");
+    }
+
+    #[test]
+    fn test_enforce_https_allows_custom_server_http() {
+        let url = GeminiProvider::enforce_gemini_api_https("http://my-llm-server.local:9000");
+        assert_eq!(url, "http://my-llm-server.local:9000");
+    }
+
+    #[test]
+    fn test_enforce_https_no_scheme_google_gets_https() {
+        let url = GeminiProvider::enforce_gemini_api_https("generativelanguage.googleapis.com");
+        assert_eq!(url, "https://generativelanguage.googleapis.com");
+    }
+
+    #[test]
+    fn test_new_default_url_is_https() {
+        let p = GeminiProvider::new("key".into(), None);
+        assert!(p.base_url.starts_with("https://"));
+    }
+
+    #[test]
+    fn test_new_upgrades_google_api_http_to_https() {
+        let p = GeminiProvider::new(
+            "key".into(),
+            Some("http://generativelanguage.googleapis.com"),
+        );
+        assert!(p.base_url.starts_with("https://"));
+    }
+
+    #[test]
+    fn test_new_preserves_custom_http_url() {
+        let p = GeminiProvider::new("key".into(), Some("http://192.168.1.100:8080"));
+        assert_eq!(p.base_url, "http://192.168.1.100:8080");
     }
 
     #[test]
