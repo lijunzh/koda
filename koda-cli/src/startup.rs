@@ -170,6 +170,11 @@ pub fn home_dir_warning_lines(project_root: &std::path::Path) -> Vec<Line<'stati
 }
 
 /// Print session resume hint (after raw mode ends, to stdout).
+///
+/// NOTE: Session IDs are non-sensitive local identifiers (UUIDs stored in
+/// a local SQLite database). Printing them to stdout is intentional UX —
+/// the user needs the ID to resume their session. This is not a credential
+/// leak. (Addresses CodeQL alert #7 / `rust/cleartext-logging`.)
 pub fn print_resume_hint(session_id: &str) {
     println!("\nResume this session with:\n  koda --resume {session_id}");
 }
