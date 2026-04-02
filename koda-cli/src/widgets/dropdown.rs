@@ -221,7 +221,6 @@ mod tests {
         vec![
             SimpleItem::new("/agent", "Agents"),
             SimpleItem::new("/compact", "Compact"),
-            SimpleItem::new("/cost", "Cost"),
             SimpleItem::new("/diff", "Diff"),
             SimpleItem::new("/exit", "Quit"),
             SimpleItem::new("/expand", "Expand"),
@@ -232,7 +231,7 @@ mod tests {
     #[test]
     fn new_contains_all() {
         let dd = DropdownState::new(test_items(), "Test");
-        assert_eq!(dd.filtered.len(), 7);
+        assert_eq!(dd.filtered.len(), 6);
         assert_eq!(dd.selected, 0);
     }
 
@@ -264,7 +263,8 @@ mod tests {
         assert_eq!(dd.selected_item().unwrap().label(), "/agent");
         dd.down();
         assert_eq!(dd.selected_item().unwrap().label(), "/compact");
-        for _ in 0..5 {
+        // 4 more downs reaches the last item (/model at index 5 of 6)
+        for _ in 0..4 {
             dd.down();
         }
         assert_eq!(dd.selected_item().unwrap().label(), "/model");
@@ -274,11 +274,21 @@ mod tests {
         assert_eq!(dd.selected_item().unwrap().label(), "/agent");
     }
 
+    /// Items that intentionally overflow the 6-visible-slot viewport so the
+    /// scroll indicator test can assert ▼ is shown. Kept separate from
+    /// `test_items()` so `new_contains_all` stays authoritative about the
+    /// real command count.
+    fn overflow_items() -> Vec<SimpleItem> {
+        let mut items = test_items();
+        items.push(SimpleItem::new("/sessions", "Sessions"));
+        items
+    }
+
     #[test]
     fn scroll_indicators() {
-        let dd = DropdownState::new(test_items(), "Test");
+        let dd = DropdownState::new(overflow_items(), "Test");
         let lines = build_dropdown_lines(&dd);
-        // 8 items, 6 visible → should have ▼ more
+        // 7 items, 6 visible → should show ▼ scroll indicator
         let hint: String = lines
             .last()
             .unwrap()

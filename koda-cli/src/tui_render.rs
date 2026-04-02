@@ -22,7 +22,7 @@ pub struct TuiRenderer {
     pub verbose: bool,
     /// Last turn stats for status bar display.
     pub last_turn_stats: Option<TurnStats>,
-    /// Current model name (for cost estimation).
+    /// Current model name displayed in the status bar.
     pub model: String,
     /// Buffer for streaming text deltas (flushed line-by-line).
     text_buf: String,
