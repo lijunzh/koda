@@ -234,8 +234,8 @@ fn list_path_matches(project_root: &Path, partial: &str) -> Vec<String> {
                 return None;
             }
 
-            let lower_name = name.to_lowercase();
-            let score = fuzzy_score(&lower_prefix, &lower_name)?;
+            // query is lowered; target keeps original case for camelCase detection
+            let score = fuzzy_score(&lower_prefix, &name)?;
 
             let path = if is_dir {
                 format!("{dir_part}{name}/")
@@ -256,11 +256,16 @@ fn list_path_matches(project_root: &Path, partial: &str) -> Vec<String> {
 /// Returns `Some(score)` if all chars of `query` appear in `target` in order.
 /// Higher score = better match.
 ///
-/// Scoring:
-/// - Prefix match: +100
-/// - Consecutive chars: +10 each
-/// - Char after separator (`_`, `-`, `.`, `/`): +5
+/// Scoring (nucleo-inspired, matching CC's `native-ts/file-index`):
 /// - Base: +1 per matched char
+/// - Prefix / first char at pos 0: +100
+/// - Consecutive chars: +10
+/// - After separator (`_`, `-`, `.`, `/`): +5
+/// - camelCase transition (lower→upper): +6
+/// - Gap penalty: −3 (start) + −1 per additional gap char
+///
+/// `query` must be lowercased. `target` is **original case** so camelCase
+/// transitions can be detected; character comparison is case-insensitive.
 fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
@@ -274,7 +279,7 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
     let mut prev_match_pos: Option<usize> = None;
 
     for (ti, &tc) in target_chars.iter().enumerate() {
-        if qi < query_chars.len() && tc == query_chars[qi] {
+        if qi < query_chars.len() && tc.to_ascii_lowercase() == query_chars[qi] {
             score += 1;
 
             // Bonus: prefix match
@@ -290,6 +295,22 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
             // Bonus: after separator
             if ti > 0 && matches!(target_chars[ti - 1], '_' | '-' | '.' | '/') {
                 score += 5;
+            }
+
+            // Bonus: camelCase transition (previous char lowercase, current uppercase)
+            if ti > 0
+                && target_chars[ti - 1].is_ascii_lowercase()
+                && tc.is_ascii_uppercase()
+            {
+                score += 6;
+            }
+
+            // Penalty: gap between consecutive matches
+            if let Some(prev) = prev_match_pos {
+                let gap = ti - prev - 1;
+                if gap > 0 {
+                    score -= 3 + gap as i32; // start + extension
+                }
             }
 
             prev_match_pos = Some(ti);
@@ -583,5 +604,42 @@ mod tests {
         // "m" → main.rs should come before format.rs (prefix match wins)
         let result = c.complete("@m");
         assert_eq!(result, Some("@main.rs".to_string()));
+    }
+
+    // ── Gap penalty tests ──────────────────────────────────
+
+    #[test]
+    fn test_gap_penalty_tight_beats_scattered() {
+        // "mrs": main.rs has gap=1 (m-a-i-n-.-r-s), scattered has large gaps
+        let tight = fuzzy_score("mrs", "main.rs").unwrap();
+        let scattered = fuzzy_score("mrs", "my_really_long_script.rs").unwrap();
+        assert!(
+            tight > scattered,
+            "tight {tight} should beat scattered {scattered}"
+        );
+    }
+
+    #[test]
+    fn test_gap_penalty_consecutive_no_penalty() {
+        // Consecutive chars should get bonus, not penalty
+        let consec = fuzzy_score("mai", "main.rs").unwrap();
+        let gapped = fuzzy_score("mai", "m_a_i.rs").unwrap();
+        assert!(
+            consec > gapped,
+            "consecutive {consec} should beat gapped {gapped}"
+        );
+    }
+
+    // ── camelCase bonus tests ──────────────────────────────
+
+    #[test]
+    fn test_camel_case_bonus() {
+        // "dm" at camelCase boundary (D→M) should score higher
+        let camel = fuzzy_score("dm", "DropdownMenu").unwrap();
+        let flat = fuzzy_score("dm", "random_dm_file").unwrap();
+        assert!(
+            camel > flat,
+            "camelCase {camel} should beat flat {flat}"
+        );
     }
 }
