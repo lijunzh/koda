@@ -26,10 +26,11 @@ pub struct StatusBar<'a> {
 /// Stats from the most recent inference turn.
 #[derive(Debug, Clone, Default)]
 pub struct TurnStats {
-    #[allow(dead_code)]
+    /// Input tokens billed for this turn.
     pub tokens_in: i64,
+    /// Output tokens generated this turn.
     pub tokens_out: i64,
-    #[allow(dead_code)]
+    /// Tokens served from the prompt cache (cost $0).
     pub cache_read: i64,
     pub elapsed_ms: u64,
     pub rate: f64,
@@ -154,13 +155,20 @@ impl Widget for StatusBar<'_> {
                 format!("{}ms", stats.elapsed_ms)
             };
 
-            spans.push(Span::styled(
-                format!(
-                    " {} tok · {} · {:.0} t/s ",
-                    stats.tokens_out, time, stats.rate
-                ),
-                Style::default().fg(Color::DarkGray),
-            ));
+            // Show ↑in ↓out token counts so users can see full turn cost.
+            let mut stat_str = format!(
+                " ↑{} ↓{} · {} · {:.0} t/s ",
+                stats.tokens_in, stats.tokens_out, time, stats.rate
+            );
+            // Cache hit indicator — only shown when nonzero (costs nothing).
+            if stats.cache_read > 0 && stats.tokens_in > 0 {
+                let pct = (stats.cache_read * 100) / stats.tokens_in;
+                stat_str = format!(
+                    " ↑{} ↓{} 🗄{pct}% · {} · {:.0} t/s ",
+                    stats.tokens_in, stats.tokens_out, time, stats.rate
+                );
+            }
+            spans.push(Span::styled(stat_str, Style::default().fg(Color::DarkGray)));
         }
 
         // Scroll position (when not at bottom)
