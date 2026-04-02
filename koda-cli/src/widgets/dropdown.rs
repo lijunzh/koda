@@ -115,9 +115,7 @@ impl<T: DropdownItem> DropdownState<T> {
     /// Move selection up.
     pub fn up(&mut self) {
         self.selected = self.selected.saturating_sub(1);
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        }
+        self.recenter();
     }
 
     /// Move selection down (wraps around).
@@ -128,10 +126,19 @@ impl<T: DropdownItem> DropdownState<T> {
             self.selected = 0;
             self.scroll_offset = 0;
         }
+        self.recenter();
+    }
+
+    /// Keep the selected item vertically centred in the visible window.
+    fn recenter(&mut self) {
         let visible = MAX_VISIBLE.min(self.filtered.len());
-        if self.selected >= self.scroll_offset + visible {
-            self.scroll_offset = self.selected + 1 - visible;
+        if visible == 0 {
+            return;
         }
+        let half = visible / 2;
+        let ideal = self.selected.saturating_sub(half);
+        let max_offset = self.filtered.len().saturating_sub(visible);
+        self.scroll_offset = ideal.min(max_offset);
     }
 
     /// Get the currently selected item, if any.

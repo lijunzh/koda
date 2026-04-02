@@ -6,22 +6,24 @@
 
 use std::path::{Path, PathBuf};
 
-/// All known slash commands with descriptions.
+/// All known slash commands with (command, description, arg_hint).
+/// `arg_hint` is `Some("<placeholder>")` for commands that take an argument,
+/// `None` for self-contained commands and picker-openers.
 /// Single source of truth — used by completer and auto-dropdown.
-pub const SLASH_COMMANDS: &[(&str, &str)] = &[
-    ("/agent", "List available sub-agents"),
-    ("/compact", "Summarize conversation to reclaim context"),
-    ("/diff", "Show git diff (review, commit)"),
-    ("/exit", "Quit the session"),
-    ("/expand", "Show full output of last tool call"),
-    ("/memory", "View/save project & global memory"),
-    ("/model", "Pick a model interactively"),
-    ("/provider", "Switch LLM provider"),
-    ("/purge", "Delete archived history (e.g. /purge 90d)"),
-    ("/sessions", "List/resume/delete sessions"),
-    ("/skills", "List available skills (search with query)"),
-    ("/undo", "Undo last turn's file changes"),
-    ("/verbose", "Toggle full tool output"),
+pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
+    ("/agent",    "Switch to a sub-agent",                   Some("<name>")),
+    ("/compact",  "Summarize conversation to reclaim context", None),
+    ("/diff",     "Show git diff (review, commit)",            None),
+    ("/exit",     "Quit the session",                         None),
+    ("/expand",   "Show full output of last tool call",        None),
+    ("/memory",   "View/save project & global memory",         None),
+    ("/model",    "Pick a model interactively",               None),
+    ("/provider", "Switch LLM provider",                      None),
+    ("/purge",    "Delete archived history (e.g. /purge 90d)", Some("<days>")),
+    ("/sessions", "List/resume/delete sessions",              None),
+    ("/skills",   "List available skills (search with query)", None),
+    ("/undo",     "Undo last turn's file changes",            None),
+    ("/verbose",  "Toggle full tool output",                  None),
 ];
 
 /// Unified Tab-completion for slash commands and @file paths.
@@ -97,8 +99,8 @@ impl InputCompleter {
             self.token = trimmed.to_string();
             self.matches = SLASH_COMMANDS
                 .iter()
-                .filter(|(cmd, _)| cmd.starts_with(trimmed) && *cmd != trimmed)
-                .map(|(cmd, _)| cmd.to_string())
+                .filter(|(cmd, _, _)| cmd.starts_with(trimmed) && *cmd != trimmed)
+                .map(|(cmd, _, _)| cmd.to_string())
                 .collect();
             self.idx = 0;
         }

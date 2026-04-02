@@ -11,6 +11,9 @@ use ratatui::text::Line;
 pub struct SlashCommand {
     pub command: &'static str,
     pub description: &'static str,
+    /// Argument placeholder shown when the command needs user input (e.g. `Some("<name>")`)
+    /// `None` for self-contained commands and picker-openers.
+    pub arg_hint: Option<&'static str>,
 }
 
 impl DropdownItem for SlashCommand {
@@ -28,14 +31,15 @@ impl DropdownItem for SlashCommand {
 /// Create a slash menu dropdown from the command list and current input.
 /// Returns `None` if no commands match.
 pub fn from_input(
-    commands: &'static [(&'static str, &'static str)],
+    commands: &'static [(&'static str, &'static str, Option<&'static str>)],
     input: &str,
 ) -> Option<DropdownState<SlashCommand>> {
     let items: Vec<SlashCommand> = commands
         .iter()
-        .map(|(cmd, desc)| SlashCommand {
+        .map(|(cmd, desc, arg_hint)| SlashCommand {
             command: cmd,
             description: desc,
+            arg_hint: *arg_hint,
         })
         .collect();
     let mut dd = DropdownState::new(items, "\u{1f43b} Commands");
@@ -55,13 +59,13 @@ pub fn build_menu_lines(state: &DropdownState<SlashCommand>) -> Vec<Line<'static
 mod tests {
     use super::*;
 
-    const TEST_COMMANDS: &[(&str, &str)] = &[
-        ("/agent", "Agents"),
-        ("/compact", "Compact"),
-        ("/diff", "Diff"),
-        ("/exit", "Quit"),
-        ("/expand", "Expand"),
-        ("/model", "Pick model"),
+    const TEST_COMMANDS: &[(&str, &str, Option<&str>)] = &[
+        ("/agent",   "Agents",    Some("<name>")),
+        ("/compact", "Compact",   None),
+        ("/diff",    "Diff",      None),
+        ("/exit",    "Quit",      None),
+        ("/expand",  "Expand",    None),
+        ("/model",   "Pick model", None),
     ];
 
     #[test]
