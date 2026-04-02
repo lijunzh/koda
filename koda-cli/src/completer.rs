@@ -11,19 +11,27 @@ use std::path::{Path, PathBuf};
 /// `None` for self-contained commands and picker-openers.
 /// Single source of truth — used by completer and auto-dropdown.
 pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
-    ("/agent",    "Switch to a sub-agent",                   Some("<name>")),
-    ("/compact",  "Summarize conversation to reclaim context", None),
-    ("/diff",     "Show git diff (review, commit)",            None),
-    ("/exit",     "Quit the session",                         None),
-    ("/expand",   "Show full output of last tool call",        None),
-    ("/memory",   "View/save project & global memory",         None),
-    ("/model",    "Pick a model interactively",               None),
-    ("/provider", "Switch LLM provider",                      None),
-    ("/purge",    "Delete archived history (e.g. /purge 90d)", Some("<days>")),
-    ("/sessions", "List/resume/delete sessions",              None),
-    ("/skills",   "List available skills (search with query)", None),
-    ("/undo",     "Undo last turn's file changes",            None),
-    ("/verbose",  "Toggle full tool output",                  None),
+    ("/agent", "Switch to a sub-agent", Some("<name>")),
+    (
+        "/compact",
+        "Summarize conversation to reclaim context",
+        None,
+    ),
+    ("/diff", "Show git diff (review, commit)", None),
+    ("/exit", "Quit the session", None),
+    ("/expand", "Show full output of last tool call", None),
+    ("/memory", "View/save project & global memory", None),
+    ("/model", "Pick a model interactively", None),
+    ("/provider", "Switch LLM provider", None),
+    (
+        "/purge",
+        "Delete archived history (e.g. /purge 90d)",
+        Some("<days>"),
+    ),
+    ("/sessions", "List/resume/delete sessions", None),
+    ("/skills", "List available skills (search with query)", None),
+    ("/undo", "Undo last turn's file changes", None),
+    ("/verbose", "Toggle full tool output", None),
 ];
 
 /// Unified Tab-completion for slash commands and @file paths.
@@ -298,10 +306,7 @@ fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
             }
 
             // Bonus: camelCase transition (previous char lowercase, current uppercase)
-            if ti > 0
-                && target_chars[ti - 1].is_ascii_lowercase()
-                && tc.is_ascii_uppercase()
-            {
+            if ti > 0 && target_chars[ti - 1].is_ascii_lowercase() && tc.is_ascii_uppercase() {
                 score += 6;
             }
 
@@ -637,9 +642,6 @@ mod tests {
         // "dm" at camelCase boundary (D→M) should score higher
         let camel = fuzzy_score("dm", "DropdownMenu").unwrap();
         let flat = fuzzy_score("dm", "random_dm_file").unwrap();
-        assert!(
-            camel > flat,
-            "camelCase {camel} should beat flat {flat}"
-        );
+        assert!(camel > flat, "camelCase {camel} should beat flat {flat}");
     }
 }

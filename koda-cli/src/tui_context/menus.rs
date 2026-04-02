@@ -241,7 +241,7 @@ impl TuiContext {
                     if arg_hint.is_some() {
                         // Command needs an argument: put "/cmd " in the box
                         // so the user can type the argument and press Enter.
-                        self.textarea.insert_str(&format!("{cmd} "));
+                        self.textarea.insert_str(format!("{cmd} "));
                     } else {
                         // Self-contained / picker-opener: execute immediately.
                         self.dispatch_slash(&cmd).await;

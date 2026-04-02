@@ -81,14 +81,15 @@ impl TuiContext {
                 let trimmed = input.trim_end();
                 // ↓ on a bare `/`-prefixed token opens the slash menu instead
                 // of scrolling history — matches CC behaviour.
-                if trimmed.starts_with('/') && !trimmed.contains(' ') {
-                    if let Some(dd) = crate::widgets::slash_menu::from_input(
+                if trimmed.starts_with('/')
+                    && !trimmed.contains(' ')
+                    && let Some(dd) = crate::widgets::slash_menu::from_input(
                         crate::completer::SLASH_COMMANDS,
                         trimmed,
-                    ) {
-                        self.menu = MenuContent::Slash(dd);
-                        return Ok(true);
-                    }
+                    )
+                {
+                    self.menu = MenuContent::Slash(dd);
+                    return Ok(true);
                 }
                 self.history_down();
             }

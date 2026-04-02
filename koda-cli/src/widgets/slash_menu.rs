@@ -60,12 +60,12 @@ mod tests {
     use super::*;
 
     const TEST_COMMANDS: &[(&str, &str, Option<&str>)] = &[
-        ("/agent",   "Agents",    Some("<name>")),
-        ("/compact", "Compact",   None),
-        ("/diff",    "Diff",      None),
-        ("/exit",    "Quit",      None),
-        ("/expand",  "Expand",    None),
-        ("/model",   "Pick model", None),
+        ("/agent", "Agents", Some("<name>")),
+        ("/compact", "Compact", None),
+        ("/diff", "Diff", None),
+        ("/exit", "Quit", None),
+        ("/expand", "Expand", None),
+        ("/model", "Pick model", None),
     ];
 
     #[test]
