@@ -228,12 +228,27 @@ impl TuiContext {
     pub(crate) async fn handle_menu_select(&mut self) {
         match &self.menu {
             MenuContent::Slash(dd) => {
-                if let Some(item) = dd.selected_item() {
-                    let cmd = item.command.to_string();
+                // Extract owned/static data before dropping the borrow on self.menu.
+                let action = dd
+                    .selected_item()
+                    .map(|item| (item.command.to_string(), item.arg_hint));
+                // Borrow on self.menu is released here — item.command and
+                // item.arg_hint are both &'static, so they don't extend it.
+                if let Some((cmd, arg_hint)) = action {
+                    self.menu = MenuContent::None;
                     self.textarea.select_all();
                     self.textarea.cut();
-                    self.textarea.insert_str(&cmd);
+                    if arg_hint.is_some() {
+                        // Command needs an argument: put "/cmd " in the box
+                        // so the user can type the argument and press Enter.
+                        self.textarea.insert_str(format!("{cmd} "));
+                    } else {
+                        // Self-contained / picker-opener: execute immediately.
+                        self.dispatch_slash(&cmd).await;
+                        self.reinit_after_slash().await;
+                    }
                 }
+                return; // skip the trailing self.menu = None
             }
             MenuContent::Model(dd) => {
                 if let Some(item) = dd.selected_item() {
