@@ -69,7 +69,12 @@ impl Database {
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .auto_vacuum(sqlx::sqlite::SqliteAutoVacuum::Incremental)
             .foreign_keys(true)
-            .create_if_missing(true);
+            .create_if_missing(true)
+            // Retry for up to 5 s when another connection holds the write
+            // lock. Without this, concurrent writes from parallel sub-agents
+            // (#595) return SQLITE_BUSY immediately and the insert is silently
+            // dropped. Individual writes are ~1 ms so the retry resolves fast.
+            .busy_timeout(std::time::Duration::from_millis(5000));
 
         let pool = SqlitePoolOptions::new()
             .max_connections(5)

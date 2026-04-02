@@ -58,7 +58,6 @@ mod tests {
     const TEST_COMMANDS: &[(&str, &str)] = &[
         ("/agent", "Agents"),
         ("/compact", "Compact"),
-        ("/cost", "Cost"),
         ("/diff", "Diff"),
         ("/exit", "Quit"),
         ("/expand", "Expand"),
@@ -68,7 +67,7 @@ mod tests {
     #[test]
     fn from_input_all() {
         let state = from_input(TEST_COMMANDS, "/").unwrap();
-        assert_eq!(state.filtered.len(), 7);
+        assert_eq!(state.filtered.len(), 6);
     }
 
     #[test]
