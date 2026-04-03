@@ -89,6 +89,35 @@ pub struct Message {
     pub thinking_tokens: Option<i64>,
 }
 
+/// Detected interruption state for a resumed session.
+///
+/// Returned by [`detect_interruption`](crate::db::queries::detect_interruption)
+/// after inspecting the tail of the message history.
+///
+/// ## Design decision: banner, not auto-resume
+///
+/// Claude Code auto-continues interrupted turns (re-sends the prompt or
+/// injects "Continue from where you left off"). Koda deliberately shows a
+/// banner and lets the user decide, for three reasons:
+///
+/// 1. **Safety** — auto-resuming a destructive tool call (e.g. `rm -rf`)
+///    after a VPN drop is surprising. The user should see the state first.
+/// 2. **Stale context** — the user may have fixed the issue manually while
+///    Koda was disconnected. Auto-resume wastes tokens re-doing work.
+/// 3. **Cost** — resuming to *check history* shouldn't burn an API call.
+///
+/// A single "type `continue` or rephrase" banner is near-zero friction
+/// (one word + Enter) and handles all three cases.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterruptionKind {
+    /// The user's prompt was never answered (last message is `Role::User`).
+    /// Contains a preview of the unanswered prompt.
+    Prompt(String),
+    /// A tool finished but the assistant never processed the result
+    /// (last message is `Role::Tool`).
+    Tool,
+}
+
 /// Token usage totals for a session.
 #[derive(Debug, Clone, Default)]
 pub struct SessionUsage {

@@ -197,6 +197,12 @@ async fn handle_resume_session(
                                 Span::styled(detail, DIM),
                             ]),
                         );
+                        // Detect interrupted turns and show a banner (#594)
+                        if let Ok(msgs) = session.db.load_context(&session.id).await
+                            && let Some(kind) = koda_core::db::queries::detect_interruption(&msgs)
+                        {
+                            buffer.push_lines(tui_output::interrupted_turn_banner(&kind));
+                        }
                     }
                     n => tui_output::err_msg(
                         buffer,
