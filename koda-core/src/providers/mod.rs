@@ -233,6 +233,12 @@ pub enum StreamChunk {
     ToolCalls(Vec<ToolCall>),
     /// Stream finished with usage info.
     Done(TokenUsage),
+    /// The underlying HTTP connection was dropped before the stream completed.
+    ///
+    /// Distinct from `Done` (clean finish) and user-initiated cancellation
+    /// (Ctrl+C). The partial response MUST be discarded — it is incomplete
+    /// and storing it would corrupt the session history on resume.
+    NetworkError(String),
 }
 
 /// Trait for LLM provider backends.

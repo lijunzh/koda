@@ -185,6 +185,13 @@ pub trait Persistence: Send + Sync {
     /// Check if the session has unresolved tool calls.
     async fn has_pending_tool_calls(&self, session_id: &str) -> Result<bool>;
 
+    /// Mark an assistant message as fully delivered.
+    ///
+    /// Sets `completed_at = CURRENT_TIMESTAMP`. Only called after a legitimate
+    /// `StreamChunk::Done` — not after user cancellation or a network error.
+    /// A `NULL` `completed_at` means the message is in-progress or was interrupted.
+    async fn mark_message_complete(&self, message_id: i64) -> Result<()>;
+
     // ── Token usage ──
 
     /// Token usage totals for a session.

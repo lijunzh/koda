@@ -1,6 +1,7 @@
 //! Tests for the SQLite persistence layer.
 
 use super::queries::prune_mismatched_tool_calls;
+use super::queries::{prune_null_content_messages, prune_whitespace_only_messages};
 use crate::db::Database;
 use crate::persistence::{Message, Persistence, Role};
 use tempfile::TempDir;
@@ -552,4 +553,140 @@ async fn test_last_assistant_message_skips_tool_calls() {
 
     let msg = db.last_assistant_message(&session).await.unwrap();
     assert_eq!(msg, "Done!");
+}
+
+// ── prune_null_content_messages tests (#594) ──────────────────────────────
+
+#[test]
+fn test_prune_null_content_drops_ghost_assistant() {
+    fn msg(role: &str, content: Option<&str>, tool_calls: Option<&str>) -> Message {
+        Message {
+            id: 0,
+            session_id: String::new(),
+            role: role.parse().unwrap_or(Role::User),
+            content: content.map(Into::into),
+            tool_calls: tool_calls.map(Into::into),
+            tool_call_id: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            thinking_tokens: None,
+        }
+    }
+
+    // Ghost message: content=None, tool_calls=None — dropped
+    let mut msgs = vec![msg("user", Some("hi"), None), msg("assistant", None, None)];
+    prune_null_content_messages(&mut msgs);
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].role, Role::User);
+
+    // No content but has tool_calls — kept (valid tool-use turn)
+    let mut msgs = vec![
+        msg("user", Some("hi"), None),
+        msg("assistant", None, Some(r#"[{"id":"t1"}]"#)),
+    ];
+    prune_null_content_messages(&mut msgs);
+    assert_eq!(msgs.len(), 2);
+
+    // Normal assistant with content — kept
+    let mut msgs = vec![
+        msg("user", Some("hi"), None),
+        msg("assistant", Some("Hello!"), None),
+    ];
+    prune_null_content_messages(&mut msgs);
+    assert_eq!(msgs.len(), 2);
+
+    // Non-assistant null content — kept (user/tool roles not touched)
+    let mut msgs = vec![msg("tool", None, None)];
+    prune_null_content_messages(&mut msgs);
+    assert_eq!(msgs.len(), 1);
+
+    // Empty vec — no crash
+    let mut empty: Vec<Message> = vec![];
+    prune_null_content_messages(&mut empty);
+    assert!(empty.is_empty());
+}
+
+// ── prune_whitespace_only_messages tests (#594) ───────────────────────────
+
+#[test]
+fn test_prune_whitespace_only_drops_blank_assistant() {
+    fn msg(role: &str, content: Option<&str>, tool_calls: Option<&str>) -> Message {
+        Message {
+            id: 0,
+            session_id: String::new(),
+            role: role.parse().unwrap_or(Role::User),
+            content: content.map(Into::into),
+            tool_calls: tool_calls.map(Into::into),
+            tool_call_id: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            thinking_tokens: None,
+        }
+    }
+
+    // Whitespace-only assistant content — dropped
+    let mut msgs = vec![
+        msg("user", Some("hi"), None),
+        msg("assistant", Some("   \n\n  "), None),
+    ];
+    prune_whitespace_only_messages(&mut msgs);
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].role, Role::User);
+
+    // Single newline — dropped
+    let mut msgs = vec![msg("assistant", Some("\n"), None)];
+    prune_whitespace_only_messages(&mut msgs);
+    assert!(msgs.is_empty());
+
+    // Whitespace content but has tool_calls — kept
+    let mut msgs = vec![msg("assistant", Some(" "), Some(r#"[{"id":"t1"}]"#))];
+    prune_whitespace_only_messages(&mut msgs);
+    assert_eq!(msgs.len(), 1);
+
+    // Real content — kept
+    let mut msgs = vec![msg("assistant", Some("Done."), None)];
+    prune_whitespace_only_messages(&mut msgs);
+    assert_eq!(msgs.len(), 1);
+
+    // User with whitespace — kept (only assistant is pruned)
+    let mut msgs = vec![msg("user", Some(" "), None)];
+    prune_whitespace_only_messages(&mut msgs);
+    assert_eq!(msgs.len(), 1);
+}
+
+// ── mark_message_complete integration test (#594) ─────────────────────────
+
+#[tokio::test]
+async fn test_mark_message_complete_sets_timestamp() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    let msg_id = db
+        .insert_message(&session, &Role::Assistant, Some("hello"), None, None, None)
+        .await
+        .unwrap();
+
+    // Verify completed_at is NULL before marking complete
+    let row: (Option<String>,) = sqlx::query_as("SELECT completed_at FROM messages WHERE id = ?")
+        .bind(msg_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert!(row.0.is_none(), "completed_at should start NULL");
+
+    db.mark_message_complete(msg_id).await.unwrap();
+
+    let row: (Option<String>,) = sqlx::query_as("SELECT completed_at FROM messages WHERE id = ?")
+        .bind(msg_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        row.0.is_some(),
+        "completed_at should be set after marking complete"
+    );
 }
