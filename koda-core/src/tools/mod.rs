@@ -29,7 +29,7 @@ pub fn classify_tool(name: &str) -> ToolEffect {
     match name {
         // Pure reads — zero side-effects
         "Read" | "List" | "Grep" | "Glob" | "MemoryRead" | "ListAgents" | "ListSkills"
-        | "ActivateSkill" | "RecallContext" | "AstAnalysis" => ToolEffect::ReadOnly,
+        | "ActivateSkill" | "RecallContext" => ToolEffect::ReadOnly,
 
         // Remote actions — side-effects on remote services only
         "WebFetch" => ToolEffect::ReadOnly,    // GET-only fetch
@@ -186,16 +186,6 @@ impl ToolRegistry {
         let recall_def = recall::definition();
         definitions.insert(recall_def.name.clone(), recall_def);
         // First-party library tools (direct calls)
-        for td in koda_ast::tool_definitions() {
-            definitions.insert(
-                td.name.to_string(),
-                ToolDefinition {
-                    name: td.name.to_string(),
-                    description: td.description.to_string(),
-                    parameters: serde_json::from_str(td.parameters_json).unwrap_or_default(),
-                },
-            );
-        }
         for td in koda_email::tool_definitions() {
             definitions.insert(
                 td.name.to_string(),
@@ -405,14 +395,6 @@ impl ToolRegistry {
             }
 
             // First-party library tools — direct calls
-            "AstAnalysis" => {
-                let action = args["action"].as_str().unwrap_or("");
-                let file_path = args["file_path"].as_str().unwrap_or("");
-                let symbol = args["symbol"].as_str();
-                koda_ast::execute(&self.project_root, action, file_path, symbol)
-                    .map_err(|e| anyhow::anyhow!(e))
-            }
-
             "EmailRead" => {
                 let config = require_email_config!(self);
                 let count = args["count"].as_u64().unwrap_or(5).clamp(1, 20) as u32;
@@ -645,14 +627,6 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
         "WebFetch" => {
             let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("?");
             format!("Fetch URL: {url}")
-        }
-        "AstAnalysis" => {
-            let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("?");
-            let file = args
-                .get("file_path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            format!("AST {action}: {file}")
         }
         "EmailSend" => {
             let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("?");
