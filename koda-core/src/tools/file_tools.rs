@@ -90,6 +90,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
                                 "new_str": {
                                     "type": "string",
                                     "description": "Text to replace it with"
+                                },
+                                "replace_all": {
+                                    "type": "boolean",
+                                    "description": "Replace all occurrences instead of just the first (default: false)"
                                 }
                             },
                             "required": ["old_str", "new_str"]
@@ -319,15 +323,30 @@ pub async fn edit_file(project_root: &Path, args: &Value) -> Result<String> {
             );
         }
 
-        // Replace only the first occurrence to be safe
-        content = content.replacen(old_str, new_str, 1);
+        let replace_all = replacement["replace_all"].as_bool().unwrap_or(false);
 
-        // Generate diff lines for display
-        for line in old_str.lines() {
-            changes.push(format!("-{line}"));
-        }
-        for line in new_str.lines() {
-            changes.push(format!("+{line}"));
+        if replace_all {
+            let count = content.matches(old_str).count();
+            content = content.replace(old_str, new_str);
+            // Generate diff lines for display
+            for line in old_str.lines() {
+                changes.push(format!("-{line}"));
+            }
+            for line in new_str.lines() {
+                changes.push(format!("+{line}"));
+            }
+            if count > 1 {
+                changes.push(format!("({count} occurrences replaced)"));
+            }
+        } else {
+            // Replace only the first occurrence (default, safe behavior)
+            content = content.replacen(old_str, new_str, 1);
+            for line in old_str.lines() {
+                changes.push(format!("-{line}"));
+            }
+            for line in new_str.lines() {
+                changes.push(format!("+{line}"));
+            }
         }
         if replacements.len() > 1 {
             changes.push(String::new()); // separator between replacements
