@@ -109,6 +109,12 @@ impl Database {
                 tool_call_id TEXT,
                 prompt_tokens INTEGER,
                 completion_tokens INTEGER,
+                cache_read_tokens INTEGER,
+                cache_creation_tokens INTEGER,
+                thinking_tokens INTEGER,
+                agent_name TEXT,
+                compacted_at TEXT,
+                completed_at DATETIME,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(session_id) REFERENCES sessions(id)
             );",
@@ -123,33 +129,6 @@ impl Database {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_role_id ON messages(role, id DESC);")
             .execute(pool)
             .await?;
-
-        // Additive migrations for new token tracking columns (idempotent).
-        for col in &[
-            "cache_read_tokens",
-            "cache_creation_tokens",
-            "thinking_tokens",
-        ] {
-            let sql = format!("ALTER TABLE messages ADD COLUMN {col} INTEGER");
-            // Ignore "duplicate column name" errors — column already exists.
-            if let Err(e) = sqlx::query(&sql).execute(pool).await {
-                let msg = e.to_string();
-                if !msg.contains("duplicate column name") {
-                    return Err(e.into());
-                }
-            }
-        }
-
-        // Text column migrations
-        for (col, col_type) in &[("agent_name", "TEXT")] {
-            let sql = format!("ALTER TABLE messages ADD COLUMN {col} {col_type}");
-            if let Err(e) = sqlx::query(&sql).execute(pool).await {
-                let msg = e.to_string();
-                if !msg.contains("duplicate column name") {
-                    return Err(e.into());
-                }
-            }
-        }
 
         // Session-scoped key-value metadata (e.g. todo list).
         sqlx::query(
@@ -167,15 +146,6 @@ impl Database {
 
         // Additive migration: add project_root to sessions
         let sql = "ALTER TABLE sessions ADD COLUMN project_root TEXT";
-        if let Err(e) = sqlx::query(sql).execute(pool).await {
-            let msg = e.to_string();
-            if !msg.contains("duplicate column name") {
-                return Err(e.into());
-            }
-        }
-
-        // Additive migration: add compacted_at for non-destructive compaction (#428)
-        let sql = "ALTER TABLE messages ADD COLUMN compacted_at TEXT";
         if let Err(e) = sqlx::query(sql).execute(pool).await {
             let msg = e.to_string();
             if !msg.contains("duplicate column name") {

@@ -79,7 +79,51 @@ pub(crate) fn prune_mismatched_tool_calls(messages: &mut Vec<Message>) {
     });
 }
 
-// ── Persistence trait ───────────────────────────────────────────────────────
+/// Drop assistant messages that have neither text content nor tool calls.
+///
+/// These are "ghost" messages: the stream was interrupted (network drop or
+/// Ctrl+C) before the model produced any output — only thinking deltas
+/// arrived, which are never persisted. Sending such a message to the
+/// provider on resume triggers `invalid_request_error` (all-null content).
+///
+/// Note: this situation should no longer arise after the `NetworkError`
+/// detection fix in #594, but the prune pass acts as a safety net for
+/// any messages that slipped through before the fix was deployed.
+pub(crate) fn prune_null_content_messages(messages: &mut Vec<Message>) {
+    messages.retain(|msg| {
+        if msg.role != Role::Assistant {
+            return true; // keep non-assistant messages unchanged
+        }
+        let has_content = msg.content.as_deref().is_some_and(|c| !c.trim().is_empty());
+        let has_tool_calls = msg.tool_calls.is_some();
+        has_content || has_tool_calls
+    });
+}
+
+/// Drop assistant messages whose text content is entirely whitespace.
+///
+/// These appear when the connection is lost just after the model emits a
+/// `\n\n` prefix (common before a `<think>` block). The resulting message
+/// is harmless but adds noise to the conversation and can confuse the model
+/// into thinking it already replied to the previous user turn.
+pub(crate) fn prune_whitespace_only_messages(messages: &mut Vec<Message>) {
+    messages.retain(|msg| {
+        if msg.role != Role::Assistant {
+            return true;
+        }
+        // Keep if there are tool calls regardless of content.
+        if msg.tool_calls.is_some() {
+            return true;
+        }
+        // Drop if content is present but whitespace-only.
+        match msg.content.as_deref() {
+            Some(c) if c.trim().is_empty() => false,
+            _ => true,
+        }
+    });
+}
+
+// ── Persistence trait ───────────────────────────────────────────────────────────────
 
 #[async_trait::async_trait]
 impl Persistence for Database {
@@ -160,11 +204,22 @@ impl Persistence for Database {
         Ok(result.last_insert_rowid())
     }
 
+    async fn mark_message_complete(&self, message_id: i64) -> Result<()> {
+        sqlx::query("UPDATE messages SET completed_at = datetime('now') WHERE id = ?")
+            .bind(message_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Load active (non-compacted) messages for a session.
     ///
     /// Returns messages in chronological order. Compacted messages
     /// (archived by `/compact`) are excluded — their summary replaces them.
-    /// Mismatched tool_use/tool_result pairs are pruned (#428).
+    /// Several sanitisation passes run before returning:
+    /// - Mismatched tool_use / tool_result pairs are pruned (#428)
+    /// - Null-content assistant messages with no tool calls are dropped (#594)
+    /// - Whitespace-only assistant messages are dropped (#594)
     async fn load_context(&self, session_id: &str) -> Result<Vec<Message>> {
         let mut messages: Vec<Message> = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, tool_calls, tool_call_id,
@@ -181,8 +236,10 @@ impl Persistence for Database {
         .map(|r| r.into())
         .collect();
 
-        // Prune mismatched tool_use/tool_result pairs.
-        prune_mismatched_tool_calls(&mut messages);
+        // Sanitisation passes: run in order, each sees the output of the previous.
+        prune_mismatched_tool_calls(&mut messages);       // (#428)
+        prune_null_content_messages(&mut messages);       // (#594)
+        prune_whitespace_only_messages(&mut messages);    // (#594)
 
         Ok(messages)
     }
