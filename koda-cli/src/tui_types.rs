@@ -71,6 +71,15 @@ pub(crate) enum MenuContent {
     LoopCap,
     /// Purge confirmation bar — \[y\] confirm / \[n\] cancel.
     PurgeConfirm { min_age_days: u32, detail: String },
+    /// Ctrl+R reverse history search overlay.
+    HistorySearch {
+        /// Current search query.
+        query: String,
+        /// Matching history entries, newest first (pre-computed on each keystroke).
+        matches: Vec<String>,
+        /// Index into `matches` of the highlighted row.
+        selected: usize,
+    },
 }
 
 impl MenuContent {

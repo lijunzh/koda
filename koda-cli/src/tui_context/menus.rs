@@ -4,8 +4,54 @@
 
 use super::*;
 
+// ── History search helpers ────────────────────────────────────────────────────
+
+/// Return up to 6 history entries (newest first) containing `query`
+/// (case-insensitive substring match). Empty query → no results.
+fn history_search_matches(history: &[String], query: &str) -> Vec<String> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let q = query.to_lowercase();
+    history
+        .iter()
+        .rev()
+        .filter(|s| s.to_lowercase().contains(&q))
+        .take(6)
+        .cloned()
+        .collect()
+}
+
 impl TuiContext {
-    // ── Dropdown openers ─────────────────────────────────────────
+    // ── Dropdown openers ─────────────────────────────────────────────
+
+    /// Enter Ctrl+R reverse history search mode.
+    pub(crate) fn open_history_search(&mut self) {
+        self.menu = MenuContent::HistorySearch {
+            query: String::new(),
+            matches: Vec::new(),
+            selected: 0,
+        };
+        // Clear the input so the best match can be previewed.
+        self.textarea.select_all();
+        self.textarea.cut();
+    }
+
+    /// Update the textarea to preview the currently selected match.
+    fn sync_search_textarea(&mut self) {
+        let (text, cursor) = match &self.menu {
+            MenuContent::HistorySearch {
+                matches, selected, ..
+            } => (matches.get(*selected).cloned(), *selected),
+            _ => return,
+        };
+        let _ = cursor; // suppresses unused warning if selected unused
+        self.textarea.select_all();
+        self.textarea.cut();
+        if let Some(t) = text {
+            self.textarea.insert_str(&t);
+        }
+    }
 
     pub(crate) async fn open_model_picker(&mut self) {
         let prov = self.provider.read().await;
@@ -153,6 +199,71 @@ impl TuiContext {
         &mut self,
         key: crossterm::event::KeyEvent,
     ) -> Option<bool> {
+        // History search: intercept ALL keys while search overlay is open.
+        if let MenuContent::HistorySearch {
+            query,
+            matches,
+            selected,
+        } = &mut self.menu
+        {
+            match (key.code, key.modifiers) {
+                // Ctrl+R → older match (down the list)
+                (KeyCode::Char('r'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    if *selected + 1 < matches.len() {
+                        *selected += 1;
+                    }
+                }
+                // Ctrl+S → newer match (up the list)
+                (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => {
+                    if *selected > 0 {
+                        *selected -= 1;
+                    }
+                }
+                // Arrow keys to navigate
+                (KeyCode::Up, _) => {
+                    if *selected + 1 < matches.len() {
+                        *selected += 1;
+                    }
+                }
+                (KeyCode::Down, _) => {
+                    if *selected > 0 {
+                        *selected -= 1;
+                    }
+                }
+                // Printable char → extend query
+                (KeyCode::Char(c), m)
+                    if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
+                {
+                    query.push(c);
+                    let new_matches = history_search_matches(&self.history, query);
+                    *selected = 0;
+                    *matches = new_matches;
+                }
+                // Backspace → shrink query
+                (KeyCode::Backspace, _) => {
+                    query.pop();
+                    let new_matches = history_search_matches(&self.history, query);
+                    *selected = 0;
+                    *matches = new_matches;
+                }
+                // Enter → accept (textarea already shows the match)
+                (KeyCode::Enter, _) => {
+                    self.menu = MenuContent::None;
+                    return Some(true);
+                }
+                // Esc / Ctrl+G → cancel, clear textarea
+                (KeyCode::Esc, _) | (KeyCode::Char('g'), KeyModifiers::CONTROL) => {
+                    self.menu = MenuContent::None;
+                    self.textarea.select_all();
+                    self.textarea.cut();
+                    return Some(true);
+                }
+                _ => return Some(true), // consume everything else
+            }
+            self.sync_search_textarea();
+            return Some(true);
+        }
+
         // Purge confirmation: only y/n/Esc are meaningful.
         if let MenuContent::PurgeConfirm { min_age_days, .. } = &self.menu {
             let days = *min_age_days;
@@ -222,6 +333,7 @@ impl TuiContext {
             | MenuContent::AskUser { .. }
             | MenuContent::LoopCap
             | MenuContent::PurgeConfirm { .. }
+            | MenuContent::HistorySearch { .. }
             | MenuContent::WizardTrail(_)
             | MenuContent::None => {}
         }
@@ -344,6 +456,7 @@ impl TuiContext {
             | MenuContent::AskUser { .. }
             | MenuContent::LoopCap
             | MenuContent::PurgeConfirm { .. }
+            | MenuContent::HistorySearch { .. }
             | MenuContent::WizardTrail(_)
             | MenuContent::None => {}
         }
@@ -435,5 +548,47 @@ impl TuiContext {
             ),
             Style::default().fg(Color::Green),
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::history_search_matches;
+
+    fn hist(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn empty_query_returns_nothing() {
+        let h = hist(&["foo", "bar"]);
+        assert!(history_search_matches(&h, "").is_empty());
+    }
+
+    #[test]
+    fn newest_first_order() {
+        let h = hist(&["first cmd", "second cmd", "third cmd"]);
+        let m = history_search_matches(&h, "cmd");
+        assert_eq!(m[0], "third cmd");
+        assert_eq!(m[1], "second cmd");
+        assert_eq!(m[2], "first cmd");
+    }
+
+    #[test]
+    fn case_insensitive_match() {
+        let h = hist(&["cargo Build", "cargo test"]);
+        assert_eq!(history_search_matches(&h, "BUILD").len(), 1);
+    }
+
+    #[test]
+    fn caps_at_six_results() {
+        let h: Vec<String> = (0..10).map(|i| format!("match {i}")).collect();
+        assert_eq!(history_search_matches(&h, "match").len(), 6);
+    }
+
+    #[test]
+    fn no_match_returns_empty() {
+        let h = hist(&["foo", "bar"]);
+        assert!(history_search_matches(&h, "zzz").is_empty());
     }
 }
