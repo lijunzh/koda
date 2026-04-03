@@ -336,6 +336,7 @@ mod tests {
         "ListAgents",
         "InvokeAgent",
         "WebFetch",
+        "WebSearch",
         "ListSkills",
         "ActivateSkill",
     ];
