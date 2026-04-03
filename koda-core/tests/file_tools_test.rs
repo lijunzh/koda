@@ -2,7 +2,9 @@
 //!
 //! Tests path safety, file CRUD, and directory listing.
 
+use koda_core::tools::file_tools;
 use koda_core::tools::safe_resolve_path;
+use serde_json::json;
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -36,30 +38,95 @@ fn test_nested_new_directories() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "deep");
 }
 
-#[test]
-fn test_edit_file_replacement() {
+#[tokio::test]
+async fn test_edit_file_replacement() {
     let tmp = TempDir::new().unwrap();
-    let file = tmp.path().join("example.rs");
-    std::fs::write(&file, "fn main() {\n    println!(\"old\");\n}\n").unwrap();
-    let mut content = std::fs::read_to_string(&file).unwrap();
-    content = content.replacen("\"old\"", "\"new\"", 1);
-    std::fs::write(&file, &content).unwrap();
-    let result = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        tmp.path().join("example.rs"),
+        "fn main() {\n    println!(\"old\");\n}\n",
+    )
+    .unwrap();
+    let args = json!({
+        "path": "example.rs",
+        "replacements": [{"old_str": "\"old\"", "new_str": "\"new\""}]
+    });
+    file_tools::edit_file(tmp.path(), &args).await.unwrap();
+    let result = std::fs::read_to_string(tmp.path().join("example.rs")).unwrap();
     assert!(result.contains("\"new\""));
     assert!(!result.contains("\"old\""));
 }
 
-#[test]
-fn test_edit_file_delete_snippet() {
+#[tokio::test]
+async fn test_edit_file_delete_snippet() {
     let tmp = TempDir::new().unwrap();
-    let file = tmp.path().join("with_comment.rs");
-    std::fs::write(&file, "// TODO: remove this\nfn main() {}\n").unwrap();
-    let mut content = std::fs::read_to_string(&file).unwrap();
-    content = content.replacen("// TODO: remove this\n", "", 1);
-    std::fs::write(&file, &content).unwrap();
-    let result = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        tmp.path().join("with_comment.rs"),
+        "// TODO: remove this\nfn main() {}\n",
+    )
+    .unwrap();
+    let args = json!({
+        "path": "with_comment.rs",
+        "replacements": [{"old_str": "// TODO: remove this\n", "new_str": ""}]
+    });
+    file_tools::edit_file(tmp.path(), &args).await.unwrap();
+    let result = std::fs::read_to_string(tmp.path().join("with_comment.rs")).unwrap();
     assert!(!result.contains("TODO"));
     assert!(result.contains("fn main"));
+}
+
+#[tokio::test]
+async fn test_edit_replace_all_replaces_every_occurrence() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("vars.rs"),
+        "let foo = 1;\nlet foo = 2;\nlet foo = 3;\n",
+    )
+    .unwrap();
+    let args = json!({
+        "path": "vars.rs",
+        "replacements": [{"old_str": "foo", "new_str": "bar", "replace_all": true}]
+    });
+    let result = file_tools::edit_file(tmp.path(), &args).await.unwrap();
+    let content = std::fs::read_to_string(tmp.path().join("vars.rs")).unwrap();
+    assert!(
+        !content.contains("foo"),
+        "all occurrences should be replaced"
+    );
+    assert_eq!(content.matches("bar").count(), 3);
+    assert!(result.contains("3 occurrences replaced"), "{result}");
+}
+
+#[tokio::test]
+async fn test_edit_without_replace_all_only_replaces_first() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("vars.rs"), "let foo = 1;\nlet foo = 2;\n").unwrap();
+    let args = json!({
+        "path": "vars.rs",
+        "replacements": [{"old_str": "foo", "new_str": "bar"}]
+    });
+    file_tools::edit_file(tmp.path(), &args).await.unwrap();
+    let content = std::fs::read_to_string(tmp.path().join("vars.rs")).unwrap();
+    assert_eq!(
+        content.matches("foo").count(),
+        1,
+        "second occurrence should remain"
+    );
+    assert_eq!(content.matches("bar").count(), 1, "only first replaced");
+}
+
+#[tokio::test]
+async fn test_edit_replace_all_single_occurrence_no_count_label() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("one.rs"), "let x = old;\n").unwrap();
+    let args = json!({
+        "path": "one.rs",
+        "replacements": [{"old_str": "old", "new_str": "new", "replace_all": true}]
+    });
+    let result = file_tools::edit_file(tmp.path(), &args).await.unwrap();
+    let content = std::fs::read_to_string(tmp.path().join("one.rs")).unwrap();
+    assert!(content.contains("new"));
+    // Single occurrence: no "(N occurrences replaced)" label needed
+    assert!(!result.contains("occurrences replaced"), "{result}");
 }
 
 #[test]
