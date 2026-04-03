@@ -20,7 +20,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {
+                    "file_path": {
                         "type": "string",
                         "description": "Relative or absolute path to the file"
                     },
@@ -33,7 +33,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                         "description": "Number of lines to read from start_line"
                     }
                 },
-                "required": ["path"]
+                "required": ["file_path"]
             }),
         },
         ToolDefinition {
@@ -45,7 +45,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {
+                    "file_path": {
                         "type": "string",
                         "description": "Relative or absolute path to the file"
                     },
@@ -58,7 +58,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                         "description": "Must be true to overwrite an existing file (default: false)"
                     }
                 },
-                "required": ["path", "content"]
+                "required": ["file_path", "content"]
             }),
         },
         ToolDefinition {
@@ -73,7 +73,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {
+                    "file_path": {
                         "type": "string",
                         "description": "Path to the file to edit"
                     },
@@ -100,7 +100,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                         }
                     }
                 },
-                "required": ["path", "replacements"]
+                "required": ["file_path", "replacements"]
             }),
         },
         ToolDefinition {
@@ -111,7 +111,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {
+                    "file_path": {
                         "type": "string",
                         "description": "Path to the file or directory to delete"
                     },
@@ -120,7 +120,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                         "description": "Required for deleting non-empty directories (default: false)"
                     }
                 },
-                "required": ["path"]
+                "required": ["file_path"]
             }),
         },
         ToolDefinition {
@@ -129,7 +129,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {
+                    "file_path": {
                         "type": "string",
                         "description": "Directory to list (default: project root)"
                     },
@@ -151,9 +151,10 @@ pub async fn read_file(
     args: &Value,
     cache: &super::FileReadCache,
 ) -> Result<String> {
-    let path_str = args["path"]
+    let path_str = args["file_path"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+        .or_else(|| args["path"].as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' argument"))?;
     let resolved = safe_resolve_path(project_root, path_str)?;
 
     // Symlink traversal protection (#526): safe_resolve_path uses lexical
@@ -259,9 +260,10 @@ pub async fn read_file(
 /// Write content to a file, creating parent directories as needed.
 /// Refuses to overwrite existing files unless `overwrite=true`.
 pub async fn write_file(project_root: &Path, args: &Value) -> Result<String> {
-    let path_str = args["path"]
+    let path_str = args["file_path"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+        .or_else(|| args["path"].as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' argument"))?;
     let content = args["content"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument"))?;
@@ -293,9 +295,10 @@ pub async fn write_file(project_root: &Path, args: &Value) -> Result<String> {
 
 /// Apply targeted find-and-replace edits to an existing file.
 pub async fn edit_file(project_root: &Path, args: &Value) -> Result<String> {
-    let path_str = args["path"]
+    let path_str = args["file_path"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+        .or_else(|| args["path"].as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' argument"))?;
     let replacements = args["replacements"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("Missing 'replacements' argument"))?;
@@ -386,9 +389,10 @@ pub async fn edit_file(project_root: &Path, args: &Value) -> Result<String> {
 
 /// Delete a file and return confirmation.
 pub async fn delete_file(project_root: &Path, args: &Value) -> Result<String> {
-    let path_str = args["path"]
+    let path_str = args["file_path"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+        .or_else(|| args["path"].as_str())
+        .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' argument"))?;
     let recursive = args["recursive"].as_bool().unwrap_or(false);
     let resolved = safe_resolve_path(project_root, path_str)?;
 
@@ -453,7 +457,10 @@ fn count_dir_entries(path: &Path) -> usize {
 /// List files in a directory, respecting .gitignore.
 /// Entry cap is set by `OutputCaps` (context-scaled).
 pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -> Result<String> {
-    let path_str = args["path"].as_str().unwrap_or(".");
+    let path_str = args["file_path"]
+        .as_str()
+        .or_else(|| args["path"].as_str())
+        .unwrap_or(".");
     let recursive = args["recursive"].as_bool().unwrap_or(false);
     let resolved = safe_resolve_path(project_root, path_str)?;
 
