@@ -38,7 +38,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "Write".to_string(),
-            description: "Create a new file or fully overwrite an existing file. \
+            description: "Create a new file or overwrite an existing one. \
+                Set overwrite=true to replace an existing file. \
                 For targeted edits to existing files, prefer Edit instead."
                 .to_string(),
             parameters: json!({
@@ -51,6 +52,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "content": {
                         "type": "string",
                         "description": "The full content to write"
+                    },
+                    "overwrite": {
+                        "type": "boolean",
+                        "description": "Must be true to overwrite an existing file (default: false)"
                     }
                 },
                 "required": ["path", "content"]
@@ -248,6 +253,7 @@ pub async fn read_file(
 }
 
 /// Write content to a file, creating parent directories as needed.
+/// Refuses to overwrite existing files unless `overwrite=true`.
 pub async fn write_file(project_root: &Path, args: &Value) -> Result<String> {
     let path_str = args["path"]
         .as_str()
@@ -255,10 +261,20 @@ pub async fn write_file(project_root: &Path, args: &Value) -> Result<String> {
     let content = args["content"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument"))?;
+    let overwrite = args["overwrite"].as_bool().unwrap_or(false);
 
     let resolved = safe_resolve_path(project_root, path_str)?;
 
-    // Ensure parent directory exists (the canonicalize fix!)
+    // Overwrite protection: refuse to clobber existing files without explicit opt-in
+    if resolved.exists() && !overwrite {
+        anyhow::bail!(
+            "File '{}' already exists. Set overwrite=true to replace it, \
+             or use Edit for targeted changes.",
+            path_str
+        );
+    }
+
+    // Ensure parent directory exists
     if let Some(parent) = resolved.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
