@@ -43,6 +43,14 @@ impl ApprovalMode {
         }
     }
 
+    /// Stable string representation for persistence.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Confirm => "confirm",
+        }
+    }
+
     /// Short label for display.
     pub fn label(self) -> &'static str {
         match self {

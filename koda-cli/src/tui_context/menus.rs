@@ -118,6 +118,7 @@ impl TuiContext {
                         message_count: s.message_count,
                         total_tokens: s.total_tokens,
                         is_current: s.id == self.session.id,
+                        title: s.title.clone(),
                     })
                     .collect();
                 let mut dd =

@@ -13,6 +13,7 @@ pub struct SessionItem {
     pub message_count: i64,
     pub total_tokens: i64,
     pub is_current: bool,
+    pub title: Option<String>,
 }
 
 impl DropdownItem for SessionItem {
@@ -20,12 +21,17 @@ impl DropdownItem for SessionItem {
         &self.short_id
     }
     fn description(&self) -> String {
-        let mut desc = format!(
-            "{}  {} msgs  {}k tok",
-            self.created_at,
-            self.message_count,
-            self.total_tokens / 1000
-        );
+        let mut desc = if let Some(title) = &self.title {
+            let t: String = title.chars().take(30).collect();
+            format!("{t}  {} msgs", self.message_count)
+        } else {
+            format!(
+                "{}  {} msgs  {}k tok",
+                self.created_at,
+                self.message_count,
+                self.total_tokens / 1000
+            )
+        };
         if self.is_current {
             desc.push_str(" \u{25c0} current");
         }
@@ -33,7 +39,12 @@ impl DropdownItem for SessionItem {
     }
     fn matches_filter(&self, filter: &str) -> bool {
         let f = filter.to_lowercase();
-        self.id.to_lowercase().contains(&f) || self.created_at.to_lowercase().contains(&f)
+        self.id.to_lowercase().contains(&f)
+            || self.created_at.to_lowercase().contains(&f)
+            || self
+                .title
+                .as_deref()
+                .is_some_and(|t| t.to_lowercase().contains(&f))
     }
 }
 
@@ -50,6 +61,7 @@ mod tests {
             message_count: 5,
             total_tokens: 12000,
             is_current: true,
+            title: None,
         };
         assert!(item.description().contains('\u{25c0}'));
     }
@@ -63,9 +75,11 @@ mod tests {
             message_count: 5,
             total_tokens: 12000,
             is_current: false,
+            title: Some("refactor auth module".into()),
         };
         assert!(item.matches_filter("abc"));
         assert!(item.matches_filter("2026"));
+        assert!(item.matches_filter("refactor"));
         assert!(!item.matches_filter("xyz"));
     }
 }

@@ -381,7 +381,8 @@ impl Persistence for Database {
         let rows: Vec<SessionInfoRow> = sqlx::query_as(
             "SELECT s.id, s.agent_name, s.created_at,
                     COUNT(m.id) as message_count,
-                    COALESCE(SUM(m.prompt_tokens), 0) + COALESCE(SUM(m.completion_tokens), 0) as total_tokens
+                    COALESCE(SUM(m.prompt_tokens), 0) + COALESCE(SUM(m.completion_tokens), 0) as total_tokens,
+                    s.title, s.mode
              FROM sessions s
              LEFT JOIN messages m ON m.session_id = s.id
              WHERE s.project_root = ? OR s.project_root IS NULL
@@ -449,6 +450,33 @@ impl Persistence for Database {
             .await?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    async fn set_session_title(&self, session_id: &str, title: &str) -> Result<()> {
+        sqlx::query("UPDATE sessions SET title = ? WHERE id = ?")
+            .bind(title)
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn set_session_mode(&self, session_id: &str, mode: &str) -> Result<()> {
+        sqlx::query("UPDATE sessions SET mode = ? WHERE id = ?")
+            .bind(mode)
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_session_mode(&self, session_id: &str) -> Result<Option<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT mode FROM sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.and_then(|r| r.0))
     }
 
     /// Compact a session: summarize old messages while preserving the most recent ones.

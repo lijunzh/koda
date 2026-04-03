@@ -148,6 +148,10 @@ pub struct SessionInfo {
     pub message_count: i64,
     /// Cumulative token count.
     pub total_tokens: i64,
+    /// Auto-generated title from first user message.
+    pub title: Option<String>,
+    /// Last active approval mode (for restore on resume).
+    pub mode: Option<String>,
 }
 
 /// Stats about compacted (archived) messages in the database.
@@ -174,6 +178,12 @@ pub trait Persistence: Send + Sync {
     async fn list_sessions(&self, limit: i64, project_root: &Path) -> Result<Vec<SessionInfo>>;
     /// Delete a session by ID. Returns `true` if it existed.
     async fn delete_session(&self, session_id: &str) -> Result<bool>;
+    /// Set the auto-generated title for a session.
+    async fn set_session_title(&self, session_id: &str, title: &str) -> Result<()>;
+    /// Persist the current approval mode for a session (restored on resume).
+    async fn set_session_mode(&self, session_id: &str, mode: &str) -> Result<()>;
+    /// Get the stored approval mode for a session.
+    async fn get_session_mode(&self, session_id: &str) -> Result<Option<String>>;
 
     // ── Messages ──
 

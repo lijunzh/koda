@@ -93,6 +93,7 @@ impl Env {
             settings: Settings::load(),
             cancel: cancel.clone(),
             file_tracker,
+            title_set: false,
         };
         (session, cancel)
     }
