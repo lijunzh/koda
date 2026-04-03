@@ -9,8 +9,8 @@
 
 use crate::highlight;
 use koda_core::preview::{
-    DeleteDirPreview, DeleteFilePreview, DiffLine, DiffPreview, DiffTag,
-    UnifiedDiffPreview, WriteNewPreview,
+    DeleteDirPreview, DeleteFilePreview, DiffLine, DiffPreview, DiffTag, UnifiedDiffPreview,
+    WriteNewPreview,
 };
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -64,10 +64,7 @@ fn render_unified_diff(diff: &UnifiedDiffPreview) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     // File header
-    lines.push(Line::styled(
-        format!("╭─── {} ───╮", diff.path),
-        DIM,
-    ));
+    lines.push(Line::styled(format!("╭─── {} ───╮", diff.path), DIM));
 
     for (i, hunk) in diff.hunks.iter().enumerate() {
         // Hunk separator (between hunks, not before the first)
@@ -92,10 +89,7 @@ fn render_unified_diff(diff: &UnifiedDiffPreview) -> Vec<Line<'static>> {
     }
 
     // Close frame
-    lines.push(Line::styled(
-        format!("╰─── {} ───╯", diff.path),
-        DIM,
-    ));
+    lines.push(Line::styled(format!("╰─── {} ───╯", diff.path), DIM));
 
     if diff.truncated {
         lines.push(Line::styled("... diff truncated (file too large)", DIM));
@@ -131,10 +125,11 @@ fn render_diff_line(
     let mut spans = Vec::new();
 
     // Gutter: line number + sigil (GUTTER_WIDTH chars total)
-    let gutter_style = Style::default()
-        .fg(sigil_color)
-        .add_modifier(Modifier::DIM);
-    spans.push(Span::styled(format!("{:>4} {} ", line_num, sigil), gutter_style));
+    let gutter_style = Style::default().fg(sigil_color).add_modifier(Modifier::DIM);
+    spans.push(Span::styled(
+        format!("{:>4} {} ", line_num, sigil),
+        gutter_style,
+    ));
 
     // Content: use pre-highlighted spans if available, with background tint
     let idx = line_num.saturating_sub(1); // 0-based index
@@ -197,10 +192,7 @@ fn render_write_new(w: &WriteNewPreview) -> Vec<Line<'static>> {
         ));
     }
 
-    lines.push(Line::styled(
-        format!("╰─── {} ───╯", w.path),
-        DIM,
-    ));
+    lines.push(Line::styled(format!("╰─── {} ───╯", w.path), DIM));
 
     lines
 }

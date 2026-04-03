@@ -170,8 +170,9 @@ pub(crate) fn extract_selected_text(
         let effective_start = col_start.max(gutter_w);
 
         if effective_start < chars.len() && effective_start < col_end {
-            let selected: String =
-                chars[effective_start..col_end.min(chars.len())].iter().collect();
+            let selected: String = chars[effective_start..col_end.min(chars.len())]
+                .iter()
+                .collect();
             result.push_str(&selected);
         }
         if row < end.row {

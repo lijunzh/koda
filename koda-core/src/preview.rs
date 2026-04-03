@@ -150,11 +150,7 @@ pub async fn compute(
 /// Build a unified diff from old and new content.
 ///
 /// Shared by Edit and Write-overwrite paths.
-fn build_unified_diff(
-    path: &str,
-    old_content: &str,
-    new_content: &str,
-) -> UnifiedDiffPreview {
+fn build_unified_diff(path: &str, old_content: &str, new_content: &str) -> UnifiedDiffPreview {
     let diff = TextDiff::from_lines(old_content, new_content);
     let mut hunks = Vec::new();
     let mut total_lines = 0usize;
@@ -192,19 +188,11 @@ fn build_unified_diff(
                     }
                     ChangeTag::Delete => {
                         old_count += 1;
-                        (
-                            DiffTag::Delete,
-                            change.old_index().map(|i| i + 1),
-                            None,
-                        )
+                        (DiffTag::Delete, change.old_index().map(|i| i + 1), None)
                     }
                     ChangeTag::Insert => {
                         new_count += 1;
-                        (
-                            DiffTag::Insert,
-                            None,
-                            change.new_index().map(|i| i + 1),
-                        )
+                        (DiffTag::Insert, None, change.new_index().map(|i| i + 1))
                     }
                 };
 
@@ -377,10 +365,18 @@ mod tests {
                 assert!(tags.contains(&DiffTag::Insert));
                 assert!(tags.contains(&DiffTag::Context));
                 // Deleted line should contain "hello"
-                let del = hunk.lines.iter().find(|l| l.tag == DiffTag::Delete).unwrap();
+                let del = hunk
+                    .lines
+                    .iter()
+                    .find(|l| l.tag == DiffTag::Delete)
+                    .unwrap();
                 assert!(del.content.contains("hello"));
                 // Inserted line should contain "world"
-                let ins = hunk.lines.iter().find(|l| l.tag == DiffTag::Insert).unwrap();
+                let ins = hunk
+                    .lines
+                    .iter()
+                    .find(|l| l.tag == DiffTag::Insert)
+                    .unwrap();
                 assert!(ins.content.contains("world"));
             }
             other => panic!("expected UnifiedDiff, got {other:?}"),
@@ -407,7 +403,12 @@ mod tests {
         let preview = compute("Edit", &args, tmp.path()).await.unwrap();
         match preview {
             DiffPreview::UnifiedDiff(diff) => {
-                assert_eq!(diff.hunks.len(), 2, "expected 2 hunks, got {:?}", diff.hunks);
+                assert_eq!(
+                    diff.hunks.len(),
+                    2,
+                    "expected 2 hunks, got {:?}",
+                    diff.hunks
+                );
             }
             other => panic!("expected UnifiedDiff, got {other:?}"),
         }

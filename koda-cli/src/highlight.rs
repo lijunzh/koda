@@ -91,7 +91,10 @@ impl CodeHighlighter {
 /// to look up pre-computed highlights by line number.
 pub fn pre_highlight(content: &str, ext: &str) -> Vec<Vec<ratatui::text::Span<'static>>> {
     let mut hl = CodeHighlighter::new(ext);
-    content.lines().map(|line| hl.highlight_spans(line)).collect()
+    content
+        .lines()
+        .map(|line| hl.highlight_spans(line))
+        .collect()
 }
 
 #[cfg(test)]
