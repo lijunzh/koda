@@ -99,6 +99,22 @@ fn extract_delete_progress(result: &str) -> Option<String> {
 }
 
 fn extract_bash_progress(result: &str) -> Option<String> {
+    // Background process start
+    if result.contains("Background process started") {
+        // Extract the command from the result: "  Command: <cmd>"
+        let cmd = result
+            .lines()
+            .find(|l| l.trim_start().starts_with("Command:"))
+            .and_then(|l| l.split_once(':').map(|(_, v)| v))
+            .map(|s| s.trim())
+            .unwrap_or("?");
+        let short = if cmd.len() > 60 {
+            format!("{}...", &cmd[..60])
+        } else {
+            cmd.to_string()
+        };
+        return Some(format!("- \u{1f4e1} Started background: {short}"));
+    }
     // Track test results and build outcomes
     let lower = result.to_lowercase();
     if lower.contains("test result: ok") || lower.contains("tests passed") {
