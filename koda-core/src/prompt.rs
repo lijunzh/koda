@@ -4,17 +4,44 @@
 
 use std::path::Path;
 
-/// Build the system prompt with semantic memory, agent list, and tool schemas.
+/// Runtime environment context injected into the system prompt.
+pub struct EnvironmentInfo<'a> {
+    /// Project root / working directory.
+    pub project_root: &'a Path,
+    /// Model identifier (e.g. "claude-sonnet-4-6", "gpt-4o").
+    pub model: &'a str,
+    /// Platform (e.g. "macos", "linux").
+    pub platform: &'a str,
+}
+
+/// Build the system prompt with instructions, environment, memory, and tool schemas.
 pub fn build_system_prompt(
     base_prompt: &str,
     semantic_memory: &str,
     agents_dir: &Path,
     tool_defs: &[crate::providers::ToolDefinition],
+    env: &EnvironmentInfo<'_>,
 ) -> String {
     let mut prompt = base_prompt.to_string();
 
-    // Embed the capabilities reference
+    // Behavioral instructions (CC-aligned, #587)
     prompt.push_str("\n\n");
+    prompt.push_str(include_str!("instructions.md"));
+
+    // Environment context
+    prompt.push_str("\n\n## Environment\n");
+    prompt.push_str(&format!(
+        "- Working directory: {}\n",
+        env.project_root.display()
+    ));
+    prompt.push_str(&format!("- Platform: {}\n", env.platform));
+    if let Ok(shell) = std::env::var("SHELL") {
+        prompt.push_str(&format!("- Shell: {}\n", shell));
+    }
+    prompt.push_str(&format!("- Model: {}\n", env.model));
+
+    // Embed the capabilities reference
+    prompt.push('\n');
     prompt.push_str(include_str!("capabilities.md"));
 
     // Auto-generate tool reference from definitions
@@ -90,11 +117,23 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn test_env() -> EnvironmentInfo<'static> {
+        // Use a leaked path so the reference lives long enough for tests
+        let path: &'static Path = Path::new("/test/project");
+        EnvironmentInfo {
+            project_root: path,
+            model: "test-model",
+            platform: "test-os",
+        }
+    }
+
     #[test]
     fn test_build_system_prompt_no_agents_no_memory() {
         let dir = TempDir::new().unwrap();
-        let result = build_system_prompt("You are helpful.", "", dir.path(), &[]);
+        let env = test_env();
+        let result = build_system_prompt("You are helpful.", "", dir.path(), &[], &env);
         assert!(result.starts_with("You are helpful."));
+        assert!(result.contains("Doing Tasks"));
         assert!(result.contains("Koda Quick Reference"));
         assert!(!result.contains("Project Memory"));
     }
@@ -102,11 +141,13 @@ mod tests {
     #[test]
     fn test_build_system_prompt_with_memory() {
         let dir = TempDir::new().unwrap();
+        let env = test_env();
         let result = build_system_prompt(
             "You are helpful.",
             "This is a Rust project.",
             dir.path(),
             &[],
+            &env,
         );
         assert!(result.contains("Project Memory"));
         assert!(result.contains("Rust project"));
@@ -115,12 +156,13 @@ mod tests {
     #[test]
     fn test_build_system_prompt_with_tools() {
         let dir = TempDir::new().unwrap();
+        let env = test_env();
         let tools = vec![crate::providers::ToolDefinition {
             name: "Read".to_string(),
             description: "Read a file. Returns contents.".to_string(),
             parameters: serde_json::json!({}),
         }];
-        let result = build_system_prompt("You are helpful.", "", dir.path(), &tools);
+        let result = build_system_prompt("You are helpful.", "", dir.path(), &tools, &env);
         assert!(result.contains("**Read**"));
         assert!(result.contains("Read a file"));
     }
@@ -129,8 +171,32 @@ mod tests {
     fn test_build_system_prompt_with_agents() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("scout.json"), "{}").unwrap();
-        let result = build_system_prompt("Base.", "", dir.path(), &[]);
+        let env = test_env();
+        let result = build_system_prompt("Base.", "", dir.path(), &[], &env);
         assert!(result.contains("scout"));
         assert!(result.contains("Sub-Agents"));
+    }
+
+    #[test]
+    fn test_environment_section_present() {
+        let dir = TempDir::new().unwrap();
+        let env = test_env();
+        let result = build_system_prompt("Base.", "", dir.path(), &[], &env);
+        assert!(result.contains("## Environment"));
+        assert!(result.contains("/test/project"));
+        assert!(result.contains("test-model"));
+        assert!(result.contains("test-os"));
+    }
+
+    #[test]
+    fn test_instructions_included() {
+        let dir = TempDir::new().unwrap();
+        let env = test_env();
+        let result = build_system_prompt("Base.", "", dir.path(), &[], &env);
+        // Spot-check key sections from instructions.md
+        assert!(result.contains("## Doing Tasks"));
+        assert!(result.contains("## Executing Actions"));
+        assert!(result.contains("## Using Your Tools"));
+        assert!(result.contains("## Output"));
     }
 }

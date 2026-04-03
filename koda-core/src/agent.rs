@@ -39,11 +39,17 @@ impl KodaAgent {
         let tool_defs = tools.get_definitions(&config.allowed_tools);
 
         let semantic_memory = memory::load(&project_root)?;
+        let env = crate::prompt::EnvironmentInfo {
+            project_root: &project_root,
+            model: &config.model,
+            platform: std::env::consts::OS,
+        };
         let system_prompt = crate::prompt::build_system_prompt(
             &config.system_prompt,
             &semantic_memory,
             &config.agents_dir,
             &tool_defs,
+            &env,
         );
 
         Ok(Self {
