@@ -41,6 +41,7 @@ const CANONICAL: &[&str] = &[
     "MemoryWrite",
     "Read",
     "RecallContext",
+    "TodoWrite",
     "WebFetch",
     "WebSearch",
     "Write",
@@ -115,6 +116,9 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
     m.insert("run_command".into(), "Bash");
     m.insert("run_shell_command".into(), "Bash");
 
+    m.insert("todo_write".into(), "TodoWrite");
+    m.insert("update_todos".into(), "TodoWrite");
+    m.insert("todo".into(), "TodoWrite");
     // Web
     m.insert("web_fetch".into(), "WebFetch");
     m.insert("http_get".into(), "WebFetch");

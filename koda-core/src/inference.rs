@@ -17,8 +17,8 @@ use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
-    PREFLIGHT_COMPACT_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages, estimate_tokens,
-    is_context_overflow_error, is_rate_limit_error, rate_limit_backoff,
+    CONTEXT_WARN_THRESHOLD, PREFLIGHT_COMPACT_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages,
+    estimate_tokens, is_context_overflow_error, is_rate_limit_error, rate_limit_backoff,
 };
 use crate::loop_guard::LoopDetector;
 use crate::persistence::Persistence;
@@ -87,6 +87,18 @@ async fn assemble_context(
         used: context_used,
         max: max_context_tokens,
     });
+
+    // Warn users when approaching the context limit (headless mode silently
+    // drops ContextUsage events, so this Warn is the only signal they get).
+    let ctx_pct = crate::context::percentage();
+    if (CONTEXT_WARN_THRESHOLD..PREFLIGHT_COMPACT_THRESHOLD).contains(&ctx_pct) {
+        sink.emit(EngineEvent::Warn {
+            message: format!(
+                "Context at {ctx_pct}% — approaching limit. \
+                 Run /compact to free up space."
+            ),
+        });
+    }
 
     Ok(messages)
 }
@@ -521,14 +533,15 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             hard_cap += extra;
         }
 
-        // Build system prompt with progress + git context
+        // Build system prompt with progress + todo + git context
         let progress = crate::progress::get_progress_summary(db, session_id)
             .await
             .unwrap_or_default();
+        let todo_section = crate::tools::todo::get_todo_section(db, session_id).await;
         let git_line = crate::git::git_context(project_root)
             .map(|ctx| format!("\n{ctx}"))
             .unwrap_or_default();
-        let system_prompt_full = format!("{base_system_prompt}{progress}{git_line}");
+        let system_prompt_full = format!("{base_system_prompt}{progress}{todo_section}{git_line}");
         let system_message = ChatMessage::text("system", &system_prompt_full);
 
         // Assemble context (load history, attach images, track usage)
