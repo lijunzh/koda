@@ -436,6 +436,26 @@ pub(crate) async fn execute_tools_sequential(
             is_sub_agent: false,
         });
 
+        // Pre-flight validation: catch errors before bothering the user
+        // with an approval prompt that will inevitably fail.
+        if let Some(error) =
+            tools::validate::validate_tool_call(&tc.function_name, &parsed_args, project_root).await
+        {
+            record_tool_result(
+                tc,
+                &format!("Validation error: {error}"),
+                false,
+                db,
+                session_id,
+                tools.caps.tool_result_chars,
+                project_root,
+                file_tracker,
+                sink,
+            )
+            .await?;
+            continue;
+        }
+
         // Check approval for this tool call (with file ownership awareness, #465)
         let approval = approval::check_tool_with_tracker(
             &tc.function_name,

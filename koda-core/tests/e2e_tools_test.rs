@@ -482,3 +482,82 @@ async fn test_read_then_write_single_turn() {
         "original content (copy)"
     );
 }
+
+// ── Pre-flight validation (#612) ─────────────────────────────
+
+/// Edit with old_str not found should fail with a validation error
+/// and NOT prompt for approval.
+#[tokio::test]
+async fn test_edit_validation_old_str_not_found() {
+    let env = Env::new().await;
+    let file = env.root.join("greet.txt");
+    std::fs::write(&file, "hello world").unwrap();
+
+    env.insert_user_message("fix the greeting").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "Edit",
+            serde_json::json!({
+                "path": "greet.txt",
+                "replacements": [{"old_str": "goodbye world", "new_str": "hi"}]
+            }),
+        ),
+        MockResponse::Text("I see the edit failed.".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    let output = events
+        .iter()
+        .find_map(|e| {
+            if let EngineEvent::ToolCallResult { output, .. } = e {
+                Some(output.clone())
+            } else {
+                None
+            }
+        })
+        .expect("expected tool result");
+
+    assert!(
+        output.contains("not found"),
+        "error should mention 'not found': {output}",
+    );
+    // File should be unchanged
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello world");
+}
+
+/// Edit on a non-existent file should fail validation.
+#[tokio::test]
+async fn test_edit_validation_file_not_found() {
+    let env = Env::new().await;
+
+    env.insert_user_message("edit missing file").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "Edit",
+            serde_json::json!({
+                "path": "nope.txt",
+                "replacements": [{"old_str": "x", "new_str": "y"}]
+            }),
+        ),
+        MockResponse::Text("File doesn't exist.".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    let output = events
+        .iter()
+        .find_map(|e| {
+            if let EngineEvent::ToolCallResult { output, .. } = e {
+                Some(output.clone())
+            } else {
+                None
+            }
+        })
+        .expect("expected tool result");
+
+    assert!(
+        output.contains("Cannot read"),
+        "error should mention file not readable: {output}",
+    );
+}
