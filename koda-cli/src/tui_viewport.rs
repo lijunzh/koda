@@ -49,7 +49,10 @@ pub(crate) fn draw_viewport(
     // Determine menu height (only when active)
     let menu_height = match menu {
         MenuContent::None => 0u16,
-        MenuContent::Approval { .. } | MenuContent::LoopCap | MenuContent::PurgeConfirm { .. } => 2,
+        MenuContent::Approval { .. }
+        | MenuContent::LoopCap
+        | MenuContent::PurgeConfirm { .. }
+        | MenuContent::AskUser { .. } => 2,
         MenuContent::WizardTrail(trail) => (trail.len() as u16) + 1,
         MenuContent::Slash(dd) => dd.visible_count() as u16 + 1,
         MenuContent::Model(dd) => dd.visible_count() as u16 + 1,
@@ -311,6 +314,36 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
                     Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
                     Span::styled("[n]", Style::default().fg(Color::Red)),
                     Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+                ]),
+            ];
+            frame.render_widget(Paragraph::new(lines), menu_area);
+        }
+        MenuContent::AskUser {
+            question, options, ..
+        } => {
+            let hint = if options.is_empty() {
+                "Type your answer and press Enter".to_string()
+            } else {
+                let choices = options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, o)| format!("[{}] {}", i + 1, o))
+                    .collect::<Vec<_>>()
+                    .join("  ");
+                format!("Choices: {choices}")
+            };
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled("  \u{2753} ", Style::default().fg(Color::Cyan)),
+                    Span::styled(question.clone(), Style::default().fg(Color::White)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled(hint, Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        "  · Esc to skip",
+                        Style::default().fg(Color::Rgb(80, 80, 80)),
+                    ),
                 ]),
             ];
             frame.render_widget(Paragraph::new(lines), menu_area);

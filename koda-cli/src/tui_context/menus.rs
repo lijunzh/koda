@@ -218,6 +218,7 @@ impl TuiContext {
             MenuContent::Session(dd) => nav!(dd),
             MenuContent::File { dropdown: dd, .. } => nav!(dd),
             MenuContent::Approval { .. }
+            | MenuContent::AskUser { .. }
             | MenuContent::LoopCap
             | MenuContent::PurgeConfirm { .. }
             | MenuContent::WizardTrail(_)
@@ -339,6 +340,7 @@ impl TuiContext {
                 }
             }
             MenuContent::Approval { .. }
+            | MenuContent::AskUser { .. }
             | MenuContent::LoopCap
             | MenuContent::PurgeConfirm { .. }
             | MenuContent::WizardTrail(_)

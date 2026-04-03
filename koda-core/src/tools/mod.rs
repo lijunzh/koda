@@ -29,7 +29,7 @@ pub fn classify_tool(name: &str) -> ToolEffect {
     match name {
         // Pure reads — zero side-effects
         "Read" | "List" | "Grep" | "Glob" | "MemoryRead" | "ListAgents" | "ListSkills"
-        | "ActivateSkill" | "RecallContext" => ToolEffect::ReadOnly,
+        | "ActivateSkill" | "RecallContext" | "AskUser" => ToolEffect::ReadOnly,
 
         // Remote actions — side-effects on remote services only
         "WebFetch" => ToolEffect::ReadOnly,    // GET-only fetch
@@ -63,6 +63,7 @@ pub fn is_mutating_tool(name: &str) -> bool {
 
 /// Sub-agent invocation tool (`InvokeAgent`, `ListAgents`).
 pub mod agent;
+pub mod ask_user;
 /// File CRUD tools (`Read`, `Write`, `Edit`, `Delete`, `List`).
 pub mod file_tools;
 /// Glob pattern search tool (`Glob`).
@@ -170,6 +171,9 @@ impl ToolRegistry {
             definitions.insert(def.name.clone(), def);
         }
         for def in agent::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
+        for def in ask_user::definitions() {
             definitions.insert(def.name.clone(), def);
         }
         for def in glob_tool::definitions() {
@@ -439,6 +443,15 @@ impl ToolRegistry {
                 // This branch should not be reached in normal flow.
                 return ToolResult {
                     output: "InvokeAgent is handled by the inference loop.".to_string(),
+                    success: false,
+                };
+            }
+
+            "AskUser" => {
+                // Handled by execute_tools_sequential (needs sink + cmd_rx).
+                // This branch should not be reached in normal flow.
+                return ToolResult {
+                    output: "AskUser is handled by the inference loop.".to_string(),
                     success: false,
                 };
             }
