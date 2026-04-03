@@ -5,8 +5,13 @@
 
 use super::safe_resolve_path;
 use std::path::Path;
+use std::time::SystemTime;
 
 /// Validate a tool call before approval.
+///
+/// `read_cache` is the session file-read cache.  When provided, `validate_edit`
+/// uses it to detect files that have been modified on disk since the model last
+/// read them — catching the most common source of lost-context edits.
 ///
 /// Returns `None` if the call looks valid, or `Some(error_message)` describing
 /// why it will fail. The error message is fed back to the model so it can
@@ -15,9 +20,10 @@ pub async fn validate_tool_call(
     tool_name: &str,
     args: &serde_json::Value,
     project_root: &Path,
+    read_cache: Option<&super::FileReadCache>,
 ) -> Option<String> {
     match tool_name {
-        "Edit" => validate_edit(args, project_root).await,
+        "Edit" => validate_edit(args, project_root, read_cache).await,
         "Write" => validate_write(args, project_root).await,
         "Delete" => validate_delete(args, project_root).await,
         "Bash" => validate_bash(args),
@@ -26,8 +32,13 @@ pub async fn validate_tool_call(
 }
 
 /// Edit: file must exist, replacements must be non-empty, each old_str must
-/// be non-empty and actually present in the file.
-async fn validate_edit(args: &serde_json::Value, project_root: &Path) -> Option<String> {
+/// be non-empty and actually present in the file.  Also warns if the file has
+/// been modified on disk since the model last read it.
+async fn validate_edit(
+    args: &serde_json::Value,
+    project_root: &Path,
+    read_cache: Option<&super::FileReadCache>,
+) -> Option<String> {
     let path_str = args["path"].as_str().unwrap_or("");
     if path_str.is_empty() {
         return Some("Missing 'path' argument.".into());
@@ -54,6 +65,30 @@ async fn validate_edit(args: &serde_json::Value, project_root: &Path) -> Option<
             ));
         }
     };
+
+    // Stale-file detection: warn if the file has been modified on disk since
+    // the model last read it.  Only fires when a full-read cache entry exists
+    // and the current mtime differs from the cached one.
+    if let Some(cache) = read_cache
+        && let Ok(meta) = tokio::fs::metadata(&resolved).await
+    {
+        let current_mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let cache_key = format!("{}:None:None", resolved.display());
+        let cached_mtime = cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&cache_key)
+            .map(|&(_, mtime)| mtime);
+        if let Some(cm) = cached_mtime
+            && cm != current_mtime
+        {
+            return Some(format!(
+                "File '{}' has been modified on disk since you last read it. \
+                 Read it again to get the current content before editing.",
+                path_str
+            ));
+        }
+    }
 
     // Validate each replacement
     for (i, replacement) in replacements.iter().enumerate() {
@@ -200,14 +235,14 @@ mod tests {
             "path": "hello.txt",
             "replacements": [{"old_str": "line two", "new_str": "line TWO"}]
         });
-        assert!(validate_edit(&args, dir.path()).await.is_none());
+        assert!(validate_edit(&args, dir.path(), None).await.is_none());
     }
 
     #[tokio::test]
     async fn edit_missing_path() {
         let dir = setup();
         let args = json!({"replacements": [{"old_str": "x", "new_str": "y"}]});
-        let err = validate_edit(&args, dir.path()).await.unwrap();
+        let err = validate_edit(&args, dir.path(), None).await.unwrap();
         assert!(err.contains("path"), "{err}");
     }
 
@@ -218,7 +253,7 @@ mod tests {
             "path": "nope.txt",
             "replacements": [{"old_str": "x", "new_str": "y"}]
         });
-        let err = validate_edit(&args, dir.path()).await.unwrap();
+        let err = validate_edit(&args, dir.path(), None).await.unwrap();
         assert!(err.contains("Cannot read"), "{err}");
         assert!(err.contains("Write"), "{err}"); // suggests Write
     }
@@ -227,7 +262,7 @@ mod tests {
     async fn edit_empty_replacements() {
         let dir = setup();
         let args = json!({"path": "hello.txt", "replacements": []});
-        let err = validate_edit(&args, dir.path()).await.unwrap();
+        let err = validate_edit(&args, dir.path(), None).await.unwrap();
         assert!(err.contains("empty"), "{err}");
     }
 
@@ -238,7 +273,7 @@ mod tests {
             "path": "hello.txt",
             "replacements": [{"old_str": "", "new_str": "y"}]
         });
-        let err = validate_edit(&args, dir.path()).await.unwrap();
+        let err = validate_edit(&args, dir.path(), None).await.unwrap();
         assert!(err.contains("empty"), "{err}");
     }
 
@@ -256,7 +291,7 @@ mod tests {
             "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
         });
         assert!(
-            validate_edit(&args, dir.path()).await.is_none(),
+            validate_edit(&args, dir.path(), None).await.is_none(),
             "fuzzy match should pass validation"
         );
     }
@@ -268,7 +303,7 @@ mod tests {
             "path": "hello.txt",
             "replacements": [{"old_str": "does not exist", "new_str": "y"}]
         });
-        let err = validate_edit(&args, dir.path()).await.unwrap();
+        let err = validate_edit(&args, dir.path(), None).await.unwrap();
         assert!(err.contains("not found"), "{err}");
     }
 
@@ -279,7 +314,7 @@ mod tests {
             "path": "hello.txt",
             "replacements": [{"old_str": "line one"}]
         });
-        let err = validate_edit(&args, dir.path()).await.unwrap();
+        let err = validate_edit(&args, dir.path(), None).await.unwrap();
         assert!(err.contains("new_str"), "{err}");
     }
 
@@ -372,5 +407,67 @@ mod tests {
     fn bash_cmd_alias() {
         let args = json!({"cmd": "ls"});
         assert!(validate_bash(&args).is_none());
+    }
+
+    // ── Stale-file detection ──────────────────────────────────
+
+    fn make_cache(path: &std::path::Path, mtime: SystemTime) -> super::super::FileReadCache {
+        let cache = super::super::FileReadCache::default();
+        let key = format!("{}:None:None", path.display());
+        cache.lock().unwrap().insert(key, (0, mtime));
+        cache
+    }
+
+    #[tokio::test]
+    async fn edit_stale_file_detected() {
+        let dir = setup();
+        let file = dir.path().join("hello.txt");
+        // Populate cache with a deliberately old mtime (epoch = definitely stale).
+        let cache = make_cache(&file, SystemTime::UNIX_EPOCH);
+        let args = json!({
+            "path": "hello.txt",
+            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+        });
+        let err = validate_edit(&args, dir.path(), Some(&cache))
+            .await
+            .unwrap();
+        assert!(err.contains("modified on disk"), "{err}");
+        assert!(err.contains("Read it again"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn edit_fresh_file_no_stale_warning() {
+        let dir = setup();
+        let file = dir.path().join("hello.txt");
+        // Populate cache with the real current mtime.
+        let current_mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let cache = make_cache(&file, current_mtime);
+        let args = json!({
+            "path": "hello.txt",
+            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+        });
+        assert!(
+            validate_edit(&args, dir.path(), Some(&cache))
+                .await
+                .is_none(),
+            "up-to-date file should not trigger stale warning"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_no_cache_entry_no_stale_warning() {
+        // File was never read via Read tool — empty cache, no stale warning.
+        let dir = setup();
+        let empty_cache = super::super::FileReadCache::default();
+        let args = json!({
+            "path": "hello.txt",
+            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+        });
+        assert!(
+            validate_edit(&args, dir.path(), Some(&empty_cache))
+                .await
+                .is_none(),
+            "no cache entry should not trigger stale warning"
+        );
     }
 }
