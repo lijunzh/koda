@@ -576,10 +576,7 @@ fn test_prune_null_content_drops_ghost_assistant() {
     }
 
     // Ghost message: content=None, tool_calls=None — dropped
-    let mut msgs = vec![
-        msg("user", Some("hi"), None),
-        msg("assistant", None, None),
-    ];
+    let mut msgs = vec![msg("user", Some("hi"), None), msg("assistant", None, None)];
     prune_null_content_messages(&mut msgs);
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].role, Role::User);
@@ -674,21 +671,22 @@ async fn test_mark_message_complete_sets_timestamp() {
         .unwrap();
 
     // Verify completed_at is NULL before marking complete
-    let row: (Option<String>,) =
-        sqlx::query_as("SELECT completed_at FROM messages WHERE id = ?")
-            .bind(msg_id)
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
+    let row: (Option<String>,) = sqlx::query_as("SELECT completed_at FROM messages WHERE id = ?")
+        .bind(msg_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
     assert!(row.0.is_none(), "completed_at should start NULL");
 
     db.mark_message_complete(msg_id).await.unwrap();
 
-    let row: (Option<String>,) =
-        sqlx::query_as("SELECT completed_at FROM messages WHERE id = ?")
-            .bind(msg_id)
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-    assert!(row.0.is_some(), "completed_at should be set after marking complete");
+    let row: (Option<String>,) = sqlx::query_as("SELECT completed_at FROM messages WHERE id = ?")
+        .bind(msg_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert!(
+        row.0.is_some(),
+        "completed_at should be set after marking complete"
+    );
 }

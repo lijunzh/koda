@@ -116,10 +116,7 @@ pub(crate) fn prune_whitespace_only_messages(messages: &mut Vec<Message>) {
             return true;
         }
         // Drop if content is present but whitespace-only.
-        match msg.content.as_deref() {
-            Some(c) if c.trim().is_empty() => false,
-            _ => true,
-        }
+        !matches!(msg.content.as_deref(), Some(c) if c.trim().is_empty())
     });
 }
 
@@ -237,9 +234,9 @@ impl Persistence for Database {
         .collect();
 
         // Sanitisation passes: run in order, each sees the output of the previous.
-        prune_mismatched_tool_calls(&mut messages);       // (#428)
-        prune_null_content_messages(&mut messages);       // (#594)
-        prune_whitespace_only_messages(&mut messages);    // (#594)
+        prune_mismatched_tool_calls(&mut messages); // (#428)
+        prune_null_content_messages(&mut messages); // (#594)
+        prune_whitespace_only_messages(&mut messages); // (#594)
 
         Ok(messages)
     }
