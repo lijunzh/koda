@@ -48,6 +48,12 @@ fn record_compact_success() {
     reset_compact_failures();
 }
 
+/// Maximum number of head-truncation retries when history is too large.
+const MAX_TRUNCATION_RETRIES: usize = 3;
+
+/// Fraction of messages to drop on each truncation attempt.
+const TRUNCATION_DROP_FRACTION: f64 = 0.2;
+
 /// Result of a successful compaction.
 #[derive(Debug)]
 pub struct CompactResult {
@@ -115,11 +121,19 @@ pub async fn compact_session_with_provider(
         as usize
         + crate::inference_helpers::SYSTEM_PROMPT_OVERHEAD;
     let available = max_context_tokens.saturating_sub(4096);
-    if text_tokens > available {
-        return Ok(Err(CompactSkip::HistoryTooLarge));
-    }
 
-    let summary_prompt = build_summary_prompt(&conversation_text);
+    // If history fits, use it as-is. Otherwise, progressively truncate
+    // the oldest messages until it fits (up to MAX_TRUNCATION_RETRIES).
+    let final_text = if text_tokens <= available {
+        conversation_text
+    } else {
+        match truncate_until_fits(&history, available) {
+            Some(text) => text,
+            None => return Ok(Err(CompactSkip::HistoryTooLarge)),
+        }
+    };
+
+    let summary_prompt = build_summary_prompt(&final_text);
 
     let messages = vec![ChatMessage::text("user", &summary_prompt)];
     // Use reduced settings for compaction on the SAME model/provider.
@@ -261,6 +275,48 @@ pub fn strip_analysis_block(summary: &str) -> String {
         prev_empty = is_empty;
     }
     result.trim().to_string()
+}
+
+/// Progressively drop oldest messages until the conversation text fits
+/// in the available token budget. Keeps at least `COMPACT_PRESERVE_COUNT`
+/// recent messages. Returns `None` if it can't fit after max retries.
+fn truncate_until_fits(history: &[crate::db::Message], available_tokens: usize) -> Option<String> {
+    let total = history.len();
+    // Minimum messages to keep: the preserved tail + at least 1 to summarize
+    let min_keep = COMPACT_PRESERVE_COUNT + 1;
+    if total <= min_keep {
+        return None;
+    }
+
+    let mut drop_count = 0usize;
+    for attempt in 0..MAX_TRUNCATION_RETRIES {
+        // Drop 20% of remaining summarizable messages each attempt
+        let summarizable = total.saturating_sub(drop_count);
+        let to_drop = (summarizable as f64 * TRUNCATION_DROP_FRACTION).ceil() as usize;
+        drop_count += to_drop.max(1); // always drop at least 1
+
+        // Never drop so many that we have fewer than min_keep
+        if total.saturating_sub(drop_count) < min_keep {
+            drop_count = total - min_keep;
+        }
+
+        let truncated = &history[drop_count..];
+        let text = build_conversation_text(truncated);
+        let text_tokens = (text.len() as f64 / crate::inference_helpers::CHARS_PER_TOKEN) as usize
+            + crate::inference_helpers::SYSTEM_PROMPT_OVERHEAD;
+
+        tracing::info!(
+            "Truncation attempt {}: dropped {drop_count}/{total} messages, \
+             ~{text_tokens} tokens (budget: {available_tokens})",
+            attempt + 1,
+        );
+
+        if text_tokens <= available_tokens {
+            return Some(text);
+        }
+    }
+
+    None
 }
 
 /// Format conversation history into a single string for the summarizer.
@@ -411,5 +467,54 @@ mod tests {
         let input = "<summary>\nThe good stuff\n</summary>";
         let result = strip_analysis_block(input);
         assert_eq!(result, "The good stuff");
+    }
+
+    #[test]
+    fn test_truncate_until_fits_drops_oldest() {
+        // 20 messages, each ~50 chars
+        let msgs: Vec<_> = (0..20)
+            .map(|i| {
+                make_msg(
+                    "user",
+                    Some(&format!("Message number {i} with some padding text here")),
+                    None,
+                )
+            })
+            .collect();
+
+        // Budget: fits ~half the messages but not all 20
+        // 20 msgs × ~50 chars / 3.5 ≈ 286 tokens + 100 overhead ≈ 386
+        // Want to force truncation: set budget to ~250 tokens
+        let result = truncate_until_fits(&msgs, 250);
+        assert!(result.is_some(), "should succeed after truncation");
+        let text = result.unwrap();
+        // Should contain the last messages but not the first
+        assert!(text.contains("Message number 19"));
+        assert!(!text.contains("Message number 0"));
+    }
+
+    #[test]
+    fn test_truncate_until_fits_too_few_messages() {
+        // Only COMPACT_PRESERVE_COUNT + 1 = 5 messages, can't drop any
+        let msgs: Vec<_> = (0..5)
+            .map(|_| make_msg("user", Some(&"x".repeat(10_000)), None))
+            .collect();
+        // Tiny budget that can't fit even 5 messages
+        let result = truncate_until_fits(&msgs, 10);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_truncate_until_fits_already_fits() {
+        let msgs: Vec<_> = (0..10)
+            .map(|i| make_msg("user", Some(&format!("Short {i}")), None))
+            .collect();
+        // Huge budget
+        let result = truncate_until_fits(&msgs, 100_000);
+        assert!(result.is_some());
+        let text = result.unwrap();
+        // First attempt drops 20% but still fits, so it drops
+        // We just check it returns something valid
+        assert!(text.contains("Short 9"));
     }
 }
