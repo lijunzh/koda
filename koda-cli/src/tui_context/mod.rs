@@ -178,7 +178,7 @@ impl TuiContext {
         let agent =
             Arc::new(koda_core::agent::KodaAgent::new(&config, project_root.clone()).await?);
 
-        let session = KodaSession::new(
+        let mut session = KodaSession::new(
             session_id,
             agent.clone(),
             db.clone(),
@@ -189,7 +189,15 @@ impl TuiContext {
 
         crate::startup::purge_nudge(&db, &mut startup_lines).await;
 
-        let shared_mode = approval::new_shared_mode(ApprovalMode::Auto);
+        // Restore persisted approval mode on resume (#590)
+        let initial_mode = {
+            use koda_core::persistence::Persistence;
+            match session.db.get_session_mode(&session.id).await {
+                Ok(Some(mode_str)) => ApprovalMode::parse(&mode_str).unwrap_or(ApprovalMode::Auto),
+                _ => ApprovalMode::Auto,
+            }
+        };
+        let shared_mode = approval::new_shared_mode(initial_mode);
 
         // Terminal + textarea
         let terminal = init_terminal()?;
@@ -243,6 +251,7 @@ impl TuiContext {
             use koda_core::persistence::Persistence;
             match session.db.load_context(&session.id).await {
                 Ok(msgs) if !msgs.is_empty() => {
+                    session.title_set = true; // resumed session already has a title
                     let oldest_id = msgs.first().map(|m| m.id);
                     let interrupted = detect_interruption(&msgs);
                     let lines = crate::history_render::render_history_messages(&msgs);
@@ -549,6 +558,17 @@ impl TuiContext {
             .await
         {
             tracing::warn!("Failed to persist user message: {e}");
+        }
+
+        // Auto-set session title from first user message (#590)
+        if !self.session.title_set {
+            self.session.title_set = true;
+            let title: String = user_message.chars().take(50).collect();
+            let _ = self
+                .session
+                .db
+                .set_session_title(&self.session.id, &title)
+                .await;
         }
 
         let pending_images = if processed.images.is_empty() {

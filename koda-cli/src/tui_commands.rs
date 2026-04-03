@@ -77,7 +77,7 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
         ReplAction::ResumeSession(ref id) => {
-            handle_resume_session(buffer, session, id, project_root).await;
+            handle_resume_session(buffer, session, id, project_root, shared_mode).await;
             SlashAction::Continue
         }
         ReplAction::InjectPrompt(prompt) => {
@@ -172,6 +172,7 @@ async fn handle_resume_session(
     session: &mut KodaSession,
     id: &str,
     project_root: &std::path::Path,
+    shared_mode: &approval::SharedMode,
 ) {
     use tui_output::GREEN;
     if session.id.starts_with(id) {
@@ -185,9 +186,17 @@ async fn handle_resume_session(
                     1 => {
                         let target = &matches[0];
                         session.id = target.id.clone();
+                        session.title_set = true;
                         let short_id = target.id[..8].to_string();
-                        let detail =
-                            format!("  {}  {} msgs", target.created_at, target.message_count);
+                        let title_part = target
+                            .title
+                            .as_deref()
+                            .map(|t| format!(" — {}", t.chars().take(40).collect::<String>()))
+                            .unwrap_or_default();
+                        let detail = format!(
+                            "{title_part}  {}  {} msgs",
+                            target.created_at, target.message_count
+                        );
                         tui_output::emit_line(
                             buffer,
                             Line::from(vec![
@@ -197,6 +206,12 @@ async fn handle_resume_session(
                                 Span::styled(detail, DIM),
                             ]),
                         );
+                        // Restore persisted approval mode (#590)
+                        if let Ok(Some(mode_str)) = session.db.get_session_mode(&session.id).await
+                            && let Some(m) = approval::ApprovalMode::parse(&mode_str)
+                        {
+                            approval::set_mode(shared_mode, m);
+                        }
                         // Detect interrupted turns and show a banner (#594)
                         if let Ok(msgs) = session.db.load_context(&session.id).await
                             && let Some(kind) = koda_core::db::queries::detect_interruption(&msgs)
