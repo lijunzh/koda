@@ -72,12 +72,25 @@ async fn validate_edit(args: &serde_json::Value, project_root: &Path) -> Option<
         }
 
         if !content.contains(old_str) {
-            // Provide a helpful snippet of what's near the expected location
-            return Some(format!(
-                "Replacement {i}: 'old_str' not found in '{}'. \
-                 Read the file first to get the exact text.",
-                path_str
-            ));
+            // Try fuzzy (whitespace-normalized) before hard-failing.
+            let ranges = super::fuzzy::fuzzy_match_ranges(old_str, &content);
+            if ranges.is_empty() {
+                return Some(format!(
+                    "Replacement {i}: 'old_str' not found in '{}'. \
+                     Read the file first to get the exact text.",
+                    path_str
+                ));
+            }
+            // 2+ fuzzy matches is also a problem — flag it now so the model
+            // can tighten the snippet before burning an approval prompt.
+            if ranges.len() > 1 {
+                return Some(format!(
+                    "Replacement {i}: 'old_str' is ambiguous — {} fuzzy matches in '{}'. \
+                     Use a more specific snippet.",
+                    ranges.len(),
+                    path_str
+                ));
+            }
         }
     }
 
@@ -227,6 +240,25 @@ mod tests {
         });
         let err = validate_edit(&args, dir.path()).await.unwrap();
         assert!(err.contains("empty"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn edit_old_str_fuzzy_match_passes_validation() {
+        // File has trailing spaces; model sends clean needle — should pass pre-flight.
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("hello.txt"),
+            "line one   \nline two   \nline three\n",
+        )
+        .unwrap();
+        let args = json!({
+            "path": "hello.txt",
+            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+        });
+        assert!(
+            validate_edit(&args, dir.path()).await.is_none(),
+            "fuzzy match should pass validation"
+        );
     }
 
     #[tokio::test]

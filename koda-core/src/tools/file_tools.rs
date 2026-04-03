@@ -316,38 +316,59 @@ pub async fn edit_file(project_root: &Path, args: &Value) -> Result<String> {
             anyhow::bail!("Replacement {i}: 'old_str' cannot be empty");
         }
 
-        if !content.contains(old_str) {
-            anyhow::bail!(
-                "Replacement {i}: 'old_str' not found in file. \
-                 Read the file first to get the exact text."
-            );
-        }
-
         let replace_all = replacement["replace_all"].as_bool().unwrap_or(false);
 
-        if replace_all {
-            let count = content.matches(old_str).count();
-            content = content.replace(old_str, new_str);
-            // Generate diff lines for display
-            for line in old_str.lines() {
-                changes.push(format!("-{line}"));
-            }
-            for line in new_str.lines() {
-                changes.push(format!("+{line}"));
-            }
-            if count > 1 {
-                changes.push(format!("({count} occurrences replaced)"));
+        // ── Exact match path ──────────────────────────────────────────────
+        if content.contains(old_str) {
+            if replace_all {
+                let count = content.matches(old_str).count();
+                content = content.replace(old_str, new_str);
+                for line in old_str.lines() {
+                    changes.push(format!("-{line}"));
+                }
+                for line in new_str.lines() {
+                    changes.push(format!("+{line}"));
+                }
+                if count > 1 {
+                    changes.push(format!("({count} occurrences replaced)"));
+                }
+            } else {
+                content = content.replacen(old_str, new_str, 1);
+                for line in old_str.lines() {
+                    changes.push(format!("-{line}"));
+                }
+                for line in new_str.lines() {
+                    changes.push(format!("+{line}"));
+                }
             }
         } else {
-            // Replace only the first occurrence (default, safe behavior)
-            content = content.replacen(old_str, new_str, 1);
-            for line in old_str.lines() {
-                changes.push(format!("-{line}"));
-            }
-            for line in new_str.lines() {
-                changes.push(format!("+{line}"));
+            // ── Fuzzy fallback (trailing-whitespace-normalized) ──────────
+            let ranges = super::fuzzy::fuzzy_match_ranges(old_str, &content);
+            match ranges.len() {
+                0 => anyhow::bail!(
+                    "Replacement {i}: 'old_str' not found in '{}'. \
+                     Read the file first to get the exact text.",
+                    path_str
+                ),
+                1 => {
+                    let r = ranges.into_iter().next().unwrap();
+                    for line in old_str.lines() {
+                        changes.push(format!("-{line}"));
+                    }
+                    for line in new_str.lines() {
+                        changes.push(format!("+{line}"));
+                    }
+                    changes.push("(fuzzy match: trailing whitespace ignored)".into());
+                    content = format!("{}{}{}", &content[..r.start], new_str, &content[r.end..]);
+                }
+                n => anyhow::bail!(
+                    "Replacement {i}: 'old_str' is ambiguous — {n} fuzzy matches in '{}'. \
+                     Use a more specific snippet.",
+                    path_str
+                ),
             }
         }
+
         if replacements.len() > 1 {
             changes.push(String::new()); // separator between replacements
         }
