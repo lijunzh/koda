@@ -8,7 +8,7 @@
 //! - **mod.rs** — `Database` struct, init/open, schema migrations, row types
 //! - **queries.rs** — `Persistence` trait implementation (all SQL queries)
 
-mod queries;
+pub mod queries;
 #[cfg(test)]
 mod tests;
 

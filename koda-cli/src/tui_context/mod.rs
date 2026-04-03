@@ -238,15 +238,17 @@ impl TuiContext {
         }
 
         // Load and render historical conversation on session resume
-        let (history_lines, oldest_msg_id) = {
+        let (history_lines, oldest_msg_id, interruption) = {
+            use koda_core::db::queries::detect_interruption;
             use koda_core::persistence::Persistence;
             match session.db.load_context(&session.id).await {
                 Ok(msgs) if !msgs.is_empty() => {
                     let oldest_id = msgs.first().map(|m| m.id);
+                    let interrupted = detect_interruption(&msgs);
                     let lines = crate::history_render::render_history_messages(&msgs);
-                    (lines, oldest_id)
+                    (lines, oldest_id, interrupted)
                 }
-                _ => (Vec::new(), None),
+                _ => (Vec::new(), None, None),
             }
         };
 
@@ -262,6 +264,9 @@ impl TuiContext {
                 }
                 if let Some(id) = oldest_msg_id {
                     buf.set_oldest_message_id(id);
+                }
+                if let Some(kind) = &interruption {
+                    buf.push_lines(crate::tui_output::interrupted_turn_banner(kind));
                 }
                 buf
             },
