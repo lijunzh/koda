@@ -16,12 +16,6 @@ pub fn emit_line(buffer: &mut ScrollBuffer, line: Line<'static>) {
     buffer.push(line);
 }
 
-/// Append multiple `Line`s to the scroll buffer.
-pub fn emit_lines(buffer: &mut ScrollBuffer, lines: &[Line<'static>]) {
-    let owned: Vec<Line<'static>> = lines.to_vec();
-    buffer.push_lines(owned);
-}
-
 // ── Style constants ─────────────────────────────────────────
 // Centralized color palette for the TUI renderer.
 

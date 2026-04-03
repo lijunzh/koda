@@ -511,8 +511,9 @@ fn handle_inference_ui_inline(
             }
             if let Some(ref prev) = preview {
                 let diff_lines = crate::diff_render::render_lines(prev);
-                for line in &diff_lines {
-                    buffer.push(line.clone());
+                let gutter = crate::diff_render::GUTTER_WIDTH;
+                for line in diff_lines {
+                    buffer.push_with_gutter(line, gutter);
                 }
             }
             *menu = MenuContent::Approval {
