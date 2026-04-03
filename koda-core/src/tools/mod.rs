@@ -33,6 +33,7 @@ pub fn classify_tool(name: &str) -> ToolEffect {
 
         // Remote actions — side-effects on remote services only
         "WebFetch" => ToolEffect::ReadOnly,    // GET-only fetch
+        "WebSearch" => ToolEffect::ReadOnly,   // read-only search
         "InvokeAgent" => ToolEffect::ReadOnly, // sub-agents inherit parent's mode
 
         // Local mutations — write to filesystem or local state
@@ -82,8 +83,10 @@ pub mod shell;
 pub mod skill_tools;
 /// Pre-flight validation for tool calls (runs before approval).
 pub mod validate;
-/// HTTP fetch tool (`WebFetch`).  
+/// HTTP fetch tool (`WebFetch`).
 pub mod web_fetch;
+/// Web search tool (`WebSearch`).
+pub mod web_search;
 
 use anyhow::Result;
 use path_clean::PathClean;
@@ -185,6 +188,9 @@ impl ToolRegistry {
             definitions.insert(def.name.clone(), def);
         }
         for def in web_fetch::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
+        for def in web_search::definitions() {
             definitions.insert(def.name.clone(), def);
         }
         for def in memory::definitions() {
@@ -367,6 +373,7 @@ impl ToolRegistry {
 
             // Web
             "WebFetch" => web_fetch::web_fetch(&args, self.caps.web_body_chars).await,
+            "WebSearch" => web_search::web_search(&args).await,
 
             // Memory
             "MemoryRead" => memory::memory_read(&self.project_root).await,
@@ -661,6 +668,10 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
         "WebFetch" => {
             let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("?");
             format!("Fetch URL: {url}")
+        }
+        "WebSearch" => {
+            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("Web search: {q}")
         }
         "EmailSend" => {
             let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("?");
