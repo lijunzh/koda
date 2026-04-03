@@ -30,7 +30,6 @@ async fn normalized_lowercase_names_are_routable() {
         "listskills",
         "activateskill",
         "recallcontext",
-        "astanalysis",
     ];
 
     for raw_name in lowercase_names {

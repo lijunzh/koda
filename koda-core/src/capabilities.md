@@ -46,4 +46,4 @@ Expert instruction modules — zero cost, instant activation via `ActivateSkill`
 
 ### First-Party Libraries
 
-Direct library integrations (no IPC): `koda-ast` (AST analysis), `koda-email` (email via IMAP/SMTP).
+Direct library integrations (no IPC): `koda-email` (email via IMAP/SMTP). `koda-ast` available as a standalone MCP server.

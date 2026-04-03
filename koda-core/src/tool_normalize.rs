@@ -24,7 +24,6 @@ use std::sync::LazyLock;
 /// All canonical (PascalCase) built-in tool names.
 const CANONICAL: &[&str] = &[
     "ActivateSkill",
-    "AstAnalysis",
     "Bash",
     "Delete",
     "Edit",
@@ -126,10 +125,6 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
     m.insert("list_skills".into(), "ListSkills");
     m.insert("activate_skill".into(), "ActivateSkill");
 
-    // AST
-    m.insert("ast_analysis".into(), "AstAnalysis");
-    m.insert("analyze_ast".into(), "AstAnalysis");
-
     // Email
     m.insert("email_read".into(), "EmailRead");
     m.insert("email_send".into(), "EmailSend");
@@ -223,7 +218,6 @@ mod tests {
         assert_eq!(normalize_tool_name("memory_read"), "MemoryRead");
         assert_eq!(normalize_tool_name("memory_write"), "MemoryWrite");
         assert_eq!(normalize_tool_name("recall_context"), "RecallContext");
-        assert_eq!(normalize_tool_name("ast_analysis"), "AstAnalysis");
     }
 
     // ── Short aliases (model hallucinations) ────────────────────
