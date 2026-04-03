@@ -100,6 +100,9 @@ pub fn engine_event_to_acp(
 
         // Handled specially by AcpSink (bidirectional permission flow)
         EngineEvent::ApprovalRequest { .. } => None,
+        // AskUser not yet implemented in ACP protocol; filtered here.
+        // AcpSink::emit auto-responds with an empty string (fallback).
+        EngineEvent::AskUserRequest { .. } => None,
 
         EngineEvent::ActionBlocked {
             tool_name: _,
@@ -244,6 +247,15 @@ impl EngineSink for AcpSink {
         if matches!(event, EngineEvent::LoopCapReached { .. }) {
             let _ = self.cmd_tx.try_send(EngineCommand::LoopDecision {
                 action: koda_core::loop_guard::LoopContinuation::Continue200,
+            });
+            return;
+        }
+
+        // AskUser: no ACP protocol support yet — auto-respond with empty string.
+        if let EngineEvent::AskUserRequest { ref id, .. } = event {
+            let _ = self.cmd_tx.try_send(EngineCommand::AskUserResponse {
+                id: id.clone(),
+                answer: String::new(),
             });
             return;
         }
@@ -440,6 +452,11 @@ mod tests {
                 tool_name: "Bash".into(),
                 detail: "cmd".into(),
                 preview: None,
+            },
+            EngineEvent::AskUserRequest {
+                id: "b".into(),
+                question: "Which db?".into(),
+                options: vec![],
             },
             EngineEvent::StatusUpdate {
                 model: "m".into(),

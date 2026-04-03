@@ -436,6 +436,30 @@ pub(crate) async fn execute_tools_sequential(
             is_sub_agent: false,
         });
 
+        // AskUser: pause inference, show question in TUI, wait for typed answer.
+        // Handled here (not in execute_one_tool) because it needs sink + cmd_rx.
+        if tc.function_name == "AskUser" {
+            let answer = handle_ask_user(sink, cmd_rx, &cancel, &parsed_args).await;
+            let result = match answer {
+                Some(text) if !text.trim().is_empty() => text,
+                Some(_) => "User did not provide an answer.".into(),
+                None => return Ok(()), // cancelled
+            };
+            record_tool_result(
+                tc,
+                &result,
+                true,
+                db,
+                session_id,
+                tools.caps.tool_result_chars,
+                project_root,
+                file_tracker,
+                sink,
+            )
+            .await?;
+            continue;
+        }
+
         // Pre-flight validation: catch errors before bothering the user
         // with an approval prompt that will inevitably fail.
         if let Some(error) =
@@ -787,6 +811,50 @@ pub(crate) async fn execute_sub_agent(
         ),
     });
     Ok("(sub-agent reached maximum iterations)".to_string())
+}
+
+/// Emit an `AskUserRequest` and wait for the user's typed response.
+///
+/// Returns `None` if the session was interrupted or cancelled.
+pub(crate) async fn handle_ask_user(
+    sink: &dyn crate::engine::EngineSink,
+    cmd_rx: &mut mpsc::Receiver<EngineCommand>,
+    cancel: &CancellationToken,
+    args: &serde_json::Value,
+) -> Option<String> {
+    let question = args["question"].as_str().unwrap_or("").to_string();
+    let options: Vec<String> = args["options"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let request_id = uuid::Uuid::new_v4().to_string();
+    sink.emit(EngineEvent::AskUserRequest {
+        id: request_id.clone(),
+        question,
+        options,
+    });
+
+    loop {
+        tokio::select! {
+            cmd = cmd_rx.recv() => match cmd {
+                Some(EngineCommand::AskUserResponse { id, answer }) if id == request_id => {
+                    return Some(answer);
+                }
+                Some(EngineCommand::Interrupt) => {
+                    cancel.cancel();
+                    return None;
+                }
+                None => return None,
+                _ => continue,
+            },
+            _ = cancel.cancelled() => return None,
+        }
+    }
 }
 
 pub(crate) async fn request_approval(

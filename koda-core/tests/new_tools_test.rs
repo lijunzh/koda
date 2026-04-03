@@ -221,6 +221,7 @@ mod naming_convention {
     /// All built-in tool names must be PascalCase.
     const BUILTIN_TOOLS: &[&str] = &[
         "ActivateSkill",
+        "AskUser",
         "Bash",
         "Delete",
         "Edit",
@@ -271,8 +272,8 @@ mod naming_convention {
 
     #[test]
     fn test_expected_tool_count() {
-        // 19 built-in tools (AstAnalysis removed in #608)
-        assert_eq!(BUILTIN_TOOLS.len(), 19);
+        // 20 built-in tools (AstAnalysis removed in #608, AskUser added)
+        assert_eq!(BUILTIN_TOOLS.len(), 20);
     }
 
     /// Ensure BUILTIN_TOOLS stays in sync with the actual registry.

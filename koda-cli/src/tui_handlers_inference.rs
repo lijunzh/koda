@@ -116,6 +116,7 @@ impl TuiContext {
                             ui_event,
                             &mut self.scroll_buffer,
                             &mut self.menu,
+                            &mut self.prompt_mode,
                             &mut self.renderer,
                         );
                         // Batch-drain queued engine events to reduce redraws.
@@ -129,6 +130,7 @@ impl TuiContext {
                                 extra,
                                 &mut self.scroll_buffer,
                                 &mut self.menu,
+                                &mut self.prompt_mode,
                                 &mut self.renderer,
                             );
                         }
@@ -408,6 +410,48 @@ async fn handle_inference_key_inline(
         return;
     }
 
+    // AskUser: freeform text input during inference.
+    // id is embedded in MenuContent::AskUser — no separate pending field needed.
+    if matches!(menu, MenuContent::AskUser { .. })
+        && matches!(prompt_mode, PromptMode::WizardInput { .. })
+    {
+        match (key.code, key.modifiers) {
+            (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
+                textarea.insert_newline();
+            }
+            (KeyCode::Enter, KeyModifiers::NONE) => {
+                let answer = textarea.lines().join("\n");
+                textarea.select_all();
+                textarea.cut();
+                *prompt_mode = PromptMode::Chat;
+                if let MenuContent::AskUser { id, .. } = std::mem::replace(menu, MenuContent::None)
+                {
+                    let _ = cmd_tx
+                        .send(EngineCommand::AskUserResponse { id, answer })
+                        .await;
+                }
+            }
+            (KeyCode::Esc, _) => {
+                textarea.select_all();
+                textarea.cut();
+                *prompt_mode = PromptMode::Chat;
+                if let MenuContent::AskUser { id, .. } = std::mem::replace(menu, MenuContent::None)
+                {
+                    let _ = cmd_tx
+                        .send(EngineCommand::AskUserResponse {
+                            id,
+                            answer: String::new(),
+                        })
+                        .await;
+                }
+            }
+            _ => {
+                textarea.input(Event::Key(key));
+            }
+        }
+        return;
+    }
+
     // Feedback text input during inference
     if matches!(prompt_mode, PromptMode::WizardInput { .. }) && pending_approval_id.is_some() {
         match (key.code, key.modifiers) {
@@ -497,9 +541,24 @@ fn handle_inference_ui_inline(
     ui_event: UiEvent,
     buffer: &mut ScrollBuffer,
     menu: &mut MenuContent,
+    prompt_mode: &mut PromptMode,
     renderer: &mut crate::tui_render::TuiRenderer,
 ) {
     match ui_event {
+        UiEvent::Engine(EngineEvent::AskUserRequest {
+            id,
+            question,
+            options,
+        }) => {
+            *prompt_mode = PromptMode::WizardInput {
+                label: "Answer".into(),
+            };
+            *menu = MenuContent::AskUser {
+                id,
+                question,
+                options,
+            };
+        }
         UiEvent::Engine(EngineEvent::ApprovalRequest {
             id,
             tool_name,
