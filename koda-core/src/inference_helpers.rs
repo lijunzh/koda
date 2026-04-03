@@ -64,14 +64,19 @@ pub fn assemble_messages(
     messages
 }
 
-/// Detect if an error is a rate limit (429) from the provider.
+/// Detect if an error is a rate limit or overload response from the provider.
+///
+/// Matches HTTP 429 (Too Many Requests) and Anthropic's HTTP 529 (overloaded),
+/// plus common text patterns across providers.
 pub fn is_rate_limit_error(err: &anyhow::Error) -> bool {
     let msg = format!("{err:#}").to_lowercase();
     msg.contains("429")
+        || msg.contains("529")          // Anthropic: API overloaded
         || msg.contains("rate limit")
         || msg.contains("rate_limit")
         || msg.contains("too many requests")
         || msg.contains("quota exceeded")
+        || msg.contains("overloaded") // Anthropic overload text
 }
 
 /// Maximum number of retries for rate-limited requests.
@@ -146,10 +151,14 @@ mod tests {
         assert!(is_rate_limit_error(&anyhow::anyhow!(
             "429 Too Many Requests"
         )));
+        assert!(is_rate_limit_error(&anyhow::anyhow!("529 API overloaded")));
         assert!(is_rate_limit_error(&anyhow::anyhow!("rate limit exceeded")));
         assert!(is_rate_limit_error(&anyhow::anyhow!("rate_limit_exceeded")));
         assert!(is_rate_limit_error(&anyhow::anyhow!("too many requests")));
         assert!(is_rate_limit_error(&anyhow::anyhow!("quota exceeded")));
+        assert!(is_rate_limit_error(&anyhow::anyhow!(
+            "Anthropic API is overloaded"
+        )));
 
         assert!(!is_rate_limit_error(&anyhow::anyhow!("prompt is too long")));
         assert!(!is_rate_limit_error(&anyhow::anyhow!("connection refused")));

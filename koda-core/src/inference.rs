@@ -51,8 +51,13 @@ struct StreamResult {
     usage: TokenUsage,
     /// Total character count of text deltas.
     char_count: usize,
-    /// Whether the stream was interrupted by cancellation.
+    /// Whether the stream was interrupted by user cancellation (Ctrl+C).
     interrupted: bool,
+    /// Whether the stream ended due to a network error.
+    ///
+    /// When `true` the partial response MUST be discarded — it is incomplete
+    /// and storing it would corrupt the session history on resume.
+    network_error: Option<String>,
 }
 
 /// Load conversation history, assemble messages with the system prompt,
@@ -350,6 +355,7 @@ async fn collect_stream(
                 usage,
                 char_count,
                 interrupted: true,
+                network_error: None,
             };
         }
 
@@ -408,6 +414,25 @@ async fn collect_stream(
                 usage = u;
                 break;
             }
+            StreamChunk::NetworkError(err) => {
+                // Connection dropped mid-stream. Stop rendering and surface a
+                // warning. The partial response will be discarded by the caller.
+                sink.emit(EngineEvent::SpinnerStop);
+                if !full_text.is_empty() {
+                    sink.emit(EngineEvent::TextDone);
+                }
+                sink.emit(EngineEvent::Warn {
+                    message: format!("Connection lost mid-stream — turn discarded ({err})"),
+                });
+                return StreamResult {
+                    text: full_text,
+                    tool_calls,
+                    usage,
+                    char_count,
+                    interrupted: false,
+                    network_error: Some(err),
+                };
+            }
         }
     }
 
@@ -423,6 +448,7 @@ async fn collect_stream(
         usage,
         char_count,
         interrupted: false,
+        network_error: None,
     }
 }
 
@@ -651,6 +677,12 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             return Ok(());
         }
 
+        // Network drop: warning already emitted by collect_stream.
+        // Discard the partial response — storing it would corrupt the session.
+        if stream_result.network_error.is_some() {
+            return Ok(());
+        }
+
         let full_text = stream_result.text;
         // Normalize tool names from model output to canonical PascalCase (#548).
         // Models (especially local/small ones via OpenAI-compat APIs) may emit
@@ -688,15 +720,20 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             Some(serde_json::to_string(&tool_calls)?)
         };
 
-        db.insert_message(
-            session_id,
-            &Role::Assistant,
-            content,
-            tool_calls_json.as_deref(),
-            None,
-            Some(&usage),
-        )
-        .await?;
+        let msg_id = db
+            .insert_message(
+                session_id,
+                &Role::Assistant,
+                content,
+                tool_calls_json.as_deref(),
+                None,
+                Some(&usage),
+            )
+            .await?;
+
+        // Mark the message as fully delivered. This distinguishes clean
+        // completions from interrupted/in-progress turns on session resume.
+        db.mark_message_complete(msg_id).await?;
 
         // If no tool calls, we already streamed the response — done
         if tool_calls.is_empty() {

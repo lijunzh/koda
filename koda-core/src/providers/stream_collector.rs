@@ -51,6 +51,15 @@ pub fn spawn_sse_collector(
 ///
 /// Separated from [`spawn_sse_collector`] so the same logic can be tested
 /// with any `Stream<Item = Result<Bytes, _>>` without needing a real HTTP response.
+///
+/// # Error handling
+///
+/// A clean stream end (no more bytes, or `[DONE]` sentinel) calls `parser.finish()`
+/// to emit `Done` with accumulated token usage.
+///
+/// A byte-stream error (network drop, connection reset, timeout) emits
+/// `StreamChunk::NetworkError` instead of calling `finish()`. The caller
+/// is responsible for discarding any partial response — see `collect_stream()`.
 async fn drive_sse_stream(
     response: reqwest::Response,
     mut parser: Box<dyn ChunkParser>,
@@ -60,10 +69,18 @@ async fn drive_sse_stream(
 
     let mut byte_stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut network_err: Option<String> = None;
 
-    while let Some(chunk_result) = byte_stream.next().await {
-        let Ok(bytes) = chunk_result else { break };
-        buffer.push_str(&String::from_utf8_lossy(&bytes));
+    'read: while let Some(chunk_result) = byte_stream.next().await {
+        match chunk_result {
+            Err(e) => {
+                network_err = Some(e.to_string());
+                break 'read;
+            }
+            Ok(bytes) => {
+                buffer.push_str(&String::from_utf8_lossy(&bytes));
+            }
+        }
 
         while let Some(line_end) = buffer.find('\n') {
             let line = buffer[..line_end].trim().to_string();
@@ -87,9 +104,15 @@ async fn drive_sse_stream(
         }
     }
 
-    // Stream ended without [DONE] (Anthropic, Gemini) — flush remaining
-    for chunk in parser.finish() {
-        let _ = tx.send(chunk).await;
+    if let Some(err) = network_err {
+        // Network drop — do NOT call parser.finish() to avoid emitting a
+        // synthetic Done that would make the partial response look complete.
+        let _ = tx.send(StreamChunk::NetworkError(err)).await;
+    } else {
+        // Stream ended without [DONE] (Anthropic, Gemini) — flush remaining
+        for chunk in parser.finish() {
+            let _ = tx.send(chunk).await;
+        }
     }
 }
 
