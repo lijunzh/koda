@@ -24,6 +24,7 @@ use std::sync::LazyLock;
 /// All canonical (PascalCase) built-in tool names.
 const CANONICAL: &[&str] = &[
     "ActivateSkill",
+    "AskUser",
     "Bash",
     "Delete",
     "Edit",
@@ -70,6 +71,11 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
     // Only include aliases where the mapping is unambiguous.
     // If a short name could plausibly mean multiple tools, leave it
     // out — an "Unknown tool" error is better than silent misrouting.
+
+    // AskUser
+    m.insert("ask_user".into(), "AskUser");
+    m.insert("ask_question".into(), "AskUser");
+    m.insert("askquestion".into(), "AskUser");
 
     // File tools
     m.insert("list_files".into(), "List");

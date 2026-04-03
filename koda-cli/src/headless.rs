@@ -125,6 +125,14 @@ impl EngineSink for HeadlessSink {
                     decision: ApprovalDecision::Approve,
                 });
             }
+            EngineEvent::AskUserRequest { id, question, .. } => {
+                // Headless: no user present, print the question and skip.
+                eprintln!("[koda] AskUser (no interactive session): {question}");
+                let _ = self.cmd_tx.blocking_send(EngineCommand::AskUserResponse {
+                    id,
+                    answer: String::new(),
+                });
+            }
             EngineEvent::LoopCapReached { .. } => {
                 let _ = self.cmd_tx.blocking_send(EngineCommand::LoopDecision {
                     action: koda_core::loop_guard::LoopContinuation::Continue200,

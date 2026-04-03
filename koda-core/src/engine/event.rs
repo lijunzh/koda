@@ -106,6 +106,20 @@ pub enum EngineEvent {
         preview: Option<crate::preview::DiffPreview>,
     },
 
+    /// The model needs a clarifying answer from the user before proceeding.
+    ///
+    /// The client must respond with `EngineCommand::AskUserResponse`
+    /// matching the same `id`. The answer is returned to the model as the
+    /// tool result, so inference can continue.
+    AskUserRequest {
+        /// Unique ID for this request.
+        id: String,
+        /// The question to ask.
+        question: String,
+        /// Optional answer choices (empty = freeform).
+        options: Vec<String>,
+    },
+
     /// An action was blocked by safe mode (shown but not executed).
     ActionBlocked {
         /// Tool name that was blocked.
@@ -277,6 +291,14 @@ pub enum EngineCommand {
     /// for streaming interruption.
     Interrupt,
 
+    /// Response to an `EngineEvent::AskUserRequest`.
+    AskUserResponse {
+        /// Must match the `id` from the `AskUserRequest`.
+        id: String,
+        /// The user's answer (empty string = cancelled).
+        answer: String,
+    },
+
     /// Response to an `EngineEvent::ApprovalRequest`.
     ApprovalResponse {
         /// Must match the `id` from the `ApprovalRequest`.
@@ -380,6 +402,35 @@ pub enum SlashCommand {
 mod tests {
     use super::*;
     use serde_json;
+
+    #[test]
+    fn test_ask_user_request_roundtrip() {
+        let event = EngineEvent::AskUserRequest {
+            id: "ask-1".into(),
+            question: "Which database?".into(),
+            options: vec!["SQLite".into(), "PostgreSQL".into()],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("ask_user_request"));
+        let deserialized: EngineEvent = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(deserialized, EngineEvent::AskUserRequest { ref question, .. } if question == "Which database?")
+        );
+    }
+
+    #[test]
+    fn test_ask_user_response_roundtrip() {
+        let cmd = EngineCommand::AskUserResponse {
+            id: "ask-1".into(),
+            answer: "SQLite".into(),
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("ask_user_response"));
+        let deserialized: EngineCommand = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(deserialized, EngineCommand::AskUserResponse { ref answer, .. } if answer == "SQLite")
+        );
+    }
 
     #[test]
     fn test_engine_event_text_delta_roundtrip() {

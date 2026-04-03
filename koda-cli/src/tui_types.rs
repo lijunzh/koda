@@ -61,6 +61,12 @@ pub(crate) enum MenuContent {
         tool_name: String,
         detail: String,
     },
+    /// AskUser input bar — model is asking a clarifying question.
+    AskUser {
+        id: String,
+        question: String,
+        options: Vec<String>,
+    },
     /// Loop cap hotkey bar — continue or stop after iteration limit.
     LoopCap,
     /// Purge confirmation bar — \[y\] confirm / \[n\] cancel.

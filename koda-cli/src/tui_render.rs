@@ -183,6 +183,7 @@ impl TuiRenderer {
                 );
             }
             EngineEvent::ApprovalRequest { .. }
+            | EngineEvent::AskUserRequest { .. }
             | EngineEvent::StatusUpdate { .. }
             | EngineEvent::ContextUsage { .. }
             | EngineEvent::TurnStart { .. }
