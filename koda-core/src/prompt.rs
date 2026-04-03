@@ -41,7 +41,7 @@ pub fn build_system_prompt(
     prompt.push_str(&format!("- Model: {}\n", env.model));
 
     // Embed the capabilities reference
-    prompt.push_str("\n");
+    prompt.push('\n');
     prompt.push_str(include_str!("capabilities.md"));
 
     // Auto-generate tool reference from definitions
