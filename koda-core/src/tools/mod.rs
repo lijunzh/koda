@@ -64,6 +64,7 @@ pub fn is_mutating_tool(name: &str) -> bool {
 /// Sub-agent invocation tool (`InvokeAgent`, `ListAgents`).
 pub mod agent;
 pub mod ask_user;
+pub mod bg_process;
 /// File CRUD tools (`Read`, `Write`, `Edit`, `Delete`, `List`).
 pub mod file_tools;
 /// Glob pattern search tool (`Glob`).
@@ -150,6 +151,9 @@ pub struct ToolRegistry {
     session_id: std::sync::RwLock<Option<String>>,
     /// Context-scaled output caps for all tools.
     pub caps: OutputCaps,
+    /// Background process registry — tracks processes spawned with `background: true`.
+    /// Dropped (SIGTERM all) when the session ends.
+    pub bg_registry: bg_process::BgRegistry,
 }
 
 impl ToolRegistry {
@@ -214,6 +218,7 @@ impl ToolRegistry {
             db: std::sync::RwLock::new(None),
             session_id: std::sync::RwLock::new(None),
             caps: OutputCaps::for_context(max_context_tokens),
+            bg_registry: bg_process::BgRegistry::new(),
         }
     }
 
@@ -350,8 +355,13 @@ impl ToolRegistry {
 
             // Shell
             "Bash" => {
-                shell::run_shell_command(&self.project_root, &args, self.caps.shell_output_lines)
-                    .await
+                shell::run_shell_command(
+                    &self.project_root,
+                    &args,
+                    self.caps.shell_output_lines,
+                    &self.bg_registry,
+                )
+                .await
             }
 
             // Web
@@ -590,7 +600,15 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
                 .or(args.get("cmd"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            cmd.to_string()
+            let bg = args
+                .get("background")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if bg {
+                format!("[bg] {cmd}")
+            } else {
+                cmd.to_string()
+            }
         }
         "Delete" => {
             let path = args

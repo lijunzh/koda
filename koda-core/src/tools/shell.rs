@@ -2,8 +2,13 @@
 //!
 //! Runs commands as child processes with timeout protection.
 //! Output line cap is set by `OutputCaps` (context-scaled).
+//!
+//! When `background: true` the command is spawned detached and control returns
+//! immediately with the PID.  The process is tracked in `BgRegistry` and
+//! SIGTERMed when the session ends.
 
 use crate::providers::ToolDefinition;
+use crate::tools::bg_process::BgRegistry;
 use anyhow::Result;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -20,7 +25,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
         description: "Execute a shell command. Use ONLY for builds, tests, git, \
             and commands without a dedicated tool. Never use for file ops \
             (use Read/Write/Edit/Grep/List instead). Suppress verbose output: \
-            pipe to tail, use --quiet, avoid -v flags."
+            pipe to tail, use --quiet, avoid -v flags. \
+            Set background=true for long-running processes (dev servers, watchers) \
+            — returns immediately with the PID."
             .to_string(),
         parameters: json!({
             "type": "object",
@@ -31,7 +38,12 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds (default: 60)"
+                    "description": "Timeout in seconds (default: 60, ignored when background=true)"
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Run in background and return immediately with PID (default: false). \
+                        Use for dev servers, file watchers, and other long-running processes."
                 }
             },
             "required": ["command"]
@@ -40,20 +52,34 @@ pub fn definitions() -> Vec<ToolDefinition> {
 }
 
 /// Execute a shell command with timeout and output capping.
+///
+/// When `args["background"]` is `true`, the process is spawned detached and
+/// this function returns immediately with the PID.  The `BgRegistry` tracks
+/// the child so it is cleaned up (SIGTERM) when the session ends.
 pub async fn run_shell_command(
     project_root: &Path,
     args: &Value,
     max_output_lines: usize,
+    bg: &BgRegistry,
 ) -> Result<String> {
     let command = args["command"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
+    let background = args["background"].as_bool().unwrap_or(false);
+
+    tracing::info!(
+        "Running shell command (background={background}): [{} chars]",
+        command.len()
+    );
+
+    if background {
+        return spawn_background(project_root, command, bg);
+    }
+
     let timeout_secs = args["timeout"]
         .as_u64()
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .min(MAX_TIMEOUT_SECS);
-
-    tracing::info!("Running shell command: [{} chars]", command.len());
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs),
@@ -91,6 +117,36 @@ pub async fn run_shell_command(
     }
 }
 
+/// Spawn a command in the background and register it.
+///
+/// Returns immediately with PID + instructions. Sync because `spawn()` doesn't
+/// need to await — only `output()` / `wait()` block.
+fn spawn_background(project_root: &Path, command: &str, bg: &BgRegistry) -> Result<String> {
+    let child = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(project_root)
+        // Detach stdio so the process doesn't block on terminal I/O.
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn background command: {e}"))?;
+
+    let pid = child
+        .id()
+        .ok_or_else(|| anyhow::anyhow!("Spawned process has no PID (already exited)"))?;
+
+    bg.insert(pid, command.to_string(), child);
+
+    Ok(format!(
+        "Background process started.\n  PID:     {pid}\n  Command: {command}\n\
+         To stop:  Bash{{command: \"kill {pid}\"}}\n\
+         To force: Bash{{command: \"kill -9 {pid}\"}}\n\
+         Note: process will be stopped automatically when the session ends."
+    ))
+}
+
 /// Cap output to the last N lines to protect the context window.
 fn cap_output(output: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = output.lines().collect();
@@ -108,13 +164,19 @@ fn cap_output(output: &str, max_lines: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::bg_process::BgRegistry;
+
+    fn bg() -> BgRegistry {
+        BgRegistry::new()
+    }
 
     #[tokio::test]
     async fn shell_timeout_returns_timeout_message() {
-        // Run a command that sleeps longer than the timeout (1 second) to keep the test fast.
         let tmp = tempfile::tempdir().unwrap();
         let args = serde_json::json!({"command": "sleep 5", "timeout": 1});
-        let result = run_shell_command(tmp.path(), &args, 256).await.unwrap();
+        let result = run_shell_command(tmp.path(), &args, 256, &bg())
+            .await
+            .unwrap();
         assert!(
             result.contains("timed out"),
             "Expected timeout message, got: {result}"
@@ -123,25 +185,56 @@ mod tests {
 
     #[tokio::test]
     async fn shell_respects_custom_timeout_parameter() {
-        // A fast command should succeed even with a short timeout.
         let tmp = tempfile::tempdir().unwrap();
         let args = serde_json::json!({"command": "echo hello", "timeout": 5});
-        let result = run_shell_command(tmp.path(), &args, 256).await.unwrap();
+        let result = run_shell_command(tmp.path(), &args, 256, &bg())
+            .await
+            .unwrap();
         assert!(
             result.contains("hello"),
-            "Fast command should succeed within timeout: {result}"
+            "Fast command should succeed: {result}"
         );
     }
 
     #[tokio::test]
     async fn shell_default_timeout_is_applied_when_not_specified() {
-        // Verify a normal command works when no timeout parameter is given.
         let tmp = tempfile::tempdir().unwrap();
         let args = serde_json::json!({"command": "echo world"});
-        let result = run_shell_command(tmp.path(), &args, 256).await.unwrap();
+        let result = run_shell_command(tmp.path(), &args, 256, &bg())
+            .await
+            .unwrap();
         assert!(
             result.contains("world"),
             "Command without explicit timeout should work: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn background_spawn_returns_pid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = BgRegistry::new();
+        let args = serde_json::json!({"command": "sleep 60", "background": true});
+        let result = run_shell_command(tmp.path(), &args, 256, &registry)
+            .await
+            .unwrap();
+        assert!(result.contains("Background process started"), "{result}");
+        assert!(result.contains("PID:"), "{result}");
+        assert!(result.contains("kill"), "{result}");
+        assert_eq!(registry.len(), 1);
+        // Drop kills it cleanly
+    }
+
+    #[tokio::test]
+    async fn background_false_runs_synchronously() {
+        let tmp = tempfile::tempdir().unwrap();
+        let args = serde_json::json!({"command": "echo sync", "background": false});
+        let result = run_shell_command(tmp.path(), &args, 256, &bg())
+            .await
+            .unwrap();
+        assert!(result.contains("sync"), "{result}");
+        assert!(
+            !result.contains("PID:"),
+            "foreground should not have PID line: {result}"
         );
     }
 
@@ -154,34 +247,25 @@ mod tests {
     #[test]
     fn test_cap_output_long() {
         let lines: Vec<String> = (0..500).map(|i| format!("line {i}")).collect();
-        let input = lines.join("\n");
-        let capped = cap_output(&input, 256);
-
-        // Should contain the truncation notice
+        let capped = cap_output(&lines.join("\n"), 256);
         assert!(capped.contains("truncated"));
-        // Should contain the last line
         assert!(capped.contains("line 499"));
-        // Should NOT contain the first line
         assert!(!capped.contains("line 0\n"));
     }
 
     #[test]
     fn test_cap_output_exactly_at_limit() {
         let lines: Vec<String> = (0..256).map(|i| format!("line {i}")).collect();
-        let input = lines.join("\n");
-        let capped = cap_output(&input, 256);
-        // Exactly at limit, no truncation
-        assert!(!capped.contains("truncated"));
+        assert!(!cap_output(&lines.join("\n"), 256).contains("truncated"));
     }
 
     #[test]
     fn test_timeout_capped_at_max() {
-        // Verify the timeout is clamped to MAX_TIMEOUT_SECS
         let args = serde_json::json!({"command": "echo hi", "timeout": 99999});
-        let timeout_secs = args["timeout"]
+        let t = args["timeout"]
             .as_u64()
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .min(MAX_TIMEOUT_SECS);
-        assert_eq!(timeout_secs, MAX_TIMEOUT_SECS);
+        assert_eq!(t, MAX_TIMEOUT_SECS);
     }
 }
