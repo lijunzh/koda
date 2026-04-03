@@ -184,6 +184,9 @@ pub trait Persistence: Send + Sync {
     async fn set_session_mode(&self, session_id: &str, mode: &str) -> Result<()>;
     /// Get the stored approval mode for a session.
     async fn get_session_mode(&self, session_id: &str) -> Result<Option<String>>;
+    /// Seconds elapsed since the session was last accessed (`last_accessed_at`).
+    /// Returns `None` if the column is NULL (session never had a context load).
+    async fn get_session_idle_secs(&self, session_id: &str) -> Result<Option<i64>>;
 
     // ── Messages ──
 
