@@ -18,6 +18,7 @@ pub async fn validate_tool_call(
 ) -> Option<String> {
     match tool_name {
         "Edit" => validate_edit(args, project_root).await,
+        "Write" => validate_write(args, project_root).await,
         "Delete" => validate_delete(args, project_root).await,
         "Bash" => validate_bash(args),
         _ => None,
@@ -78,6 +79,34 @@ async fn validate_edit(args: &serde_json::Value, project_root: &Path) -> Option<
                 path_str
             ));
         }
+    }
+
+    None
+}
+
+/// Write: catch overwrite-without-flag before approval.
+async fn validate_write(args: &serde_json::Value, project_root: &Path) -> Option<String> {
+    let path_str = args["path"].as_str().unwrap_or("");
+    if path_str.is_empty() {
+        return Some("Missing 'path' argument.".into());
+    }
+
+    if args["content"].as_str().is_none() {
+        return Some("Missing 'content' argument.".into());
+    }
+
+    let resolved = match safe_resolve_path(project_root, path_str) {
+        Ok(p) => p,
+        Err(e) => return Some(format!("Invalid path: {e}")),
+    };
+
+    let overwrite = args["overwrite"].as_bool().unwrap_or(false);
+    if resolved.exists() && !overwrite {
+        return Some(format!(
+            "File '{}' already exists. Set overwrite=true to replace it, \
+             or use Edit for targeted changes.",
+            path_str
+        ));
     }
 
     None
@@ -220,6 +249,39 @@ mod tests {
         });
         let err = validate_edit(&args, dir.path()).await.unwrap();
         assert!(err.contains("new_str"), "{err}");
+    }
+
+    // ── Write validation ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn write_new_file_valid() {
+        let dir = setup();
+        let args = json!({"path": "brand_new.txt", "content": "hello"});
+        assert!(validate_write(&args, dir.path()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn write_existing_without_overwrite() {
+        let dir = setup();
+        let args = json!({"path": "hello.txt", "content": "replaced"});
+        let err = validate_write(&args, dir.path()).await.unwrap();
+        assert!(err.contains("already exists"), "{err}");
+        assert!(err.contains("overwrite=true"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn write_existing_with_overwrite() {
+        let dir = setup();
+        let args = json!({"path": "hello.txt", "content": "replaced", "overwrite": true});
+        assert!(validate_write(&args, dir.path()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn write_missing_content() {
+        let dir = setup();
+        let args = json!({"path": "foo.txt"});
+        let err = validate_write(&args, dir.path()).await.unwrap();
+        assert!(err.contains("content"), "{err}");
     }
 
     // ── Delete validation ─────────────────────────────────────
