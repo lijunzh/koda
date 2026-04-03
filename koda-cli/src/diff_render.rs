@@ -2,30 +2,42 @@
 //!
 //! Takes structured [`DiffPreview`] data from koda-core and produces
 //! `Vec<Line<'static>>` with:
-//! - Dark background tint for line-level diffs (red removed, green added)
-//! - Syntax highlighting (foreground colors via syntect)
+//! - Proper unified diff with hunk headers and context lines
+//! - Syntax highlighting with cross-hunk context (via pre-highlighted files)
+//! - Dark background tint for diff lines (red removed, green added)
+//! - Gutter metadata for NoSelect copy support
 
-use crate::highlight::CodeHighlighter;
+use crate::highlight;
 use koda_core::preview::{
-    DeleteDirPreview, DeleteFilePreview, DiffPreview, EditPreview, WriteOverwritePreview,
-    WritePreview,
+    DeleteDirPreview, DeleteFilePreview, DiffLine, DiffPreview, DiffTag,
+    UnifiedDiffPreview, WriteNewPreview,
 };
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 
-// Background styles for diff lines
-const LINE_RED_BG: Style = Style::new().bg(Color::Rgb(50, 0, 0));
-const LINE_GREEN_BG: Style = Style::new().bg(Color::Rgb(0, 35, 0));
+// ── Styles ────────────────────────────────────────────────────
+
+const LINE_RED_BG: Color = Color::Rgb(50, 0, 0);
+const LINE_GREEN_BG: Color = Color::Rgb(0, 35, 0);
 const DIM: Style = Style::new().fg(Color::DarkGray);
+const HUNK_HEADER: Style = Style::new().fg(Color::Cyan);
+
+/// Width of the gutter: 4-digit line number + space + sigil + space = 7.
+/// Used by NoSelect to know how many leading columns to skip on copy.
+pub const GUTTER_WIDTH: u16 = 7;
+
+// ── Public API ────────────────────────────────────────────────
 
 /// Render a [`DiffPreview`] as native ratatui `Line`s.
+///
+/// Each diff line's gutter (line numbers + ±) occupies [`GUTTER_WIDTH`]
+/// columns. The caller can use this to implement NoSelect on copy.
 pub fn render_lines(preview: &DiffPreview) -> Vec<Line<'static>> {
     match preview {
-        DiffPreview::Edit(edit) => render_edit(edit),
+        DiffPreview::UnifiedDiff(diff) => render_unified_diff(diff),
         DiffPreview::WriteNew(w) => render_write_new(w),
-        DiffPreview::WriteOverwrite(w) => render_write_overwrite(w),
         DiffPreview::DeleteFile(d) => render_delete_file(d),
         DiffPreview::DeleteDir(d) => render_delete_dir(d),
         DiffPreview::FileNotYetExists => {
@@ -37,121 +49,168 @@ pub fn render_lines(preview: &DiffPreview) -> Vec<Line<'static>> {
     }
 }
 
-/// Legacy ANSI render — kept for `app.rs` / `confirm.rs` (legacy mode).
-pub fn render(preview: &DiffPreview) -> String {
-    // Delegate to the old ANSI rendering for backward compat
-    render_ansi(preview)
-}
+// ── Unified diff renderer ─────────────────────────────────────
 
-fn render_edit(edit: &EditPreview) -> Vec<Line<'static>> {
-    let ext = std::path::Path::new(&edit.path)
+fn render_unified_diff(diff: &UnifiedDiffPreview) -> Vec<Line<'static>> {
+    let ext = std::path::Path::new(&diff.path)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
 
+    // Pre-highlight both files for cross-hunk syntax context
+    let old_highlights = highlight::pre_highlight(&diff.old_content, ext);
+    let new_highlights = highlight::pre_highlight(&diff.new_content, ext);
+
     let mut lines = Vec::new();
 
-    for r in &edit.replacements {
-        if r.total > 1 {
-            lines.push(Line::styled(
-                format!(
-                    "\u{2500}\u{2500} replacement {}/{} \u{2500}\u{2500}",
-                    r.index + 1,
-                    r.total
-                ),
-                DIM,
-            ));
+    // File header
+    lines.push(Line::styled(
+        format!("╭─── {} ───╮", diff.path),
+        DIM,
+    ));
+
+    for (i, hunk) in diff.hunks.iter().enumerate() {
+        // Hunk separator (between hunks, not before the first)
+        if i > 0 {
+            lines.push(Line::styled("  ⋯", DIM));
         }
 
-        let mut hl_old = CodeHighlighter::new(ext);
-        let mut hl_new = CodeHighlighter::new(ext);
+        // Hunk header: @@ -old_start,old_count +new_start,new_count @@
+        lines.push(Line::styled(
+            format!(
+                "@@ -{},{} +{},{} @@",
+                hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+            ),
+            HUNK_HEADER,
+        ));
 
-        for (j, old_line) in r.old_lines.iter().enumerate() {
-            let mut spans = vec![Span::styled(
-                format!("{:>4} - ", r.start_line + j),
-                Style::default().fg(Color::Red).add_modifier(Modifier::DIM),
-            )];
-            let highlighted = hl_old.highlight_spans(old_line);
-            for mut s in highlighted {
-                s.style = s.style.bg(Color::Rgb(50, 0, 0));
-                spans.push(s);
-            }
-            lines.push(Line::from(spans));
-        }
-
-        for (j, new_line) in r.new_lines.iter().enumerate() {
-            let mut spans = vec![Span::styled(
-                format!("{:>4} + ", r.start_line + j),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::DIM),
-            )];
-            let highlighted = hl_new.highlight_spans(new_line);
-            for mut s in highlighted {
-                s.style = s.style.bg(Color::Rgb(0, 35, 0));
-                spans.push(s);
-            }
-            lines.push(Line::from(spans));
+        // Hunk lines
+        for diff_line in &hunk.lines {
+            let rendered = render_diff_line(diff_line, &old_highlights, &new_highlights);
+            lines.push(rendered);
         }
     }
 
-    if edit.truncated_count > 0 {
-        lines.push(Line::styled(
-            format!("... and {} more replacement(s)", edit.truncated_count),
-            DIM,
-        ));
+    // Close frame
+    lines.push(Line::styled(
+        format!("╰─── {} ───╯", diff.path),
+        DIM,
+    ));
+
+    if diff.truncated {
+        lines.push(Line::styled("... diff truncated (file too large)", DIM));
     }
 
     lines
 }
 
-fn render_write_new(w: &WritePreview) -> Vec<Line<'static>> {
+/// Render a single diff line with gutter + syntax-highlighted content.
+///
+/// Uses pre-computed highlights from the full file for correct cross-hunk
+/// syntax context (multiline strings, comments, etc.).
+fn render_diff_line(
+    line: &DiffLine,
+    old_highlights: &[Vec<Span<'static>>],
+    new_highlights: &[Vec<Span<'static>>],
+) -> Line<'static> {
+    let (sigil, sigil_color, bg_color, highlights, line_num) = match line.tag {
+        DiffTag::Context => {
+            let num = line.old_line.unwrap_or(0);
+            (' ', Color::DarkGray, None, old_highlights, num)
+        }
+        DiffTag::Delete => {
+            let num = line.old_line.unwrap_or(0);
+            ('-', Color::Red, Some(LINE_RED_BG), old_highlights, num)
+        }
+        DiffTag::Insert => {
+            let num = line.new_line.unwrap_or(0);
+            ('+', Color::Green, Some(LINE_GREEN_BG), new_highlights, num)
+        }
+    };
+
+    let mut spans = Vec::new();
+
+    // Gutter: line number + sigil (GUTTER_WIDTH chars total)
+    let gutter_style = Style::default()
+        .fg(sigil_color)
+        .add_modifier(Modifier::DIM);
+    spans.push(Span::styled(format!("{:>4} {} ", line_num, sigil), gutter_style));
+
+    // Content: use pre-highlighted spans if available, with background tint
+    let idx = line_num.saturating_sub(1); // 0-based index
+    if idx < highlights.len() {
+        for hl_span in &highlights[idx] {
+            let mut style = hl_span.style;
+            if let Some(bg) = bg_color {
+                style = style.bg(bg);
+            }
+            spans.push(Span::styled(hl_span.content.clone(), style));
+        }
+    } else {
+        // Fallback: no highlighting available
+        let style = match bg_color {
+            Some(bg) => Style::default().bg(bg),
+            None => Style::default(),
+        };
+        spans.push(Span::styled(line.content.clone(), style));
+    }
+
+    Line::from(spans)
+}
+
+// ── Write new file ────────────────────────────────────────────
+
+fn render_write_new(w: &WriteNewPreview) -> Vec<Line<'static>> {
+    let ext = std::path::Path::new(&w.path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
     let mut lines = vec![Line::styled(
-        format!("New file: {} lines ({} bytes)", w.line_count, w.byte_count),
+        format!(
+            "╭─── {} (new file: {} lines, {} bytes) ───╮",
+            w.path, w.line_count, w.byte_count
+        ),
         DIM,
     )];
-    for line in &w.first_lines {
-        lines.push(Line::from(vec![
-            Span::styled("+ ", Style::default().fg(Color::Green)),
-            Span::styled(line.clone(), LINE_GREEN_BG),
-        ]));
+
+    let mut hl = crate::highlight::CodeHighlighter::new(ext);
+    for (i, content) in w.first_lines.iter().enumerate() {
+        let mut spans = vec![Span::styled(
+            format!("{:>4} + ", i + 1),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::DIM),
+        )];
+        let highlighted = hl.highlight_spans(content);
+        for mut s in highlighted {
+            s.style = s.style.bg(LINE_GREEN_BG);
+            spans.push(s);
+        }
+        lines.push(Line::from(spans));
     }
+
     if w.truncated {
         lines.push(Line::styled(
             format!("... +{} more lines", w.line_count - w.first_lines.len()),
             DIM,
         ));
     }
+
+    lines.push(Line::styled(
+        format!("╰─── {} ───╯", w.path),
+        DIM,
+    ));
+
     lines
 }
 
-fn render_write_overwrite(w: &WriteOverwritePreview) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::styled(
-        format!(
-            "Overwriting {} lines ({} bytes) \u{2192} {} lines ({} bytes)",
-            w.old_line_count, w.old_byte_count, w.new_line_count, w.new_byte_count
-        ),
-        DIM,
-    )];
-    for line in &w.first_lines {
-        lines.push(Line::from(vec![
-            Span::styled("+ ", Style::default().fg(Color::Green)),
-            Span::styled(line.clone(), LINE_GREEN_BG),
-        ]));
-    }
-    if w.truncated {
-        lines.push(Line::styled(
-            format!("... +{} more lines", w.new_line_count - w.first_lines.len()),
-            DIM,
-        ));
-    }
-    lines
-}
+// ── Delete ────────────────────────────────────────────────────
 
 fn render_delete_file(d: &DeleteFilePreview) -> Vec<Line<'static>> {
     vec![Line::styled(
         format!("Removing {} lines ({} bytes)", d.line_count, d.byte_count),
-        LINE_RED_BG,
+        Style::default().bg(LINE_RED_BG),
     )]
 }
 
@@ -159,156 +218,146 @@ fn render_delete_dir(d: &DeleteDirPreview) -> Vec<Line<'static>> {
     if d.recursive {
         vec![Line::styled(
             "Removing directory and all contents",
-            LINE_RED_BG,
+            Style::default().bg(LINE_RED_BG),
         )]
     } else {
-        vec![Line::styled("Removing empty directory", LINE_RED_BG)]
-    }
-}
-
-// ── Legacy ANSI rendering (kept for app.rs / confirm.rs) ────────
-
-const ANSI_LINE_RED: &str = "\x1b[48;2;50;0;0m";
-const ANSI_LINE_GREEN: &str = "\x1b[48;2;0;35;0m";
-const ANSI_DIM: &str = "\x1b[90m";
-const ANSI_RESET: &str = "\x1b[0m";
-
-fn render_ansi(preview: &DiffPreview) -> String {
-    match preview {
-        DiffPreview::Edit(edit) => {
-            let ext = std::path::Path::new(&edit.path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
-            let mut lines = Vec::new();
-            for r in &edit.replacements {
-                if r.total > 1 {
-                    lines.push(format!(
-                        "{ANSI_DIM}\u{2500}\u{2500} replacement {}/{} \u{2500}\u{2500}{ANSI_RESET}",
-                        r.index + 1,
-                        r.total
-                    ));
-                }
-                let mut hl = CodeHighlighter::new(ext);
-                for (j, line) in r.old_lines.iter().enumerate() {
-                    let h = hl.highlight_line(line).replace("\x1b[0m", "");
-                    lines.push(format!(
-                        "{ANSI_LINE_RED}{:>4} -\t{h}{ANSI_RESET}",
-                        r.start_line + j
-                    ));
-                }
-                let mut hl = CodeHighlighter::new(ext);
-                for (j, line) in r.new_lines.iter().enumerate() {
-                    let h = hl.highlight_line(line).replace("\x1b[0m", "");
-                    lines.push(format!(
-                        "{ANSI_LINE_GREEN}{:>4} +\t{h}{ANSI_RESET}",
-                        r.start_line + j
-                    ));
-                }
-            }
-            if edit.truncated_count > 0 {
-                lines.push(format!(
-                    "{ANSI_DIM}... and {} more replacement(s){ANSI_RESET}",
-                    edit.truncated_count
-                ));
-            }
-            lines.join("\n")
-        }
-        DiffPreview::WriteNew(w) => {
-            let mut lines = vec![format!(
-                "{ANSI_DIM}New file: {} lines ({} bytes){ANSI_RESET}",
-                w.line_count, w.byte_count
-            )];
-            for line in &w.first_lines {
-                lines.push(format!("{ANSI_LINE_GREEN}+\t{line}{ANSI_RESET}"));
-            }
-            if w.truncated {
-                lines.push(format!(
-                    "{ANSI_DIM}... +{} more lines{ANSI_RESET}",
-                    w.line_count - w.first_lines.len()
-                ));
-            }
-            lines.join("\n")
-        }
-        DiffPreview::WriteOverwrite(w) => {
-            let mut lines = vec![format!(
-                "{ANSI_DIM}Overwriting {} lines → {} lines{ANSI_RESET}",
-                w.old_line_count, w.new_line_count
-            )];
-            for line in &w.first_lines {
-                lines.push(format!("{ANSI_LINE_GREEN}+\t{line}{ANSI_RESET}"));
-            }
-            if w.truncated {
-                lines.push(format!(
-                    "{ANSI_DIM}... +{} more lines{ANSI_RESET}",
-                    w.new_line_count - w.first_lines.len()
-                ));
-            }
-            lines.join("\n")
-        }
-        DiffPreview::DeleteFile(d) => format!(
-            "{ANSI_LINE_RED}Removing {} lines ({} bytes){ANSI_RESET}",
-            d.line_count, d.byte_count
-        ),
-        DiffPreview::DeleteDir(d) => {
-            if d.recursive {
-                format!("{ANSI_LINE_RED}Removing directory and all contents{ANSI_RESET}")
-            } else {
-                format!("{ANSI_LINE_RED}Removing empty directory{ANSI_RESET}")
-            }
-        }
-        DiffPreview::FileNotYetExists => format!("{ANSI_DIM}(file does not exist yet){ANSI_RESET}"),
-        DiffPreview::PathNotFound => format!("{ANSI_DIM}(path does not exist){ANSI_RESET}"),
+        vec![Line::styled(
+            "Removing empty directory",
+            Style::default().bg(LINE_RED_BG),
+        )]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koda_core::preview::ReplacementPreview;
+    use koda_core::preview::*;
 
     #[test]
-    fn test_render_lines_edit_has_line_numbers() {
-        let preview = DiffPreview::Edit(EditPreview {
+    fn test_unified_diff_has_hunk_headers() {
+        let preview = DiffPreview::UnifiedDiff(UnifiedDiffPreview {
             path: "test.rs".into(),
-            replacements: vec![ReplacementPreview {
-                index: 0,
-                total: 1,
-                start_line: 2,
-                old_lines: vec!["println!(\"hello\");".into()],
-                new_lines: vec!["println!(\"world\");".into()],
+            old_content: "fn main() {\n    println!(\"hello\");\n}\n".into(),
+            new_content: "fn main() {\n    println!(\"world\");\n}\n".into(),
+            hunks: vec![DiffHunk {
+                old_start: 1,
+                old_count: 3,
+                new_start: 1,
+                new_count: 3,
+                lines: vec![
+                    DiffLine {
+                        tag: DiffTag::Context,
+                        content: "fn main() {".into(),
+                        old_line: Some(1),
+                        new_line: Some(1),
+                    },
+                    DiffLine {
+                        tag: DiffTag::Delete,
+                        content: "    println!(\"hello\");".into(),
+                        old_line: Some(2),
+                        new_line: None,
+                    },
+                    DiffLine {
+                        tag: DiffTag::Insert,
+                        content: "    println!(\"world\");".into(),
+                        old_line: None,
+                        new_line: Some(2),
+                    },
+                    DiffLine {
+                        tag: DiffTag::Context,
+                        content: "}".into(),
+                        old_line: Some(3),
+                        new_line: Some(3),
+                    },
+                ],
             }],
-            truncated_count: 0,
+            truncated: false,
         });
+
         let lines = render_lines(&preview);
-        assert_eq!(lines.len(), 2); // one removed + one added
-        // Check line numbers in first span
-        let first_span = &lines[0].spans[0];
-        assert!(first_span.content.contains("2 -"));
-        let second_span = &lines[1].spans[0];
-        assert!(second_span.content.contains("2 +"));
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+
+        // Should have file header
+        assert!(text[0].contains("test.rs"), "header: {}", text[0]);
+        // Should have hunk header
+        assert!(
+            text.iter().any(|t| t.contains("@@")),
+            "should have hunk header"
+        );
+        // Should have line numbers with sigils
+        assert!(
+            text.iter().any(|t| t.contains(" - ")),
+            "should have delete marker"
+        );
+        assert!(
+            text.iter().any(|t| t.contains(" + ")),
+            "should have insert marker"
+        );
     }
 
     #[test]
-    fn test_render_lines_write_new() {
-        let preview = DiffPreview::WriteNew(WritePreview {
+    fn test_write_new_rendering() {
+        let preview = DiffPreview::WriteNew(WriteNewPreview {
+            path: "new.rs".into(),
             line_count: 10,
             byte_count: 200,
-            first_lines: vec!["line 1".into(), "line 2".into()],
+            first_lines: vec!["fn main() {}".into()],
             truncated: true,
         });
         let lines = render_lines(&preview);
-        assert!(lines.len() >= 3); // header + 2 lines + truncation
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(text[0].contains("new.rs"));
+        assert!(text.iter().any(|t| t.contains("more lines")));
     }
 
     #[test]
-    fn test_legacy_render_still_works() {
-        let preview = DiffPreview::DeleteFile(DeleteFilePreview {
-            line_count: 5,
-            byte_count: 100,
+    fn test_hunk_separator_between_hunks() {
+        let preview = DiffPreview::UnifiedDiff(UnifiedDiffPreview {
+            path: "test.rs".into(),
+            old_content: String::new(),
+            new_content: String::new(),
+            hunks: vec![
+                DiffHunk {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![DiffLine {
+                        tag: DiffTag::Context,
+                        content: "a".into(),
+                        old_line: Some(1),
+                        new_line: Some(1),
+                    }],
+                },
+                DiffHunk {
+                    old_start: 50,
+                    old_count: 1,
+                    new_start: 50,
+                    new_count: 1,
+                    lines: vec![DiffLine {
+                        tag: DiffTag::Context,
+                        content: "b".into(),
+                        old_line: Some(50),
+                        new_line: Some(50),
+                    }],
+                },
+            ],
+            truncated: false,
         });
-        let ansi = render(&preview);
-        assert!(ansi.contains("\x1b["));
-        assert!(ansi.contains("Removing"));
+        let lines = render_lines(&preview);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            text.iter().any(|t| t.contains('⋯')),
+            "should have hunk separator"
+        );
     }
 }

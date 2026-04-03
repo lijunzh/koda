@@ -35,6 +35,9 @@ path-clean = "1"
 # Text search
 regex = "1"
 
+# Diff computation
+similar = "2"
+
 # File globbing
 glob = "0.3"
 

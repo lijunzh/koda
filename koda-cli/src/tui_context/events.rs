@@ -262,8 +262,15 @@ impl TuiContext {
                     if sel.anchor != sel.cursor {
                         let lines: Vec<Line<'_>> =
                             self.scroll_buffer.all_lines().cloned().collect();
-                        let all_rows = crate::mouse_select::build_all_visual_rows(&lines, w);
-                        let text = crate::mouse_select::extract_selected_text(&all_rows, &sel);
+                        let gutter_ws: Vec<u16> =
+                            self.scroll_buffer.gutter_widths().iter().copied().collect();
+                        let (all_rows, all_gutters) =
+                            crate::mouse_select::build_all_visual_rows(&lines, &gutter_ws, w);
+                        let text = crate::mouse_select::extract_selected_text(
+                            &all_rows,
+                            &all_gutters,
+                            &sel,
+                        );
                         if !text.is_empty() {
                             match crate::mouse_select::copy_to_clipboard(&text) {
                                 Ok(msg) => {

@@ -204,7 +204,10 @@ impl TuiRenderer {
                 );
                 if let Some(preview) = preview {
                     let diff_lines = crate::diff_render::render_lines(&preview);
-                    tui_output::emit_lines(buffer, &diff_lines);
+                    let gutter = crate::diff_render::GUTTER_WIDTH;
+                    for line in diff_lines {
+                        buffer.push_with_gutter(line, gutter);
+                    }
                 }
             }
             EngineEvent::Footer {
