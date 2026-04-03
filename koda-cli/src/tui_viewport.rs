@@ -59,6 +59,10 @@ pub(crate) fn draw_viewport(
         MenuContent::Provider(dd) => dd.visible_count() as u16 + 1,
         MenuContent::Session(dd) => dd.visible_count() as u16 + 1,
         MenuContent::File { dropdown: dd, .. } => dd.visible_count() as u16 + 1,
+        MenuContent::HistorySearch { matches, .. } => {
+            // 1 header + up to 6 match rows
+            (matches.len().min(6) as u16) + 1
+        }
     };
 
     // Layout: History | Separator | Input | Separator | Status | Menu
@@ -346,6 +350,47 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
                     ),
                 ]),
             ];
+            frame.render_widget(Paragraph::new(lines), menu_area);
+        }
+        MenuContent::HistorySearch {
+            query,
+            matches,
+            selected,
+        } => {
+            let header = Line::from(vec![
+                Span::styled(
+                    "  \u{1f50d} (reverse-i-search) ",
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(query.as_str(), Style::default().fg(Color::White)),
+                if matches.is_empty() {
+                    Span::styled(": (no match)", Style::default().fg(Color::DarkGray))
+                } else {
+                    Span::styled(
+                        "  \u{2191}\u{2193} navigate \u{00b7} Enter accept \u{00b7} Esc cancel",
+                        Style::default().fg(Color::DarkGray),
+                    )
+                },
+            ]);
+            let mut lines = vec![header];
+            for (i, m) in matches.iter().take(6).enumerate() {
+                let snippet: String = m
+                    .chars()
+                    .take(menu_area.width.saturating_sub(4) as usize)
+                    .collect();
+                let style = if i == *selected {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled(snippet, style),
+                ]));
+            }
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
         MenuContent::None => {}

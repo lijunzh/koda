@@ -112,6 +112,10 @@ impl TuiContext {
                 // Ctrl+L: jump to bottom (re-engage sticky)
                 self.scroll_buffer.scroll_to_bottom();
             }
+            (KeyCode::Char('r'), m) if m.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+R: reverse history search (closes any open menu first)
+                self.open_history_search();
+            }
             // Scroll keys
             (KeyCode::PageUp, _) => {
                 let (w, h) = self.term_dims();
