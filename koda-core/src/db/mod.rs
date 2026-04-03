@@ -93,7 +93,11 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                agent_name TEXT NOT NULL
+                agent_name TEXT NOT NULL,
+                project_root TEXT,
+                last_accessed_at TEXT,
+                title TEXT,
+                mode TEXT
             );",
         )
         .execute(pool)
@@ -143,24 +147,6 @@ impl Database {
         )
         .execute(pool)
         .await?;
-
-        // Additive migration: add project_root to sessions
-        let sql = "ALTER TABLE sessions ADD COLUMN project_root TEXT";
-        if let Err(e) = sqlx::query(sql).execute(pool).await {
-            let msg = e.to_string();
-            if !msg.contains("duplicate column name") {
-                return Err(e.into());
-            }
-        }
-
-        // Additive migration: track last activity per session (#429)
-        let sql = "ALTER TABLE sessions ADD COLUMN last_accessed_at TEXT";
-        if let Err(e) = sqlx::query(sql).execute(pool).await {
-            let msg = e.to_string();
-            if !msg.contains("duplicate column name") {
-                return Err(e.into());
-            }
-        }
 
         // File lifecycle tracking (#465): files created by Koda in a session.
         sqlx::query(
@@ -276,6 +262,8 @@ pub(crate) struct SessionInfoRow {
     pub created_at: String,
     pub message_count: i64,
     pub total_tokens: i64,
+    pub title: Option<String>,
+    pub mode: Option<String>,
 }
 
 impl From<SessionInfoRow> for SessionInfo {
@@ -286,6 +274,8 @@ impl From<SessionInfoRow> for SessionInfo {
             created_at: r.created_at,
             message_count: r.message_count,
             total_tokens: r.total_tokens,
+            title: r.title,
+            mode: r.mode,
         }
     }
 }

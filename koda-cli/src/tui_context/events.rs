@@ -135,7 +135,12 @@ impl TuiContext {
                 self.copy_to_clipboard(true);
             }
             (KeyCode::BackTab, _) => {
-                approval::cycle_mode(&self.shared_mode);
+                let new_mode = approval::cycle_mode(&self.shared_mode);
+                let _ = self
+                    .session
+                    .db
+                    .set_session_mode(&self.session.id, new_mode.as_str())
+                    .await;
             }
             (KeyCode::Tab, KeyModifiers::NONE) => {
                 let current = self.textarea.lines().join("\n");

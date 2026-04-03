@@ -40,6 +40,8 @@ pub struct KodaSession {
     pub cancel: CancellationToken,
     /// File lifecycle tracker — tracks files created by Koda (#465).
     pub file_tracker: FileTracker,
+    /// Whether the session title has already been set (first-message guard).
+    pub title_set: bool,
 }
 
 impl KodaSession {
@@ -65,6 +67,7 @@ impl KodaSession {
             settings,
             cancel: CancellationToken::new(),
             file_tracker,
+            title_set: false,
         }
     }
 
