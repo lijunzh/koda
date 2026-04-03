@@ -89,23 +89,7 @@ pub async fn compact_session_with_provider(
         return Ok(Err(CompactSkip::HistoryTooLarge));
     }
 
-    let summary_prompt = format!(
-        "Summarize the conversation below. This summary will replace the older messages \
-         so an AI assistant can continue the session seamlessly.\n\
-         \n\
-         Preserve ALL of the following:\n\
-         1. **User Intent** — Every goal, request, and requirement.\n\
-         2. **Key Decisions** — Decisions made and their rationale.\n\
-         3. **Files & Code** — Every file created, modified, or deleted.\n\
-         4. **Errors & Fixes** — Bugs encountered and how they were resolved.\n\
-         5. **Current State** — What is working, what has been tested.\n\
-         6. **Pending Tasks** — Anything unfinished or deferred.\n\
-         7. **Next Step** — Only if clearly stated or implied.\n\
-         \n\
-         Use concise bullet points. Do not add new ideas.\n\
-         \n\
-         ---\n\n{conversation_text}"
-    );
+    let summary_prompt = build_summary_prompt(&conversation_text);
 
     let messages = vec![ChatMessage::text("user", &summary_prompt)];
     // Use reduced settings for compaction on the SAME model/provider.
@@ -126,6 +110,7 @@ pub async fn compact_session_with_provider(
         _ => bail!("LLM returned an empty summary"),
     };
 
+    let summary = strip_analysis_block(&summary);
     let compact_message = format!("[Compacted conversation summary]\n\n{summary}");
     let deleted = db
         .compact_session(session_id, &compact_message, COMPACT_PRESERVE_COUNT)
@@ -135,6 +120,115 @@ pub async fn compact_session_with_provider(
         deleted,
         summary_tokens: summary.len() / 4,
     }))
+}
+
+/// Build the 9-section summarization prompt.
+///
+/// Adapted from CC's compaction prompt. Uses an `<analysis>` scratchpad block
+/// (stripped before storing) that demonstrably improves summary quality.
+fn build_summary_prompt(conversation_text: &str) -> String {
+    format!(
+        "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\
+         Tool calls will be REJECTED and will waste your only turn.\n\
+         Your entire response must be plain text: an <analysis> block followed by a <summary> block.\n\
+         \n\
+         Your task is to create a detailed summary of the conversation so far, paying close \n\
+         attention to the user's explicit requests and your previous actions.\n\
+         This summary should be thorough in capturing technical details, code patterns, and \n\
+         architectural decisions that would be essential for continuing development work \n\
+         without losing context.\n\
+         \n\
+         Before providing your final summary, wrap your analysis in <analysis> tags to \n\
+         organize your thoughts and ensure you've covered all necessary points. In your analysis:\n\
+         \n\
+         1. Chronologically analyze each message. For each section thoroughly identify:\n\
+            - The user's explicit requests and intents\n\
+            - Your approach to addressing them\n\
+            - Key decisions, technical concepts and code patterns\n\
+            - Specific details: file names, code snippets, function signatures, file edits\n\
+            - Errors encountered and how they were fixed\n\
+            - Specific user feedback, especially corrections\n\
+         2. Double-check for technical accuracy and completeness.\n\
+         \n\
+         Your summary should include these sections:\n\
+         \n\
+         1. **Primary Request and Intent**: Capture ALL of the user's explicit requests in detail.\n\
+         2. **Key Technical Concepts**: List all important technologies and frameworks discussed.\n\
+         3. **Files and Code Sections**: Enumerate specific files examined, modified, or created. \n\
+            Include code snippets where applicable and a summary of why each file matters.\n\
+         4. **Errors and Fixes**: List all errors and how they were resolved. Note user feedback.\n\
+         5. **Problem Solving**: Document problems solved and ongoing troubleshooting.\n\
+         6. **All User Messages**: List ALL user messages (not tool results). Critical for \n\
+            preserving feedback and changing intent.\n\
+         7. **Pending Tasks**: Outline anything unfinished or deferred.\n\
+         8. **Current Work**: Describe precisely what was being worked on immediately before \n\
+            this summary. Include file names and code snippets.\n\
+         9. **Optional Next Step**: Only if directly in line with the user's most recent \n\
+            explicit request. Include direct quotes from the conversation to prevent drift.\n\
+         \n\
+         Format your response as:\n\
+         \n\
+         <analysis>\n\
+         [Your thought process ensuring all points are covered]\n\
+         </analysis>\n\
+         \n\
+         <summary>\n\
+         1. Primary Request and Intent:\n\
+            [Detailed description]\n\
+         ...\n\
+         </summary>\n\
+         \n\
+         REMINDER: Do NOT call any tools. Respond with plain text only.\n\
+         \n\
+         ---\n\n{conversation_text}"
+    )
+}
+
+/// Strip the `<analysis>` scratchpad block from the summary.
+///
+/// The analysis block improves summary quality (model "thinks" before writing)
+/// but has no informational value once the summary is written. Stripping it
+/// saves tokens in the ongoing context.
+pub fn strip_analysis_block(summary: &str) -> String {
+    // Remove <analysis>...</analysis> including the tags
+    let stripped = if let Some(start) = summary.find("<analysis>") {
+        if let Some(end) = summary.find("</analysis>") {
+            let after = end + "</analysis>".len();
+            format!("{}{}", &summary[..start], &summary[after..])
+        } else {
+            summary.to_string()
+        }
+    } else {
+        summary.to_string()
+    };
+
+    // Extract content from <summary> tags if present
+    let stripped = if let Some(start) = stripped.find("<summary>") {
+        if let Some(end) = stripped.find("</summary>") {
+            let content_start = start + "<summary>".len();
+            stripped[content_start..end].trim().to_string()
+        } else {
+            stripped
+        }
+    } else {
+        stripped
+    };
+
+    // Clean up extra whitespace
+    let mut result = String::new();
+    let mut prev_empty = false;
+    for line in stripped.lines() {
+        let is_empty = line.trim().is_empty();
+        if is_empty && prev_empty {
+            continue;
+        }
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str(line);
+        prev_empty = is_empty;
+    }
+    result.trim().to_string()
 }
 
 /// Format conversation history into a single string for the summarizer.
@@ -243,5 +337,28 @@ mod tests {
         let msgs = vec![make_msg("tool", None, None)];
         let text = build_conversation_text(&msgs);
         assert_eq!(text, "");
+    }
+
+    #[test]
+    fn test_strip_analysis_block() {
+        let input = "<analysis>\nthinking here\n</analysis>\n\n<summary>\n1. Primary Request:\n   Build a thing\n</summary>";
+        let result = strip_analysis_block(input);
+        assert!(result.contains("Primary Request"));
+        assert!(!result.contains("<analysis>"));
+        assert!(!result.contains("thinking here"));
+        assert!(!result.contains("<summary>"));
+    }
+
+    #[test]
+    fn test_strip_analysis_no_tags() {
+        let input = "Just a plain summary";
+        assert_eq!(strip_analysis_block(input), "Just a plain summary");
+    }
+
+    #[test]
+    fn test_strip_analysis_only_summary_tags() {
+        let input = "<summary>\nThe good stuff\n</summary>";
+        let result = strip_analysis_block(input);
+        assert_eq!(result, "The good stuff");
     }
 }
