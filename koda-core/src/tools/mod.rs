@@ -67,6 +67,7 @@ pub mod ask_user;
 pub mod bg_process;
 /// File CRUD tools (`Read`, `Write`, `Edit`, `Delete`, `List`).
 pub mod file_tools;
+pub mod fuzzy;
 /// Glob pattern search tool (`Glob`).
 pub mod glob_tool;
 /// Recursive text search tool (`Grep`).
