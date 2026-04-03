@@ -77,6 +77,8 @@ pub mod recall;
 pub mod shell;
 /// Skill discovery and activation tools (`ListSkills`, `ActivateSkill`).
 pub mod skill_tools;
+/// Pre-flight validation for tool calls (runs before approval).
+pub mod validate;
 /// HTTP fetch tool (`WebFetch`).  
 pub mod web_fetch;
 
