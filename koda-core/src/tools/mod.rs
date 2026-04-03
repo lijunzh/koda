@@ -37,7 +37,7 @@ pub fn classify_tool(name: &str) -> ToolEffect {
         "InvokeAgent" => ToolEffect::ReadOnly, // sub-agents inherit parent's mode
 
         // Local mutations — write to filesystem or local state
-        "Write" | "Edit" | "MemoryWrite" => ToolEffect::LocalMutation,
+        "Write" | "Edit" | "MemoryWrite" | "TodoWrite" => ToolEffect::LocalMutation,
 
         // Bash — default to LocalMutation; refined by classify_bash_command()
         "Bash" => ToolEffect::LocalMutation,
@@ -81,6 +81,8 @@ pub mod recall;
 pub mod shell;
 /// Skill discovery and activation tools (`ListSkills`, `ActivateSkill`).
 pub mod skill_tools;
+/// Session-scoped task list tool (`TodoWrite`).
+pub mod todo;
 /// Pre-flight validation for tool calls (runs before approval).
 pub mod validate;
 /// HTTP fetch tool (`WebFetch`).
@@ -191,6 +193,9 @@ impl ToolRegistry {
             definitions.insert(def.name.clone(), def);
         }
         for def in web_search::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
+        for def in todo::definitions() {
             definitions.insert(def.name.clone(), def);
         }
         for def in memory::definitions() {
@@ -374,6 +379,14 @@ impl ToolRegistry {
             // Web
             "WebFetch" => web_fetch::web_fetch(&args, self.caps.web_body_chars).await,
             "WebSearch" => web_search::web_search(&args).await,
+            "TodoWrite" => {
+                let db_opt = self.db.read().ok().and_then(|g| g.clone());
+                let sid_opt = self.session_id.read().ok().and_then(|g| g.clone());
+                match (db_opt, sid_opt) {
+                    (Some(db), Some(sid)) => todo::todo_write(&db, &sid, &args).await,
+                    _ => Ok("TodoWrite requires an active session.".to_string()),
+                }
+            }
 
             // Memory
             "MemoryRead" => memory::memory_read(&self.project_root).await,
@@ -672,6 +685,14 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
         "WebSearch" => {
             let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("?");
             format!("Web search: {q}")
+        }
+        "TodoWrite" => {
+            let n = args
+                .get("todos")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            format!("Update todo list ({n} tasks)")
         }
         "EmailSend" => {
             let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("?");

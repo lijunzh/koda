@@ -354,7 +354,14 @@ mod tests {
 
     #[test]
     fn test_write_tools_need_confirmation_in_confirm() {
-        for tool in ["Write", "Edit", "Delete", "MemoryWrite", "EmailSend"] {
+        for tool in [
+            "Write",
+            "Edit",
+            "Delete",
+            "MemoryWrite",
+            "EmailSend",
+            "TodoWrite",
+        ] {
             assert_eq!(
                 check_tool(tool, &serde_json::json!({}), ApprovalMode::Confirm, None),
                 ToolApproval::NeedsConfirmation,
@@ -365,7 +372,7 @@ mod tests {
 
     #[test]
     fn test_auto_approves_non_destructive() {
-        for tool in ["Write", "Edit", "Bash", "WebFetch"] {
+        for tool in ["Write", "Edit", "Bash", "WebFetch", "TodoWrite"] {
             assert_eq!(
                 check_tool(tool, &serde_json::json!({}), ApprovalMode::Auto, None),
                 ToolApproval::AutoApprove,

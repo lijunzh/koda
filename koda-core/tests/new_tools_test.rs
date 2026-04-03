@@ -238,6 +238,7 @@ mod naming_convention {
         "MemoryWrite",
         "Read",
         "RecallContext",
+        "TodoWrite",
         "WebFetch",
         "WebSearch",
         "Write",
@@ -273,8 +274,8 @@ mod naming_convention {
 
     #[test]
     fn test_expected_tool_count() {
-        // 21 built-in tools (AstAnalysis removed in #608, AskUser + WebSearch added)
-        assert_eq!(BUILTIN_TOOLS.len(), 21);
+        // 22 built-in tools (AstAnalysis removed in #608, AskUser + WebSearch + TodoWrite added)
+        assert_eq!(BUILTIN_TOOLS.len(), 22);
     }
 
     /// Ensure BUILTIN_TOOLS stays in sync with the actual registry.
