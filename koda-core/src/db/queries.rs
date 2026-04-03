@@ -479,6 +479,18 @@ impl Persistence for Database {
         Ok(row.and_then(|r| r.0))
     }
 
+    async fn get_session_idle_secs(&self, session_id: &str) -> Result<Option<i64>> {
+        // julianday diff * 86400 gives whole seconds; NULL when never accessed.
+        let row: Option<(Option<i64>,)> = sqlx::query_as(
+            "SELECT CAST((julianday('now') - julianday(last_accessed_at)) * 86400 AS INTEGER)
+             FROM sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.and_then(|r| r.0))
+    }
+
     /// Compact a session: summarize old messages while preserving the most recent ones.
     ///
     /// Keeps the last `preserve_count` messages intact, deletes the rest, and

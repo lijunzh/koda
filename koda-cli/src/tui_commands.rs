@@ -212,11 +212,34 @@ async fn handle_resume_session(
                         {
                             approval::set_mode(shared_mode, m);
                         }
-                        // Detect interrupted turns and show a banner (#594)
-                        if let Ok(msgs) = session.db.load_context(&session.id).await
-                            && let Some(kind) = koda_core::db::queries::detect_interruption(&msgs)
-                        {
-                            buffer.push_lines(tui_output::interrupted_turn_banner(&kind));
+                        // Read idle time BEFORE load_context updates last_accessed_at.
+                        let idle_secs = session
+                            .db
+                            .get_session_idle_secs(&session.id)
+                            .await
+                            .ok()
+                            .flatten();
+                        // Show away-summary + interrupted-turn banners (#590, #594)
+                        if let Ok(msgs) = session.db.load_context(&session.id).await {
+                            use koda_core::persistence::Role;
+                            let user_msgs = msgs.iter().filter(|m| m.role == Role::User).count();
+                            let tool_calls = msgs.iter().filter(|m| m.role == Role::Tool).count();
+                            let total_tokens: i64 = msgs
+                                .iter()
+                                .map(|m| {
+                                    m.prompt_tokens.unwrap_or(0) + m.completion_tokens.unwrap_or(0)
+                                })
+                                .sum();
+                            buffer.push_lines(tui_output::away_summary_banner(
+                                idle_secs,
+                                None, // title already in the confirmation line above
+                                user_msgs,
+                                tool_calls,
+                                total_tokens,
+                            ));
+                            if let Some(kind) = koda_core::db::queries::detect_interruption(&msgs) {
+                                buffer.push_lines(tui_output::interrupted_turn_banner(&kind));
+                            }
                         }
                     }
                     n => tui_output::err_msg(
