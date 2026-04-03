@@ -73,3 +73,49 @@ pub fn warn_msg(buffer: &mut ScrollBuffer, msg: String) {
 pub fn blank(buffer: &mut ScrollBuffer) {
     buffer.push(Line::default());
 }
+
+/// Build a banner for an interrupted turn on session resume.
+///
+/// Returns styled `Line`s ready to push into a `ScrollBuffer`.
+/// The banner tells the user what was interrupted and how to continue.
+pub fn interrupted_turn_banner(
+    kind: &koda_core::persistence::InterruptionKind,
+) -> Vec<Line<'static>> {
+    use koda_core::persistence::InterruptionKind;
+
+    let mut lines = vec![Line::default()];
+
+    match kind {
+        InterruptionKind::Prompt(preview) => {
+            lines.push(Line::from(vec![
+                Span::styled("  ↻ ", AMBER),
+                Span::styled(
+                    "Last turn was interrupted — your prompt was never answered:",
+                    AMBER,
+                ),
+            ]));
+            let display = if preview.len() >= 77 {
+                format!("  \u{201c}{}\u{2026}\u{201d}", &preview[..77])
+            } else {
+                format!("  \u{201c}{}\u{201d}", preview)
+            };
+            lines.push(Line::styled(display, DIM));
+        }
+        InterruptionKind::Tool => {
+            lines.push(Line::from(vec![
+                Span::styled("  ↻ ", AMBER),
+                Span::styled(
+                    "Last turn was interrupted — tool result was never processed.",
+                    AMBER,
+                ),
+            ]));
+        }
+    }
+
+    lines.push(Line::styled(
+        "  Type \"continue\" to resume, or start a new message.",
+        DIM,
+    ));
+    lines.push(Line::default());
+    lines
+}
