@@ -626,11 +626,17 @@ pub(crate) async fn execute_sub_agent(
     };
     let tool_defs = tools.get_definitions(&sub_config.allowed_tools);
     let semantic_memory = memory::load(project_root)?;
+    let env = crate::prompt::EnvironmentInfo {
+        project_root,
+        model: &sub_config.model,
+        platform: std::env::consts::OS,
+    };
     let system_prompt = build_system_prompt(
         &sub_config.system_prompt,
         &semantic_memory,
         &sub_config.agents_dir,
         &tool_defs,
+        &env,
     );
 
     for _ in 0..loop_guard::MAX_SUB_AGENT_ITERATIONS {
