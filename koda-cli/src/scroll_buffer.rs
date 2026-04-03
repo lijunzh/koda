@@ -19,6 +19,10 @@ pub struct ScrollBuffer {
     /// The rendered lines (ring buffer).
     lines: VecDeque<Line<'static>>,
 
+    /// Per-line gutter width (columns to skip during NoSelect copy).
+    /// 0 = no gutter (normal text). Parallel with `lines`.
+    gutter_widths: VecDeque<u16>,
+
     /// Scroll offset: number of lines scrolled UP from the bottom.
     /// 0 = viewing the bottom (latest content).
     scroll_offset: usize,
@@ -41,8 +45,10 @@ pub struct ScrollBuffer {
 
 impl ScrollBuffer {
     pub fn new(capacity: usize) -> Self {
+        let cap = capacity.min(4096);
         Self {
-            lines: VecDeque::with_capacity(capacity.min(4096)),
+            lines: VecDeque::with_capacity(cap),
+            gutter_widths: VecDeque::with_capacity(cap),
             scroll_offset: 0,
             sticky_bottom: true,
             oldest_message_id: None,
@@ -57,9 +63,21 @@ impl ScrollBuffer {
     /// lines are evicted from the front.
     pub fn push(&mut self, line: Line<'static>) {
         self.lines.push_back(line);
+        self.gutter_widths.push_back(0);
         self.enforce_capacity();
 
         // If sticky, keep scroll at bottom
+        if self.sticky_bottom {
+            self.scroll_offset = 0;
+        }
+    }
+
+    /// Append a line with a gutter width (for NoSelect diff lines).
+    pub fn push_with_gutter(&mut self, line: Line<'static>, gutter_width: u16) {
+        self.lines.push_back(line);
+        self.gutter_widths.push_back(gutter_width);
+        self.enforce_capacity();
+
         if self.sticky_bottom {
             self.scroll_offset = 0;
         }
@@ -69,6 +87,7 @@ impl ScrollBuffer {
     pub fn push_lines(&mut self, lines: impl IntoIterator<Item = Line<'static>>) {
         for line in lines {
             self.lines.push_back(line);
+            self.gutter_widths.push_back(0);
         }
         self.enforce_capacity();
 
@@ -147,6 +166,13 @@ impl ScrollBuffer {
         self.lines.iter()
     }
 
+    /// Return the per-line gutter widths (parallel with `all_lines()`).
+    ///
+    /// Used by mouse selection to skip gutter columns during copy.
+    pub fn gutter_widths(&self) -> &VecDeque<u16> {
+        &self.gutter_widths
+    }
+
     /// Compute the total number of visual (wrapped) lines at a given
     /// terminal width. Used for scrollbar state and offset clamping.
     pub fn total_visual_lines(&self, term_width: usize) -> usize {
@@ -204,6 +230,7 @@ impl ScrollBuffer {
     #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.lines.clear();
+        self.gutter_widths.clear();
         self.scroll_offset = 0;
         self.sticky_bottom = true;
     }
@@ -286,6 +313,7 @@ impl ScrollBuffer {
                 let vis = visual_height(&evicted, w);
                 self.scroll_offset = self.scroll_offset.saturating_sub(vis);
             }
+            self.gutter_widths.pop_front();
         }
     }
 
@@ -297,9 +325,9 @@ impl ScrollBuffer {
     pub fn prepend_lines(&mut self, lines: impl IntoIterator<Item = Line<'static>>) {
         let lines: Vec<_> = lines.into_iter().collect();
         let count = lines.len();
-        // Push in reverse so they appear in the original order at the front
         for line in lines.into_iter().rev() {
             self.lines.push_front(line);
+            self.gutter_widths.push_front(0);
         }
         // Adjust scroll offset to keep the viewport stable
         // (content shifted down by `count` logical lines)

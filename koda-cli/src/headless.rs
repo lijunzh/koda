@@ -191,9 +191,10 @@ impl EngineSink for HeadlessSink {
             } => {
                 eprintln!("\x1b[33m  \u{1f50d} Would execute: {detail}\x1b[0m");
                 if let Some(ref p) = preview {
-                    let rendered = crate::diff_render::render(p);
-                    for line in rendered.lines() {
-                        eprintln!("  {line}");
+                    let diff_lines = crate::diff_render::render_lines(p);
+                    for line in &diff_lines {
+                        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                        eprintln!("  {text}");
                     }
                 }
             }
