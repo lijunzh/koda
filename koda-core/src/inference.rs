@@ -112,6 +112,12 @@ async fn preflight_compact_if_needed(
         return Ok(messages);
     }
 
+    // Circuit breaker: stop wasting API calls after repeated failures
+    if crate::compact::is_compact_circuit_broken() {
+        tracing::warn!("Pre-flight: context at {ctx_pct}% but circuit breaker tripped — skipping");
+        return Ok(messages);
+    }
+
     tracing::warn!("Pre-flight: context at {ctx_pct}%, attempting auto-compact");
     sink.emit(EngineEvent::Info {
         message: format!("\u{1f4e6} Context at {ctx_pct}% \u{2014} compacting before sending..."),
@@ -147,6 +153,7 @@ async fn preflight_compact_if_needed(
         Ok(Err(skip)) => {
             tracing::info!("Pre-flight compact skipped: {skip:?}");
             if matches!(skip, crate::compact::CompactSkip::HistoryTooLarge) {
+                crate::compact::record_compact_failure();
                 sink.emit(EngineEvent::Warn {
                     message: "\u{26a0}\u{fe0f} Context is full but history is too large for \
                               this model to summarize. Start a new session (/session) or \
@@ -158,8 +165,14 @@ async fn preflight_compact_if_needed(
         }
         Err(e) => {
             tracing::warn!("Pre-flight compact failed: {e:#}");
+            let tripped = crate::compact::record_compact_failure();
+            let suffix = if tripped {
+                " Auto-compact disabled after repeated failures."
+            } else {
+                " Continuing anyway..."
+            };
             sink.emit(EngineEvent::Warn {
-                message: format!("Compact failed: {e:#}. Continuing anyway..."),
+                message: format!("Compact failed: {e:#}.{suffix}"),
             });
             Ok(messages)
         }

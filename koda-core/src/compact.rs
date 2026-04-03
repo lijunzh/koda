@@ -13,10 +13,40 @@ use crate::persistence::Persistence;
 use crate::providers::{ChatMessage, LlmProvider};
 use anyhow::{Result, bail};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::RwLock;
 
 /// Number of recent messages to keep verbatim during compaction.
 pub const COMPACT_PRESERVE_COUNT: usize = 4;
+
+/// Stop auto-compacting after this many consecutive failures.
+/// Prevents wasting an API call every turn when compaction is stuck
+/// (e.g. history too large for the model, persistent API errors).
+const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+
+/// Global consecutive failure counter. Shared across the session.
+static CONSECUTIVE_FAILURES: AtomicU32 = AtomicU32::new(0);
+
+/// Reset the failure counter (call after successful compaction or new session).
+pub fn reset_compact_failures() {
+    CONSECUTIVE_FAILURES.store(0, Ordering::Relaxed);
+}
+
+/// Check if the circuit breaker is tripped.
+pub fn is_compact_circuit_broken() -> bool {
+    CONSECUTIVE_FAILURES.load(Ordering::Relaxed) >= MAX_CONSECUTIVE_FAILURES
+}
+
+/// Record a compaction failure. Returns true if the circuit breaker just tripped.
+pub fn record_compact_failure() -> bool {
+    let prev = CONSECUTIVE_FAILURES.fetch_add(1, Ordering::Relaxed);
+    prev + 1 >= MAX_CONSECUTIVE_FAILURES
+}
+
+/// Record a compaction success — resets the failure counter.
+fn record_compact_success() {
+    reset_compact_failures();
+}
 
 /// Result of a successful compaction.
 #[derive(Debug)]
@@ -115,6 +145,8 @@ pub async fn compact_session_with_provider(
     let deleted = db
         .compact_session(session_id, &compact_message, COMPACT_PRESERVE_COUNT)
         .await?;
+
+    record_compact_success();
 
     Ok(Ok(CompactResult {
         deleted,
@@ -272,6 +304,25 @@ mod tests {
             cache_creation_tokens: None,
             thinking_tokens: None,
         }
+    }
+
+    #[test]
+    fn test_circuit_breaker() {
+        reset_compact_failures();
+        assert!(!is_compact_circuit_broken());
+
+        assert!(!record_compact_failure()); // 1st
+        assert!(!is_compact_circuit_broken());
+
+        assert!(!record_compact_failure()); // 2nd
+        assert!(!is_compact_circuit_broken());
+
+        assert!(record_compact_failure()); // 3rd — trips
+        assert!(is_compact_circuit_broken());
+
+        // Reset should untrip
+        reset_compact_failures();
+        assert!(!is_compact_circuit_broken());
     }
 
     #[test]
