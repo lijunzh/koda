@@ -246,18 +246,39 @@ impl TuiContext {
         }
 
         // Load and render historical conversation on session resume
-        let (history_lines, oldest_msg_id, interruption) = {
+        let (history_lines, oldest_msg_id, interruption, away_banner) = {
             use koda_core::db::queries::detect_interruption;
-            use koda_core::persistence::Persistence;
+            use koda_core::persistence::{Persistence, Role};
+            // Read idle time BEFORE load_context updates last_accessed_at.
+            let idle_secs = session
+                .db
+                .get_session_idle_secs(&session.id)
+                .await
+                .ok()
+                .flatten();
             match session.db.load_context(&session.id).await {
                 Ok(msgs) if !msgs.is_empty() => {
                     session.title_set = true; // resumed session already has a title
                     let oldest_id = msgs.first().map(|m| m.id);
                     let interrupted = detect_interruption(&msgs);
+                    // Compute stats for the away-summary banner.
+                    let user_msgs = msgs.iter().filter(|m| m.role == Role::User).count();
+                    let tool_calls = msgs.iter().filter(|m| m.role == Role::Tool).count();
+                    let total_tokens: i64 = msgs
+                        .iter()
+                        .map(|m| m.prompt_tokens.unwrap_or(0) + m.completion_tokens.unwrap_or(0))
+                        .sum();
+                    let banner = crate::tui_output::away_summary_banner(
+                        idle_secs,
+                        None, // title visible in startup hint; keep banner slim
+                        user_msgs,
+                        tool_calls,
+                        total_tokens,
+                    );
                     let lines = crate::history_render::render_history_messages(&msgs);
-                    (lines, oldest_id, interrupted)
+                    (lines, oldest_id, interrupted, banner)
                 }
-                _ => (Vec::new(), None, None),
+                _ => (Vec::new(), None, None, Vec::new()),
             }
         };
 
@@ -273,6 +294,9 @@ impl TuiContext {
                 }
                 if let Some(id) = oldest_msg_id {
                     buf.set_oldest_message_id(id);
+                }
+                if !away_banner.is_empty() {
+                    buf.push_lines(away_banner);
                 }
                 if let Some(kind) = &interruption {
                     buf.push_lines(crate::tui_output::interrupted_turn_banner(kind));
