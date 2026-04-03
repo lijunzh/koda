@@ -438,12 +438,8 @@ pub(crate) async fn execute_tools_sequential(
 
         // Pre-flight validation: catch errors before bothering the user
         // with an approval prompt that will inevitably fail.
-        if let Some(error) = tools::validate::validate_tool_call(
-            &tc.function_name,
-            &parsed_args,
-            project_root,
-        )
-        .await
+        if let Some(error) =
+            tools::validate::validate_tool_call(&tc.function_name, &parsed_args, project_root).await
         {
             record_tool_result(
                 tc,
