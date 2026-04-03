@@ -39,9 +39,12 @@ async fn validate_edit(
     project_root: &Path,
     read_cache: Option<&super::FileReadCache>,
 ) -> Option<String> {
-    let path_str = args["path"].as_str().unwrap_or("");
+    let path_str = args["file_path"]
+        .as_str()
+        .or_else(|| args["path"].as_str())
+        .unwrap_or("");
     if path_str.is_empty() {
-        return Some("Missing 'path' argument.".into());
+        return Some("Missing 'file_path' argument.".into());
     }
 
     let resolved = match safe_resolve_path(project_root, path_str) {
@@ -134,9 +137,12 @@ async fn validate_edit(
 
 /// Write: catch overwrite-without-flag before approval.
 async fn validate_write(args: &serde_json::Value, project_root: &Path) -> Option<String> {
-    let path_str = args["path"].as_str().unwrap_or("");
+    let path_str = args["file_path"]
+        .as_str()
+        .or_else(|| args["path"].as_str())
+        .unwrap_or("");
     if path_str.is_empty() {
-        return Some("Missing 'path' argument.".into());
+        return Some("Missing 'file_path' argument.".into());
     }
 
     if args["content"].as_str().is_none() {
@@ -162,9 +168,12 @@ async fn validate_write(args: &serde_json::Value, project_root: &Path) -> Option
 
 /// Delete: path must exist.
 async fn validate_delete(args: &serde_json::Value, project_root: &Path) -> Option<String> {
-    let path_str = args["path"].as_str().unwrap_or("");
+    let path_str = args["file_path"]
+        .as_str()
+        .or_else(|| args["path"].as_str())
+        .unwrap_or("");
     if path_str.is_empty() {
-        return Some("Missing 'path' argument.".into());
+        return Some("Missing 'file_path' argument.".into());
     }
 
     let resolved = match safe_resolve_path(project_root, path_str) {
@@ -380,6 +389,32 @@ mod tests {
     async fn delete_nonempty_dir_with_recursive() {
         let dir = setup();
         let args = json!({"path": "subdir", "recursive": true});
+        assert!(validate_delete(&args, dir.path()).await.is_none());
+    }
+
+    // ── file_path alias acceptance ──────────────────────────
+
+    #[tokio::test]
+    async fn edit_accepts_file_path_param() {
+        let dir = setup();
+        let args = json!({
+            "file_path": "hello.txt",
+            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+        });
+        assert!(validate_edit(&args, dir.path(), None).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn write_accepts_file_path_param() {
+        let dir = setup();
+        let args = json!({"file_path": "brand_new.txt", "content": "hello"});
+        assert!(validate_write(&args, dir.path()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_accepts_file_path_param() {
+        let dir = setup();
+        let args = json!({"file_path": "hello.txt"});
         assert!(validate_delete(&args, dir.path()).await.is_none());
     }
 
