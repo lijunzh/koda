@@ -236,7 +236,7 @@ impl TuiContext {
                         key,
                         name,
                         local: !ptype.requires_api_key(),
-                        is_current: false,
+                        key_set: false,
                     }
                 })
                 .collect();
