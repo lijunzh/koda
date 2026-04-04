@@ -16,8 +16,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::RwLock;
 
-/// Number of recent messages to keep verbatim during compaction.
+/// Minimum number of recent messages to keep verbatim during compaction.
 pub const COMPACT_PRESERVE_COUNT: usize = 4;
+
+/// Fraction of history to compact in partial mode (compact oldest half).
+const PARTIAL_COMPACT_FRACTION: f64 = 0.5;
+
+/// Below this message count, always do full compaction (partial is overhead).
+const PARTIAL_COMPACT_THRESHOLD: usize = 12;
 
 /// Stop auto-compacting after this many consecutive failures.
 /// Prevents wasting an API call every turn when compaction is stuck
@@ -92,6 +98,10 @@ pub async fn compact_session(
 
 /// Core compaction logic — accepts `&dyn LlmProvider` directly.
 ///
+/// Uses partial compaction for longer sessions (≥12 messages): only the oldest
+/// half of messages are summarized and archived, preserving more recent context
+/// verbatim. Short sessions fall back to full compaction (keep last 4).
+///
 /// Used by the inference loop for pre-flight compaction (where we already
 /// have a `&dyn LlmProvider` and don't need the Arc<RwLock<>> wrapper).
 pub async fn compact_session_with_provider(
@@ -112,8 +122,24 @@ pub async fn compact_session_with_provider(
         return Ok(Err(CompactSkip::TooShort(history.len())));
     }
 
-    // Build conversation text for summarization (no hard cap — scales to model capacity)
-    let conversation_text = build_conversation_text(&history);
+    // Decide how many messages to preserve (partial vs full compaction).
+    // Partial: compact the oldest half, keep the newest half.
+    // Full: compact everything except the last COMPACT_PRESERVE_COUNT.
+    let preserve_count = compute_preserve_count(history.len());
+
+    let compact_count = history.len().saturating_sub(preserve_count);
+    if compact_count == 0 {
+        return Ok(Err(CompactSkip::TooShort(history.len())));
+    }
+
+    // Only summarize the messages being compacted, not the ones we're keeping.
+    let to_compact = &history[..compact_count];
+    let conversation_text = build_conversation_text(to_compact);
+
+    tracing::info!(
+        "Compacting {compact_count}/{} messages (preserving {preserve_count})",
+        history.len(),
+    );
 
     // Check if the conversation text fits in the current model's context.
     // Reserve 4096 tokens for the summary output + overhead.
@@ -127,7 +153,7 @@ pub async fn compact_session_with_provider(
     let final_text = if text_tokens <= available {
         conversation_text
     } else {
-        match truncate_until_fits(&history, available) {
+        match truncate_until_fits(to_compact, available) {
             Some(text) => text,
             None => return Ok(Err(CompactSkip::HistoryTooLarge)),
         }
@@ -157,7 +183,7 @@ pub async fn compact_session_with_provider(
     let summary = strip_analysis_block(&summary);
     let compact_message = format!("[Compacted conversation summary]\n\n{summary}");
     let deleted = db
-        .compact_session(session_id, &compact_message, COMPACT_PRESERVE_COUNT)
+        .compact_session(session_id, &compact_message, preserve_count)
         .await?;
 
     record_compact_success();
@@ -166,6 +192,22 @@ pub async fn compact_session_with_provider(
         deleted,
         summary_tokens: summary.len() / 4,
     }))
+}
+
+/// Compute how many messages to preserve during compaction.
+///
+/// - Short sessions (<12 messages): full compaction, keep last 4.
+/// - Longer sessions: partial compaction, keep the newest ~50%.
+///
+/// This preserves more recent context verbatim in long sessions,
+/// producing a smaller, more focused summary of just the oldest half.
+fn compute_preserve_count(total: usize) -> usize {
+    if total < PARTIAL_COMPACT_THRESHOLD {
+        COMPACT_PRESERVE_COUNT
+    } else {
+        let keep = (total as f64 * (1.0 - PARTIAL_COMPACT_FRACTION)).ceil() as usize;
+        keep.max(COMPACT_PRESERVE_COUNT)
+    }
 }
 
 /// Build the 9-section summarization prompt.
@@ -516,5 +558,33 @@ mod tests {
         // First attempt drops 20% but still fits, so it drops
         // We just check it returns something valid
         assert!(text.contains("Short 9"));
+    }
+
+    #[test]
+    fn test_compute_preserve_count_short_sessions() {
+        // Below threshold: always keep COMPACT_PRESERVE_COUNT (4)
+        assert_eq!(compute_preserve_count(4), 4);
+        assert_eq!(compute_preserve_count(8), 4);
+        assert_eq!(compute_preserve_count(11), 4);
+    }
+
+    #[test]
+    fn test_compute_preserve_count_partial() {
+        // At threshold (12): keep ceil(12 * 0.5) = 6
+        assert_eq!(compute_preserve_count(12), 6);
+        // 20 messages: keep ceil(20 * 0.5) = 10
+        assert_eq!(compute_preserve_count(20), 10);
+        // 50 messages: keep 25
+        assert_eq!(compute_preserve_count(50), 25);
+        // 100 messages: keep 50
+        assert_eq!(compute_preserve_count(100), 50);
+    }
+
+    #[test]
+    fn test_compute_preserve_count_never_below_minimum() {
+        // Even at threshold, result must be >= COMPACT_PRESERVE_COUNT
+        for n in 0..200 {
+            assert!(compute_preserve_count(n) >= COMPACT_PRESERVE_COUNT);
+        }
     }
 }
