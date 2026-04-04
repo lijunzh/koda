@@ -65,6 +65,10 @@ pub async fn handle_slash_command(
                     config.model_settings.model = config.model.clone();
                     config.recalculate_model_derived();
                     *provider.write().await = koda_core::providers::create_provider(config);
+                    {
+                        let prov = provider.read().await;
+                        config.query_and_apply_capabilities(prov.as_ref()).await;
+                    }
                     crate::tui_wizards::save_provider(config);
                     tui_output::ok_msg(
                         buffer,

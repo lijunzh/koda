@@ -503,25 +503,34 @@ impl LlmProvider for OpenAiCompatProvider {
     }
 
     async fn model_capabilities(&self, model: &str) -> Result<super::ModelCapabilities> {
-        // Try LM Studio / Ollama extended endpoint first (/api/v0/models)
-        // which returns max_context_length per model.
         let base = self.base_url.trim_end_matches("/v1");
-        if let Ok(caps) = self.query_local_capabilities(base, model).await
+
+        // LM Studio: GET /api/v0/models → data[].max_context_length
+        // Only one model is loaded at a time, so just take the first entry.
+        if let Ok(caps) = self.query_lmstudio_capabilities(base).await
             && caps.context_window.is_some()
         {
             return Ok(caps);
         }
+
+        // Ollama: POST /api/show → model_info.general.context_length
+        if let Ok(caps) = self.query_ollama_capabilities(base, model).await
+            && caps.context_window.is_some()
+        {
+            return Ok(caps);
+        }
+
         Ok(super::ModelCapabilities::default())
     }
 }
 
 impl OpenAiCompatProvider {
-    /// Query LM Studio / Ollama extended model info for context window.
-    async fn query_local_capabilities(
-        &self,
-        base: &str,
-        model: &str,
-    ) -> Result<super::ModelCapabilities> {
+    /// Query LM Studio for the loaded model's context window.
+    ///
+    /// LM Studio serves one model at a time. The user configures the context
+    /// window in LM Studio's UI, so the API-reported value is the source of
+    /// truth — not a lookup table.
+    async fn query_lmstudio_capabilities(&self, base: &str) -> Result<super::ModelCapabilities> {
         let resp = self
             .client
             .get(format!("{base}/api/v0/models"))
@@ -533,22 +542,54 @@ impl OpenAiCompatProvider {
         }
 
         let body: serde_json::Value = resp.json().await?;
-        let models = body["data"].as_array();
 
-        if let Some(models) = models {
-            for m in models {
-                let id = m["id"].as_str().unwrap_or_default();
-                if id == model {
-                    let ctx = m["max_context_length"].as_u64().map(|v| v as usize);
-                    return Ok(super::ModelCapabilities {
-                        context_window: ctx,
-                        max_output_tokens: None,
-                    });
-                }
+        // Take the first loaded model — no ID matching needed.
+        if let Some(model) = body["data"].as_array().and_then(|a| a.first()) {
+            let ctx = model["max_context_length"].as_u64().map(|v| v as usize);
+            if let Some(c) = ctx {
+                tracing::info!("LM Studio reports context window: {c} tokens");
             }
+            return Ok(super::ModelCapabilities {
+                context_window: ctx,
+                max_output_tokens: None,
+            });
         }
 
         Ok(super::ModelCapabilities::default())
+    }
+
+    /// Query Ollama for model context window via `/api/show`.
+    async fn query_ollama_capabilities(
+        &self,
+        base: &str,
+        model: &str,
+    ) -> Result<super::ModelCapabilities> {
+        let resp = self
+            .client
+            .post(format!("{base}/api/show"))
+            .json(&serde_json::json!({ "name": model }))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Ok(super::ModelCapabilities::default());
+        }
+
+        let body: serde_json::Value = resp.json().await?;
+
+        // Ollama reports context length in model_info.general.context_length
+        let ctx = body["model_info"]["general.context_length"]
+            .as_u64()
+            .map(|v| v as usize);
+
+        if let Some(ctx) = ctx {
+            tracing::info!("Ollama reports context window: {ctx} tokens");
+        }
+
+        Ok(super::ModelCapabilities {
+            context_window: ctx,
+            max_output_tokens: None,
+        })
     }
 }
 /// Convert OpenAI usage response to our TokenUsage, extracting reasoning_tokens.
