@@ -134,9 +134,10 @@ pub fn analyze_context(messages: &[Message]) -> ContextAnalysis {
 
     for msg in messages {
         if msg.role == crate::persistence::Role::Assistant
-            && let Some(ref tc_json) = msg.tool_calls {
-                extract_tool_call_ids(tc_json, &mut id_to_tool, &mut read_tool_paths);
-            }
+            && let Some(ref tc_json) = msg.tool_calls
+        {
+            extract_tool_call_ids(tc_json, &mut id_to_tool, &mut read_tool_paths);
+        }
     }
 
     // Phase 2: Classify each message and accumulate tokens.
@@ -154,10 +155,7 @@ pub fn analyze_context(messages: &[Message]) -> ContextAnalysis {
             crate::persistence::Role::Assistant => {
                 if let Some(ref tc_json) = msg.tool_calls {
                     // Split tokens between text content and tool requests.
-                    let text_tokens = msg
-                        .content
-                        .as_deref()
-                        .map_or(0, estimate_str_tokens);
+                    let text_tokens = msg.content.as_deref().map_or(0, estimate_str_tokens);
                     let tool_tokens = tokens.saturating_sub(text_tokens);
                     analysis.assistant_tokens += text_tokens;
 
@@ -180,7 +178,10 @@ pub fn analyze_context(messages: &[Message]) -> ContextAnalysis {
                     .cloned()
                     .unwrap_or_else(|| "unknown".to_string());
 
-                *analysis.tool_result_tokens.entry(tool_name.clone()).or_default() += tokens;
+                *analysis
+                    .tool_result_tokens
+                    .entry(tool_name.clone())
+                    .or_default() += tokens;
 
                 // Track file read stats for duplicate detection.
                 if (tool_name == "Read" || tool_name == "read")
@@ -188,16 +189,17 @@ pub fn analyze_context(messages: &[Message]) -> ContextAnalysis {
                         .tool_call_id
                         .as_deref()
                         .and_then(|id| read_tool_paths.get(id))
-                    {
-                        let entry = file_read_stats
+                {
+                    let entry =
+                        file_read_stats
                             .entry(path.clone())
                             .or_insert_with(|| FileReadAccum {
                                 count: 0,
                                 total_tokens: 0,
                             });
-                        entry.count += 1;
-                        entry.total_tokens += tokens;
-                    }
+                    entry.count += 1;
+                    entry.total_tokens += tokens;
+                }
             }
             crate::persistence::Role::System => {
                 // System prompt — count toward total but not any category.
@@ -256,10 +258,7 @@ fn extract_tool_call_ids(
         Err(_) => return,
     };
     for call in &calls {
-        let id = call
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
+        let id = call.get("id").and_then(|v| v.as_str()).unwrap_or_default();
         let name = call
             .get("function_name")
             .or_else(|| call.get("name"))
@@ -272,22 +271,23 @@ fn extract_tool_call_ids(
 
         // Extract file path for Read tool calls.
         if (name == "Read" || name == "read")
-            && let Some(args) = call.get("arguments") {
-                // `arguments` may be a JSON string or an object.
-                let args_obj: Option<serde_json::Value> = if let Some(s) = args.as_str() {
-                    serde_json::from_str(s).ok()
-                } else {
-                    Some(args.clone())
-                };
-                if let Some(obj) = args_obj
-                    && let Some(path) = obj
-                        .get("file_path")
-                        .or_else(|| obj.get("path"))
-                        .and_then(|v| v.as_str())
-                    {
-                        read_paths.insert(id.to_string(), PathBuf::from(path));
-                    }
+            && let Some(args) = call.get("arguments")
+        {
+            // `arguments` may be a JSON string or an object.
+            let args_obj: Option<serde_json::Value> = if let Some(s) = args.as_str() {
+                serde_json::from_str(s).ok()
+            } else {
+                Some(args.clone())
+            };
+            if let Some(obj) = args_obj
+                && let Some(path) = obj
+                    .get("file_path")
+                    .or_else(|| obj.get("path"))
+                    .and_then(|v| v.as_str())
+            {
+                read_paths.insert(id.to_string(), PathBuf::from(path));
             }
+        }
     }
 }
 
@@ -320,7 +320,12 @@ mod tests {
     use super::*;
     use crate::persistence::{Message, Role};
 
-    fn msg(role: Role, content: Option<&str>, tool_calls: Option<&str>, tool_call_id: Option<&str>) -> Message {
+    fn msg(
+        role: Role,
+        content: Option<&str>,
+        tool_calls: Option<&str>,
+        tool_call_id: Option<&str>,
+    ) -> Message {
         Message {
             id: 0,
             session_id: String::new(),
@@ -361,11 +366,17 @@ mod tests {
 
     #[test]
     fn test_tool_call_attribution() {
-        let tc_json = r#"[{"id":"tc_1","function_name":"Read","arguments":"{\"file_path\":\"foo.rs\"}"}]"#;
+        let tc_json =
+            r#"[{"id":"tc_1","function_name":"Read","arguments":"{\"file_path\":\"foo.rs\"}"}]"#;
         let messages = vec![
             msg(Role::User, Some("Read foo.rs"), None, None),
             msg(Role::Assistant, None, Some(tc_json), None),
-            msg(Role::Tool, Some("contents of foo.rs which is a pretty long file with lots of code"), None, Some("tc_1")),
+            msg(
+                Role::Tool,
+                Some("contents of foo.rs which is a pretty long file with lots of code"),
+                None,
+                Some("tc_1"),
+            ),
         ];
         let analysis = analyze_context(&messages);
         assert!(analysis.tool_result_tokens.contains_key("Read"));
@@ -374,9 +385,12 @@ mod tests {
 
     #[test]
     fn test_duplicate_read_detection() {
-        let tc1 = r#"[{"id":"tc_1","function_name":"Read","arguments":"{\"file_path\":\"foo.rs\"}"}]"#;
-        let tc2 = r#"[{"id":"tc_2","function_name":"Read","arguments":"{\"file_path\":\"foo.rs\"}"}]"#;
-        let tc3 = r#"[{"id":"tc_3","function_name":"Read","arguments":"{\"file_path\":\"bar.rs\"}"}]"#;
+        let tc1 =
+            r#"[{"id":"tc_1","function_name":"Read","arguments":"{\"file_path\":\"foo.rs\"}"}]"#;
+        let tc2 =
+            r#"[{"id":"tc_2","function_name":"Read","arguments":"{\"file_path\":\"foo.rs\"}"}]"#;
+        let tc3 =
+            r#"[{"id":"tc_3","function_name":"Read","arguments":"{\"file_path\":\"bar.rs\"}"}]"#;
 
         let messages = vec![
             msg(Role::User, Some("Read foo.rs"), None, None),

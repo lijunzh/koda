@@ -126,9 +126,7 @@ async fn assemble_context(
         }
         let waste = analysis.total_duplicate_waste();
         if waste > 500 {
-            warning.push_str(&format!(
-                " ~{waste} tokens wasted on duplicate file reads."
-            ));
+            warning.push_str(&format!(" ~{waste} tokens wasted on duplicate file reads."));
         }
         warning.push_str(" Run /compact to free up space.");
         sink.emit(EngineEvent::Warn { message: warning });
