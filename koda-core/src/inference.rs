@@ -18,7 +18,8 @@ use crate::engine::{EngineCommand, EngineEvent, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
     CONTEXT_WARN_THRESHOLD, PREFLIGHT_COMPACT_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages,
-    estimate_tokens, is_context_overflow_error, is_rate_limit_error, rate_limit_backoff,
+    estimate_tokens, is_context_overflow_error, is_rate_limit_error, is_server_error,
+    rate_limit_backoff,
 };
 use crate::loop_guard::LoopDetector;
 use crate::persistence::Persistence;
@@ -706,6 +707,17 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                         return Ok(());
                     }
                 }
+            }
+            Err(e) if is_server_error(&e) => {
+                sink.emit(EngineEvent::SpinnerStop);
+                sink.emit(EngineEvent::Warn {
+                    message: format!(
+                        "Provider returned a server error: {e:#}. \
+                         This often means the model can't handle the current \
+                         conversation state. Try a different model or start a new session."
+                    ),
+                });
+                return Ok(());
             }
             Err(e) => {
                 return Err(e).context("LLM inference failed");

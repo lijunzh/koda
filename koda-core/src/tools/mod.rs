@@ -531,7 +531,20 @@ impl ToolRegistry {
                 };
             }
 
-            other => Err(anyhow::anyhow!("Unknown tool: {other}")),
+            other => {
+                // Detect garbled tool names (JSON blobs, very long strings)
+                // — a sign the model can't do structured tool calling.
+                let warning = if other.contains('{') || other.len() > 64 {
+                    format!(
+                        "Unknown tool: {other}. \
+                         This model appears to struggle with tool calling. \
+                         Consider switching to a model with native function-call support."
+                    )
+                } else {
+                    format!("Unknown tool: {other}")
+                };
+                Err(anyhow::anyhow!(warning))
+            }
         };
 
         match result {
