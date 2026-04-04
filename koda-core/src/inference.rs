@@ -648,12 +648,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let mut rx = match stream_result {
             Ok(rx) => rx,
             Err(e) if is_context_overflow_error(&e) => {
-                match try_overflow_recovery(
-                    &turn,
-                    e,
-                )
-                .await?
-                {
+                match try_overflow_recovery(&turn, e).await? {
                     Some((rx, _updated)) => rx,
                     None => {
                         sink.emit(EngineEvent::SpinnerStop);
