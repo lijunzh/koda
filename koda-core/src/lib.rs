@@ -24,6 +24,8 @@ pub mod compact;
 pub mod config;
 /// Context window management and token budgeting (engine-internal).
 pub(crate) mod context;
+/// Context analysis — per-tool token breakdown and duplicate detection.
+pub mod context_analysis;
 /// SQLite persistence layer — sessions, messages, usage tracking.
 pub mod db;
 /// Engine protocol: `EngineEvent` / `EngineCommand` enums.

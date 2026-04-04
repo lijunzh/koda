@@ -75,6 +75,23 @@ async fn assemble_context(
     sink: &dyn EngineSink,
 ) -> Result<Vec<ChatMessage>> {
     let history = db.load_context(session_id).await?;
+
+    // Run per-tool context analysis for smarter compaction decisions.
+    // Logged at debug level; will be surfaced in `/usage` and used by
+    // microcompact (#636 P1) once that lands.
+    let analysis = crate::context_analysis::analyze_context(&history);
+    if analysis.total > 0 {
+        tracing::debug!(
+            "Context analysis: {} total, {}% tool results, {}% duplicate reads",
+            analysis.total,
+            analysis.tool_result_percent(),
+            analysis.duplicate_read_percent(),
+        );
+        for (tool, tokens) in analysis.top_tool_results(3) {
+            tracing::debug!("  {tool}: ~{tokens} tokens");
+        }
+    }
+
     let mut messages = assemble_messages(system_message, &history);
 
     // Attach pending images to the last user message (first iteration only)
@@ -97,12 +114,22 @@ async fn assemble_context(
     // drops ContextUsage events, so this Warn is the only signal they get).
     let ctx_pct = crate::context::percentage();
     if (CONTEXT_WARN_THRESHOLD..PREFLIGHT_COMPACT_THRESHOLD).contains(&ctx_pct) {
-        sink.emit(EngineEvent::Warn {
-            message: format!(
-                "Context at {ctx_pct}% — approaching limit. \
-                 Run /compact to free up space."
-            ),
-        });
+        // Include analysis hints so the user knows *why* context is high.
+        let mut warning = format!("Context at {ctx_pct}% — approaching limit.");
+        let top = analysis.top_tool_results(2);
+        if !top.is_empty() {
+            let hogs: Vec<String> = top
+                .iter()
+                .map(|(name, tokens)| format!("{name} (~{tokens} tok)"))
+                .collect();
+            warning.push_str(&format!(" Top consumers: {}.", hogs.join(", ")));
+        }
+        let waste = analysis.total_duplicate_waste();
+        if waste > 500 {
+            warning.push_str(&format!(" ~{waste} tokens wasted on duplicate file reads."));
+        }
+        warning.push_str(" Run /compact to free up space.");
+        sink.emit(EngineEvent::Warn { message: warning });
     }
 
     Ok(messages)
