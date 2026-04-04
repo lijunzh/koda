@@ -172,19 +172,20 @@ fn build_tool_id_map(messages: &[Message]) -> HashMap<String, String> {
     for msg in messages {
         if msg.role == Role::Assistant
             && let Some(ref tc_json) = msg.tool_calls
-                && let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json) {
-                    for call in &calls {
-                        let id = call.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-                        let name = call
-                            .get("function_name")
-                            .or_else(|| call.get("name"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown");
-                        if !id.is_empty() {
-                            map.insert(id.to_string(), name.to_string());
-                        }
-                    }
+            && let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json)
+        {
+            for call in &calls {
+                let id = call.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                let name = call
+                    .get("function_name")
+                    .or_else(|| call.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                if !id.is_empty() {
+                    map.insert(id.to_string(), name.to_string());
                 }
+            }
+        }
     }
     map
 }
