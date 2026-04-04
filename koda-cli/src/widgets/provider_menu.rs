@@ -12,8 +12,8 @@ pub struct ProviderItem {
     pub key: &'static str,
     /// Display name (e.g. "Anthropic", "OpenAI").
     pub name: &'static str,
-    /// Short description (e.g. "Claude Sonnet, Opus").
-    pub description: &'static str,
+    /// Whether this is a local provider (no API key needed).
+    pub local: bool,
     /// Whether this is the currently active provider.
     pub is_current: bool,
 }
@@ -23,9 +23,16 @@ impl DropdownItem for ProviderItem {
         self.name
     }
     fn description(&self) -> String {
-        let mut desc = self.description.to_string();
+        let mut desc = if self.local {
+            "Local, no API key".to_string()
+        } else {
+            String::new()
+        };
         if self.is_current {
-            desc.push_str(" \u{25c0} current");
+            if !desc.is_empty() {
+                desc.push(' ');
+            }
+            desc.push_str("\u{25c0} current");
         }
         desc
     }
@@ -33,7 +40,7 @@ impl DropdownItem for ProviderItem {
         let f = filter.to_lowercase();
         self.name.to_lowercase().contains(&f)
             || self.key.to_lowercase().contains(&f)
-            || self.description.to_lowercase().contains(&f)
+            || (self.local && "local".contains(&f))
     }
 }
 
@@ -46,23 +53,34 @@ mod tests {
         let item = ProviderItem {
             key: "anthropic",
             name: "Anthropic",
-            description: "Claude Sonnet, Opus",
+            local: false,
             is_current: true,
         };
         assert!(item.description().contains('\u{25c0}'));
     }
 
     #[test]
-    fn filter_matches_key_name_desc() {
+    fn local_shows_description() {
         let item = ProviderItem {
-            key: "anthropic",
-            name: "Anthropic",
-            description: "Claude Sonnet, Opus",
+            key: "ollama",
+            name: "Ollama",
+            local: true,
             is_current: false,
         };
-        assert!(item.matches_filter("anth"));
-        assert!(item.matches_filter("Claude"));
-        assert!(item.matches_filter("opus"));
+        assert!(item.description().contains("Local, no API key"));
+    }
+
+    #[test]
+    fn filter_matches_key_name_local() {
+        let item = ProviderItem {
+            key: "lmstudio",
+            name: "LM Studio",
+            local: true,
+            is_current: false,
+        };
+        assert!(item.matches_filter("lm"));
+        assert!(item.matches_filter("Studio"));
+        assert!(item.matches_filter("local"));
         assert!(!item.matches_filter("gemini"));
     }
 }
