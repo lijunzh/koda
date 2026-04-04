@@ -123,7 +123,7 @@ impl ProviderType {
             },
             Self::MiniMax => ProviderMeta {
                 name: "minimax",
-                url: "https://api.minimax.chat/v1",
+                url: "https://api.minimax.io/v1",
                 model: "minimax-text-01",
                 env_key: "MINIMAX_API_KEY",
                 api_key: true,
