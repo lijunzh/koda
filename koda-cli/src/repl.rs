@@ -39,6 +39,8 @@ pub enum ReplAction {
     Undo,
     /// List available skills (optional search query)
     ListSkills(Option<String>),
+    /// Manage API keys
+    ManageKeys,
     #[allow(dead_code)]
     Handled,
     NotACommand,
@@ -127,26 +129,28 @@ pub async fn handle_command(
 
         "/skills" => ReplAction::ListSkills(arg.map(|s| s.to_string())),
 
+        "/key" | "/keys" => ReplAction::ManageKeys,
+
         _ => ReplAction::NotACommand,
     }
 }
 
 /// Available providers for the interactive picker.
 pub const PROVIDERS: &[(&str, &str, &str)] = &[
-    ("lmstudio", "LM Studio", "Local models, no API key needed"),
-    ("ollama", "Ollama", "Local models, no API key needed"),
-    ("openai", "OpenAI", "GPT-4o, o1, o3"),
-    ("anthropic", "Anthropic", "Claude Sonnet, Opus"),
-    ("deepseek", "DeepSeek", "DeepSeek-V3, R1"),
-    ("gemini", "Google Gemini", "Gemini 2.0 Flash, Pro"),
+    ("lmstudio", "LM Studio", "Local, no API key"),
+    ("ollama", "Ollama", "Local, no API key"),
+    ("openai", "OpenAI", ""),
+    ("anthropic", "Anthropic", ""),
+    ("deepseek", "DeepSeek", ""),
+    ("gemini", "Google Gemini", ""),
     ("groq", "Groq", "Fast inference"),
-    ("grok", "Grok (xAI)", "Grok-3, Grok-2"),
-    ("mistral", "Mistral", "Mistral Large, Codestral"),
-    ("minimax", "MiniMax", "MiniMax-01"),
-    ("openrouter", "OpenRouter", "Meta-provider, 100+ models"),
-    ("together", "Together", "Open-source model hosting"),
+    ("grok", "Grok (xAI)", ""),
+    ("mistral", "Mistral", ""),
+    ("minimax", "MiniMax", ""),
+    ("openrouter", "OpenRouter", "Meta-provider"),
+    ("together", "Together", ""),
     ("fireworks", "Fireworks", "Fast inference"),
-    ("vllm", "vLLM", "Local high-performance serving"),
+    ("vllm", "vLLM", "Local, no API key"),
 ];
 
 /// Get the full git diff (unstaged + staged), capped for context window safety.

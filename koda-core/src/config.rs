@@ -19,7 +19,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// Supported LLM provider types.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderType {
     /// OpenAI API.
@@ -82,7 +82,7 @@ impl ProviderType {
             Self::Gemini => ProviderMeta {
                 name: "gemini",
                 url: "https://generativelanguage.googleapis.com",
-                model: "gemini-2.0-flash",
+                model: "gemini-flash-latest",
                 env_key: "GEMINI_API_KEY",
                 api_key: true,
             },
@@ -123,7 +123,7 @@ impl ProviderType {
             },
             Self::MiniMax => ProviderMeta {
                 name: "minimax",
-                url: "https://api.minimax.chat/v1",
+                url: "https://api.minimax.io/v1",
                 model: "minimax-text-01",
                 env_key: "MINIMAX_API_KEY",
                 api_key: true,
@@ -776,7 +776,7 @@ mod tests {
         let config =
             KodaConfig::default_for_testing(ProviderType::Gemini).with_overrides(None, None, None);
         assert_eq!(config.provider_type, ProviderType::Gemini);
-        assert_eq!(config.model, "gemini-2.0-flash");
+        assert_eq!(config.model, "gemini-flash-latest");
     }
 
     // ── recalculate_model_derived ──────────────────────────────

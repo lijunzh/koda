@@ -208,13 +208,10 @@ mod repl_commands {
     }
 
     #[test]
-    fn key_command_is_not_a_command() {
-        // /key was removed; must fall through
-        assert!(matches!(dispatch("/key"), ReplAction::NotACommand));
-        assert!(matches!(
-            dispatch("/key my-secret-key"),
-            ReplAction::NotACommand
-        ));
+    fn key_command_manages_keys() {
+        // /key is now a real command
+        assert!(matches!(dispatch("/key"), ReplAction::ManageKeys));
+        assert!(matches!(dispatch("/keys"), ReplAction::ManageKeys));
     }
 
     #[test]

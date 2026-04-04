@@ -511,6 +511,10 @@ impl TuiContext {
                 self.reinit_after_slash().await;
                 CommandOutcome::Handled
             }
+            SlashAction::OpenKeyMenu => {
+                self.open_key_picker().await;
+                CommandOutcome::Handled
+            }
             SlashAction::Quit => {
                 self.scroll_buffer.push(Line::styled(
                     "\u{1f43b} Goodbye!",

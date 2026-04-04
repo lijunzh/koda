@@ -6,10 +6,10 @@ Refer to this when the user asks "what can you do?" or about features.
 
 /agent — list sub-agents | /compact — reclaim context
 /diff — git diff/review/commit | /exit — quit | /expand — show full tool output
-/memory — persistent memory | /model — switch model
-/provider — switch provider | /purge — delete archived history
-/sessions — resume/delete sessions | /skills — list skills
-/undo — undo last turn | /verbose — toggle full tool output
+/key — manage API keys | /memory — persistent memory
+/model — pick model (aliases + local) | /provider — browse provider models
+/purge — delete archived history | /sessions — resume/delete sessions
+/skills — list skills | /undo — undo last turn | /verbose — toggle full tool output
 Shift+Tab — cycle approval mode (auto/confirm)
 
 ### Input

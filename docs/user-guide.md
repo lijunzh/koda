@@ -194,9 +194,10 @@ Type `/` to open the command palette with descriptions. Tab to complete.
 | `/diff` | Show git diff, review changes, or commit |
 | `/exit` | Quit the session |
 | `/expand` | Show full output of last collapsed tool call |
+| `/key` | Manage API keys |
 | `/memory` | View or save project and global memory |
-| `/model` | Pick a model interactively |
-| `/provider` | Switch LLM provider |
+| `/model` | Pick a model (curated aliases + local) |
+| `/provider` | Browse all models from a specific provider |
 | `/purge` | Delete archived history (e.g. `/purge 90d`) |
 | `/sessions` | List, resume, or delete sessions |
 | `/skills` | List available skills (search with `/skills <query>`) |
@@ -209,8 +210,9 @@ clipboard via `arboard`. This is essential since the alternate screen buffer
 disables terminal-native mouse selection.
 
 **Power-user shortcuts**: Commands accept inline arguments to skip wizards.
-For example, `/provider anthropic` switches instantly if an API key is
-already stored, or starts the wizard at the API key step if not.
+For example, `/model claude-sonnet` switches instantly to Claude Sonnet
+(resolving the alias to the exact model ID and switching provider if needed).
+`/model <exact-model-id>` works for models not in the alias list.
 
 ---
 

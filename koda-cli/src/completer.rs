@@ -20,9 +20,10 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ("/diff", "Show git diff (review, commit)", None),
     ("/exit", "Quit the session", None),
     ("/expand", "Show full output of last tool call", None),
+    ("/key", "Manage API keys", None),
     ("/memory", "View/save project & global memory", None),
-    ("/model", "Pick a model interactively", None),
-    ("/provider", "Switch LLM provider", None),
+    ("/model", "Pick a model (aliases + local)", None),
+    ("/provider", "Browse all models from a provider", None),
     (
         "/purge",
         "Delete archived history (e.g. /purge 90d)",
@@ -129,9 +130,12 @@ impl InputCompleter {
 
         if token_key != self.token {
             self.token = token_key;
-            self.matches = self
-                .model_names
+            // Complete against alias names + cached provider model names
+            let alias_names = koda_core::model_alias::alias_names();
+            self.matches = alias_names
                 .iter()
+                .map(|s| s.to_string())
+                .chain(self.model_names.iter().cloned())
                 .filter(|name| name.contains(partial) && name.as_str() != partial)
                 .map(|name| format!("/model {name}"))
                 .collect();
@@ -506,8 +510,16 @@ mod tests {
     fn test_model_no_names_returns_none() {
         let tmp = tempdir().unwrap();
         let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        // No model names set
+        // No provider model names set; "gpt" matches no aliases (we only have gemini/claude)
         assert!(c.complete("/model gpt").is_none());
+    }
+
+    #[test]
+    fn test_model_no_match_returns_none() {
+        let tmp = tempdir().unwrap();
+        let mut c = InputCompleter::new(tmp.path().to_path_buf());
+        // "zzz" matches no aliases or model names
+        assert!(c.complete("/model zzz").is_none());
     }
 
     #[test]
@@ -516,7 +528,10 @@ mod tests {
         let mut c = InputCompleter::new(tmp.path().to_path_buf());
         c.set_model_names(vec!["claude-3-sonnet".into(), "claude-3-opus".into()]);
         let result = c.complete("/model opus");
-        assert_eq!(result, Some("/model claude-3-opus".to_string()));
+        // "opus" matches both the alias "claude-opus" and "claude-3-opus" from model_names
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(text.contains("opus"), "got: {text}");
     }
 
     // ── Helper tests ────────────────────────────────────────
