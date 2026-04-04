@@ -252,6 +252,12 @@ pub trait Persistence: Send + Sync {
         preserve_count: usize,
     ) -> Result<usize>;
 
+    // ── Microcompact ──
+
+    /// Replace message content for the given IDs with a stub string.
+    /// Used by microcompact to clear old tool results without full compaction.
+    async fn clear_message_content(&self, message_ids: &[i64], stub: &str) -> Result<()>;
+
     // ── Purge ──
 
     /// Stats about compacted (archived) messages across all sessions.

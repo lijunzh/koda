@@ -587,6 +587,22 @@ impl Persistence for Database {
         Ok(matches!(last_msg, Some((role, Some(_))) if role == "assistant"))
     }
 
+    async fn clear_message_content(&self, message_ids: &[i64], stub: &str) -> Result<()> {
+        if message_ids.is_empty() {
+            return Ok(());
+        }
+        for chunk in message_ids.chunks(500) {
+            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!("UPDATE messages SET content = ? WHERE id IN ({placeholders})");
+            let mut query = sqlx::query(&sql).bind(stub);
+            for id in chunk {
+                query = query.bind(id);
+            }
+            query.execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
     /// Stats about compacted (archived) messages across all sessions.
     async fn compacted_stats(&self) -> Result<CompactedStats> {
         let row: (i64, i64, i64, Option<String>) = sqlx::query_as(
