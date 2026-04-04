@@ -102,13 +102,13 @@ mod tests {
     fn alias_shows_model_id_and_provider() {
         let item = ModelItem {
             label: "gemini-flash-lite".into(),
-            model_id: "gemini-2.0-flash-lite".into(),
+            model_id: "gemini-flash-lite-latest".into(),
             provider: "Gemini".into(),
             is_current: false,
             is_local: false,
         };
         let desc = item.description();
-        assert!(desc.contains("gemini-2.0-flash-lite"));
+        assert!(desc.contains("gemini-flash-lite-latest"));
         assert!(desc.contains("Gemini"));
     }
 

@@ -28,54 +28,37 @@ pub const LOCAL_ALIAS: &str = "local";
 
 /// All known aliases. Order determines display order in `/model` picker.
 static ALIASES: &[ModelAlias] = &[
-    // ── Nearly free ──────────────────────────────────────
+    // ── Gemini (version-less → auto-resolves to latest) ─
     ModelAlias {
         alias: "gemini-flash-lite",
-        model_id: "gemini-2.0-flash-lite",
+        model_id: "gemini-flash-lite-latest",
         provider: ProviderType::Gemini,
     },
-    // ── Fast ─────────────────────────────────────────────
     ModelAlias {
         alias: "gemini-flash",
-        model_id: "gemini-2.5-flash",
+        model_id: "gemini-flash-latest",
         provider: ProviderType::Gemini,
     },
+    ModelAlias {
+        alias: "gemini-pro",
+        model_id: "gemini-pro-latest",
+        provider: ProviderType::Gemini,
+    },
+    // ── Anthropic ────────────────────────────────────────
     ModelAlias {
         alias: "claude-haiku",
         model_id: "claude-haiku-3.5-20241022",
         provider: ProviderType::Anthropic,
     },
     ModelAlias {
-        alias: "gpt-mini",
-        model_id: "gpt-4o-mini",
-        provider: ProviderType::OpenAI,
-    },
-    // ── Default ──────────────────────────────────────────
-    ModelAlias {
         alias: "claude-sonnet",
         model_id: "claude-sonnet-4-20250514",
         provider: ProviderType::Anthropic,
     },
     ModelAlias {
-        alias: "gemini-pro",
-        model_id: "gemini-2.5-pro",
-        provider: ProviderType::Gemini,
-    },
-    ModelAlias {
-        alias: "gpt-4o",
-        model_id: "gpt-4o",
-        provider: ProviderType::OpenAI,
-    },
-    // ── Strong ───────────────────────────────────────────
-    ModelAlias {
         alias: "claude-opus",
         model_id: "claude-opus-4-20250514",
         provider: ProviderType::Anthropic,
-    },
-    ModelAlias {
-        alias: "o3",
-        model_id: "o3",
-        provider: ProviderType::OpenAI,
     },
 ];
 
@@ -156,6 +139,7 @@ mod tests {
     fn resolve_literal_model_id_returns_none() {
         // Literal model IDs should NOT resolve as aliases
         assert!(resolve("claude-sonnet-4-20250514").is_none());
+        assert!(resolve("gemini-2.5-pro").is_none());
     }
 
     #[test]

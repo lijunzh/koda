@@ -510,9 +510,8 @@ mod tests {
     fn test_model_no_names_returns_none() {
         let tmp = tempdir().unwrap();
         let mut c = InputCompleter::new(tmp.path().to_path_buf());
-        // No provider model names set, but aliases still match
-        // "gpt" matches gpt-mini, gpt-4o aliases
-        assert!(c.complete("/model gpt").is_some());
+        // No provider model names set; "gpt" matches no aliases (we only have gemini/claude)
+        assert!(c.complete("/model gpt").is_none());
     }
 
     #[test]
