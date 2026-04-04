@@ -230,14 +230,15 @@ impl TuiContext {
             let providers = crate::repl::PROVIDERS;
             let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
                 .iter()
-                .map(
-                    |(key, name, desc)| crate::widgets::provider_menu::ProviderItem {
+                .map(|(key, name)| {
+                    let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
+                    crate::widgets::provider_menu::ProviderItem {
                         key,
                         name,
-                        description: desc,
+                        local: !ptype.requires_api_key(),
                         is_current: false,
-                    },
-                )
+                    }
+                })
                 .collect();
             menu = MenuContent::Provider(crate::widgets::dropdown::DropdownState::new(
                 items,
