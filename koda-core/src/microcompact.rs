@@ -3,8 +3,10 @@
 //! Replaces old tool result content with a stub (`[Old tool result content cleared]`)
 //! directly in the database. No LLM call, no API cost — just a SQL UPDATE.
 //!
-//! This keeps context lean between full compactions. A session with 20 file reads
-//! only keeps the N most recent results; older ones become stubs.
+//! **Time-based trigger**: only fires when the gap since the last assistant
+//! message exceeds a threshold (default 5 minutes). This prevents aggressive
+//! clearing during active tool use and matches Claude Code's pattern where
+//! microcompact only runs when the prompt cache has gone cold.
 //!
 //! Inspired by Claude Code's `microCompact.ts`.
 
@@ -37,7 +39,19 @@ const COMPACTABLE_TOOLS: &[&str] = &[
 ];
 
 /// Number of most-recent compactable tool results to keep intact.
-const KEEP_RECENT: usize = 6;
+///
+/// Claude Code uses 5 with a 60-minute gap threshold. We match their
+/// keep-recent count.
+const KEEP_RECENT: usize = 5;
+
+/// Minimum idle gap (in seconds) since the last assistant message before
+/// microcompact fires. During active tool use the model needs those results;
+/// clearing them mid-turn is wasteful and confusing.
+///
+/// 5 minutes = user went for coffee, came back, sent a new message.
+/// Claude Code uses 60 minutes (tied to Anthropic's prompt cache TTL).
+/// We use a shorter gap because koda has no server-side cache to protect.
+const GAP_THRESHOLD_SECS: i64 = 300;
 
 /// Minimum token size for a tool result to be worth clearing.
 /// Don't bother clearing tiny results — the overhead of the stub is comparable.
@@ -54,13 +68,22 @@ pub struct MicrocompactResult {
 
 /// Run microcompact on a session — clear old compactable tool results.
 ///
-/// This is cheap (no LLM call) and idempotent. Safe to run every turn.
-///
-/// Returns `None` if nothing was cleared (already clean or too few results).
+/// Only fires when the gap since the last assistant message exceeds
+/// `GAP_THRESHOLD_SECS`. Returns `None` if the trigger doesn't fire
+/// or nothing was cleared.
 pub async fn microcompact_session(
     db: &Database,
     session_id: &str,
 ) -> Result<Option<MicrocompactResult>> {
+    // Check the time-based trigger first — skip the heavy scan if idle gap
+    // hasn't been reached.
+    let gap = db.seconds_since_last_assistant(session_id).await?;
+    match gap {
+        None => return Ok(None), // No assistant messages yet.
+        Some(s) if s < GAP_THRESHOLD_SECS => return Ok(None),
+        _ => {} // Gap exceeded — proceed.
+    }
+
     let history = db.load_context(session_id).await?;
     if history.len() < KEEP_RECENT + 2 {
         return Ok(None);
@@ -215,6 +238,7 @@ mod tests {
             cache_read_tokens: None,
             cache_creation_tokens: None,
             thinking_tokens: None,
+            created_at: None,
         }
     }
 
@@ -286,7 +310,8 @@ mod tests {
         assert!(diagnosis(&messages).is_none());
     }
 
-    /// Integration test: verifies microcompact clears old results in a real SQLite DB.
+    /// Integration test: verifies microcompact clears old results in a real SQLite DB,
+    /// but only when the time-based trigger fires (last assistant msg is old enough).
     #[tokio::test]
     async fn test_microcompact_session_integration() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -301,11 +326,9 @@ mod tests {
             let tc_id = format!("tc_{i}");
             let tc_json =
                 format!(r#"[{{"id":"{tc_id}","function_name":"Read","arguments":"{{}}"}}]"#);
-            // Assistant with tool_calls
             db.insert_message(&session, &Role::Assistant, None, Some(&tc_json), None, None)
                 .await
                 .unwrap();
-            // Tool result
             db.insert_message(
                 &session,
                 &Role::Tool,
@@ -318,9 +341,25 @@ mod tests {
             .unwrap();
         }
 
-        // Run microcompact
+        // Should NOT trigger — last assistant message is fresh (just inserted).
         let result = microcompact_session(&db, &session).await.unwrap();
-        assert!(result.is_some());
+        assert!(result.is_none(), "should not trigger for fresh messages");
+
+        // Backdate the last assistant message so the time-based trigger fires.
+        sqlx::query(
+            "UPDATE messages SET created_at = datetime('now', '-10 minutes') \
+             WHERE session_id = ? AND role = 'assistant' \
+             AND id = (SELECT MAX(id) FROM messages WHERE session_id = ? AND role = 'assistant')",
+        )
+        .bind(&session)
+        .bind(&session)
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // NOW it should trigger.
+        let result = microcompact_session(&db, &session).await.unwrap();
+        assert!(result.is_some(), "should trigger after gap threshold");
         let mc = result.unwrap();
         assert_eq!(mc.cleared, 3); // 3 oldest should be cleared
         assert!(mc.tokens_saved > 0);

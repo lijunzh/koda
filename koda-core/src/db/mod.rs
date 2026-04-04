@@ -45,6 +45,11 @@ pub fn config_dir() -> Result<std::path::PathBuf> {
 }
 
 impl Database {
+    /// Access the underlying connection pool (for tests and raw queries).
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     /// Initialize the database, run migrations, and enable WAL mode.
     ///
     /// `koda_config_dir` is the koda configuration directory (e.g. `~/.config/koda`).
@@ -218,7 +223,8 @@ impl Database {
         let rows: Vec<MessageRow> = sqlx::query_as(
             "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
-                    cache_read_tokens, cache_creation_tokens, thinking_tokens
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens,
+                    created_at
              FROM messages
              WHERE session_id = ? AND id < ? AND compacted_at IS NULL
              ORDER BY id DESC
@@ -234,6 +240,23 @@ impl Database {
         let mut messages: Vec<Message> = rows.into_iter().map(|r| r.into()).collect();
         messages.reverse();
         Ok(messages)
+    }
+
+    /// Seconds since the last assistant message in this session.
+    ///
+    /// Returns `None` if there are no (non-compacted) assistant messages.
+    /// Used by microcompact to decide whether the idle gap threshold is met.
+    pub async fn seconds_since_last_assistant(&self, session_id: &str) -> Result<Option<i64>> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT CAST((julianday('now') - julianday(created_at)) * 86400 AS INTEGER) \
+             FROM messages \
+             WHERE session_id = ? AND role = 'assistant' AND compacted_at IS NULL \
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(secs,)| secs))
     }
 }
 
@@ -254,6 +277,7 @@ pub(crate) struct MessageRow {
     pub cache_read_tokens: Option<i64>,
     pub cache_creation_tokens: Option<i64>,
     pub thinking_tokens: Option<i64>,
+    pub created_at: Option<String>,
 }
 
 /// Session metadata for listing.
@@ -297,6 +321,7 @@ impl From<MessageRow> for Message {
             cache_read_tokens: r.cache_read_tokens,
             cache_creation_tokens: r.cache_creation_tokens,
             thinking_tokens: r.thinking_tokens,
+            created_at: r.created_at,
         }
     }
 }
