@@ -456,6 +456,6 @@ pub(crate) fn handle_keys(buffer: &mut ScrollBuffer) {
     tui_output::blank(buffer);
     tui_output::dim_msg(
         buffer,
-        "Use /provider <name> to add or update a key.".into(),
+        "Pick a provider below to set or update its key.".into(),
     );
 }

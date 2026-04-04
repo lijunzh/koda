@@ -47,6 +47,8 @@ pub(crate) enum MenuContent {
     Provider(ProviderDropdown),
     /// Provider model list — second step of `/provider` (pick provider → list its models).
     ProviderModels(ModelDropdown, koda_core::config::ProviderType),
+    /// Key management — pick a provider to set its API key (`/key`).
+    Key(ProviderDropdown),
     /// Session picker dropdown (`/sessions` with no args).
     Session(SessionDropdown),
     /// File picker dropdown (auto-appears on `@`).
@@ -108,6 +110,10 @@ pub(crate) enum ProviderWizard {
     NeedApiKey {
         provider_type: koda_core::config::ProviderType,
         base_url: String,
+        env_name: String,
+    },
+    /// Key-only mode from `/key` — set key and return, no model list.
+    NeedApiKeyOnly {
         env_name: String,
     },
     /// Step 1 (local): provider selected, now need URL.

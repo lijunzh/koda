@@ -20,6 +20,7 @@ use tokio::sync::RwLock;
 pub enum SlashAction {
     Continue,
     Quit,
+    OpenKeyMenu,
 }
 
 use tui_output::{BOLD, CYAN, DIM};
@@ -160,7 +161,7 @@ pub async fn handle_slash_command(
         }
         ReplAction::ManageKeys => {
             crate::tui_wizards::handle_keys(buffer);
-            SlashAction::Continue
+            SlashAction::OpenKeyMenu
         }
         ReplAction::Handled => SlashAction::Continue,
         ReplAction::NotACommand => SlashAction::Continue,

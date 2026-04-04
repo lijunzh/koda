@@ -111,6 +111,37 @@ impl TuiContext {
         self.menu = MenuContent::Provider(dd);
     }
 
+    pub(crate) async fn open_key_picker(&mut self) {
+        // Only show cloud providers (ones that need API keys)
+        let providers = crate::repl::PROVIDERS;
+        let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
+            .iter()
+            .filter(|&&(name, _, _)| {
+                let ptype =
+                    koda_core::config::ProviderType::from_url_or_name("", Some(name));
+                ptype.requires_api_key()
+            })
+            .map(
+                |&(key, name, desc)| {
+                    let ptype =
+                        koda_core::config::ProviderType::from_url_or_name("", Some(key));
+                    let has_key = koda_core::runtime_env::is_set(ptype.env_key_name());
+                    crate::widgets::provider_menu::ProviderItem {
+                        key,
+                        name,
+                        description: desc,
+                        is_current: has_key, // repurpose: green = key is set
+                    }
+                },
+            )
+            .collect();
+        let dd = crate::widgets::dropdown::DropdownState::new(
+            items,
+            "\u{1f511} Set API key for",
+        );
+        self.menu = MenuContent::Key(dd);
+    }
+
     pub(crate) fn start_provider_wizard(&mut self, name: &str) {
         let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(name));
         let base_url = ptype.default_base_url().to_string();
@@ -375,6 +406,7 @@ impl TuiContext {
             MenuContent::Model(dd) => nav!(dd),
             MenuContent::Provider(dd) => nav!(dd),
             MenuContent::ProviderModels(dd, _) => nav!(dd),
+            MenuContent::Key(dd) => nav!(dd),
             MenuContent::Session(dd) => nav!(dd),
             MenuContent::File { dropdown: dd, .. } => nav!(dd),
             MenuContent::Approval { .. }
@@ -487,6 +519,28 @@ impl TuiContext {
                 }
                 return;
             }
+            MenuContent::Key(dd) => {
+                if let Some(item) = dd.selected_item() {
+                    let ptype =
+                        koda_core::config::ProviderType::from_url_or_name("", Some(item.key));
+                    let env_name = ptype.env_key_name().to_string();
+                    let provider_name = ptype.to_string();
+                    let has_key = koda_core::runtime_env::is_set(&env_name);
+                    let label = if has_key {
+                        format!("API key for {} (Enter to keep current)", provider_name)
+                    } else {
+                        format!("API key for {}", provider_name)
+                    };
+                    self.menu = MenuContent::WizardTrail(vec![
+                        ("Key".into(), provider_name),
+                    ]);
+                    self.prompt_mode = PromptMode::WizardInput { label };
+                    self.provider_wizard = Some(ProviderWizard::NeedApiKeyOnly { env_name });
+                    self.textarea.select_all();
+                    self.textarea.cut();
+                }
+                return;
+            }
             MenuContent::Session(dd) => {
                 if let Some(item) = dd.selected_item() {
                     if item.is_current {
@@ -579,6 +633,26 @@ impl TuiContext {
                     }
                     self.apply_provider(provider_type, base_url).await;
                 }
+                ProviderWizard::NeedApiKeyOnly { env_name } => {
+                    if value.is_empty() && !koda_core::runtime_env::is_set(&env_name) {
+                        self.scroll_buffer.push(Line::styled(
+                            "  \u{2716} No API key provided.",
+                            Style::default().fg(Color::Red),
+                        ));
+                    } else if !value.is_empty() {
+                        koda_core::runtime_env::set(&env_name, &value);
+                        if let Ok(mut store) = koda_core::keystore::KeyStore::load() {
+                            store.set(&env_name, &value);
+                            let _ = store.save();
+                        }
+                        let masked = koda_core::keystore::mask_key(&value);
+                        self.scroll_buffer.push(Line::styled(
+                            format!("  \u{2714} {env_name} set to {masked}"),
+                            Style::default().fg(Color::Green),
+                        ));
+                    }
+                    // Key-only mode: just return to chat, no provider switch
+                }
                 ProviderWizard::NeedUrl { provider_type } => {
                     let url = if value.is_empty() {
                         provider_type.default_base_url().to_string()
@@ -598,8 +672,8 @@ impl TuiContext {
         provider_type: koda_core::config::ProviderType,
         base_url: String,
     ) {
-        self.config.provider_type = provider_type.clone();
-        self.config.base_url = base_url.clone();
+        self.config.provider_type = provider_type;
+        self.config.base_url = base_url;
         self.config.model = provider_type.default_model().to_string();
         self.config.model_settings.model = self.config.model.clone();
         self.config.recalculate_model_derived();
