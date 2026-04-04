@@ -19,6 +19,13 @@ pub trait EngineSink: Send + Sync {
     fn emit(&self, event: EngineEvent);
 }
 
+/// A no-op sink that discards all events. Used by background sub-agents.
+pub struct NullSink;
+
+impl EngineSink for NullSink {
+    fn emit(&self, _event: EngineEvent) {}
+}
+
 /// A sink that collects events into a Vec for testing.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default)]

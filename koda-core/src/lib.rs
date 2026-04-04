@@ -16,6 +16,8 @@ pub mod approval;
 pub mod bash_path_lint;
 /// Bash command safety classification (destructive, mutating, read-only).
 pub mod bash_safety;
+/// Background sub-agent registry — tracks agents spawned with `background: true`.
+pub mod bg_agent;
 /// Context compaction — summarise old messages to reclaim token budget.
 pub mod compact;
 /// Global configuration: provider, model, model settings, CLI flags.

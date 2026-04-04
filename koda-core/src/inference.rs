@@ -517,6 +517,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     let mut retried_empty = false;
     let mut loop_detector = LoopDetector::new();
     let sub_agent_cache = crate::sub_agent_cache::SubAgentCache::new();
+    let bg_agents = crate::bg_agent::new_shared();
     let mut total_prompt_tokens: i64 = 0;
     let mut total_completion_tokens: i64 = 0;
     let mut total_cache_read_tokens: i64 = 0;
@@ -528,6 +529,29 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     let base_system_prompt = system_prompt.to_string();
 
     loop {
+        // Inject completed background agent results as user messages
+        for bg_result in bg_agents.drain_completed() {
+            let status = if bg_result.success {
+                "completed"
+            } else {
+                "failed"
+            };
+            let injection = format!(
+                "[Background agent '{}' {status}]\n\
+                 Original task: {}\n\
+                 Result:\n{}",
+                bg_result.agent_name, bg_result.prompt, bg_result.output
+            );
+            sink.emit(EngineEvent::Info {
+                message: format!(
+                    "  \u{2705} Background agent '{}' {status}",
+                    bg_result.agent_name
+                ),
+            });
+            db.insert_message(session_id, &Role::User, Some(&injection), None, None, None)
+                .await?;
+        }
+
         if iteration >= hard_cap {
             let recent = loop_detector.recent_names();
             sink.emit(EngineEvent::LoopCapReached {
@@ -814,6 +838,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 cancel.clone(),
                 &sub_agent_cache,
                 file_tracker,
+                &bg_agents,
             )
             .await?;
         } else if tool_calls.len() > 1 {
@@ -831,6 +856,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 cmd_rx,
                 &sub_agent_cache,
                 file_tracker,
+                &bg_agents,
             )
             .await?;
         } else {
@@ -848,6 +874,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 cmd_rx,
                 &sub_agent_cache,
                 file_tracker,
+                &bg_agents,
             )
             .await?;
         }
