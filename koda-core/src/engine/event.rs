@@ -81,6 +81,19 @@ pub enum EngineEvent {
         output: String,
     },
 
+    /// A line of streaming output from a tool (currently Bash only).
+    ///
+    /// Emitted as each line arrives from stdout/stderr, before `ToolCallResult`.
+    /// Clients can render these in real-time for a "live terminal" feel.
+    ToolOutputLine {
+        /// Matches the `id` from `ToolCallStart`.
+        id: String,
+        /// The output line (no trailing newline).
+        line: String,
+        /// Whether this line came from stderr.
+        is_stderr: bool,
+    },
+
     // ── Sub-agent delegation ──────────────────────────────────────────
     /// A sub-agent is being invoked.
     SubAgentStart {

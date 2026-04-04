@@ -39,6 +39,9 @@ pub struct TuiRenderer {
     /// Pending tool call args: maps tool_call_id → (tool_name, args_json).
     /// Used to extract file paths for syntax highlighting Read/Grep results.
     pending_tool_args: HashMap<String, (String, String)>,
+    /// Tool IDs that emitted streaming output lines.
+    /// Used to avoid re-rendering the full output in ToolCallResult.
+    streaming_tool_ids: std::collections::HashSet<String>,
 }
 
 impl TuiRenderer {
@@ -55,6 +58,7 @@ impl TuiRenderer {
             response_started: false,
             md: crate::md_render::MarkdownRenderer::new(),
             pending_tool_args: HashMap::new(),
+            streaming_tool_ids: std::collections::HashSet::new(),
         }
     }
 
@@ -148,28 +152,64 @@ impl TuiRenderer {
                     ]),
                 );
             }
+            EngineEvent::ToolOutputLine {
+                id,
+                line,
+                is_stderr,
+            } => {
+                self.streaming_tool_ids.insert(id);
+                let (prefix, style) = if is_stderr {
+                    ("  \u{2502}e ", RED)
+                } else {
+                    ("  \u{2502} ", DIM)
+                };
+                tui_output::emit_line(
+                    buffer,
+                    Line::from(vec![Span::styled(prefix, DIM), Span::styled(line, style)]),
+                );
+            }
             EngineEvent::ToolCallResult { id, name, output } => {
-                // Extract file path from pending args for syntax highlighting
+                // If we streamed output lines, skip rendering the full result
+                // (the user already saw it in real-time). Just show exit code.
+                let streamed = self.streaming_tool_ids.remove(&id);
                 let file_ext = self
                     .pending_tool_args
                     .remove(&id)
                     .and_then(|(_, args)| extract_file_extension(&args));
 
                 self.tool_history.push(&name, &output);
-                let is_diff_tool =
-                    matches!(name.as_str(), "Write" | "Edit" | "Delete" | "MemoryWrite");
-                if self.preview_shown && is_diff_tool {
-                    // Compact: just show line count
-                    let line_count = output.lines().count();
+                if streamed {
+                    // Already streamed line-by-line — just show exit code summary.
+                    let exit_line = output.lines().next().unwrap_or("");
                     tui_output::emit_line(
                         buffer,
                         Line::from(vec![
                             Span::styled("  \u{2514} ", DIM),
-                            Span::styled(format!("{name}: {line_count} line(s)"), DIM),
+                            Span::styled(exit_line.to_string(), DIM),
                         ]),
                     );
                 } else {
-                    render_tool_output(buffer, &name, &output, self.verbose, file_ext.as_deref());
+                    let is_diff_tool =
+                        matches!(name.as_str(), "Write" | "Edit" | "Delete" | "MemoryWrite");
+                    if self.preview_shown && is_diff_tool {
+                        // Compact: just show line count
+                        let line_count = output.lines().count();
+                        tui_output::emit_line(
+                            buffer,
+                            Line::from(vec![
+                                Span::styled("  \u{2514} ", DIM),
+                                Span::styled(format!("{name}: {line_count} line(s)"), DIM),
+                            ]),
+                        );
+                    } else {
+                        render_tool_output(
+                            buffer,
+                            &name,
+                            &output,
+                            self.verbose,
+                            file_ext.as_deref(),
+                        );
+                    }
                 }
                 self.preview_shown = false;
             }

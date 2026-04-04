@@ -159,6 +159,15 @@ impl EngineSink for HeadlessSink {
             EngineEvent::ToolCallStart { name, .. } => {
                 eprintln!("\x1b[36m  \u{26a1} {name}\x1b[0m");
             }
+            EngineEvent::ToolOutputLine {
+                line, is_stderr, ..
+            } => {
+                if is_stderr {
+                    eprintln!("  \u{2502}e {line}");
+                } else {
+                    eprintln!("  \u{2502} {line}");
+                }
+            }
             EngineEvent::ToolCallResult { name, output, .. } => {
                 use koda_core::truncate::{Truncated, truncate_for_display};
                 eprintln!("\x1b[32m  \u{2713} {name}\x1b[0m");
