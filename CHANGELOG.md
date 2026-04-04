@@ -9,6 +9,116 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-04
+
+Major release closing all P0/P1 architecture gaps vs Claude Code v2.1.88.
+50 PRs merged since v0.1.20, touching every layer of the engine.
+
+### Added
+
+#### Streaming Tool Executor (#648)
+- **Eager dispatch during streaming** — read-only auto-approved tools execute
+  while subsequent tool call arguments are still being streamed from the LLM.
+  Overlaps tool execution with generation time (Claude Code's
+  `StreamingToolExecutor` pattern).
+- `ToolCallReady` variant in `StreamChunk` — emitted by Anthropic parser on
+  `content_block_stop`, enabling per-tool completion events during streaming.
+
+#### Tool System Overhaul (#611–#620)
+- **AskUser tool** (#615) — model can explicitly request user clarification
+  instead of guessing. Read-only, auto-approved.
+- **Background Bash** (#616) — `run_in_background: true` parameter spawns
+  long-lived processes (dev servers, watchers) without blocking inference.
+  Returns PID immediately.
+- **WebSearch tool** (#620) — DuckDuckGo search, no API key required.
+  Returns title + snippet + URL for top results.
+- **Write `overwrite` parameter** (#613) — must be `true` to replace existing
+  files. Prevents accidental overwrites.
+- **Edit `replace_all` parameter** (#614) — replace all occurrences of
+  `old_str` in a single call.
+- **Fuzzy `old_str` matching** (#617) — Edit tool suggests closest match when
+  exact `old_str` not found (whitespace normalization + similarity scoring).
+- **Stale file detection** (#618) — Edit checks file mtime before applying;
+  warns if the file changed since the model last read it.
+- **Pre-flight input validation** (#612) — tool arguments validated before
+  the approval prompt, not after. No more approving a tool call only to get
+  a validation error.
+- **Parameter rename** (#619) — `path` → `file_path` across all tool schemas
+  for consistency. Both names accepted for backward compatibility.
+
+#### Sub-agent System (#631–#635)
+- **Built-in sub-agents** (#631) — `task`, `explore`, `plan` agents available
+  out of the box.
+- **Fork sub-agent** (#632) — sub-agents forked from the parent session
+  context, inheriting conversation history.
+- **Background sub-agent execution** (#633) — sub-agents run in background
+  with progress tracking.
+- **Git worktree isolation** (#634) — each sub-agent gets its own git worktree,
+  preventing concurrent file conflicts.
+- **Verify agent overhaul** (#635) — default-deny write access for verification
+  agents. Read-only by default, explicit opt-in for mutations.
+
+#### Context & Compaction (#638–#642)
+- **Context analysis struct** (#638) — per-tool token breakdown with duplicate
+  file read detection. Enriched context warnings show top token consumers.
+- **Microcompact** (#639) — lightweight tool result aging between full
+  compactions. Old Read/Bash/Grep results replaced with stubs, no API call.
+- **Partial compaction** (#640) — compacts oldest half of context, preserving
+  recent messages and original task intent.
+- **Streaming Bash output** (#641) — `EngineEvent::ToolProgress` streams
+  Bash stdout/stderr line-by-line to the TUI during execution.
+- **Bash smart summary** (#642) — large command output stored in full but
+  summarized in context (head + tail + line count).
+
+#### Session & Recovery (#622–#626)
+- **Network-drop detection** (#622) — `NetworkError` variant distinguishes
+  connection drops from clean stream ends. Partial responses discarded.
+- **Interrupted turn recovery** (#623) — banner on session resume when the
+  previous turn was interrupted.
+- **Session titles & mode persistence** (#624) — sessions get auto-generated
+  titles; approval mode persisted across resumes.
+- **Ctrl+R reverse history search** (#625) — interactive overlay for searching
+  command history.
+- **Away-summary banner** (#626) — on session resume, shows what happened
+  since the user left.
+
+#### Other Features
+- **TodoWrite tool + context warning** (#621) — persistent task tracking;
+  warning at 80% context usage.
+- **Model aliases & /key command** (#630) — `/model` redesigned with alias
+  support; `/key` manages API keys interactively.
+- **Unified diff preview** (#607) — syntax-highlighted unified diff with
+  context lines for Edit/Write previews.
+
+### Changed
+- **System prompt** (#602) — aligned with Claude Code conventions for tool
+  usage instructions, project context, and behavioral guidelines.
+- **Compaction prompt** (#604) — 9-section summarization with `<analysis>`
+  scratchpad for higher-quality summaries.
+- **Compaction circuit breaker** (#603) — stops retrying after 3 consecutive
+  compaction failures.
+- **Progressive head-truncation** (#605) — on context overflow, truncates
+  oldest messages before falling back to full compaction.
+- **Provider descriptions** (#650) — removed inaccurate "Fast inference" and
+  "Meta-provider" labels. "Local, no API key" now derived from
+  `ProviderType::requires_api_key()`.
+
+### Removed
+- **AstAnalysis tool** (#611) — tree-sitter analysis removed from tool
+  registry. Post-edit syntax verification was removed in v0.1.18; this
+  cleans up the remaining dead tool definition.
+
+### Refactored
+- **`tool_dispatch.rs` split** (#643, #646) — 600-line monolith decomposed
+  into `tool_dispatch.rs`, `sub_agent_dispatch.rs`, and `approval_flow.rs`.
+- **`TurnState` struct** (#645, #647) — 15+ parameters bundled into a single
+  struct, threaded through the inference loop.
+
+### Testing
+- All 286 tests pass across 4 crates
+- Clean clippy (zero warnings), clean fmt
+- CI: Ubuntu, macOS, Windows
+
 ## [0.1.20] - 2026-03-28
 
 ### Added
