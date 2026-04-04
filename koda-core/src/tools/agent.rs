@@ -236,11 +236,12 @@ mod tests {
             .iter()
             .filter(|(_, _, src)| src == "built-in")
             .collect();
-        assert_eq!(builtins.len(), 3, "Expected task/explore/plan built-ins");
+        assert_eq!(builtins.len(), 4, "Expected task/explore/plan/verify built-ins");
         let names: Vec<&str> = result.iter().map(|(n, _, _)| n.as_str()).collect();
         assert!(names.contains(&"task"));
         assert!(names.contains(&"explore"));
         assert!(names.contains(&"plan"));
+        assert!(names.contains(&"verify"));
         // Default is always excluded from listing
         assert!(!names.contains(&"default"), "Should exclude default agent");
     }
@@ -269,11 +270,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let agents = discover_all_agents(dir.path());
         let builtins: Vec<_> = agents.iter().filter(|a| a.source == "built-in").collect();
-        assert_eq!(builtins.len(), 3, "Expected task/explore/plan built-ins");
+        assert_eq!(builtins.len(), 4, "Expected task/explore/plan/verify built-ins");
         let names: Vec<&str> = builtins.iter().map(|a| a.name.as_str()).collect();
         assert!(names.contains(&"task"));
         assert!(names.contains(&"explore"));
         assert!(names.contains(&"plan"));
+        assert!(names.contains(&"verify"));
     }
 
     #[test]
@@ -284,6 +286,7 @@ mod tests {
         assert!(result.contains("task"));
         assert!(result.contains("explore"));
         assert!(result.contains("plan"));
+        assert!(result.contains("verify"));
     }
 
     #[test]

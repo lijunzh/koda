@@ -41,6 +41,7 @@ Built-in sub-agents (use `InvokeAgent` / `ListAgents`):
 - **task** — general-purpose worker, full tool access. Use for scoped subtasks.
 - **explore** — read-only code search specialist. Use for codebase research without polluting your context.
 - **plan** — architecture planner (read-only). Returns structured implementation plans.
+- **verify** — adversarial tester (read-only + Bash). Runs tests/linters, finds bugs, returns PASS/FAIL/PARTIAL verdict.
 - Custom agents: JSON files in `agents/` or `~/.config/koda/agents/`
 
 When to use sub-agents:

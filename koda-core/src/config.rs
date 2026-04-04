@@ -551,6 +551,7 @@ impl KodaConfig {
         ("task", include_str!("../agents/task.json")),
         ("explore", include_str!("../agents/explore.json")),
         ("plan", include_str!("../agents/plan.json")),
+        ("verify", include_str!("../agents/verify.json")),
     ];
 
     /// Try to load a built-in (embedded) agent by name.
