@@ -19,7 +19,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// Supported LLM provider types.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderType {
     /// OpenAI API.
