@@ -51,7 +51,7 @@ impl Env {
     }
 
     fn tool_defs(&self) -> Vec<koda_core::providers::ToolDefinition> {
-        self.tools.get_definitions(&[])
+        self.tools.get_definitions(&[], &[])
     }
 
     async fn insert_message(&self, role: &Role, text: &str) {
