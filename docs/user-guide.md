@@ -223,16 +223,10 @@ plain text. Models that can't do this will produce errors and a warning:
 > *This model appears to struggle with tool calling.
 > Consider switching to a model with native function-call support.*
 
-**Known-good local models** (via LM Studio or Ollama):
-
-| Model | Tool calling | Notes |
-|---|---|---|
-| Qwen 3.x (any size) | ✅ | Recommended for local use |
-| Llama 3.3 70B+ | ✅ | Strong tool calling |
-| DeepSeek V3 | ✅ | |
-| Mistral Small/Large | ✅ | |
-| Phi-4 | ⚠️ | Mostly works, occasional hallucinated tool names |
-| GLM-4 / tiny models | ❌ | Emits JSON as text, not function calls |
+Most modern instruction-tuned models support tool calling, but some
+smaller or older models do not. If you see the warning above, try a
+different model. Check your model's documentation for function-call
+support.
 
 ---
 
