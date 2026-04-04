@@ -34,6 +34,7 @@ pub(crate) async fn handle_compact(
         config.max_context_tokens,
         &config.model_settings,
         provider,
+        compact::CompactMode::Manual,
     )
     .await
     {
