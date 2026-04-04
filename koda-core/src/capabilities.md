@@ -42,7 +42,9 @@ Built-in sub-agents (use `InvokeAgent` / `ListAgents`):
 - **explore** — read-only code search specialist. Use for codebase research without polluting your context.
 - **plan** — architecture planner (read-only). Returns structured implementation plans.
 - **verify** — adversarial tester (read-only + Bash). Runs tests/linters, finds bugs, returns PASS/FAIL/PARTIAL verdict.
+- **fork** — not a named agent. Set `agent_name: "fork"` to spawn a clone that inherits your full conversation context. Fork children cannot spawn sub-agents (anti-recursion).
 - Custom agents: JSON files in `agents/` or `~/.config/koda/agents/`
+- Omit `agent_name` to default to `task`.
 
 When to use sub-agents:
 - Complex multi-step tasks where you want to keep your context clean
