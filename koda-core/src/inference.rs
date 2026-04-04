@@ -41,6 +41,24 @@ use tokio_util::sync::CancellationToken;
 // Inference loop helpers (tightly coupled to inference_loop — live here)
 // ---------------------------------------------------------------------------
 
+/// Per-iteration immutable context shared across inference helpers.
+///
+/// Bundles the parameters that `assemble_context`, `preflight_compact_if_needed`,
+/// and `try_overflow_recovery` all share. Built at the top of each loop iteration
+/// (since `system_message` and `iteration` change per turn).
+struct TurnState<'a> {
+    db: &'a Database,
+    session_id: &'a str,
+    system_message: &'a ChatMessage,
+    pending_images: Option<&'a [ImageData]>,
+    iteration: u32,
+    config: &'a KodaConfig,
+    provider: &'a dyn LlmProvider,
+    tool_defs: &'a [ToolDefinition],
+    sink: &'a dyn EngineSink,
+    cancel: &'a CancellationToken,
+}
+
 /// Result of collecting a streamed LLM response.
 struct StreamResult {
     /// Accumulated text content from the response.
@@ -65,16 +83,8 @@ struct StreamResult {
 ///
 /// This is the single source of truth for context assembly — called on initial
 /// build, after pre-flight compaction, and after overflow recovery.
-async fn assemble_context(
-    db: &Database,
-    session_id: &str,
-    system_message: &ChatMessage,
-    pending_images: Option<&[ImageData]>,
-    iteration: u32,
-    max_context_tokens: usize,
-    sink: &dyn EngineSink,
-) -> Result<Vec<ChatMessage>> {
-    let history = db.load_context(session_id).await?;
+async fn assemble_context(turn: &TurnState<'_>) -> Result<Vec<ChatMessage>> {
+    let history = turn.db.load_context(turn.session_id).await?;
 
     // Run per-tool context analysis for smarter compaction decisions.
     // Logged at debug level; will be surfaced in `/usage` and used by
@@ -92,11 +102,11 @@ async fn assemble_context(
         }
     }
 
-    let mut messages = assemble_messages(system_message, &history);
+    let mut messages = assemble_messages(turn.system_message, &history);
 
     // Attach pending images to the last user message (first iteration only)
-    if iteration == 0
-        && let Some(imgs) = pending_images
+    if turn.iteration == 0
+        && let Some(imgs) = turn.pending_images
         && !imgs.is_empty()
         && let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user")
     {
@@ -104,10 +114,10 @@ async fn assemble_context(
     }
 
     let context_used = estimate_tokens(&messages);
-    crate::context::update(context_used, max_context_tokens);
-    sink.emit(EngineEvent::ContextUsage {
+    crate::context::update(context_used, turn.config.max_context_tokens);
+    turn.sink.emit(EngineEvent::ContextUsage {
         used: context_used,
-        max: max_context_tokens,
+        max: turn.config.max_context_tokens,
     });
 
     // Warn users when approaching the context limit (headless mode silently
@@ -129,7 +139,7 @@ async fn assemble_context(
             warning.push_str(&format!(" ~{waste} tokens wasted on duplicate file reads."));
         }
         warning.push_str(" Run /compact to free up space.");
-        sink.emit(EngineEvent::Warn { message: warning });
+        turn.sink.emit(EngineEvent::Warn { message: warning });
     }
 
     Ok(messages)
@@ -139,17 +149,9 @@ async fn assemble_context(
 /// before sending to the provider. Re-assembles context after successful compaction.
 ///
 /// Returns the (possibly updated) message vec.
-#[allow(clippy::too_many_arguments)]
 async fn preflight_compact_if_needed(
+    turn: &TurnState<'_>,
     messages: Vec<ChatMessage>,
-    db: &Database,
-    session_id: &str,
-    system_message: &ChatMessage,
-    pending_images: Option<&[ImageData]>,
-    iteration: u32,
-    config: &KodaConfig,
-    provider: &dyn LlmProvider,
-    sink: &dyn EngineSink,
 ) -> Result<Vec<ChatMessage>> {
     let ctx_pct = crate::context::percentage();
     if ctx_pct < PREFLIGHT_COMPACT_THRESHOLD {
@@ -163,42 +165,33 @@ async fn preflight_compact_if_needed(
     }
 
     tracing::warn!("Pre-flight: context at {ctx_pct}%, attempting auto-compact");
-    sink.emit(EngineEvent::Info {
+    turn.sink.emit(EngineEvent::Info {
         message: format!("\u{1f4e6} Context at {ctx_pct}% \u{2014} compacting before sending..."),
     });
 
     match crate::compact::compact_session_with_provider(
-        db,
-        session_id,
-        config.max_context_tokens,
-        &config.model_settings,
-        provider,
+        turn.db,
+        turn.session_id,
+        turn.config.max_context_tokens,
+        &turn.config.model_settings,
+        turn.provider,
     )
     .await
     {
         Ok(Ok(result)) => {
-            sink.emit(EngineEvent::Info {
+            turn.sink.emit(EngineEvent::Info {
                 message: format!(
                     "\u{2705} Compacted {} messages (~{} token summary)",
                     result.deleted, result.summary_tokens
                 ),
             });
-            assemble_context(
-                db,
-                session_id,
-                system_message,
-                pending_images,
-                iteration,
-                config.max_context_tokens,
-                sink,
-            )
-            .await
+            assemble_context(turn).await
         }
         Ok(Err(skip)) => {
             tracing::info!("Pre-flight compact skipped: {skip:?}");
             if matches!(skip, crate::compact::CompactSkip::HistoryTooLarge) {
                 crate::compact::record_compact_failure();
-                sink.emit(EngineEvent::Warn {
+                turn.sink.emit(EngineEvent::Warn {
                     message: "\u{26a0}\u{fe0f} Context is full but history is too large for \
                               this model to summarize. Start a new session (/session) or \
                               switch to a model with a larger context window."
@@ -215,7 +208,7 @@ async fn preflight_compact_if_needed(
             } else {
                 " Continuing anyway..."
             };
-            sink.emit(EngineEvent::Warn {
+            turn.sink.emit(EngineEvent::Warn {
                 message: format!("Compact failed: {e:#}.{suffix}"),
             });
             Ok(messages)
@@ -271,22 +264,12 @@ async fn try_with_rate_limit(
 ///
 /// Returns `Ok(Some((rx, messages)))` on success (receiver + updated messages),
 /// `Ok(None)` if cancelled during retry, or `Err` if compaction/retry fails.
-#[allow(clippy::too_many_arguments)]
 async fn try_overflow_recovery(
+    turn: &TurnState<'_>,
     original_err: anyhow::Error,
-    db: &Database,
-    session_id: &str,
-    system_message: &ChatMessage,
-    pending_images: Option<&[ImageData]>,
-    iteration: u32,
-    config: &KodaConfig,
-    provider: &dyn LlmProvider,
-    tool_defs: &[ToolDefinition],
-    cancel: &CancellationToken,
-    sink: &dyn EngineSink,
 ) -> Result<Option<(mpsc::Receiver<StreamChunk>, Vec<ChatMessage>)>> {
-    sink.emit(EngineEvent::SpinnerStop);
-    sink.emit(EngineEvent::Warn {
+    turn.sink.emit(EngineEvent::SpinnerStop);
+    turn.sink.emit(EngineEvent::Warn {
         message: "\u{26a0}\u{fe0f} Provider rejected request (context overflow). \
              Compacting and retrying..."
             .to_string(),
@@ -294,16 +277,16 @@ async fn try_overflow_recovery(
     tracing::warn!("Context overflow from provider: {original_err:#}");
 
     match crate::compact::compact_session_with_provider(
-        db,
-        session_id,
-        config.max_context_tokens,
-        &config.model_settings,
-        provider,
+        turn.db,
+        turn.session_id,
+        turn.config.max_context_tokens,
+        &turn.config.model_settings,
+        turn.provider,
     )
     .await
     {
         Ok(Ok(result)) => {
-            sink.emit(EngineEvent::Info {
+            turn.sink.emit(EngineEvent::Info {
                 message: format!(
                     "\u{2705} Compacted {} messages. Retrying...",
                     result.deleted
@@ -316,25 +299,16 @@ async fn try_overflow_recovery(
         }
     }
 
-    let messages = assemble_context(
-        db,
-        session_id,
-        system_message,
-        pending_images,
-        iteration,
-        config.max_context_tokens,
-        sink,
-    )
-    .await?;
+    let messages = assemble_context(turn).await?;
 
-    sink.emit(EngineEvent::SpinnerStart {
+    turn.sink.emit(EngineEvent::SpinnerStart {
         message: "Retrying...".into(),
     });
     let rx = tokio::select! {
-        result = provider.chat_stream(&messages, tool_defs, &config.model_settings) => {
+        result = turn.provider.chat_stream(&messages, turn.tool_defs, &turn.config.model_settings) => {
             result.context("LLM inference failed after compaction retry")?
         }
-        _ = cancel.cancelled() => return Ok(None),
+        _ = turn.cancel.cancelled() => return Ok(None),
     };
     Ok(Some((rx, messages)))
 }
@@ -621,31 +595,25 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let system_prompt_full = format!("{base_system_prompt}{progress}{todo_section}{git_line}");
         let system_message = ChatMessage::text("system", &system_prompt_full);
 
-        // Assemble context (load history, attach images, track usage)
-        let messages = assemble_context(
+        // Build per-iteration immutable context for helpers
+        let turn = TurnState {
             db,
             session_id,
-            &system_message,
-            pending_images.as_deref(),
-            iteration,
-            config.max_context_tokens,
-            sink,
-        )
-        .await?;
-
-        // Pre-flight budget check: if context is critically high, compact first
-        let messages = preflight_compact_if_needed(
-            messages,
-            db,
-            session_id,
-            &system_message,
-            pending_images.as_deref(),
+            system_message: &system_message,
+            pending_images: pending_images.as_deref(),
             iteration,
             config,
             provider,
+            tool_defs,
             sink,
-        )
-        .await?;
+            cancel: &cancel,
+        };
+
+        // Assemble context (load history, attach images, track usage)
+        let messages = assemble_context(&turn).await?;
+
+        // Pre-flight budget check: if context is critically high, compact first
+        let messages = preflight_compact_if_needed(&turn, messages).await?;
 
         // Stream the response (with rate limit retry)
         sink.emit(EngineEvent::SpinnerStart {
@@ -680,21 +648,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let mut rx = match stream_result {
             Ok(rx) => rx,
             Err(e) if is_context_overflow_error(&e) => {
-                match try_overflow_recovery(
-                    e,
-                    db,
-                    session_id,
-                    &system_message,
-                    pending_images.as_deref(),
-                    iteration,
-                    config,
-                    provider,
-                    tool_defs,
-                    &cancel,
-                    sink,
-                )
-                .await?
-                {
+                match try_overflow_recovery(&turn, e).await? {
                     Some((rx, _updated)) => rx,
                     None => {
                         sink.emit(EngineEvent::SpinnerStop);
