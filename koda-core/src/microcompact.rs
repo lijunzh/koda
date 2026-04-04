@@ -245,7 +245,7 @@ mod tests {
             msg(1, Role::Assistant, None, Some(tc), None),
             msg(2, Role::Tool, Some(CLEARED_MESSAGE), None, Some("tc_1")),
         ];
-        let id_map = build_tool_id_map(&messages);
+        let _id_map = build_tool_id_map(&messages);
         let compactable: Vec<_> = messages
             .iter()
             .filter(|m| m.role == Role::Tool)
