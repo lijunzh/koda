@@ -229,7 +229,19 @@ pub enum StreamChunk {
     TextDelta(String),
     /// A thinking/reasoning delta from native API (Anthropic extended thinking, OpenAI reasoning).
     ThinkingDelta(String),
-    /// A tool call was returned (streaming ends, need full response).
+    /// A single tool call whose arguments finished streaming.
+    ///
+    /// Emitted by providers that support per-block completion events (Anthropic
+    /// `content_block_stop`). Enables eager execution of read-only tools while
+    /// subsequent tool calls are still being streamed.
+    ///
+    /// Providers that don't support per-block events (OpenAI, Gemini) never
+    /// emit this — they only emit `ToolCalls` at stream end.
+    ToolCallReady(ToolCall),
+    /// All tool calls from the response (batch, emitted at stream end).
+    ///
+    /// For Anthropic, this only contains tool calls NOT already emitted via
+    /// `ToolCallReady`. For other providers, this contains all tool calls.
     ToolCalls(Vec<ToolCall>),
     /// Stream finished with usage info.
     Done(TokenUsage),

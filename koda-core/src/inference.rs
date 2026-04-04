@@ -65,6 +65,12 @@ struct StreamResult {
     text: String,
     /// Tool calls requested by the model.
     tool_calls: Vec<ToolCall>,
+    /// Results from tools executed eagerly during streaming.
+    ///
+    /// Contains `(tool_call_id, output, success, full_output)` for each
+    /// read-only auto-approved tool that finished before the stream ended.
+    /// These tools are skipped during normal dispatch.
+    eager_results: Vec<(String, String, bool, Option<String>)>,
     /// Token usage statistics.
     usage: TokenUsage,
     /// Total character count of text deltas.
@@ -313,18 +319,28 @@ async fn try_overflow_recovery(
     Ok(Some((rx, messages)))
 }
 
-/// Collect a streamed LLM response, emitting engine events for thinking/text/tool calls.
+/// Collect a streamed LLM response, executing read-only tools eagerly.
 ///
-/// Handles thinking ↔ response state transitions, cancellation via `CancellationToken`,
+/// When a `ToolCallReady` event arrives (Anthropic `content_block_stop`),
+/// and the tool is read-only + auto-approved, it executes immediately while
+/// subsequent tool call arguments are still being streamed. This overlaps
+/// tool execution with LLM generation time — the key latency optimization
+/// from Claude Code's `StreamingToolExecutor` pattern.
+///
+/// Handles thinking → response state transitions, cancellation via `CancellationToken`,
 /// and spinner lifecycle. Returns a `StreamResult` — the caller is responsible for
 /// persistence and early-return on interruption.
 async fn collect_stream(
     rx: &mut mpsc::Receiver<StreamChunk>,
     sink: &dyn EngineSink,
     cancel: &CancellationToken,
+    tools: &ToolRegistry,
+    mode: ApprovalMode,
+    project_root: &Path,
 ) -> StreamResult {
     let mut full_text = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
+    let mut eager_results: Vec<(String, String, bool, Option<String>)> = Vec::new();
     let mut usage = TokenUsage::default();
     let mut first_token = true;
     let mut char_count: usize = 0;
@@ -353,6 +369,7 @@ async fn collect_stream(
             return StreamResult {
                 text: full_text,
                 tool_calls,
+                eager_results,
                 usage,
                 char_count,
                 interrupted: true,
@@ -397,6 +414,34 @@ async fn collect_stream(
                 });
                 native_think_buf.push_str(&delta);
             }
+            StreamChunk::ToolCallReady(tc) => {
+                // A single tool call finished streaming (Anthropic content_block_stop).
+                // If it's read-only and auto-approved, execute it now while
+                // subsequent tool calls are still being streamed.
+                if !native_think_buf.is_empty() {
+                    sink.emit(EngineEvent::SpinnerStop);
+                    sink.emit(EngineEvent::ThinkingDone);
+                    native_think_buf.clear();
+                }
+                let args: serde_json::Value =
+                    serde_json::from_str(&tc.arguments).unwrap_or_default();
+                let is_read_only = !crate::tools::is_mutating_tool(&tc.function_name);
+                let is_auto_approved = !matches!(
+                    crate::approval::check_tool(&tc.function_name, &args, mode, Some(project_root),),
+                    crate::approval::ToolApproval::NeedsConfirmation
+                        | crate::approval::ToolApproval::Blocked
+                );
+
+                if is_read_only && is_auto_approved && tc.function_name != "InvokeAgent" {
+                    // Execute eagerly — read-only tools are fast (10–50ms),
+                    // the channel buffers incoming chunks while we run.
+                    tracing::debug!("Eager dispatch: {} (id={})", tc.function_name, tc.id);
+                    let r = tools.execute(&tc.function_name, &tc.arguments, None).await;
+                    eager_results.push((tc.id.clone(), r.output, r.success, r.full_output));
+                }
+                // Always add to tool_calls for persistence and normal flow
+                tool_calls.push(tc);
+            }
             StreamChunk::ToolCalls(tcs) => {
                 if !native_think_buf.is_empty() {
                     sink.emit(EngineEvent::SpinnerStop);
@@ -404,7 +449,8 @@ async fn collect_stream(
                     native_think_buf.clear();
                 }
                 sink.emit(EngineEvent::SpinnerStop);
-                tool_calls = tcs;
+                // Append — some tool calls may already be in the list from ToolCallReady
+                tool_calls.extend(tcs);
             }
             StreamChunk::Done(u) => {
                 if !native_think_buf.is_empty() {
@@ -428,6 +474,7 @@ async fn collect_stream(
                 return StreamResult {
                     text: full_text,
                     tool_calls,
+                    eager_results,
                     usage,
                     char_count,
                     interrupted: false,
@@ -446,6 +493,7 @@ async fn collect_stream(
     StreamResult {
         text: full_text,
         tool_calls,
+        eager_results,
         usage,
         char_count,
         interrupted: false,
@@ -665,7 +713,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         };
 
         // Collect the streamed response
-        let stream_result = collect_stream(&mut rx, sink, &cancel).await;
+        let stream_result = collect_stream(&mut rx, sink, &cancel, tools, mode, project_root).await;
 
         if stream_result.interrupted {
             if !stream_result.text.is_empty() {
@@ -805,10 +853,55 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
 
         made_tool_calls = true;
 
-        // Execute tool calls — parallelize when possible
-        if tool_calls.len() > 1 && can_parallelize(&tool_calls, mode, project_root) {
+        // Record results from eagerly-executed tools (dispatched during streaming)
+        let eager_ids: std::collections::HashSet<String> = stream_result
+            .eager_results
+            .iter()
+            .map(|(id, _, _, _)| id.clone())
+            .collect();
+
+        if !eager_ids.is_empty() {
+            tracing::info!(
+                "{} tool(s) executed eagerly during streaming",
+                eager_ids.len()
+            );
+            for (tc_id, result, success, full_output) in &stream_result.eager_results {
+                // Find the matching ToolCall for metadata
+                if let Some(tc) = tool_calls.iter().find(|tc| tc.id == *tc_id) {
+                    sink.emit(EngineEvent::ToolCallStart {
+                        id: tc_id.clone(),
+                        name: tc.function_name.clone(),
+                        args: serde_json::from_str(&tc.arguments).unwrap_or_default(),
+                        is_sub_agent: false,
+                    });
+                    crate::tool_dispatch::record_tool_result(
+                        tc,
+                        result,
+                        *success,
+                        full_output.as_deref(),
+                        db,
+                        session_id,
+                        tools.caps.tool_result_chars,
+                        project_root,
+                        file_tracker,
+                        sink,
+                    )
+                    .await?;
+                }
+            }
+        }
+
+        // Filter out eagerly-executed tools from the remaining dispatch
+        let remaining_tools: Vec<ToolCall> = tool_calls
+            .iter()
+            .filter(|tc| !eager_ids.contains(&tc.id))
+            .cloned()
+            .collect();
+
+        // Execute remaining tool calls — parallelize when possible
+        if remaining_tools.len() > 1 && can_parallelize(&remaining_tools, mode, project_root) {
             execute_tools_parallel(
-                &tool_calls,
+                &remaining_tools,
                 project_root,
                 config,
                 db,
@@ -822,9 +915,9 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 &bg_agents,
             )
             .await?;
-        } else if tool_calls.len() > 1 {
+        } else if remaining_tools.len() > 1 {
             execute_tools_split_batch(
-                &tool_calls,
+                &remaining_tools,
                 project_root,
                 config,
                 db,
@@ -840,9 +933,9 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 &bg_agents,
             )
             .await?;
-        } else {
+        } else if !remaining_tools.is_empty() {
             execute_tools_sequential(
-                &tool_calls,
+                &remaining_tools,
                 project_root,
                 config,
                 db,
