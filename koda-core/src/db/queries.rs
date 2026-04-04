@@ -278,7 +278,8 @@ impl Persistence for Database {
         let mut messages: Vec<Message> = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
-                    cache_read_tokens, cache_creation_tokens, thinking_tokens
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens,
+                    created_at
              FROM messages
              WHERE session_id = ? AND compacted_at IS NULL
              ORDER BY id ASC",
@@ -304,7 +305,8 @@ impl Persistence for Database {
         let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
-                    cache_read_tokens, cache_creation_tokens, thinking_tokens
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens,
+                    created_at
              FROM messages
              WHERE session_id = ?
              ORDER BY id ASC",

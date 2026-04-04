@@ -578,6 +578,18 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     // Pre-build the base system message (avoids re-cloning 4-8KB per iteration)
     let base_system_prompt = system_prompt.to_string();
 
+    // Microcompact: clear old tool results before the first LLM call.
+    // Time-based trigger — only fires when the idle gap since the last
+    // assistant message exceeds the threshold (not during active tool use).
+    if let Ok(Some(mc)) = crate::microcompact::microcompact_session(db, session_id).await {
+        sink.emit(EngineEvent::Info {
+            message: format!(
+                "\u{1f9f9} Microcompact: cleared {} old tool results (~{} tokens)",
+                mc.cleared, mc.tokens_saved,
+            ),
+        });
+    }
+
     loop {
         // Inject completed background agent results as user messages
         for bg_result in bg_agents.drain_completed() {
@@ -975,17 +987,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 ),
             });
             break Ok(());
-        }
-
-        // Microcompact: clear old tool results to keep context lean.
-        // Cheap (no LLM call), idempotent, runs every turn.
-        if let Ok(Some(mc)) = crate::microcompact::microcompact_session(db, session_id).await {
-            sink.emit(EngineEvent::Info {
-                message: format!(
-                    "\u{1f9f9} Microcompact: cleared {} old tool results (~{} tokens)",
-                    mc.cleared, mc.tokens_saved,
-                ),
-            });
         }
 
         iteration += 1;
