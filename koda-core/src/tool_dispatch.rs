@@ -785,8 +785,33 @@ pub(crate) async fn execute_sub_agent(
         .await?;
 
     let provider = crate::providers::create_provider(&sub_config);
+    // Provision a git worktree for agents that can write files.
+    // Read-only agents (explore, plan, verify) skip this.
+    let has_write_tools = !sub_config
+        .disallowed_tools
+        .iter()
+        .any(|t| t == "Write" || t == "Edit");
+    let (effective_root, worktree_path) = if has_write_tools {
+        match crate::worktree::provision(project_root, &sub_session).await {
+            Ok(crate::worktree::WorktreeResult::Created(wt)) => {
+                sink.emit(EngineEvent::Info {
+                    message: format!("  \u{1f333} {agent_name}: isolated in worktree"),
+                });
+                (wt.clone(), Some(wt))
+            }
+            Ok(_) => (project_root.to_path_buf(), None), // not a git repo / no git
+            Err(e) => {
+                tracing::warn!("Worktree provision failed: {e}");
+                (project_root.to_path_buf(), None)
+            }
+        }
+    } else {
+        (project_root.to_path_buf(), None)
+    };
+    let effective_root_ref = effective_root.as_path();
+
     let tools = {
-        let registry = ToolRegistry::new(project_root.to_path_buf(), sub_config.max_context_tokens);
+        let registry = ToolRegistry::new(effective_root.clone(), sub_config.max_context_tokens);
         match parent_cache {
             Some(cache) => registry.with_shared_cache(cache),
             None => registry,
@@ -802,7 +827,7 @@ pub(crate) async fn execute_sub_agent(
     };
     let semantic_memory = memory::load(project_root)?;
     let env = crate::prompt::EnvironmentInfo {
-        project_root,
+        project_root: effective_root_ref,
         model: &sub_config.model,
         platform: std::env::consts::OS,
     };
@@ -817,6 +842,10 @@ pub(crate) async fn execute_sub_agent(
     for _ in 0..loop_guard::MAX_SUB_AGENT_ITERATIONS {
         // Respect parent cancellation (#286)
         if cancel.is_cancelled() {
+            // Clean up worktree on cancellation
+            if let Some(ref wt) = worktree_path {
+                let _ = crate::worktree::cleanup(project_root, wt).await;
+            }
             return Ok("[cancelled by parent]".to_string());
         }
         let history = db.load_context(&sub_session).await?;
@@ -865,6 +894,14 @@ pub(crate) async fn execute_sub_agent(
                 .unwrap_or_else(|| "(no output)".to_string());
             // Cache the result for future identical calls
             sub_agent_cache.put(agent_name, prompt, &result);
+            // Clean up worktree
+            if let Some(ref wt) = worktree_path
+                && let Ok(Some(changes)) = crate::worktree::cleanup(project_root, wt).await
+            {
+                sink.emit(EngineEvent::Info {
+                    message: format!("  \u{1f333} {agent_name}: {changes}"),
+                });
+            }
             return Ok(result);
         }
 
@@ -879,8 +916,12 @@ pub(crate) async fn execute_sub_agent(
             // Sub-agents inherit the parent's approval mode
             let parsed_args: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or_default();
-            let approval =
-                approval::check_tool(&tc.function_name, &parsed_args, mode, Some(project_root));
+            let approval = approval::check_tool(
+                &tc.function_name,
+                &parsed_args,
+                mode,
+                Some(effective_root_ref),
+            );
 
             let output = match approval {
                 ToolApproval::AutoApprove => {
@@ -889,7 +930,7 @@ pub(crate) async fn execute_sub_agent(
                 ToolApproval::Blocked => {
                     let detail = tools::describe_action(&tc.function_name, &parsed_args);
                     let diff_preview =
-                        preview::compute(&tc.function_name, &parsed_args, project_root).await;
+                        preview::compute(&tc.function_name, &parsed_args, effective_root_ref).await;
                     sink.emit(EngineEvent::ActionBlocked {
                         tool_name: tc.function_name.clone(),
                         detail,
@@ -900,7 +941,7 @@ pub(crate) async fn execute_sub_agent(
                 ToolApproval::NeedsConfirmation => {
                     let detail = tools::describe_action(&tc.function_name, &parsed_args);
                     let diff_preview =
-                        preview::compute(&tc.function_name, &parsed_args, project_root).await;
+                        preview::compute(&tc.function_name, &parsed_args, effective_root_ref).await;
                     match request_approval(
                         sink,
                         cmd_rx,
@@ -941,6 +982,14 @@ pub(crate) async fn execute_sub_agent(
             loop_guard::MAX_SUB_AGENT_ITERATIONS
         ),
     });
+    // Clean up worktree on exit
+    if let Some(ref wt) = worktree_path
+        && let Ok(Some(changes)) = crate::worktree::cleanup(project_root, wt).await
+    {
+        sink.emit(EngineEvent::Info {
+            message: format!("  \u{1f333} {agent_name}: {changes}"),
+        });
+    }
     Ok("(sub-agent reached maximum iterations)".to_string())
 }
 
