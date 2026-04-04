@@ -6,6 +6,12 @@
 //! When `background: true` the command is spawned detached and control returns
 //! immediately with the PID.  The process is tracked in `BgRegistry` and
 //! SIGTERMed when the session ends.
+//!
+//! ## Smart summary
+//!
+//! The model receives a compact summary (exit code + stderr + tail of stdout)
+//! while the full output is stored separately in the DB for retrieval via
+//! `RecallContext`.
 
 use crate::engine::{EngineEvent, EngineSink};
 use crate::providers::ToolDefinition;
@@ -19,6 +25,20 @@ use tokio::process::Command;
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// Hard ceiling to prevent LLM-controlled DoS via huge timeout values.
 const MAX_TIMEOUT_SECS: u64 = 300;
+/// Max stderr lines to include in the summary (stderr is high-signal).
+const SUMMARY_STDERR_LINES: usize = 50;
+/// Max stdout tail lines to include in the summary.
+const SUMMARY_STDOUT_TAIL: usize = 20;
+
+/// Result of a shell command with both a model-facing summary and full output.
+#[derive(Debug, Clone)]
+pub struct ShellOutput {
+    /// Compact summary for the model's context window.
+    pub summary: String,
+    /// Full untruncated output for DB storage / RecallContext retrieval.
+    /// `None` for background commands (no output to capture).
+    pub full_output: Option<String>,
+}
 
 /// Return tool definitions for the LLM.
 pub fn definitions() -> Vec<ToolDefinition> {
@@ -65,10 +85,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
 pub async fn run_shell_command(
     project_root: &Path,
     args: &Value,
-    max_output_lines: usize,
+    _max_output_lines: usize,
     bg: &BgRegistry,
     sink: Option<(&dyn EngineSink, &str)>,
-) -> Result<String> {
+) -> Result<ShellOutput> {
     let command = args["command"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
@@ -80,7 +100,11 @@ pub async fn run_shell_command(
     );
 
     if background {
-        return spawn_background(project_root, command, bg);
+        let msg = spawn_background(project_root, command, bg)?;
+        return Ok(ShellOutput {
+            summary: msg,
+            full_output: None,
+        });
     }
 
     let timeout_secs = args["timeout"]
@@ -127,25 +151,23 @@ pub async fn run_shell_command(
                 .map_err(|e| anyhow::anyhow!("wait: {e}"))?;
             let exit_code = status.code().unwrap_or(-1);
 
-            let stdout_capped = cap_lines(&stdout_lines, max_output_lines);
-            let stderr_capped = cap_lines(&stderr_lines, max_output_lines);
+            let summary = format_summary(exit_code, &stdout_lines, &stderr_lines);
+            let full = format_full_output(exit_code, &stdout_lines, &stderr_lines);
 
-            let mut response = format!("Exit code: {exit_code}\n");
-            if !stdout_capped.is_empty() {
-                response.push_str(&format!("\n--- stdout ---\n{stdout_capped}"));
-            }
-            if !stderr_capped.is_empty() {
-                response.push_str(&format!("\n--- stderr ---\n{stderr_capped}"));
-            }
-            Ok(response)
+            Ok(ShellOutput {
+                summary,
+                full_output: Some(full),
+            })
         }
         Ok(Err(e)) => Err(anyhow::anyhow!("Stream read error: {e}")),
         Err(_) => {
             // Timeout — kill the child.
             let _ = child.kill().await;
-            Ok(format!(
-                "Command timed out after {timeout_secs}s: {command}"
-            ))
+            let msg = format!("Command timed out after {timeout_secs}s: {command}");
+            Ok(ShellOutput {
+                summary: msg.clone(),
+                full_output: Some(msg),
+            })
         }
     }
 }
@@ -231,20 +253,99 @@ fn spawn_background(project_root: &Path, command: &str, bg: &BgRegistry) -> Resu
     ))
 }
 
-/// Cap output to the last N lines to protect the context window.
-fn cap_lines(lines: &[String], max_lines: usize) -> String {
-    if lines.is_empty() {
-        return String::new();
+/// Build a compact summary for the model's context window.
+///
+/// Includes all stderr (high-signal — errors/warnings) and only the tail
+/// of stdout (low-signal — build progress noise).  Line counts let the
+/// model decide whether to retrieve the full output via RecallContext.
+fn format_summary(exit_code: i32, stdout_lines: &[String], stderr_lines: &[String]) -> String {
+    let mut out = format!(
+        "Exit code: {exit_code} | stdout: {} lines | stderr: {} lines",
+        stdout_lines.len(),
+        stderr_lines.len(),
+    );
+
+    // Stderr first — always include (capped at SUMMARY_STDERR_LINES).
+    if !stderr_lines.is_empty() {
+        let (label, text) = if stderr_lines.len() > SUMMARY_STDERR_LINES {
+            let skipped = stderr_lines.len() - SUMMARY_STDERR_LINES;
+            (
+                format!(
+                    "\n\n--- stderr (last {} of {}, {skipped} skipped) ---",
+                    SUMMARY_STDERR_LINES,
+                    stderr_lines.len(),
+                ),
+                stderr_lines[stderr_lines.len() - SUMMARY_STDERR_LINES..].join("\n"),
+            )
+        } else {
+            (
+                format!("\n\n--- stderr ({} lines) ---", stderr_lines.len()),
+                stderr_lines.join("\n"),
+            )
+        };
+        out.push_str(&label);
+        out.push('\n');
+        out.push_str(&text);
     }
-    if lines.len() > max_lines {
-        let skipped = lines.len() - max_lines;
-        format!(
-            "[... {skipped} lines truncated ...]\n{}",
-            lines[lines.len() - max_lines..].join("\n")
-        )
-    } else {
-        lines.join("\n")
+
+    // Stdout tail — only last N lines.
+    if !stdout_lines.is_empty() {
+        let (label, text) = if stdout_lines.len() > SUMMARY_STDOUT_TAIL {
+            (
+                format!(
+                    "\n\n--- stdout (last {} of {}) ---",
+                    SUMMARY_STDOUT_TAIL,
+                    stdout_lines.len(),
+                ),
+                stdout_lines[stdout_lines.len() - SUMMARY_STDOUT_TAIL..].join("\n"),
+            )
+        } else {
+            (
+                format!("\n\n--- stdout ({} lines) ---", stdout_lines.len()),
+                stdout_lines.join("\n"),
+            )
+        };
+        out.push_str(&label);
+        out.push('\n');
+        out.push_str(&text);
     }
+
+    // Hint for the model.
+    if stdout_lines.len() > SUMMARY_STDOUT_TAIL || stderr_lines.len() > SUMMARY_STDERR_LINES {
+        out.push_str("\n\nFull output stored. Use RecallContext to search if needed.");
+    }
+
+    out
+}
+
+/// Build the full (untruncated) output for DB storage.
+///
+/// Stored in `messages.full_content` and searchable via RecallContext.
+/// Capped at 200 KB to prevent pathological commands from bloating the DB.
+fn format_full_output(exit_code: i32, stdout_lines: &[String], stderr_lines: &[String]) -> String {
+    const MAX_FULL_OUTPUT_BYTES: usize = 200 * 1024;
+
+    let mut out = format!("Exit code: {exit_code}\n");
+    if !stdout_lines.is_empty() {
+        out.push_str("\n--- stdout ---\n");
+        out.push_str(&stdout_lines.join("\n"));
+    }
+    if !stderr_lines.is_empty() {
+        out.push_str("\n\n--- stderr ---\n");
+        out.push_str(&stderr_lines.join("\n"));
+    }
+
+    // Hard cap to prevent DB bloat from pathological commands.
+    if out.len() > MAX_FULL_OUTPUT_BYTES {
+        out.truncate(MAX_FULL_OUTPUT_BYTES);
+        // Find safe char boundary
+        while !out.is_char_boundary(out.len()) {
+            out.pop();
+        }
+        out.push_str("\n\n[... output truncated at 200KB ...]");
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -264,8 +365,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            result.contains("timed out"),
-            "Expected timeout message, got: {result}"
+            result.summary.contains("timed out"),
+            "Expected timeout message, got: {}",
+            result.summary
         );
     }
 
@@ -277,8 +379,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            result.contains("hello"),
-            "Fast command should succeed: {result}"
+            result.summary.contains("hello"),
+            "Fast command should succeed: {}",
+            result.summary
         );
     }
 
@@ -290,8 +393,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            result.contains("world"),
-            "Command without explicit timeout should work: {result}"
+            result.summary.contains("world"),
+            "Command without explicit timeout should work: {}",
+            result.summary
         );
     }
 
@@ -303,9 +407,17 @@ mod tests {
         let result = run_shell_command(tmp.path(), &args, 256, &registry, None)
             .await
             .unwrap();
-        assert!(result.contains("Background process started"), "{result}");
-        assert!(result.contains("PID:"), "{result}");
-        assert!(result.contains("kill"), "{result}");
+        assert!(
+            result.summary.contains("Background process started"),
+            "{}",
+            result.summary
+        );
+        assert!(result.summary.contains("PID:"), "{}", result.summary);
+        assert!(result.summary.contains("kill"), "{}", result.summary);
+        assert!(
+            result.full_output.is_none(),
+            "background has no full_output"
+        );
         assert_eq!(registry.len(), 1);
     }
 
@@ -316,35 +428,77 @@ mod tests {
         let result = run_shell_command(tmp.path(), &args, 256, &bg(), None)
             .await
             .unwrap();
-        assert!(result.contains("sync"), "{result}");
+        assert!(result.summary.contains("sync"), "{}", result.summary);
         assert!(
-            !result.contains("PID:"),
-            "foreground should not have PID line: {result}"
+            !result.summary.contains("PID:"),
+            "foreground should not have PID line: {}",
+            result.summary
         );
     }
 
     #[test]
-    fn test_cap_lines_short() {
-        let lines: Vec<String> = vec!["line1", "line2", "line3"]
+    fn test_format_summary_short_output() {
+        let stdout: Vec<String> = vec!["hello", "world"]
             .into_iter()
             .map(String::from)
             .collect();
-        assert_eq!(cap_lines(&lines, 256), "line1\nline2\nline3");
+        let stderr: Vec<String> = vec![];
+        let summary = format_summary(0, &stdout, &stderr);
+        assert!(summary.contains("Exit code: 0"));
+        assert!(summary.contains("stdout: 2 lines"));
+        assert!(summary.contains("hello"));
+        assert!(summary.contains("world"));
+        // Short output should NOT have the RecallContext hint
+        assert!(!summary.contains("RecallContext"));
     }
 
     #[test]
-    fn test_cap_lines_long() {
-        let lines: Vec<String> = (0..500).map(|i| format!("line {i}")).collect();
-        let capped = cap_lines(&lines, 256);
-        assert!(capped.contains("truncated"));
-        assert!(capped.contains("line 499"));
-        assert!(!capped.contains("line 0\n"));
+    fn test_format_summary_long_stdout_truncated() {
+        let stdout: Vec<String> = (0..100).map(|i| format!("line {i}")).collect();
+        let stderr: Vec<String> = vec!["warning: something".into()];
+        let summary = format_summary(0, &stdout, &stderr);
+        // Should contain last 20 lines
+        assert!(summary.contains("line 99"));
+        assert!(summary.contains("line 80"));
+        // Should NOT contain early lines
+        assert!(!summary.contains("line 0\n"));
+        // Should show truncation metadata
+        assert!(summary.contains("last 20 of 100"));
+        // Stderr should be fully included
+        assert!(summary.contains("warning: something"));
+        // Should have RecallContext hint
+        assert!(summary.contains("RecallContext"));
     }
 
     #[test]
-    fn test_cap_lines_exactly_at_limit() {
-        let lines: Vec<String> = (0..256).map(|i| format!("line {i}")).collect();
-        assert!(!cap_lines(&lines, 256).contains("truncated"));
+    fn test_format_full_output_includes_everything() {
+        let stdout: Vec<String> = (0..100).map(|i| format!("line {i}")).collect();
+        let stderr: Vec<String> = vec!["err1".into(), "err2".into()];
+        let full = format_full_output(1, &stdout, &stderr);
+        assert!(full.contains("Exit code: 1"));
+        assert!(full.contains("line 0"));
+        assert!(full.contains("line 99"));
+        assert!(full.contains("err1"));
+        assert!(full.contains("err2"));
+    }
+
+    #[test]
+    fn test_format_full_output_capped_at_200kb() {
+        let stdout: Vec<String> = (0..50_000).map(|i| format!("line {i}: padding")).collect();
+        let full = format_full_output(0, &stdout, &[]);
+        assert!(full.len() <= 200 * 1024 + 50); // 200KB + truncation message
+        assert!(full.contains("truncated at 200KB"));
+    }
+
+    #[test]
+    fn test_shell_output_has_full_output() {
+        // Verify ShellOutput struct works correctly
+        let so = ShellOutput {
+            summary: "Exit code: 0".into(),
+            full_output: Some("full output here".into()),
+        };
+        assert_eq!(so.summary, "Exit code: 0");
+        assert_eq!(so.full_output.unwrap(), "full output here");
     }
 
     #[test]
@@ -392,10 +546,16 @@ mod tests {
         .await
         .unwrap();
 
-        // Full result should still be collected
-        assert!(result.contains("alpha"));
-        assert!(result.contains("bravo"));
-        assert!(result.contains("charlie"));
+        // Summary should contain the output
+        assert!(result.summary.contains("alpha"));
+        assert!(result.summary.contains("bravo"));
+        assert!(result.summary.contains("charlie"));
+
+        // Full output should contain everything
+        let full = result.full_output.unwrap();
+        assert!(full.contains("alpha"));
+        assert!(full.contains("bravo"));
+        assert!(full.contains("charlie"));
 
         // Streaming lines should have been emitted
         let lines = sink.lines.lock().unwrap();

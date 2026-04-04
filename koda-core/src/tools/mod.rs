@@ -115,6 +115,7 @@ macro_rules! require_email_config {
                         koda_email::config::EmailConfig::setup_instructions()
                     ),
                     success: false,
+                    full_output: None,
                 };
             }
         }
@@ -132,7 +133,7 @@ pub type FileReadCache = Arc<std::sync::Mutex<HashMap<String, (u64, SystemTime)>
 /// Result of executing a tool.
 #[derive(Debug, Clone)]
 pub struct ToolResult {
-    /// The tool's output string.
+    /// The tool's output string (model-facing; may be a summary for Bash).
     pub output: String,
     /// Whether the tool executed successfully.
     ///
@@ -140,6 +141,12 @@ pub struct ToolResult {
     /// `Err(…)` → `false`. Individual tools never set this directly;
     /// they just return `Result<String>`.
     pub success: bool,
+    /// Full untruncated output, stored separately in DB for later retrieval.
+    ///
+    /// Only populated by Bash when output exceeds the summary threshold.
+    /// `RecallContext` can search this to retrieve details the model didn't
+    /// see in its context window.
+    pub full_output: Option<String>,
 }
 
 /// The tool registry: maps tool names to their definitions and handlers.
@@ -349,6 +356,7 @@ impl ToolRegistry {
                 return ToolResult {
                     output: format!("Invalid JSON arguments: {e}"),
                     success: false,
+                    full_output: None,
                 };
             }
         };
@@ -386,15 +394,28 @@ impl ToolRegistry {
             }
 
             // Shell
+            // Shell — returns ShellOutput with summary + full output.
             "Bash" => {
-                shell::run_shell_command(
+                let shell_result = shell::run_shell_command(
                     &self.project_root,
                     &args,
                     self.caps.shell_output_lines,
                     &self.bg_registry,
                     sink_for_streaming,
                 )
-                .await
+                .await;
+                return match shell_result {
+                    Ok(so) => ToolResult {
+                        output: so.summary,
+                        success: true,
+                        full_output: so.full_output,
+                    },
+                    Err(e) => ToolResult {
+                        output: format!("Error: {e}"),
+                        success: false,
+                        full_output: None,
+                    },
+                };
             }
 
             // Web
@@ -496,6 +517,7 @@ impl ToolRegistry {
                 return ToolResult {
                     output: "InvokeAgent is handled by the inference loop.".to_string(),
                     success: false,
+                    full_output: None,
                 };
             }
 
@@ -505,6 +527,7 @@ impl ToolRegistry {
                 return ToolResult {
                     output: "AskUser is handled by the inference loop.".to_string(),
                     success: false,
+                    full_output: None,
                 };
             }
 
@@ -515,10 +538,12 @@ impl ToolRegistry {
             Ok(output) => ToolResult {
                 output,
                 success: true,
+                full_output: None,
             },
             Err(e) => ToolResult {
                 output: format!("Error: {e}"),
                 success: false,
+                full_output: None,
             },
         }
     }

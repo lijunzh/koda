@@ -71,8 +71,10 @@ pub struct Message {
     pub session_id: String,
     /// Message role (system, user, assistant, tool).
     pub role: Role,
-    /// Text content.
+    /// Text content (may be a summary for Bash results).
     pub content: Option<String>,
+    /// Full untruncated output (only set for Bash tool results).
+    pub full_content: Option<String>,
     /// Serialized tool calls JSON.
     pub tool_calls: Option<String>,
     /// ID of the tool call this responds to.
@@ -212,6 +214,19 @@ pub trait Persistence: Send + Sync {
         tool_call_id: Option<&str>,
         usage: Option<&crate::providers::TokenUsage>,
         agent_name: Option<&str>,
+    ) -> Result<i64>;
+
+    /// Insert a tool message with full (untruncated) output stored separately.
+    ///
+    /// `content` holds the model-facing summary; `full_content` holds the
+    /// complete output for later retrieval via RecallContext.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_tool_message_with_full(
+        &self,
+        session_id: &str,
+        content: &str,
+        tool_call_id: &str,
+        full_content: &str,
     ) -> Result<i64>;
 
     /// Load active (non-compacted) conversation context for a session.

@@ -63,7 +63,12 @@ pub async fn recall_context(db: &Database, session_id: &str, args: &serde_json::
             );
         }
         let msg = &history[idx];
-        let content = msg.content.as_deref().unwrap_or("(no content)");
+        // Prefer full_content (untruncated Bash output) over content (summary).
+        let content = msg
+            .full_content
+            .as_deref()
+            .or(msg.content.as_deref())
+            .unwrap_or("(no content)");
         // Truncate very long messages
         let display = if content.len() > 2000 {
             format!(
@@ -77,15 +82,18 @@ pub async fn recall_context(db: &Database, session_id: &str, args: &serde_json::
         return format!("## Turn {} ({})\n\n{}", turn_num, msg.role, display);
     }
 
-    // Search by query
+    // Search by query — searches both content and full_content.
     if let Some(q) = query {
         let q_lower = q.to_lowercase();
         let mut matches = Vec::new();
         for (i, msg) in history.iter().enumerate() {
-            if let Some(ref content) = msg.content
-                && content.to_lowercase().contains(&q_lower)
+            // Search full_content first (has untruncated Bash output),
+            // fall back to content (summary / normal tool output).
+            let searchable = msg.full_content.as_deref().or(msg.content.as_deref());
+            if let Some(text) = searchable
+                && text.to_lowercase().contains(&q_lower)
             {
-                let snippet = extract_snippet(content, &q_lower, 200);
+                let snippet = extract_snippet(text, &q_lower, 200);
                 matches.push(format!("**Turn {} ({}):** {}\n", i + 1, msg.role, snippet));
             }
         }

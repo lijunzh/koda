@@ -241,6 +241,7 @@ mod tests {
             session_id: "test".into(),
             role,
             content: Some(content.into()),
+            full_content: None,
             tool_calls: None,
             tool_call_id: None,
             prompt_tokens: None,

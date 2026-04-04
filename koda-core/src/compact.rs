@@ -394,6 +394,7 @@ mod tests {
             session_id: String::new(),
             role: role.parse().unwrap_or(crate::db::Role::User),
             content: content.map(String::from),
+            full_content: None,
             tool_calls: tool_calls.map(String::from),
             tool_call_id: None,
             prompt_tokens: None,

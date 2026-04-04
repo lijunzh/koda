@@ -37,6 +37,7 @@ async fn record_tool_result(
     tc: &ToolCall,
     result: &str,
     success: bool,
+    full_output: Option<&str>,
     db: &Database,
     session_id: &str,
     max_result_chars: usize,
@@ -49,16 +50,25 @@ async fn record_tool_result(
         name: tc.function_name.clone(),
         output: result.to_string(),
     });
-    let stored = truncate_for_history(result, max_result_chars);
-    db.insert_message(
-        session_id,
-        &Role::Tool,
-        Some(&stored),
-        None,
-        Some(&tc.id),
-        None,
-    )
-    .await?;
+
+    // If we have separate full output (Bash smart summary), use the dedicated
+    // two-column insert so the model sees the summary while RecallContext can
+    // search the full output.
+    if let Some(full) = full_output {
+        db.insert_tool_message_with_full(session_id, result, &tc.id, full)
+            .await?;
+    } else {
+        let stored = truncate_for_history(result, max_result_chars);
+        db.insert_message(
+            session_id,
+            &Role::Tool,
+            Some(&stored),
+            None,
+            Some(&tc.id),
+            None,
+        )
+        .await?;
+    }
     crate::progress::track_progress(db, session_id, &tc.function_name, &tc.arguments, result).await;
     let parsed_args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
     track_file_lifecycle(
@@ -226,8 +236,8 @@ pub(crate) async fn execute_one_tool(
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
     bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
-) -> (String, String, bool) {
-    let (result, success) = if tc.function_name == "InvokeAgent" {
+) -> (String, String, bool, Option<String>) {
+    let (result, success, full_output) = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
         let mut sub_settings = Settings::default();
         match execute_sub_agent(
@@ -248,8 +258,8 @@ pub(crate) async fn execute_one_tool(
         )
         .await
         {
-            Ok(output) => (output, true),
-            Err(e) => (format!("Error invoking sub-agent: {e}"), false),
+            Ok(output) => (output, true, None),
+            Err(e) => (format!("Error invoking sub-agent: {e}"), false, None),
         }
     } else {
         // Invalidate sub-agent cache on file mutations
@@ -264,10 +274,10 @@ pub(crate) async fn execute_one_tool(
         let r = tools
             .execute(&tc.function_name, &tc.arguments, streaming)
             .await;
-        (r.output, r.success)
+        (r.output, r.success, r.full_output)
     };
 
-    (tc.id.clone(), result, success)
+    (tc.id.clone(), result, success, full_output)
 }
 
 /// Run multiple tool calls concurrently and store results.
@@ -313,7 +323,7 @@ pub(crate) async fn execute_tools_parallel(
     let results = futures_util::future::join_all(futures).await;
 
     // Emit banner + result together so each tool's output is visually grouped
-    for (i, (tc_id, result, success)) in results.into_iter().enumerate() {
+    for (i, (tc_id, result, success, full_output)) in results.into_iter().enumerate() {
         sink.emit(EngineEvent::ToolCallStart {
             id: tc_id.clone(),
             name: tool_calls[i].function_name.clone(),
@@ -324,6 +334,7 @@ pub(crate) async fn execute_tools_parallel(
             &tool_calls[i],
             &result,
             success,
+            full_output.as_deref(),
             db,
             session_id,
             tools.caps.tool_result_chars,
@@ -394,7 +405,7 @@ pub(crate) async fn execute_tools_split_batch(
             .collect();
         let results = futures_util::future::join_all(futures).await;
 
-        for (j, (tc_id, result, success)) in results.into_iter().enumerate() {
+        for (j, (tc_id, result, success, full_output)) in results.into_iter().enumerate() {
             sink.emit(EngineEvent::ToolCallStart {
                 id: tc_id.clone(),
                 name: parallel[j].function_name.clone(),
@@ -405,6 +416,7 @@ pub(crate) async fn execute_tools_split_batch(
                 parallel[j],
                 &result,
                 success,
+                full_output.as_deref(),
                 db,
                 session_id,
                 tools.caps.tool_result_chars,
@@ -513,6 +525,7 @@ pub(crate) async fn execute_tools_sequential(
                 tc,
                 &result,
                 true,
+                None, // AskUser has no full_output
                 db,
                 session_id,
                 tools.caps.tool_result_chars,
@@ -540,6 +553,7 @@ pub(crate) async fn execute_tools_sequential(
                 tc,
                 &format!("Validation error: {error}"),
                 false,
+                None,
                 db,
                 session_id,
                 tools.caps.tool_result_chars,
@@ -634,7 +648,7 @@ pub(crate) async fn execute_tools_sequential(
             }
         }
 
-        let (_, result, success) = execute_one_tool(
+        let (_, result, success, full_output) = execute_one_tool(
             tc,
             project_root,
             config,
@@ -652,6 +666,7 @@ pub(crate) async fn execute_tools_sequential(
             tc,
             &result,
             success,
+            full_output.as_deref(),
             db,
             session_id,
             tools.caps.tool_result_chars,
