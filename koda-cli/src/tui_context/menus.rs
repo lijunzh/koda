@@ -87,15 +87,15 @@ impl TuiContext {
         let providers = crate::repl::PROVIDERS;
         let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
             .iter()
-            .map(
-                |(key, name, desc)| crate::widgets::provider_menu::ProviderItem {
+            .map(|(key, name)| {
+                let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
+                crate::widgets::provider_menu::ProviderItem {
                     key,
                     name,
-                    description: desc,
-                    is_current: koda_core::config::ProviderType::from_url_or_name("", Some(key))
-                        == self.config.provider_type,
-                },
-            )
+                    local: !ptype.requires_api_key(),
+                    is_current: ptype == self.config.provider_type,
+                }
+            })
             .collect();
         let mut dd =
             crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Select a provider");
@@ -114,17 +114,17 @@ impl TuiContext {
         let providers = crate::repl::PROVIDERS;
         let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
             .iter()
-            .filter(|&&(name, _, _)| {
+            .filter(|&&(name, _)| {
                 let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(name));
                 ptype.requires_api_key()
             })
-            .map(|&(key, name, desc)| {
+            .map(|&(key, name)| {
                 let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
                 let has_key = koda_core::runtime_env::is_set(ptype.env_key_name());
                 crate::widgets::provider_menu::ProviderItem {
                     key,
                     name,
-                    description: desc,
+                    local: false,
                     is_current: has_key, // repurpose: green = key is set
                 }
             })

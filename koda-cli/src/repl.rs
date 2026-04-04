@@ -136,21 +136,24 @@ pub async fn handle_command(
 }
 
 /// Available providers for the interactive picker.
-pub const PROVIDERS: &[(&str, &str, &str)] = &[
-    ("lmstudio", "LM Studio", "Local, no API key"),
-    ("ollama", "Ollama", "Local, no API key"),
-    ("openai", "OpenAI", ""),
-    ("anthropic", "Anthropic", ""),
-    ("deepseek", "DeepSeek", ""),
-    ("gemini", "Google Gemini", ""),
-    ("groq", "Groq", "Fast inference"),
-    ("grok", "Grok (xAI)", ""),
-    ("mistral", "Mistral", ""),
-    ("minimax", "MiniMax", ""),
-    ("openrouter", "OpenRouter", "Meta-provider"),
-    ("together", "Together", ""),
-    ("fireworks", "Fireworks", "Fast inference"),
-    ("vllm", "vLLM", "Local, no API key"),
+///
+/// Tuple: (internal_key, display_name). Descriptions like "Local, no API key"
+/// are derived from `ProviderType::requires_api_key()` at render time.
+pub const PROVIDERS: &[(&str, &str)] = &[
+    ("lmstudio", "LM Studio"),
+    ("ollama", "Ollama"),
+    ("openai", "OpenAI"),
+    ("anthropic", "Anthropic"),
+    ("deepseek", "DeepSeek"),
+    ("gemini", "Google Gemini"),
+    ("groq", "Groq"),
+    ("grok", "Grok (xAI)"),
+    ("mistral", "Mistral"),
+    ("minimax", "MiniMax"),
+    ("openrouter", "OpenRouter"),
+    ("together", "Together"),
+    ("fireworks", "Fireworks"),
+    ("vllm", "vLLM"),
 ];
 
 /// Get the full git diff (unstaged + staged), capped for context window safety.

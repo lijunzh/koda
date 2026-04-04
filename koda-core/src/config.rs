@@ -30,7 +30,7 @@ pub enum ProviderType {
     LMStudio,
     /// Google Gemini API.
     Gemini,
-    /// Groq (fast inference, OpenAI-compatible).
+    /// Groq (OpenAI-compatible).
     Groq,
     /// Grok / xAI API.
     Grok,
