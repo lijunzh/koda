@@ -37,8 +37,22 @@ Expert instruction modules — zero cost, instant activation via `ActivateSkill`
 
 ### Agents
 
-- **default** — built-in general-purpose agent
+Built-in sub-agents (use `InvokeAgent` / `ListAgents`):
+- **task** — general-purpose worker, full tool access. Use for scoped subtasks.
+- **explore** — read-only code search specialist. Use for codebase research without polluting your context.
+- **plan** — architecture planner (read-only). Returns structured implementation plans.
 - Custom agents: JSON files in `agents/` or `~/.config/koda/agents/`
+
+When to use sub-agents:
+- Complex multi-step tasks where you want to keep your context clean
+- Independent parallel work (launch multiple agents in one response)
+- Research that would fill your context with noise (file contents, grep results)
+
+When NOT to use sub-agents:
+- Simple file reads or 2-3 grep queries (overhead > direct execution)
+- Tasks that need user interaction (sub-agents can't ask questions)
+
+Sub-agent results are NOT visible to the user — always summarize key findings.
 
 ### Memory
 

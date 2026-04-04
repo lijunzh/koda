@@ -675,7 +675,7 @@ pub(crate) async fn execute_sub_agent(
             None => registry,
         }
     };
-    let tool_defs = tools.get_definitions(&sub_config.allowed_tools);
+    let tool_defs = tools.get_definitions(&sub_config.allowed_tools, &sub_config.disallowed_tools);
     let semantic_memory = memory::load(project_root)?;
     let env = crate::prompt::EnvironmentInfo {
         project_root,

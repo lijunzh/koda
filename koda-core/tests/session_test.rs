@@ -72,7 +72,7 @@ impl Env {
             project_root: self.root.clone(),
             tools,
             tool_defs: ToolRegistry::new(self.root.clone(), self.config.max_context_tokens)
-                .get_definitions(&[]),
+                .get_definitions(&[], &[]),
             system_prompt: "You are a test assistant.".to_string(),
         });
 

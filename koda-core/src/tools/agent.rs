@@ -71,6 +71,8 @@ pub fn discover_all_agents(project_root: &Path) -> Vec<AgentInfo> {
 
     // 1. Built-in agents (lowest priority)
     for (name, config) in crate::config::KodaConfig::builtin_agents() {
+        // Skip `default` — it's the main agent, not a sub-agent.
+        // Map omitted agent_name to `task` instead (see InvokeAgent schema).
         if name == "default" {
             continue;
         }
@@ -227,21 +229,19 @@ mod tests {
     }
 
     #[test]
-    fn test_list_agents_no_builtins() {
+    fn test_list_agents_has_builtins() {
         let dir = TempDir::new().unwrap();
         let result = list_agents(dir.path());
-        // No built-in sub-agents after purge (#329)
-        // (user-level agents from ~/.config/koda/agents/ may still appear)
         let builtins: Vec<_> = result
             .iter()
             .filter(|(_, _, src)| src == "built-in")
             .collect();
-        assert!(
-            builtins.is_empty(),
-            "No built-in sub-agents after purge (#329), got: {builtins:?}"
-        );
-        // Default is always excluded from listing
+        assert_eq!(builtins.len(), 3, "Expected task/explore/plan built-ins");
         let names: Vec<&str> = result.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert!(names.contains(&"task"));
+        assert!(names.contains(&"explore"));
+        assert!(names.contains(&"plan"));
+        // Default is always excluded from listing
         assert!(!names.contains(&"default"), "Should exclude default agent");
     }
 
@@ -265,24 +265,25 @@ mod tests {
     }
 
     #[test]
-    fn test_discover_all_agents_no_builtins() {
+    fn test_discover_all_agents_has_builtins() {
         let dir = TempDir::new().unwrap();
         let agents = discover_all_agents(dir.path());
         let builtins: Vec<_> = agents.iter().filter(|a| a.source == "built-in").collect();
-        assert_eq!(
-            builtins.len(),
-            0,
-            "No built-in sub-agents after #329 purge, got {}",
-            builtins.len()
-        );
+        assert_eq!(builtins.len(), 3, "Expected task/explore/plan built-ins");
+        let names: Vec<&str> = builtins.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"task"));
+        assert!(names.contains(&"explore"));
+        assert!(names.contains(&"plan"));
     }
 
     #[test]
-    fn test_list_agents_detail_empty_when_no_builtins() {
+    fn test_list_agents_detail_shows_builtins() {
         let dir = TempDir::new().unwrap();
         let result = list_agents_detail(dir.path());
-        // No built-in sub-agents after #329 purge
-        assert!(!result.contains("[built-in]"));
+        assert!(result.contains("[built-in]"));
+        assert!(result.contains("task"));
+        assert!(result.contains("explore"));
+        assert!(result.contains("plan"));
     }
 
     #[test]
