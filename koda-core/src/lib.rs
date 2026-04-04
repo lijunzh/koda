@@ -20,6 +20,8 @@ pub mod bash_safety;
 pub mod bg_agent;
 /// Context compaction — summarise old messages to reclaim token budget.
 pub mod compact;
+/// Context analysis — per-tool token breakdown and duplicate detection.
+pub mod context_analysis;
 /// Global configuration: provider, model, model settings, CLI flags.
 pub mod config;
 /// Context window management and token budgeting (engine-internal).
