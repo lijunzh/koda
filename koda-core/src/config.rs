@@ -323,6 +323,11 @@ pub struct AgentConfig {
     /// Override auto-compact threshold percentage.
     #[serde(default)]
     pub auto_compact_threshold: Option<usize>,
+    /// Grant write access (Write/Edit/Delete tools). Default: false.
+    /// Sub-agents are read-only by default (principle of least privilege).
+    /// Set to `true` for agents that need to create or modify files.
+    #[serde(default)]
+    pub write_access: bool,
 }
 
 /// Runtime configuration assembled from CLI args, env vars, and agent JSON.
@@ -422,7 +427,7 @@ impl KodaConfig {
             agent_name: agent.name,
             system_prompt: agent.system_prompt,
             allowed_tools: agent.allowed_tools,
-            disallowed_tools: agent.disallowed_tools,
+            disallowed_tools: Self::apply_default_deny(agent.disallowed_tools, agent.write_access),
             provider_type,
             base_url,
             model: model.clone(),
@@ -432,6 +437,24 @@ impl KodaConfig {
             max_iterations,
             auto_compact_threshold,
         })
+    }
+
+    /// Write tools that are blocked by default for sub-agents.
+    /// Sub-agents must opt in with `"write_access": true` in their JSON config.
+    const WRITE_TOOLS: &'static [&'static str] = &["Write", "Edit", "Delete"];
+
+    /// Apply default-deny for write tools. If `write_access` is false,
+    /// inject Write/Edit/Delete into disallowed_tools (deduped).
+    fn apply_default_deny(mut disallowed: Vec<String>, write_access: bool) -> Vec<String> {
+        if !write_access {
+            for tool in Self::WRITE_TOOLS {
+                let name = tool.to_string();
+                if !disallowed.contains(&name) {
+                    disallowed.push(name);
+                }
+            }
+        }
+        disallowed
     }
 
     /// Apply CLI/env overrides on top of the loaded config.
@@ -727,13 +750,15 @@ mod tests {
             r#"{
             "name": "test",
             "system_prompt": "You are a test.",
-            "allowed_tools": ["Read", "Write"]
+            "allowed_tools": ["Read", "Write"],
+            "write_access": true
         }"#,
         )
         .unwrap();
         let config = KodaConfig::load(tmp.path(), "test").unwrap();
         assert_eq!(config.agent_name, "test");
         assert_eq!(config.allowed_tools, vec!["Read", "Write"]);
+        assert!(config.disallowed_tools.is_empty());
     }
 
     #[test]
@@ -750,6 +775,64 @@ mod tests {
         std::fs::create_dir_all(&agents_dir).unwrap();
         std::fs::write(agents_dir.join("bad.json"), "NOT JSON").unwrap();
         assert!(KodaConfig::load(tmp.path(), "bad").is_err());
+    }
+
+    // ── Default-deny write access ─────────────────────────────
+
+    #[test]
+    fn test_default_deny_blocks_write_tools() {
+        let result = KodaConfig::apply_default_deny(vec![], false);
+        assert!(result.contains(&"Write".to_string()));
+        assert!(result.contains(&"Edit".to_string()));
+        assert!(result.contains(&"Delete".to_string()));
+    }
+
+    #[test]
+    fn test_write_access_true_allows_write_tools() {
+        let result = KodaConfig::apply_default_deny(vec![], true);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_default_deny_deduplicates() {
+        // If Write is already in disallowed, don't add it again
+        let result =
+            KodaConfig::apply_default_deny(vec!["Write".to_string(), "Bash".to_string()], false);
+        assert_eq!(result.iter().filter(|t| *t == "Write").count(), 1);
+        assert!(result.contains(&"Edit".to_string()));
+        assert!(result.contains(&"Delete".to_string()));
+        assert!(result.contains(&"Bash".to_string()));
+    }
+
+    #[test]
+    fn test_custom_agent_without_write_access_is_readonly() {
+        let tmp = TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("custom.json"),
+            r#"{
+                "name": "custom",
+                "system_prompt": "I am custom."
+            }"#,
+        )
+        .unwrap();
+        let config = KodaConfig::load(tmp.path(), "custom").unwrap();
+        assert!(config.disallowed_tools.contains(&"Write".to_string()));
+        assert!(config.disallowed_tools.contains(&"Edit".to_string()));
+        assert!(config.disallowed_tools.contains(&"Delete".to_string()));
+    }
+
+    #[test]
+    fn test_builtin_task_has_write_access() {
+        let agent = KodaConfig::load_builtin("task").unwrap();
+        assert!(agent.write_access, "task agent should have write_access");
+    }
+
+    #[test]
+    fn test_builtin_explore_no_write_access() {
+        let agent = KodaConfig::load_builtin("explore").unwrap();
+        assert!(!agent.write_access, "explore should be read-only");
     }
 
     // ── Override logic ────────────────────────────────────────
