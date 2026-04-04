@@ -290,6 +290,9 @@ pub struct AgentConfig {
     /// Allowlisted tool names (empty = all tools).
     #[serde(default)]
     pub allowed_tools: Vec<String>,
+    /// Denylisted tool names — excluded even if `allowed_tools` is empty.
+    #[serde(default)]
+    pub disallowed_tools: Vec<String>,
     /// Override model identifier.
     #[serde(default)]
     pub model: Option<String>,
@@ -331,6 +334,8 @@ pub struct KodaConfig {
     pub system_prompt: String,
     /// Allowlisted tool names (empty = all tools).
     pub allowed_tools: Vec<String>,
+    /// Denylisted tool names.
+    pub disallowed_tools: Vec<String>,
     /// Active provider type.
     pub provider_type: ProviderType,
     /// API base URL.
@@ -417,6 +422,7 @@ impl KodaConfig {
             agent_name: agent.name,
             system_prompt: agent.system_prompt,
             allowed_tools: agent.allowed_tools,
+            disallowed_tools: agent.disallowed_tools,
             provider_type,
             base_url,
             model: model.clone(),
@@ -540,7 +546,13 @@ impl KodaConfig {
 
     /// Built-in agent configs, embedded at compile time.
     /// These are always available regardless of disk state.
-    const BUILTIN_AGENTS: &[(&str, &str)] = &[("default", include_str!("../agents/default.json"))];
+    const BUILTIN_AGENTS: &[(&str, &str)] = &[
+        ("default", include_str!("../agents/default.json")),
+        ("task", include_str!("../agents/task.json")),
+        ("explore", include_str!("../agents/explore.json")),
+        ("plan", include_str!("../agents/plan.json")),
+        ("verify", include_str!("../agents/verify.json")),
+    ];
 
     /// Try to load a built-in (embedded) agent by name.
     pub fn load_builtin(name: &str) -> Option<AgentConfig> {
@@ -572,6 +584,7 @@ impl KodaConfig {
             agent_name: "test".to_string(),
             system_prompt: "You are a test agent.".to_string(),
             allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
             base_url: provider_type.default_base_url().to_string(),
             model,
             provider_type,

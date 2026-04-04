@@ -36,7 +36,7 @@ impl KodaAgent {
     /// Initializes tools, system prompt, and tool definitions.
     pub async fn new(config: &KodaConfig, project_root: PathBuf) -> Result<Self> {
         let tools = ToolRegistry::new(project_root.clone(), config.max_context_tokens);
-        let tool_defs = tools.get_definitions(&config.allowed_tools);
+        let tool_defs = tools.get_definitions(&config.allowed_tools, &config.disallowed_tools);
 
         let semantic_memory = memory::load(&project_root)?;
         let env = crate::prompt::EnvironmentInfo {

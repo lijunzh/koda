@@ -303,12 +303,23 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Get tool definitions, optionally filtered by an allow-list.
-    pub fn get_definitions(&self, allowed: &[String]) -> Vec<ToolDefinition> {
+    /// Get tool definitions, optionally filtered by allow/deny lists.
+    ///
+    /// - `allowed` non-empty → only those tools (allowlist).
+    /// - `denied` non-empty → all tools except those (denylist).
+    /// - Both empty → all tools.
+    /// - If both are specified, allowlist wins (deny is ignored).
+    pub fn get_definitions(&self, allowed: &[String], denied: &[String]) -> Vec<ToolDefinition> {
         if !allowed.is_empty() {
             allowed
                 .iter()
                 .filter_map(|name| self.definitions.get(name).cloned())
+                .collect()
+        } else if !denied.is_empty() {
+            self.definitions
+                .values()
+                .filter(|d| !denied.contains(&d.name))
+                .cloned()
                 .collect()
         } else {
             self.definitions.values().cloned().collect()
@@ -737,5 +748,42 @@ mod describe_action_tests {
     fn test_describe_write_overwrite() {
         let desc = describe_action("Write", &json!({"path": "x.rs", "overwrite": true}));
         assert!(desc.contains("Overwrite"));
+    }
+
+    #[test]
+    fn test_get_definitions_deny_list() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"), 128_000);
+        let denied = vec![
+            "Write".to_string(),
+            "Edit".to_string(),
+            "Delete".to_string(),
+        ];
+        let defs = registry.get_definitions(&[], &denied);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert!(!names.contains(&"Write"));
+        assert!(!names.contains(&"Edit"));
+        assert!(!names.contains(&"Delete"));
+        assert!(names.contains(&"Read"));
+        assert!(names.contains(&"Grep"));
+    }
+
+    #[test]
+    fn test_get_definitions_allow_list_wins_over_deny() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"), 128_000);
+        let allowed = vec!["Read".to_string(), "Write".to_string()];
+        let denied = vec!["Write".to_string()];
+        // allow wins — Write should be present
+        let defs = registry.get_definitions(&allowed, &denied);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"Read"));
+        assert!(names.contains(&"Write"));
+    }
+
+    #[test]
+    fn test_get_definitions_both_empty_returns_all() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"), 128_000);
+        let all = registry.get_definitions(&[], &[]);
+        assert!(all.len() > 10, "Should have many tools");
     }
 }
