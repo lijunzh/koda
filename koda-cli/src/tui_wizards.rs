@@ -430,10 +430,7 @@ const KEY_PROVIDERS: &[(&str, &str)] = &[
 ];
 
 pub(crate) fn handle_keys(buffer: &mut ScrollBuffer) {
-    tui_output::emit_line(
-        buffer,
-        Line::styled("  \u{1f511} API Keys", BOLD),
-    );
+    tui_output::emit_line(buffer, Line::styled("  \u{1f511} API Keys", BOLD));
     tui_output::blank(buffer);
 
     for (name, env_var) in KEY_PROVIDERS {

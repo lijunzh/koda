@@ -43,10 +43,7 @@ impl DropdownItem for ModelItem {
 }
 
 /// Build model items from aliases + optional local model.
-pub fn build_items(
-    current_model: &str,
-    local_model: Option<&str>,
-) -> Vec<ModelItem> {
+pub fn build_items(current_model: &str, local_model: Option<&str>) -> Vec<ModelItem> {
     let mut items: Vec<ModelItem> = koda_core::model_alias::all()
         .iter()
         .map(|a| {

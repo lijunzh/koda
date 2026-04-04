@@ -74,11 +74,14 @@ pub fn resolve(name: &str) -> Option<ResolvedAlias> {
             provider: ProviderType::LMStudio,
         });
     }
-    ALIASES.iter().find(|a| a.alias == name).map(|a| ResolvedAlias {
-        alias: a.alias,
-        model_id: a.model_id,
-        provider: a.provider,
-    })
+    ALIASES
+        .iter()
+        .find(|a| a.alias == name)
+        .map(|a| ResolvedAlias {
+            alias: a.alias,
+            model_id: a.model_id,
+            provider: a.provider,
+        })
 }
 
 /// Result of resolving an alias.
@@ -167,7 +170,11 @@ mod tests {
     fn no_duplicate_model_ids() {
         let mut seen = std::collections::HashSet::new();
         for a in all() {
-            assert!(seen.insert(a.model_id), "duplicate model_id: {}", a.model_id);
+            assert!(
+                seen.insert(a.model_id),
+                "duplicate model_id: {}",
+                a.model_id
+            );
         }
     }
 }

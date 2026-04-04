@@ -47,8 +47,7 @@ pub async fn handle_slash_command(
             // Check if it's an alias first
             if let Some(resolved) = koda_core::model_alias::resolve(&model) {
                 let ptype = resolved.provider;
-                if ptype.requires_api_key()
-                    && !koda_core::runtime_env::is_set(ptype.env_key_name())
+                if ptype.requires_api_key() && !koda_core::runtime_env::is_set(ptype.env_key_name())
                 {
                     tui_output::err_msg(
                         buffer,

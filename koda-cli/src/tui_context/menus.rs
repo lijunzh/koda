@@ -56,10 +56,8 @@ impl TuiContext {
     pub(crate) async fn open_model_picker(&mut self) {
         // Try to auto-detect local model for the "local" alias
         let local_model = self.detect_local_model().await;
-        let items = crate::widgets::model_menu::build_items(
-            &self.config.model,
-            local_model.as_deref(),
-        );
+        let items =
+            crate::widgets::model_menu::build_items(&self.config.model, local_model.as_deref());
         let mut dd =
             crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Select a model");
         if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
@@ -117,28 +115,21 @@ impl TuiContext {
         let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
             .iter()
             .filter(|&&(name, _, _)| {
-                let ptype =
-                    koda_core::config::ProviderType::from_url_or_name("", Some(name));
+                let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(name));
                 ptype.requires_api_key()
             })
-            .map(
-                |&(key, name, desc)| {
-                    let ptype =
-                        koda_core::config::ProviderType::from_url_or_name("", Some(key));
-                    let has_key = koda_core::runtime_env::is_set(ptype.env_key_name());
-                    crate::widgets::provider_menu::ProviderItem {
-                        key,
-                        name,
-                        description: desc,
-                        is_current: has_key, // repurpose: green = key is set
-                    }
-                },
-            )
+            .map(|&(key, name, desc)| {
+                let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
+                let has_key = koda_core::runtime_env::is_set(ptype.env_key_name());
+                crate::widgets::provider_menu::ProviderItem {
+                    key,
+                    name,
+                    description: desc,
+                    is_current: has_key, // repurpose: green = key is set
+                }
+            })
             .collect();
-        let dd = crate::widgets::dropdown::DropdownState::new(
-            items,
-            "\u{1f511} Set API key for",
-        );
+        let dd = crate::widgets::dropdown::DropdownState::new(items, "\u{1f511} Set API key for");
         self.menu = MenuContent::Key(dd);
     }
 
@@ -204,8 +195,7 @@ impl TuiContext {
                     })
                     .collect();
                 let title = format!("\u{1f43b} {} models", ptype);
-                let mut dd =
-                    crate::widgets::dropdown::DropdownState::new(items, &title);
+                let mut dd = crate::widgets::dropdown::DropdownState::new(items, &title);
                 if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
                     dd.selected = idx;
                     let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
@@ -488,7 +478,7 @@ impl TuiContext {
                                 ));
                             }
                         } else {
-                          // Not an alias — use model_id directly
+                            // Not an alias — use model_id directly
                             self.config.model = model_id.clone();
                             self.config.model_settings.model = model_id.clone();
                             self.config.recalculate_model_derived();
@@ -531,9 +521,7 @@ impl TuiContext {
                     } else {
                         format!("API key for {}", provider_name)
                     };
-                    self.menu = MenuContent::WizardTrail(vec![
-                        ("Key".into(), provider_name),
-                    ]);
+                    self.menu = MenuContent::WizardTrail(vec![("Key".into(), provider_name)]);
                     self.prompt_mode = PromptMode::WizardInput { label };
                     self.provider_wizard = Some(ProviderWizard::NeedApiKeyOnly { env_name });
                     self.textarea.select_all();
