@@ -183,12 +183,23 @@ async fn test_provider_error_emits_error_event() {
     })
     .await;
 
-    assert!(result.is_err(), "expected error from provider failure");
-    let err = result.unwrap_err();
-    let chain = format!("{err:?}");
     assert!(
-        chain.contains("Internal server error"),
-        "error chain should contain provider message, got: {chain}"
+        result.is_ok(),
+        "server errors should end gracefully, not crash"
+    );
+
+    // The warning should be emitted as an event, not as a fatal error
+    let events = sink.events();
+    let has_warn = events.iter().any(|e| {
+        if let EngineEvent::Warn { message } = e {
+            message.contains("server error")
+        } else {
+            false
+        }
+    });
+    assert!(
+        has_warn,
+        "expected a Warn event about server error, got events: {events:?}"
     );
 }
 
