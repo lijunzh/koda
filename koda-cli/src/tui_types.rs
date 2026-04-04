@@ -107,15 +107,15 @@ pub(crate) enum PromptMode {
 /// Each variant holds the data collected so far.
 pub(crate) enum ProviderWizard {
     /// Step 1: provider selected, now need API key (or URL for local providers).
-    NeedApiKey {
+    ApiKey {
         provider_type: koda_core::config::ProviderType,
         base_url: String,
         env_name: String,
     },
     /// Key-only mode from `/key` — set key and return, no model list.
-    NeedApiKeyOnly { env_name: String },
+    ApiKeyOnly { env_name: String },
     /// Step 1 (local): provider selected, now need URL.
-    NeedUrl {
+    Url {
         provider_type: koda_core::config::ProviderType,
     },
 }

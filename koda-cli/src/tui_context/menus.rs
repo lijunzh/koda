@@ -148,7 +148,7 @@ impl TuiContext {
             };
             self.menu = MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
             self.prompt_mode = PromptMode::WizardInput { label };
-            self.provider_wizard = Some(ProviderWizard::NeedApiKey {
+            self.provider_wizard = Some(ProviderWizard::ApiKey {
                 provider_type: ptype,
                 base_url,
                 env_name,
@@ -160,7 +160,7 @@ impl TuiContext {
             self.prompt_mode = PromptMode::WizardInput {
                 label: format!("{} URL", ptype),
             };
-            self.provider_wizard = Some(ProviderWizard::NeedUrl {
+            self.provider_wizard = Some(ProviderWizard::Url {
                 provider_type: ptype,
             });
             self.textarea.select_all();
@@ -523,7 +523,7 @@ impl TuiContext {
                     };
                     self.menu = MenuContent::WizardTrail(vec![("Key".into(), provider_name)]);
                     self.prompt_mode = PromptMode::WizardInput { label };
-                    self.provider_wizard = Some(ProviderWizard::NeedApiKeyOnly { env_name });
+                    self.provider_wizard = Some(ProviderWizard::ApiKeyOnly { env_name });
                     self.textarea.select_all();
                     self.textarea.cut();
                 }
@@ -593,7 +593,7 @@ impl TuiContext {
 
         if let Some(wizard) = self.provider_wizard.take() {
             match wizard {
-                ProviderWizard::NeedApiKey {
+                ProviderWizard::ApiKey {
                     provider_type,
                     base_url,
                     env_name,
@@ -621,7 +621,7 @@ impl TuiContext {
                     }
                     self.apply_provider(provider_type, base_url).await;
                 }
-                ProviderWizard::NeedApiKeyOnly { env_name } => {
+                ProviderWizard::ApiKeyOnly { env_name } => {
                     if value.is_empty() && !koda_core::runtime_env::is_set(&env_name) {
                         self.scroll_buffer.push(Line::styled(
                             "  \u{2716} No API key provided.",
@@ -641,7 +641,7 @@ impl TuiContext {
                     }
                     // Key-only mode: just return to chat, no provider switch
                 }
-                ProviderWizard::NeedUrl { provider_type } => {
+                ProviderWizard::Url { provider_type } => {
                     let url = if value.is_empty() {
                         provider_type.default_base_url().to_string()
                     } else {
