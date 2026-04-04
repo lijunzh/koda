@@ -43,6 +43,7 @@ Built-in sub-agents (use `InvokeAgent` / `ListAgents`):
 - **plan** — architecture planner (read-only). Returns structured implementation plans.
 - **verify** — adversarial tester (read-only + Bash). Runs tests/linters, finds bugs, returns PASS/FAIL/PARTIAL verdict.
 - **fork** — not a named agent. Set `agent_name: "fork"` to spawn a clone that inherits your full conversation context. Fork children cannot spawn sub-agents (anti-recursion).
+- **background** — any agent can run in background with `background: true`. Returns immediately; results are injected when complete.
 - Custom agents: JSON files in `agents/` or `~/.config/koda/agents/`
 - Omit `agent_name` to default to `task`.
 
