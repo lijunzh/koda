@@ -258,11 +258,7 @@ fn spawn_background(project_root: &Path, command: &str, bg: &BgRegistry) -> Resu
 /// Includes all stderr (high-signal — errors/warnings) and only the tail
 /// of stdout (low-signal — build progress noise).  Line counts let the
 /// model decide whether to retrieve the full output via RecallContext.
-fn format_summary(
-    exit_code: i32,
-    stdout_lines: &[String],
-    stderr_lines: &[String],
-) -> String {
+fn format_summary(exit_code: i32, stdout_lines: &[String], stderr_lines: &[String]) -> String {
     let mut out = format!(
         "Exit code: {exit_code} | stdout: {} lines | stderr: {} lines",
         stdout_lines.len(),
@@ -316,9 +312,7 @@ fn format_summary(
 
     // Hint for the model.
     if stdout_lines.len() > SUMMARY_STDOUT_TAIL || stderr_lines.len() > SUMMARY_STDERR_LINES {
-        out.push_str(
-            "\n\nFull output stored. Use RecallContext to search if needed.",
-        );
+        out.push_str("\n\nFull output stored. Use RecallContext to search if needed.");
     }
 
     out
@@ -328,11 +322,7 @@ fn format_summary(
 ///
 /// Stored in `messages.full_content` and searchable via RecallContext.
 /// Capped at 200 KB to prevent pathological commands from bloating the DB.
-fn format_full_output(
-    exit_code: i32,
-    stdout_lines: &[String],
-    stderr_lines: &[String],
-) -> String {
+fn format_full_output(exit_code: i32, stdout_lines: &[String], stderr_lines: &[String]) -> String {
     const MAX_FULL_OUTPUT_BYTES: usize = 200 * 1024;
 
     let mut out = format!("Exit code: {exit_code}\n");
@@ -424,7 +414,10 @@ mod tests {
         );
         assert!(result.summary.contains("PID:"), "{}", result.summary);
         assert!(result.summary.contains("kill"), "{}", result.summary);
-        assert!(result.full_output.is_none(), "background has no full_output");
+        assert!(
+            result.full_output.is_none(),
+            "background has no full_output"
+        );
         assert_eq!(registry.len(), 1);
     }
 

@@ -89,10 +89,7 @@ pub async fn recall_context(db: &Database, session_id: &str, args: &serde_json::
         for (i, msg) in history.iter().enumerate() {
             // Search full_content first (has untruncated Bash output),
             // fall back to content (summary / normal tool output).
-            let searchable = msg
-                .full_content
-                .as_deref()
-                .or(msg.content.as_deref());
+            let searchable = msg.full_content.as_deref().or(msg.content.as_deref());
             if let Some(text) = searchable
                 && text.to_lowercase().contains(&q_lower)
             {
