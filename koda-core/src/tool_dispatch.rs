@@ -256,7 +256,14 @@ pub(crate) async fn execute_one_tool(
         if crate::tools::is_mutating_tool(&tc.function_name) {
             sub_agent_cache.invalidate();
         }
-        let r = tools.execute(&tc.function_name, &tc.arguments).await;
+        let streaming = if tc.function_name == "Bash" {
+            Some((sink, tc.id.as_str()))
+        } else {
+            None
+        };
+        let r = tools
+            .execute(&tc.function_name, &tc.arguments, streaming)
+            .await;
         (r.output, r.success)
     };
 
@@ -925,7 +932,10 @@ pub(crate) async fn execute_sub_agent(
 
             let output = match approval {
                 ToolApproval::AutoApprove => {
-                    tools.execute(&tc.function_name, &tc.arguments).await.output
+                    tools
+                        .execute(&tc.function_name, &tc.arguments, None)
+                        .await
+                        .output
                 }
                 ToolApproval::Blocked => {
                     let detail = tools::describe_action(&tc.function_name, &parsed_args);
@@ -953,7 +963,10 @@ pub(crate) async fn execute_sub_agent(
                     .await
                     {
                         Some(ApprovalDecision::Approve) => {
-                            tools.execute(&tc.function_name, &tc.arguments).await.output
+                            tools
+                                .execute(&tc.function_name, &tc.arguments, None)
+                                .await
+                                .output
                         }
                         Some(ApprovalDecision::Reject) => "[rejected by user]".to_string(),
                         Some(ApprovalDecision::RejectWithFeedback { feedback }) => {

@@ -70,6 +70,9 @@ pub fn engine_event_to_acp(
             ))
         }
 
+        // Streaming output lines — not mapped to ACP events (yet).
+        EngineEvent::ToolOutputLine { .. } => None,
+
         EngineEvent::ToolCallResult {
             id,
             name: _,
