@@ -1,7 +1,6 @@
 //! Provider picker dropdown — thin wrapper around the generic dropdown.
 //!
-//! Appears when the user types `/provider` with no args.
-//! After selection, the provider setup flow continues with API key input.
+//! Used by both `/provider` (onboarding/model-list) and `/key` (API key mgmt).
 
 use super::dropdown::DropdownItem;
 
@@ -14,8 +13,9 @@ pub struct ProviderItem {
     pub name: &'static str,
     /// Whether this is a local provider (no API key needed).
     pub local: bool,
-    /// Whether this is the currently active provider.
-    pub is_current: bool,
+    /// Whether an API key is configured for this provider.
+    /// Only meaningful in the `/key` picker — always `false` in `/provider`.
+    pub key_set: bool,
 }
 
 impl DropdownItem for ProviderItem {
@@ -28,11 +28,11 @@ impl DropdownItem for ProviderItem {
         } else {
             String::new()
         };
-        if self.is_current {
+        if self.key_set {
             if !desc.is_empty() {
                 desc.push(' ');
             }
-            desc.push_str("\u{25c0} current");
+            desc.push('\u{2705}');
         }
         desc
     }
@@ -49,14 +49,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_shows_marker() {
+    fn key_set_shows_checkmark() {
         let item = ProviderItem {
             key: "anthropic",
             name: "Anthropic",
             local: false,
-            is_current: true,
+            key_set: true,
         };
-        assert!(item.description().contains('\u{25c0}'));
+        assert!(item.description().contains('\u{2705}'));
+    }
+
+    #[test]
+    fn no_key_no_marker() {
+        let item = ProviderItem {
+            key: "openai",
+            name: "OpenAI",
+            local: false,
+            key_set: false,
+        };
+        assert!(item.description().is_empty());
     }
 
     #[test]
@@ -65,7 +76,7 @@ mod tests {
             key: "ollama",
             name: "Ollama",
             local: true,
-            is_current: false,
+            key_set: false,
         };
         assert!(item.description().contains("Local, no API key"));
     }
@@ -76,7 +87,7 @@ mod tests {
             key: "lmstudio",
             name: "LM Studio",
             local: true,
-            is_current: false,
+            key_set: false,
         };
         assert!(item.matches_filter("lm"));
         assert!(item.matches_filter("Studio"));

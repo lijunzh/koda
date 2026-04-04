@@ -93,19 +93,11 @@ impl TuiContext {
                     key,
                     name,
                     local: !ptype.requires_api_key(),
-                    is_current: ptype == self.config.provider_type,
+                    key_set: false,
                 }
             })
             .collect();
-        let mut dd =
-            crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Select a provider");
-        if let Some(idx) = dd.filtered.iter().position(|p| p.is_current) {
-            dd.selected = idx;
-            let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
-            if idx >= max_vis {
-                dd.scroll_offset = idx + 1 - max_vis;
-            }
-        }
+        let dd = crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Select a provider");
         self.menu = MenuContent::Provider(dd);
     }
 
@@ -125,7 +117,7 @@ impl TuiContext {
                     key,
                     name,
                     local: false,
-                    is_current: has_key, // repurpose: green = key is set
+                    key_set: has_key,
                 }
             })
             .collect();
