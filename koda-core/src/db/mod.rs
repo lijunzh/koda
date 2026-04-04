@@ -216,7 +216,7 @@ impl Database {
         limit: i64,
     ) -> Result<Vec<Message>> {
         let rows: Vec<MessageRow> = sqlx::query_as(
-            "SELECT id, session_id, role, content, tool_calls, tool_call_id,
+            "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
                     cache_read_tokens, cache_creation_tokens, thinking_tokens
              FROM messages
