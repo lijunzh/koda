@@ -47,17 +47,17 @@ static ALIASES: &[ModelAlias] = &[
     // ── Anthropic ────────────────────────────────────────
     ModelAlias {
         alias: "claude-haiku",
-        model_id: "claude-haiku-3.5-20241022",
+        model_id: "claude-haiku-4-6",
         provider: ProviderType::Anthropic,
     },
     ModelAlias {
         alias: "claude-sonnet",
-        model_id: "claude-sonnet-4-20250514",
+        model_id: "claude-sonnet-4-6",
         provider: ProviderType::Anthropic,
     },
     ModelAlias {
         alias: "claude-opus",
-        model_id: "claude-opus-4-20250514",
+        model_id: "claude-opus-4-6",
         provider: ProviderType::Anthropic,
     },
 ];
@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn resolve_known_alias() {
         let r = resolve("claude-sonnet").unwrap();
-        assert_eq!(r.model_id, "claude-sonnet-4-20250514");
+        assert_eq!(r.model_id, "claude-sonnet-4-6");
         assert_eq!(r.provider, ProviderType::Anthropic);
         assert!(!r.needs_auto_detect());
     }
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn resolve_literal_model_id_returns_none() {
         // Literal model IDs should NOT resolve as aliases
-        assert!(resolve("claude-sonnet-4-20250514").is_none());
+        assert!(resolve("claude-sonnet-4-6").is_none());
         assert!(resolve("gemini-2.5-pro").is_none());
     }
 

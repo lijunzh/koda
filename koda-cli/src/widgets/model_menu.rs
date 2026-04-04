@@ -90,7 +90,7 @@ mod tests {
     fn current_model_shows_marker() {
         let item = ModelItem {
             label: "claude-sonnet".into(),
-            model_id: "claude-sonnet-4-20250514".into(),
+            model_id: "claude-sonnet-4-6".into(),
             provider: "Anthropic".into(),
             is_current: true,
             is_local: false,
@@ -116,14 +116,14 @@ mod tests {
     fn filter_matches_alias_model_provider() {
         let item = ModelItem {
             label: "claude-sonnet".into(),
-            model_id: "claude-sonnet-4-20250514".into(),
+            model_id: "claude-sonnet-4-6".into(),
             provider: "Anthropic".into(),
             is_current: false,
             is_local: false,
         };
         assert!(item.matches_filter("sonnet"));
         assert!(item.matches_filter("anthropic"));
-        assert!(item.matches_filter("20250514"));
+        assert!(item.matches_filter("4-6"));
         assert!(!item.matches_filter("gemini"));
     }
 
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn build_items_marks_current_by_model_id() {
-        let items = build_items("claude-sonnet-4-20250514", None);
+        let items = build_items("claude-sonnet-4-6", None);
         let current = items.iter().find(|i| i.is_current);
         assert!(current.is_some());
         assert_eq!(current.unwrap().label, "claude-sonnet");
