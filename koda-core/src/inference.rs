@@ -918,6 +918,17 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             break Ok(());
         }
 
+        // Microcompact: clear old tool results to keep context lean.
+        // Cheap (no LLM call), idempotent, runs every turn.
+        if let Ok(Some(mc)) = crate::microcompact::microcompact_session(db, session_id).await {
+            sink.emit(EngineEvent::Info {
+                message: format!(
+                    "\u{1f9f9} Microcompact: cleared {} old tool results (~{} tokens)",
+                    mc.cleared, mc.tokens_saved,
+                ),
+            });
+        }
+
         iteration += 1;
     }
 }

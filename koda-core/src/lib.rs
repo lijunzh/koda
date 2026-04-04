@@ -44,6 +44,8 @@ pub mod keystore;
 pub mod loop_guard;
 /// Project memory — `MEMORY.md` / `CLAUDE.md` read/write.
 pub mod memory;
+/// Microcompact — lightweight tool result aging without full compaction.
+pub mod microcompact;
 /// Hardcoded model aliases for stable, cross-provider model selection.
 pub mod model_alias;
 /// Hardcoded context-window lookup table (fallback when API doesn't report).
