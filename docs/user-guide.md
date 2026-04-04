@@ -214,6 +214,26 @@ For example, `/model claude-sonnet` switches instantly to Claude Sonnet
 (resolving the alias to the exact model ID and switching provider if needed).
 `/model <exact-model-id>` works for models not in the alias list.
 
+### Model requirements
+
+Koda requires models with **native function/tool calling** support.
+The model must emit structured `function_call` blocks — not JSON as
+plain text. Models that can't do this will produce errors and a warning:
+
+> *This model appears to struggle with tool calling.
+> Consider switching to a model with native function-call support.*
+
+**Known-good local models** (via LM Studio or Ollama):
+
+| Model | Tool calling | Notes |
+|---|---|---|
+| Qwen 3.x (any size) | ✅ | Recommended for local use |
+| Llama 3.3 70B+ | ✅ | Strong tool calling |
+| DeepSeek V3 | ✅ | |
+| Mistral Small/Large | ✅ | |
+| Phi-4 | ⚠️ | Mostly works, occasional hallucinated tool names |
+| GLM-4 / tiny models | ❌ | Emits JSON as text, not function calls |
+
 ---
 
 ## File References
