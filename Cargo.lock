@@ -1704,7 +1704,7 @@ dependencies = [
 
 [[package]]
 name = "koda-ast"
-version = "0.1.20"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "petgraph",
@@ -1730,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "koda-cli"
-version = "0.1.20"
+version = "0.2.0"
 dependencies = [
  "agent-client-protocol-schema",
  "ansi-to-tui",
@@ -1760,7 +1760,7 @@ dependencies = [
 
 [[package]]
 name = "koda-core"
-version = "0.1.20"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "koda-email"
-version = "0.1.20"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "imap",
