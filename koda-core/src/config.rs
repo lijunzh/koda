@@ -82,7 +82,7 @@ impl ProviderType {
             Self::Gemini => ProviderMeta {
                 name: "gemini",
                 url: "https://generativelanguage.googleapis.com",
-                model: "gemini-2.0-flash",
+                model: "gemini-flash-latest",
                 env_key: "GEMINI_API_KEY",
                 api_key: true,
             },
@@ -776,7 +776,7 @@ mod tests {
         let config =
             KodaConfig::default_for_testing(ProviderType::Gemini).with_overrides(None, None, None);
         assert_eq!(config.provider_type, ProviderType::Gemini);
-        assert_eq!(config.model, "gemini-2.0-flash");
+        assert_eq!(config.model, "gemini-flash-latest");
     }
 
     // ── recalculate_model_derived ──────────────────────────────
