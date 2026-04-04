@@ -195,6 +195,7 @@ pub(crate) async fn execute_one_tool(
             &mut mpsc::channel(1).1,
             Some(tools.file_read_cache()),
             sub_agent_cache,
+            _session_id,
         )
         .await
         {
@@ -621,15 +622,15 @@ pub(crate) async fn execute_sub_agent(
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     parent_cache: Option<crate::tools::FileReadCache>,
     sub_agent_cache: &SubAgentCache,
+    parent_session_id: &str,
 ) -> Result<String> {
     let args: serde_json::Value = serde_json::from_str(arguments)?;
-    let agent_name = args["agent_name"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'agent_name'"))?;
+    let agent_name = args["agent_name"].as_str().unwrap_or("task");
     let prompt = args["prompt"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'prompt'"))?;
     let session_id = args["session_id"].as_str().map(|s| s.to_string());
+    let is_fork = agent_name == "fork";
 
     // Check result cache (only for stateless calls without a session_id,
     // since session continuations need fresh execution).
@@ -646,21 +647,42 @@ pub(crate) async fn execute_sub_agent(
         agent_name: agent_name.to_string(),
     });
 
-    let sub_config = crate::config::KodaConfig::load(project_root, agent_name)
-        .with_context(|| format!("Failed to load sub-agent: {agent_name}"))?;
-    // Only inherit parent's base_url if the sub-agent doesn't have its own
-    // provider/model explicitly configured (respect agent-level routing).
-    let sub_config = if sub_config.provider_type == parent_config.provider_type {
-        sub_config.with_overrides(Some(parent_config.base_url.clone()), None, None)
+    // Fork inherits parent config; named agents load their own.
+    let sub_config = if is_fork {
+        parent_config.clone()
     } else {
-        sub_config
+        let cfg = crate::config::KodaConfig::load(project_root, agent_name)
+            .with_context(|| format!("Failed to load sub-agent: {agent_name}"))?;
+        // Inherit parent's base_url if same provider (respect agent-level routing).
+        if cfg.provider_type == parent_config.provider_type {
+            cfg.with_overrides(Some(parent_config.base_url.clone()), None, None)
+        } else {
+            cfg
+        }
     };
 
     let sub_session = match session_id {
         Some(id) => id,
         None => {
-            db.create_session(&sub_config.agent_name, project_root)
-                .await?
+            let sid = db
+                .create_session(&sub_config.agent_name, project_root)
+                .await?;
+            // Fork: copy parent conversation history into the new session
+            if is_fork {
+                let parent_history = db.load_context(parent_session_id).await?;
+                for msg in &parent_history {
+                    db.insert_message(
+                        &sid,
+                        &msg.role,
+                        msg.content.as_deref(),
+                        msg.tool_calls.as_deref(),
+                        msg.tool_call_id.as_deref(),
+                        None, // don't duplicate usage stats
+                    )
+                    .await?;
+                }
+            }
+            sid
         }
     };
 
@@ -675,7 +697,14 @@ pub(crate) async fn execute_sub_agent(
             None => registry,
         }
     };
-    let tool_defs = tools.get_definitions(&sub_config.allowed_tools, &sub_config.disallowed_tools);
+    let tool_defs = {
+        let mut denied = sub_config.disallowed_tools.clone();
+        // Anti-recursion: fork children cannot spawn sub-agents
+        if is_fork && !denied.contains(&"InvokeAgent".to_string()) {
+            denied.push("InvokeAgent".to_string());
+        }
+        tools.get_definitions(&sub_config.allowed_tools, &denied)
+    };
     let semantic_memory = memory::load(project_root)?;
     let env = crate::prompt::EnvironmentInfo {
         project_root,

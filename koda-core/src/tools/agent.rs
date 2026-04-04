@@ -15,14 +15,16 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "InvokeAgent".to_string(),
             description: "Delegate a task to a specialized sub-agent. The sub-agent runs \
-                independently with its own persona and tools, then returns its result."
+                independently with its own persona and tools, then returns its result. \
+                Omit agent_name to use the 'task' worker. Set agent_name to 'fork' \
+                to inherit the parent's full conversation context."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "agent_name": {
                         "type": "string",
-                        "description": "Name of the sub-agent (must be one from ListAgents)"
+                        "description": "Name of the sub-agent (from ListAgents). Omit for 'task', use 'fork' to inherit parent context."
                     },
                     "prompt": {
                         "type": "string",
@@ -33,7 +35,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                         "description": "Optional session ID to continue a previous sub-agent conversation"
                     }
                 },
-                "required": ["agent_name", "prompt"]
+                "required": ["prompt"]
             }),
         },
         ToolDefinition {
