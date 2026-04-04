@@ -12,6 +12,8 @@
 pub mod agent;
 /// Tool approval modes, safety gates, and shared mode state.
 pub mod approval;
+/// Approval flow and user interaction during tool execution.
+pub(crate) mod approval_flow;
 /// Heuristic path-escape detection for bash commands.
 pub mod bash_path_lint;
 /// Bash command safety classification (destructive, mutating, read-only).
@@ -72,6 +74,8 @@ pub mod settings;
 pub mod skills;
 /// Cache for sub-agent provider/model config across invocations.
 pub mod sub_agent_cache;
+/// Sub-agent invocation and lifecycle management.
+pub(crate) mod sub_agent_dispatch;
 /// Tool dispatch — routes tool calls from inference to the registry.
 pub mod tool_dispatch;
 /// Tool name normalization — maps model-emitted variants to canonical PascalCase.
