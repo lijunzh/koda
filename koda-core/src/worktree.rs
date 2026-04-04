@@ -200,6 +200,32 @@ pub async fn prune(project_root: &Path) -> Result<(usize, usize)> {
 mod tests {
     use super::*;
 
+    /// Init a git repo with a dummy commit. Configures user.name/email
+    /// so it works in CI environments where global git config is absent.
+    async fn init_test_repo(path: &Path) {
+        Command::new("git")
+            .args(["init"])
+            .current_dir(path)
+            .output()
+            .await
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "init",
+            ])
+            .current_dir(path)
+            .output()
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn provision_not_git_repo() {
         let tmp = tempfile::tempdir().unwrap();
@@ -210,19 +236,7 @@ mod tests {
     #[tokio::test]
     async fn provision_in_git_repo() {
         let tmp = tempfile::tempdir().unwrap();
-        // Init a git repo with an initial commit
-        Command::new("git")
-            .args(["init"])
-            .current_dir(tmp.path())
-            .output()
-            .await
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(tmp.path())
-            .output()
-            .await
-            .unwrap();
+        init_test_repo(tmp.path()).await;
 
         let result = provision(tmp.path(), "test-session-123").await.unwrap();
         match result {
@@ -237,18 +251,7 @@ mod tests {
     #[tokio::test]
     async fn provision_reuses_existing() {
         let tmp = tempfile::tempdir().unwrap();
-        Command::new("git")
-            .args(["init"])
-            .current_dir(tmp.path())
-            .output()
-            .await
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(tmp.path())
-            .output()
-            .await
-            .unwrap();
+        init_test_repo(tmp.path()).await;
 
         let r1 = provision(tmp.path(), "reuse-test").await.unwrap();
         let r2 = provision(tmp.path(), "reuse-test").await.unwrap();
@@ -263,18 +266,7 @@ mod tests {
     #[tokio::test]
     async fn cleanup_removes_clean_worktree() {
         let tmp = tempfile::tempdir().unwrap();
-        Command::new("git")
-            .args(["init"])
-            .current_dir(tmp.path())
-            .output()
-            .await
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(tmp.path())
-            .output()
-            .await
-            .unwrap();
+        init_test_repo(tmp.path()).await;
 
         let result = provision(tmp.path(), "clean-wt").await.unwrap();
         let wt_path = match result {
@@ -290,18 +282,7 @@ mod tests {
     #[tokio::test]
     async fn cleanup_keeps_dirty_worktree() {
         let tmp = tempfile::tempdir().unwrap();
-        Command::new("git")
-            .args(["init"])
-            .current_dir(tmp.path())
-            .output()
-            .await
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
-            .current_dir(tmp.path())
-            .output()
-            .await
-            .unwrap();
+        init_test_repo(tmp.path()).await;
 
         let result = provision(tmp.path(), "dirty-wt").await.unwrap();
         let wt_path = match result {
