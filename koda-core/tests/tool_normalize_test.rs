@@ -38,7 +38,7 @@ async fn normalized_lowercase_names_are_routable() {
             registry.has_tool(&canonical),
             "Normalized '{raw_name}' -> '{canonical}' is not in the registry"
         );
-        let result = registry.execute(&canonical, "{}").await;
+        let result = registry.execute(&canonical, "{}", None).await;
         assert!(
             !result.output.contains("Unknown tool"),
             "'{raw_name}' normalized to '{canonical}' but dispatcher rejected it: {}",
@@ -77,7 +77,7 @@ async fn normalized_snake_case_names_are_routable() {
             canonical, expected,
             "'{raw}' should normalize to '{expected}', got '{canonical}'"
         );
-        let result = registry.execute(&canonical, "{}").await;
+        let result = registry.execute(&canonical, "{}", None).await;
         assert!(
             !result.output.contains("Unknown tool"),
             "'{raw}' -> '{canonical}' rejected by dispatcher: {}",
