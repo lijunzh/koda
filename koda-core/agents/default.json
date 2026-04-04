@@ -3,5 +3,6 @@
     "system_prompt": "You are an interactive CLI agent for software engineering tasks.",
     "allowed_tools": [],
     "model": null,
-    "base_url": null
+    "base_url": null,
+    "write_access": true
 }
