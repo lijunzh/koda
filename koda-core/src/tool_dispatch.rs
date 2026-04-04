@@ -131,6 +131,53 @@ async fn track_file_lifecycle(
     }
 }
 
+/// Run a sub-agent in the background. Owns all data (no borrows).
+///
+/// This is a standalone async fn so the future is `Send + 'static`,
+/// which `tokio::spawn` requires.
+async fn run_bg_agent(
+    project_root: std::path::PathBuf,
+    parent_config: KodaConfig,
+    db: Database,
+    arguments: String,
+    sub_agent_cache: SubAgentCache,
+    parent_session: String,
+    tx: tokio::sync::oneshot::Sender<Result<String, String>>,
+) {
+    let mut settings = Settings::default();
+    let cancel = CancellationToken::new();
+    let (_, mut cmd_rx) = mpsc::channel(1);
+    let null_sink = crate::engine::sink::NullSink;
+    let nested_bg = crate::bg_agent::new_shared();
+
+    // Override background=false to prevent infinite spawn
+    let mut sync_args: serde_json::Value = serde_json::from_str(&arguments).unwrap_or_default();
+    sync_args["background"] = serde_json::Value::Bool(false);
+    let sync_arguments = serde_json::to_string(&sync_args).unwrap();
+
+    let result = execute_sub_agent(
+        &project_root,
+        &parent_config,
+        &db,
+        &sync_arguments,
+        ApprovalMode::Auto,
+        &mut settings,
+        &null_sink,
+        cancel,
+        &mut cmd_rx,
+        None,
+        &sub_agent_cache,
+        &parent_session,
+        &nested_bg,
+    )
+    .await;
+
+    let _ = match result {
+        Ok(output) => tx.send(Ok(output)),
+        Err(e) => tx.send(Err(format!("Error: {e}"))),
+    };
+}
+
 pub(crate) fn can_parallelize(
     tool_calls: &[ToolCall],
     mode: ApprovalMode,
@@ -178,6 +225,7 @@ pub(crate) async fn execute_one_tool(
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
+    bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
 ) -> (String, String, bool) {
     let (result, success) = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
@@ -196,6 +244,7 @@ pub(crate) async fn execute_one_tool(
             Some(tools.file_read_cache()),
             sub_agent_cache,
             _session_id,
+            bg_agents,
         )
         .await
         {
@@ -228,6 +277,7 @@ pub(crate) async fn execute_tools_parallel(
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
     file_tracker: &mut FileTracker,
+    bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
 ) -> Result<()> {
     let count = tool_calls.len();
     sink.emit(EngineEvent::Info {
@@ -249,6 +299,7 @@ pub(crate) async fn execute_tools_parallel(
                 sink,
                 cancel.clone(),
                 sub_agent_cache,
+                bg_agents,
             )
         })
         .collect();
@@ -299,6 +350,7 @@ pub(crate) async fn execute_tools_split_batch(
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     sub_agent_cache: &SubAgentCache,
     file_tracker: &mut FileTracker,
+    bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
 ) -> Result<()> {
     // Partition into parallelizable vs sequential
     let (parallel, sequential): (Vec<_>, Vec<_>) = tool_calls.iter().partition(|tc| {
@@ -329,6 +381,7 @@ pub(crate) async fn execute_tools_split_batch(
                     sink,
                     cancel.clone(),
                     sub_agent_cache,
+                    bg_agents,
                 )
             })
             .collect();
@@ -372,6 +425,7 @@ pub(crate) async fn execute_tools_split_batch(
                 cmd_rx,
                 sub_agent_cache,
                 file_tracker,
+                bg_agents,
             )
             .await?;
         }
@@ -394,6 +448,7 @@ pub(crate) async fn execute_tools_split_batch(
             cmd_rx,
             sub_agent_cache,
             file_tracker,
+            bg_agents,
         )
         .await?;
     }
@@ -417,6 +472,7 @@ pub(crate) async fn execute_tools_sequential(
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     sub_agent_cache: &SubAgentCache,
     file_tracker: &mut FileTracker,
+    bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
 ) -> Result<()> {
     for tc in tool_calls {
         // Check for interrupt before each tool
@@ -582,6 +638,7 @@ pub(crate) async fn execute_tools_sequential(
             sink,
             cancel.clone(),
             sub_agent_cache,
+            bg_agents,
         )
         .await;
         record_tool_result(
@@ -623,6 +680,7 @@ pub(crate) async fn execute_sub_agent(
     parent_cache: Option<crate::tools::FileReadCache>,
     sub_agent_cache: &SubAgentCache,
     parent_session_id: &str,
+    bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
 ) -> Result<String> {
     let args: serde_json::Value = serde_json::from_str(arguments)?;
     let agent_name = args["agent_name"].as_str().unwrap_or("task");
@@ -631,7 +689,44 @@ pub(crate) async fn execute_sub_agent(
         .ok_or_else(|| anyhow::anyhow!("Missing 'prompt'"))?;
     let session_id = args["session_id"].as_str().map(|s| s.to_string());
     let is_fork = agent_name == "fork";
+    let background = args["background"].as_bool().unwrap_or(false);
 
+    // Background mode: spawn and return immediately
+    if background {
+        let (task_id, tx) = bg_agents.register(agent_name, prompt);
+        let project_root = project_root.to_path_buf();
+        let parent_config = parent_config.clone();
+        let agent_name_owned = agent_name.to_string();
+        let arguments = arguments.to_string();
+        let sub_agent_cache = sub_agent_cache.clone();
+        let parent_session = parent_session_id.to_string();
+        let bg_db = db.clone();
+
+        sink.emit(EngineEvent::Info {
+            message: format!("  \u{1f680} {agent_name} launched in background (task {task_id})"),
+        });
+
+        tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("bg agent runtime");
+            rt.block_on(run_bg_agent(
+                project_root,
+                parent_config,
+                bg_db,
+                arguments,
+                sub_agent_cache,
+                parent_session,
+                tx,
+            ));
+        });
+
+        return Ok(format!(
+            "Background agent '{agent_name_owned}' started (task {task_id}). \
+             Results will be injected when complete."
+        ));
+    }
     // Check result cache (only for stateless calls without a session_id,
     // since session continuations need fresh execution).
     if session_id.is_none()
