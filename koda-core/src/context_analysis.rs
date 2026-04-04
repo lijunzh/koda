@@ -331,6 +331,7 @@ mod tests {
             session_id: String::new(),
             role,
             content: content.map(String::from),
+            full_content: None,
             tool_calls: tool_calls.map(String::from),
             tool_call_id: tool_call_id.map(String::from),
             prompt_tokens: None,

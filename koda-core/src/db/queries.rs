@@ -232,6 +232,32 @@ impl Persistence for Database {
         Ok(result.last_insert_rowid())
     }
 
+    async fn insert_tool_message_with_full(
+        &self,
+        session_id: &str,
+        content: &str,
+        tool_call_id: &str,
+        full_content: &str,
+    ) -> Result<i64> {
+        let result = sqlx::query(
+            "INSERT INTO messages (session_id, role, content, full_content, tool_call_id) \
+             VALUES (?, 'tool', ?, ?, ?)",
+        )
+        .bind(session_id)
+        .bind(content)
+        .bind(full_content)
+        .bind(tool_call_id)
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query("UPDATE sessions SET last_accessed_at = datetime('now') WHERE id = ?")
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(result.last_insert_rowid())
+    }
+
     async fn mark_message_complete(&self, message_id: i64) -> Result<()> {
         sqlx::query("UPDATE messages SET completed_at = datetime('now') WHERE id = ?")
             .bind(message_id)
@@ -250,7 +276,7 @@ impl Persistence for Database {
     /// - Whitespace-only assistant messages are dropped (#594)
     async fn load_context(&self, session_id: &str) -> Result<Vec<Message>> {
         let mut messages: Vec<Message> = sqlx::query_as::<_, MessageRow>(
-            "SELECT id, session_id, role, content, tool_calls, tool_call_id,
+            "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
                     cache_read_tokens, cache_creation_tokens, thinking_tokens
              FROM messages
@@ -276,7 +302,7 @@ impl Persistence for Database {
     /// Returns messages in chronological order, no truncation.
     async fn load_all_messages(&self, session_id: &str) -> Result<Vec<Message>> {
         let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
-            "SELECT id, session_id, role, content, tool_calls, tool_call_id,
+            "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
                     cache_read_tokens, cache_creation_tokens, thinking_tokens
              FROM messages
