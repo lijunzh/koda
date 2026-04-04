@@ -64,6 +64,20 @@ pub fn assemble_messages(
     messages
 }
 
+/// Detect if an error is a server error (5xx) from the provider.
+///
+/// These are typically transient (LM Studio choking on malformed input,
+/// Ollama OOM, etc.) and should end the turn gracefully rather than crash.
+pub fn is_server_error(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}").to_lowercase();
+    msg.contains("500")
+        || msg.contains("502")
+        || msg.contains("503")
+        || msg.contains("internal server error")
+        || msg.contains("bad gateway")
+        || msg.contains("service unavailable")
+}
+
 /// Detect if an error is a rate limit or overload response from the provider.
 ///
 /// Matches HTTP 429 (Too Many Requests) and Anthropic's HTTP 529 (overloaded),

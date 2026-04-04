@@ -214,6 +214,20 @@ For example, `/model claude-sonnet` switches instantly to Claude Sonnet
 (resolving the alias to the exact model ID and switching provider if needed).
 `/model <exact-model-id>` works for models not in the alias list.
 
+### Model requirements
+
+Koda requires models with **native function/tool calling** support.
+The model must emit structured `function_call` blocks — not JSON as
+plain text. Models that can't do this will produce errors and a warning:
+
+> *This model appears to struggle with tool calling.
+> Consider switching to a model with native function-call support.*
+
+Most modern instruction-tuned models support tool calling, but some
+smaller or older models do not. If you see the warning above, try a
+different model. Check your model's documentation for function-call
+support.
+
 ---
 
 ## File References
