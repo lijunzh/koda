@@ -89,6 +89,8 @@ pub struct Message {
     pub cache_creation_tokens: Option<i64>,
     /// Reasoning/thinking tokens.
     pub thinking_tokens: Option<i64>,
+    /// ISO 8601 creation timestamp.
+    pub created_at: Option<String>,
 }
 
 /// Detected interruption state for a resumed session.
