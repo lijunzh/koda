@@ -123,9 +123,10 @@ Koda connects to your email via IMAP/SMTP through the built-in koda-email integr
 | `/compact` | Summarize conversation to reclaim context |
 | `/cost` | Show token usage for this session |
 | `/diff` | Show/review uncommitted changes |
+| `/key` | Manage API keys |
 | `/memory` | View/save project & global memory |
-| `/model` | Pick a model (↑↓ arrow keys) |
-| `/provider` | Switch LLM provider |
+| `/model` | Pick a model (curated aliases + local) |
+| `/provider` | Browse all models from a provider |
 | `/sessions` | List, resume, or delete sessions |
 | `/skills` | List available skills (search with `/skills <query>`) |
 | `/exit` | Quit Koda |

@@ -54,40 +54,33 @@ impl TuiContext {
     }
 
     pub(crate) async fn open_model_picker(&mut self) {
-        let prov = self.provider.read().await;
-        match prov.list_models().await {
-            Ok(models) if !models.is_empty() => {
-                let items: Vec<crate::widgets::model_menu::ModelItem> = models
-                    .iter()
-                    .map(|m| crate::widgets::model_menu::ModelItem {
-                        id: m.id.clone(),
-                        is_current: m.id == self.config.model,
-                    })
-                    .collect();
-                let mut dd =
-                    crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Select a model");
-                if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
-                    dd.selected = idx;
-                    let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
-                    if idx >= max_vis {
-                        dd.scroll_offset = idx + 1 - max_vis;
-                    }
-                }
-                self.menu = MenuContent::Model(dd);
-            }
-            Ok(_) => {
-                self.scroll_buffer.push(Line::styled(
-                    "  \u{26a0} No models available",
-                    Style::default().fg(Color::Yellow),
-                ));
-            }
-            Err(e) => {
-                self.scroll_buffer.push(Line::styled(
-                    format!("  \u{2717} Failed to list models: {e}"),
-                    Style::default().fg(Color::Red),
-                ));
+        // Try to auto-detect local model for the "local" alias
+        let local_model = self.detect_local_model().await;
+        let items =
+            crate::widgets::model_menu::build_items(&self.config.model, local_model.as_deref());
+        let mut dd =
+            crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Select a model");
+        if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
+            dd.selected = idx;
+            let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
+            if idx >= max_vis {
+                dd.scroll_offset = idx + 1 - max_vis;
             }
         }
+        self.menu = MenuContent::Model(dd);
+    }
+
+    /// Try to detect a locally running LMStudio model.
+    async fn detect_local_model(&self) -> Option<String> {
+        let ptype = koda_core::config::ProviderType::LMStudio;
+        let url = koda_core::runtime_env::get("KODA_LOCAL_URL")
+            .unwrap_or_else(|| ptype.default_base_url().to_string());
+        let mut temp_config = self.config.clone();
+        temp_config.provider_type = ptype;
+        temp_config.base_url = url;
+        let temp_provider = koda_core::providers::create_provider(&temp_config);
+        let models = temp_provider.list_models().await.ok()?;
+        models.first().map(|m| m.id.clone())
     }
 
     pub(crate) fn open_provider_picker(&mut self) {
@@ -116,6 +109,30 @@ impl TuiContext {
         self.menu = MenuContent::Provider(dd);
     }
 
+    pub(crate) async fn open_key_picker(&mut self) {
+        // Only show cloud providers (ones that need API keys)
+        let providers = crate::repl::PROVIDERS;
+        let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
+            .iter()
+            .filter(|&&(name, _, _)| {
+                let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(name));
+                ptype.requires_api_key()
+            })
+            .map(|&(key, name, desc)| {
+                let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
+                let has_key = koda_core::runtime_env::is_set(ptype.env_key_name());
+                crate::widgets::provider_menu::ProviderItem {
+                    key,
+                    name,
+                    description: desc,
+                    is_current: has_key, // repurpose: green = key is set
+                }
+            })
+            .collect();
+        let dd = crate::widgets::dropdown::DropdownState::new(items, "\u{1f511} Set API key for");
+        self.menu = MenuContent::Key(dd);
+    }
+
     pub(crate) fn start_provider_wizard(&mut self, name: &str) {
         let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(name));
         let base_url = ptype.default_base_url().to_string();
@@ -131,7 +148,7 @@ impl TuiContext {
             };
             self.menu = MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
             self.prompt_mode = PromptMode::WizardInput { label };
-            self.provider_wizard = Some(ProviderWizard::NeedApiKey {
+            self.provider_wizard = Some(ProviderWizard::ApiKey {
                 provider_type: ptype,
                 base_url,
                 env_name,
@@ -143,12 +160,63 @@ impl TuiContext {
             self.prompt_mode = PromptMode::WizardInput {
                 label: format!("{} URL", ptype),
             };
-            self.provider_wizard = Some(ProviderWizard::NeedUrl {
+            self.provider_wizard = Some(ProviderWizard::Url {
                 provider_type: ptype,
             });
             self.textarea.select_all();
             self.textarea.cut();
             self.textarea.insert_str(&base_url);
+        }
+    }
+
+    /// List all models from a specific provider (power-user path).
+    async fn open_provider_model_list(&mut self, ptype: koda_core::config::ProviderType) {
+        let base_url = ptype.default_base_url().to_string();
+
+        // Temporarily create a provider to list its models
+        let temp_config = {
+            let mut c = self.config.clone();
+            c.provider_type = ptype;
+            c.base_url = base_url;
+            c
+        };
+        let temp_provider = koda_core::providers::create_provider(&temp_config);
+
+        match temp_provider.list_models().await {
+            Ok(models) if !models.is_empty() => {
+                let items: Vec<crate::widgets::model_menu::ModelItem> = models
+                    .iter()
+                    .map(|m| crate::widgets::model_menu::ModelItem {
+                        label: m.id.clone(),
+                        model_id: m.id.clone(),
+                        provider: ptype.to_string(),
+                        is_current: m.id == self.config.model,
+                        is_local: false,
+                    })
+                    .collect();
+                let title = format!("\u{1f43b} {} models", ptype);
+                let mut dd = crate::widgets::dropdown::DropdownState::new(items, &title);
+                if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
+                    dd.selected = idx;
+                    let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
+                    if idx >= max_vis {
+                        dd.scroll_offset = idx + 1 - max_vis;
+                    }
+                }
+                self.menu = MenuContent::ProviderModels(dd, ptype);
+            }
+            Ok(_) => {
+                self.scroll_buffer.push(Line::styled(
+                    format!("  \u{26a0} No models available from {ptype}"),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            Err(e) => {
+                self.scroll_buffer.push(Line::styled(
+                    format!("  \u{2717} Failed to list models from {ptype}: {e}"),
+                    Style::default().fg(Color::Red),
+                ));
+            }
         }
     }
 
@@ -327,6 +395,8 @@ impl TuiContext {
             MenuContent::Slash(dd) => nav!(dd),
             MenuContent::Model(dd) => nav!(dd),
             MenuContent::Provider(dd) => nav!(dd),
+            MenuContent::ProviderModels(dd, _) => nav!(dd),
+            MenuContent::Key(dd) => nav!(dd),
             MenuContent::Session(dd) => nav!(dd),
             MenuContent::File { dropdown: dd, .. } => nav!(dd),
             MenuContent::Approval { .. }
@@ -366,62 +436,96 @@ impl TuiContext {
             }
             MenuContent::Model(dd) => {
                 if let Some(item) = dd.selected_item() {
-                    let model_id = item.id.clone();
-                    self.config.model = model_id.clone();
-                    self.config.model_settings.model = model_id.clone();
-                    self.config.recalculate_model_derived();
-                    {
-                        let prov = self.provider.read().await;
-                        self.config
-                            .query_and_apply_capabilities(prov.as_ref())
-                            .await;
+                    if item.is_local && item.model_id == "(not running)" {
+                        self.scroll_buffer.push(Line::styled(
+                            "  \u{26a0} LM Studio is not running. Start it and try again.",
+                            Style::default().fg(Color::Yellow),
+                        ));
+                    } else {
+                        let model_id = item.model_id.clone();
+                        let label = item.label.clone();
+
+                        // Resolve alias to get provider type
+                        if let Some(resolved) = koda_core::model_alias::resolve(&label) {
+                            let ptype = resolved.provider;
+                            // Check API key for cloud providers
+                            if ptype.requires_api_key()
+                                && !koda_core::runtime_env::is_set(ptype.env_key_name())
+                            {
+                                self.scroll_buffer.push(Line::styled(
+                                    format!(
+                                        "  \u{2716} {} not set. Run /key to configure.",
+                                        ptype.env_key_name()
+                                    ),
+                                    Style::default().fg(Color::Red),
+                                ));
+                            } else {
+                                let actual_model = if resolved.needs_auto_detect() {
+                                    model_id.clone()
+                                } else {
+                                    resolved.model_id.to_string()
+                                };
+                                self.apply_provider(ptype, ptype.default_base_url().to_string())
+                                    .await;
+                                self.config.model = actual_model.clone();
+                                self.config.model_settings.model = actual_model.clone();
+                                self.config.recalculate_model_derived();
+                                crate::tui_wizards::save_provider(&self.config);
+                                self.renderer.model = actual_model.clone();
+                                self.scroll_buffer.push(Line::styled(
+                                    format!("  \u{2714} Model: {label} ({actual_model})"),
+                                    Style::default().fg(Color::Green),
+                                ));
+                            }
+                        } else {
+                            // Not an alias — use model_id directly
+                            self.config.model = model_id.clone();
+                            self.config.model_settings.model = model_id.clone();
+                            self.config.recalculate_model_derived();
+                            crate::tui_wizards::save_provider(&self.config);
+                            self.renderer.model = model_id.clone();
+                            self.scroll_buffer.push(Line::styled(
+                                format!("  \u{2714} Model set to: {model_id}"),
+                                Style::default().fg(Color::Green),
+                            ));
+                        }
                     }
-                    crate::tui_wizards::save_provider(&self.config);
-                    self.scroll_buffer.push(Line::styled(
-                        format!("  \u{2714} Model set to: {model_id}"),
-                        Style::default().fg(Color::Green),
-                    ));
-                    self.renderer.model = model_id;
                 }
             }
             MenuContent::Provider(dd) => {
                 if let Some(item) = dd.selected_item() {
                     let key = item.key;
                     let ptype = koda_core::config::ProviderType::from_url_or_name("", Some(key));
-                    let base_url = ptype.default_base_url().to_string();
-                    let provider_name = item.name.to_string();
 
-                    if ptype.requires_api_key() {
-                        let env_name = ptype.env_key_name().to_string();
-                        let has_key = koda_core::runtime_env::is_set(&env_name);
-                        let label = if has_key {
-                            format!("API key for {} (Enter to keep current)", ptype)
-                        } else {
-                            format!("API key for {}", ptype)
-                        };
-                        self.menu =
-                            MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
-                        self.prompt_mode = PromptMode::WizardInput { label };
-                        self.provider_wizard = Some(ProviderWizard::NeedApiKey {
-                            provider_type: ptype,
-                            base_url,
-                            env_name,
-                        });
-                        self.textarea.select_all();
-                        self.textarea.cut();
+                    if ptype.requires_api_key()
+                        && !koda_core::runtime_env::is_set(ptype.env_key_name())
+                    {
+                        // Need API key first — enter wizard
+                        self.start_provider_wizard(key);
                     } else {
-                        self.menu =
-                            MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
-                        self.prompt_mode = PromptMode::WizardInput {
-                            label: format!("{} URL", ptype),
-                        };
-                        self.provider_wizard = Some(ProviderWizard::NeedUrl {
-                            provider_type: ptype,
-                        });
-                        self.textarea.select_all();
-                        self.textarea.cut();
-                        self.textarea.insert_str(&base_url);
+                        // Key is set (or not needed) — list models from this provider
+                        self.open_provider_model_list(ptype).await;
                     }
+                }
+                return;
+            }
+            MenuContent::Key(dd) => {
+                if let Some(item) = dd.selected_item() {
+                    let ptype =
+                        koda_core::config::ProviderType::from_url_or_name("", Some(item.key));
+                    let env_name = ptype.env_key_name().to_string();
+                    let provider_name = ptype.to_string();
+                    let has_key = koda_core::runtime_env::is_set(&env_name);
+                    let label = if has_key {
+                        format!("API key for {} (Enter to keep current)", provider_name)
+                    } else {
+                        format!("API key for {}", provider_name)
+                    };
+                    self.menu = MenuContent::WizardTrail(vec![("Key".into(), provider_name)]);
+                    self.prompt_mode = PromptMode::WizardInput { label };
+                    self.provider_wizard = Some(ProviderWizard::ApiKeyOnly { env_name });
+                    self.textarea.select_all();
+                    self.textarea.cut();
                 }
                 return;
             }
@@ -442,6 +546,23 @@ impl TuiContext {
                             Span::styled(short, Style::default().fg(Color::Cyan)),
                         ]));
                     }
+                }
+            }
+            MenuContent::ProviderModels(dd, ptype) => {
+                if let Some(item) = dd.selected_item() {
+                    let model_id = item.model_id.clone();
+                    let ptype = *ptype;
+                    self.apply_provider(ptype, ptype.default_base_url().to_string())
+                        .await;
+                    self.config.model = model_id.clone();
+                    self.config.model_settings.model = model_id.clone();
+                    self.config.recalculate_model_derived();
+                    crate::tui_wizards::save_provider(&self.config);
+                    self.renderer.model = model_id.clone();
+                    self.scroll_buffer.push(Line::styled(
+                        format!("  \u{2714} Model set to: {model_id} ({ptype})"),
+                        Style::default().fg(Color::Green),
+                    ));
                 }
             }
             MenuContent::File { dropdown, prefix } => {
@@ -472,7 +593,7 @@ impl TuiContext {
 
         if let Some(wizard) = self.provider_wizard.take() {
             match wizard {
-                ProviderWizard::NeedApiKey {
+                ProviderWizard::ApiKey {
                     provider_type,
                     base_url,
                     env_name,
@@ -500,7 +621,27 @@ impl TuiContext {
                     }
                     self.apply_provider(provider_type, base_url).await;
                 }
-                ProviderWizard::NeedUrl { provider_type } => {
+                ProviderWizard::ApiKeyOnly { env_name } => {
+                    if value.is_empty() && !koda_core::runtime_env::is_set(&env_name) {
+                        self.scroll_buffer.push(Line::styled(
+                            "  \u{2716} No API key provided.",
+                            Style::default().fg(Color::Red),
+                        ));
+                    } else if !value.is_empty() {
+                        koda_core::runtime_env::set(&env_name, &value);
+                        if let Ok(mut store) = koda_core::keystore::KeyStore::load() {
+                            store.set(&env_name, &value);
+                            let _ = store.save();
+                        }
+                        let masked = koda_core::keystore::mask_key(&value);
+                        self.scroll_buffer.push(Line::styled(
+                            format!("  \u{2714} {env_name} set to {masked}"),
+                            Style::default().fg(Color::Green),
+                        ));
+                    }
+                    // Key-only mode: just return to chat, no provider switch
+                }
+                ProviderWizard::Url { provider_type } => {
                     let url = if value.is_empty() {
                         provider_type.default_base_url().to_string()
                     } else {
@@ -519,8 +660,8 @@ impl TuiContext {
         provider_type: koda_core::config::ProviderType,
         base_url: String,
     ) {
-        self.config.provider_type = provider_type.clone();
-        self.config.base_url = base_url.clone();
+        self.config.provider_type = provider_type;
+        self.config.base_url = base_url;
         self.config.model = provider_type.default_model().to_string();
         self.config.model_settings.model = self.config.model.clone();
         self.config.recalculate_model_derived();

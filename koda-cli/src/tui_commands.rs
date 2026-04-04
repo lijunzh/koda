@@ -20,6 +20,7 @@ use tokio::sync::RwLock;
 pub enum SlashAction {
     Continue,
     Quit,
+    OpenKeyMenu,
 }
 
 use tui_output::{BOLD, CYAN, DIM};
@@ -43,15 +44,48 @@ pub async fn handle_slash_command(
     match crate::repl::handle_command(input, config, provider).await {
         ReplAction::Quit => SlashAction::Quit,
         ReplAction::SwitchModel(model) => {
-            config.model = model.clone();
-            config.model_settings.model = model.clone();
-            config.recalculate_model_derived();
-            {
-                let prov = provider.read().await;
-                config.query_and_apply_capabilities(prov.as_ref()).await;
+            // Check if it's an alias first
+            if let Some(resolved) = koda_core::model_alias::resolve(&model) {
+                let ptype = resolved.provider;
+                if ptype.requires_api_key() && !koda_core::runtime_env::is_set(ptype.env_key_name())
+                {
+                    tui_output::err_msg(
+                        buffer,
+                        format!("{} not set. Run /key to configure.", ptype.env_key_name()),
+                    );
+                } else if resolved.needs_auto_detect() {
+                    tui_output::warn_msg(
+                        buffer,
+                        "Use /model to pick local models interactively.".to_string(),
+                    );
+                } else {
+                    config.provider_type = ptype;
+                    config.base_url = ptype.default_base_url().to_string();
+                    config.model = resolved.model_id.to_string();
+                    config.model_settings.model = config.model.clone();
+                    config.recalculate_model_derived();
+                    *provider.write().await = koda_core::providers::create_provider(config);
+                    crate::tui_wizards::save_provider(config);
+                    tui_output::ok_msg(
+                        buffer,
+                        format!(
+                            "Model: {} ({}, {})",
+                            resolved.alias, resolved.model_id, ptype
+                        ),
+                    );
+                }
+            } else {
+                // Literal model ID — switch on current provider
+                config.model = model.clone();
+                config.model_settings.model = model.clone();
+                config.recalculate_model_derived();
+                {
+                    let prov = provider.read().await;
+                    config.query_and_apply_capabilities(prov.as_ref()).await;
+                }
+                crate::tui_wizards::save_provider(config);
+                tui_output::ok_msg(buffer, format!("Model set to: {model}"));
             }
-            crate::tui_wizards::save_provider(config);
-            tui_output::ok_msg(buffer, format!("Model set to: {model}"));
             SlashAction::Continue
         }
         ReplAction::PickModel => SlashAction::Continue,
@@ -123,6 +157,10 @@ pub async fn handle_slash_command(
         ReplAction::ListSkills(ref query) => {
             crate::tui_wizards::handle_list_skills(buffer, query.as_deref(), &agent.tools);
             SlashAction::Continue
+        }
+        ReplAction::ManageKeys => {
+            crate::tui_wizards::handle_keys(buffer);
+            SlashAction::OpenKeyMenu
         }
         ReplAction::Handled => SlashAction::Continue,
         ReplAction::NotACommand => SlashAction::Continue,
