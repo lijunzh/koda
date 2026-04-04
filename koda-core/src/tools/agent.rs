@@ -236,7 +236,11 @@ mod tests {
             .iter()
             .filter(|(_, _, src)| src == "built-in")
             .collect();
-        assert_eq!(builtins.len(), 4, "Expected task/explore/plan/verify built-ins");
+        assert_eq!(
+            builtins.len(),
+            4,
+            "Expected task/explore/plan/verify built-ins"
+        );
         let names: Vec<&str> = result.iter().map(|(n, _, _)| n.as_str()).collect();
         assert!(names.contains(&"task"));
         assert!(names.contains(&"explore"));
@@ -270,7 +274,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let agents = discover_all_agents(dir.path());
         let builtins: Vec<_> = agents.iter().filter(|a| a.source == "built-in").collect();
-        assert_eq!(builtins.len(), 4, "Expected task/explore/plan/verify built-ins");
+        assert_eq!(
+            builtins.len(),
+            4,
+            "Expected task/explore/plan/verify built-ins"
+        );
         let names: Vec<&str> = builtins.iter().map(|a| a.name.as_str()).collect();
         assert!(names.contains(&"task"));
         assert!(names.contains(&"explore"));
