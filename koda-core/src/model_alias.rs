@@ -47,7 +47,7 @@ static ALIASES: &[ModelAlias] = &[
     // ── Anthropic ────────────────────────────────────────
     ModelAlias {
         alias: "claude-haiku",
-        model_id: "claude-haiku-4-6",
+        model_id: "claude-haiku-4-5-20251001",
         provider: ProviderType::Anthropic,
     },
     ModelAlias {
