@@ -80,3 +80,5 @@ pub mod truncate;
 pub mod undo;
 /// Version string and update-check helpers.
 pub mod version;
+/// Git worktree provisioning for sub-agent isolation.
+pub mod worktree;
