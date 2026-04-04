@@ -331,7 +331,16 @@ impl ToolRegistry {
     /// Empty or whitespace-only `arguments` are treated as `{}` (no args)
     /// so that tools can fall through to their own defaults instead of
     /// surfacing a raw JSON parse error.  See #513.
-    pub async fn execute(&self, name: &str, arguments: &str) -> ToolResult {
+    ///
+    /// `sink_for_streaming` is an optional `(sink, call_id)` pair. When
+    /// provided, the Bash tool streams each output line as a
+    /// `ToolOutputLine` event in real-time.
+    pub async fn execute(
+        &self,
+        name: &str,
+        arguments: &str,
+        sink_for_streaming: Option<(&dyn crate::engine::EngineSink, &str)>,
+    ) -> ToolResult {
         let raw = arguments.trim();
         let raw = if raw.is_empty() { "{}" } else { raw };
         let args: Value = match serde_json::from_str(raw) {
@@ -383,6 +392,7 @@ impl ToolRegistry {
                     &args,
                     self.caps.shell_output_lines,
                     &self.bg_registry,
+                    sink_for_streaming,
                 )
                 .await
             }

@@ -18,7 +18,7 @@ fn all_tool_names() -> Vec<String> {
 async fn test_all_tools_routable_in_dispatcher() {
     let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"), 100_000);
     for name in all_tool_names() {
-        let result = registry.execute(&name, "{}").await;
+        let result = registry.execute(&name, "{}", None).await;
         assert!(
             !result.output.contains("Unknown tool"),
             "Tool '{name}' is not routed in the dispatcher (tools/mod.rs execute()). \
@@ -34,7 +34,7 @@ async fn test_all_tools_routable_in_dispatcher() {
 async fn test_empty_args_default_to_empty_object() {
     let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"), 100_000);
     for input in ["", "  ", "\n", "\t "] {
-        let result = registry.execute("List", input).await;
+        let result = registry.execute("List", input, None).await;
         assert!(
             !result.output.contains("Invalid JSON"),
             "Empty args '{input:?}' should not produce a JSON parse error. Got: {}",
