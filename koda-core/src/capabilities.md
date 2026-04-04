@@ -44,7 +44,7 @@ Built-in sub-agents (use `InvokeAgent` / `ListAgents`):
 - **verify** — adversarial tester (read-only + Bash). Runs tests/linters, finds bugs, returns PASS/FAIL/PARTIAL verdict.
 - **fork** — not a named agent. Set `agent_name: "fork"` to spawn a clone that inherits your full conversation context. Fork children cannot spawn sub-agents (anti-recursion).
 - **background** — any agent can run in background with `background: true`. Returns immediately; results are injected when complete.
-- Custom agents: JSON files in `agents/` or `~/.config/koda/agents/`
+- Custom agents: JSON files in `agents/` or `~/.config/koda/agents/`. Read-only by default; set `"write_access": true` to grant Write/Edit/Delete.
 - Omit `agent_name` to default to `task`.
 
 When to use sub-agents:
