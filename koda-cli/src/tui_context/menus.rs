@@ -462,6 +462,7 @@ impl TuiContext {
                                 self.config.model = actual_model.clone();
                                 self.config.model_settings.model = actual_model.clone();
                                 self.config.recalculate_model_derived();
+                                self.query_model_capabilities().await;
                                 crate::tui_wizards::save_provider(&self.config);
                                 self.renderer.model = actual_model.clone();
                                 self.scroll_buffer.push(Line::styled(
@@ -474,6 +475,7 @@ impl TuiContext {
                             self.config.model = model_id.clone();
                             self.config.model_settings.model = model_id.clone();
                             self.config.recalculate_model_derived();
+                            self.query_model_capabilities().await;
                             crate::tui_wizards::save_provider(&self.config);
                             self.renderer.model = model_id.clone();
                             self.scroll_buffer.push(Line::styled(
@@ -549,6 +551,7 @@ impl TuiContext {
                     self.config.model = model_id.clone();
                     self.config.model_settings.model = model_id.clone();
                     self.config.recalculate_model_derived();
+                    self.query_model_capabilities().await;
                     crate::tui_wizards::save_provider(&self.config);
                     self.renderer.model = model_id.clone();
                     self.scroll_buffer.push(Line::styled(
@@ -681,6 +684,18 @@ impl TuiContext {
             ),
             Style::default().fg(Color::Green),
         ));
+    }
+
+    /// Query the provider API for context window and apply it.
+    ///
+    /// Called after `recalculate_model_derived()` on model switch so local
+    /// providers (LM Studio, Ollama) report their actual configured context
+    /// window instead of using the lookup table.
+    async fn query_model_capabilities(&mut self) {
+        let prov = self.provider.read().await;
+        self.config
+            .query_and_apply_capabilities(prov.as_ref())
+            .await;
     }
 }
 
