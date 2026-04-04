@@ -57,6 +57,7 @@ pub(crate) fn draw_viewport(
         MenuContent::Slash(dd) => dd.visible_count() as u16 + 1,
         MenuContent::Model(dd) => dd.visible_count() as u16 + 1,
         MenuContent::Provider(dd) => dd.visible_count() as u16 + 1,
+        MenuContent::ProviderModels(dd, _) => dd.visible_count() as u16 + 1,
         MenuContent::Session(dd) => dd.visible_count() as u16 + 1,
         MenuContent::File { dropdown: dd, .. } => dd.visible_count() as u16 + 1,
         MenuContent::HistorySearch { matches, .. } => {
@@ -226,6 +227,10 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
         MenuContent::Provider(dd) => {
+            let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
+            frame.render_widget(Paragraph::new(lines), menu_area);
+        }
+        MenuContent::ProviderModels(dd, _) => {
             let lines = crate::widgets::dropdown::build_dropdown_lines(dd);
             frame.render_widget(Paragraph::new(lines), menu_area);
         }

@@ -9,6 +9,7 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "/diff",
     "/exit",
     "/expand",
+    "/key",
     "/memory",
     "/model",
     "/provider",

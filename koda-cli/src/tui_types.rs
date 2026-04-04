@@ -45,6 +45,8 @@ pub(crate) enum MenuContent {
     Model(ModelDropdown),
     /// Provider picker dropdown (`/provider` with no args).
     Provider(ProviderDropdown),
+    /// Provider model list — second step of `/provider` (pick provider → list its models).
+    ProviderModels(ModelDropdown, koda_core::config::ProviderType),
     /// Session picker dropdown (`/sessions` with no args).
     Session(SessionDropdown),
     /// File picker dropdown (auto-appears on `@`).

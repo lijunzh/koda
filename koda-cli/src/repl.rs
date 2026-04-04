@@ -39,6 +39,8 @@ pub enum ReplAction {
     Undo,
     /// List available skills (optional search query)
     ListSkills(Option<String>),
+    /// Manage API keys
+    ManageKeys,
     #[allow(dead_code)]
     Handled,
     NotACommand,
@@ -126,6 +128,8 @@ pub async fn handle_command(
         "/undo" => ReplAction::Undo,
 
         "/skills" => ReplAction::ListSkills(arg.map(|s| s.to_string())),
+
+        "/key" | "/keys" => ReplAction::ManageKeys,
 
         _ => ReplAction::NotACommand,
     }
