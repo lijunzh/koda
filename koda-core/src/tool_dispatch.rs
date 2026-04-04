@@ -34,7 +34,7 @@ use tokio_util::sync::CancellationToken;
 /// and file lifecycle. Called after every successful tool execution regardless
 /// of execution strategy (parallel, split-batch, or sequential).
 #[allow(clippy::too_many_arguments)]
-async fn record_tool_result(
+pub(crate) async fn record_tool_result(
     tc: &ToolCall,
     result: &str,
     success: bool,

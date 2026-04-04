@@ -303,6 +303,8 @@ use super::stream_collector::ChunkParser;
 /// and accumulates tool calls + usage across the stream.
 pub(crate) struct AnthropicChunkParser {
     tool_calls: Vec<(String, String, String)>, // (id, name, args_json)
+    /// Indices of tool calls already emitted via `ToolCallReady`.
+    emitted_tool_indices: std::collections::HashSet<usize>,
     usage: TokenUsage,
     thinking_indices: std::collections::HashSet<usize>,
 }
@@ -311,6 +313,7 @@ impl AnthropicChunkParser {
     pub fn new() -> Self {
         Self {
             tool_calls: Vec::new(),
+            emitted_tool_indices: std::collections::HashSet::new(),
             usage: TokenUsage::default(),
             thinking_indices: std::collections::HashSet::new(),
         }
@@ -394,7 +397,24 @@ impl ChunkParser for AnthropicChunkParser {
                     self.usage.cache_creation_tokens = u.cache_creation_input_tokens;
                 }
             }
-            _ => {} // message_stop, content_block_stop, ping, etc.
+            _ => {
+                // content_block_stop — emit ToolCallReady for completed tool calls
+                if event.event_type == "content_block_stop"
+                    && let Some(idx) = event.index
+                    && idx < self.tool_calls.len()
+                    && !self.tool_calls[idx].0.is_empty()
+                {
+                    let (id, name, args) = &self.tool_calls[idx];
+                    chunks.push(StreamChunk::ToolCallReady(ToolCall {
+                        id: id.clone(),
+                        function_name: name.clone(),
+                        arguments: args.clone(),
+                        thought_signature: None,
+                    }));
+                    self.emitted_tool_indices.insert(idx);
+                }
+                // message_stop, ping, etc. — ignored
+            }
         }
 
         chunks
@@ -403,18 +423,22 @@ impl ChunkParser for AnthropicChunkParser {
     fn finish(&mut self) -> Vec<StreamChunk> {
         let mut chunks = Vec::new();
         if !self.tool_calls.is_empty() {
-            let tcs = self
+            // Only emit tool calls NOT already sent via ToolCallReady
+            let tcs: Vec<_> = self
                 .tool_calls
-                .drain(..)
-                .filter(|(id, _, _)| !id.is_empty())
-                .map(|(id, name, args)| ToolCall {
-                    id,
-                    function_name: name,
-                    arguments: args,
+                .iter()
+                .enumerate()
+                .filter(|(i, (id, _, _))| !id.is_empty() && !self.emitted_tool_indices.contains(i))
+                .map(|(_, (id, name, args))| ToolCall {
+                    id: id.clone(),
+                    function_name: name.clone(),
+                    arguments: args.clone(),
                     thought_signature: None,
                 })
                 .collect();
-            chunks.push(StreamChunk::ToolCalls(tcs));
+            if !tcs.is_empty() {
+                chunks.push(StreamChunk::ToolCalls(tcs));
+            }
         }
         chunks.push(StreamChunk::Done(std::mem::take(&mut self.usage)));
         chunks
