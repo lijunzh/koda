@@ -320,9 +320,6 @@ pub struct AgentConfig {
     /// Override max inference iterations.
     #[serde(default)]
     pub max_iterations: Option<u32>,
-    /// Override auto-compact threshold percentage.
-    #[serde(default)]
-    pub auto_compact_threshold: Option<usize>,
     /// Grant write access (Write/Edit/Delete tools). Default: false.
     /// Sub-agents are read-only by default (principle of least privilege).
     /// Set to `true` for agents that need to create or modify files.
@@ -355,8 +352,6 @@ pub struct KodaConfig {
     pub model_settings: ModelSettings,
     /// Max inference iterations per turn.
     pub max_iterations: u32,
-    /// Context usage percentage (0-100) that triggers auto-compact. 0 = disabled.
-    pub auto_compact_threshold: usize,
 }
 
 impl KodaConfig {
@@ -421,8 +416,6 @@ impl KodaConfig {
 
         let max_iterations = agent.max_iterations.unwrap_or(200);
 
-        let auto_compact_threshold = agent.auto_compact_threshold.unwrap_or(85);
-
         Ok(Self {
             agent_name: agent.name,
             system_prompt: agent.system_prompt,
@@ -435,7 +428,6 @@ impl KodaConfig {
             agents_dir,
             model_settings: settings,
             max_iterations,
-            auto_compact_threshold,
         })
     }
 
@@ -518,7 +510,6 @@ impl KodaConfig {
         self.model_settings.max_context_tokens = new_ctx;
 
         self.max_iterations = 200;
-        self.auto_compact_threshold = 85;
     }
 
     /// Apply capabilities queried from the provider API.
@@ -615,7 +606,6 @@ impl KodaConfig {
             agents_dir: PathBuf::from("agents"),
             model_settings,
             max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,
-            auto_compact_threshold: 80,
         }
     }
 
