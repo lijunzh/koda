@@ -3,6 +3,21 @@
 //! Keys are stored in `~/.config/koda/keys.toml` with
 //! restrictive file permissions (0600). This file is user-level,
 //! never inside a project directory, and never committed to git.
+//!
+//! ## Supported providers
+//!
+//! Each provider has its own key entry. Use `/key` in the REPL
+//! or the onboarding wizard to manage keys.
+//!
+//! ```toml
+//! [keys]
+//! anthropic = "sk-ant-..."
+//! openai = "sk-..."
+//! gemini = "AIza..."
+//! ```
+//!
+//! Keys are also read from environment variables (e.g., `ANTHROPIC_API_KEY`).
+//! The keystore is checked first, then the environment.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

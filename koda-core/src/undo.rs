@@ -2,6 +2,23 @@
 //!
 //! Snapshots file contents before Write/Edit/Delete tool execution.
 //! Each turn's mutations are grouped into a single undo entry.
+//!
+//! ## How it works
+//!
+//! 1. Before any file mutation, the current file contents are snapshotted
+//! 2. All mutations in a single turn are grouped into one undo entry
+//! 3. `/undo` restores all files from the most recent entry
+//! 4. Stack depth is unlimited — undo as many turns as needed
+//!
+//! ## What gets tracked
+//!
+//! - **Write**: snapshots the file if it existed (for overwrite), or marks as "created"
+//! - **Edit**: snapshots the file before the edit
+//! - **Delete**: snapshots the file contents before deletion
+//!
+//! Git checkpointing provides a separate safety net via `git stash`-style
+//! snapshots before each turn. `/undo` is faster (in-memory) but git
+//! checkpoints survive process crashes.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -1,7 +1,20 @@
 //! SQLite persistence layer.
 //!
-//! Implements `Persistence` trait for SQLite via sqlx.
-//! Uses WAL mode for concurrent access.
+//! Implements the [`crate::persistence::Persistence`] trait for SQLite via sqlx.
+//! Uses WAL mode for concurrent read/write access.
+//!
+//! ## Database location
+//!
+//! - **Default**: `~/.config/koda/koda.db`
+//! - Schema is auto-migrated on startup
+//! - WAL mode enables concurrent reads (main session + sub-agents)
+//!
+//! ## What's stored
+//!
+//! - **Conversation history** — all messages, tool calls, and results
+//! - **Sessions** — session metadata, timestamps, model info
+//! - **File ownership** — which files Koda created (for auto-approve Delete)
+//! - **Progress entries** — survive compaction for persistent tracking
 //!
 //! ## Module layout
 //!

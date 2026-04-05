@@ -2,6 +2,36 @@
 //!
 //! Each tool is a function that takes JSON arguments and returns a string result.
 //! Path validation is enforced here to prevent directory traversal.
+//!
+//! ## Available tools
+//!
+//! | Tool | Module | Effect | Description |
+//! |---|---|---|---|
+//! | **Read** | `file_tools` | ReadOnly | Read file contents with line numbers |
+//! | **Write** | `file_tools` | LocalMutation | Create or overwrite a file |
+//! | **Edit** | `file_tools` | LocalMutation | Find-and-replace in an existing file |
+//! | **Delete** | `file_tools` | Destructive | Delete a file |
+//! | **List** | `file_tools` | ReadOnly | List files and directories |
+//! | **Bash** | `shell` | LocalMutation | Execute shell commands (with background mode) |
+//! | **Grep** | `grep` | ReadOnly | Recursive text search (respects .gitignore) |
+//! | **Glob** | `glob_tool` | ReadOnly | Find files by glob pattern |
+//! | **WebFetch** | `web_fetch` | RemoteAction | Fetch URL content (HTML→text) |
+//! | **WebSearch** | `web_search` | RemoteAction | Web search via DuckDuckGo |
+//! | **InvokeAgent** | `agent` | LocalMutation | Delegate task to a sub-agent |
+//! | **ListAgents** | `agent` | ReadOnly | List available sub-agents |
+//! | **MemoryRead** | `memory` | ReadOnly | Read project/global memory |
+//! | **MemoryWrite** | `memory` | LocalMutation | Save facts to memory |
+//! | **TodoRead** | `todo` | ReadOnly | Read task list |
+//! | **TodoWrite** | `todo` | LocalMutation | Update task list |
+//! | **AskUser** | `ask_user` | ReadOnly | Ask the user a question |
+//! | **ActivateSkill** | `skills` | ReadOnly | Load a skill's instructions |
+//! | **ListSkills** | `skills` | ReadOnly | List available skills |
+//!
+//! ## Safety model
+//!
+//! Every tool call is classified by `ToolEffect` and checked against the
+//! current approval mode before execution. See
+//! `classify_tool` for the effect of each tool.
 
 /// Effect classification for tool calls.
 ///

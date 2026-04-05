@@ -4,6 +4,13 @@
 //! that is safe to read/write from any tokio task.
 //!
 //! Read priority: runtime map → process environment.
+//!
+//! ## Why not `std::env::set_var`?
+//!
+//! `set_var` is unsafe in multi-threaded programs (undefined behavior in
+//! Rust 2024 edition). Since Koda uses tokio with multiple tasks (main
+//! REPL, background agents, version checker), we need a thread-safe
+//! alternative.
 
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};

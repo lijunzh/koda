@@ -1,6 +1,20 @@
 //! System prompt construction.
 //!
 //! Builds the system prompt from agent config, memory, and available tools.
+//! The prompt is the single source of truth for what the model knows about
+//! Koda's capabilities — it is **generated from code**, not a static file.
+//!
+//! ## Prompt structure
+//!
+//! The assembled prompt contains (in order):
+//!
+//! 1. **Base prompt** — from the agent's `system_prompt` field
+//! 2. **Behavioral instructions** — `instructions.md` (how to act)
+//! 3. **Environment** — working dir, platform, shell, model
+//! 4. **Quick Reference** — auto-generated from `SLASH_COMMANDS` + `ToolDefinition`
+//! 5. **Sub-agents** — available agents with delegation guidance
+//! 6. **Skills** — available expertise modules
+//! 7. **Memory** — project and global learned facts
 
 use std::path::Path;
 

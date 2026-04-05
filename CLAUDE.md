@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 Koda is a personal AI assistant built in Rust (edition 2024) — not a product,
-not a platform. See [docs/design.md](docs/design.md) for principles (P1: Personal,
+not a platform. See [DESIGN.md](DESIGN.md) for principles (P1: Personal,
 P2: Simple enough to own alone, P3: Build for the world six months from now).
 
 **Development philosophy:** Make it work, make it right, make it fast — in that
@@ -18,7 +18,7 @@ Four-crate workspace:
 - `koda-ast` (binary `koda-ast`) — tree-sitter AST analysis (library + standalone MCP server)
 - `koda-email` (binary `koda-email`) — email via IMAP/SMTP (library + standalone MCP server)
 
-See [docs/design.md](docs/design.md) for architectural decisions. See [#70](https://github.com/lijunzh/koda/issues/70) for the TUI design.
+See [DESIGN.md](DESIGN.md) for architectural decisions. See [#70](https://github.com/lijunzh/koda/issues/70) for the TUI design.
 
 ### Current Architecture
 
@@ -49,7 +49,7 @@ how mutations are gated:
 **When to update docs with a PR:**
 - User-facing feature added/changed → update root README + relevant crate README
 - Tool added/changed in koda-ast/koda-email → update the crate README's tool/protocol section
-- Architecture or design decision → add to the appropriate section in `docs/design.md` with rationale
+- Architecture or design decision → add to the appropriate section in `DESIGN.md` with rationale
 - New crate → must ship with a README.md (required for crates.io)
 - Keep feature coverage symmetric — if AST and email have equivalent capabilities, they get equivalent documentation
 - Internal refactors don't require doc updates unless they change crate boundaries or public APIs
@@ -58,7 +58,7 @@ how mutations are gated:
 - Move CHANGELOG.md `[Unreleased]` to versioned section
 - Bump version in all 4 crate Cargo.toml files (koda-core, koda-cli, koda-ast, koda-email)
 - Verify README quick-start examples still work
-- Check that CHANGELOG entries match what's documented in README/docs/design.md
+- Check that CHANGELOG entries match what's documented in README/DESIGN.md
 
 ## Build & Development Commands
 
@@ -198,7 +198,7 @@ koda/
 │   │       ├── model_menu.rs # Model picker menu
 │   │       ├── provider_menu.rs # Provider picker menu
 │   │       ├── session_menu.rs # Session picker menu
-│   │       ├── slash_menu.rs# Slash command dropdown (see docs/design.md, Interaction)
+│   │       ├── slash_menu.rs# Slash command dropdown (see DESIGN.md, Interaction)
 │   │       └── status_bar.rs# Model, mode, context meter, elapsed time
 │   └── tests/              # CLI integration tests
 ├── koda-ast/               # Tree-sitter AST analysis (library + standalone MCP server)
@@ -215,7 +215,7 @@ koda/
 │   │   ├── imap_client.rs  # IMAP read/search (sync imap crate + spawn_blocking)
 │   │   └── smtp_client.rs  # SMTP sending via lettre
 │   └── tests/              # Integration tests (two-layer)
-└── docs/design.md          # Architecture decisions
+├── DESIGN.md               # Architecture decisions
 ```
 
 ### Core Event Loop
@@ -228,7 +228,7 @@ app-managed scrollback. All output flows through a single rendering path:
 Mouse capture is enabled for scroll wheel; text selection is handled by
 `mouse_select.rs` with automatic clipboard copy.
 
-**Viewport layout** (see docs/design.md, Interaction):
+**Viewport layout** (see DESIGN.md, Interaction):
 ```
 [history panel]                ← ScrollBuffer: scrollable, mouse-selectable
 ─── 🐻 ─                        ← separator
@@ -243,7 +243,7 @@ remaining vertical space. Mouse scroll works during inference. Native
 clipboard (`arboard`) handles copy since alternate screen disables
 terminal-native mouse selection.
 
-See docs/design.md (Interaction section) for the interaction system design and competitive analysis.
+See DESIGN.md (Interaction section) for the interaction system design and competitive analysis.
 
 The engine communicates through `EngineEvent` (output) and `EngineCommand` (input) enums.
 Approval flows through async channels: engine emits `ApprovalRequest`, client sends `ApprovalResponse`.

@@ -3,6 +3,20 @@
 //! Auto-extracts progress from tool results into DB metadata.
 //! Survives compaction. Injected into system prompt so the LLM
 //! always knows what's been done even after context is trimmed.
+//!
+//! ## Why progress tracking exists
+//!
+//! When compaction summarizes old messages, the model loses awareness of
+//! what files were created/modified and what steps were completed. Progress
+//! entries are stored in the DB (not in messages) and re-injected into
+//! the system prompt, providing a persistent "done" list.
+//!
+//! ## What gets tracked
+//!
+//! - Files created (Write tool)
+//! - Files modified (Edit tool)
+//! - Tests run and their results (Bash tool with test patterns)
+//! - Commands executed with exit codes
 
 use crate::db::Database;
 use crate::persistence::Persistence;

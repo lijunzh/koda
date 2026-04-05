@@ -7,6 +7,35 @@
 //! Note: `KodaConfig` is NOT stored here because the REPL allows
 //! switching models and providers mid-session. Config lives on the
 //! caller side and is passed to `KodaSession` per-turn.
+//!
+//! ## Built-in agents
+//!
+//! Koda ships with these built-in agents (see [`crate::config`] module):
+//!
+//! | Agent | Purpose | Write access |
+//! |---|---|---|
+//! | **default** | Main interactive agent with all tools | Yes |
+//! | **task** | General-purpose worker for delegated tasks | Yes |
+//! | **explore** | Read-only code search specialist | No |
+//! | **guide** | Documentation assistant (fetches docs.rs) | No |
+//! | **plan** | Architecture and planning specialist | No |
+//! | **verify** | Code review and verification | No |
+//!
+//! ## Custom agents
+//!
+//! Define agents as JSON files in `agents/` (project) or `~/.config/koda/agents/` (global):
+//!
+//! ```json
+//! {
+//!   "name": "testgen",
+//!   "system_prompt": "You are a test generation specialist.",
+//!   "model": "gemini-2.5-flash",
+//!   "write_access": true,
+//!   "allowed_tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
+//! }
+//! ```
+//!
+//! See [`crate::config::AgentConfig`] for all available fields.
 
 use crate::config::KodaConfig;
 use crate::memory;

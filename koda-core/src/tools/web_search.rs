@@ -1,9 +1,18 @@
-//! WebSearch tool: query the web via DuckDuckGo.
+//! WebSearch tool — query the web via DuckDuckGo.
 //!
 //! Returns the top N results (title, URL, snippet) with no API key required.
-//! Uses the DuckDuckGo HTML endpoint — the same SSRF-safe HTTP client that
-//! `web_fetch` uses, but targets a fixed trusted domain so no SSRF checks
-//! are needed here.
+//! Uses the DuckDuckGo HTML endpoint.
+//!
+//! ## Parameters
+//!
+//! - **`query`** (required) — The search query
+//! - **`num_results`** (optional, default 5) — Number of results to return
+//!
+//! ## Usage patterns
+//!
+//! - Research a library or API: `"rust tokio graceful shutdown"`
+//! - Find documentation: `"fastapi middleware docs"`
+//! - Combine with WebFetch: search → pick best URL → fetch full page
 
 use crate::providers::ToolDefinition;
 use anyhow::Result;
