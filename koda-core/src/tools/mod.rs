@@ -7,6 +7,16 @@
 ///
 /// Two-axis model: what does the tool touch (local vs. remote)
 /// and how severe are its effects (read vs. mutate vs. destroy)?
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::tools::{ToolEffect, classify_tool};
+///
+/// assert_eq!(classify_tool("Read"), ToolEffect::ReadOnly);
+/// assert_eq!(classify_tool("Write"), ToolEffect::LocalMutation);
+/// assert_eq!(classify_tool("Delete"), ToolEffect::Destructive);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum ToolEffect {
@@ -25,6 +35,8 @@ pub enum ToolEffect {
 /// For `Bash`, this returns the *default* classification (`LocalMutation`);
 /// the actual effect depends on the command string and must be refined
 /// via [`crate::bash_safety::classify_bash_command`].
+///
+/// Unknown tools default to `LocalMutation` (conservative — always asks).
 pub fn classify_tool(name: &str) -> ToolEffect {
     match name {
         // Pure reads — zero side-effects
@@ -58,6 +70,14 @@ pub fn classify_tool(name: &str) -> ToolEffect {
 ///
 /// Convenience wrapper over [`classify_tool`] for call sites that only
 /// need a bool (e.g., loop guard).
+///
+/// ```
+/// use koda_core::tools::is_mutating_tool;
+///
+/// assert!(!is_mutating_tool("Read"));
+/// assert!(is_mutating_tool("Write"));
+/// assert!(is_mutating_tool("Delete"));
+/// ```
 pub fn is_mutating_tool(name: &str) -> bool {
     !matches!(classify_tool(name), ToolEffect::ReadOnly)
 }
@@ -131,6 +151,17 @@ use crate::providers::ToolDefinition;
 pub type FileReadCache = Arc<std::sync::Mutex<HashMap<String, (u64, SystemTime)>>>;
 
 /// Result of executing a tool.
+///
+/// The `success` field is set automatically by `ToolRegistry::execute()` —
+/// `Ok(…)` → `true`, `Err(…)` → `false`. Individual tool functions just
+/// return `Result<String>`.
+///
+/// ```
+/// use koda_core::tools::ToolResult;
+///
+/// let ok = ToolResult { output: "done".into(), success: true, full_output: None };
+/// assert!(ok.success);
+/// ```
 #[derive(Debug, Clone)]
 pub struct ToolResult {
     /// The tool's output string (model-facing; may be a summary for Bash).
@@ -563,7 +594,26 @@ impl ToolRegistry {
 }
 
 /// Validate and resolve a path, preventing directory traversal.
-/// Works for both existing and non-existing files (no canonicalize!).
+///
+/// Works for both existing and non-existing files (no `canonicalize!`).
+/// Relative paths are joined to `project_root`; absolute paths must
+/// still be within `project_root`.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::tools::safe_resolve_path;
+/// use std::path::Path;
+///
+/// let root = Path::new("/home/user/project");
+///
+/// // Relative paths resolve within project
+/// let p = safe_resolve_path(root, "src/main.rs").unwrap();
+/// assert_eq!(p, Path::new("/home/user/project/src/main.rs"));
+///
+/// // Traversal is blocked
+/// assert!(safe_resolve_path(root, "../../etc/passwd").is_err());
+/// ```
 pub fn safe_resolve_path(project_root: &Path, requested: &str) -> Result<PathBuf> {
     let requested_path = Path::new(requested);
 

@@ -154,6 +154,15 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
 ///
 /// Returns the canonical name if a mapping exists, otherwise returns
 /// the input unchanged (so the dispatcher can surface a proper error).
+///
+/// ```
+/// use koda_core::tool_normalize::normalize_tool_name;
+///
+/// assert_eq!(normalize_tool_name("list_files"), "List");
+/// assert_eq!(normalize_tool_name("Read"), "Read");
+/// assert_eq!(normalize_tool_name("run_command"), "Bash");
+/// assert_eq!(normalize_tool_name("unknown_tool"), "unknown_tool");
+/// ```
 pub fn normalize_tool_name(name: &str) -> String {
     // Single O(1) lookup: lowercase the input and check the alias map.
     // Canonical names are self-mapped (e.g. "list" → "List"), so this
