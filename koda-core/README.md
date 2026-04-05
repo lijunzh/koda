@@ -12,7 +12,6 @@ Pure logic with zero terminal dependencies — communicates exclusively through
 - **Per-tool approval** — two modes (Auto/Confirm) with effect-based safety classification
 - **Inference loop** — streaming tool-use loop with parallel execution
 - **SQLite persistence** — sessions, messages, compaction
-- **MCP client** — connects to external MCP servers for extensibility
 
 **Rust edition:** 2024
 

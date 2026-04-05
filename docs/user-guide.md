@@ -73,7 +73,7 @@ refuses rather than silently discarding unsummarized messages.
 
 ### Auto-compaction
 
-Koda automatically compacts when context usage exceeds ~85-90% of the
+Koda automatically compacts when context usage exceeds **85%** of the
 model's context window. This happens transparently before sending the
 next request to the LLM.
 
@@ -298,7 +298,6 @@ Create a JSON file in `agents/` (project-local) or `~/.config/koda/agents/`
 - `model`, `provider`, `base_url` — override the parent session's LLM
 - `max_tokens`, `temperature`, `thinking_budget`, `reasoning_effort` — model tuning
 - `max_iterations` — hard cap on tool-call loops
-- `auto_compact_threshold` — context % at which auto-compaction triggers
 
 **Search order**: project `agents/` → user `~/.config/koda/agents/` → built-in.
 First match wins.

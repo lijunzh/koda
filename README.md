@@ -71,7 +71,6 @@ echo "explain this" | koda        # Piped input
 - **Git integration** — `/diff` review, commit message generation
 - **Headless mode** — `koda -p "prompt"` with JSON output for CI/CD
 - **Persistent memory** — project (`MEMORY.md`) and global (`~/.config/koda/memory.md`)
-- **Cost tracking** — per-turn and per-session cost estimation including thinking tokens
 - **Skills** — built-in expertise modules (code review, security audit) + user-created skills for repeatable analysis
 
 ### 📚 Skills
@@ -121,7 +120,6 @@ Koda connects to your email via IMAP/SMTP through the built-in koda-email integr
 | `/help` | Command palette (select & execute) |
 | `/agent` | List available sub-agents |
 | `/compact` | Summarize conversation to reclaim context |
-| `/cost` | Show token usage for this session |
 | `/diff` | Show/review uncommitted changes |
 | `/key` | Manage API keys |
 | `/memory` | View/save project & global memory |
@@ -188,14 +186,9 @@ Sub-agents can run on different models for cost optimization. The default agent 
 
 Koda auto-detects your model's context window and manages it:
 
-| Model | Context | Auto-compact at |
-|-------|---------|----------------|
-| Claude Opus/Sonnet | 200K tokens | 90% |
-| Gemini 2.5 | 1M tokens | 80% |
-| GPT-4o | 128K tokens | 90% |
-| Local models | 4K–128K | 70% |
-
-Use `/compact` manually, or let auto-compact handle it. The `/cost` command shows token usage and estimated cost.
+Auto-compact fires at **85%** of the model's context window (matching
+Claude Code's default). Use `/compact` manually, or let auto-compact
+handle it. The status bar shows token usage in real time.
 
 ## Documentation
 

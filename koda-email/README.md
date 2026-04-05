@@ -6,12 +6,14 @@ Read, search, and send email via IMAP/SMTP. Works with any email provider
 (Gmail, Outlook, FastMail, self-hosted). Communicates via the
 [Model Context Protocol](https://modelcontextprotocol.io) over stdio.
 
-## Auto-provisioning
+## Built-in integration
 
-Koda auto-installs and connects this server when email access is needed.
-Just ask — "check my email" — and koda handles the rest.
+koda-email is compiled into Koda as a direct library call — no setup needed.
+Just ask “check my email” and koda handles the rest.
 
-On first use, you'll be prompted for IMAP/SMTP credentials.
+On first use, you’ll be prompted for IMAP/SMTP credentials.
+
+The standalone MCP server binary is also available for use in other editors.
 
 ## Manual setup
 

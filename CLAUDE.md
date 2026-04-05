@@ -87,6 +87,7 @@ koda/
 │   │   ├── approval.rs     # Approval modes + tool confirmation gates
 │   │   ├── bash_path_lint.rs # Heuristic path-escape detection for bash commands
 │   │   ├── bash_safety.rs  # Bash command safety classification
+│   │   ├── bg_agent.rs     # Background sub-agent registry
 │   │   ├── compact.rs      # Session compaction (summarize old messages)
 │   │   ├── config.rs       # Agent/provider config + provider metadata
 │   │   ├── context.rs      # Context window token tracking
@@ -101,6 +102,8 @@ koda/
 │   │   ├── keystore.rs     # Secure API key storage (~/.config/koda/keys.toml, 0600)
 │   │   ├── loop_guard.rs   # Loop detection + iteration hard-cap
 │   │   ├── memory.rs       # Semantic memory (global + project tiers → system prompt)
+│   │   ├── microcompact.rs # Lightweight tool result aging between full compactions
+│   │   ├── model_alias.rs  # Curated model aliases (e.g. "sonnet" → exact model ID)
 │   │   ├── model_context.rs# Model → context window size lookup table (fallback)
 │   │   ├── output_caps.rs  # Output cap scaling based on context window size
 │   │   ├── persistence.rs  # Persistence trait — the database contract
@@ -113,10 +116,14 @@ koda/
 │   │   ├── skills.rs       # Skill discovery and activation
 │   │   ├── sub_agent_cache.rs # Sub-agent provider/model config cache
 │   │   ├── tool_dispatch.rs# Tool dispatch — routes tool calls to the registry
+│   │   ├── tool_normalize.rs # Tool name normalization (snake_case → PascalCase)
+│   │   ├── approval_flow.rs# Approval logic extracted from tool dispatch
+│   │   ├── sub_agent_dispatch.rs # Sub-agent invocation dispatch
+│   │   ├── context_analysis.rs # Per-tool token breakdown + duplicate detection
 │   │   ├── truncate.rs     # Token-safe output truncation
 │   │   ├── undo.rs         # Undo stack for file mutations
 │   │   ├── version.rs      # Background version checker (queries crates.io)
-│   │   ├── file_tracker.rs # File lifecycle tracker — auto-approve cleanup of Koda-created files
+│   │   ├── worktree.rs     # Git worktree isolation for sub-agents
 │   │   ├── engine/         # EngineEvent, EngineCommand, EngineSink trait
 │   │   │   ├── mod.rs      # Module root + re-exports
 │   │   │   ├── event.rs    # EngineEvent + EngineCommand protocol types
@@ -132,14 +139,20 @@ koda/
 │   │   └── tools/          # Built-in tools
 │   │       ├── mod.rs      # ToolRegistry, ToolEffect, tool definitions
 │   │       ├── agent.rs    # Sub-agent invocation tool
+│   │       ├── ask_user.rs # AskUser tool (explicit user clarification)
+│   │       ├── bg_process.rs # Background process registry + spawning
 │   │       ├── file_tools.rs # Read, Write, Edit, Delete
+│   │       ├── fuzzy.rs    # Fuzzy old_str matching for Edit
 │   │       ├── glob_tool.rs# Glob file search
 │   │       ├── grep.rs     # Ripgrep-based text search
 │   │       ├── memory.rs   # MemoryRead, MemoryWrite
 │   │       ├── recall.rs   # RecallContext (session history)
 │   │       ├── shell.rs    # Bash command execution
 │   │       ├── skill_tools.rs # ListSkills, ActivateSkill
-│   │       └── web_fetch.rs# WebFetch (URL content retrieval)
+│   │       ├── todo.rs     # TodoRead, TodoWrite
+│   │       ├── validate.rs # Pre-flight input validation
+│   │       ├── web_fetch.rs# WebFetch (URL content retrieval)
+│   │       └── web_search.rs # WebSearch (DuckDuckGo)
 │   └── tests/              # Engine integration tests
 ├── koda-cli/               # CLI binary
 │   ├── src/
@@ -397,6 +410,6 @@ For capabilities that ship in the koda workspace (same release cycle):
 7. Add `--version` flag to `main.rs` (standalone server wrapper)
 8. Write integration tests in `tests/mcp_integration_test.rs`
 9. Update `release.yml`: version verify, build, package, publish, Homebrew
-10. Sync version with workspace (currently 0.1.10)
+10. Sync version with workspace (currently 0.2.1)
 11. Update this file (CLAUDE.md)
 
