@@ -1,6 +1,6 @@
 //! TUI main event loop.
 //!
-//! Thin entry point that creates a [`TuiContext`] and runs the event loop.
+//! Thin entry point that creates a `TuiContext` and runs the event loop.
 //! All handler logic lives in `tui_context.rs` and its sub-modules.
 //!
 //! Supporting modules:

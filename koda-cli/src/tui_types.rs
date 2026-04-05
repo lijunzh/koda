@@ -36,7 +36,7 @@ pub(crate) enum TuiState {
 
 /// What's currently shown in the `menu_area` below the status bar.
 /// Only one menu can be active at a time.
-pub(crate) enum MenuContent {
+pub enum MenuContent {
     /// Nothing — menu_area is empty.
     None,
     /// Slash command dropdown (auto-appears on `/`).

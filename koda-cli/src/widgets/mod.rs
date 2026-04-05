@@ -1,3 +1,5 @@
+//! TUI widgets — dropdown menus, status bar, and interactive selectors.
+
 pub mod dropdown;
 pub mod file_menu;
 pub mod model_menu;
