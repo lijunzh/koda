@@ -27,7 +27,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "type": "string",
                     "description": "The text pattern to search for (plain text or regex)"
                 },
-                "path": {
+                "file_path": {
                     "type": "string",
                     "description": "Directory to search in (default: project root)"
                 },
@@ -47,7 +47,10 @@ pub async fn grep(project_root: &Path, args: &Value, max_matches: usize) -> Resu
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' argument"))?
         .to_string();
-    let path_str = args["path"].as_str().unwrap_or(".");
+    let path_str = args["file_path"]
+        .as_str()
+        .or_else(|| args["path"].as_str())
+        .unwrap_or(".");
     let case_insensitive = args["case_insensitive"].as_bool().unwrap_or(false);
 
     let search_root = safe_resolve_path(project_root, path_str)?;

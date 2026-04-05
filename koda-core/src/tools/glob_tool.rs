@@ -26,7 +26,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
                     "type": "string",
                     "description": "Glob pattern (e.g. '**/*.rs', 'src/**/mod.rs', '*.toml')"
                 },
-                "path": {
+                "file_path": {
                     "type": "string",
                     "description": "Base directory for the search (default: project root)"
                 }
@@ -41,7 +41,10 @@ pub async fn glob_search(project_root: &Path, args: &Value, max_results: usize) 
     let pattern = args["pattern"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' argument"))?;
-    let path_str = args["path"].as_str().unwrap_or(".");
+    let path_str = args["file_path"]
+        .as_str()
+        .or_else(|| args["path"].as_str())
+        .unwrap_or(".");
     let base = safe_resolve_path(project_root, path_str)?;
 
     // Build full pattern relative to base directory
