@@ -75,7 +75,7 @@ pub async fn handle_slash_command(
                         let prov = provider.read().await;
                         config.query_and_apply_capabilities(prov.as_ref()).await;
                     }
-                    crate::tui_wizards::save_provider(config);
+                    crate::tui_wizards::save_provider(config, &session.db).await;
                     tui_output::ok_msg(
                         buffer,
                         format!(
@@ -93,7 +93,7 @@ pub async fn handle_slash_command(
                     let prov = provider.read().await;
                     config.query_and_apply_capabilities(prov.as_ref()).await;
                 }
-                crate::tui_wizards::save_provider(config);
+                crate::tui_wizards::save_provider(config, &session.db).await;
                 tui_output::ok_msg(buffer, format!("Model set to: {model}"));
             }
             SlashAction::Continue

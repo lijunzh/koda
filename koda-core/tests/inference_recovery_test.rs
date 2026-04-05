@@ -11,7 +11,6 @@ use koda_core::{
     engine::{EngineCommand, EngineEvent, sink::TestSink},
     inference::{self, InferenceContext},
     providers::mock::{MockProvider, MockResponse},
-    settings::Settings,
     tools::ToolRegistry,
 };
 use std::path::PathBuf;
@@ -65,7 +64,6 @@ impl Env {
     async fn run(&self, provider: &MockProvider) -> (anyhow::Result<()>, Vec<EngineEvent>) {
         let sink = TestSink::new();
         let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
-        let mut settings = Settings::load();
         let tool_defs = self.tool_defs();
         let mut file_tracker =
             koda_core::file_tracker::FileTracker::new(&self.session_id, self.db.clone()).await;
@@ -81,7 +79,6 @@ impl Env {
             tool_defs: &tool_defs,
             pending_images: None,
             mode: ApprovalMode::Auto,
-            settings: &mut settings,
             sink: &sink,
             cancel: CancellationToken::new(),
             cmd_rx: &mut cmd_rx,

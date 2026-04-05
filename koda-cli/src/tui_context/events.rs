@@ -176,7 +176,8 @@ impl TuiContext {
             self.textarea.select_all();
             self.textarea.cut();
             self.history.push(text.clone());
-            save_history(&self.history);
+            // Persist to DB (fire-and-forget)
+            let _ = self.session.db.history_push(&text).await;
             self.history_idx = None;
             let mode = approval::read_mode(&self.shared_mode);
             let icon = match mode {
@@ -414,48 +415,6 @@ impl TuiContext {
 }
 
 // ---------------------------------------------------------------------------
-// Command history persistence
-// ---------------------------------------------------------------------------
-
-const MAX_HISTORY: usize = 500;
-fn history_file_path() -> std::path::PathBuf {
-    let config_dir = std::env::var("XDG_CONFIG_HOME")
-        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.config")))
-        .or_else(|_| std::env::var("USERPROFILE").map(|h| format!("{h}/.config")))
-        .unwrap_or_else(|_| ".".to_string());
-    std::path::PathBuf::from(config_dir)
-        .join("koda")
-        .join("history")
-}
-
-pub(crate) fn load_history() -> Vec<String> {
-    load_history_from(&history_file_path())
-}
-
-fn load_history_from(path: &std::path::Path) -> Vec<String> {
-    match std::fs::read_to_string(path) {
-        Ok(content) => content
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(String::from)
-            .collect(),
-        Err(_) => Vec::new(),
-    }
-}
-
-pub(crate) fn save_history(history: &[String]) {
-    save_history_to(history, &history_file_path());
-}
-
-fn save_history_to(history: &[String], path: &std::path::Path) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let start = history.len().saturating_sub(MAX_HISTORY);
-    let content = history[start..].join("\n");
-    let _ = std::fs::write(path, content);
-}
-
 // ---------------------------------------------------------------------------
 // Pure helper: history index navigation
 // ---------------------------------------------------------------------------
@@ -531,42 +490,27 @@ mod tests {
         assert_eq!(history_down_index(None, 5), None);
     }
 
-    // ── History file persistence ──────────────────────────────
+    // ── History DB persistence ────────────────────────────────
 
-    #[test]
-    fn test_history_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("koda").join("history");
+    #[tokio::test]
+    async fn test_history_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = koda_core::db::Database::init(tmp.path()).await.unwrap();
 
-        let input = vec!["hello".into(), "world".into(), "/model gpt-4".into()];
-        save_history_to(&input, &path);
+        db.history_push("hello").await.unwrap();
+        db.history_push("world").await.unwrap();
+        db.history_push("/model gpt-4").await.unwrap();
 
-        let loaded = load_history_from(&path);
-        assert_eq!(loaded, input);
-        assert!(path.exists());
+        let loaded = db.history_load().await.unwrap();
+        assert_eq!(loaded, vec!["hello", "world", "/model gpt-4"]);
     }
 
-    #[test]
-    fn test_history_truncation() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("koda").join("history");
+    #[tokio::test]
+    async fn test_history_empty_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = koda_core::db::Database::init(tmp.path()).await.unwrap();
 
-        let big: Vec<String> = (0..MAX_HISTORY + 100).map(|i| format!("cmd {i}")).collect();
-        save_history_to(&big, &path);
-
-        let loaded = load_history_from(&path);
-        assert_eq!(loaded.len(), MAX_HISTORY);
-        // Should keep the LATEST entries (tail)
-        assert_eq!(loaded[0], format!("cmd {}", 100));
-        assert_eq!(loaded[MAX_HISTORY - 1], format!("cmd {}", MAX_HISTORY + 99));
-    }
-
-    #[test]
-    fn test_load_history_missing_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nonexistent").join("history");
-
-        let loaded = load_history_from(&path);
+        let loaded = db.history_load().await.unwrap();
         assert!(loaded.is_empty());
     }
 }

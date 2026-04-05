@@ -15,6 +15,8 @@
 //! - **Sessions** — session metadata, timestamps, model info
 //! - **File ownership** — which files Koda created (for auto-approve Delete)
 //! - **Progress entries** — survive compaction for persistent tracking
+//! - **KV store** — settings (last provider) and API keys (#693)
+//! - **Input history** — REPL command history (#693)
 //!
 //! ## Module layout
 //!
@@ -76,7 +78,14 @@ impl Database {
 
         let db_path = db_dir.join("koda.db");
 
-        Self::open(&db_path).await
+        let db = Self::open(&db_path).await?;
+
+        // Ensure restrictive permissions — DB contains API keys and
+        // conversation history that may include secrets (#693).
+        #[cfg(unix)]
+        Self::set_db_permissions(&db_path);
+
+        Ok(db)
     }
 
     /// Open a database at a specific path (used by tests and init).
@@ -179,7 +188,45 @@ impl Database {
         .execute(pool)
         .await?;
 
+        // Global key-value store (#693): replaces settings.toml and keys.toml.
+        // Keys are namespaced by convention:
+        //   - `setting:*`  — last-used provider, etc.
+        //   - `apikey:*`   — API keys (GEMINI_API_KEY, etc.)
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS kv_store (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );",
+        )
+        .execute(pool)
+        .await?;
+
+        // REPL input history (#693): replaces ~/.config/koda/history.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS input_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                input TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );",
+        )
+        .execute(pool)
+        .await?;
+
         Ok(())
+    }
+
+    /// Set koda.db file permissions to 0600 (owner-only).
+    ///
+    /// The DB contains API keys and conversation history that may include
+    /// secrets. Restrictive permissions prevent other local users from reading.
+    #[cfg(unix)]
+    fn set_db_permissions(db_path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        if let Err(e) = std::fs::set_permissions(db_path, perms) {
+            tracing::warn!("Failed to set 0600 on {}: {e}", db_path.display());
+        }
     }
 }
 
@@ -336,5 +383,87 @@ impl From<MessageRow> for Message {
             thinking_tokens: r.thinking_tokens,
             created_at: r.created_at,
         }
+    }
+}
+
+// ── Global KV store (#693) ─────────────────────────────────────────────────────────
+
+impl Database {
+    /// Get a value from the global KV store.
+    pub async fn kv_get(&self, key: &str) -> Result<Option<String>> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT value FROM kv_store WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(v,)| v))
+    }
+
+    /// Set a value in the global KV store (upsert).
+    pub async fn kv_set(&self, key: &str, value: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Delete a key from the global KV store.
+    pub async fn kv_delete(&self, key: &str) -> Result<()> {
+        sqlx::query("DELETE FROM kv_store WHERE key = ?")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Get all KV entries matching a prefix (e.g. `"apikey:"`).
+    pub async fn kv_list_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
+        let pattern = format!("{prefix}%");
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT key, value FROM kv_store WHERE key LIKE ?")
+                .bind(&pattern)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows)
+    }
+}
+
+// ── Input history (#693) ─────────────────────────────────────────────────────────
+
+/// Maximum number of input history entries to keep.
+const MAX_INPUT_HISTORY: i64 = 500;
+
+impl Database {
+    /// Append an input to the history.
+    pub async fn history_push(&self, input: &str) -> Result<()> {
+        sqlx::query("INSERT INTO input_history (input) VALUES (?)")
+            .bind(input)
+            .execute(&self.pool)
+            .await?;
+
+        // Trim old entries beyond the cap.
+        sqlx::query(
+            "DELETE FROM input_history WHERE id NOT IN (
+                SELECT id FROM input_history ORDER BY id DESC LIMIT ?
+            )",
+        )
+        .bind(MAX_INPUT_HISTORY)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Load all history entries, oldest first.
+    pub async fn history_load(&self) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT input FROM input_history ORDER BY id ASC")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|(s,)| s).collect())
     }
 }

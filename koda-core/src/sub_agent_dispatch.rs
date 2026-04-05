@@ -3,7 +3,7 @@
 //! Extracted from `tool_dispatch.rs` — handles `InvokeAgent` execution,
 //! background agent spawning, worktree provisioning, and sub-agent caching.
 
-use crate::approval::{self, ApprovalMode, Settings, ToolApproval};
+use crate::approval::{self, ApprovalMode, ToolApproval};
 use crate::approval_flow::request_approval;
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
@@ -35,7 +35,6 @@ async fn run_bg_agent(
     parent_session: String,
     tx: tokio::sync::oneshot::Sender<Result<String, String>>,
 ) {
-    let mut settings = Settings::default();
     let cancel = CancellationToken::new();
     let (_, mut cmd_rx) = mpsc::channel(1);
     let null_sink = crate::engine::sink::NullSink;
@@ -52,7 +51,6 @@ async fn run_bg_agent(
         &db,
         &sync_arguments,
         ApprovalMode::Auto,
-        &mut settings,
         &null_sink,
         cancel,
         &mut cmd_rx,
@@ -83,7 +81,6 @@ pub(crate) async fn execute_sub_agent(
     db: &Database,
     arguments: &str,
     mode: ApprovalMode,
-    _settings: &mut Settings,
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,

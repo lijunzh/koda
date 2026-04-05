@@ -120,16 +120,16 @@ async fn main() -> Result<()> {
         match cmd {
             Command::Server { port, stdio } => {
                 if *stdio {
-                    // Load and inject stored API keys (env vars take precedence)
-                    match koda_core::keystore::KeyStore::load() {
-                        Ok(store) => store.inject_into_env(),
-                        Err(e) => tracing::warn!("Failed to load keystore: {e}"),
-                    }
-
                     let project_root = cli.project_root.clone().unwrap_or_else(|| {
                         std::env::current_dir().expect("Failed to get current directory")
                     });
                     let project_root = std::fs::canonicalize(&project_root)?;
+
+                    // Init DB and inject keys (#693)
+                    let db = koda_core::db::Database::init(&koda_core::db::config_dir()?).await?;
+                    if let Err(e) = koda_core::keystore::inject_into_env(&db).await {
+                        tracing::warn!("Failed to load keystore: {e}");
+                    }
 
                     let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
                     let config = config
@@ -179,10 +179,12 @@ async fn main() -> Result<()> {
 
     tracing::info!("Koda starting. Project root: {:?}", project_root);
 
+    // Initialize database early — keys and settings live here (#693)
+    let db = koda_core::db::Database::init(&koda_core::db::config_dir()?).await?;
+
     // Load and inject stored API keys (env vars take precedence)
-    match koda_core::keystore::KeyStore::load() {
-        Ok(store) => store.inject_into_env(),
-        Err(e) => tracing::warn!("Failed to load keystore: {e}"),
+    if let Err(e) = koda_core::keystore::inject_into_env(&db).await {
+        tracing::warn!("Failed to load keystore: {e}");
     }
 
     // Headless mode: skip onboarding, banner, version check
@@ -196,7 +198,6 @@ async fn main() -> Result<()> {
                 cli.thinking_budget,
                 cli.reasoning_effort,
             );
-        let db = koda_core::db::Database::init(&koda_core::db::config_dir()?).await?;
         let session_id = match cli.session {
             Some(id) => id,
             None => db.create_session(&config.agent_name, &project_root).await?,
@@ -230,8 +231,7 @@ async fn main() -> Result<()> {
             cli.reasoning_effort,
         );
 
-    // Initialize database
-    let db = koda_core::db::Database::init(&koda_core::db::config_dir()?).await?;
+    // Initialize database is already done above
 
     // Load or create session
     let session_id = match cli.session {

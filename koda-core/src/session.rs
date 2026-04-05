@@ -1,7 +1,7 @@
 //! KodaSession — per-conversation state.
 //!
 //! Holds mutable, per-turn state: database handle, session ID,
-//! provider instance, approval settings, and cancellation token.
+//! provider instance, approval mode, and cancellation token.
 //! Instantiable N times for parallel sub-agents or cowork mode.
 //!
 //! ## Architecture
@@ -30,7 +30,6 @@ use crate::engine::{EngineCommand, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference::InferenceContext;
 use crate::providers::{self, ImageData, LlmProvider};
-use crate::settings::Settings;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -39,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 
 /// A single conversation session with its own state.
 ///
-/// Each session has its own provider, approval settings, and cancel token.
+/// Each session has its own provider, approval mode, and cancel token.
 /// Multiple sessions can share the same `Arc<KodaAgent>`.
 pub struct KodaSession {
     /// Unique session identifier.
@@ -52,8 +51,6 @@ pub struct KodaSession {
     pub provider: Box<dyn LlmProvider>,
     /// Current approval mode (Auto / Confirm).
     pub mode: ApprovalMode,
-    /// User settings (last provider, preferences).
-    pub settings: Settings,
     /// Cancellation token for graceful shutdown.
     pub cancel: CancellationToken,
     /// File lifecycle tracker — tracks files created by Koda (#465).
@@ -72,7 +69,6 @@ impl KodaSession {
         mode: ApprovalMode,
     ) -> Self {
         let provider = providers::create_provider(config);
-        let settings = Settings::load();
         // Wire db+session into ToolRegistry for RecallContext
         agent.tools.set_session(Arc::new(db.clone()), id.clone());
         let file_tracker = FileTracker::new(&id, db.clone()).await;
@@ -82,7 +78,6 @@ impl KodaSession {
             db,
             provider,
             mode,
-            settings,
             cancel: CancellationToken::new(),
             file_tracker,
             title_set: false,
@@ -91,8 +86,7 @@ impl KodaSession {
 
     /// Run one inference turn: prompt → streaming → tool execution → response.
     ///
-    /// Emits `TurnStart` and `TurnEnd` lifecycle events. The loop-cap prompt
-    /// is handled via `EngineEvent::LoopCapReached` / `EngineCommand::LoopDecision`
+    /// Emits `TurnStart` and `TurnEnd` lifecycle events. The loop-cap prompt is handled via `EngineEvent::LoopCapReached` / `EngineCommand::LoopDecision`
     /// through the `cmd_rx` channel.
     pub async fn run_turn(
         &mut self,
@@ -117,7 +111,6 @@ impl KodaSession {
             tool_defs: &self.agent.tool_defs,
             pending_images,
             mode: self.mode,
-            settings: &mut self.settings,
             sink,
             cancel: self.cancel.clone(),
             cmd_rx,

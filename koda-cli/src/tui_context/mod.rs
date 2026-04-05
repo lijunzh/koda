@@ -9,9 +9,6 @@
 mod events;
 mod menus;
 
-use events::load_history;
-pub(crate) use events::save_history;
-
 use crate::input;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::sink::UiEvent;
@@ -123,9 +120,8 @@ impl TuiContext {
         version_check: tokio::task::JoinHandle<Option<String>>,
         first_run: bool,
     ) -> Result<Self> {
-        // Restore last-used provider
-        let settings = koda_core::approval::Settings::load();
-        if let Some(ref last) = settings.last_provider {
+        // Restore last-used provider from DB (#693)
+        if let Ok(Some(last)) = koda_core::settings::load_last_provider(&db).await {
             let ptype =
                 koda_core::config::ProviderType::from_url_or_name("", Some(&last.provider_type));
             config.provider_type = ptype;
@@ -324,7 +320,7 @@ impl TuiContext {
             silent_compact_deferred: false,
             inference_start: None,
             context_pct: 0,
-            history: load_history(),
+            history: db.history_load().await.unwrap_or_default(),
             history_idx: None,
             completer,
             mouse_selection: None,
