@@ -246,12 +246,13 @@ mod tests {
             .collect();
         assert_eq!(
             builtins.len(),
-            4,
-            "Expected task/explore/plan/verify built-ins"
+            5,
+            "Expected task/explore/guide/plan/verify built-ins"
         );
         let names: Vec<&str> = result.iter().map(|(n, _, _)| n.as_str()).collect();
         assert!(names.contains(&"task"));
         assert!(names.contains(&"explore"));
+        assert!(names.contains(&"guide"));
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"verify"));
         // Default is always excluded from listing
@@ -284,12 +285,13 @@ mod tests {
         let builtins: Vec<_> = agents.iter().filter(|a| a.source == "built-in").collect();
         assert_eq!(
             builtins.len(),
-            4,
-            "Expected task/explore/plan/verify built-ins"
+            5,
+            "Expected task/explore/guide/plan/verify built-ins"
         );
         let names: Vec<&str> = builtins.iter().map(|a| a.name.as_str()).collect();
         assert!(names.contains(&"task"));
         assert!(names.contains(&"explore"));
+        assert!(names.contains(&"guide"));
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"verify"));
     }
