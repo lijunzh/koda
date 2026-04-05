@@ -3,7 +3,7 @@
 //! Runs the streaming inference → tool execution → re-inference loop
 //! until the LLM produces a final text response.
 //!
-//! ## Design (docs/design.md)
+//! ## Design (DESIGN.md)
 //!
 //! - **Let the model drive (P3)**: The engine is a mechanical loop. It does
 //!   not plan, verify, or make decisions — the model does. This loop streams

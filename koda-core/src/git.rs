@@ -3,7 +3,7 @@
 //! - `git_context()`: compact git info for the system prompt
 //!
 //! File-level undo is handled by `undo.rs` (in-memory snapshots),
-//! not git. See docs/design.md for rationale.
+//! not git. See DESIGN.md for rationale.
 
 use std::path::Path;
 use std::process::Command;

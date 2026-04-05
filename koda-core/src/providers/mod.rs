@@ -2,7 +2,7 @@
 //!
 //! Defines a common trait for all providers and re-exports the default.
 //!
-//! ## Design (docs/design.md)
+//! ## Design (DESIGN.md)
 //!
 //! - **Any model, any provider (P1)**: 15 provider types, cloud and local.
 //!   No vendor lock-in. The tool serves the person, not the platform.

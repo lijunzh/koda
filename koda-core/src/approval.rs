@@ -7,7 +7,7 @@
 //! Tool effects are classified via [`crate::tools::ToolEffect`] and bash commands are
 //! further refined by [`crate::bash_safety::classify_bash_command`].
 //!
-//! ## Design (docs/design.md)
+//! ## Design (DESIGN.md)
 //!
 //! - **Security Model (P2)**: Two modes + hardcoded floors. Hardcoded floors
 //!   override mode settings for destructive ops — this is not configurable.

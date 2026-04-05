@@ -4,7 +4,7 @@
 //! It communicates exclusively through `EngineEvent` (output) and
 //! `EngineCommand` (input) enums.
 //!
-//! See `docs/design.md` in the repository root for the full architectural rationale.
+//! See `DESIGN.md` in the repository root for the full architectural rationale.
 
 #![warn(missing_docs)]
 

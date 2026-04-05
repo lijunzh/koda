@@ -5,7 +5,7 @@
 //!
 //! The default implementation is `Database` in `db.rs`.
 //!
-//! ## Design (docs/design.md)
+//! ## Design (DESIGN.md)
 //!
 //! - **Database Backend: SQLite + Persistence Trait (P3)**: This trait
 //!   exists because P3 says the storage backend will change. But there's

@@ -6,7 +6,7 @@
 //! Sub-agent invocation lives in `sub_agent_dispatch.rs`.
 //! Approval request/response lives in `approval_flow.rs`.
 //!
-//! ## Design (docs/design.md)
+//! ## Design (DESIGN.md)
 //!
 //! - **Tool Dispatch: Match Statement (P2)**: Tools are dispatched via a
 //!   `match` in `ToolRegistry::execute()`, not a `HashMap<String, Box<dyn Tool>>`.
