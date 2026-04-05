@@ -14,8 +14,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "Read".to_string(),
-            description: "Read the contents of a file. For large files, use start_line and \
-                num_lines to read specific portions instead of the whole file."
+            description: "Read the contents of a file. The output includes line numbers. \
+                For large files (>500 lines), use start_line and num_lines to read specific \
+                portions instead of the whole file. ALWAYS read a file before editing it — \
+                never guess at file contents. Re-read after editing to verify changes."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -125,7 +127,11 @@ pub fn definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "List".to_string(),
-            description: "List files and directories. Respects .gitignore.".to_string(),
+            description: "List files and directories in a given path. Respects .gitignore \
+                and skips common noise (node_modules, __pycache__, .git). \
+                Use with recursive=false (default) to explore project structure one level \
+                at a time. Use with recursive=true for a full tree view. \
+                For finding files by pattern (e.g. all *.rs files), prefer Glob instead.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
