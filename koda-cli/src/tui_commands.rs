@@ -96,7 +96,7 @@ pub async fn handle_slash_command(
         ReplAction::SetupProvider(_ptype, _base_url) => SlashAction::Continue,
         ReplAction::PickProvider => SlashAction::Continue,
         ReplAction::ShowHelp => {
-            tui_output::dim_msg(buffer, "Type / to see available commands".into());
+            show_help(buffer);
             SlashAction::Continue
         }
         ReplAction::Undo => {
@@ -293,6 +293,59 @@ async fn handle_resume_session(
             Err(e) => tui_output::err_msg(buffer, format!("Error: {e}")),
         }
     }
+}
+
+/// Print help output generated from the `SLASH_COMMANDS` registry.
+///
+/// Single source of truth: `completer::SLASH_COMMANDS` drives both
+/// Tab completion and this help screen.
+fn show_help(buffer: &mut ScrollBuffer) {
+    use crate::completer::SLASH_COMMANDS;
+
+    tui_output::blank(buffer);
+    tui_output::emit_line(buffer, Line::styled("  Koda — Commands", BOLD));
+    tui_output::blank(buffer);
+
+    // Compute column width from longest command name
+    let max_cmd_len = SLASH_COMMANDS
+        .iter()
+        .map(|(cmd, _, _)| cmd.len())
+        .max()
+        .unwrap_or(10);
+
+    for &(cmd, desc, arg_hint) in SLASH_COMMANDS {
+        let label = match arg_hint {
+            Some(hint) => format!("{cmd} {hint}"),
+            None => cmd.to_string(),
+        };
+        tui_output::emit_line(
+            buffer,
+            Line::from(vec![
+                Span::styled(format!("  {label:<width$}", width = max_cmd_len + 12), CYAN),
+                Span::styled(desc, DIM),
+            ]),
+        );
+    }
+
+    tui_output::blank(buffer);
+    tui_output::emit_line(buffer, Line::styled("  Shortcuts", BOLD));
+    tui_output::blank(buffer);
+    let shortcuts = [
+        ("Shift+Tab", "Cycle approval mode (auto/confirm)"),
+        ("Alt+Enter", "Insert newline (multi-line input)"),
+        ("@file.rs", "Attach file context"),
+        ("@image.png", "Attach image (multi-modal)"),
+    ];
+    for (key, desc) in shortcuts {
+        tui_output::emit_line(
+            buffer,
+            Line::from(vec![
+                Span::styled(format!("  {key:<width$}", width = max_cmd_len + 12), CYAN),
+                Span::styled(desc, DIM),
+            ]),
+        );
+    }
+    tui_output::blank(buffer);
 }
 
 fn handle_expand(buffer: &mut ScrollBuffer, renderer: &TuiRenderer, n: usize) {
