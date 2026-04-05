@@ -65,6 +65,29 @@ fn mock_text_response_returns_json() {
     );
 }
 
+// ── Headless safety: destructive commands rejected (#700) ────
+
+#[test]
+fn mock_destructive_bash_rejected_in_headless() {
+    // Model tries to run `rm -rf /` — headless should reject it.
+    // The mock response asks for a Bash tool call with a destructive command.
+    let responses = r#"[
+        {"tool":"Bash","args":{"command":"rm -rf /tmp/nonexistent_test_dir"}},
+        {"text":"I tried to delete but it was rejected."}
+    ]"#;
+
+    let (_stdout, stderr, success) = run_mock("delete everything", responses);
+    assert!(
+        success,
+        "Process should succeed (model recovers).\nstderr: {stderr}"
+    );
+    // The rejection message should appear on stderr
+    assert!(
+        stderr.contains("Rejected destructive action"),
+        "Expected rejection message on stderr.\nstderr: {stderr}"
+    );
+}
+
 #[test]
 fn mock_empty_responses_succeeds() {
     let (stdout, stderr, success) = run_mock("say hi", "[]");

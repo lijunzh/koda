@@ -117,6 +117,8 @@ pub enum EngineEvent {
         detail: String,
         /// Structured diff preview (rendered by the client).
         preview: Option<crate::preview::DiffPreview>,
+        /// The classified effect that triggered confirmation.
+        effect: crate::tools::ToolEffect,
     },
 
     /// The model needs a clarifying answer from the user before proceeding.
@@ -476,6 +478,7 @@ mod tests {
             tool_name: "Bash".into(),
             detail: "rm -rf node_modules".into(),
             preview: None,
+            effect: crate::tools::ToolEffect::Destructive,
         };
         let json = serde_json::to_string(&event).unwrap();
         let deserialized: EngineEvent = serde_json::from_str(&json).unwrap();
