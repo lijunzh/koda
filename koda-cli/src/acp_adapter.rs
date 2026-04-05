@@ -472,6 +472,7 @@ mod tests {
                 tool_name: "Bash".into(),
                 detail: "cmd".into(),
                 preview: None,
+                effect: koda_core::tools::ToolEffect::LocalMutation,
             },
             EngineEvent::AskUserRequest {
                 id: "b".into(),

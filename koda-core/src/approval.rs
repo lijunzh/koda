@@ -195,7 +195,7 @@ pub fn check_tool_with_tracker(
     file_tracker: Option<&FileTracker>,
 ) -> ToolApproval {
     // Classify the tool's effect
-    let effect = resolve_effect(tool_name, args);
+    let effect = resolve_tool_effect(tool_name, args);
 
     // Read-only tools always auto-approve in every mode
     if effect == ToolEffect::ReadOnly {
@@ -250,7 +250,7 @@ pub fn check_tool_with_tracker(
 ///
 /// For Bash, refines the generic `LocalMutation` classification by
 /// parsing the actual command string.
-fn resolve_effect(tool_name: &str, args: &serde_json::Value) -> ToolEffect {
+pub fn resolve_tool_effect(tool_name: &str, args: &serde_json::Value) -> ToolEffect {
     let base = crate::tools::classify_tool(tool_name);
 
     if tool_name == "Bash" {

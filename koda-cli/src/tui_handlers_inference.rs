@@ -565,6 +565,7 @@ fn handle_inference_ui_inline(
             tool_name,
             detail,
             preview,
+            ..
         }) => {
             if preview.is_some() {
                 renderer.preview_shown = true;
