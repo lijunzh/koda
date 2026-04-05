@@ -1,8 +1,8 @@
 # Koda 🐻
 
-A high-performance AI coding agent built in Rust.
+A high-performance personal AI assistant built in Rust.
 
-Single compiled binary. Multi-provider LLM support. Zero runtime dependencies.
+Single compiled binary. 14 LLM providers. Zero runtime dependencies.
 
 ## Install
 
@@ -24,22 +24,36 @@ On first run, an onboarding wizard guides you through provider and API key setup
 ## Quick Start
 
 ```bash
-koda                              # Interactive REPL (auto-detects LM Studio)
-koda --provider anthropic         # Use a cloud provider
-koda -p "fix the bug in auth.rs"  # Headless one-shot
-echo "explain this" | koda        # Piped input
+koda                                # Interactive REPL (auto-detects local models)
+koda "fix the failing test"         # One-shot with positional prompt
+koda -p "explain auth.rs" -m opus   # Explicit model alias
+echo "review this diff" | koda      # Piped input
+koda server --stdio                 # ACP server for editor integration
 ```
+
+Model aliases route to the right provider automatically:
+
+| Alias | Provider | Model |
+|---|---|---|
+| `flash-lite` | Gemini | gemini-2.0-flash-lite |
+| `flash` | Gemini | gemini-2.5-flash |
+| `pro` | Gemini | gemini-2.5-pro |
+| `haiku` | Anthropic | claude-3-5-haiku |
+| `sonnet` | Anthropic | claude-sonnet-4 |
+| `opus` | Anthropic | claude-opus-4 |
 
 Type `/help` in the REPL for all commands and shortcuts.
 
 ## Highlights
 
-- **20+ built-in tools** — file ops, search, shell, web fetch, memory, agents, AST analysis, email
-- **14 LLM providers** — LM Studio, OpenAI, Anthropic, Gemini, Groq, Grok, Ollama, DeepSeek, and more
-- **User-defined agents** — specialized sub-agents via JSON configs with per-agent model selection
+- **18 built-in tools** — file ops, search, shell, web fetch/search, memory, sub-agents, skills
+- **14 LLM providers** — OpenAI, Anthropic, Gemini, Groq, Grok, Ollama, DeepSeek, LM Studio, and more
+- **Model aliases** — `opus`, `sonnet`, `flash` route across providers without remembering model IDs
+- **Sub-agents** — specialized agents via JSON configs with per-agent model/tool selection
 - **Safety** — git checkpointing, approval modes, per-tool safety gates, folder-scoped permissions
 - **Fullscreen TUI** — mouse scroll, clipboard copy, diff preview, extended thinking display
-- **Headless mode** — `koda -p "prompt"` with JSON output for CI/CD
+- **Headless mode** — `koda "prompt"` with JSON output for CI/CD pipelines
+- **ACP server** — `koda server --stdio` for editor/IDE integration
 - **Skills** — built-in expertise modules (code review, security audit) + user-created skills
 
 ## Architecture
@@ -47,9 +61,9 @@ Type `/help` in the REPL for all commands and shortcuts.
 ```
 koda/
 ├── koda-core/     # Engine library (providers, tools, inference, DB)
-├── koda-cli/      # CLI binary (REPL, display, approval UI)
-├── koda-ast/      # Tree-sitter AST analysis (library + MCP server)
-└── koda-email/    # Email via IMAP/SMTP (library + MCP server)
+├── koda-cli/      # CLI binary (REPL, TUI, approval UI, ACP server)
+├── koda-ast/      # Tree-sitter AST analysis library
+└── koda-email/    # Email via IMAP/SMTP library
 ```
 
 ## Custom Agents
@@ -63,7 +77,7 @@ koda/
 }
 ```
 
-See [docs.rs/koda-core](https://docs.rs/koda-core) for full config reference.
+Place in `.koda/agents/` (project) or `~/.config/koda/agents/` (global).
 
 ## Documentation
 
