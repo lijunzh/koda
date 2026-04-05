@@ -13,7 +13,11 @@ use std::path::Path;
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         name: "Glob".to_string(),
-        description: "Find files by glob pattern (e.g. '**/*.rs'). Returns relative paths."
+        description: "Find files by glob pattern. Returns relative paths, respects .gitignore. \
+            Use '**/*.rs' for recursive matching, 'src/**/mod.rs' for specific names, \
+            '*.toml' for current-directory-only. \
+            Prefer this over List when you know the filename pattern you want. \
+            Prefer Grep when you need to search file contents, not names."
             .to_string(),
         parameters: json!({
             "type": "object",

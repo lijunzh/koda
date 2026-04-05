@@ -14,8 +14,11 @@ use std::path::Path;
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
         name: "Grep".to_string(),
-        description: "Recursively search for text across files (respects .gitignore). \
-            Capped at 100 matches."
+        description: "Recursively search for text patterns across files (respects .gitignore). \
+            Returns matching file paths with line numbers and content. \
+            Use plain text for exact matches or regex for complex patterns. \
+            Set case_insensitive=true for case-agnostic search. \
+            Prefer this over Bash + rg/grep. Results are capped at 100 matches."
             .to_string(),
         parameters: json!({
             "type": "object",
