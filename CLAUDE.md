@@ -8,6 +8,10 @@ Koda is a personal AI assistant built in Rust (edition 2024) — not a product,
 not a platform. See [docs/design.md](docs/design.md) for principles (P1: Personal,
 P2: Simple enough to own alone, P3: Build for the world six months from now).
 
+**Development philosophy:** Make it work, make it right, make it fast — in that
+order. Ship working code first, refactor to clean design second, optimize for
+performance only when measured.
+
 Four-crate workspace:
 - `koda-core` (library) — pure engine with zero terminal deps
 - `koda-cli` (binary `koda`) — CLI frontend with ratatui TUI
