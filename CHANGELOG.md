@@ -9,6 +9,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-04-05
+
+Documentation, safety, and architecture release. 17 PRs merged since v0.2.1.
+
+### Added
+- **CLI reference in docs.rs** (#703) — full flag table with env vars
+  (`KODA_MODEL`, `KODA_PROVIDER`, `KODA_BASE_URL`) and subcommand docs.
+- **Privacy statement** (#703) — explicit zero-telemetry guarantee in
+  crate-level docs.
+- **Guide agent** (#691) — built-in `/agent guide` for answering questions
+  about Koda's features.
+- **Registry-driven `/help`** (#684) — `/help` output generated from the
+  slash command registry (single source of truth).
+- **Tool descriptions with behavioral guidance** (#686) — enriched tool
+  descriptions tell the model *when* and *how* to use each tool.
+- **Capabilities generated from code** (#685) — tool capability list
+  auto-generated from `ToolDef` structs, replacing static markdown.
+- **Doc examples on public APIs** (#689) — `cargo test` now exercises
+  doc examples for key types.
+
+### Changed
+- **All 29 koda-cli modules now `pub`** (#702) — docs.rs renders the full
+  user manual. docs.rs is the single source of truth for documentation.
+- **Config consolidated into SQLite** (#698) — API keys, settings, and
+  last-used provider moved from dotfiles to `~/.config/koda/db/koda.db`.
+  Eliminates 3 config files.
+- **Parameter name alignment** (#688) — `Grep` and `Glob` tools renamed
+  `path` parameter to `file_path` for consistency with Read/Write/Edit.
+- **CONTRIBUTING.md merged into CLAUDE.md** (#687) — single contributor
+  reference file.
+- **README trimmed** (#690, #699) — removed duplicated content, fixed
+  outdated claims, kept it scannable.
+- **Module docs enriched** (#694, #696) — every module has `//!` docs;
+  thin pages expanded with usage examples and cross-references.
+
+### Fixed
+- **Destructive commands rejected in headless mode** (#701) — `rm -rf`,
+  `sudo`, `git push --force` etc. are now rejected outright when no human
+  is present to approve. Previously auto-approved in headless.
+- **`ToolEffect` propagated through approval flow** (#701) — approval
+  sinks receive the classified effect so they can make policy decisions
+  without re-classifying.
+- **`blocking_send` panic in tokio runtime** (#701) — replaced with
+  `try_send` to avoid panic when called from async context.
+
 ## [0.2.1] - 2026-04-04
 
 Bug-fix release. All fixes discovered during real-world usage after v0.2.0.
