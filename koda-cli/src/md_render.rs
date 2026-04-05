@@ -32,6 +32,12 @@ pub struct MarkdownRenderer {
     highlighter: Option<CodeHighlighter>,
 }
 
+impl Default for MarkdownRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MarkdownRenderer {
     pub fn new() -> Self {
         Self {

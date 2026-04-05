@@ -1,35 +1,9 @@
-//! Koda 🐻 - A high-performance AI coding agent built in Rust.
+//! Koda 🐻 - A high-performance personal AI assistant built in Rust.
 //!
 //! CLI entry point. The binary is named `koda` for ergonomics.
+//! See [`koda_cli`] for the full user manual.
 
-mod ansi_parse;
-mod completer;
-mod diff_render;
-mod headless;
-mod highlight;
-mod history_render;
-mod input;
-mod md_render;
-mod mouse_select;
-mod onboarding;
-mod repl;
-mod scroll_buffer;
-mod server;
-mod sink;
-mod startup;
-mod tool_history;
-mod tui_app;
-mod tui_commands;
-mod tui_context;
-mod tui_handlers_inference;
-mod tui_output;
-mod tui_render;
-mod tui_types;
-mod tui_viewport;
-mod tui_wizards;
-mod widgets;
-mod wrap_input;
-mod wrap_util;
+use koda_cli::*;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};

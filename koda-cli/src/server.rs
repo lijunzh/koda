@@ -3,10 +3,10 @@
 //! Reads newline-delimited JSON from stdin, writes JSON-RPC messages to stdout.
 //! Implements the ACP lifecycle: Initialize → Authenticate → NewSession → Prompt → Cancel.
 
+use crate::acp_adapter::{self, AcpOutgoing, PendingApproval};
 use acp::Side;
 use agent_client_protocol_schema as acp;
 use anyhow::Result;
-use koda_cli::acp_adapter::{self, AcpOutgoing, PendingApproval};
 use koda_core::agent::KodaAgent;
 use koda_core::approval::ApprovalMode;
 use koda_core::config::KodaConfig;
