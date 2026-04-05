@@ -58,6 +58,18 @@ impl OutputCaps {
     const BASE_GLOB_RESULTS: usize = 200;
 
     /// Compute caps scaled to the given context window size (in tokens).
+    ///
+    /// ```
+    /// use koda_core::output_caps::OutputCaps;
+    ///
+    /// // 100K context = 1× (baseline)
+    /// let caps = OutputCaps::for_context(100_000);
+    /// assert_eq!(caps.grep_matches, 100);
+    ///
+    /// // 200K context = 2×
+    /// let caps = OutputCaps::for_context(200_000);
+    /// assert_eq!(caps.grep_matches, 200);
+    /// ```
     pub fn for_context(max_context_tokens: usize) -> Self {
         let factor = (max_context_tokens as f64 / BASELINE).clamp(1.0, MAX_SCALE);
 

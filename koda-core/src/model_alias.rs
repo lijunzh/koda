@@ -66,6 +66,16 @@ static ALIASES: &[ModelAlias] = &[
 ///
 /// Returns `None` if `name` is not a known alias (treat as literal model ID).
 /// For `"local"`, returns a sentinel — caller must auto-detect via LMStudio API.
+///
+/// ```
+/// use koda_core::model_alias::resolve;
+/// use koda_core::config::ProviderType;
+///
+/// let r = resolve("gemini-flash").unwrap();
+/// assert_eq!(r.provider, ProviderType::Gemini);
+///
+/// assert!(resolve("not-an-alias").is_none());
+/// ```
 pub fn resolve(name: &str) -> Option<ResolvedAlias> {
     if name == LOCAL_ALIAS {
         return Some(ResolvedAlias {

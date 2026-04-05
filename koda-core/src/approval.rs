@@ -25,6 +25,16 @@ use std::sync::atomic::{AtomicU8, Ordering};
 // ── Approval Mode ─────────────────────────────────────────
 
 /// The two approval modes.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::approval::ApprovalMode;
+///
+/// let mode = ApprovalMode::Auto;
+/// assert_eq!(mode.as_str(), "auto");
+/// assert_eq!(mode.next(), ApprovalMode::Confirm);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ApprovalMode {
