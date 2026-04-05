@@ -84,7 +84,6 @@ Use `/skills` to browse, or ask Koda to "use the code review skill."
 
 Koda natively understands code structure (Rust, Python, JS, TS via tree-sitter)
 and connects to email (IMAP/SMTP). Both are auto-provisioned — just ask.
-Both are auto-provisioned — just ask.
 
 ## REPL Commands
 
