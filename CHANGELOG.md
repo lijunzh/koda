@@ -9,6 +9,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-04
+
+Bug-fix release. All fixes discovered during real-world usage after v0.2.0.
+
+### Fixed
+- **Provider menu label** (#653) — renamed misleading `is_current` marker to
+  `key_set`, removed stale provider marker.
+- **Context window from local provider API** (#655) — `query_and_apply_capabilities`
+  now reads the actual context window from locally-hosted providers (Ollama,
+  LM Studio) instead of falling back to the hardcoded lookup table.
+- **Graceful degradation for weak models** (#657) — models that can’t
+  tool-call no longer crash the inference loop. Falls back to text-only mode
+  with a user-visible warning.
+- **`full_content` in `load_messages_before`** (#659) — the recall context
+  query now includes untruncated tool output, fixing empty results when
+  searching older Bash output.
+- **Time-based microcompact** (#660) — microcompact no longer clears tool
+  results every turn. Now uses message age (5+ minutes) instead of
+  per-turn eviction, preserving recent tool output the model needs.
+
+### Changed
+- **Auto-compact threshold** (#667) — removed dead `auto_compact_threshold`
+  config field (was never read by the inference loop). Hard-coded to 85%
+  matching Claude Code’s behavior. The previous hard-coded constant was 90%.
+
+### Testing
+- All 288 tests pass across 4 crates
+- Clean clippy (zero warnings), clean fmt
+- CI: Ubuntu, macOS, Windows
+
 ## [0.2.0] - 2026-04-04
 
 Major release closing all P0/P1 architecture gaps vs Claude Code v2.1.88.
