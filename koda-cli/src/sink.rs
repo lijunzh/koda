@@ -9,7 +9,7 @@ use koda_core::engine::{EngineEvent, EngineSink};
 // ── UiEvent ───────────────────────────────────────────────
 
 /// Events forwarded from `CliSink` to the main event loop.
-pub(crate) enum UiEvent {
+pub enum UiEvent {
     Engine(EngineEvent),
 }
 
