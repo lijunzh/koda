@@ -187,12 +187,8 @@ impl TuiContext {
     }
 
     async fn maybe_auto_compact(&mut self) {
-        if self.config.auto_compact_threshold == 0 {
-            return;
-        }
-
         let ctx_pct = self.context_pct as usize;
-        if ctx_pct < self.config.auto_compact_threshold {
+        if ctx_pct < koda_core::inference_helpers::AUTO_COMPACT_THRESHOLD {
             return;
         }
 
