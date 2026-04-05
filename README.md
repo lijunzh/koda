@@ -84,7 +84,7 @@ Use `/skills` to browse, or ask Koda to "use the code review skill."
 
 Koda natively understands code structure (Rust, Python, JS, TS via tree-sitter)
 and connects to email (IMAP/SMTP). Both are auto-provisioned — just ask.
-See [docs/user-guide.md](docs/user-guide.md) for setup details.
+Both are auto-provisioned — just ask.
 
 ## REPL Commands
 
@@ -150,13 +150,13 @@ different models for cost optimization:
 }
 ```
 
-See [docs/user-guide.md](docs/user-guide.md) for full agent config reference.
+See [docs.rs/koda-core](https://docs.rs/koda-core) for full config reference.
 
 ## Documentation
 
 | Document | Audience | Content |
 |---|---|---|
-| [**User Guide**](docs/user-guide.md) | Users | Workflow docs, commands, security |
+| [**API Reference**](https://docs.rs/koda-core) | Users / Contributors | Auto-generated from code |
 | [**Design**](docs/design.md) | Contributors | Principles, architecture |
 | [**CLAUDE.md**](CLAUDE.md) | AI / Contributors | Workspace layout, conventions |
 | [**Changelog**](CHANGELOG.md) | Everyone | Version history |
