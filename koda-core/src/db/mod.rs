@@ -391,11 +391,10 @@ impl From<MessageRow> for Message {
 impl Database {
     /// Get a value from the global KV store.
     pub async fn kv_get(&self, key: &str) -> Result<Option<String>> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT value FROM kv_store WHERE key = ?")
-                .bind(key)
-                .fetch_optional(&self.pool)
-                .await?;
+        let row: Option<(String,)> = sqlx::query_as("SELECT value FROM kv_store WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(row.map(|(v,)| v))
     }
 

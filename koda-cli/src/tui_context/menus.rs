@@ -463,7 +463,8 @@ impl TuiContext {
                                 self.config.model_settings.model = actual_model.clone();
                                 self.config.recalculate_model_derived();
                                 self.query_model_capabilities().await;
-                                crate::tui_wizards::save_provider(&self.config, &self.session.db).await;
+                                crate::tui_wizards::save_provider(&self.config, &self.session.db)
+                                    .await;
                                 self.renderer.model = actual_model.clone();
                                 self.scroll_buffer.push(Line::styled(
                                     format!("  \u{2714} Model: {label} ({actual_model})"),
@@ -604,7 +605,8 @@ impl TuiContext {
                     }
                     if !value.is_empty() {
                         koda_core::runtime_env::set(&env_name, &value);
-                        let _ = koda_core::keystore::set_key(&self.session.db, &env_name, &value).await;
+                        let _ =
+                            koda_core::keystore::set_key(&self.session.db, &env_name, &value).await;
                         let masked = koda_core::keystore::mask_key(&value);
                         self.scroll_buffer.push(Line::styled(
                             format!("  \u{2714} {env_name} set to {masked}"),
@@ -621,7 +623,8 @@ impl TuiContext {
                         ));
                     } else if !value.is_empty() {
                         koda_core::runtime_env::set(&env_name, &value);
-                        let _ = koda_core::keystore::set_key(&self.session.db, &env_name, &value).await;
+                        let _ =
+                            koda_core::keystore::set_key(&self.session.db, &env_name, &value).await;
                         let masked = koda_core::keystore::mask_key(&value);
                         self.scroll_buffer.push(Line::styled(
                             format!("  \u{2714} {env_name} set to {masked}"),

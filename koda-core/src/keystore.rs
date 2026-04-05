@@ -106,6 +106,9 @@ mod tests {
         inject_into_env(&db).await.unwrap();
 
         // Should keep the original value
-        assert_eq!(crate::runtime_env::get(&unique).as_deref(), Some("original"));
+        assert_eq!(
+            crate::runtime_env::get(&unique).as_deref(),
+            Some("original")
+        );
     }
 }
