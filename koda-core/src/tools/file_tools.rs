@@ -1,6 +1,24 @@
-//! File system tools: read, write, and list files.
+//! File system tools: Read, Write, Edit, Delete, and List.
 //!
-//! All paths are validated through `safe_resolve_path` to prevent escapes.
+//! All paths are validated through `safe_resolve_path` to prevent escapes
+//! outside the project root.
+//!
+//! ## Tools
+//!
+//! | Tool | Description | Effect |
+//! |---|---|---|
+//! | **Read** | Read file contents with line numbers. Supports `start_line`/`num_lines` for large files. | ReadOnly |
+//! | **Write** | Create a new file or overwrite an existing one. Use `overwrite: true` to replace. | LocalMutation |
+//! | **Edit** | Find-and-replace in an existing file. Matches `old_str` exactly and replaces with `new_str`. Use `replace_all: true` to replace all occurrences. | LocalMutation |
+//! | **Delete** | Delete a file. Always requires confirmation (Destructive effect). | Destructive |
+//! | **List** | List files and directories. Respects `.gitignore`. | ReadOnly |
+//!
+//! ## Path safety
+//!
+//! All file paths are resolved relative to the project root. Attempts to
+//! access files outside the project (e.g., `../../../etc/passwd`) are blocked
+//! with an error. Absolute paths are also rejected unless they resolve within
+//! the project root.
 
 use super::safe_resolve_path;
 use crate::providers::ToolDefinition;

@@ -309,8 +309,7 @@ users find them tedious and disorienting.
 - Native clipboard (`arboard`) for copy — essential UX since alternate screen
   breaks terminal-native mouse selection for multi-page content
 
-For the viewport layout diagram and interaction patterns, see
-[user-guide.md](user-guide.md#slash-commands).
+For the viewport layout diagram and interaction patterns, run `/help` in the REPL.
 
 **Competitive analysis**: [#230](https://github.com/lijunzh/koda/issues/230)
 **Implementation**: [#229](https://github.com/lijunzh/koda/pull/229), [#472]
@@ -373,7 +372,7 @@ checks at approval, and heuristic bash linting. The LLM is semi-trusted
 (can make mistakes, not adversarial). The concern is accidental blast
 radius, not targeted attacks.
 
-For operational details, see [user-guide.md](user-guide.md#security-model).
+For operational details, see the [approval module docs](https://docs.rs/koda-core/latest/koda_core/approval/).
 
 ### Security Model (P2)
 
@@ -387,7 +386,7 @@ effects need confirmation. Hardcoded floors ensure destructive operations
 and outside-project writes always require confirmation regardless of mode.
 
 For approval mode tables, tool effect matrix, and operational details, see
-[user-guide.md](user-guide.md#security-model).
+the [approval module docs](https://docs.rs/koda-core/latest/koda_core/approval/).
 
 **Key design choices**:
 - Sub-agents inherit the parent's approval mode (clamped — Auto parent still

@@ -1,11 +1,34 @@
 //! LLM provider abstraction layer.
 //!
-//! Defines a common trait for all providers and re-exports the default.
+//! Defines a common `Provider` trait for all backends and re-exports
+//! the concrete implementations.
 //!
-//! ## Design (docs/design.md)
+//! ## Supported providers
 //!
-//! - **Any model, any provider (P1)**: 15 provider types, cloud and local.
-//!   No vendor lock-in. The tool serves the person, not the platform.
+//! | Provider | Module | API style | Local? |
+//! |---|---|---|---|
+//! | Anthropic Claude | `anthropic` | Native | No |
+//! | Google Gemini | `gemini` | Native | No |
+//! | OpenAI / GPT | `openai_compat` | OpenAI-compat | No |
+//! | LM Studio | `openai_compat` | OpenAI-compat | Yes |
+//! | Ollama | `openai_compat` | OpenAI-compat | Yes |
+//! | Groq | `openai_compat` | OpenAI-compat | No |
+//! | Grok (xAI) | `openai_compat` | OpenAI-compat | No |
+//! | DeepSeek | `openai_compat` | OpenAI-compat | No |
+//! | OpenRouter | `openai_compat` | OpenAI-compat | No |
+//! | Together | `openai_compat` | OpenAI-compat | No |
+//! | Mistral | `openai_compat` | OpenAI-compat | No |
+//! | Cerebras | `openai_compat` | OpenAI-compat | No |
+//! | Fireworks | `openai_compat` | OpenAI-compat | No |
+//! | Custom | `openai_compat` | OpenAI-compat | Varies |
+//!
+//! All OpenAI-compatible providers share the same module with different
+//! base URLs. Use `--base-url` to point at any compatible endpoint.
+//!
+//! ## Design (DESIGN.md)
+//!
+//! - **Any model, any provider (P1)**: No vendor lock-in.
+//!   The tool serves the person, not the platform.
 //! - **Context Window Auto-Detection (P1, P3)**: Capabilities are queried
 //!   from the provider API at startup. Hardcoded lookup is the fallback,
 //!   not the primary source.

@@ -1,7 +1,12 @@
 //! Model context window lookup.
 //!
-//! Maps model names to their known context window sizes.
-//! Falls back to a conservative default for unknown models.
+//! Maps model names to their known context window sizes (in tokens).
+//! Falls back to a conservative default (100K) for unknown models.
+//!
+//! Context window size drives:
+//! - Output caps (see [`crate::output_caps`]) — larger windows get more tool output
+//! - Auto-compaction threshold — triggers at ~80% of context window
+//! - Microcompact aggressiveness — scales with remaining capacity
 
 /// Default context window when the model is unknown.
 const DEFAULT_CONTEXT: usize = 128_000;

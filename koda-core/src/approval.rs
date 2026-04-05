@@ -1,13 +1,32 @@
 //! Approval modes and tool confirmation.
 //!
 //! Two modes control how Koda handles tool confirmations:
-//! - **Auto** (default): Auto-approve everything. Destructive ops need confirmation.
+//! - **Auto** (default): Auto-approve local mutations. Destructive ops need confirmation.
 //! - **Confirm**: Every non-read action requires explicit confirmation.
+//!
+//! ## Approval matrix
+//!
+//! | Tool effect | Auto mode | Confirm mode |
+//! |---|---|---|
+//! | ReadOnly (Read, Grep, Glob) | ✅ Auto | ✅ Auto |
+//! | LocalMutation (Write, Edit) | ✅ Auto | ❗ Confirm |
+//! | RemoteAction (WebFetch) | ✅ Auto | ❗ Confirm |
+//! | Destructive (Delete) | ❗ Confirm | ❗ Confirm |
+//! | Outside project root | ❗ Confirm | ❗ Confirm |
+//!
+//! ## Hardcoded safety floors
+//!
+//! These always require confirmation regardless of mode:
+//! - Destructive file operations (Delete)
+//! - Writes outside the project root directory
+//! - Bash commands that escape the project (e.g. `rm -rf /`)
+//!
+//! Toggle modes at runtime with `Shift+Tab` in the REPL.
 //!
 //! Tool effects are classified via [`crate::tools::ToolEffect`] and bash commands are
 //! further refined by [`crate::bash_safety::classify_bash_command`].
 //!
-//! ## Design (docs/design.md)
+//! ## Design (DESIGN.md)
 //!
 //! - **Security Model (P2)**: Two modes + hardcoded floors. Hardcoded floors
 //!   override mode settings for destructive ops — this is not configurable.

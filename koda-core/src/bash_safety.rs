@@ -6,7 +6,7 @@
 //! Design: simple allowlist for safe commands, blocklist for dangerous ones,
 //! everything else defaults to LocalMutation. No hand-rolled parser.
 //!
-//! ## Design (docs/design.md)
+//! ## Design (DESIGN.md)
 //!
 //! - **Folder-Scoped Permissions (P2)**: Bash commands are linted for path
 //!   escapes before execution. This is heuristic — complex pipelines can

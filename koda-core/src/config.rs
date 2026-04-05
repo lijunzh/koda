@@ -1,4 +1,23 @@
 //! Configuration loading for agents and global settings.
+//!
+//! ## Agent discovery order
+//!
+//! 1. **Project agents** — `<project>/agents/*.json` (highest priority)
+//! 2. **User agents** — `~/.config/koda/agents/*.json`
+//! 3. **Built-in agents** — embedded at compile time (lowest priority)
+//!
+//! Project agents override user agents, which override built-ins.
+//!
+//! ## Built-in agents
+//!
+//! | Name | Purpose | Tools |
+//! |---|---|---|
+//! | `default` | Main interactive agent | All |
+//! | `task` | General-purpose delegated worker | All (write access) |
+//! | `explore` | Read-only code search | Read, Grep, Glob, List |
+//! | `guide` | Documentation assistant | WebFetch, WebSearch |
+//! | `plan` | Architecture planning | Read-only |
+//! | `verify` | Code review and verification | Read-only |
 
 use anyhow::{Context, Result};
 
@@ -281,6 +300,34 @@ impl ModelSettings {
 }
 
 /// Top-level agent configuration loaded from JSON.
+///
+/// Place agent JSON files in:
+/// - `agents/` (project-level, highest priority)
+/// - `~/.config/koda/agents/` (user-level)
+/// - Built-in (embedded at compile time, lowest priority)
+///
+/// ## Example
+///
+/// ```json
+/// {
+///   "name": "testgen",
+///   "system_prompt": "You are a test generation specialist.",
+///   "model": "gemini-2.5-flash",
+///   "write_access": true,
+///   "allowed_tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
+///   "max_iterations": 20
+/// }
+/// ```
+///
+/// ## Fields
+///
+/// - **`name`** — Agent identifier (used with `InvokeAgent`)
+/// - **`system_prompt`** — Behavioral instructions for the LLM
+/// - **`allowed_tools`** — Allowlist (empty = all tools available)
+/// - **`disallowed_tools`** — Denylist (excluded even if `allowed_tools` is empty)
+/// - **`model`** — Override the default model (e.g. `"gemini-2.5-flash"` for cheap workers)
+/// - **`write_access`** — Grant Write/Edit/Delete tools (default: `false`)
+/// - **`max_iterations`** — Cap inference loops (prevents runaway agents)
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
     /// Agent identifier.

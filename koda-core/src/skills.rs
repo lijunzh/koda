@@ -1,13 +1,40 @@
 //! Skill discovery and loading.
 //!
-//! Skills are SKILL.md files with YAML frontmatter that inject expertise
+//! Skills are `SKILL.md` files with YAML frontmatter that inject expertise
 //! into the agent's context. Unlike sub-agents, skills don't spawn a
 //! separate inference loop — they're prompt injection, zero extra LLM cost.
 //!
+//! ## Skill file format
+//!
+//! ```markdown
+//! ---
+//! name: code-review
+//! description: Expert code review with security focus
+//! tags: [review, security]
+//! ---
+//!
+//! You are a code review expert. When reviewing code:
+//! 1. Check for security vulnerabilities
+//! 2. Verify error handling
+//! 3. Assess test coverage
+//! ```
+//!
+//! ## Built-in skills
+//!
+//! - **code-review** — structured code review with security focus
+//! - **security-audit** — OWASP-aligned security analysis
+//!
+//! ## Custom skills
+//!
+//! - **Project**: `.koda/skills/<name>/SKILL.md`
+//! - **Global**: `~/.config/koda/skills/<name>/SKILL.md`
+//!
+//! Use `/skills` to browse, or ask Koda to "use the code review skill."
+//!
 //! Discovery order (later overrides earlier):
 //! 1. Built-in skills (embedded in the binary)
-//! 2. User-global skills (~/.config/koda/skills/)
-//! 3. Project-local skills (.koda/skills/)
+//! 2. User-global skills (`~/.config/koda/skills/`)
+//! 3. Project-local skills (`.koda/skills/`)
 
 use std::collections::HashMap;
 use std::path::Path;

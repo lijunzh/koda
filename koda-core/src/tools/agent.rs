@@ -3,6 +3,27 @@
 //! Exposes `InvokeAgent` and `ListAgents` as tools the LLM can call.
 //! Actual sub-agent execution is handled by the event loop since it needs
 //! access to config, DB, and the provider.
+//!
+//! ## Usage patterns
+//!
+//! - **Delegate a task**: `InvokeAgent { prompt: "write tests for auth.rs" }`
+//!   (uses the `task` agent by default)
+//! - **Use a specialist**: `InvokeAgent { agent_name: "explore", prompt: "find all error handling" }`
+//! - **Fork context**: `InvokeAgent { agent_name: "fork", prompt: "..." }`
+//!   (inherits parent's full conversation)
+//! - **Background work**: `InvokeAgent { prompt: "...", background: true }`
+//!   (returns immediately, results injected when complete)
+//!
+//! ## When to use sub-agents
+//!
+//! - Complex multi-step tasks (keeps parent context clean)
+//! - Independent parallel work (launch multiple agents at once)
+//! - Research that generates lots of noise (grep results, file contents)
+//!
+//! ## When NOT to use sub-agents
+//!
+//! - Simple file reads or 2–3 grep queries (overhead > benefit)
+//! - Tasks requiring user interaction (sub-agents can't ask questions)
 
 use crate::providers::ToolDefinition;
 use serde_json::json;

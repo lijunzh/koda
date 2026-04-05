@@ -1,7 +1,18 @@
-//! Glob tool: find files by pattern matching.
+//! Glob tool — find files by pattern matching.
 //!
-//! Complements `List` (listing) and `Grep` (content search) by providing
-//! fast structural file discovery using glob patterns.
+//! Complements `List` (directory listing) and `Grep` (content search) by
+//! providing fast structural file discovery using glob patterns.
+//!
+//! ## Parameters
+//!
+//! - **`pattern`** (required) — Glob pattern (e.g., `"**/*.rs"`, `"src/**/*.test.ts"`)
+//!
+//! ## Usage notes
+//!
+//! - Use Glob for file discovery, Grep for content search
+//! - Respects `.gitignore` rules
+//! - Results are sorted alphabetically
+//! - Output is capped based on context window size
 
 use super::safe_resolve_path;
 use crate::providers::ToolDefinition;

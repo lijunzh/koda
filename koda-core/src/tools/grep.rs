@@ -1,8 +1,24 @@
-//! Grep tool: recursive text search across files.
+//! Grep tool — recursive text search across files.
 //!
-//! Uses the `ignore` crate to walk directories (respecting .gitignore)
+//! Uses the `ignore` crate to walk directories (respecting `.gitignore`)
 //! and searches for text patterns. Match cap is set by `OutputCaps`
 //! (context-scaled).
+//!
+//! ## Parameters
+//!
+//! - **`pattern`** (required) — Text or regex pattern to search for
+//! - **`path`** (optional, default `.`) — Directory or file to search in
+//! - **`include`** (optional) — Glob pattern to filter files (e.g., `"*.rs"`)
+//!
+//! ## Output format
+//!
+//! Returns matches as `file:line: content`, one per line. When matches
+//! exceed the cap, output is truncated with a count of remaining matches.
+//!
+//! ## When to use Grep vs Bash
+//!
+//! - **Grep tool**: fast, respects `.gitignore`, context-aware output caps
+//! - **`bash: grep/rg`**: only when you need complex flags the tool doesn't expose
 
 use super::safe_resolve_path;
 use crate::providers::ToolDefinition;

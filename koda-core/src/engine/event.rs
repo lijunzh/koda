@@ -4,7 +4,7 @@
 //! They are serde-serializable so they can be sent over in-process channels
 //! (CLI mode) or over the wire (ACP server mode).
 //!
-//! ## Design (docs/design.md)
+//! ## Design (DESIGN.md)
 //!
 //! - **Engine as a Library, Not a Process (P2, P3)**: The engine communicates
 //!   exclusively through these enums. Zero IO in the engine crate.

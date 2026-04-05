@@ -1,8 +1,19 @@
-//! WebFetch tool: retrieve content from a URL.
+//! WebFetch tool — retrieve content from a URL.
 //!
-//! Fetches a web page and returns the textual content,
-//! stripping HTML tags for readability. Body cap is set by
-//! `OutputCaps` (context-scaled).
+//! Fetches a web page and converts HTML to readable text.
+//! Body cap is set by `OutputCaps` (context-scaled).
+//!
+//! ## Parameters
+//!
+//! - **`url`** (required) — The URL to fetch
+//!
+//! ## Behavior
+//!
+//! - HTML pages are converted to clean text (strips tags, scripts, styles)
+//! - JSON and plain text are returned as-is
+//! - Output is truncated to context-scaled caps
+//! - Follows redirects (up to 10 hops)
+//! - Timeout: 30 seconds
 
 use crate::providers::ToolDefinition;
 use anyhow::Result;

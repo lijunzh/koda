@@ -1,7 +1,23 @@
-//! Memory tools: read and write semantic memory.
+//! Memory tools — read and write semantic memory.
 //!
 //! Exposes `MemoryRead` and `MemoryWrite` as tools the LLM can call
 //! to inspect and persist project/global context.
+//!
+//! ## MemoryRead
+//!
+//! Returns the current contents of project and global memory files.
+//! No parameters required.
+//!
+//! ## MemoryWrite
+//!
+//! Appends a fact to `MEMORY.md` (project) or `~/.config/koda/memory.md` (global).
+//!
+//! - **`content`** (required) — The fact or convention to remember
+//! - **`scope`** (optional, default `"project"`) — `"project"` or `"global"`
+//!
+//! Memory is injected into the system prompt on every turn, so saved facts
+//! persist across sessions and compactions. See [`crate::memory`] for the
+//! file format and loading logic.
 
 use crate::memory;
 use crate::providers::ToolDefinition;
