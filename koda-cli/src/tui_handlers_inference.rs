@@ -7,7 +7,7 @@
 use crate::input;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::sink::UiEvent;
-use crate::tui_context::{TuiContext, save_history};
+use crate::tui_context::TuiContext;
 use crate::tui_types::{MenuContent, PromptMode, TuiState};
 use crate::tui_viewport::draw_viewport;
 
@@ -36,6 +36,7 @@ impl TuiContext {
     ) -> anyhow::Result<()> {
         let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
         let cancel_token = self.session.cancel.clone();
+        let db_handle = self.session.db.clone();
 
         self.tui_state = TuiState::Inferring;
         self.inference_start = Some(std::time::Instant::now());
@@ -105,6 +106,7 @@ impl TuiContext {
                             &mut self.history_idx,
                             &mut self.input_queue,
                             &mut self.paste_blocks,
+                            &db_handle,
                         ).await;
                     }
                     Some(ui_event) = ui_rx.recv() => {
@@ -283,6 +285,7 @@ async fn handle_crossterm_event_inline(
     history_idx: &mut Option<usize>,
     input_queue: &mut std::collections::VecDeque<String>,
     paste_blocks: &mut Vec<input::PasteBlock>,
+    db: &koda_core::db::Database,
 ) {
     use crossterm::event::MouseEventKind;
     match ev {
@@ -327,6 +330,7 @@ async fn handle_crossterm_event_inline(
                 history,
                 history_idx,
                 input_queue,
+                db,
             )
             .await;
         }
@@ -349,6 +353,7 @@ async fn handle_inference_key_inline(
     history: &mut Vec<String>,
     history_idx: &mut Option<usize>,
     input_queue: &mut std::collections::VecDeque<String>,
+    db: &koda_core::db::Database,
 ) {
     // Approval hotkeys
     if let MenuContent::Approval { id, .. } = menu {
@@ -503,7 +508,7 @@ async fn handle_inference_key_inline(
                 textarea.select_all();
                 textarea.cut();
                 history.push(text.clone());
-                save_history(history);
+                let _ = db.history_push(&text).await;
                 *history_idx = None;
                 input_queue.push_back(text);
             }
