@@ -12,6 +12,33 @@
 //! | **Headless** | `koda "prompt"` or `koda -p "..."` | [`headless`] |
 //! | **ACP server** | `koda server --stdio` | [`server`], [`acp_adapter`] |
 //!
+//! ## CLI reference
+//!
+//! ### Flags
+//!
+//! | Flag | Env var | Description |
+//! |------|---------|-------------|
+//! | `-p`, `--prompt <PROMPT>` | | Run a single prompt and exit (headless). Use `"-"` for stdin |
+//! | `<PROMPT>` (positional) | | Same as `-p` — `koda "fix the bug"` works |
+//! | `-a`, `--agent <NAME>` | | Agent to use (matches JSON in `agents/`, default: `default`) |
+//! | `-s`, `--resume <ID>` | | Resume a previous session by ID |
+//! | `--model <NAME>` | `KODA_MODEL` | Model name or alias (e.g. `claude-sonnet`, `gemini-flash`) |
+//! | `--provider <NAME>` | `KODA_PROVIDER` | LLM provider (`anthropic`, `gemini`, `openai`, `ollama`, …) |
+//! | `--base-url <URL>` | `KODA_BASE_URL` | Override the provider's API base URL |
+//! | `--max-tokens <N>` | | Maximum output tokens |
+//! | `--temperature <F>` | | Sampling temperature (0.0–2.0) |
+//! | `--thinking-budget <N>` | | Anthropic extended thinking budget (tokens) |
+//! | `--reasoning-effort <L>` | | OpenAI reasoning effort (`low`, `medium`, `high`) |
+//! | `--output-format <FMT>` | | Headless output format: `text` (default) or `json` |
+//! | `--project-root <DIR>` | | Project root (defaults to cwd) |
+//!
+//! ### Subcommands
+//!
+//! | Command | Description |
+//! |---------|-------------|
+//! | `koda server --stdio` | Start ACP server over stdin/stdout (for editors) |
+//! | `koda server --port <N>` | Start ACP server on TCP port (default: 9999) |
+//!
 //! ## Quick start
 //!
 //! ```bash
@@ -158,6 +185,17 @@
 //! | `agents/` | Global custom agent JSON files |
 //! | `skills/` | Global custom skill markdown files |
 //! | `memory.md` | Global memory (injected into all system prompts) |
+//!
+//! ## Privacy and data
+//!
+//! Koda has **zero telemetry**. No usage data, crash reports, or analytics
+//! are collected or transmitted. All data stays local:
+//!
+//! - Conversations are stored in your local SQLite database
+//! - API keys are stored locally in the same database (file mode 0600)
+//! - The only network traffic is your LLM API calls to the provider you choose
+//! - No phone-home, no update checks to third-party servers (version checks
+//!   query crates.io only)
 
 pub mod acp_adapter;
 pub mod ansi_parse;
