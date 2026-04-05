@@ -76,42 +76,15 @@ echo "explain this" | koda        # Piped input
 ### 📚 Skills
 
 Skills inject expert instructions into context — zero cost, instant activation.
-Koda includes built-in skills for common analysis tasks, and you can create your own.
+Built-in: `code-review`, `security-audit`. Create your own by adding a
+`SKILL.md` file to `.koda/skills/<name>/` (project) or `~/.config/koda/skills/<name>/` (global).
+Use `/skills` to browse, or ask Koda to "use the code review skill."
 
-**Built-in skills:**
-- `code-review` — senior code review (bugs, anti-patterns, improvements)
-- `security-audit` — security vulnerability scan (OWASP checklist)
+### 🌳 AST & 📧 Email
 
-**Create custom skills:** add a `SKILL.md` file with YAML frontmatter to:
-- `.koda/skills/<name>/SKILL.md` — project-level (shared with team)
-- `~/.config/koda/skills/<name>/SKILL.md` — user-level (global)
-
-```markdown
----
-name: my-skill
-description: What this skill does
-tags: [tag1, tag2]
----
-
-# Instructions for the agent
-
-Your expert guidance here...
-```
-
-Use `/skills` to list available skills, or ask Koda to "use the code review skill".
-
-### 🌳 AST Code Analysis
-
-Koda natively understands the structure of your codebase using embedded `tree-sitter` parsers.
-- **Auto-provisioned:** just ask koda to analyze code structure — no setup needed.
-- **Built-in languages:** Rust, Python, JavaScript, TypeScript — instant function/class extraction and call graphs.
-
-### 📧 Email Integration
-
-Koda connects to your email via IMAP/SMTP through the built-in koda-email integration.
-- **Auto-provisioned:** just ask "check my email" — koda sets it up.
-- **Any provider:** Gmail, Outlook, FastMail, self-hosted.
-- **Read, search, send:** full email workflow from the CLI.
+Koda natively understands code structure (Rust, Python, JS, TS via tree-sitter)
+and connects to email (IMAP/SMTP). Both are auto-provisioned — just ask.
+See [docs/user-guide.md](docs/user-guide.md) for setup details.
 
 ## REPL Commands
 
@@ -162,44 +135,31 @@ koda/
 The engine communicates through `EngineEvent` (output) and `EngineCommand` (input) enums
 over async channels. See [docs/design.md](docs/design.md) for architectural decisions.
 
-## Getting the Most Out of Koda
+## Custom Agents
 
-### Create custom agents
-
-Define specialized agents as JSON files in your project's `agents/` directory:
+Define specialized agents as JSON files in `agents/`. Sub-agents can use
+different models for cost optimization:
 
 ```json
-// agents/testgen.json — test generation specialist
+// agents/testgen.json
 {
   "name": "testgen",
-  "system_prompt": "You are a test generation specialist. Write comprehensive tests.",
-  "provider": "gemini",
+  "system_prompt": "You are a test generation specialist.",
   "model": "gemini-2.5-flash",
-  "allowed_tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"],
-  "max_iterations": 15
+  "allowed_tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
 }
 ```
 
-Sub-agents can run on different models for cost optimization. The default agent is built-in; all others are user-created.
-
-### Context window management
-
-Koda auto-detects your model's context window and manages it:
-
-Auto-compact fires at **85%** of the model's context window (matching
-Claude Code's default). Use `/compact` manually, or let auto-compact
-handle it. The status bar shows token usage in real time.
+See [docs/user-guide.md](docs/user-guide.md) for full agent config reference.
 
 ## Documentation
 
 | Document | Audience | Content |
 |---|---|---|
 | [**User Guide**](docs/user-guide.md) | Users | Workflow docs, commands, security |
-| [**Design**](docs/design.md) | Contributors | Principles, architecture, decisions |
-| [**CLAUDE.md**](CLAUDE.md) | AI assistants | Workspace layout, developer reference |
-| [**Contributing**](CONTRIBUTING.md) | Contributors | Setup, conventions, release process |
+| [**Design**](docs/design.md) | Contributors | Principles, architecture |
+| [**CLAUDE.md**](CLAUDE.md) | AI / Contributors | Workspace layout, conventions |
 | [**Changelog**](CHANGELOG.md) | Everyone | Version history |
-| [**API Reference**](https://docs.rs/koda-core) | Developers | Full Rust API docs |
 
 ## Development
 
