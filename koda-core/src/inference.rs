@@ -17,7 +17,7 @@ use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
-    CONTEXT_WARN_THRESHOLD, PREFLIGHT_COMPACT_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages,
+    AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages,
     estimate_tokens, is_context_overflow_error, is_rate_limit_error, is_server_error,
     rate_limit_backoff,
 };
@@ -130,7 +130,7 @@ async fn assemble_context(turn: &TurnState<'_>) -> Result<Vec<ChatMessage>> {
     // Warn users when approaching the context limit (headless mode silently
     // drops ContextUsage events, so this Warn is the only signal they get).
     let ctx_pct = crate::context::percentage();
-    if (CONTEXT_WARN_THRESHOLD..PREFLIGHT_COMPACT_THRESHOLD).contains(&ctx_pct) {
+    if (CONTEXT_WARN_THRESHOLD..AUTO_COMPACT_THRESHOLD).contains(&ctx_pct) {
         // Include analysis hints so the user knows *why* context is high.
         let mut warning = format!("Context at {ctx_pct}% — approaching limit.");
         let top = analysis.top_tool_results(2);
@@ -161,7 +161,7 @@ async fn preflight_compact_if_needed(
     messages: Vec<ChatMessage>,
 ) -> Result<Vec<ChatMessage>> {
     let ctx_pct = crate::context::percentage();
-    if ctx_pct < PREFLIGHT_COMPACT_THRESHOLD {
+    if ctx_pct < AUTO_COMPACT_THRESHOLD {
         return Ok(messages);
     }
 

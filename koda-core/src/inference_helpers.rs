@@ -3,14 +3,13 @@
 
 use crate::providers::{ChatMessage, ToolCall};
 
-/// Pre-flight context budget threshold (percentage).
-/// If context usage exceeds this before calling the provider, auto-compact first.
-/// Context usage % at which a pre-flight auto-compact fires (engine-side).
-pub const PREFLIGHT_COMPACT_THRESHOLD: usize = 90;
+/// Context usage % at which a pre-flight auto-compact fires.
+/// Matches CC's default (~85%). Hard-coded — no config knob needed.
+pub const AUTO_COMPACT_THRESHOLD: usize = 85;
+
 /// Context usage % at which a user-visible warning is emitted.
-///
-/// Sits below `PREFLIGHT_COMPACT_THRESHOLD` so users see the warning
-/// 1–2 turns before compaction fires automatically.
+/// Sits below `AUTO_COMPACT_THRESHOLD` so users see the warning
+/// 1–2 turns before compaction fires.
 pub const CONTEXT_WARN_THRESHOLD: usize = 80;
 
 /// Characters-per-token ratio for heuristic estimation.
