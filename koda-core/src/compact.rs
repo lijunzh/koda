@@ -1,5 +1,28 @@
 //! Session compaction — summarize old messages to reclaim context.
 //!
+//! When the conversation grows long, compaction replaces older messages with
+//! a concise summary, freeing context window space for new work.
+//!
+//! ## How it works
+//!
+//! 1. **Trigger**: user types `/compact`, or auto-compact fires at ~80% context usage
+//! 2. **Summarization**: a cheap model (Standard tier) generates a summary of old messages
+//! 3. **Replacement**: old messages are archived in the DB, replaced by the summary
+//! 4. **Result**: context usage drops, conversation continues with full history awareness
+//!
+//! ## Auto-compaction
+//!
+//! When context usage exceeds the threshold (configurable, default ~80%),
+//! compaction runs automatically before the next inference call. The user
+//! sees a brief "⚡ Compacting..." indicator.
+//!
+//! ## What's preserved
+//!
+//! - Summary of all prior conversation and decisions
+//! - Progress tracking entries (survive compaction via DB metadata)
+//! - Memory facts (injected from `MEMORY.md`, not from conversation)
+//! - File ownership state (tracked in SQLite, not in messages)
+//!
 //! Pure logic, zero UI dependencies. Returns structured results
 //! for the caller (TUI or headless) to render however it likes.
 //!

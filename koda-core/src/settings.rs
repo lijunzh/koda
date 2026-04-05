@@ -1,6 +1,16 @@
 //! User settings persistence.
 //!
 //! Stores and loads user preferences from `~/.config/koda/settings.toml`.
+//!
+//! ## Stored settings
+//!
+//! - **`provider`** — Default LLM provider
+//! - **`model`** — Default model identifier
+//! - **`base_url`** — Custom API base URL (for LM Studio, self-hosted, etc.)
+//! - **`max_tokens`** — Default max output tokens
+//! - **`temperature`** — Default temperature
+//!
+//! Settings are overridden by CLI flags, which are overridden by agent JSON configs.
 
 use std::path::{Path, PathBuf};
 

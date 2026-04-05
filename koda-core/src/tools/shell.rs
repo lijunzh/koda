@@ -1,17 +1,32 @@
-//! Shell command execution tool.
+//! Shell command execution tool (Bash).
 //!
 //! Runs commands as child processes with timeout protection.
 //! Output line cap is set by `OutputCaps` (context-scaled).
 //!
+//! ## Parameters
+//!
+//! - **`command`** (required) — The shell command to execute
+//! - **`timeout`** (optional, default 60) — Timeout in seconds
+//! - **`background`** (optional, default false) — Run in background, return PID
+//!
+//! ## Background mode
+//!
 //! When `background: true` the command is spawned detached and control returns
-//! immediately with the PID.  The process is tracked in `BgRegistry` and
-//! SIGTERMed when the session ends.
+//! immediately with the PID. Use for dev servers, file watchers, and other
+//! long-running processes. Background processes are tracked in `BgRegistry`.
 //!
-//! ## Smart summary
+//! ## Safety
 //!
-//! The model receives a compact summary (exit code + stderr + tail of stdout)
-//! while the full output is stored separately in the DB for retrieval via
-//! `RecallContext`.
+//! - Commands are classified by `bash_safety::classify_bash_command`
+//! - Destructive commands (`rm -rf`, `git push --force`) always need confirmation
+//! - Path escapes outside the project root are flagged by `bash_path_lint`
+//! - Output is capped to prevent context overflow (verbose output is truncated)
+//!
+//! ## Best practices (sent to the model)
+//!
+//! - Use Bash only for builds, tests, git, and commands without a dedicated tool
+//! - Never use Bash for file ops — use Read/Write/Edit/Grep/List instead
+//! - Suppress verbose output: pipe to `tail`, use `--quiet`, avoid `-v` flags
 
 use crate::engine::{EngineEvent, EngineSink};
 use crate::providers::ToolDefinition;

@@ -1,8 +1,15 @@
-//! Version checker: non-blocking startup check for newer crate versions.
+//! Version checker — non-blocking startup check for newer crate versions.
 //!
 //! Spawns a background task that queries crates.io for `koda-cli`.
 //! If a newer version exists, prints a one-line hint after the banner.
-//! Never blocks startup.
+//! Never blocks startup — the REPL is ready immediately.
+//!
+//! ## Behavior
+//!
+//! - Runs once per session at startup
+//! - Timeout: 3 seconds (fails silently on slow networks)
+//! - Compares `semver::Version` of current binary vs latest on crates.io
+//! - Shows: `📦 Update available: 0.2.1 → 0.3.0 (cargo install koda-cli)`
 
 use std::time::Duration;
 

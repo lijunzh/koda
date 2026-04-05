@@ -1,8 +1,38 @@
 //! Koda Core — the engine library for the Koda AI coding agent.
 //!
 //! This crate contains the pure engine logic with zero terminal dependencies.
-//! It communicates exclusively through `EngineEvent` (output) and
-//! `EngineCommand` (input) enums.
+//! It communicates exclusively through [`engine::EngineEvent`] (output) and
+//! [`engine::EngineCommand`] (input) enums.
+//!
+//! ## Quick navigation
+//!
+//! | Module | What it does |
+//! |---|---|
+//! | [`agent`] | Agent construction and built-in agent catalog |
+//! | [`tools`] | 19 built-in tools (file ops, shell, search, web, memory, agents) |
+//! | [`providers`] | 14 LLM providers (Anthropic, OpenAI, Gemini, local, etc.) |
+//! | [`inference`] | Streaming inference loop with tool execution |
+//! | [`config`] | Configuration loading, agent discovery, settings |
+//! | [`approval`] | Safety gates and approval modes |
+//! | [`engine`] | Event/command protocol (client–engine boundary) |
+//! | [`compact`] | Context compaction (summarize old messages) |
+//! | [`memory`] | Persistent semantic memory (`MEMORY.md`) |
+//! | [`skills`] | Expertise modules (prompt injection, zero LLM cost) |
+//! | [`db`] | SQLite persistence (sessions, history, file ownership) |
+//!
+//! ## Architecture
+//!
+//! ```text
+//! ┌───────────────┐    EngineEvent     ┌─────────────────┐
+//! │   koda-cli   │ ─────────────→ │   koda-core     │
+//! │  (TUI/REPL)  │ ─────────────→ │  (engine lib)   │
+//! └───────────────┘    EngineCommand   └────────┬────────┘
+//!                                          │
+//!                                   ┌──────┴──────┐
+//!                                   │  providers  │
+//!                                   │ (LLM APIs)  │
+//!                                   └─────────────┘
+//! ```
 //!
 //! See `DESIGN.md` in the repository root for the full architectural rationale.
 

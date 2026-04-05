@@ -3,6 +3,24 @@
 //! Holds mutable, per-turn state: database handle, session ID,
 //! provider instance, approval settings, and cancellation token.
 //! Instantiable N times for parallel sub-agents or cowork mode.
+//!
+//! ## Architecture
+//!
+//! ```text
+//! KodaAgent (shared, immutable)
+//!   ├─ tools, system prompt, project root
+//!   └─ shared via Arc across sessions
+//!
+//! KodaSession (per-conversation, mutable)
+//!   ├─ database handle (SQLite)
+//!   ├─ session_id (UUID)
+//!   ├─ provider instance
+//!   ├─ approval mode (auto/confirm)
+//!   └─ cancellation token
+//! ```
+//!
+//! This split allows the same agent to power multiple concurrent sessions
+//! (e.g., main REPL + background sub-agents) without shared mutable state.
 
 use crate::agent::KodaAgent;
 use crate::approval::ApprovalMode;

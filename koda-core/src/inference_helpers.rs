@@ -1,5 +1,15 @@
 //! Helper functions for inference — context estimation, message assembly,
 //! error classification.
+//!
+//! These are pure functions extracted from [`crate::inference`] to keep the
+//! main inference loop readable. They handle:
+//!
+//! - **Context estimation** — count tokens in the conversation to decide
+//!   when to compact or truncate
+//! - **Message assembly** — convert tool results and progress into the
+//!   format expected by each provider
+//! - **Error classification** — distinguish retryable errors (rate limits,
+//!   network) from fatal ones (auth, invalid model)
 
 use crate::providers::{ChatMessage, ToolCall};
 

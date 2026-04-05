@@ -3,6 +3,31 @@
 //! Runs the streaming inference → tool execution → re-inference loop
 //! until the LLM produces a final text response.
 //!
+//! ## Loop flow
+//!
+//! ```text
+//! User message
+//!   → Build messages array (history + system prompt)
+//!   → Stream response from provider
+//!   → If tool calls:
+//!       → Normalize tool names (handle model quirks)
+//!       → Check approval (auto/confirm based on effect)
+//!       → Execute tools (parallel when safe)
+//!       → Append results to conversation
+//!       → Loop (re-inference with tool results)
+//!   → If text response:
+//!       → Done — return to REPL
+//! ```
+//!
+//! ## Key behaviors
+//!
+//! - **Streaming**: tokens are emitted as they arrive via `EngineSink`
+//! - **Loop guard**: detects repeated identical tool calls and prompts the user
+//! - **Auto-compact**: triggers compaction when context usage exceeds threshold
+//! - **Microcompact**: ages old tool results between turns
+//! - **Sub-agents**: `InvokeAgent` calls spawn a nested inference loop
+//! - **Cancellation**: `Ctrl+C` cancels the current inference gracefully
+//!
 //! ## Design (DESIGN.md)
 //!
 //! - **Let the model drive (P3)**: The engine is a mechanical loop. It does
