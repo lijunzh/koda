@@ -1,6 +1,13 @@
-//! Native TUI wizard handlers for /provider, /compact, /trust.
+//! Native TUI wizard handlers — multi-step interactive flows.
 //!
-//! All output flows through the `ScrollBuffer` render cache.
+//! ## Wizards
+//!
+//! - **`/compact`** — summarize old context, show token savings
+//! - **`/provider`** — provider selection menu (Anthropic, Gemini, etc.)
+//! - **`/trust`** — set approval mode for the session
+//! - **`/key`** — API key entry (masked input)
+//!
+//! All output flows through the [`crate::scroll_buffer::ScrollBuffer`] render cache.
 
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;

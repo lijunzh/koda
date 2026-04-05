@@ -1,3 +1,20 @@
+//! ACP (Agent Client Protocol) adapter — translates between Koda engine
+//! events and the ACP JSON-RPC wire format.
+//!
+//! ## What it does
+//!
+//! - Maps `EngineEvent` → `SessionNotification` (outgoing to client)
+//! - Maps ACP `EngineCommand` → internal `EngineCommand` (incoming from client)
+//! - Maps Koda tool names → ACP `ToolKind` enum
+//! - Handles ACP permission requests (tool approval over JSON-RPC)
+//!
+//! ## Why it's separate from `server.rs`
+//!
+//! `server.rs` owns the JSON-RPC transport (stdin/stdout framing).
+//! This module owns the semantic translation between Koda's internal
+//! event model and ACP's protocol schema. Neither knows about the other's
+//! internals.
+
 use agent_client_protocol_schema as acp;
 use koda_core::engine::sink::EngineSink;
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent};
