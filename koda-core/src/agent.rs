@@ -33,8 +33,14 @@ pub struct KodaAgent {
 impl KodaAgent {
     /// Build a new agent from config and project root.
     ///
-    /// Initializes tools, system prompt, and tool definitions.
-    pub async fn new(config: &KodaConfig, project_root: PathBuf) -> Result<Self> {
+    /// `commands` is a list of `(name, description)` pairs for user-facing
+    /// slash commands.  The CLI passes its `SLASH_COMMANDS` registry here;
+    /// sub-agents pass `&[]`.
+    pub async fn new(
+        config: &KodaConfig,
+        project_root: PathBuf,
+        commands: &[(&str, &str)],
+    ) -> Result<Self> {
         let tools = ToolRegistry::new(project_root.clone(), config.max_context_tokens);
         let tool_defs = tools.get_definitions(&config.allowed_tools, &config.disallowed_tools);
 
@@ -50,6 +56,7 @@ impl KodaAgent {
             &config.agents_dir,
             &tool_defs,
             &env,
+            commands,
         );
 
         Ok(Self {
