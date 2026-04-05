@@ -111,8 +111,16 @@ pub fn build_system_prompt(
              - Simple file reads or 2\u{2013}3 grep queries (overhead > direct execution)\n\
              - Tasks that need user interaction (sub-agents can\u{2019}t ask questions)\n\
              \n\
-             Sub-agent results are NOT visible to the user \u{2014} always summarize key findings.\n",
+             Sub-agent results are NOT visible to the user — always summarize key findings.\n",
         );
+
+        // Guide agent delegation hint
+        if available_agents.iter().any(|n| n == "guide") {
+            prompt.push_str(
+                "\nFor detailed questions about Koda’s features, commands, or architecture, \
+                 delegate to the `guide` agent. It fetches official documentation on demand.\n",
+            );
+        }
     } else {
         prompt.push_str(
             "\n\nNote: No sub-agents are configured. \
