@@ -1,4 +1,14 @@
 //! Headless mode — run a single prompt and exit.
+//!
+//! Invoked via `koda -p "fix the bug"`. Runs one inference turn with
+//! auto-approval (no interactive prompts), prints the output, and exits
+//! with code 0 (success) or 1 (error).
+//!
+//! ## Output formats
+//!
+//! - `text` (default) — plain text, suitable for piping
+//! - `json` — structured JSON with tool calls and results
+//! - `stream-json` — newline-delimited JSON events
 
 use crate::input;
 use koda_core::agent::KodaAgent;

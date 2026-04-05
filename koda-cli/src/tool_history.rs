@@ -1,4 +1,8 @@
 //! Tool output history — bounded ring buffer for `/expand` replay.
+//!
+//! Records the last 20 tool outputs so the user can re-read truncated
+//! results via `/expand` or `/expand <n>`. Outputs are stored in memory
+//! only (not persisted to DB) since they're already in the conversation.
 
 const TOOL_HISTORY_CAP: usize = 20;
 

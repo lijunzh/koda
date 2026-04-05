@@ -1,7 +1,10 @@
-//! REPL command handling and display helpers.
+//! REPL command dispatch — parses slash commands and returns actions.
 //!
-//! Handles slash commands (/model, /provider, /help, /quit)
-//! and the interactive provider/model pickers.
+//! This module is shared between the TUI and headless entry points.
+//! It parses the command string and returns a [`ReplAction`] enum that
+//! the caller translates into UI-specific behavior.
+//!
+//! See [`crate`] module docs for the full command table.
 
 use koda_core::config::{KodaConfig, ProviderType};
 use koda_core::providers::LlmProvider;

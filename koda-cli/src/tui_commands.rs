@@ -1,6 +1,12 @@
 //! Slash command handler for the TUI event loop.
 //!
-//! All output flows through the `ScrollBuffer` render cache.
+//! Dispatches `/command` input to the appropriate handler. Most commands
+//! are handled via [`crate::repl::handle_command`] (shared with headless),
+//! then translated into TUI-specific actions here.
+//!
+//! See [`crate`] module docs for the full command table.
+//!
+//! All output flows through the [`crate::scroll_buffer::ScrollBuffer`] render cache.
 
 use crate::repl::ReplAction;
 use crate::scroll_buffer::ScrollBuffer;
