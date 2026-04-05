@@ -131,7 +131,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 and skips common noise (node_modules, __pycache__, .git). \
                 Use with recursive=false (default) to explore project structure one level \
                 at a time. Use with recursive=true for a full tree view. \
-                For finding files by pattern (e.g. all *.rs files), prefer Glob instead.".to_string(),
+                For finding files by pattern (e.g. all *.rs files), prefer Glob instead."
+                .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

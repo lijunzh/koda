@@ -17,7 +17,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
         description: "Fetch content from a URL. HTML is stripped to readable text by default; \
             set raw=true for raw HTML. Only use URLs from tool results or user input — \
             never guess or generate URLs from memory. \
-            For documentation lookup, prefer reading local files first.".to_string(),
+            For documentation lookup, prefer reading local files first."
+            .to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
