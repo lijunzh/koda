@@ -274,6 +274,39 @@ calls to potentially different providers.
 
 ---
 
+## Documentation
+
+### docs.rs as the Documentation Site (P1, P2)
+
+Koda uses `cargo doc` / docs.rs as its documentation site. There is no
+separate docs website to build, host, or maintain.
+
+Claude Code hosts a separate docs site at `code.claude.com/docs` and ships
+a `claude_code_docs_map.md` index file that the guide agent fetches at
+runtime to answer user questions. This requires a docs build pipeline,
+hosting infrastructure, and a separate content workflow.
+
+Koda takes a different approach: both `koda-core` (engine library) and
+`koda-cli` (TUI, slash commands, REPL) expose their modules as `pub mod`
+so that `cargo doc` renders them. The guide agent fetches these pages the
+same way CC's guide agent fetches `code.claude.com` — but the content
+comes from rustdoc, not a custom site.
+
+This means:
+
+- **Module-level `//!` docs are user-facing documentation**, not just
+  developer notes. They should explain *what the feature does and how to
+  use it*, not just implementation details.
+- **koda-cli modules must be `pub`** even though they have no external
+  consumers. This is a deliberate visibility trade for documentation
+  coverage — the guide agent needs to read slash command docs, TUI
+  keybindings, and onboarding flow.
+- **Zero infrastructure.** `cargo doc --open` works offline. docs.rs
+  publishes automatically on `cargo publish`. No CI pipeline for docs.
+- **Single source of truth.** Docs live next to code, never drift.
+
+---
+
 ## Interaction
 
 ### No `.koda.md` — Use `CLAUDE.md` (P1, P2)

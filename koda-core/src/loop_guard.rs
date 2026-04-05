@@ -1,9 +1,25 @@
-//! Loop detection and hard-cap user prompt for the inference loop.
+//! Loop detection and hard-cap for the inference loop.
 //!
 //! Tracks recent tool call fingerprints in a sliding window and flags
 //! when the same tool+args combination repeats too many times.
-//! When the hard iteration cap is hit, prompts the user interactively
-//! to continue or stop — falling back to stop in headless environments.
+//!
+//! ## Detection method
+//!
+//! Each tool call is fingerprinted as `(tool_name, hash(args))`. The guard
+//! maintains a sliding window of the last N fingerprints. When the same
+//! fingerprint appears more than the threshold, a loop is detected.
+//!
+//! ## What happens on detection
+//!
+//! - **Soft limit** (repeated tool calls): injects a system message telling
+//!   the model it's looping, asking it to try a different approach
+//! - **Hard limit** (iteration cap): prompts the user interactively to
+//!   continue or stop — falls back to stop in headless environments
+//!
+//! ## Why this matters
+//!
+//! Without loop detection, a confused model can burn thousands of tokens
+//! retrying the same failing edit or grep. The guard is the safety net.
 
 use crate::providers::ToolCall;
 use std::collections::{HashMap, VecDeque};

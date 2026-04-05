@@ -46,9 +46,9 @@ pub mod approval;
 pub(crate) mod approval_flow;
 /// Heuristic path-escape detection for bash commands.
 pub mod bash_path_lint;
-/// Bash command safety classification (destructive, mutating, read-only).
+/// Bash command safety classification — ReadOnly, LocalMutation, Destructive.
 pub mod bash_safety;
-/// Background sub-agent registry — tracks agents spawned with `background: true`.
+/// Background sub-agent registry — tracks and drains async agent results.
 pub mod bg_agent;
 /// Context compaction — summarise old messages to reclaim token budget.
 pub mod compact;
@@ -64,15 +64,15 @@ pub mod db;
 pub mod engine;
 /// File lifecycle tracker — tracks files created by Koda per session (#465).
 pub mod file_tracker;
-/// Git helpers — status, diff, blame, log.
+/// Git context injection — branch, staged/unstaged diffs, recent commits.
 pub mod git;
 /// The main inference loop — send messages, stream responses, dispatch tools.
 pub mod inference;
 /// Shared helpers used by the inference loop.
 pub mod inference_helpers;
-/// Credential storage (OS keychain via `keyring`).
+/// Credential storage — `keys.toml` with env var fallback.
 pub mod keystore;
-/// Guardrail against runaway tool-call loops.
+/// Loop detection — catches runaway repeated tool calls.
 pub mod loop_guard;
 /// Project memory — `MEMORY.md` / `CLAUDE.md` read/write.
 pub mod memory;
@@ -94,15 +94,15 @@ pub mod progress;
 pub mod prompt;
 /// LLM provider abstraction — Anthropic, Gemini, OpenAI-compatible.
 pub mod providers;
-/// Environment variable access (mockable for tests).
+/// Thread-safe runtime environment — replaces `std::env::set_var`.
 pub mod runtime_env;
 /// Session lifecycle — create, resume, list, delete.
 pub mod session;
-/// User settings persistence (`~/.config/koda/settings.json`).
+/// Last-used provider persistence (`~/.config/koda/settings.toml`).
 pub mod settings;
 /// Skill discovery and activation (project, user, built-in).
 pub mod skills;
-/// Cache for sub-agent provider/model config across invocations.
+/// Sub-agent result caching — zero-cost retries after compaction.
 pub mod sub_agent_cache;
 /// Sub-agent invocation and lifecycle management.
 pub(crate) mod sub_agent_dispatch;

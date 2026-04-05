@@ -1,20 +1,21 @@
-//! User settings persistence.
+//! Last-used provider persistence.
 //!
-//! Stores and loads user preferences from `~/.config/koda/settings.toml`.
+//! Remembers the last provider/model/base-URL so Koda can auto-restore
+//! on next startup. Currently stored in `~/.config/koda/settings.toml`.
 //!
-//! ## Stored settings
+//! **Note:** This module is slated for removal (#693). The TOML file
+//! should be a row in SQLite, not a separate config file — users should
+//! never edit it manually.
 //!
-//! - **`provider`** — Default LLM provider
-//! - **`model`** — Default model identifier
-//! - **`base_url`** — Custom API base URL (for LM Studio, self-hosted, etc.)
-//! - **`max_tokens`** — Default max output tokens
-//! - **`temperature`** — Default temperature
-//!
-//! Settings are overridden by CLI flags, which are overridden by agent JSON configs.
+//! This is **not** user configuration — Koda follows "customization over
+//! configuration" (see DESIGN.md). The only persisted state is which
+//! provider the user last chose via `/model`.
 
 use std::path::{Path, PathBuf};
 
-/// User settings stored in `~/.config/koda/settings.toml`.
+/// Last-used provider state, restored on startup.
+///
+/// Not user configuration — just session memory.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     /// Last-used provider/model, restored on next startup.

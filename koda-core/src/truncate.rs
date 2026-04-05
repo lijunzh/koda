@@ -4,6 +4,23 @@
 //! and the last N lines (tail) with a separator indicating how many lines
 //! were hidden. This keeps the UI scannable while preserving the most
 //! important parts (beginning for context, end for results).
+//!
+//! ## Example output
+//!
+//! ```text
+//! line 1
+//! line 2
+//! ... (248 lines hidden) ...
+//! line 299
+//! line 300
+//! ```
+//!
+//! ## Design rationale
+//!
+//! - **Head**: shows the start of output (file headers, command echoes, first errors)
+//! - **Tail**: shows the end (final results, exit codes, summary lines)
+//! - This mirrors how developers read logs: scan the top, then jump to the bottom
+//! - The hidden line count lets the model request specific sections if needed
 
 /// Default threshold: truncate if output exceeds this many lines.
 pub const TRUNCATE_THRESHOLD: usize = 50;

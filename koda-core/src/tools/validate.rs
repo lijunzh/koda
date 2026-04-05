@@ -2,6 +2,18 @@
 //!
 //! Runs **before** the approval prompt so we never ask the user to approve
 //! an operation that will inevitably fail. Cheap checks only — no mutations.
+//!
+//! ## What it validates
+//!
+//! - **Write**: target path resolves within project root
+//! - **Write (overwrite)**: file exists and `overwrite: true` is set
+//! - **Edit**: file exists, `old_str` is found, `old_str` is unique
+//!   (unless `replace_all: true`)
+//! - **Delete**: file exists
+//! - **Bash**: command is non-empty
+//!
+//! Validation errors are returned as tool results (not panics), so the
+//! model sees the error and can self-correct.
 
 use super::safe_resolve_path;
 use std::path::Path;
