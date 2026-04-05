@@ -62,6 +62,7 @@ pub(crate) async fn request_approval(
     tool_name: &str,
     detail: &str,
     preview: Option<crate::preview::DiffPreview>,
+    effect: crate::tools::ToolEffect,
 ) -> Option<ApprovalDecision> {
     let approval_id = uuid::Uuid::new_v4().to_string();
     sink.emit(EngineEvent::ApprovalRequest {
@@ -69,6 +70,7 @@ pub(crate) async fn request_approval(
         tool_name: tool_name.to_string(),
         detail: detail.to_string(),
         preview,
+        effect,
     });
 
     loop {

@@ -566,6 +566,7 @@ pub(crate) async fn execute_tools_sequential(
                 let detail = tools::describe_action(&tc.function_name, &parsed_args);
                 let diff_preview =
                     preview::compute(&tc.function_name, &parsed_args, project_root).await;
+                let effect = crate::approval::resolve_tool_effect(&tc.function_name, &parsed_args);
 
                 match request_approval(
                     sink,
@@ -574,6 +575,7 @@ pub(crate) async fn execute_tools_sequential(
                     &tc.function_name,
                     &detail,
                     diff_preview,
+                    effect,
                 )
                 .await
                 {
