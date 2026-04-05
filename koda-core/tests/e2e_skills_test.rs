@@ -200,7 +200,6 @@ async fn test_compact_session_summarizes_and_reduces_messages() {
         100_000,
         &env.config.model_settings,
         &provider,
-        compact::CompactMode::Manual,
     )
     .await
     .unwrap();
@@ -248,7 +247,6 @@ async fn test_compact_skips_short_conversation() {
         100_000,
         &env.config.model_settings,
         &provider,
-        compact::CompactMode::Manual,
     )
     .await
     .unwrap();

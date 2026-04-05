@@ -17,9 +17,8 @@ use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
-    CONTEXT_WARN_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages,
-    estimate_tokens, is_context_overflow_error, is_rate_limit_error, is_server_error,
-    rate_limit_backoff,
+    CONTEXT_WARN_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages, estimate_tokens,
+    is_context_overflow_error, is_rate_limit_error, is_server_error, rate_limit_backoff,
 };
 use crate::loop_guard::LoopDetector;
 use crate::persistence::Persistence;
@@ -156,8 +155,10 @@ async fn assemble_context(turn: &TurnState<'_>) -> Result<Vec<ChatMessage>> {
 /// before sending to the provider. Re-assembles context after successful compaction.
 ///
 /// Two thresholds (dual-threshold compaction):
-/// - **Advisory** (default 70%): gentle compact — summarize oldest third
-/// - **Critical** (default 90%): aggressive compact — summarize oldest half
+/// - **Advisory** (default 70%): early compact to avoid the surprise cliff
+/// - **Critical** (default 90%): last resort before overflow
+///
+/// Both use the same compaction strategy (summarize oldest half).
 ///
 /// Returns the (possibly updated) message vec.
 async fn preflight_compact_if_needed(
@@ -166,20 +167,15 @@ async fn preflight_compact_if_needed(
 ) -> Result<Vec<ChatMessage>> {
     let ctx_pct = crate::context::percentage();
 
-    // Determine which compact mode to use (if any)
-    let mode = if ctx_pct >= turn.config.auto_compact_threshold {
-        Some(crate::compact::CompactMode::Critical)
+    // Determine which threshold triggered (if any)
+    let level = if ctx_pct >= turn.config.auto_compact_threshold {
+        "critical"
     } else if turn.config.advisory_compact_threshold > 0
         && ctx_pct >= turn.config.advisory_compact_threshold
     {
-        Some(crate::compact::CompactMode::Advisory)
+        "advisory"
     } else {
-        None
-    };
-
-    let mode = match mode {
-        Some(m) => m,
-        None => return Ok(messages),
+        return Ok(messages);
     };
 
     // Circuit breaker: stop wasting API calls after repeated failures
@@ -188,15 +184,10 @@ async fn preflight_compact_if_needed(
         return Ok(messages);
     }
 
-    let mode_label = match mode {
-        crate::compact::CompactMode::Advisory => "advisory",
-        crate::compact::CompactMode::Critical => "critical",
-        crate::compact::CompactMode::Manual => "manual",
-    };
-    tracing::warn!("Pre-flight: context at {ctx_pct}%, attempting {mode_label} auto-compact");
+    tracing::warn!("Pre-flight: context at {ctx_pct}%, attempting {level} auto-compact");
     turn.sink.emit(EngineEvent::Info {
         message: format!(
-            "\u{1f4e6} Context at {ctx_pct}% \u{2014} {mode_label} compact before sending..."
+            "\u{1f4e6} Context at {ctx_pct}% \u{2014} {level} compact before sending..."
         ),
     });
 
@@ -206,7 +197,6 @@ async fn preflight_compact_if_needed(
         turn.config.max_context_tokens,
         &turn.config.model_settings,
         turn.provider,
-        mode,
     )
     .await
     {
@@ -314,7 +304,6 @@ async fn try_overflow_recovery(
         turn.config.max_context_tokens,
         &turn.config.model_settings,
         turn.provider,
-        crate::compact::CompactMode::Critical,
     )
     .await
     {

@@ -236,7 +236,6 @@ impl TuiContext {
             self.config.max_context_tokens,
             &self.config.model_settings,
             &self.provider,
-            koda_core::compact::CompactMode::Critical,
         )
         .await
         {

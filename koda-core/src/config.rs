@@ -427,12 +427,12 @@ impl KodaConfig {
 
         let max_iterations = agent.max_iterations.unwrap_or(200);
 
-        let auto_compact_threshold = agent.auto_compact_threshold.unwrap_or(
-            crate::inference_helpers::DEFAULT_CRITICAL_COMPACT_THRESHOLD,
-        );
-        let advisory_compact_threshold = agent.advisory_compact_threshold.unwrap_or(
-            crate::inference_helpers::DEFAULT_ADVISORY_COMPACT_THRESHOLD,
-        );
+        let auto_compact_threshold = agent
+            .auto_compact_threshold
+            .unwrap_or(crate::inference_helpers::DEFAULT_CRITICAL_COMPACT_THRESHOLD);
+        let advisory_compact_threshold = agent
+            .advisory_compact_threshold
+            .unwrap_or(crate::inference_helpers::DEFAULT_ADVISORY_COMPACT_THRESHOLD);
 
         Ok(Self {
             agent_name: agent.name,
@@ -531,7 +531,8 @@ impl KodaConfig {
 
         self.max_iterations = 200;
         self.auto_compact_threshold = crate::inference_helpers::DEFAULT_CRITICAL_COMPACT_THRESHOLD;
-        self.advisory_compact_threshold = crate::inference_helpers::DEFAULT_ADVISORY_COMPACT_THRESHOLD;
+        self.advisory_compact_threshold =
+            crate::inference_helpers::DEFAULT_ADVISORY_COMPACT_THRESHOLD;
     }
 
     /// Apply capabilities queried from the provider API.

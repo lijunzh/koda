@@ -19,11 +19,8 @@ use tokio::sync::RwLock;
 /// Minimum number of recent messages to keep verbatim during compaction.
 pub const COMPACT_PRESERVE_COUNT: usize = 4;
 
-/// Fraction of history to compact in advisory mode (compact oldest third).
-const ADVISORY_COMPACT_FRACTION: f64 = 0.33;
-
-/// Fraction of history to compact in critical mode (compact oldest half).
-const CRITICAL_COMPACT_FRACTION: f64 = 0.5;
+/// Fraction of history to compact (oldest half).
+const COMPACT_FRACTION: f64 = 0.5;
 
 /// Below this message count, always do full compaction (partial is overhead).
 const PARTIAL_COMPACT_THRESHOLD: usize = 12;
@@ -84,17 +81,6 @@ pub enum CompactSkip {
     HistoryTooLarge,
 }
 
-/// How aggressively to compact.
-#[derive(Debug, Clone, Copy)]
-pub enum CompactMode {
-    /// Gentle: compact oldest third. Fires early to avoid cliff.
-    Advisory,
-    /// Aggressive: compact oldest half. Last resort before overflow.
-    Critical,
-    /// User-initiated via `/compact` — always compact oldest half.
-    Manual,
-}
-
 /// Attempt to compact a session.
 ///
 /// Returns `Ok(Ok(result))` on success, `Ok(Err(skip))` if a
@@ -105,26 +91,22 @@ pub async fn compact_session(
     max_context_tokens: usize,
     model_settings: &crate::config::ModelSettings,
     provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
-    mode: CompactMode,
 ) -> Result<std::result::Result<CompactResult, CompactSkip>> {
     let prov = provider.read().await;
-    compact_session_with_provider(db, session_id, max_context_tokens, model_settings, &**prov, mode).await
+    compact_session_with_provider(db, session_id, max_context_tokens, model_settings, &**prov).await
 }
 
 /// Core compaction logic — accepts `&dyn LlmProvider` directly.
 ///
-/// Uses partial compaction for longer sessions (≥12 messages):
-/// - **Advisory**: compact oldest third (gentle, early intervention)
-/// - **Critical/Manual**: compact oldest half (aggressive, last resort)
-///
-/// Short sessions always use full compaction (keep last 4).
+/// Uses partial compaction for longer sessions (≥12 messages): the oldest
+/// half of messages are summarized and archived, preserving recent context
+/// verbatim. Short sessions use full compaction (keep last 4).
 pub async fn compact_session_with_provider(
     db: &Database,
     session_id: &str,
     max_context_tokens: usize,
     model_settings: &crate::config::ModelSettings,
     provider: &dyn LlmProvider,
-    mode: CompactMode,
 ) -> Result<std::result::Result<CompactResult, CompactSkip>> {
     // Check preconditions
     if db.has_pending_tool_calls(session_id).await.unwrap_or(false) {
@@ -138,13 +120,9 @@ pub async fn compact_session_with_provider(
     }
 
     // Decide how many messages to preserve (partial vs full compaction).
-    // Partial: compact the oldest fraction, keep the rest.
+    // Partial: compact the oldest half, keep the newest half.
     // Full: compact everything except the last COMPACT_PRESERVE_COUNT.
-    let compact_fraction = match mode {
-        CompactMode::Advisory => ADVISORY_COMPACT_FRACTION,
-        CompactMode::Critical | CompactMode::Manual => CRITICAL_COMPACT_FRACTION,
-    };
-    let preserve_count = compute_preserve_count(history.len(), compact_fraction);
+    let preserve_count = compute_preserve_count(history.len());
 
     let compact_count = history.len().saturating_sub(preserve_count);
     if compact_count == 0 {
@@ -221,11 +199,11 @@ pub async fn compact_session_with_provider(
 ///
 /// This preserves more recent context verbatim in long sessions,
 /// producing a smaller, more focused summary of just the oldest slice.
-fn compute_preserve_count(total: usize, compact_fraction: f64) -> usize {
+fn compute_preserve_count(total: usize) -> usize {
     if total < PARTIAL_COMPACT_THRESHOLD {
         COMPACT_PRESERVE_COUNT
     } else {
-        let keep = (total as f64 * (1.0 - compact_fraction)).ceil() as usize;
+        let keep = (total as f64 * (1.0 - COMPACT_FRACTION)).ceil() as usize;
         keep.max(COMPACT_PRESERVE_COUNT)
     }
 }
@@ -585,40 +563,28 @@ mod tests {
     #[test]
     fn test_compute_preserve_count_short_sessions() {
         // Below threshold: always keep COMPACT_PRESERVE_COUNT (4)
-        assert_eq!(compute_preserve_count(4, CRITICAL_COMPACT_FRACTION), 4);
-        assert_eq!(compute_preserve_count(8, CRITICAL_COMPACT_FRACTION), 4);
-        assert_eq!(compute_preserve_count(11, CRITICAL_COMPACT_FRACTION), 4);
+        assert_eq!(compute_preserve_count(4), 4);
+        assert_eq!(compute_preserve_count(8), 4);
+        assert_eq!(compute_preserve_count(11), 4);
     }
 
     #[test]
-    fn test_compute_preserve_count_critical() {
+    fn test_compute_preserve_count_partial() {
         // At threshold (12): keep ceil(12 * 0.5) = 6
-        assert_eq!(compute_preserve_count(12, CRITICAL_COMPACT_FRACTION), 6);
+        assert_eq!(compute_preserve_count(12), 6);
         // 20 messages: keep ceil(20 * 0.5) = 10
-        assert_eq!(compute_preserve_count(20, CRITICAL_COMPACT_FRACTION), 10);
+        assert_eq!(compute_preserve_count(20), 10);
         // 50 messages: keep 25
-        assert_eq!(compute_preserve_count(50, CRITICAL_COMPACT_FRACTION), 25);
+        assert_eq!(compute_preserve_count(50), 25);
         // 100 messages: keep 50
-        assert_eq!(compute_preserve_count(100, CRITICAL_COMPACT_FRACTION), 50);
-    }
-
-    #[test]
-    fn test_compute_preserve_count_advisory() {
-        // Advisory keeps ~67% (compacts oldest third)
-        // 12 messages: keep ceil(12 * 0.67) = 9
-        assert_eq!(compute_preserve_count(12, ADVISORY_COMPACT_FRACTION), 9);
-        // 20 messages: keep ceil(20 * 0.67) = 14
-        assert_eq!(compute_preserve_count(20, ADVISORY_COMPACT_FRACTION), 14);
-        // 50 messages: keep ceil(50 * 0.67) = 34
-        assert_eq!(compute_preserve_count(50, ADVISORY_COMPACT_FRACTION), 34);
+        assert_eq!(compute_preserve_count(100), 50);
     }
 
     #[test]
     fn test_compute_preserve_count_never_below_minimum() {
         // Even at threshold, result must be >= COMPACT_PRESERVE_COUNT
         for n in 0..200 {
-            assert!(compute_preserve_count(n, CRITICAL_COMPACT_FRACTION) >= COMPACT_PRESERVE_COUNT);
-            assert!(compute_preserve_count(n, ADVISORY_COMPACT_FRACTION) >= COMPACT_PRESERVE_COUNT);
+            assert!(compute_preserve_count(n) >= COMPACT_PRESERVE_COUNT);
         }
     }
 }
