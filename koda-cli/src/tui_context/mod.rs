@@ -175,8 +175,15 @@ impl TuiContext {
             startup_lines.extend(crate::startup::update_notice_lines(current, &latest));
         }
 
-        let agent =
-            Arc::new(koda_core::agent::KodaAgent::new(&config, project_root.clone()).await?);
+        // Extract (name, description) pairs from SLASH_COMMANDS for the system prompt.
+        let commands: Vec<(&str, &str)> = crate::completer::SLASH_COMMANDS
+            .iter()
+            .map(|&(name, desc, _)| (name, desc))
+            .collect();
+
+        let agent = Arc::new(
+            koda_core::agent::KodaAgent::new(&config, project_root.clone(), &commands).await?,
+        );
 
         let mut session = KodaSession::new(
             session_id,

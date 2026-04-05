@@ -57,7 +57,7 @@ pub async fn run_stdio_server(project_root: PathBuf, mut config: KodaConfig) -> 
         .await;
 
     // Build agent (tools, system prompt)
-    let agent = Arc::new(KodaAgent::new(&config, project_root.clone()).await?);
+    let agent = Arc::new(KodaAgent::new(&config, project_root.clone(), &[]).await?);
 
     let pending_approvals = Arc::new(Mutex::new(HashMap::new()));
     let next_rpc_id = Arc::new(AtomicI64::new(1));
