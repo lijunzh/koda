@@ -4,8 +4,17 @@
 //! session. On cache hit, returns the previous response immediately —
 //! zero-cost retries for compaction-triggered re-planning.
 //!
+//! ## Why this exists
+//!
+//! After compaction, the model sometimes re-issues the same sub-agent
+//! call (it forgot it already ran). Without caching, this burns tokens
+//! and time re-running identical work. The cache makes this free.
+//!
+//! ## Invalidation
+//!
 //! Cache entries are invalidated when files are mutated (piggybacks on
-//! `FileReadCache` mtime tracking via a generation counter).
+//! `FileReadCache` mtime tracking via a generation counter). This ensures
+//! stale results aren't served after the codebase changes.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};

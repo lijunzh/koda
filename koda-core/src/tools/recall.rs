@@ -1,7 +1,18 @@
 //! RecallContext — on-demand conversation history retrieval.
 //!
-//! Strong-tier only. Allows the model to page in older conversation
-//! context that was dropped from the sliding window.
+//! Allows the model to page in older conversation context that was dropped
+//! from the sliding window after compaction or microcompact.
+//!
+//! ## When it's used
+//!
+//! After compaction summarizes old messages, the model may need specific
+//! details (e.g., the exact error message from an earlier test run). Rather
+//! than re-running the command, it can recall the original tool result.
+//!
+//! ## Availability
+//!
+//! Strong-tier models only — cheaper models don't benefit enough from
+//! the extra context to justify the cost.
 
 use crate::db::Database;
 use crate::persistence::Persistence;

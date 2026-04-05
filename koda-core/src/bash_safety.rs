@@ -202,8 +202,6 @@ const DANGEROUS_PATTERNS: &[&str] = &[
 
 // ── Classification ───────────────────────────────────────────
 
-/// Classify a bash command's effect.
-///
 /// Classify a bash command by its side-effect severity.
 ///
 /// Returns the *most dangerous* effect found across all pipeline/chain

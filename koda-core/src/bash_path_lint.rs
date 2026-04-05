@@ -1,7 +1,26 @@
-//! Bash path lint: detect commands that escape the project root.
+//! Bash path lint — detect commands that escape the project root.
 //!
-//! Heuristic analysis — catches common accidental escapes, not adversarial inputs.
-//! Dynamic targets (`cd $VAR`, `cd $(cmd)`) are intentionally ignored.
+//! Heuristic analysis that catches common accidental path escapes.
+//! Not designed for adversarial inputs — that's a kernel sandbox concern.
+//!
+//! ## What it catches
+//!
+//! - Absolute paths outside the project (e.g., `cat /etc/passwd`)
+//! - Relative escapes (e.g., `cd ../../../`)
+//! - Home directory access (e.g., `rm ~/.bashrc`)
+//!
+//! ## What it allows
+//!
+//! - Temp directories (`/tmp`, `$TMPDIR`)
+//! - Device files (`/dev/null`, `/dev/stdout`)
+//! - Paths inside the project root
+//!
+//! ## What it intentionally ignores
+//!
+//! - Dynamic targets (`cd $VAR`, `cd $(cmd)`) — can't statically resolve
+//! - Quoted strings (commit messages, echo) — stripped before analysis
+//!
+//! See [`crate::bash_safety`] for the complementary command classification.
 
 use path_clean::PathClean;
 use std::path::{Path, PathBuf};

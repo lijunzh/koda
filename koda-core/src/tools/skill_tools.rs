@@ -1,7 +1,19 @@
 //! Skill activation tools for the LLM.
 //!
 //! Provides `ActivateSkill` and `ListSkills` tools that let the LLM
-//! inject expertise into its context by loading SKILL.md files.
+//! inject expertise into its context by loading `SKILL.md` files.
+//!
+//! ## ActivateSkill
+//!
+//! - **`skill_name`** (required) — name of the skill to load
+//! - Injects the skill's instructions into the conversation
+//! - Zero LLM cost (prompt injection, no extra inference call)
+//!
+//! ## ListSkills
+//!
+//! - No parameters — returns all available skills with descriptions
+//!
+//! See [`crate::skills`] for skill discovery, file format, and built-in skills.
 
 use crate::providers::ToolDefinition;
 use crate::skills::SkillRegistry;

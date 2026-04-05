@@ -1,7 +1,22 @@
 //! Context analysis — per-tool token breakdown and duplicate detection.
 //!
 //! Analyzes conversation history to identify where tokens are being spent.
-//! Used by compaction decisions, `/usage` reporting, and microcompact (future).
+//! Used by compaction decisions, `/usage` reporting, and microcompact.
+//!
+//! ## What it reports
+//!
+//! - **Per-tool token counts** — how many tokens each tool's results consume
+//!   (Read, Grep, Bash, etc.)
+//! - **Duplicate file reads** — files read multiple times (wasted context)
+//! - **Human vs assistant split** — how much of the context is user messages
+//!   vs model responses
+//! - **Attachment sizes** — images and files pasted into the conversation
+//!
+//! ## How it's used
+//!
+//! - **Auto-compact**: triggers compaction when total tokens exceed threshold
+//! - **`/usage` command**: shows the token breakdown to the user
+//! - **Microcompact**: identifies old tool results safe to clear
 //!
 //! Inspired by Claude Code's `contextAnalysis.ts`.
 
