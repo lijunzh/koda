@@ -1,8 +1,10 @@
-//! Verify that capabilities.md stays in sync with actual commands and features.
+//! Verify that generated capabilities and the user guide stay in sync.
+//!
+//! The capabilities.md file was deleted in #674 — capabilities are now
+//! generated from code in `prompt::build_system_prompt()`. These tests
+//! verify the user guide still covers key commands and sections.
 
-const CAPABILITIES_MD: &str = include_str!("../src/capabilities.md");
-
-/// Every slash command that exists in the REPL must be mentioned in capabilities.md.
+/// Every slash command that exists in the REPL must be mentioned in the user guide.
 const EXPECTED_COMMANDS: &[&str] = &[
     "/agent",
     "/compact",
@@ -20,42 +22,7 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "/verbose",
 ];
 
-#[test]
-fn test_all_commands_documented_in_capabilities() {
-    for cmd in EXPECTED_COMMANDS {
-        assert!(
-            CAPABILITIES_MD.contains(cmd),
-            "Command '{cmd}' is missing from capabilities.md"
-        );
-    }
-}
-
-/// Key features that must be mentioned to keep the model's self-knowledge accurate.
-#[test]
-fn test_capabilities_mentions_key_features() {
-    let must_mention = [
-        "Memory",
-        "@file",
-        "MEMORY.md",
-        "CLAUDE.md",
-        "auto",
-        "confirm",
-        "Shift+Tab",
-        "koda-ast",
-        "koda-email",
-        "Skills",
-        "ActivateSkill",
-        "ListSkills",
-    ];
-    for feature in must_mention {
-        assert!(
-            CAPABILITIES_MD.contains(feature),
-            "Feature '{feature}' is missing from capabilities.md"
-        );
-    }
-}
-
-/// Verify the user guide covers the same commands as capabilities.md.
+/// Verify the user guide covers the same commands as the REPL.
 #[test]
 fn test_user_guide_covers_slash_commands() {
     let guide = include_str!("../../docs/user-guide.md");

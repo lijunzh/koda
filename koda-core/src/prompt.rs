@@ -47,9 +47,7 @@ pub fn build_system_prompt(
 
     // Capabilities quick-reference (generated from code, replaces static capabilities.md)
     prompt.push_str("\n## Koda Quick Reference\n\n");
-    prompt.push_str(
-        "Refer to this when the user asks \"what can you do?\" or about features.\n",
-    );
+    prompt.push_str("Refer to this when the user asks \"what can you do?\" or about features.\n");
 
     // Commands — generated from the registry passed by the CLI
     if !commands.is_empty() {
