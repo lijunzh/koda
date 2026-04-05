@@ -410,13 +410,14 @@ pub(crate) fn handle_memory(
     }
 }
 
-pub(crate) fn save_provider(config: &KodaConfig) {
-    let mut s = koda_core::approval::Settings::load();
-    let _ = s.save_last_provider(
+pub(crate) async fn save_provider(config: &KodaConfig, db: &koda_core::db::Database) {
+    let _ = koda_core::settings::save_last_provider(
+        db,
         &config.provider_type.to_string(),
         &config.base_url,
         &config.model,
-    );
+    )
+    .await;
 }
 
 // ── API key management (/key) ─────────────────────────

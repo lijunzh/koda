@@ -15,7 +15,6 @@ use koda_core::{
         mock::{MockProvider, MockResponse},
     },
     session::KodaSession,
-    settings::Settings,
     tools::ToolRegistry,
 };
 use std::path::PathBuf;
@@ -90,7 +89,6 @@ impl Env {
             db: self.db.clone(),
             provider,
             mode: ApprovalMode::Auto,
-            settings: Settings::load(),
             cancel: cancel.clone(),
             file_tracker,
             title_set: false,

@@ -18,7 +18,6 @@ use koda_core::{
         ChatMessage, LlmProvider, LlmResponse, ModelInfo, StreamChunk, ToolDefinition,
         mock::{MockProvider, MockResponse},
     },
-    settings::Settings,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -159,7 +158,6 @@ async fn test_provider_error_emits_error_event() {
     let provider = MockProvider::new(vec![MockResponse::Error("Internal server error".into())]);
     let sink = koda_core::engine::sink::TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
-    let mut settings = Settings::load();
     let tool_defs = env.tool_defs();
     let mut file_tracker =
         koda_core::file_tracker::FileTracker::new(&env.session_id, env.db.clone()).await;
@@ -175,7 +173,6 @@ async fn test_provider_error_emits_error_event() {
         tool_defs: &tool_defs,
         pending_images: None,
         mode: ApprovalMode::Auto,
-        settings: &mut settings,
         sink: &sink,
         cancel: CancellationToken::new(),
         cmd_rx: &mut cmd_rx,
@@ -262,7 +259,6 @@ async fn test_cancel_during_streaming() {
 
     let sink = koda_core::engine::sink::TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
-    let mut settings = Settings::load();
     let tool_defs = env.tool_defs();
     let cancel = CancellationToken::new();
     let mut file_tracker =
@@ -286,7 +282,6 @@ async fn test_cancel_during_streaming() {
         tool_defs: &tool_defs,
         pending_images: None,
         mode: ApprovalMode::Auto,
-        settings: &mut settings,
         sink: &sink,
         cancel,
         cmd_rx: &mut cmd_rx,

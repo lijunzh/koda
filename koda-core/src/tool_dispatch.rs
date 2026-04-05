@@ -27,7 +27,7 @@
 //!   `match` in `ToolRegistry::execute()`, not a `HashMap<String, Box<dyn Tool>>`.
 //!   Rust's exhaustive matching catches missing handlers at compile time.
 
-use crate::approval::{self, ApprovalMode, Settings, ToolApproval};
+use crate::approval::{self, ApprovalMode, ToolApproval};
 use crate::approval_flow::{handle_ask_user, request_approval};
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
@@ -208,14 +208,12 @@ pub(crate) async fn execute_one_tool(
 ) -> (String, String, bool, Option<String>) {
     let (result, success, full_output) = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
-        let mut sub_settings = Settings::default();
         match sub_agent_dispatch::execute_sub_agent(
             project_root,
             config,
             db,
             &tc.arguments,
             mode,
-            &mut sub_settings,
             sink,
             cancel.clone(),
             // Sub-agents get a fresh command channel (they auto-approve in all modes)
@@ -331,7 +329,6 @@ pub(crate) async fn execute_tools_split_batch(
     session_id: &str,
     tools: &crate::tools::ToolRegistry,
     mode: ApprovalMode,
-    settings: &mut Settings,
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
@@ -407,7 +404,6 @@ pub(crate) async fn execute_tools_split_batch(
                 session_id,
                 tools,
                 mode,
-                settings,
                 sink,
                 cancel.clone(),
                 cmd_rx,
@@ -430,7 +426,6 @@ pub(crate) async fn execute_tools_split_batch(
             session_id,
             tools,
             mode,
-            settings,
             sink,
             cancel.clone(),
             cmd_rx,
@@ -454,7 +449,6 @@ pub(crate) async fn execute_tools_sequential(
     session_id: &str,
     tools: &crate::tools::ToolRegistry,
     mode: ApprovalMode,
-    _settings: &mut Settings,
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,

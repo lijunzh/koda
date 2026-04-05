@@ -1,27 +1,17 @@
-//! Last-used provider persistence.
+//! Last-used provider persistence (#693).
 //!
 //! Remembers the last provider/model/base-URL so Koda can auto-restore
-//! on next startup. Currently stored in `~/.config/koda/settings.toml`.
-//!
-//! **Note:** This module is slated for removal (#693). The TOML file
-//! should be a row in SQLite, not a separate config file — users should
-//! never edit it manually.
+//! on next startup. Stored in SQLite via the [`crate::db`] KV store.
 //!
 //! This is **not** user configuration — Koda follows "customization over
 //! configuration" (see DESIGN.md). The only persisted state is which
 //! provider the user last chose via `/model`.
 
-use std::path::{Path, PathBuf};
+use crate::db::Database;
+use anyhow::Result;
 
-/// Last-used provider state, restored on startup.
-///
-/// Not user configuration — just session memory.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct Settings {
-    /// Last-used provider/model, restored on next startup.
-    #[serde(default)]
-    pub last_provider: Option<LastProvider>,
-}
+/// KV key for the last-used provider.
+const KV_KEY: &str = "setting:last_provider";
 
 /// Last-used provider configuration, restored on startup.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -34,51 +24,26 @@ pub struct LastProvider {
     pub model: String,
 }
 
-impl Settings {
-    /// Load from `~/.config/koda/settings.toml`, returning defaults if missing.
-    pub fn load() -> Self {
-        Self::settings_path()
-            .and_then(|path| std::fs::read_to_string(&path).ok())
-            .and_then(|content| toml::from_str(&content).ok())
-            .unwrap_or_default()
+/// Load the last-used provider from the DB. Returns `None` if not set.
+pub async fn load_last_provider(db: &Database) -> Result<Option<LastProvider>> {
+    match db.kv_get(KV_KEY).await? {
+        Some(json) => Ok(serde_json::from_str(&json)?),
+        None => Ok(None),
     }
+}
 
-    /// Save to `~/.config/koda/settings.toml`.
-    pub fn save(&self) -> anyhow::Result<()> {
-        let path = Self::settings_path()
-            .ok_or_else(|| anyhow::anyhow!("Cannot determine config directory"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let content = toml::to_string_pretty(self)?;
-        std::fs::write(&path, content)?;
-        Ok(())
-    }
-
-    /// Save the last-used provider/model for restoration on next startup.
-    pub fn save_last_provider(
-        &mut self,
-        provider_type: &str,
-        base_url: &str,
-        model: &str,
-    ) -> anyhow::Result<()> {
-        self.last_provider = Some(LastProvider {
-            provider_type: provider_type.to_string(),
-            base_url: base_url.to_string(),
-            model: model.to_string(),
-        });
-        self.save()
-    }
-
-    fn settings_path() -> Option<PathBuf> {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .ok()?;
-        Some(
-            Path::new(&home)
-                .join(".config")
-                .join("koda")
-                .join("settings.toml"),
-        )
-    }
+/// Save the last-used provider to the DB.
+pub async fn save_last_provider(
+    db: &Database,
+    provider_type: &str,
+    base_url: &str,
+    model: &str,
+) -> Result<()> {
+    let lp = LastProvider {
+        provider_type: provider_type.to_string(),
+        base_url: base_url.to_string(),
+        model: model.to_string(),
+    };
+    let json = serde_json::to_string(&lp)?;
+    db.kv_set(KV_KEY, &json).await
 }

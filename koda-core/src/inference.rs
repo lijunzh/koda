@@ -51,7 +51,6 @@ use crate::persistence::Persistence;
 use crate::providers::{
     ChatMessage, ImageData, LlmProvider, StreamChunk, TokenUsage, ToolCall, ToolDefinition,
 };
-use crate::settings::Settings;
 use crate::tool_dispatch::{
     can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
 };
@@ -553,8 +552,6 @@ pub struct InferenceContext<'a> {
     pub pending_images: Option<Vec<ImageData>>,
     /// Current approval mode.
     pub mode: ApprovalMode,
-    /// User settings (may be mutated for auto-compact).
-    pub settings: &'a mut Settings,
     /// Event sink for streaming output to the client.
     pub sink: &'a dyn EngineSink,
     /// Cancellation token for graceful interruption.
@@ -578,7 +575,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         tool_defs,
         pending_images,
         mode,
-        settings,
         sink,
         cancel,
         cmd_rx,
@@ -973,7 +969,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 session_id,
                 tools,
                 mode,
-                settings,
                 sink,
                 cancel.clone(),
                 cmd_rx,
@@ -991,7 +986,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 session_id,
                 tools,
                 mode,
-                settings,
                 sink,
                 cancel.clone(),
                 cmd_rx,
