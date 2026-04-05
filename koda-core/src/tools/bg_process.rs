@@ -3,8 +3,21 @@
 //! Tracks processes spawned by `Bash { background: true }` so they can be
 //! listed, and so they are cleaned up (SIGTERM) when the session ends.
 //!
-//! Each `ToolRegistry` owns one `BgRegistry`.  All background processes for
-//! the session are keyed by PID.
+//! ## Usage
+//!
+//! ```text
+//! Model calls: Bash { command: "npm run dev", background: true }
+//!   → Process spawned, PID recorded in BgRegistry
+//!   → Tool returns immediately: "Started PID 12345"
+//!   → Model continues with other work
+//!   → On session end: all tracked PIDs receive SIGTERM
+//! ```
+//!
+//! ## Design
+//!
+//! Each `ToolRegistry` owns one `BgRegistry`. All background processes for
+//! the session are keyed by PID. The registry is `Mutex`-protected since
+//! the spawning thread and the cleanup path may differ.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

@@ -1,9 +1,29 @@
 //! Git integration for context injection.
 //!
-//! - `git_context()`: compact git info for the system prompt
+//! Provides a compact snapshot of the current git state for injection into
+//! the system prompt. This gives the model awareness of:
 //!
-//! File-level undo is handled by `undo.rs` (in-memory snapshots),
-//! not git. See DESIGN.md for rationale.
+//! - **Current branch** — so it knows where it's working
+//! - **Staged changes** — diff stat showing what's ready to commit
+//! - **Unstaged changes** — diff stat showing what's modified but not staged
+//! - **Recent commits** — last N commit subjects for historical context
+//!
+//! ## What this module does NOT do
+//!
+//! - **File-level undo** — handled by [`crate::undo`] (in-memory snapshots)
+//! - **Git operations** — commits, pushes, etc. are done via the Bash tool
+//! - **Worktree management** — handled by [`crate::worktree`]
+//!
+//! ## Output format
+//!
+//! ```text
+//! [Git: branch=main
+//!  Staged: 2 files changed, 15 insertions(+), 3 deletions(-)
+//!  Unstaged: 1 file changed, 4 insertions(+)
+//!  Recent: fix: align arrows | docs: enrich modules | feat: add AskUser]
+//! ```
+//!
+//! Diff stats are truncated at 2KB to avoid bloating the system prompt.
 
 use std::path::Path;
 use std::process::Command;

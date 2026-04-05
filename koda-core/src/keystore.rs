@@ -96,7 +96,6 @@ impl KeyStore {
         self.keys.insert(env_name.to_string(), value.to_string());
     }
 
-    /// Load all stored keys into the process environment.
     /// Load all stored keys into the runtime environment.
     /// Only sets vars that aren't already set (env vars and
     /// previously-set runtime vars take precedence).

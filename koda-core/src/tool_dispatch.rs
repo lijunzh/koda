@@ -3,8 +3,23 @@
 //! Routes tool calls from the inference loop to execution, handling
 //! approval flow, parallelization, and result recording.
 //!
-//! Sub-agent invocation lives in `sub_agent_dispatch.rs`.
-//! Approval request/response lives in `approval_flow.rs`.
+//! ## Dispatch flow
+//!
+//! ```text
+//! Model emits tool calls
+//!   → Classify each call's effect (ReadOnly / LocalMutation / Destructive)
+//!   → Split into read-only batch + mutation batch
+//!   → Read-only tools: execute in parallel (tokio::join)
+//!   → Mutation tools: execute sequentially with approval
+//!   → Record results in DB + inject into conversation
+//! ```
+//!
+//! ## Related modules
+//!
+//! - [`crate::tools`] — tool definitions and `ToolRegistry::execute()`
+//! - [`crate::approval`] — approval mode and effect classification
+//! - `sub_agent_dispatch.rs` — `InvokeAgent` handling (needs provider access)
+//! - `approval_flow.rs` — interactive approval UI flow
 //!
 //! ## Design (DESIGN.md)
 //!

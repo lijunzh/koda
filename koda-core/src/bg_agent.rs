@@ -3,6 +3,19 @@
 //! Tracks sub-agents spawned with `background: true` in `InvokeAgent`.
 //! The inference loop drains completed results and injects them as
 //! user-role messages so the model sees them on the next iteration.
+//!
+//! ## Lifecycle
+//!
+//! 1. **Spawn**: `InvokeAgent { background: true }` creates a tokio task
+//! 2. **Track**: the task handle + metadata are stored in `BgAgentRegistry`
+//! 3. **Poll**: before each inference call, the loop calls `drain_completed()`
+//! 4. **Inject**: completed results are appended as user messages
+//! 5. **Cleanup**: on session end, all pending tasks are cancelled
+//!
+//! ## Thread safety
+//!
+//! The registry is wrapped in `Arc<Mutex<>>` and shared between the main
+//! inference loop and the background task spawner.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
