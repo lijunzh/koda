@@ -18,10 +18,12 @@ code using embedded tree-sitter parsers. Communicates via the
 
 Additional languages require adding tree-sitter grammars to this crate — see [#298](https://github.com/lijunzh/koda/issues/298).
 
-## Auto-provisioning
+## Built-in integration
 
-Koda auto-installs and connects this server when AST analysis is needed.
-No manual setup required — just ask koda to analyze code structure.
+koda-ast is compiled into Koda as a direct library call — no setup needed.
+Just ask koda to analyze code structure and it works out of the box.
+
+The standalone MCP server binary is also available for use in other editors.
 
 ## Manual setup
 
