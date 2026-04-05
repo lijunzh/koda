@@ -23,15 +23,15 @@
 //! ## Architecture
 //!
 //! ```text
-//! ┌───────────────┐    EngineEvent     ┌─────────────────┐
-//! │   koda-cli   │ ─────────────→ │   koda-core     │
-//! │  (TUI/REPL)  │ ─────────────→ │  (engine lib)   │
-//! └───────────────┘    EngineCommand   └────────┬────────┘
-//!                                          │
-//!                                   ┌──────┴──────┐
-//!                                   │  providers  │
-//!                                   │ (LLM APIs)  │
-//!                                   └─────────────┘
+//! ┌───────────────┐  EngineEvent   ┌─────────────────┐
+//! │   koda-cli    │ ←───────────── │    koda-core    │
+//! │  (TUI/REPL)   │ ─────────────→ │   (engine lib)  │
+//! └───────────────┘  EngineCommand └────────┬────────┘
+//!                                           │
+//!                                    ┌──────┴──────┐
+//!                                    │  providers  │
+//!                                    │ (LLM APIs)  │
+//!                                    └─────────────┘
 //! ```
 //!
 //! See `DESIGN.md` in the repository root for the full architectural rationale.
