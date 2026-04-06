@@ -853,11 +853,20 @@ async fn test_load_all_messages_includes_compacted() {
 
     // load_context should return fewer than the original 5.
     let active = db.load_context(&session).await.unwrap();
-    assert!(active.len() < 5, "active should be < 5, got {}", active.len());
+    assert!(
+        active.len() < 5,
+        "active should be < 5, got {}",
+        active.len()
+    );
 
     // load_all_messages should return everything (active + compacted).
     let all = db.load_all_messages(&session).await.unwrap();
-    assert!(all.len() >= active.len(), "all({}) should >= active({})", all.len(), active.len());
+    assert!(
+        all.len() >= active.len(),
+        "all({}) should >= active({})",
+        all.len(),
+        active.len()
+    );
 }
 
 #[tokio::test]
@@ -963,7 +972,14 @@ async fn test_clear_message_content() {
         .await
         .unwrap();
     let id2 = db
-        .insert_message(&session, &Role::Assistant, Some("response"), None, None, None)
+        .insert_message(
+            &session,
+            &Role::Assistant,
+            Some("response"),
+            None,
+            None,
+            None,
+        )
         .await
         .unwrap();
 

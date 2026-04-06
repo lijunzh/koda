@@ -58,10 +58,7 @@ async fn read_via_symlink_outside_sandbox_is_blocked() {
     env.insert_user_message("read the linked file").await;
 
     let provider = MockProvider::new(vec![
-        MockResponse::tool_call(
-            "Read",
-            serde_json::json!({"file_path": "sneaky_link"}),
-        ),
+        MockResponse::tool_call("Read", serde_json::json!({"file_path": "sneaky_link"})),
         MockResponse::Text("I tried to read it.".into()),
     ]);
     let events = env.run_inference(&provider).await;
@@ -71,8 +68,11 @@ async fn read_via_symlink_outside_sandbox_is_blocked() {
     assert!(read_output.is_some(), "expected Read result: {events:?}");
     let output = read_output.unwrap();
     assert!(
-        output.contains("escape") || output.contains("symlink") || output.contains("outside")
-            || output.contains("resolve") || output.contains("denied"),
+        output.contains("escape")
+            || output.contains("symlink")
+            || output.contains("outside")
+            || output.contains("resolve")
+            || output.contains("denied"),
         "should block symlink escape: {output}"
     );
 }
@@ -138,17 +138,17 @@ async fn read_binary_file_does_not_crash() {
     env.insert_user_message("read the binary file").await;
 
     let provider = MockProvider::new(vec![
-        MockResponse::tool_call(
-            "Read",
-            serde_json::json!({"file_path": "image.bin"}),
-        ),
+        MockResponse::tool_call("Read", serde_json::json!({"file_path": "image.bin"})),
         MockResponse::Text("I see it's binary.".into()),
     ]);
     let events = env.run_inference(&provider).await;
 
     // Should not crash — may return an error or the content.
     let output = find_tool_output(&events, "Read");
-    assert!(output.is_some(), "should have a tool result (even if error): {events:?}");
+    assert!(
+        output.is_some(),
+        "should have a tool result (even if error): {events:?}"
+    );
 }
 
 // ── Dangerous command handling (Codex: safety_tests) ───────────────────────
@@ -159,10 +159,7 @@ async fn dangerous_rm_rf_is_flagged() {
     env.insert_user_message("delete everything").await;
 
     let provider = MockProvider::new(vec![
-        MockResponse::tool_call(
-            "Bash",
-            serde_json::json!({"command": "rm -rf /"}),
-        ),
+        MockResponse::tool_call("Bash", serde_json::json!({"command": "rm -rf /"})),
         MockResponse::Text("I tried.".into()),
     ]);
     let events = env.run_inference(&provider).await;
@@ -184,7 +181,10 @@ async fn dangerous_rm_rf_is_flagged() {
     let has_text = events
         .iter()
         .any(|e| matches!(e, EngineEvent::TextDelta { .. }));
-    assert!(has_text, "model should still produce a text response: {events:?}");
+    assert!(
+        has_text,
+        "model should still produce a text response: {events:?}"
+    );
 }
 
 #[tokio::test]
@@ -208,8 +208,10 @@ async fn path_traversal_in_write_is_blocked() {
     assert!(output.is_some());
     let output = output.unwrap();
     assert!(
-        output.contains("escape") || output.contains("outside")
-            || output.contains("traversal") || output.contains("resolve")
+        output.contains("escape")
+            || output.contains("outside")
+            || output.contains("traversal")
+            || output.contains("resolve")
             || output.contains("denied"),
         "should mention path escape: {output}"
     );
@@ -236,9 +238,12 @@ async fn path_traversal_in_edit_is_blocked() {
     assert!(output.is_some());
     let output = output.unwrap();
     assert!(
-        output.contains("escape") || output.contains("outside")
-            || output.contains("traversal") || output.contains("resolve")
-            || output.contains("denied") || output.contains("Error"),
+        output.contains("escape")
+            || output.contains("outside")
+            || output.contains("traversal")
+            || output.contains("resolve")
+            || output.contains("denied")
+            || output.contains("Error"),
         "path traversal should fail: {output}"
     );
 }
@@ -272,10 +277,7 @@ async fn edit_fuzzy_matches_trailing_whitespace() {
     let output = output.unwrap();
     // If fuzzy matching is supported, it should succeed and mention fuzzy.
     // If not, the edit might fail — either way, no crash.
-    assert!(
-        !output.is_empty(),
-        "edit result should not be empty"
-    );
+    assert!(!output.is_empty(), "edit result should not be empty");
 
     let content = std::fs::read_to_string(&target).unwrap();
     assert!(content.contains("greetings"), "content: {content}");
@@ -295,15 +297,9 @@ async fn tool_error_feeds_back_to_model_for_retry() {
 
     let provider = MockProvider::new(vec![
         // Bad attempt — file doesn't exist.
-        MockResponse::tool_call(
-            "Read",
-            serde_json::json!({"file_path": "wrong.txt"}),
-        ),
+        MockResponse::tool_call("Read", serde_json::json!({"file_path": "wrong.txt"})),
         // Model sees the error, tries correct path.
-        MockResponse::tool_call(
-            "Read",
-            serde_json::json!({"file_path": "correct.txt"}),
-        ),
+        MockResponse::tool_call("Read", serde_json::json!({"file_path": "correct.txt"})),
         MockResponse::Text("Found the file!".into()),
     ]);
     let events = env.run_inference(&provider).await;
@@ -314,7 +310,8 @@ async fn tool_error_feeds_back_to_model_for_retry() {
     assert_eq!(tool_results.len(), 2, "should have 2 Read results");
     // First should be an error (file not found).
     assert!(
-        tool_results[0].contains("No such file") || tool_results[0].contains("not found")
+        tool_results[0].contains("No such file")
+            || tool_results[0].contains("not found")
             || tool_results[0].contains("Error"),
         "first should fail: {}",
         tool_results[0]
@@ -368,8 +365,7 @@ async fn resume_interrupted_tool_call_session() {
     // never received (crash mid-execution).
     env.insert_user_message("list files").await;
 
-    let tc_json =
-        r#"[{"id":"tc_orphan","type":"function","function":{"name":"Bash","arguments":"{\"command\":\"ls\"}"}}]"#;
+    let tc_json = r#"[{"id":"tc_orphan","type":"function","function":{"name":"Bash","arguments":"{\"command\":\"ls\"}"}}]"#;
     env.db
         .insert_message(
             &env.session_id,
@@ -384,13 +380,15 @@ async fn resume_interrupted_tool_call_session() {
 
     // No tool result — the prune pass should clean this up.
     // Then the model should produce a fresh response.
-    let provider = MockProvider::new(vec![MockResponse::Text(
-        "Here are the files.".into(),
-    )]);
+    let provider = MockProvider::new(vec![MockResponse::Text("Here are the files.".into())]);
     let (result, events) = env.run_inference_result(&provider).await;
 
     // Should not crash.
-    assert!(result.is_ok(), "resume should be graceful: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "resume should be graceful: {:?}",
+        result.err()
+    );
 
     let has_text = events
         .iter()
@@ -406,16 +404,12 @@ async fn multi_turn_context_preserved() {
 
     // Turn 1: user asks, model responds.
     env.insert_user_message("My name is Alice.").await;
-    let provider1 = MockProvider::new(vec![MockResponse::Text(
-        "Nice to meet you, Alice!".into(),
-    )]);
+    let provider1 = MockProvider::new(vec![MockResponse::Text("Nice to meet you, Alice!".into())]);
     env.run_inference(&provider1).await;
 
     // Turn 2: follow-up referencing turn 1.
     env.insert_user_message("What is my name?").await;
-    let provider2 = MockProvider::new(vec![MockResponse::Text(
-        "Your name is Alice.".into(),
-    )]);
+    let provider2 = MockProvider::new(vec![MockResponse::Text("Your name is Alice.".into())]);
     let events = env.run_inference(&provider2).await;
 
     // Both turns should be persisted correctly.
@@ -446,10 +440,7 @@ async fn bash_large_output_is_truncated() {
 
     // seq 100000 generates ~600KB of output.
     let provider = MockProvider::new(vec![
-        MockResponse::tool_call(
-            "Bash",
-            serde_json::json!({"command": "seq 1 100000"}),
-        ),
+        MockResponse::tool_call("Bash", serde_json::json!({"command": "seq 1 100000"})),
         MockResponse::Text("That was a lot of output.".into()),
     ]);
     let events = env.run_inference(&provider).await;
@@ -464,7 +455,9 @@ async fn bash_large_output_is_truncated() {
         output.len()
     );
     assert!(
-        output.contains("truncated") || output.contains("TRUNCATED") || output.contains("...")
+        output.contains("truncated")
+            || output.contains("TRUNCATED")
+            || output.contains("...")
             || output.contains("Full output stored"),
         "should indicate truncation: {}",
         &output[output.len().saturating_sub(200)..]
@@ -492,7 +485,9 @@ async fn bash_command_timeout() {
     assert!(output.is_some());
     let output = output.unwrap();
     assert!(
-        output.contains("timed out") || output.contains("timeout") || output.contains("Timeout")
+        output.contains("timed out")
+            || output.contains("timeout")
+            || output.contains("Timeout")
             || output.contains("killed"),
         "should mention timeout: {output}"
     );
