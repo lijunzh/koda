@@ -71,7 +71,7 @@ pub fn classify_tool(name: &str) -> ToolEffect {
     match name {
         // Pure reads — zero side-effects
         "Read" | "List" | "Grep" | "Glob" | "MemoryRead" | "ListAgents" | "ListSkills"
-        | "ActivateSkill" | "RecallContext" | "AskUser" => ToolEffect::ReadOnly,
+        | "ActivateSkill" | "RecallContext" | "AskUser" | "TodoRead" => ToolEffect::ReadOnly,
 
         // Remote actions — side-effects on remote services only
         "WebFetch" => ToolEffect::ReadOnly,    // GET-only fetch
@@ -832,6 +832,15 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
                 .map(|a| a.len())
                 .unwrap_or(0);
             format!("Update todo list ({n} tasks)")
+        }
+        "MemoryWrite" => {
+            let fact = args.get("fact").and_then(|v| v.as_str()).unwrap_or("?");
+            let preview = if fact.len() > 60 {
+                format!("{}…", &fact[..57])
+            } else {
+                fact.to_string()
+            };
+            format!("Save to memory: {preview}")
         }
         "EmailSend" => {
             let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("?");

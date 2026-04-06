@@ -61,3 +61,106 @@ fn test_all_tools_handled_by_approval() {
         }
     }
 }
+
+// ── Sync tests: verify the 3 match statements stay in sync ──────────
+//
+// DESIGN.md: "Match Statement, Not Trait Registry (P2)"
+//
+// The trade-off of match dispatch is that 3 locations must stay in sync:
+//   1. classify_tool()   — tool name → ToolEffect
+//   2. describe_action() — tool name → human-readable description
+//   3. execute()         — tool name → handler
+//
+// These tests catch drift. If you add a tool, you'll get a compile error
+// in execute() (missing match arm triggers "Unknown tool" in the wiring
+// test above), but classify_tool and describe_action have catch-all arms
+// that silently do the wrong thing. These tests catch that.
+
+/// Every built-in tool must have an *explicit* entry in `classify_tool()`,
+/// not just fall through to the `_ => LocalMutation` default.
+///
+/// We maintain the expected classification here. If you add a tool,
+/// add it to this map — the test will fail until you do.
+#[test]
+fn test_classify_tool_covers_all_tools_explicitly() {
+    use koda_core::tools::{ToolEffect, classify_tool};
+
+    // Canonical expected classification for every built-in tool.
+    // If you add a tool, add it here with its expected ToolEffect.
+    let expected: std::collections::HashMap<&str, ToolEffect> = [
+        // Pure reads
+        ("Read", ToolEffect::ReadOnly),
+        ("List", ToolEffect::ReadOnly),
+        ("Grep", ToolEffect::ReadOnly),
+        ("Glob", ToolEffect::ReadOnly),
+        ("MemoryRead", ToolEffect::ReadOnly),
+        ("ListAgents", ToolEffect::ReadOnly),
+        ("ListSkills", ToolEffect::ReadOnly),
+        ("ActivateSkill", ToolEffect::ReadOnly),
+        ("RecallContext", ToolEffect::ReadOnly),
+        ("AskUser", ToolEffect::ReadOnly),
+        ("TodoRead", ToolEffect::ReadOnly),
+        ("WebFetch", ToolEffect::ReadOnly),
+        ("WebSearch", ToolEffect::ReadOnly),
+        ("InvokeAgent", ToolEffect::ReadOnly),
+        ("EmailRead", ToolEffect::ReadOnly),
+        ("EmailSearch", ToolEffect::ReadOnly),
+        // Local mutations
+        ("Write", ToolEffect::LocalMutation),
+        ("Edit", ToolEffect::LocalMutation),
+        ("Bash", ToolEffect::LocalMutation),
+        ("MemoryWrite", ToolEffect::LocalMutation),
+        ("TodoWrite", ToolEffect::LocalMutation),
+        ("EmailSend", ToolEffect::LocalMutation),
+        // Destructive
+        ("Delete", ToolEffect::Destructive),
+    ]
+    .into_iter()
+    .collect();
+
+    let registered = all_tool_names();
+
+    // Every registered tool must appear in our expected map.
+    for name in &registered {
+        assert!(
+            expected.contains_key(name.as_str()),
+            "Tool '{name}' is registered but missing from the classify_tool sync test. \
+             Add it to the `expected` map in test_classify_tool_covers_all_tools_explicitly()."
+        );
+    }
+
+    // Every expected tool must return the documented classification.
+    for (name, effect) in &expected {
+        assert_eq!(
+            classify_tool(name),
+            *effect,
+            "classify_tool(\"{name}\") returned wrong effect. \
+             Update either classify_tool() or the expected map."
+        );
+    }
+}
+
+/// Every mutating tool must have an explicit `describe_action()` entry,
+/// not the generic fallback "Execute: {name}".
+///
+/// Read-only tools auto-approve and never show in the approval prompt,
+/// so a generic description is fine for them.
+#[test]
+fn test_describe_action_covers_all_mutating_tools() {
+    use koda_core::tools::{ToolEffect, classify_tool, describe_action};
+
+    let empty_args = serde_json::json!({});
+
+    for name in all_tool_names() {
+        if matches!(classify_tool(&name), ToolEffect::ReadOnly) {
+            continue; // read-only tools don't need custom descriptions
+        }
+        let desc = describe_action(&name, &empty_args);
+        assert!(
+            !desc.starts_with("Execute:"),
+            "Mutating tool '{name}' has no explicit describe_action() entry — \
+             it fell through to the generic 'Execute: {name}' fallback. \
+             Add a match arm in describe_action()."
+        );
+    }
+}
