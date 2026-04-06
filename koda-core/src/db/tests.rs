@@ -1064,7 +1064,7 @@ async fn test_session_usage_by_agent() {
 
     let by_agent = db.session_usage_by_agent(&session).await.unwrap();
     assert!(
-        by_agent.len() >= 1,
+        !by_agent.is_empty(),
         "should track at least 1 agent: {by_agent:?}"
     );
 }

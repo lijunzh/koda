@@ -17,10 +17,10 @@ use koda_core::{
 /// Find the first ToolCallResult output for a given tool name.
 fn find_tool_output(events: &[EngineEvent], tool: &str) -> Option<String> {
     events.iter().find_map(|e| {
-        if let EngineEvent::ToolCallResult { output, name, .. } = e {
-            if name == tool {
-                return Some(output.clone());
-            }
+        if let EngineEvent::ToolCallResult { output, name, .. } = e
+            && name == tool
+        {
+            return Some(output.clone());
         }
         None
     })
@@ -31,10 +31,10 @@ fn find_all_tool_outputs(events: &[EngineEvent], tool: &str) -> Vec<String> {
     events
         .iter()
         .filter_map(|e| {
-            if let EngineEvent::ToolCallResult { output, name, .. } = e {
-                if name == tool {
-                    return Some(output.clone());
-                }
+            if let EngineEvent::ToolCallResult { output, name, .. } = e
+                && name == tool
+            {
+                return Some(output.clone());
             }
             None
         })
@@ -133,7 +133,7 @@ async fn write_file_with_spaces_in_path() {
 async fn read_binary_file_does_not_crash() {
     let env = Env::new().await;
     let binary_file = env.root.join("image.bin");
-    std::fs::write(&binary_file, &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]).unwrap();
+    std::fs::write(&binary_file, [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]).unwrap();
 
     env.insert_user_message("read the binary file").await;
 
