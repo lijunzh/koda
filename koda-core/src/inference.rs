@@ -1036,7 +1036,7 @@ mod tests {
     ) -> StreamResult {
         let (tx, mut rx) = mpsc::channel(32);
         let sink = TestSink::new();
-        let cancel = cancel.unwrap_or_else(CancellationToken::new);
+        let cancel = cancel.unwrap_or_default();
         let tmp = tempfile::tempdir().unwrap();
         let tools = test_tools(tmp.path());
 
@@ -1082,11 +1082,7 @@ mod tests {
 
     #[tokio::test]
     async fn collect_stream_empty_stream_returns_empty() {
-        let result = run_collect(
-            vec![StreamChunk::Done(TokenUsage::default())],
-            None,
-        )
-        .await;
+        let result = run_collect(vec![StreamChunk::Done(TokenUsage::default())], None).await;
 
         assert!(result.text.is_empty());
         assert!(!result.interrupted);
@@ -1183,7 +1179,12 @@ mod tests {
         });
 
         let result = collect_stream(
-            &mut rx, &sink, &cancel, &tools, ApprovalMode::Auto, tmp.path(),
+            &mut rx,
+            &sink,
+            &cancel,
+            &tools,
+            ApprovalMode::Auto,
+            tmp.path(),
         )
         .await;
 
@@ -1244,7 +1245,12 @@ mod tests {
         });
 
         let result = collect_stream(
-            &mut rx, &sink, &cancel, &tools, ApprovalMode::Auto, tmp.path(),
+            &mut rx,
+            &sink,
+            &cancel,
+            &tools,
+            ApprovalMode::Auto,
+            tmp.path(),
         )
         .await;
 
@@ -1268,20 +1274,13 @@ mod tests {
         .await;
 
         assert!(!result.interrupted);
-        assert_eq!(
-            result.network_error.as_deref(),
-            Some("connection reset")
-        );
+        assert_eq!(result.network_error.as_deref(), Some("connection reset"));
         assert_eq!(result.text, "partial response");
     }
 
     #[tokio::test]
     async fn collect_stream_network_error_with_no_text() {
-        let result = run_collect(
-            vec![StreamChunk::NetworkError("timeout".into())],
-            None,
-        )
-        .await;
+        let result = run_collect(vec![StreamChunk::NetworkError("timeout".into())], None).await;
 
         assert!(result.text.is_empty());
         assert!(result.network_error.is_some());

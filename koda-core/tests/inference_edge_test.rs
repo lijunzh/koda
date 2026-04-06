@@ -31,9 +31,9 @@ async fn rate_limit_then_success() {
     let events = env.run_inference(&provider).await;
 
     // Should see a warning about rate limiting.
-    let has_rate_warn = events.iter().any(|e| {
-        matches!(e, EngineEvent::Warn { message } if message.contains("Rate limited"))
-    });
+    let has_rate_warn = events
+        .iter()
+        .any(|e| matches!(e, EngineEvent::Warn { message } if message.contains("Rate limited")));
     assert!(has_rate_warn, "expected rate limit warning in: {events:?}");
 
     // Should still produce a response.
@@ -91,17 +91,17 @@ async fn network_error_mid_stream_discards_response() {
     assert!(result.is_ok(), "network error should be graceful");
 
     // Should emit a warning about the connection drop.
-    let has_warn = events.iter().any(|e| {
-        matches!(e, EngineEvent::Warn { message } if message.contains("Connection lost"))
-    });
-    assert!(
-        has_warn,
-        "expected connection warning in: {events:?}"
-    );
+    let has_warn = events
+        .iter()
+        .any(|e| matches!(e, EngineEvent::Warn { message } if message.contains("Connection lost")));
+    assert!(has_warn, "expected connection warning in: {events:?}");
 
     // The partial response must NOT be persisted (would corrupt session).
     let messages = env.db.load_context(&env.session_id).await.unwrap();
-    let assistant_msgs: Vec<_> = messages.iter().filter(|m| m.role.as_str() == "assistant").collect();
+    let assistant_msgs: Vec<_> = messages
+        .iter()
+        .filter(|m| m.role.as_str() == "assistant")
+        .collect();
     assert!(
         assistant_msgs.is_empty(),
         "partial response should not be persisted: {assistant_msgs:?}"
@@ -157,9 +157,9 @@ async fn max_tokens_continues_loop() {
     let events = env.run_inference(&provider).await;
 
     // Should warn about max_tokens.
-    let has_warn = events.iter().any(|e| {
-        matches!(e, EngineEvent::Warn { message } if message.contains("max_tokens"))
-    });
+    let has_warn = events
+        .iter()
+        .any(|e| matches!(e, EngineEvent::Warn { message } if message.contains("max_tokens")));
     assert!(has_warn, "expected max_tokens warning: {events:?}");
 
     // The second response should be the final one persisted.
@@ -203,10 +203,7 @@ async fn loop_detection_stops_repeated_tool_calls() {
         matches!(e, EngineEvent::Warn { message } if message.contains("Loop detected")
             || message.contains("repeating"))
     });
-    assert!(
-        has_loop_warn,
-        "expected loop detection warning: {events:?}"
-    );
+    assert!(has_loop_warn, "expected loop detection warning: {events:?}");
 }
 
 // ── Eager tool execution (ToolCallReady) ─────────────────────
@@ -232,12 +229,13 @@ async fn eager_execution_of_read_only_tools() {
 
     // Should have a tool result with the file content.
     let tool_result = events.iter().find_map(|e| {
-        if let EngineEvent::ToolCallResult { output, name, .. } = e {
-            if name == "Read" {
-                return Some(output.clone());
-            }
+        if let EngineEvent::ToolCallResult { output, name, .. } = e
+            && name == "Read"
+        {
+            Some(output.clone())
+        } else {
+            None
         }
-        None
     });
     assert!(
         tool_result.is_some(),
@@ -284,12 +282,13 @@ async fn multiple_read_only_tools_dispatch() {
     let tool_results: Vec<_> = events
         .iter()
         .filter_map(|e| {
-            if let EngineEvent::ToolCallResult { output, name, .. } = e {
-                if name == "Read" {
-                    return Some(output.clone());
-                }
+            if let EngineEvent::ToolCallResult { output, name, .. } = e
+                && name == "Read"
+            {
+                Some(output.clone())
+            } else {
+                None
             }
-            None
         })
         .collect();
     assert_eq!(tool_results.len(), 2, "expected 2 Read results: {events:?}");
@@ -341,9 +340,9 @@ async fn server_error_exits_gracefully() {
     // Should exit gracefully, not crash.
     assert!(result.is_ok(), "server error should be handled gracefully");
 
-    let has_warn = events.iter().any(|e| {
-        matches!(e, EngineEvent::Warn { message } if message.contains("server error"))
-    });
+    let has_warn = events
+        .iter()
+        .any(|e| matches!(e, EngineEvent::Warn { message } if message.contains("server error")));
     assert!(has_warn, "expected server error warning: {events:?}");
 }
 
@@ -361,7 +360,10 @@ async fn context_overflow_attempts_compact_and_retry() {
             .insert_message(
                 &env.session_id,
                 &koda_core::db::Role::Assistant,
-                Some(&"Answer: Here's a long response about this topic that fills up context. ".repeat(5)),
+                Some(
+                    &"Answer: Here's a long response about this topic that fills up context. "
+                        .repeat(5),
+                ),
                 None,
                 None,
                 None,
@@ -383,17 +385,17 @@ async fn context_overflow_attempts_compact_and_retry() {
     // If it worked, we'll see a Compacted info event.
     // If it failed, we'll see an error (which is OK — the test validates the
     // recovery path was attempted).
-    let attempted_recovery = events.iter().any(|e| {
+    let _attempted_recovery = events.iter().any(|e| {
         matches!(e, EngineEvent::Warn { message } if message.contains("overflow"))
             || matches!(e, EngineEvent::Info { message } if message.contains("Compact"))
     });
 
     // At minimum, the overflow should not crash.
-    if result.is_err() {
-        let err = result.unwrap_err().to_string();
+    if let Err(err) = result {
+        let msg = err.to_string();
         assert!(
-            err.contains("compaction") || err.contains("overflow") || err.contains("context"),
-            "error should be about context/compaction: {err}"
+            msg.contains("compaction") || msg.contains("overflow") || msg.contains("context"),
+            "error should be about context/compaction: {msg}"
         );
     }
 }
@@ -464,8 +466,14 @@ async fn multi_step_tool_chain_persists_all() {
             }
         })
         .collect();
-    assert!(tool_names.contains(&"Write".to_string()), "tools: {tool_names:?}");
-    assert!(tool_names.contains(&"Read".to_string()), "tools: {tool_names:?}");
+    assert!(
+        tool_names.contains(&"Write".to_string()),
+        "tools: {tool_names:?}"
+    );
+    assert!(
+        tool_names.contains(&"Read".to_string()),
+        "tools: {tool_names:?}"
+    );
 
     // File should exist with correct content.
     let content = std::fs::read_to_string(&target).unwrap();

@@ -75,6 +75,7 @@ impl Env {
     }
 
     /// Run inference and return Result + events (for testing error paths).
+    #[allow(dead_code)] // Used by inference_edge_test, not all test binaries.
     pub async fn run_inference_result(
         &self,
         provider: &dyn LlmProvider,
@@ -84,6 +85,7 @@ impl Env {
     }
 
     /// Run inference with a cancellation token.
+    #[allow(dead_code)] // Used by inference_edge_test, not all test binaries.
     pub async fn run_inference_cancellable(
         &self,
         provider: &dyn LlmProvider,

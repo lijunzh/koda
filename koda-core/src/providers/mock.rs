@@ -38,7 +38,12 @@ pub enum MockResponse {
     /// Simulate a context overflow error.
     ContextOverflow,
     /// Simulate a network drop mid-stream (partial text then disconnect).
-    NetworkError { partial_text: String, error: String },
+    NetworkError {
+        /// Text streamed before the connection drops.
+        partial_text: String,
+        /// Error message for the network failure.
+        error: String,
+    },
 }
 
 impl MockResponse {

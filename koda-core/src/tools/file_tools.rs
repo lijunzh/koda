@@ -465,6 +465,95 @@ pub async fn delete_file(project_root: &Path, args: &Value) -> Result<String> {
     }
 }
 
+/// Count all entries in a directory recursively.
+fn count_dir_entries(path: &Path) -> usize {
+    let mut count = 0;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            count += 1;
+            if entry.path().is_dir() {
+                count += count_dir_entries(&entry.path());
+            }
+        }
+    }
+    count
+}
+
+/// List files in a directory, respecting .gitignore.
+/// Entry cap is set by `OutputCaps` (context-scaled).
+pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -> Result<String> {
+    let path_str = args["file_path"]
+        .as_str()
+        .or_else(|| args["path"].as_str())
+        .unwrap_or(".");
+    let recursive = args["recursive"].as_bool().unwrap_or(false);
+    let resolved = safe_resolve_path(project_root, path_str)?;
+
+    let mut entries = Vec::new();
+    let mut total_count: usize = 0;
+
+    if recursive {
+        // Use the `ignore` crate to respect .gitignore
+        let mut builder = ignore::WalkBuilder::new(&resolved);
+        builder
+            .hidden(true) // skip hidden files/dirs (dotfiles)
+            .git_ignore(true)
+            // Always ignore common build/dependency dirs even without .gitignore
+            .filter_entry(|entry| {
+                let name = entry.file_name().to_string_lossy();
+                !matches!(
+                    name.as_ref(),
+                    "target"
+                        | "node_modules"
+                        | "__pycache__"
+                        | ".git"
+                        | "dist"
+                        | "build"
+                        | ".next"
+                        | ".cache"
+                )
+            });
+        let walker = builder.build();
+
+        for entry in walker.flatten() {
+            let path = entry.path();
+            // Skip the root directory itself
+            if path == resolved {
+                continue;
+            }
+            let relative = path.strip_prefix(project_root).unwrap_or(path);
+            let prefix = if path.is_dir() { "d " } else { "  " };
+            entries.push(format!("{prefix}{}", relative.display()));
+            total_count += 1;
+            if entries.len() >= max_entries {
+                break;
+            }
+        }
+    } else {
+        let mut reader = tokio::fs::read_dir(&resolved).await?;
+        while let Some(entry) = reader.next_entry().await? {
+            let ft = entry.file_type().await?;
+            let prefix = if ft.is_dir() { "d " } else { "  " };
+            entries.push(format!("{prefix}{}", entry.file_name().to_string_lossy()));
+            total_count += 1;
+            if entries.len() >= max_entries {
+                break;
+            }
+        }
+    }
+
+    if entries.is_empty() {
+        Ok("(empty directory)".to_string())
+    } else if total_count >= max_entries {
+        Ok(format!(
+            "{}\n\n... [CAPPED at {max_entries} entries. Use a subdirectory path to narrow results.]",
+            entries.join("\n")
+        ))
+    } else {
+        Ok(entries.join("\n"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,10 +717,7 @@ mod tests {
         });
         let result = edit_file(tmp.path(), &args).await.unwrap();
         assert!(result.contains("Applied 1 edit"));
-        assert_eq!(
-            std::fs::read_to_string(&f).unwrap(),
-            "hello world\nbaz bar"
-        );
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "hello world\nbaz bar");
     }
 
     #[tokio::test]
@@ -646,10 +732,7 @@ mod tests {
         });
         let result = edit_file(tmp.path(), &args).await.unwrap();
         assert!(result.contains("3 occurrences"));
-        assert_eq!(
-            std::fs::read_to_string(&f).unwrap(),
-            "zzz bbb zzz ccc zzz"
-        );
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "zzz bbb zzz ccc zzz");
     }
 
     #[tokio::test]
@@ -710,10 +793,7 @@ mod tests {
             ]
         });
         edit_file(tmp.path(), &args).await.unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&f).unwrap(),
-            "ALPHA beta GAMMA"
-        );
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "ALPHA beta GAMMA");
     }
 
     // ── Delete ───────────────────────────────────────────────────
@@ -764,94 +844,5 @@ mod tests {
         let args = json!({"file_path": "."});
         let result = list_files(tmp.path(), &args, 5).await.unwrap();
         assert!(result.contains("CAPPED"), "expected cap message: {result}");
-    }
-}
-
-/// Count all entries in a directory recursively.
-fn count_dir_entries(path: &Path) -> usize {
-    let mut count = 0;
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            count += 1;
-            if entry.path().is_dir() {
-                count += count_dir_entries(&entry.path());
-            }
-        }
-    }
-    count
-}
-
-/// List files in a directory, respecting .gitignore.
-/// Entry cap is set by `OutputCaps` (context-scaled).
-pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -> Result<String> {
-    let path_str = args["file_path"]
-        .as_str()
-        .or_else(|| args["path"].as_str())
-        .unwrap_or(".");
-    let recursive = args["recursive"].as_bool().unwrap_or(false);
-    let resolved = safe_resolve_path(project_root, path_str)?;
-
-    let mut entries = Vec::new();
-    let mut total_count: usize = 0;
-
-    if recursive {
-        // Use the `ignore` crate to respect .gitignore
-        let mut builder = ignore::WalkBuilder::new(&resolved);
-        builder
-            .hidden(true) // skip hidden files/dirs (dotfiles)
-            .git_ignore(true)
-            // Always ignore common build/dependency dirs even without .gitignore
-            .filter_entry(|entry| {
-                let name = entry.file_name().to_string_lossy();
-                !matches!(
-                    name.as_ref(),
-                    "target"
-                        | "node_modules"
-                        | "__pycache__"
-                        | ".git"
-                        | "dist"
-                        | "build"
-                        | ".next"
-                        | ".cache"
-                )
-            });
-        let walker = builder.build();
-
-        for entry in walker.flatten() {
-            let path = entry.path();
-            // Skip the root directory itself
-            if path == resolved {
-                continue;
-            }
-            let relative = path.strip_prefix(project_root).unwrap_or(path);
-            let prefix = if path.is_dir() { "d " } else { "  " };
-            entries.push(format!("{prefix}{}", relative.display()));
-            total_count += 1;
-            if entries.len() >= max_entries {
-                break;
-            }
-        }
-    } else {
-        let mut reader = tokio::fs::read_dir(&resolved).await?;
-        while let Some(entry) = reader.next_entry().await? {
-            let ft = entry.file_type().await?;
-            let prefix = if ft.is_dir() { "d " } else { "  " };
-            entries.push(format!("{prefix}{}", entry.file_name().to_string_lossy()));
-            total_count += 1;
-            if entries.len() >= max_entries {
-                break;
-            }
-        }
-    }
-
-    if entries.is_empty() {
-        Ok("(empty directory)".to_string())
-    } else if total_count >= max_entries {
-        Ok(format!(
-            "{}\n\n... [CAPPED at {max_entries} entries. Use a subdirectory path to narrow results.]",
-            entries.join("\n")
-        ))
-    } else {
-        Ok(entries.join("\n"))
     }
 }
