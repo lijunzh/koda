@@ -169,4 +169,55 @@ mod tests {
         let snippet = extract_snippet(text, "xyz", 100);
         assert_eq!(snippet, "hello world");
     }
+
+    #[test]
+    fn test_extract_snippet_at_start_no_leading_ellipsis() {
+        // Match at position 0 — no leading context, no "..."
+        let text = "match at the start and some more text here";
+        let snippet = extract_snippet(text, "match", 100);
+        assert!(
+            !snippet.starts_with("..."),
+            "no leading ellipsis when at start"
+        );
+        assert!(snippet.contains("match"));
+    }
+
+    #[test]
+    fn test_extract_snippet_mid_text_has_ellipsis() {
+        // 100 chars of padding before 'needle' forces start > 0
+        let text = format!("{}needle{}", "a".repeat(100), "b".repeat(100));
+        let snippet = extract_snippet(&text, "needle", 200);
+        assert!(
+            snippet.starts_with("..."),
+            "should have leading ellipsis: {snippet}"
+        );
+        assert!(
+            snippet.ends_with("..."),
+            "should have trailing ellipsis: {snippet}"
+        );
+    }
+
+    #[test]
+    fn test_extract_snippet_not_found_truncated_at_max_len() {
+        // When no match, extract_snippet returns up to max_len chars.
+        let text = "a".repeat(500);
+        let snippet = extract_snippet(&text, "nothere", 50);
+        assert_eq!(snippet.chars().count(), 50);
+    }
+
+    #[test]
+    fn test_extract_snippet_empty_text() {
+        let snippet = extract_snippet("", "query", 100);
+        assert_eq!(snippet, "");
+    }
+
+    #[test]
+    fn test_extract_snippet_query_is_case_lowered() {
+        // extract_snippet expects the query to already be lowercased
+        // (the caller lower-cases both text and query).
+        let text = "Error: file not found at line 42";
+        let lower_q = "error";
+        let snippet = extract_snippet(text, lower_q, 200);
+        assert!(snippet.contains("Error"));
+    }
 }
