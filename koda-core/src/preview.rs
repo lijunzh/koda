@@ -171,9 +171,6 @@ fn build_unified_diff(path: &str, old_content: &str, new_content: &str) -> Unifi
                 first = false;
             }
 
-            let old_lines = diff.old_slices();
-            let new_lines = diff.new_slices();
-
             for change in diff.iter_changes(op) {
                 let content = change.value().trim_end_matches('\n').to_string();
                 let (tag, old_line, new_line) = match change.tag() {
@@ -203,9 +200,6 @@ fn build_unified_diff(path: &str, old_content: &str, new_content: &str) -> Unifi
                     new_line,
                 });
             }
-
-            // Suppress unused-variable warnings — we use iter_changes instead.
-            let _ = (old_lines, new_lines);
         }
 
         total_lines += hunk_lines.len();
