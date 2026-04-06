@@ -8,7 +8,8 @@
 //! - **Write**: target path resolves within project root
 //! - **Write (overwrite)**: file exists and `overwrite: true` is set
 //! - **Edit**: file exists, `old_str` is found, `old_str` is unique
-//!   (unless `replace_all: true`)
+//!   (unless `replace_all: true`), `new_str` does not contain omission
+//!   placeholders (e.g. `// rest of code ...`)
 //! - **Delete**: file exists
 //! - **Bash**: command is non-empty
 //!
@@ -16,6 +17,7 @@
 //! model sees the error and can self-correct.
 
 use super::safe_resolve_path;
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -117,8 +119,18 @@ async fn validate_edit(
             }
         };
 
-        if replacement["new_str"].as_str().is_none() {
-            return Some(format!("Replacement {i}: missing 'new_str'."));
+        let new_str = match replacement["new_str"].as_str() {
+            Some(s) => s,
+            None => {
+                return Some(format!("Replacement {i}: missing 'new_str'."));
+            }
+        };
+
+        // Omission placeholder detection: catch lazy model output like
+        // "// rest of code ..." or "(unchanged methods ...)" before it
+        // silently replaces real code with a comment.
+        if let Some(msg) = detect_new_omission_placeholder(old_str, new_str, i) {
+            return Some(msg);
         }
 
         if !content.contains(old_str) {
@@ -225,6 +237,115 @@ fn validate_bash(args: &serde_json::Value) -> Option<String> {
         return Some("Missing or empty 'command' argument.".into());
     }
     None
+}
+
+// ── Omission placeholder detection ────────────────────────────
+
+/// Known omission phrase prefixes (lowercase, before the `...`).
+const OMISSION_PREFIXES: &[&str] = &[
+    "rest of",
+    "rest of code",
+    "rest of method",
+    "rest of methods",
+    "rest of file",
+    "rest of function",
+    "rest of implementation",
+    "existing code",
+    "existing implementation",
+    "unchanged code",
+    "unchanged method",
+    "unchanged methods",
+    "remaining code",
+    "remaining implementation",
+];
+
+/// Check if `new_str` introduces an omission placeholder not present in `old_str`.
+///
+/// Returns an error message if the model is being lazy, or `None` if clean.
+fn detect_new_omission_placeholder(
+    old_str: &str,
+    new_str: &str,
+    replacement_idx: usize,
+) -> Option<String> {
+    let new_placeholders = detect_omission_placeholders(new_str);
+    if new_placeholders.is_empty() {
+        return None;
+    }
+    // If old_str already had the same placeholder, the model is preserving
+    // an existing comment — that's fine.
+    let old_set: HashSet<String> = detect_omission_placeholders(old_str).into_iter().collect();
+    for p in &new_placeholders {
+        if !old_set.contains(p) {
+            return Some(format!(
+                "Replacement {replacement_idx}: 'new_str' contains an omission placeholder \
+                 ('{p}'). Write the actual code instead of abbreviating with comments."
+            ));
+        }
+    }
+    None
+}
+
+/// Scan text for lines that look like omission placeholders.
+///
+/// Recognized patterns:
+/// - `// rest of code ...`
+/// - `# unchanged methods ...`
+/// - `(rest of implementation ...)`
+/// - `// (existing code ...)`
+///
+/// Returns normalized placeholder strings (e.g. `"rest of code ..."`).
+fn detect_omission_placeholders(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for line in text.lines() {
+        if let Some(normalized) = normalize_placeholder_line(line) {
+            found.push(normalized);
+        }
+    }
+    found
+}
+
+/// Try to parse a single line as an omission placeholder.
+///
+/// Strips comment prefixes (`//`, `#`), optional parentheses, then checks
+/// for a known phrase followed by `...`.
+fn normalize_placeholder_line(line: &str) -> Option<String> {
+    let mut text = line.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    // Strip comment prefix
+    if let Some(rest) = text.strip_prefix("//") {
+        text = rest.trim();
+    } else if let Some(rest) = text.strip_prefix('#') {
+        text = rest.trim();
+    }
+
+    // Strip optional parentheses: (rest of code ...)
+    if text.starts_with('(') && text.ends_with(')') {
+        text = &text[1..text.len() - 1];
+        text = text.trim();
+    }
+
+    // Must contain "..."
+    let ellipsis_pos = text.find("...")?;
+    let prefix = text[..ellipsis_pos].trim();
+    let suffix = text[ellipsis_pos + 3..].trim();
+
+    // Suffix must be empty or all dots ("...." is fine)
+    if !suffix.is_empty() && !suffix.chars().all(|c| c == '.') {
+        return None;
+    }
+
+    // Normalize whitespace in prefix and check against known phrases
+    let normalized: String = prefix.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = normalized.to_lowercase();
+
+    if OMISSION_PREFIXES.contains(&lower.as_str()) {
+        Some(format!("{lower} ..."))
+    } else {
+        None
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────
@@ -516,5 +637,119 @@ mod tests {
                 .is_none(),
             "no cache entry should not trigger stale warning"
         );
+    }
+
+    // ── Omission placeholder detection ────────────────────────
+
+    #[test]
+    fn omission_detects_comment_style() {
+        let cases = vec![
+            "// rest of code ...",
+            "// rest of methods ...",
+            "# rest of implementation ...",
+            "// unchanged code ...",
+            "# existing code ...",
+            "// remaining code ...",
+        ];
+        for input in cases {
+            let found = detect_omission_placeholders(input);
+            assert!(!found.is_empty(), "should detect: {input}");
+        }
+    }
+
+    #[test]
+    fn omission_detects_paren_style() {
+        let found = detect_omission_placeholders("(rest of code ...)");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0], "rest of code ...");
+    }
+
+    #[test]
+    fn omission_detects_comment_plus_parens() {
+        let found = detect_omission_placeholders("// (existing implementation ...)");
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn omission_ignores_normal_code() {
+        let cases = vec![
+            "let x = 42;",
+            "// TODO: fix this later",
+            "# This is a normal comment",
+            "fn rest_of_things() {}",
+            "use std::rest::of::things;",
+            "println!(\"...\");", // "..." not after a known prefix
+            "// See the rest of the docs at ...", // not a known prefix
+        ];
+        for input in cases {
+            let found = detect_omission_placeholders(input);
+            assert!(found.is_empty(), "false positive on: {input}");
+        }
+    }
+
+    #[test]
+    fn omission_case_insensitive() {
+        let found = detect_omission_placeholders("// Rest Of Code ...");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0], "rest of code ...");
+    }
+
+    #[test]
+    fn omission_extra_dots_ok() {
+        // "// rest of code ......" should still match
+        let found = detect_omission_placeholders("// rest of code ......");
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn omission_suffix_text_rejects() {
+        // "// rest of code ... here" has non-dot suffix — not a placeholder
+        let found = detect_omission_placeholders("// rest of code ... here");
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn omission_preserving_existing_placeholder_is_fine() {
+        // old_str already has the placeholder — model is preserving, not creating.
+        let old = "fn foo() {\n    // rest of code ...\n}";
+        let new = "fn foo() {\n    do_thing();\n    // rest of code ...\n}";
+        assert!(detect_new_omission_placeholder(old, new, 0).is_none());
+    }
+
+    #[test]
+    fn omission_introducing_new_placeholder_rejected() {
+        let old = "fn foo() {\n    real_code();\n    more_code();\n}";
+        let new = "fn foo() {\n    real_code();\n    // rest of code ...\n}";
+        let err = detect_new_omission_placeholder(old, new, 0).unwrap();
+        assert!(err.contains("omission placeholder"), "{err}");
+        assert!(err.contains("actual code"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn edit_rejects_omission_in_new_str() {
+        let dir = setup();
+        let args = json!({
+            "path": "hello.txt",
+            "replacements": [{
+                "old_str": "line two",
+                "new_str": "// rest of code ..."
+            }]
+        });
+        let err = validate_edit(&args, dir.path(), None).await.unwrap();
+        assert!(err.contains("omission placeholder"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn edit_allows_normal_new_str() {
+        let dir = setup();
+        let args = json!({
+            "path": "hello.txt",
+            "replacements": [{
+                "old_str": "line two",
+                "new_str": "line TWO\n// This comment has dots: ..."
+            }]
+        });
+        // "..." without a known prefix should NOT be detected
+        assert!(validate_edit(&args, dir.path(), None).await.is_none());
     }
 }
