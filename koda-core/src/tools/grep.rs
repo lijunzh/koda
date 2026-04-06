@@ -273,4 +273,65 @@ mod tests {
         let result = grep(tmp.path(), &args, 100).await.unwrap();
         assert!(result.contains("deep.rs"));
     }
+
+    #[tokio::test]
+    async fn test_grep_skips_binary_files() {
+        let tmp = TempDir::new().unwrap();
+        // Write a file with invalid UTF-8 bytes (binary).
+        let binary: Vec<u8> = vec![0xFF, 0xFE, b'h', b'e', b'l', b'l', b'o', 0x00];
+        std::fs::write(tmp.path().join("data.bin"), &binary).unwrap();
+        // Also a normal file that matches.
+        std::fs::write(tmp.path().join("text.rs"), "hello world").unwrap();
+
+        let args = json!({ "pattern": "hello" });
+        let result = grep(tmp.path(), &args, 100).await.unwrap();
+        // Binary file should be silently skipped; text file should match.
+        assert!(result.contains("text.rs"));
+        assert!(!result.contains("data.bin"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_match_count_capped() {
+        let tmp = TempDir::new().unwrap();
+        // 20 files each containing the search term.
+        for i in 0..20 {
+            std::fs::write(
+                tmp.path().join(format!("file{i}.rs")),
+                "needle haystack needle",
+            )
+            .unwrap();
+        }
+        // Cap at 5 matches.
+        let args = json!({ "pattern": "needle" });
+        let result = grep(tmp.path(), &args, 5).await.unwrap();
+        // Result should mention truncation when matches exceed the cap.
+        assert!(
+            result.contains("CAPPED"),
+            "expected CAPPED hint in output when cap is exceeded: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grep_file_path_param_alias() {
+        // The tool accepts both "path" and "file_path" as the directory param.
+        let tmp = setup_test_dir();
+        let args = json!({ "pattern": "nope", "file_path": "nested" });
+        let result = grep(tmp.path(), &args, 100).await.unwrap();
+        assert!(result.contains("deep.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_regex_special_chars_treated_literally() {
+        let tmp = TempDir::new().unwrap();
+        // Write a file containing the literal string "fn (" — the parens are regex specials.
+        std::fs::write(tmp.path().join("code.rs"), "fn (invalid syntax").unwrap();
+        // If the pattern were treated as regex, "fn (" would be a parse error.
+        // Since we escape it, it should match the literal text.
+        let args = json!({ "pattern": "fn (" });
+        let result = grep(tmp.path(), &args, 100).await.unwrap();
+        assert!(
+            result.contains("code.rs"),
+            "literal paren should be matched without regex error"
+        );
+    }
 }
