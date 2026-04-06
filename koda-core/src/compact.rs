@@ -612,4 +612,88 @@ mod tests {
             assert!(compute_preserve_count(n) >= COMPACT_PRESERVE_COUNT);
         }
     }
+
+    // ── build_summary_prompt ────────────────────────────────────────────
+
+    #[test]
+    fn test_build_summary_prompt_embeds_conversation() {
+        let text = build_summary_prompt("[user]: hello\n\n[assistant]: hi\n\n");
+        assert!(
+            text.contains("[user]: hello"),
+            "prompt should embed the conversation text verbatim"
+        );
+        assert!(text.contains("[assistant]: hi"));
+    }
+
+    #[test]
+    fn test_build_summary_prompt_instructs_no_tool_calls() {
+        let text = build_summary_prompt("some conversation");
+        assert!(
+            text.contains("Do NOT call any tools"),
+            "prompt must forbid tool calls"
+        );
+        assert!(text.contains("CRITICAL"));
+    }
+
+    #[test]
+    fn test_build_summary_prompt_requests_analysis_and_summary_tags() {
+        let text = build_summary_prompt("some conversation");
+        assert!(
+            text.contains("<analysis>"),
+            "prompt should ask for <analysis> block"
+        );
+        assert!(
+            text.contains("<summary>"),
+            "prompt should ask for <summary> block"
+        );
+    }
+
+    // ── build_conversation_text edge cases ────────────────────────────
+
+    #[test]
+    fn test_build_conversation_text_tool_calls_truncated_at_500() {
+        let long_tc = "T".repeat(600);
+        let msgs = vec![make_msg("assistant", None, Some(&long_tc))];
+        let text = build_conversation_text(&msgs);
+        // 500 char cap on tool_calls
+        assert!(
+            text.len() <= 550,
+            "tool_calls should be capped at 500 chars"
+        );
+    }
+
+    #[test]
+    fn test_build_conversation_text_both_content_and_tool_calls() {
+        let msgs = vec![make_msg(
+            "assistant",
+            Some("I will read the file"),
+            Some("{\"name\": \"Read\"}"),
+        )];
+        let text = build_conversation_text(&msgs);
+        assert!(text.contains("I will read the file"));
+        assert!(text.contains("tool_calls"));
+    }
+
+    // ── strip_analysis_block edge cases ──────────────────────────────
+
+    #[test]
+    fn test_strip_analysis_unclosed_tag_passthrough() {
+        // If <analysis> has no closing tag, leave the text alone.
+        let input = "<analysis>\nthinking...\n1. Primary Request: build a thing";
+        let result = strip_analysis_block(input);
+        assert!(
+            result.contains("thinking"),
+            "unclosed analysis tag should leave text intact"
+        );
+    }
+
+    #[test]
+    fn test_strip_analysis_trims_extra_whitespace() {
+        let input = "<analysis>\nthink\n</analysis>\n\n\n\n<summary>\nClean content\n</summary>";
+        let result = strip_analysis_block(input);
+        // Collapsed blank lines, no leading/trailing whitespace
+        assert!(!result.starts_with('\n'));
+        assert!(!result.ends_with('\n'));
+        assert_eq!(result, "Clean content");
+    }
 }
