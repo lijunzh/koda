@@ -1095,3 +1095,67 @@ async fn test_purge_compacted() {
     let stats = db.compacted_stats().await.unwrap();
     assert_eq!(stats.message_count, 0, "all compacted should be purged");
 }
+
+// ── config_dir ─────────────────────────────────────────────────────────
+
+/// Serialize tests that mutate XDG_CONFIG_HOME.
+static XDG_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn test_config_dir_with_xdg() {
+    let _guard = XDG_MUTEX.lock().unwrap();
+    // SAFETY: serialized via XDG_MUTEX
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", "/tmp/test_xdg_config") };
+    let dir = super::config_dir().unwrap();
+    unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+    // Always ends with "koda"
+    assert!(dir.ends_with("koda"), "got: {dir:?}");
+    assert!(
+        dir.to_string_lossy().contains("test_xdg_config"),
+        "should use XDG_CONFIG_HOME: {dir:?}"
+    );
+}
+
+#[test]
+fn test_config_dir_with_home() {
+    let _guard = XDG_MUTEX.lock().unwrap();
+    unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+    let dir = super::config_dir().unwrap();
+    // Should end with koda regardless of base path
+    assert!(dir.ends_with("koda"), "got: {dir:?}");
+}
+
+// ── kv store ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_kv_set_get_delete() {
+    let (db, _tmp) = setup().await;
+    // Initially absent
+    assert!(db.kv_get("my_key").await.unwrap().is_none());
+    // Set
+    db.kv_set("my_key", "hello").await.unwrap();
+    assert_eq!(db.kv_get("my_key").await.unwrap().as_deref(), Some("hello"));
+    // Overwrite
+    db.kv_set("my_key", "updated").await.unwrap();
+    assert_eq!(
+        db.kv_get("my_key").await.unwrap().as_deref(),
+        Some("updated")
+    );
+    // Delete
+    db.kv_delete("my_key").await.unwrap();
+    assert!(db.kv_get("my_key").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_kv_list_prefix() {
+    let (db, _tmp) = setup().await;
+    db.kv_set("cfg:foo", "1").await.unwrap();
+    db.kv_set("cfg:bar", "2").await.unwrap();
+    db.kv_set("other:baz", "3").await.unwrap();
+    let items = db.kv_list_prefix("cfg:").await.unwrap();
+    assert_eq!(items.len(), 2);
+    let keys: Vec<&str> = items.iter().map(|(k, _)| k.as_str()).collect();
+    assert!(keys.contains(&"cfg:foo"));
+    assert!(keys.contains(&"cfg:bar"));
+    assert!(!keys.contains(&"other:baz"));
+}
