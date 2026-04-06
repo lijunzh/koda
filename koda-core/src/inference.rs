@@ -1011,3 +1011,278 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         iteration += 1;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::approval::ApprovalMode;
+    use crate::engine::sink::TestSink;
+    use crate::providers::{StreamChunk, TokenUsage, ToolCall};
+    use tokio::sync::mpsc;
+
+    /// Helper: create a ToolRegistry backed by a temp directory.
+    fn test_tools(root: &Path) -> ToolRegistry {
+        ToolRegistry::new(root.to_path_buf(), 100_000)
+    }
+
+    /// Helper: send chunks into a channel and collect_stream them.
+    async fn run_collect(
+        chunks: Vec<StreamChunk>,
+        cancel: Option<CancellationToken>,
+    ) -> StreamResult {
+        let (tx, mut rx) = mpsc::channel(32);
+        let sink = TestSink::new();
+        let cancel = cancel.unwrap_or_default();
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = test_tools(tmp.path());
+
+        // Send all chunks in a background task.
+        tokio::spawn(async move {
+            for chunk in chunks {
+                let _ = tx.send(chunk).await;
+            }
+            // tx drops here → stream ends
+        });
+
+        collect_stream(
+            &mut rx,
+            &sink,
+            &cancel,
+            &tools,
+            ApprovalMode::Auto,
+            tmp.path(),
+        )
+        .await
+    }
+
+    // ── Text streaming ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn collect_stream_accumulates_text_deltas() {
+        let result = run_collect(
+            vec![
+                StreamChunk::TextDelta("Hello ".into()),
+                StreamChunk::TextDelta("world!".into()),
+                StreamChunk::Done(TokenUsage::default()),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(result.text, "Hello world!");
+        assert!(!result.interrupted);
+        assert!(result.network_error.is_none());
+        assert!(result.tool_calls.is_empty());
+        assert_eq!(result.char_count, 12);
+    }
+
+    #[tokio::test]
+    async fn collect_stream_empty_stream_returns_empty() {
+        let result = run_collect(vec![StreamChunk::Done(TokenUsage::default())], None).await;
+
+        assert!(result.text.is_empty());
+        assert!(!result.interrupted);
+        assert!(result.tool_calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn collect_stream_preserves_usage_from_done() {
+        let usage = TokenUsage {
+            prompt_tokens: 42,
+            completion_tokens: 17,
+            stop_reason: "end_turn".into(),
+            ..Default::default()
+        };
+        let result = run_collect(
+            vec![
+                StreamChunk::TextDelta("hi".into()),
+                StreamChunk::Done(usage),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(result.usage.prompt_tokens, 42);
+        assert_eq!(result.usage.completion_tokens, 17);
+        assert_eq!(result.usage.stop_reason, "end_turn");
+    }
+
+    // ── Thinking blocks ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn collect_stream_thinking_then_text() {
+        let result = run_collect(
+            vec![
+                StreamChunk::ThinkingDelta("Let me think...".into()),
+                StreamChunk::TextDelta("Answer!".into()),
+                StreamChunk::Done(TokenUsage::default()),
+            ],
+            None,
+        )
+        .await;
+
+        // Thinking deltas should NOT appear in the text output.
+        assert_eq!(result.text, "Answer!");
+    }
+
+    // ── Tool calls ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn collect_stream_tool_calls_batch() {
+        let tc = ToolCall {
+            id: "tc_1".into(),
+            function_name: "Bash".into(),
+            arguments: r#"{"command":"echo hi"}"#.into(),
+            thought_signature: None,
+        };
+        let result = run_collect(
+            vec![
+                StreamChunk::ToolCalls(vec![tc]),
+                StreamChunk::Done(TokenUsage::default()),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].function_name, "Bash");
+        assert!(result.text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn collect_stream_eager_executes_read_only_tool() {
+        // Read is read-only + auto-approved → should be eagerly executed.
+        let tmp = tempfile::tempdir().unwrap();
+        let test_file = tmp.path().join("hello.txt");
+        std::fs::write(&test_file, "file content").unwrap();
+
+        let tc = ToolCall {
+            id: "tc_eager".into(),
+            function_name: "Read".into(),
+            arguments: serde_json::json!({"file_path": test_file.to_string_lossy()}).to_string(),
+            thought_signature: None,
+        };
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let sink = TestSink::new();
+        let cancel = CancellationToken::new();
+        let tools = test_tools(tmp.path());
+
+        tokio::spawn(async move {
+            let _ = tx.send(StreamChunk::ToolCallReady(tc)).await;
+            let _ = tx.send(StreamChunk::ToolCalls(vec![])).await;
+            let _ = tx.send(StreamChunk::Done(TokenUsage::default())).await;
+        });
+
+        let result = collect_stream(
+            &mut rx,
+            &sink,
+            &cancel,
+            &tools,
+            ApprovalMode::Auto,
+            tmp.path(),
+        )
+        .await;
+
+        assert_eq!(result.tool_calls.len(), 1, "tool call should be recorded");
+        assert_eq!(result.eager_results.len(), 1, "should have 1 eager result");
+        let (id, output, success, _) = &result.eager_results[0];
+        assert_eq!(id, "tc_eager");
+        assert!(output.contains("file content"), "eager result: {output}");
+        assert!(success);
+    }
+
+    #[tokio::test]
+    async fn collect_stream_does_not_eagerly_execute_mutating_tool() {
+        // Write is mutating → should NOT be eagerly executed.
+        let tc = ToolCall {
+            id: "tc_write".into(),
+            function_name: "Write".into(),
+            arguments: r#"{"file_path":"/tmp/x","content":"y"}"#.into(),
+            thought_signature: None,
+        };
+        let result = run_collect(
+            vec![
+                StreamChunk::ToolCallReady(tc),
+                StreamChunk::ToolCalls(vec![]),
+                StreamChunk::Done(TokenUsage::default()),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(result.tool_calls.len(), 1);
+        assert!(
+            result.eager_results.is_empty(),
+            "Write should NOT be eagerly executed"
+        );
+    }
+
+    // ── Cancellation ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn collect_stream_cancellation_sets_interrupted() {
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let sink = TestSink::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = test_tools(tmp.path());
+
+        // Send one delta, then cancel, then try to send more.
+        tokio::spawn(async move {
+            let _ = tx.send(StreamChunk::TextDelta("partial".into())).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            cancel_clone.cancel();
+            // This should be ignored after cancel:
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let _ = tx.send(StreamChunk::TextDelta(" ignored".into())).await;
+        });
+
+        let result = collect_stream(
+            &mut rx,
+            &sink,
+            &cancel,
+            &tools,
+            ApprovalMode::Auto,
+            tmp.path(),
+        )
+        .await;
+
+        assert!(result.interrupted);
+        assert!(result.network_error.is_none());
+        // Partial text should be captured up to cancellation.
+        assert!(result.text.contains("partial"));
+    }
+
+    // ── Network errors ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn collect_stream_network_error_preserves_partial() {
+        let result = run_collect(
+            vec![
+                StreamChunk::TextDelta("partial response".into()),
+                StreamChunk::NetworkError("connection reset".into()),
+            ],
+            None,
+        )
+        .await;
+
+        assert!(!result.interrupted);
+        assert_eq!(result.network_error.as_deref(), Some("connection reset"));
+        assert_eq!(result.text, "partial response");
+    }
+
+    #[tokio::test]
+    async fn collect_stream_network_error_with_no_text() {
+        let result = run_collect(vec![StreamChunk::NetworkError("timeout".into())], None).await;
+
+        assert!(result.text.is_empty());
+        assert!(result.network_error.is_some());
+    }
+}

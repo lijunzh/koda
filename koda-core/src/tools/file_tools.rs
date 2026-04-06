@@ -544,12 +544,305 @@ pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -
 
     if entries.is_empty() {
         Ok("(empty directory)".to_string())
-    } else if total_count > max_entries {
+    } else if total_count >= max_entries {
         Ok(format!(
             "{}\n\n... [CAPPED at {max_entries} entries. Use a subdirectory path to narrow results.]",
             entries.join("\n")
         ))
     } else {
         Ok(entries.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    fn cache() -> super::super::FileReadCache {
+        std::sync::Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    // ── Read ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn read_file_basic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("hello.txt");
+        std::fs::write(&f, "line1\nline2\nline3").unwrap();
+
+        let args = json!({"file_path": f.to_string_lossy()});
+        let result = read_file(tmp.path(), &args, &cache()).await.unwrap();
+        assert!(result.contains("line1"));
+        assert!(result.contains("line3"));
+    }
+
+    #[tokio::test]
+    async fn read_file_with_line_range() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("lines.txt");
+        let content: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&f, &content).unwrap();
+
+        let args = json!({"file_path": f.to_string_lossy(), "start_line": 50, "num_lines": 3});
+        let result = read_file(tmp.path(), &args, &cache()).await.unwrap();
+        assert!(result.contains("line 50"));
+        assert!(result.contains("line 52"));
+        assert!(!result.contains("line 53"));
+    }
+
+    #[tokio::test]
+    async fn read_file_nonexistent_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let args = json!({"file_path": "does_not_exist.txt"});
+        let result = read_file(tmp.path(), &args, &cache()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_file_stale_cache_returns_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("cached.txt");
+        std::fs::write(&f, "original content").unwrap();
+
+        let c = cache();
+        let args = json!({"file_path": f.to_string_lossy()});
+
+        // First read — populates cache.
+        let r1 = read_file(tmp.path(), &args, &c).await.unwrap();
+        assert!(r1.contains("original content"));
+
+        // Second read — same file, same mtime → stale-read.
+        let r2 = read_file(tmp.path(), &args, &c).await.unwrap();
+        assert!(r2.contains("unchanged"), "expected stale-read: {r2}");
+    }
+
+    #[tokio::test]
+    async fn read_file_missing_path_arg_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let args = json!({});
+        let result = read_file(tmp.path(), &args, &cache()).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("file_path"),
+            "should mention missing param"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_file_large_file_truncates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("big.txt");
+        let content = "x".repeat(30_000);
+        std::fs::write(&f, &content).unwrap();
+
+        let args = json!({"file_path": f.to_string_lossy()});
+        let result = read_file(tmp.path(), &args, &cache()).await.unwrap();
+        assert!(result.contains("TRUNCATED"));
+        assert!(result.len() < 25_000);
+    }
+
+    #[tokio::test]
+    async fn read_file_path_escape_blocked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let args = json!({"file_path": "../../../etc/passwd"});
+        let result = read_file(tmp.path(), &args, &cache()).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("escape") || err.contains("outside"),
+            "error should mention path escape: {err}"
+        );
+    }
+
+    // ── Write ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn write_file_creates_new() {
+        let tmp = tempfile::tempdir().unwrap();
+        let args = json!({"file_path": "new_file.txt", "content": "hello world"});
+        let result = write_file(tmp.path(), &args).await.unwrap();
+        assert!(result.contains("Written"));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("new_file.txt")).unwrap(),
+            "hello world"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_file_creates_parent_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let args = json!({"file_path": "a/b/c/deep.txt", "content": "nested"});
+        write_file(tmp.path(), &args).await.unwrap();
+        assert!(tmp.path().join("a/b/c/deep.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn write_file_refuses_overwrite_without_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("existing.txt");
+        std::fs::write(&f, "original").unwrap();
+
+        let args = json!({"file_path": "existing.txt", "content": "replaced"});
+        let result = write_file(tmp.path(), &args).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+        // File should be unchanged.
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "original");
+    }
+
+    #[tokio::test]
+    async fn write_file_overwrites_with_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("overwrite_me.txt");
+        std::fs::write(&f, "old").unwrap();
+
+        let args = json!({"file_path": "overwrite_me.txt", "content": "new", "overwrite": true});
+        write_file(tmp.path(), &args).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "new");
+    }
+
+    // ── Edit ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn edit_file_single_replacement() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("edit_me.txt");
+        std::fs::write(&f, "hello world\nfoo bar").unwrap();
+
+        let args = json!({
+            "file_path": "edit_me.txt",
+            "replacements": [{"old_str": "foo", "new_str": "baz"}]
+        });
+        let result = edit_file(tmp.path(), &args).await.unwrap();
+        assert!(result.contains("Applied 1 edit"));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "hello world\nbaz bar");
+    }
+
+    #[tokio::test]
+    async fn edit_file_replace_all() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("multi.txt");
+        std::fs::write(&f, "aaa bbb aaa ccc aaa").unwrap();
+
+        let args = json!({
+            "file_path": "multi.txt",
+            "replacements": [{"old_str": "aaa", "new_str": "zzz", "replace_all": true}]
+        });
+        let result = edit_file(tmp.path(), &args).await.unwrap();
+        assert!(result.contains("3 occurrences"));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "zzz bbb zzz ccc zzz");
+    }
+
+    #[tokio::test]
+    async fn edit_file_replaces_first_only_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("first_only.txt");
+        std::fs::write(&f, "aaa bbb aaa").unwrap();
+
+        let args = json!({
+            "file_path": "first_only.txt",
+            "replacements": [{"old_str": "aaa", "new_str": "zzz"}]
+        });
+        edit_file(tmp.path(), &args).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "zzz bbb aaa");
+    }
+
+    #[tokio::test]
+    async fn edit_file_not_found_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("edit_me.txt");
+        std::fs::write(&f, "hello world").unwrap();
+
+        let args = json!({
+            "file_path": "edit_me.txt",
+            "replacements": [{"old_str": "not here", "new_str": "x"}]
+        });
+        let result = edit_file(tmp.path(), &args).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_empty_old_str_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("edit.txt");
+        std::fs::write(&f, "content").unwrap();
+
+        let args = json!({
+            "file_path": "edit.txt",
+            "replacements": [{"old_str": "", "new_str": "x"}]
+        });
+        let result = edit_file(tmp.path(), &args).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_multiple_replacements() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("multi_edit.txt");
+        std::fs::write(&f, "alpha beta gamma").unwrap();
+
+        let args = json!({
+            "file_path": "multi_edit.txt",
+            "replacements": [
+                {"old_str": "alpha", "new_str": "ALPHA"},
+                {"old_str": "gamma", "new_str": "GAMMA"}
+            ]
+        });
+        edit_file(tmp.path(), &args).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "ALPHA beta GAMMA");
+    }
+
+    // ── Delete ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn delete_file_removes_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("doomed.txt");
+        std::fs::write(&f, "goodbye").unwrap();
+
+        let args = json!({"file_path": "doomed.txt"});
+        let result = delete_file(tmp.path(), &args).await.unwrap();
+        assert!(result.contains("Deleted"));
+        assert!(!f.exists());
+    }
+
+    #[tokio::test]
+    async fn delete_file_nonexistent_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let args = json!({"file_path": "nope.txt"});
+        let result = delete_file(tmp.path(), &args).await;
+        assert!(result.is_err());
+    }
+
+    // ── List ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_files_basic() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "").unwrap();
+        std::fs::create_dir(tmp.path().join("subdir")).unwrap();
+
+        let args = json!({"directory": "."});
+        let result = list_files(tmp.path(), &args, 200).await.unwrap();
+        assert!(result.contains("a.txt"));
+        assert!(result.contains("b.txt"));
+        assert!(result.contains("subdir"));
+    }
+
+    #[tokio::test]
+    async fn list_files_capped() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..20 {
+            std::fs::write(tmp.path().join(format!("file_{i}.txt")), "").unwrap();
+        }
+
+        let args = json!({"file_path": "."});
+        let result = list_files(tmp.path(), &args, 5).await.unwrap();
+        assert!(result.contains("CAPPED"), "expected cap message: {result}");
     }
 }
