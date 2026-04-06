@@ -352,4 +352,116 @@ mod tests {
             "should have hunk separator"
         );
     }
+
+    #[test]
+    fn test_delete_file_shows_line_and_byte_count() {
+        let preview = DiffPreview::DeleteFile(DeleteFilePreview {
+            line_count: 42,
+            byte_count: 1024,
+        });
+        let lines = render_lines(&preview);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let full = text.join(" ");
+        assert!(full.contains("42"), "should mention line count: {full}");
+        assert!(full.contains("1024"), "should mention byte count: {full}");
+    }
+
+    #[test]
+    fn test_delete_dir_recursive_message() {
+        let preview = DiffPreview::DeleteDir(DeleteDirPreview { recursive: true });
+        let lines = render_lines(&preview);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let full = text.join(" ");
+        assert!(
+            full.contains("all contents") || full.contains("recursive"),
+            "recursive delete should mention all contents: {full}"
+        );
+    }
+
+    #[test]
+    fn test_delete_dir_non_recursive_message() {
+        let preview = DiffPreview::DeleteDir(DeleteDirPreview { recursive: false });
+        let lines = render_lines(&preview);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let full = text.join(" ");
+        assert!(
+            full.contains("empty"),
+            "non-recursive should mention empty directory: {full}"
+        );
+    }
+
+    #[test]
+    fn test_unified_diff_truncated_flag() {
+        // When truncated=true the render should include some truncation indicator.
+        let preview = DiffPreview::UnifiedDiff(UnifiedDiffPreview {
+            path: "big.rs".into(),
+            old_content: String::new(),
+            new_content: String::new(),
+            hunks: vec![DiffHunk {
+                old_start: 1,
+                old_count: 1,
+                new_start: 1,
+                new_count: 1,
+                lines: vec![DiffLine {
+                    tag: DiffTag::Insert,
+                    content: "new line".into(),
+                    old_line: None,
+                    new_line: Some(1),
+                }],
+            }],
+            truncated: true,
+        });
+        let lines = render_lines(&preview);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        // Check that there's at least a line indicating truncation
+        assert!(
+            text.iter().any(|t| {
+                t.to_lowercase().contains("truncat")
+                    || t.contains('…')
+                    || t.contains("more")
+                    || t.contains("⋯")
+            }),
+            "truncated diff should have an indicator: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_file_not_yet_exists_variant() {
+        let preview = DiffPreview::FileNotYetExists;
+        let lines = render_lines(&preview);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            text.iter().any(|t| t.contains("not exist")),
+            "FileNotYetExists should say the file does not exist: {text:?}"
+        );
+    }
+
+    #[test]
+    fn test_path_not_found_variant() {
+        let preview = DiffPreview::PathNotFound;
+        let lines = render_lines(&preview);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            text.iter().any(|t| t.contains("not exist")),
+            "PathNotFound should say path does not exist: {text:?}"
+        );
+    }
 }
