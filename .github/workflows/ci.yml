@@ -68,7 +68,7 @@ jobs:
           RUSTDOCFLAGS: -Dwarnings
 
   coverage:
-    name: Coverage (koda-core ≥ 80%, koda-ast ≥ 80%)
+    name: Coverage (core ≥ 80%, ast ≥ 80%, email ≥ 70%)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -92,6 +92,12 @@ jobs:
             --lib -p koda-ast \
             --fail-under-lines 80 \
             --lcov --output-path lcov-ast.info
+      - name: koda-email coverage (≥ 70% lines)
+        run: |
+          cargo llvm-cov \
+            --lib -p koda-email \
+            --fail-under-lines 70 \
+            --lcov --output-path lcov-email.info
       - name: Upload lcov reports
         uses: actions/upload-artifact@v4
         if: always()   # Upload even on failure so you can inspect regressions

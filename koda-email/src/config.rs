@@ -89,10 +89,136 @@ impl EmailConfig {
 mod tests {
     use super::*;
 
+    /// Serialize env-var mutations so parallel tests don't stomp each other.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn set_required_vars() {
+        unsafe {
+            std::env::set_var("KODA_EMAIL_IMAP_HOST", "imap.example.com");
+            std::env::set_var("KODA_EMAIL_USERNAME", "user@example.com");
+            std::env::set_var("KODA_EMAIL_PASSWORD", "secret");
+        }
+    }
+
+    fn clear_all_vars() {
+        unsafe {
+            for k in [
+                "KODA_EMAIL_IMAP_HOST",
+                "KODA_EMAIL_IMAP_PORT",
+                "KODA_EMAIL_SMTP_HOST",
+                "KODA_EMAIL_SMTP_PORT",
+                "KODA_EMAIL_USERNAME",
+                "KODA_EMAIL_PASSWORD",
+            ] {
+                std::env::remove_var(k);
+            }
+        }
+    }
+
     #[test]
     fn test_setup_instructions_not_empty() {
         let msg = EmailConfig::setup_instructions();
         assert!(msg.contains("KODA_EMAIL_IMAP_HOST"));
         assert!(msg.contains("KODA_EMAIL_USERNAME"));
+    }
+
+    #[test]
+    fn test_from_env_happy_path() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        clear_all_vars();
+        set_required_vars();
+        let cfg = EmailConfig::from_env().unwrap();
+        assert_eq!(cfg.imap_host, "imap.example.com");
+        assert_eq!(cfg.imap_port, 993); // default
+        assert_eq!(cfg.smtp_host, "smtp.example.com"); // derived
+        assert_eq!(cfg.smtp_port, 587); // default
+        assert_eq!(cfg.username, "user@example.com");
+        assert_eq!(cfg.password, "secret");
+    }
+
+    #[test]
+    fn test_from_env_custom_ports_and_smtp_host() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        clear_all_vars();
+        set_required_vars();
+        unsafe {
+            std::env::set_var("KODA_EMAIL_IMAP_PORT", "143");
+            std::env::set_var("KODA_EMAIL_SMTP_HOST", "relay.example.com");
+            std::env::set_var("KODA_EMAIL_SMTP_PORT", "465");
+        }
+        let cfg = EmailConfig::from_env().unwrap();
+        assert_eq!(cfg.imap_port, 143);
+        assert_eq!(cfg.smtp_host, "relay.example.com");
+        assert_eq!(cfg.smtp_port, 465);
+    }
+
+    #[test]
+    fn test_from_env_missing_imap_host() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        clear_all_vars();
+        let err = EmailConfig::from_env().unwrap_err();
+        assert!(err.to_string().contains("KODA_EMAIL_IMAP_HOST"));
+    }
+
+    #[test]
+    fn test_from_env_missing_username() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        clear_all_vars();
+        unsafe { std::env::set_var("KODA_EMAIL_IMAP_HOST", "imap.example.com") };
+        let err = EmailConfig::from_env().unwrap_err();
+        assert!(err.to_string().contains("KODA_EMAIL_USERNAME"));
+    }
+
+    #[test]
+    fn test_from_env_missing_password() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        clear_all_vars();
+        unsafe {
+            std::env::set_var("KODA_EMAIL_IMAP_HOST", "imap.example.com");
+            std::env::set_var("KODA_EMAIL_USERNAME", "u@example.com");
+        }
+        let err = EmailConfig::from_env().unwrap_err();
+        assert!(err.to_string().contains("KODA_EMAIL_PASSWORD"));
+    }
+
+    #[test]
+    fn test_from_env_invalid_imap_port() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        clear_all_vars();
+        set_required_vars();
+        unsafe { std::env::set_var("KODA_EMAIL_IMAP_PORT", "notaport") };
+        let err = EmailConfig::from_env().unwrap_err();
+        assert!(err.to_string().contains("KODA_EMAIL_IMAP_PORT"));
+    }
+
+    #[test]
+    fn test_from_env_invalid_smtp_port() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        clear_all_vars();
+        set_required_vars();
+        unsafe { std::env::set_var("KODA_EMAIL_SMTP_PORT", "99999") };
+        let err = EmailConfig::from_env().unwrap_err();
+        assert!(err.to_string().contains("KODA_EMAIL_SMTP_PORT"));
+    }
+
+    #[test]
+    fn test_debug_redacts_credentials() {
+        let _g = ENV_MUTEX.lock().unwrap();
+        clear_all_vars();
+        set_required_vars();
+        let cfg = EmailConfig::from_env().unwrap();
+        let debug = format!("{cfg:?}");
+        assert!(
+            !debug.contains("secret"),
+            "password must be redacted: {debug}"
+        );
+        assert!(
+            debug.contains("[REDACTED]"),
+            "should show [REDACTED]: {debug}"
+        );
+        assert!(
+            debug.contains("imap.example.com"),
+            "host should be visible: {debug}"
+        );
     }
 }
