@@ -85,6 +85,18 @@ name = "e2e_test"
 required-features = ["test-support"]
 
 [[test]]
+name = "e2e_agent_test"
+required-features = ["test-support"]
+
+[[test]]
+name = "e2e_skills_test"
+required-features = ["test-support"]
+
+[[test]]
+name = "e2e_tools_test"
+required-features = ["test-support"]
+
+[[test]]
 name = "cancel_test"
 required-features = ["test-support"]
 
