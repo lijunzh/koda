@@ -110,3 +110,126 @@ pub fn activate_skill(registry: &SkillRegistry, args: &serde_json::Value) -> Str
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Write a minimal valid SKILL.md to `<tmp>/.koda/skills/<skill_name>/SKILL.md`.
+    fn write_project_skill(tmp: &TempDir, skill_name: &str, description: &str) {
+        let dir = tmp.path().join(".koda").join("skills").join(skill_name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = format!(
+            "---\nname: {skill_name}\ndescription: {description}\ntags: [test]\n---\n\nInstructions for {skill_name}."
+        );
+        std::fs::write(dir.join("SKILL.md"), content).unwrap();
+    }
+
+    // ── definitions ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_definitions_returns_two_tools() {
+        assert_eq!(definitions().len(), 2);
+    }
+
+    #[test]
+    fn test_definition_names() {
+        let names: Vec<String> = definitions().into_iter().map(|d| d.name).collect();
+        assert!(names.contains(&"ListSkills".to_string()));
+        assert!(names.contains(&"ActivateSkill".to_string()));
+    }
+
+    #[test]
+    fn test_activate_skill_requires_skill_name() {
+        let d = definitions()
+            .into_iter()
+            .find(|d| d.name == "ActivateSkill")
+            .unwrap();
+        let required: Vec<&str> = d.parameters["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(required.contains(&"skill_name"));
+    }
+
+    #[test]
+    fn test_list_skills_has_no_required_params() {
+        let d = definitions()
+            .into_iter()
+            .find(|d| d.name == "ListSkills")
+            .unwrap();
+        let required = d.parameters["required"].as_array().unwrap();
+        assert!(required.is_empty());
+    }
+
+    // ── list_skills ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_list_skills_empty_registry() {
+        let registry = SkillRegistry::default();
+        let result = list_skills(&registry, &json!({}));
+        assert_eq!(result, "No skills available.");
+    }
+
+    #[test]
+    fn test_list_skills_shows_skill_name() {
+        let tmp = TempDir::new().unwrap();
+        write_project_skill(&tmp, "my-skill", "Does something cool");
+        let registry = SkillRegistry::discover(tmp.path());
+        let result = list_skills(&registry, &json!({}));
+        assert!(
+            result.contains("my-skill"),
+            "should list the project skill: {result}"
+        );
+    }
+
+    #[test]
+    fn test_list_skills_query_matches() {
+        let tmp = TempDir::new().unwrap();
+        write_project_skill(&tmp, "cool-skill", "Something unique to filter on");
+        let registry = SkillRegistry::discover(tmp.path());
+        let result = list_skills(&registry, &json!({"query": "unique to filter"}));
+        assert!(result.contains("cool-skill"));
+    }
+
+    #[test]
+    fn test_list_skills_query_no_match() {
+        let tmp = TempDir::new().unwrap();
+        write_project_skill(&tmp, "my-skill", "mundane description");
+        let registry = SkillRegistry::discover(tmp.path());
+        let result = list_skills(&registry, &json!({"query": "zzz-not-found-anywhere"} ));
+        assert!(result.contains("No skills found matching"));
+    }
+
+    // ── activate_skill ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_activate_skill_missing_param() {
+        let registry = SkillRegistry::default();
+        let result = activate_skill(&registry, &json!({}));
+        assert_eq!(result, "Missing 'skill_name' parameter.");
+    }
+
+    #[test]
+    fn test_activate_skill_unknown_name() {
+        let registry = SkillRegistry::default();
+        let result = activate_skill(&registry, &json!({"skill_name": "does-not-exist"}));
+        assert!(result.contains("not found"));
+    }
+
+    #[test]
+    fn test_activate_skill_known_returns_content() {
+        let tmp = TempDir::new().unwrap();
+        write_project_skill(&tmp, "alpha", "Alpha skill");
+        let registry = SkillRegistry::discover(tmp.path());
+        let result = activate_skill(&registry, &json!({"skill_name": "alpha"}));
+        assert!(
+            result.contains("activated"),
+            "expected activation message: {result}"
+        );
+        assert!(result.contains("Instructions for alpha"));
+    }
+}
