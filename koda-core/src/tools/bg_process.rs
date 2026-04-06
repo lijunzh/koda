@@ -107,4 +107,26 @@ mod tests {
         assert_eq!(reg.len(), 0);
         assert!(reg.list().is_empty());
     }
+
+    #[test]
+    fn is_empty_reflects_state() {
+        let reg = BgRegistry::new();
+        assert!(reg.is_empty());
+    }
+
+    #[tokio::test]
+    async fn insert_increments_len_and_appears_in_list() {
+        let reg = BgRegistry::new();
+        // Spawn a trivial command so we have a real Child handle.
+        let child = tokio::process::Command::new("true").spawn().unwrap();
+        let pid = child.id().unwrap_or(9999);
+        let returned_pid = reg.insert(pid, "true".into(), child);
+        assert_eq!(returned_pid, pid);
+        assert_eq!(reg.len(), 1);
+        assert!(!reg.is_empty());
+        let entries = reg.list();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, pid);
+        assert_eq!(entries[0].1, "true");
+    }
 }
