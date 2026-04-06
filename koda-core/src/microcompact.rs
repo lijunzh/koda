@@ -381,4 +381,116 @@ mod tests {
         let result2 = microcompact_session(&db, &session).await.unwrap();
         assert!(result2.is_none());
     }
+
+    // ── estimate_tokens ───────────────────────────────────────────────
+
+    #[test]
+    fn test_estimate_tokens_proportional_to_chars() {
+        let short = estimate_tokens("hello");
+        let long = estimate_tokens(&"x".repeat(400));
+        assert!(long > short, "more chars should estimate more tokens");
+    }
+
+    #[test]
+    fn test_estimate_tokens_empty_string() {
+        assert_eq!(estimate_tokens(""), 0);
+    }
+
+    #[test]
+    fn test_estimate_tokens_below_min_threshold() {
+        // Content shorter than MIN_TOKENS_TO_CLEAR chars should estimate < threshold.
+        let tiny = "hi";
+        let tokens = estimate_tokens(tiny);
+        assert!(
+            tokens < MIN_TOKENS_TO_CLEAR,
+            "tiny content ({tokens} tokens) should be below MIN_TOKENS_TO_CLEAR ({MIN_TOKENS_TO_CLEAR})"
+        );
+    }
+
+    // ── is_compactable ──────────────────────────────────────────────
+
+    #[test]
+    fn test_is_not_compactable_write() {
+        assert!(!is_compactable("Write"));
+        assert!(!is_compactable("write"));
+    }
+
+    #[test]
+    fn test_is_not_compactable_edit() {
+        assert!(!is_compactable("Edit"));
+        assert!(!is_compactable("edit"));
+    }
+
+    #[test]
+    fn test_is_not_compactable_unknown_tool() {
+        assert!(!is_compactable("FancyCustomTool"));
+        assert!(!is_compactable(""));
+    }
+
+    // ── diagnosis ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_diagnosis_returns_none_below_token_threshold() {
+        // A small tool result (<500 tokens) should not trigger diagnosis.
+        let tc = r#"[{"id":"tc_1","function_name":"Bash","arguments":"{}"}]"#;
+        let messages = vec![
+            msg(1, Role::Assistant, None, Some(tc), None),
+            msg(2, Role::Tool, Some("tiny result"), None, Some("tc_1")),
+        ];
+        assert!(diagnosis(&messages).is_none());
+    }
+
+    #[test]
+    fn test_diagnosis_includes_compactable_tools_only() {
+        // Write tool results should NOT appear in diagnosis even if large.
+        let tc_write = r#"[{"id":"tc_w","function_name":"Write","arguments":"{}"}]"#;
+        let tc_read = r#"[{"id":"tc_r","function_name":"Read","arguments":"{}"}]"#;
+        let big = "X".repeat(3000);
+        let messages = vec![
+            msg(1, Role::Assistant, None, Some(tc_write), None),
+            msg(2, Role::Tool, Some(&big), None, Some("tc_w")),
+            msg(3, Role::Assistant, None, Some(tc_read), None),
+            msg(4, Role::Tool, Some(&big), None, Some("tc_r")),
+        ];
+        let d = diagnosis(&messages);
+        assert!(d.is_some());
+        let text = d.unwrap();
+        assert!(
+            !text.contains("Write"),
+            "Write should not appear in diagnosis"
+        );
+        assert!(text.contains("Read"), "Read should appear in diagnosis");
+    }
+
+    #[test]
+    fn test_diagnosis_returns_none_when_all_tools_non_compactable() {
+        // Only Write results — nothing compactable to diagnose.
+        let tc = r#"[{"id":"tc_w","function_name":"Write","arguments":"{}"}]"#;
+        let big = "W".repeat(3000);
+        let messages = vec![
+            msg(1, Role::Assistant, None, Some(tc), None),
+            msg(2, Role::Tool, Some(&big), None, Some("tc_w")),
+        ];
+        assert!(diagnosis(&messages).is_none());
+    }
+
+    // ── build_tool_id_map edge cases ──────────────────────────────────
+
+    #[test]
+    fn test_build_tool_id_map_accepts_name_key_variant() {
+        // Some providers emit "name" instead of "function_name".
+        let tc = r#"[{"id":"tc_x","name":"Grep","arguments":"{}"}]"#;
+        let messages = vec![msg(1, Role::Assistant, None, Some(tc), None)];
+        let map = build_tool_id_map(&messages);
+        assert_eq!(map.get("tc_x").map(|s| s.as_str()), Some("Grep"));
+    }
+
+    #[test]
+    fn test_build_tool_id_map_ignores_non_assistant_messages() {
+        let tc = r#"[{"id":"tc_y","function_name":"Bash","arguments":"{}"}]"#;
+        // Tool role message with tool_calls JSON — should be ignored.
+        let messages = vec![msg(1, Role::Tool, None, Some(tc), None)];
+        let map = build_tool_id_map(&messages);
+        assert!(map.is_empty());
+    }
 }

@@ -51,3 +51,63 @@ pub fn definitions() -> Vec<ToolDefinition> {
         }),
     }]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn def() -> ToolDefinition {
+        definitions().remove(0)
+    }
+
+    #[test]
+    fn test_definitions_returns_exactly_one_tool() {
+        assert_eq!(definitions().len(), 1);
+    }
+
+    #[test]
+    fn test_tool_name_is_ask_user() {
+        assert_eq!(def().name, "AskUser");
+    }
+
+    #[test]
+    fn test_description_is_non_empty() {
+        assert!(!def().description.is_empty());
+    }
+
+    #[test]
+    fn test_question_is_required() {
+        let required = def().parameters["required"].clone();
+        let required_fields: Vec<&str> = required
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(required_fields.contains(&"question"));
+    }
+
+    #[test]
+    fn test_options_is_not_required() {
+        let required = def().parameters["required"].clone();
+        let required_fields: Vec<&str> = required
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(!required_fields.contains(&"options"));
+    }
+
+    #[test]
+    fn test_options_is_array_type() {
+        let options_type = &def().parameters["properties"]["options"]["type"];
+        assert_eq!(options_type.as_str().unwrap(), "array");
+    }
+
+    #[test]
+    fn test_question_is_string_type() {
+        let q_type = &def().parameters["properties"]["question"]["type"];
+        assert_eq!(q_type.as_str().unwrap(), "string");
+    }
+}

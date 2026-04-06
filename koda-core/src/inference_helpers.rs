@@ -207,4 +207,48 @@ mod tests {
         // "Hello world" = 11 chars / 3.5 + 10 ≈ 13
         assert!(tokens > 20 && tokens < 40, "tokens={tokens}");
     }
+
+    // ── is_server_error ──────────────────────────────────────────────
+
+    #[test]
+    fn test_is_server_error_http_codes() {
+        for code in ["500", "502", "503"] {
+            let err = anyhow::anyhow!("HTTP {code} from provider");
+            assert!(is_server_error(&err), "{code} should be server error");
+        }
+    }
+
+    #[test]
+    fn test_is_server_error_text_patterns() {
+        let patterns = [
+            "internal server error",
+            "bad gateway",
+            "service unavailable",
+        ];
+        for text in patterns {
+            let err = anyhow::anyhow!("{text}");
+            assert!(is_server_error(&err), "'{text}' should be server error");
+        }
+    }
+
+    #[test]
+    fn test_is_server_error_case_insensitive() {
+        let err = anyhow::anyhow!("Internal Server Error from upstream");
+        assert!(is_server_error(&err));
+    }
+
+    #[test]
+    fn test_is_not_server_error_for_rate_limit() {
+        let err = anyhow::anyhow!("429 Too Many Requests");
+        assert!(
+            !is_server_error(&err),
+            "rate limit should not be server error"
+        );
+    }
+
+    #[test]
+    fn test_is_not_server_error_for_auth() {
+        let err = anyhow::anyhow!("401 Unauthorized");
+        assert!(!is_server_error(&err));
+    }
 }

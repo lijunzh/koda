@@ -294,3 +294,49 @@ pub trait Persistence: Send + Sync {
     /// Set the TODO list for a session.
     async fn set_todo(&self, session_id: &str, content: &str) -> Result<()>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Role::as_str ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_role_as_str_all_variants() {
+        assert_eq!(Role::System.as_str(), "system");
+        assert_eq!(Role::User.as_str(), "user");
+        assert_eq!(Role::Assistant.as_str(), "assistant");
+        assert_eq!(Role::Tool.as_str(), "tool");
+    }
+
+    // ── Role FromStr ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_role_from_str_round_trips() {
+        for (s, expected) in [
+            ("system", Role::System),
+            ("user", Role::User),
+            ("assistant", Role::Assistant),
+            ("tool", Role::Tool),
+        ] {
+            let parsed: Role = s.parse().expect(s);
+            assert_eq!(parsed.as_str(), expected.as_str());
+        }
+    }
+
+    #[test]
+    fn test_role_from_str_unknown_returns_error() {
+        let result: Result<Role, _> = "unknown".parse();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown role"));
+    }
+
+    // ── Role Display ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_role_display_matches_as_str() {
+        for role in [Role::System, Role::User, Role::Assistant, Role::Tool] {
+            assert_eq!(role.to_string(), role.as_str());
+        }
+    }
+}

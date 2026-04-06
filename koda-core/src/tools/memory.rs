@@ -103,6 +103,49 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    // ── definitions ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_definitions_returns_two_tools() {
+        let defs = definitions();
+        assert_eq!(defs.len(), 2);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"MemoryRead"));
+        assert!(names.contains(&"MemoryWrite"));
+    }
+
+    #[test]
+    fn test_memory_write_requires_content() {
+        let write_def = definitions()
+            .into_iter()
+            .find(|d| d.name == "MemoryWrite")
+            .unwrap();
+        let required: Vec<&str> = write_def.parameters["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(required.contains(&"content"));
+        assert!(!required.contains(&"scope"), "scope should be optional");
+    }
+
+    #[test]
+    fn test_memory_read_has_no_required_params() {
+        let read_def = definitions()
+            .into_iter()
+            .find(|d| d.name == "MemoryRead")
+            .unwrap();
+        // MemoryRead takes no parameters at all.
+        let props = &read_def.parameters["properties"];
+        assert!(
+            props.as_object().map(|o| o.is_empty()).unwrap_or(true),
+            "MemoryRead should have no properties"
+        );
+    }
+
+    // ── memory_read / memory_write ──────────────────────────────────
+
     #[tokio::test]
     async fn test_memory_read_empty() {
         let tmp = TempDir::new().unwrap();

@@ -486,4 +486,182 @@ mod tests {
         assert!(analysis.tool_result_tokens.contains_key("Read"));
         assert!(analysis.tool_result_tokens.contains_key("Grep"));
     }
+
+    #[test]
+    fn test_total_tool_request_tokens_counted() {
+        // A tool_calls JSON in an assistant message should contribute to
+        // tool_request_tokens, not tool_result_tokens.
+        let tc =
+            r#"[{"id":"tc_1","function_name":"Read","arguments":"{\"file_path\":\"big.rs\"}"}]"#;
+        let messages = vec![
+            msg(Role::Assistant, None, Some(tc), None),
+            msg(Role::Tool, Some("result"), None, Some("tc_1")),
+        ];
+        let analysis = analyze_context(&messages);
+        assert!(
+            analysis.total_tool_request_tokens() > 0,
+            "tool request tokens should be counted"
+        );
+    }
+
+    #[test]
+    fn test_tool_result_percent_calculation() {
+        let tc = r#"[{"id":"tc_1","function_name":"Read","arguments":"{}"}]"#;
+        // Use a large result so it registers as a meaningful percentage.
+        let big_result = "x".repeat(500);
+        let messages = vec![
+            msg(Role::User, Some("hello"), None, None),
+            msg(Role::Assistant, None, Some(tc), None),
+            msg(Role::Tool, Some(&big_result), None, Some("tc_1")),
+        ];
+        let analysis = analyze_context(&messages);
+        let pct = analysis.tool_result_percent();
+        assert!(pct > 0 && pct <= 100, "percent should be 1-100, got {pct}");
+        // Tool result should be the dominant consumer in this exchange.
+        assert!(
+            pct > analysis.human_tokens * 100 / analysis.total,
+            "tool result percent should exceed human percent for large results"
+        );
+    }
+
+    #[test]
+    fn test_tool_result_percent_zero_when_no_context() {
+        let analysis = analyze_context(&[]);
+        assert_eq!(analysis.tool_result_percent(), 0);
+        assert_eq!(analysis.duplicate_read_percent(), 0);
+    }
+
+    #[test]
+    fn test_total_duplicate_waste_sums_correctly() {
+        let tc1 =
+            r#"[{"id":"tc_1","function_name":"Read","arguments":"{\"file_path\":\"f.rs\"}"}]"#;
+        let tc2 =
+            r#"[{"id":"tc_2","function_name":"Read","arguments":"{\"file_path\":\"f.rs\"}"}]"#;
+        let content = "y".repeat(200);
+        let messages = vec![
+            msg(Role::Assistant, None, Some(tc1), None),
+            msg(Role::Tool, Some(&content), None, Some("tc_1")),
+            msg(Role::Assistant, None, Some(tc2), None),
+            msg(Role::Tool, Some(&content), None, Some("tc_2")),
+        ];
+        let analysis = analyze_context(&messages);
+        assert!(
+            analysis.total_duplicate_waste() > 0,
+            "duplicate read of f.rs should produce non-zero waste"
+        );
+        // waste should equal result of the second (redundant) read
+        assert_eq!(
+            analysis.total_duplicate_waste(),
+            analysis
+                .duplicate_reads
+                .values()
+                .map(|d| d.wasted_tokens)
+                .sum::<usize>()
+        );
+    }
+
+    #[test]
+    fn test_duplicate_read_percent_nonzero() {
+        let tc1 =
+            r#"[{"id":"tc_1","function_name":"Read","arguments":"{\"file_path\":\"g.rs\"}"}]"#;
+        let tc2 =
+            r#"[{"id":"tc_2","function_name":"Read","arguments":"{\"file_path\":\"g.rs\"}"}]"#;
+        let content = "z".repeat(400);
+        let messages = vec![
+            msg(Role::Assistant, None, Some(tc1), None),
+            msg(Role::Tool, Some(&content), None, Some("tc_1")),
+            msg(Role::Assistant, None, Some(tc2), None),
+            msg(Role::Tool, Some(&content), None, Some("tc_2")),
+        ];
+        let analysis = analyze_context(&messages);
+        assert!(
+            analysis.duplicate_read_percent() > 0,
+            "duplicate reads should produce non-zero percent"
+        );
+    }
+
+    #[test]
+    fn test_top_tool_results_empty_when_n_zero() {
+        let tc = r#"[{"id":"tc_1","function_name":"Read","arguments":"{}"}]"#;
+        let messages = vec![
+            msg(Role::Assistant, None, Some(tc), None),
+            msg(Role::Tool, Some("stuff"), None, Some("tc_1")),
+        ];
+        let analysis = analyze_context(&messages);
+        assert!(analysis.top_tool_results(0).is_empty());
+    }
+
+    #[test]
+    fn test_top_tool_results_sorted_descending() {
+        let tc1 = r#"[{"id":"tc_1","function_name":"Bash","arguments":"{}"}]"#;
+        let tc2 = r#"[{"id":"tc_2","function_name":"Read","arguments":"{}"}]"#;
+        let tc3 = r#"[{"id":"tc_3","function_name":"Grep","arguments":"{}"}]"#;
+        let messages = vec![
+            msg(Role::Assistant, None, Some(tc1), None),
+            msg(Role::Tool, Some(&"a".repeat(100)), None, Some("tc_1")), // small
+            msg(Role::Assistant, None, Some(tc2), None),
+            msg(Role::Tool, Some(&"b".repeat(2000)), None, Some("tc_2")), // largest
+            msg(Role::Assistant, None, Some(tc3), None),
+            msg(Role::Tool, Some(&"c".repeat(500)), None, Some("tc_3")), // medium
+        ];
+        let analysis = analyze_context(&messages);
+        let top = analysis.top_tool_results(3);
+        assert_eq!(top.len(), 3);
+        // Descending order: Read > Grep > Bash
+        assert_eq!(top[0].0, "Read");
+        assert_eq!(top[1].0, "Grep");
+        assert_eq!(top[2].0, "Bash");
+        // Each entry should be >= the next.
+        assert!(top[0].1 >= top[1].1);
+        assert!(top[1].1 >= top[2].1);
+    }
+
+    #[test]
+    fn test_system_tokens_counted_in_total() {
+        let big_system = "S".repeat(1000);
+        let messages = vec![msg(Role::System, Some(&big_system), None, None)];
+        let analysis = analyze_context(&messages);
+        assert!(
+            analysis.total > 0,
+            "system message should contribute to total token count"
+        );
+        assert_eq!(
+            analysis.human_tokens, 0,
+            "system tokens should not be counted as human"
+        );
+    }
+
+    #[test]
+    fn test_summary_with_no_tool_use() {
+        let messages = vec![
+            msg(Role::User, Some("hi"), None, None),
+            msg(Role::Assistant, Some("hello"), None, None),
+        ];
+        let summary = analyze_context(&messages).summary();
+        assert!(summary.contains("Context:"));
+        assert!(summary.contains("Human:"));
+        // No tool section when there are no tool results.
+        assert!(!summary.contains("Top tool results:"));
+        assert!(!summary.contains("Duplicate reads:"));
+    }
+
+    #[test]
+    fn test_summary_includes_duplicate_waste_line() {
+        let tc1 =
+            r#"[{"id":"tc_1","function_name":"Read","arguments":"{\"file_path\":\"h.rs\"}"}]"#;
+        let tc2 =
+            r#"[{"id":"tc_2","function_name":"Read","arguments":"{\"file_path\":\"h.rs\"}"}]"#;
+        let content = "D".repeat(500);
+        let messages = vec![
+            msg(Role::Assistant, None, Some(tc1), None),
+            msg(Role::Tool, Some(&content), None, Some("tc_1")),
+            msg(Role::Assistant, None, Some(tc2), None),
+            msg(Role::Tool, Some(&content), None, Some("tc_2")),
+        ];
+        let summary = analyze_context(&messages).summary();
+        assert!(
+            summary.contains("Duplicate reads:"),
+            "summary should mention duplicate reads when present"
+        );
+    }
 }
