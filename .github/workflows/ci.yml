@@ -49,6 +49,7 @@ jobs:
 
   test:
     name: Test
+    needs: [check, fmt, clippy]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -58,6 +59,7 @@ jobs:
 
   doc:
     name: Docs
+    needs: coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -68,7 +70,8 @@ jobs:
           RUSTDOCFLAGS: -Dwarnings
 
   coverage:
-    name: Coverage (koda-core ≥ 80%, koda-ast ≥ 80%)
+    name: Coverage
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -92,6 +95,12 @@ jobs:
             --lib -p koda-ast \
             --fail-under-lines 80 \
             --lcov --output-path lcov-ast.info
+      - name: koda-email coverage (≥ 70% lines)
+        run: |
+          cargo llvm-cov \
+            --lib -p koda-email \
+            --fail-under-lines 70 \
+            --lcov --output-path lcov-email.info
       - name: Upload lcov reports
         uses: actions/upload-artifact@v4
         if: always()   # Upload even on failure so you can inspect regressions
@@ -102,6 +111,7 @@ jobs:
 
   audit:
     name: Security Audit
+    needs: coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

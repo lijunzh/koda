@@ -41,3 +41,38 @@ pub fn tool_definitions() -> Vec<ToolDef> {
         },
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tool_definitions_returns_three_tools() {
+        let defs = tool_definitions();
+        assert_eq!(defs.len(), 3);
+        let names: Vec<_> = defs.iter().map(|d| d.name).collect();
+        assert!(names.contains(&"EmailRead"));
+        assert!(names.contains(&"EmailSend"));
+        assert!(names.contains(&"EmailSearch"));
+    }
+
+    #[test]
+    fn test_tool_definitions_schemas_are_valid_json() {
+        for def in tool_definitions() {
+            let v: serde_json::Value = serde_json::from_str(def.parameters_json)
+                .unwrap_or_else(|e| panic!("{} has invalid JSON schema: {e}", def.name));
+            assert_eq!(v["type"], "object", "{} schema must be an object", def.name);
+        }
+    }
+
+    #[test]
+    fn test_tool_definitions_descriptions_not_empty() {
+        for def in tool_definitions() {
+            assert!(
+                !def.description.is_empty(),
+                "{} has empty description",
+                def.name
+            );
+        }
+    }
+}
