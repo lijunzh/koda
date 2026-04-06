@@ -359,4 +359,86 @@ mod tests {
         let result = web_search(&json!({"query": "   "})).await;
         assert!(result.is_err());
     }
+
+    // ── definitions schema pin ─────────────────────────────────────────
+
+    #[test]
+    fn definitions_returns_one_tool() {
+        let defs = definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "WebSearch");
+    }
+
+    #[test]
+    fn definitions_query_is_required() {
+        let defs = definitions();
+        let required: Vec<&str> = defs[0].parameters["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(required.contains(&"query"));
+        // num_results is optional
+        assert!(!required.contains(&"num_results"));
+    }
+
+    // ── percent_decode edge cases ────────────────────────────────────
+
+    #[test]
+    fn percent_decode_slash_and_colon() {
+        assert_eq!(percent_decode("%2F"), "/");
+        assert_eq!(percent_decode("%3A"), ":");
+        assert_eq!(percent_decode("%26"), "&");
+        assert_eq!(percent_decode("%3D"), "=");
+    }
+
+    #[test]
+    fn percent_decode_plus_becomes_space() {
+        assert_eq!(percent_decode("hello+world"), "hello world");
+    }
+
+    #[test]
+    fn percent_decode_combined() {
+        // "hello%20world" → "hello world"
+        assert_eq!(percent_decode("hello%20world"), "hello world");
+    }
+
+    #[test]
+    fn percent_decode_truncated_escape_passthrough() {
+        // "%" at end with nothing after is passed through as-is
+        assert_eq!(percent_decode("%"), "%");
+        assert_eq!(percent_decode("%2"), "%2");
+    }
+
+    // ── strip_inline edge cases ──────────────────────────────────────
+
+    #[test]
+    fn strip_inline_plain_text_unchanged() {
+        assert_eq!(strip_inline("hello world"), "hello world");
+    }
+
+    #[test]
+    fn strip_inline_empty_string() {
+        assert_eq!(strip_inline(""), "");
+    }
+
+    #[test]
+    fn strip_inline_nested_tags() {
+        assert_eq!(strip_inline("<b><i>bold italic</i></b>"), "bold italic");
+    }
+
+    // ── parse_results edge cases ─────────────────────────────────────
+
+    #[test]
+    fn parse_empty_html_returns_no_results() {
+        let results = parse_results("", 10);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn parse_zero_max_returns_no_results() {
+        let results = parse_results(FIXTURE, 0);
+        assert!(results.is_empty());
+    }
 }

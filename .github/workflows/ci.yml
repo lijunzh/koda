@@ -68,7 +68,7 @@ jobs:
           RUSTDOCFLAGS: -Dwarnings
 
   coverage:
-    name: Coverage (koda-core ≥ 70% lines)
+    name: Coverage (koda-core ≥ 80%, koda-ast ≥ 80%)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -79,19 +79,25 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
-      - name: Run coverage
+      - name: koda-core coverage (≥ 80% lines)
         run: |
           cargo llvm-cov \
             --lib -p koda-core \
             --features koda-core/test-support \
-            --fail-under-lines 70 \
-            --lcov --output-path lcov.info
-      - name: Upload lcov report
+            --fail-under-lines 80 \
+            --lcov --output-path lcov-core.info
+      - name: koda-ast coverage (≥ 80% lines)
+        run: |
+          cargo llvm-cov \
+            --lib -p koda-ast \
+            --fail-under-lines 80 \
+            --lcov --output-path lcov-ast.info
+      - name: Upload lcov reports
         uses: actions/upload-artifact@v4
         if: always()   # Upload even on failure so you can inspect regressions
         with:
-          name: lcov-report
-          path: lcov.info
+          name: lcov-reports
+          path: lcov-*.info
           retention-days: 7
 
   audit:

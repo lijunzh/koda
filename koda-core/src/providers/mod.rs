@@ -344,3 +344,94 @@ pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider> {
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_localhost_url ────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_localhost_url_localhost() {
+        assert!(is_localhost_url("http://localhost:1234/v1"));
+        assert!(is_localhost_url("HTTP://LOCALHOST:11434/api"));
+    }
+
+    #[test]
+    fn test_is_localhost_url_127() {
+        assert!(is_localhost_url("http://127.0.0.1:8000/v1"));
+    }
+
+    #[test]
+    fn test_is_localhost_url_ipv6() {
+        assert!(is_localhost_url("http://[::1]:1234/v1"));
+    }
+
+    #[test]
+    fn test_is_localhost_url_remote() {
+        assert!(!is_localhost_url("https://api.openai.com/v1"));
+        assert!(!is_localhost_url("https://api.anthropic.com/v1"));
+    }
+
+    // ── redact_url_credentials ─────────────────────────────────────────
+
+    #[test]
+    fn test_redact_with_credentials() {
+        let result = redact_url_credentials("http://user:secret@proxy.corp.com:8080");
+        assert!(
+            !result.contains("secret"),
+            "credentials should be redacted: {result}"
+        );
+        assert!(
+            result.contains("***:***"),
+            "should have redacted placeholder: {result}"
+        );
+        assert!(
+            result.contains("proxy.corp.com"),
+            "host should be preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn test_redact_without_credentials() {
+        let url = "https://proxy.corp.com:8080";
+        assert_eq!(redact_url_credentials(url), url);
+    }
+
+    #[test]
+    fn test_redact_empty_url() {
+        assert_eq!(redact_url_credentials(""), "");
+    }
+
+    // ── ChatMessage::text ─────────────────────────────────────────────
+
+    #[test]
+    fn test_chat_message_text_builder() {
+        let msg = ChatMessage::text("user", "hello world");
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.content.as_deref(), Some("hello world"));
+        assert!(msg.tool_calls.is_none());
+        assert!(msg.tool_call_id.is_none());
+        assert!(msg.images.is_none());
+    }
+
+    #[test]
+    fn test_chat_message_text_assistant() {
+        let msg = ChatMessage::text("assistant", "I can help with that.");
+        assert_eq!(msg.role, "assistant");
+        assert_eq!(msg.content.as_deref(), Some("I can help with that."));
+    }
+
+    // ── TokenUsage defaults ────────────────────────────────────────────
+
+    #[test]
+    fn test_token_usage_default() {
+        let usage = TokenUsage::default();
+        assert_eq!(usage.prompt_tokens, 0);
+        assert_eq!(usage.completion_tokens, 0);
+        assert!(
+            usage.stop_reason.is_empty(),
+            "default stop_reason should be empty"
+        );
+    }
+}

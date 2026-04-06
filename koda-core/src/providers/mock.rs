@@ -273,6 +273,9 @@ impl LlmProvider for MockProvider {
 mod tests {
     use super::*;
 
+    /// Serialize env-var mutations across parallel tests.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[tokio::test]
     async fn test_text_response() {
         let provider = MockProvider::new(vec![MockResponse::Text("hello".into())]);
@@ -337,5 +340,251 @@ mod tests {
             chunks.push(chunk);
         }
         chunks
+    }
+
+    // ── MockResponse::tool_call builder ─────────────────────────────────
+
+    #[test]
+    fn test_tool_call_builder() {
+        let tc = MockResponse::tool_call("Read", serde_json::json!({"file_path": "foo.rs"}));
+        match tc {
+            MockResponse::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].function_name, "Read");
+                let args: serde_json::Value = serde_json::from_str(&calls[0].arguments).unwrap();
+                assert_eq!(args["file_path"], "foo.rs");
+            }
+            other => panic!("expected ToolCalls, got {other:?}"),
+        }
+    }
+
+    // ── from_env ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_from_env_no_var_gives_empty_provider() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        // SAFETY: serialized via ENV_MUTEX
+        unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
+        let provider = MockProvider::from_env();
+        let next = provider.next_response();
+        assert!(matches!(next, MockResponse::Text(t) if t.is_empty()));
+    }
+
+    #[test]
+    fn test_from_env_with_text_response() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"text": "hello from env"}]"#);
+        }
+        let provider = MockProvider::from_env();
+        let next = provider.next_response();
+        assert!(matches!(next, MockResponse::Text(t) if t == "hello from env"));
+        unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
+    }
+
+    #[test]
+    fn test_from_env_with_tool_call() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var(
+                "KODA_MOCK_RESPONSES",
+                r#"[{"tool": "Bash", "args": {"command": "ls"}}]"#,
+            );
+        }
+        let provider = MockProvider::from_env();
+        let next = provider.next_response();
+        assert!(matches!(next, MockResponse::ToolCalls(calls) if calls[0].function_name == "Bash"));
+        unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
+    }
+
+    #[test]
+    fn test_from_env_with_error() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"error": "boom"}]"#);
+        }
+        let provider = MockProvider::from_env();
+        let next = provider.next_response();
+        assert!(matches!(next, MockResponse::Error(e) if e == "boom"));
+        unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
+    }
+
+    #[test]
+    fn test_from_env_with_rate_limit() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"rate_limit": true}]"#);
+        }
+        let provider = MockProvider::from_env();
+        let next = provider.next_response();
+        assert!(matches!(next, MockResponse::RateLimit));
+        unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
+    }
+
+    #[test]
+    fn test_from_env_with_context_overflow() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"context_overflow": true}]"#);
+        }
+        let provider = MockProvider::from_env();
+        let next = provider.next_response();
+        assert!(matches!(next, MockResponse::ContextOverflow));
+        unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
+    }
+
+    // ── provider metadata ─────────────────────────────────────────────
+
+    #[test]
+    fn test_provider_name() {
+        let p = MockProvider::new(vec![]);
+        assert_eq!(p.provider_name(), "mock");
+    }
+
+    #[tokio::test]
+    async fn test_list_models_returns_mock_model() {
+        let p = MockProvider::new(vec![]);
+        let models = p.list_models().await.unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "mock-model");
+    }
+
+    // ── non-streaming chat ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_chat_text_response() {
+        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let provider = MockProvider::new(vec![MockResponse::Text("hi there".into())]);
+        let resp = provider.chat(&[], &[], &settings).await.unwrap();
+        assert_eq!(resp.content.as_deref(), Some("hi there"));
+        assert!(resp.tool_calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_chat_empty_queue_returns_empty_text() {
+        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let provider = MockProvider::new(vec![]);
+        let resp = provider.chat(&[], &[], &settings).await.unwrap();
+        assert_eq!(resp.content.as_deref(), Some(""));
+    }
+
+    #[tokio::test]
+    async fn test_chat_rate_limit_is_error() {
+        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let provider = MockProvider::new(vec![MockResponse::RateLimit]);
+        let result = provider.chat(&[], &[], &settings).await;
+        assert!(result.is_err());
+        // Error message: "LLM API returned 429: Too Many Requests"
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("429") || msg.to_lowercase().contains("too many"),
+            "unexpected rate-limit msg: {msg}"
+        );
+    }
+
+    // ── remaining chat() variants ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_chat_tool_calls_response() {
+        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let provider = MockProvider::new(vec![MockResponse::tool_call(
+            "Bash",
+            serde_json::json!({"command": "ls"}),
+        )]);
+        let resp = provider.chat(&[], &[], &settings).await.unwrap();
+        assert!(resp.content.is_none());
+        assert_eq!(resp.tool_calls.len(), 1);
+        assert_eq!(resp.tool_calls[0].function_name, "Bash");
+    }
+
+    #[tokio::test]
+    async fn test_chat_text_max_tokens_stop_reason() {
+        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let provider =
+            MockProvider::new(vec![MockResponse::TextMaxTokens("truncated text".into())]);
+        let resp = provider.chat(&[], &[], &settings).await.unwrap();
+        assert_eq!(resp.content.as_deref(), Some("truncated text"));
+        assert_eq!(resp.usage.stop_reason, "max_tokens");
+    }
+
+    #[tokio::test]
+    async fn test_chat_context_overflow_is_error() {
+        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let provider = MockProvider::new(vec![MockResponse::ContextOverflow]);
+        let result = provider.chat(&[], &[], &settings).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("too long"),
+            "should mention context length"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chat_network_error() {
+        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let provider = MockProvider::new(vec![MockResponse::NetworkError {
+            partial_text: "partial...".into(),
+            error: "connection reset".into(),
+        }]);
+        let result = provider.chat(&[], &[], &settings).await;
+        assert!(result.is_err());
+    }
+
+    // ── chat_stream() remaining variants ────────────────────────────────
+
+    #[tokio::test]
+    async fn test_stream_text_max_tokens() {
+        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let provider = MockProvider::new(vec![MockResponse::TextMaxTokens("hi there".into())]);
+        let rx = provider.chat_stream(&[], &[], &settings).await.unwrap();
+        let chunks = collect_chunks(rx).await;
+        // Should end with Done with stop_reason = "max_tokens"
+        let done = chunks
+            .iter()
+            .find(|c| matches!(c, StreamChunk::Done(u) if u.stop_reason == "max_tokens"));
+        assert!(done.is_some(), "should emit max_tokens Done chunk");
+    }
+
+    #[tokio::test]
+    async fn test_stream_tool_calls_eager() {
+        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let provider = MockProvider::new(vec![MockResponse::ToolCallsEager(vec![ToolCall {
+            id: "tc1".into(),
+            function_name: "Read".into(),
+            arguments: "{}".into(),
+            thought_signature: None,
+        }])]);
+        let rx = provider.chat_stream(&[], &[], &settings).await.unwrap();
+        let chunks = collect_chunks(rx).await;
+        // Should have a ToolCallReady chunk
+        assert!(
+            chunks
+                .iter()
+                .any(|c| matches!(c, StreamChunk::ToolCallReady(tc) if tc.function_name == "Read")),
+            "expected ToolCallReady chunk"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_network_error() {
+        let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
+        let provider = MockProvider::new(vec![MockResponse::NetworkError {
+            partial_text: "partial output".into(),
+            error: "connection dropped".into(),
+        }]);
+        let rx = provider.chat_stream(&[], &[], &settings).await.unwrap();
+        let chunks = collect_chunks(rx).await;
+        assert!(
+            chunks
+                .iter()
+                .any(|c| matches!(c, StreamChunk::TextDelta(s) if s == "partial output")),
+            "should emit partial text"
+        );
+        assert!(
+            chunks
+                .iter()
+                .any(|c| matches!(c, StreamChunk::NetworkError(_))),
+            "should emit NetworkError chunk"
+        );
     }
 }
