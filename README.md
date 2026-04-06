@@ -1,5 +1,10 @@
 # Koda 🐻
 
+[![CI](https://github.com/lijunzh/koda/actions/workflows/ci.yml/badge.svg)](https://github.com/lijunzh/koda/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/koda-cli.svg)](https://crates.io/crates/koda-cli)
+[![docs.rs](https://docs.rs/koda-core/badge.svg)](https://docs.rs/koda-core)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A high-performance personal AI assistant built in Rust.
 
 Single compiled binary. 14 LLM providers. Zero runtime dependencies.
