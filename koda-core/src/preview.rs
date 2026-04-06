@@ -200,7 +200,6 @@ fn build_unified_diff(path: &str, old_content: &str, new_content: &str) -> Unifi
                     new_line,
                 });
             }
-
         }
 
         total_lines += hunk_lines.len();
