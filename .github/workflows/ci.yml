@@ -68,7 +68,7 @@ jobs:
           RUSTDOCFLAGS: -Dwarnings
 
   coverage:
-    name: Coverage (core ≥ 80%, ast ≥ 80%, email ≥ 70%)
+    name: Coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
