@@ -22,14 +22,23 @@ static MOCK_CALL_COUNTER: AtomicU64 = AtomicU64::new(1);
 pub enum MockResponse {
     /// Stream text content back as the LLM response.
     Text(String),
+    /// Stream text and signal `stop_reason = "max_tokens"` (truncated response).
+    TextMaxTokens(String),
     /// Return one or more tool calls.
     ToolCalls(Vec<ToolCall>),
+    /// Return tool calls via per-block `ToolCallReady` events (Anthropic pattern).
+    ///
+    /// Each tool call is emitted as a `ToolCallReady` chunk — the same path that
+    /// enables eager execution during streaming.
+    ToolCallsEager(Vec<ToolCall>),
     /// Simulate a provider error.
     Error(String),
     /// Simulate a rate limit (429) error.
     RateLimit,
     /// Simulate a context overflow error.
     ContextOverflow,
+    /// Simulate a network drop mid-stream (partial text then disconnect).
+    NetworkError { partial_text: String, error: String },
 }
 
 impl MockResponse {
@@ -121,6 +130,19 @@ impl LlmProvider for MockProvider {
                 tool_calls: calls,
                 usage: TokenUsage::default(),
             }),
+            MockResponse::TextMaxTokens(text) => Ok(LlmResponse {
+                content: Some(text),
+                tool_calls: vec![],
+                usage: TokenUsage {
+                    stop_reason: "max_tokens".into(),
+                    ..Default::default()
+                },
+            }),
+            MockResponse::ToolCallsEager(calls) => Ok(LlmResponse {
+                content: None,
+                tool_calls: calls,
+                usage: TokenUsage::default(),
+            }),
             MockResponse::Error(msg) => Err(anyhow::anyhow!(msg)),
             MockResponse::RateLimit => {
                 Err(anyhow::anyhow!("LLM API returned 429: Too Many Requests"))
@@ -128,6 +150,7 @@ impl LlmProvider for MockProvider {
             MockResponse::ContextOverflow => Err(anyhow::anyhow!(
                 "LLM API returned 400: prompt is too long, maximum context length exceeded"
             )),
+            MockResponse::NetworkError { .. } => Err(anyhow::anyhow!("network error")),
         }
     }
 
@@ -171,6 +194,20 @@ impl LlmProvider for MockProvider {
                         }))
                         .await;
                 }
+                MockResponse::TextMaxTokens(text) => {
+                    for chunk in text.as_bytes().chunks(20) {
+                        let s = String::from_utf8_lossy(chunk).to_string();
+                        let _ = tx.send(StreamChunk::TextDelta(s)).await;
+                    }
+                    let _ = tx
+                        .send(StreamChunk::Done(TokenUsage {
+                            prompt_tokens: 10,
+                            completion_tokens: text.len() as i64 / 4,
+                            stop_reason: "max_tokens".into(),
+                            ..Default::default()
+                        }))
+                        .await;
+                }
                 MockResponse::ToolCalls(calls) => {
                     let _ = tx.send(StreamChunk::ToolCalls(calls)).await;
                     let _ = tx
@@ -180,6 +217,31 @@ impl LlmProvider for MockProvider {
                             ..Default::default()
                         }))
                         .await;
+                }
+                MockResponse::ToolCallsEager(calls) => {
+                    // Emit each tool call individually (Anthropic pattern).
+                    for tc in &calls {
+                        let _ = tx.send(StreamChunk::ToolCallReady(tc.clone())).await;
+                    }
+                    // Empty batch — all already emitted via ToolCallReady.
+                    let _ = tx.send(StreamChunk::ToolCalls(vec![])).await;
+                    let _ = tx
+                        .send(StreamChunk::Done(TokenUsage {
+                            prompt_tokens: 10,
+                            completion_tokens: 5,
+                            ..Default::default()
+                        }))
+                        .await;
+                }
+                MockResponse::NetworkError {
+                    partial_text,
+                    error,
+                } => {
+                    // Send partial text, then drop with a network error.
+                    if !partial_text.is_empty() {
+                        let _ = tx.send(StreamChunk::TextDelta(partial_text)).await;
+                    }
+                    let _ = tx.send(StreamChunk::NetworkError(error)).await;
                 }
                 MockResponse::Error(_)
                 | MockResponse::RateLimit
