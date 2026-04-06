@@ -696,4 +696,49 @@ mod tests {
         assert!(!result.ends_with('\n'));
         assert_eq!(result, "Clean content");
     }
+
+    // ── circuit breaker ───────────────────────────────────────────────────
+    // Note: CONSECUTIVE_FAILURES is a process-global AtomicU32. Each test
+    // resets it first so concurrent tests don't cross-contaminate.
+
+    #[test]
+    fn test_circuit_not_broken_after_reset() {
+        reset_compact_failures();
+        assert!(!is_compact_circuit_broken());
+    }
+
+    #[test]
+    fn test_circuit_broken_after_max_failures() {
+        reset_compact_failures();
+        // MAX_CONSECUTIVE_FAILURES = 3
+        record_compact_failure();
+        record_compact_failure();
+        let tripped = record_compact_failure();
+        assert!(tripped, "third failure should trip the circuit");
+        assert!(is_compact_circuit_broken());
+        reset_compact_failures(); // clean up
+    }
+
+    #[test]
+    fn test_reset_clears_broken_circuit() {
+        // Trip the circuit
+        reset_compact_failures();
+        record_compact_failure();
+        record_compact_failure();
+        record_compact_failure();
+        assert!(is_compact_circuit_broken());
+        // Reset heals it
+        reset_compact_failures();
+        assert!(!is_compact_circuit_broken());
+    }
+
+    #[test]
+    fn test_record_failure_not_tripped_below_threshold() {
+        reset_compact_failures();
+        let first = record_compact_failure();
+        let second = record_compact_failure();
+        assert!(!first, "first failure should not trip circuit");
+        assert!(!second, "second failure should not trip circuit");
+        reset_compact_failures(); // clean up
+    }
 }

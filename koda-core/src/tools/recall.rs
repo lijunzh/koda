@@ -149,6 +149,8 @@ fn extract_snippet(text: &str, query: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistence::{Persistence, Role};
+    use serde_json::json;
 
     #[test]
     fn test_definition() {
@@ -219,5 +221,96 @@ mod tests {
         let lower_q = "error";
         let snippet = extract_snippet(text, lower_q, 200);
         assert!(snippet.contains("Error"));
+    }
+
+    // ── recall_context integration tests (requires DB) ─────────────────────
+
+    async fn test_db() -> (Database, tempfile::TempDir, String) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Database::open(&dir.path().join("recall_test.db"))
+            .await
+            .unwrap();
+        let sid = db.create_session("koda", dir.path()).await.unwrap();
+        (db, dir, sid)
+    }
+
+    #[tokio::test]
+    async fn test_recall_no_query_or_turn() {
+        let (db, _dir, sid) = test_db().await;
+        let result = recall_context(&db, &sid, &json!({})).await;
+        assert!(
+            result.contains("Provide"),
+            "should ask for query or turn: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recall_empty_history() {
+        let (db, _dir, sid) = test_db().await;
+        let result = recall_context(&db, &sid, &json!({"turn": 1})).await;
+        assert!(result.contains("No conversation history"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_recall_by_turn_hit() {
+        let (db, _dir, sid) = test_db().await;
+        db.insert_message(&sid, &Role::User, Some("hello world"), None, None, None)
+            .await
+            .unwrap();
+        let result = recall_context(&db, &sid, &json!({"turn": 1})).await;
+        assert!(result.contains("hello world"), "got: {result}");
+        assert!(result.contains("Turn 1"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_recall_by_turn_out_of_bounds() {
+        let (db, _dir, sid) = test_db().await;
+        db.insert_message(&sid, &Role::User, Some("msg1"), None, None, None)
+            .await
+            .unwrap();
+        let result = recall_context(&db, &sid, &json!({"turn": 99})).await;
+        assert!(result.contains("does not exist"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_recall_by_query_match() {
+        let (db, _dir, sid) = test_db().await;
+        db.insert_message(
+            &sid,
+            &Role::Assistant,
+            Some("The error was a null pointer exception"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let result = recall_context(&db, &sid, &json!({"query": "null pointer"})).await;
+        assert!(result.contains("null pointer"), "got: {result}");
+        assert!(result.contains("Found"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_recall_by_query_no_match() {
+        let (db, _dir, sid) = test_db().await;
+        db.insert_message(&sid, &Role::User, Some("hello world"), None, None, None)
+            .await
+            .unwrap();
+        let result = recall_context(&db, &sid, &json!({"query": "xyzzy"})).await;
+        assert!(result.contains("No matches"), "got: {result}");
+    }
+
+    #[tokio::test]
+    async fn test_recall_by_turn_long_content_truncated() {
+        let (db, _dir, sid) = test_db().await;
+        let long_msg = "z".repeat(3000);
+        db.insert_message(&sid, &Role::User, Some(&long_msg), None, None, None)
+            .await
+            .unwrap();
+        let result = recall_context(&db, &sid, &json!({"turn": 1})).await;
+        assert!(
+            result.contains("[truncated"),
+            "long message should be truncated: {result}"
+        );
     }
 }

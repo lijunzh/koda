@@ -175,4 +175,191 @@ mod tests {
         assert!(extract_delete_progress("Deleted src/old.rs").is_some());
         assert!(extract_delete_progress("File not found").is_none());
     }
+
+    // ── content / format assertions ───────────────────────────────────────
+
+    #[test]
+    fn test_write_progress_content_includes_first_line() {
+        let result = extract_write_progress("Created file: src/main.rs").unwrap();
+        assert!(
+            result.contains("Created file: src/main.rs"),
+            "got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_delete_progress_removed_keyword() {
+        // "removed" is an alternative trigger word
+        assert!(extract_delete_progress("5 files removed successfully").is_some());
+    }
+
+    #[test]
+    fn test_delete_progress_content_includes_first_line() {
+        let result = extract_delete_progress("Deleted src/old.rs").unwrap();
+        assert!(result.contains("Deleted src/old.rs"), "got: {result}");
+    }
+
+    #[test]
+    fn test_edit_progress_long_line_is_truncated() {
+        let long = "Applied replacements to ".to_string() + &"x".repeat(100);
+        let result = extract_edit_progress(&long).unwrap();
+        // Should be capped at 80 chars + "..."
+        assert!(
+            result.contains("..."),
+            "long line should be truncated: {result}"
+        );
+    }
+
+    #[test]
+    fn test_edit_progress_short_line_not_truncated() {
+        let result = extract_edit_progress("Applied 3 replacements to src/lib.rs").unwrap();
+        assert!(
+            !result.contains("..."),
+            "short line should not be truncated: {result}"
+        );
+    }
+
+    // ── extract_bash_progress edge cases ─────────────────────────────────
+
+    #[test]
+    fn test_bash_progress_background_process() {
+        let result = extract_bash_progress(
+            "Background process started\n  Command: cargo watch -x test\n  PID: 1234",
+        )
+        .unwrap();
+        assert!(
+            result.contains("cargo watch"),
+            "should include command: {result}"
+        );
+        assert!(result.contains("Started background"), "got: {result}");
+    }
+
+    #[test]
+    fn test_bash_progress_build_cargo_finish() {
+        // cargo build output typically contains "Finished" and "target"
+        let result =
+            extract_bash_progress("   Finished `release` profile [optimized] target(s)").unwrap();
+        assert!(result.contains("Build succeeded"), "got: {result}");
+    }
+
+    #[test]
+    fn test_bash_progress_build_succeeded_literal() {
+        let result = extract_bash_progress("build succeeded").unwrap();
+        assert!(result.contains("Build succeeded"), "got: {result}");
+    }
+
+    #[test]
+    fn test_bash_progress_build_failed() {
+        let result =
+            extract_bash_progress("error: could not compile `myapp` due to 3 errors").unwrap();
+        assert!(result.contains("Build failed"), "got: {result}");
+    }
+
+    #[test]
+    fn test_bash_progress_tests_passed_text() {
+        // Some test runners emit "tests passed" not "test result: ok"
+        let result = extract_bash_progress("All 42 tests passed").unwrap();
+        assert!(result.contains("Tests passed"), "got: {result}");
+    }
+
+    #[test]
+    fn test_bash_progress_tests_failed_text() {
+        let result = extract_bash_progress("3 tests failed").unwrap();
+        assert!(result.contains("Tests failed"), "got: {result}");
+    }
+
+    #[test]
+    fn test_bash_progress_background_long_command_truncated() {
+        let long_cmd = "x".repeat(80);
+        let output = format!("Background process started\n  Command: {long_cmd}\n");
+        let result = extract_bash_progress(&output).unwrap();
+        assert!(
+            result.contains("..."),
+            "long command should be truncated: {result}"
+        );
+    }
+
+    // ── async / DB-backed tests ──────────────────────────────────────────
+
+    async fn test_db() -> (Database, tempfile::TempDir, String) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Database::open(&dir.path().join("progress_test.db"))
+            .await
+            .unwrap();
+        let sid = db.create_session("koda", dir.path()).await.unwrap();
+        (db, dir, sid)
+    }
+
+    #[tokio::test]
+    async fn test_get_progress_summary_empty() {
+        let (db, _dir, sid) = test_db().await;
+        let result = get_progress_summary(&db, &sid).await;
+        assert!(result.is_none(), "empty session should return None");
+    }
+
+    #[tokio::test]
+    async fn test_track_progress_write_tool() {
+        let (db, _dir, sid) = test_db().await;
+        track_progress(&db, &sid, "Write", "", "Created file: src/main.rs").await;
+        let summary = get_progress_summary(&db, &sid).await.unwrap();
+        assert!(summary.contains("src/main.rs"), "got: {summary}");
+        assert!(summary.contains("Session Progress"), "got: {summary}");
+    }
+
+    #[tokio::test]
+    async fn test_track_progress_edit_tool() {
+        let (db, _dir, sid) = test_db().await;
+        track_progress(
+            &db,
+            &sid,
+            "Edit",
+            "",
+            "Applied 2 replacements to src/lib.rs",
+        )
+        .await;
+        let summary = get_progress_summary(&db, &sid).await.unwrap();
+        assert!(summary.contains("lib.rs"), "got: {summary}");
+    }
+
+    #[tokio::test]
+    async fn test_track_progress_bash_tool() {
+        let (db, _dir, sid) = test_db().await;
+        track_progress(
+            &db,
+            &sid,
+            "Bash",
+            "",
+            "test result: ok. 10 passed; 0 failed",
+        )
+        .await;
+        let summary = get_progress_summary(&db, &sid).await.unwrap();
+        assert!(summary.contains("Tests passed"), "got: {summary}");
+    }
+
+    #[tokio::test]
+    async fn test_track_progress_delete_tool() {
+        let (db, _dir, sid) = test_db().await;
+        track_progress(&db, &sid, "Delete", "", "Deleted src/old.rs").await;
+        let summary = get_progress_summary(&db, &sid).await.unwrap();
+        assert!(summary.contains("Deleted"), "got: {summary}");
+    }
+
+    #[tokio::test]
+    async fn test_track_progress_unknown_tool_no_entry() {
+        let (db, _dir, sid) = test_db().await;
+        track_progress(&db, &sid, "UnknownTool", "", "some result").await;
+        // Unknown tool → no entry tracked
+        let summary = get_progress_summary(&db, &sid).await;
+        assert!(summary.is_none(), "unknown tool should not create progress");
+    }
+
+    #[tokio::test]
+    async fn test_progress_accumulates_multiple_entries() {
+        let (db, _dir, sid) = test_db().await;
+        track_progress(&db, &sid, "Write", "", "Created file: a.rs").await;
+        track_progress(&db, &sid, "Write", "", "Created file: b.rs").await;
+        let summary = get_progress_summary(&db, &sid).await.unwrap();
+        assert!(summary.contains("a.rs"), "got: {summary}");
+        assert!(summary.contains("b.rs"), "got: {summary}");
+    }
 }

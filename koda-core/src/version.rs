@@ -91,4 +91,44 @@ mod tests {
     fn test_is_newer_same_version() {
         assert!(!is_newer("0.1.0", "0.1.0"));
     }
+
+    #[test]
+    fn test_is_newer_single_component() {
+        assert!(is_newer("2", "1"));
+        assert!(!is_newer("1", "2"));
+    }
+
+    #[test]
+    fn test_is_newer_patch_only() {
+        assert!(is_newer("0.1.10", "0.1.9"));
+        assert!(!is_newer("0.1.9", "0.1.10"));
+    }
+
+    #[test]
+    fn test_crate_name() {
+        assert_eq!(crate_name(), "koda-cli");
+    }
+
+    #[test]
+    fn test_update_available_same_version_returns_none() {
+        let current = env!("CARGO_PKG_VERSION");
+        // Same version → no update
+        assert!(update_available(current).is_none());
+    }
+
+    #[test]
+    fn test_update_available_older_version_returns_none() {
+        // "0.0.1" is almost certainly older than any real build
+        assert!(update_available("0.0.1").is_none());
+    }
+
+    #[test]
+    fn test_update_available_future_version_returns_some() {
+        // "999.0.0" is always newer than any real build
+        let result = update_available("999.0.0");
+        assert!(result.is_some());
+        let (current, latest) = result.unwrap();
+        assert_eq!(latest, "999.0.0");
+        assert_eq!(current, env!("CARGO_PKG_VERSION"));
+    }
 }

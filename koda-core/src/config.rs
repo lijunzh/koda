@@ -941,4 +941,195 @@ mod tests {
         assert_eq!(config.model, "gpt-4o");
         assert_eq!(config.max_context_tokens, 128_000);
     }
+
+    // ── URL-based provider detection (remaining providers) ─────────────────
+
+    #[test]
+    fn test_provider_from_url_ollama() {
+        assert_eq!(
+            ProviderType::from_url_or_name("http://localhost:11434/api", None),
+            ProviderType::Ollama
+        );
+    }
+
+    #[test]
+    fn test_provider_from_url_vllm() {
+        assert_eq!(
+            ProviderType::from_url_or_name("http://localhost:8000/v1", None),
+            ProviderType::Vllm
+        );
+    }
+
+    #[test]
+    fn test_provider_from_url_gemini() {
+        assert_eq!(
+            ProviderType::from_url_or_name(
+                "https://generativelanguage.googleapis.com/v1beta",
+                None
+            ),
+            ProviderType::Gemini
+        );
+    }
+
+    #[test]
+    fn test_provider_from_url_groq() {
+        assert_eq!(
+            ProviderType::from_url_or_name("https://api.groq.com/openai/v1", None),
+            ProviderType::Groq
+        );
+    }
+
+    #[test]
+    fn test_provider_from_url_grok() {
+        assert_eq!(
+            ProviderType::from_url_or_name("https://api.x.ai/v1", None),
+            ProviderType::Grok
+        );
+    }
+
+    #[test]
+    fn test_provider_from_url_deepseek() {
+        assert_eq!(
+            ProviderType::from_url_or_name("https://api.deepseek.com/v1", None),
+            ProviderType::DeepSeek
+        );
+    }
+
+    #[test]
+    fn test_provider_from_url_mistral() {
+        assert_eq!(
+            ProviderType::from_url_or_name("https://api.mistral.ai/v1", None),
+            ProviderType::Mistral
+        );
+    }
+
+    #[test]
+    fn test_provider_from_url_openrouter() {
+        assert_eq!(
+            ProviderType::from_url_or_name("https://openrouter.ai/api/v1", None),
+            ProviderType::OpenRouter
+        );
+    }
+
+    #[test]
+    fn test_provider_from_url_together() {
+        assert_eq!(
+            ProviderType::from_url_or_name("https://api.together.xyz/v1", None),
+            ProviderType::Together
+        );
+    }
+
+    #[test]
+    fn test_provider_from_url_fireworks() {
+        assert_eq!(
+            ProviderType::from_url_or_name("https://api.fireworks.ai/inference/v1", None),
+            ProviderType::Fireworks
+        );
+    }
+
+    // ── Name alias coverage (remaining aliases) ─────────────────────────
+
+    #[test]
+    fn test_provider_name_aliases_extended() {
+        let cases = [
+            ("ollama", ProviderType::Ollama),
+            ("deepseek", ProviderType::DeepSeek),
+            ("mistral", ProviderType::Mistral),
+            ("minimax", ProviderType::MiniMax),
+            ("openrouter", ProviderType::OpenRouter),
+            ("together", ProviderType::Together),
+            ("fireworks", ProviderType::Fireworks),
+            ("vllm", ProviderType::Vllm),
+            ("groq", ProviderType::Groq),
+            ("mock", ProviderType::Mock),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(
+                ProviderType::from_url_or_name("", Some(name)),
+                expected,
+                "alias '{name}' failed"
+            );
+        }
+    }
+
+    // ── requires_api_key ───────────────────────────────────────────────
+
+    #[test]
+    fn test_requires_api_key_local_providers() {
+        // Local providers don't require an API key
+        assert!(!ProviderType::LMStudio.requires_api_key());
+        assert!(!ProviderType::Ollama.requires_api_key());
+        assert!(!ProviderType::Mock.requires_api_key());
+        assert!(!ProviderType::Vllm.requires_api_key());
+    }
+
+    #[test]
+    fn test_requires_api_key_cloud_providers() {
+        assert!(ProviderType::Anthropic.requires_api_key());
+        assert!(ProviderType::OpenAI.requires_api_key());
+        assert!(ProviderType::Gemini.requires_api_key());
+        assert!(ProviderType::Groq.requires_api_key());
+        assert!(ProviderType::Grok.requires_api_key());
+    }
+
+    // ── ModelSettings::defaults_for ─────────────────────────────────────
+
+    #[test]
+    fn test_model_settings_defaults_anthropic_has_max_tokens() {
+        let s = ModelSettings::defaults_for("claude-opus-4-5", &ProviderType::Anthropic);
+        assert_eq!(s.max_tokens, Some(16384));
+        assert_eq!(s.model, "claude-opus-4-5");
+        assert!(s.temperature.is_none());
+    }
+
+    #[test]
+    fn test_model_settings_defaults_openai_no_max_tokens() {
+        let s = ModelSettings::defaults_for("gpt-4o", &ProviderType::OpenAI);
+        assert!(s.max_tokens.is_none(), "OpenAI should use provider default");
+        assert_eq!(s.model, "gpt-4o");
+    }
+
+    // ── with_model_overrides ──────────────────────────────────────────
+
+    #[test]
+    fn test_with_model_overrides_all_fields() {
+        let config = KodaConfig::default_for_testing(ProviderType::Anthropic).with_model_overrides(
+            Some(8192),         // max_tokens
+            Some(0.7),          // temperature
+            Some(2000),         // thinking_budget
+            Some("low".into()), // reasoning_effort
+        );
+        assert_eq!(config.model_settings.max_tokens, Some(8192));
+        assert_eq!(config.model_settings.temperature, Some(0.7));
+        assert_eq!(config.model_settings.thinking_budget, Some(2000));
+        assert_eq!(
+            config.model_settings.reasoning_effort,
+            Some("low".to_string())
+        );
+    }
+
+    #[test]
+    fn test_with_model_overrides_none_changes_nothing() {
+        let original = KodaConfig::default_for_testing(ProviderType::OpenAI);
+        let original_tokens = original.model_settings.max_tokens;
+        let config = original.with_model_overrides(None, None, None, None);
+        assert_eq!(config.model_settings.max_tokens, original_tokens);
+        assert!(config.model_settings.temperature.is_none());
+    }
+
+    // ── builtin_agents ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_builtin_agents_is_not_empty() {
+        let agents = KodaConfig::builtin_agents();
+        assert!(!agents.is_empty(), "builtin_agents should not be empty");
+    }
+
+    #[test]
+    fn test_builtin_agents_contains_core_agents() {
+        let agents = KodaConfig::builtin_agents();
+        let names: Vec<&str> = agents.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(names.contains(&"task"), "should have 'task' agent");
+        assert!(names.contains(&"explore"), "should have 'explore' agent");
+    }
 }
