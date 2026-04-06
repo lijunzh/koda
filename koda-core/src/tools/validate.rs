@@ -273,9 +273,7 @@ fn detect_new_omission_placeholder(
     }
     // If old_str already had the same placeholder, the model is preserving
     // an existing comment — that's fine.
-    let old_set: HashSet<String> = detect_omission_placeholders(old_str)
-        .into_iter()
-        .collect();
+    let old_set: HashSet<String> = detect_omission_placeholders(old_str).into_iter().collect();
     for p in &new_placeholders {
         if !old_set.contains(p) {
             return Some(format!(
@@ -680,7 +678,7 @@ mod tests {
             "# This is a normal comment",
             "fn rest_of_things() {}",
             "use std::rest::of::things;",
-            "println!(\"...\");",       // "..." not after a known prefix
+            "println!(\"...\");", // "..." not after a known prefix
             "// See the rest of the docs at ...", // not a known prefix
         ];
         for input in cases {
