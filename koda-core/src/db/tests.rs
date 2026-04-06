@@ -772,3 +772,310 @@ fn detect_interruption_prompt_truncated() {
 fn detect_interruption_empty() {
     assert_eq!(detect_interruption(&[]), None);
 }
+
+// ── DB methods: extended coverage ────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_insert_message_with_agent() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    let id = db
+        .insert_message_with_agent(
+            &session,
+            &Role::Assistant,
+            Some("hello from sub-agent"),
+            None,
+            None,
+            None,
+            Some("research-agent"),
+        )
+        .await
+        .unwrap();
+    assert!(id > 0);
+
+    let msgs = db.load_context(&session).await.unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].content.as_deref(), Some("hello from sub-agent"));
+}
+
+#[tokio::test]
+async fn test_insert_tool_message_with_full() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    // Insert an assistant message with a tool call.
+    let tc_json = r#"[{"id":"tc_1","function_name":"Read","arguments":"{}"}]"#;
+    db.insert_message(&session, &Role::Assistant, None, Some(tc_json), None, None)
+        .await
+        .unwrap();
+
+    // Insert tool result with full_output.
+    let id = db
+        .insert_tool_message_with_full(
+            &session,
+            "short result",
+            "tc_1",
+            "very long full output that was truncated",
+        )
+        .await
+        .unwrap();
+    assert!(id > 0);
+
+    // load_all_messages returns everything (load_context may prune orphans).
+    let msgs = db.load_all_messages(&session).await.unwrap();
+    let tool_msg = msgs.iter().find(|m| m.role == Role::Tool).unwrap();
+    assert_eq!(tool_msg.content.as_deref(), Some("short result"));
+    assert_eq!(tool_msg.tool_call_id.as_deref(), Some("tc_1"));
+}
+
+#[tokio::test]
+async fn test_load_all_messages_includes_compacted() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    // Insert several messages.
+    for i in 0..5 {
+        db.insert_message(
+            &session,
+            &Role::User,
+            Some(&format!("msg {i}")),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    // Compact (keep last 2 — means preserve_count=2 messages from the tail).
+    db.compact_session(&session, "summary", 2).await.unwrap();
+
+    // load_context should return fewer than the original 5.
+    let active = db.load_context(&session).await.unwrap();
+    assert!(active.len() < 5, "active should be < 5, got {}", active.len());
+
+    // load_all_messages should return everything (active + compacted).
+    let all = db.load_all_messages(&session).await.unwrap();
+    assert!(all.len() >= active.len(), "all({}) should >= active({})", all.len(), active.len());
+}
+
+#[tokio::test]
+async fn test_recent_user_messages() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    db.insert_message(&session, &Role::User, Some("first"), None, None, None)
+        .await
+        .unwrap();
+    db.insert_message(&session, &Role::User, Some("second"), None, None, None)
+        .await
+        .unwrap();
+    db.insert_message(&session, &Role::User, Some("third"), None, None, None)
+        .await
+        .unwrap();
+
+    let recent = db.recent_user_messages(2).await.unwrap();
+    assert_eq!(recent.len(), 2);
+    // Most recent first.
+    assert_eq!(recent[0], "third");
+    assert_eq!(recent[1], "second");
+}
+
+#[tokio::test]
+async fn test_last_user_message() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    db.insert_message(&session, &Role::User, Some("hey"), None, None, None)
+        .await
+        .unwrap();
+    db.insert_message(&session, &Role::Assistant, Some("yo"), None, None, None)
+        .await
+        .unwrap();
+    db.insert_message(&session, &Role::User, Some("latest"), None, None, None)
+        .await
+        .unwrap();
+
+    let last = db.last_user_message(&session).await.unwrap();
+    assert_eq!(last, "latest");
+}
+
+#[tokio::test]
+async fn test_session_mode_roundtrip() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    // Initially None.
+    let mode = db.get_session_mode(&session).await.unwrap();
+    assert!(mode.is_none());
+
+    // Set and get.
+    db.set_session_mode(&session, "confirm").await.unwrap();
+    let mode = db.get_session_mode(&session).await.unwrap();
+    assert_eq!(mode.as_deref(), Some("confirm"));
+
+    // Overwrite.
+    db.set_session_mode(&session, "auto").await.unwrap();
+    let mode = db.get_session_mode(&session).await.unwrap();
+    assert_eq!(mode.as_deref(), Some("auto"));
+}
+
+#[tokio::test]
+async fn test_set_session_title() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    db.set_session_title(&session, "My Cool Session")
+        .await
+        .unwrap();
+
+    let sessions = db.list_sessions(10, _tmp.path()).await.unwrap();
+    let found = sessions.iter().find(|s| s.id == session).unwrap();
+    assert_eq!(found.title.as_deref(), Some("My Cool Session"));
+}
+
+#[tokio::test]
+async fn test_get_session_idle_secs() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    // Fresh session — insert a message to set a timestamp.
+    db.insert_message(&session, &Role::User, Some("hi"), None, None, None)
+        .await
+        .unwrap();
+
+    let idle = db.get_session_idle_secs(&session).await.unwrap();
+    // Could be None or Some depending on DB impl, but if Some it should be small.
+    if let Some(secs) = idle {
+        assert!(secs < 5, "just created, idle: {secs}");
+    }
+    // Test passes either way — we're just verifying no crash.
+}
+
+#[tokio::test]
+async fn test_clear_message_content() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    let id1 = db
+        .insert_message(&session, &Role::User, Some("secret"), None, None, None)
+        .await
+        .unwrap();
+    let id2 = db
+        .insert_message(&session, &Role::Assistant, Some("response"), None, None, None)
+        .await
+        .unwrap();
+
+    db.clear_message_content(&[id1, id2], "[redacted]")
+        .await
+        .unwrap();
+
+    let msgs = db.load_all_messages(&session).await.unwrap();
+    for msg in &msgs {
+        assert_eq!(
+            msg.content.as_deref(),
+            Some("[redacted]"),
+            "msg {:?} should be redacted",
+            msg.role
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_compacted_stats() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    // Initially zero.
+    let stats = db.compacted_stats().await.unwrap();
+    assert_eq!(stats.message_count, 0);
+
+    // Create some messages and compact.
+    for i in 0..10 {
+        db.insert_message(
+            &session,
+            &Role::User,
+            Some(&format!("msg {i}")),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    db.compact_session(&session, "summary", 2).await.unwrap();
+
+    let stats = db.compacted_stats().await.unwrap();
+    assert!(stats.message_count > 0, "should have compacted messages");
+}
+
+#[tokio::test]
+async fn test_session_usage_by_agent() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    let usage = crate::providers::TokenUsage {
+        prompt_tokens: 100,
+        completion_tokens: 50,
+        ..Default::default()
+    };
+
+    // Insert messages from different agents.
+    db.insert_message_with_agent(
+        &session,
+        &Role::Assistant,
+        Some("main response"),
+        None,
+        None,
+        Some(&usage),
+        None, // default agent
+    )
+    .await
+    .unwrap();
+
+    db.insert_message_with_agent(
+        &session,
+        &Role::Assistant,
+        Some("sub response"),
+        None,
+        None,
+        Some(&usage),
+        Some("research"),
+    )
+    .await
+    .unwrap();
+
+    let by_agent = db.session_usage_by_agent(&session).await.unwrap();
+    assert!(
+        by_agent.len() >= 1,
+        "should track at least 1 agent: {by_agent:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_purge_compacted() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    for i in 0..10 {
+        db.insert_message(
+            &session,
+            &Role::User,
+            Some(&format!("msg {i}")),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    db.compact_session(&session, "summary", 2).await.unwrap();
+    // Purge with 0 min_age_days to catch everything.
+    let purged = db.purge_compacted(0).await.unwrap();
+    assert!(purged > 0, "should purge some messages");
+
+    // After purge, compacted stats should be lower.
+    let stats = db.compacted_stats().await.unwrap();
+    assert_eq!(stats.message_count, 0, "all compacted should be purged");
+}
