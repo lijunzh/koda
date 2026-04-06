@@ -44,6 +44,12 @@ const MAX_TIMEOUT_SECS: u64 = 300;
 const SUMMARY_STDERR_LINES: usize = 50;
 /// Max stdout tail lines to include in the summary.
 const SUMMARY_STDOUT_TAIL: usize = 20;
+/// Hard memory ceiling for line collection. Pathological commands (`yes`,
+/// `cat /dev/urandom | base64`) can produce gigabytes within the 300s timeout.
+/// Once this byte threshold is reached, lines are still streamed to the TUI
+/// but no longer collected into the in-memory Vec. The DB cap
+/// (`MAX_FULL_OUTPUT_BYTES`) handles what actually gets persisted.
+const MAX_COLLECT_BYTES: usize = 10 * 1024 * 1024; // 10 MB
 
 /// Result of a shell command with both a model-facing summary and full output.
 #[derive(Debug, Clone)]
@@ -100,7 +106,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
 pub async fn run_shell_command(
     project_root: &Path,
     args: &Value,
-    _max_output_lines: usize,
+    max_lines: usize,
     bg: &BgRegistry,
     sink: Option<(&dyn EngineSink, &str)>,
 ) -> Result<ShellOutput> {
@@ -144,6 +150,8 @@ pub async fn run_shell_command(
     let mut stderr_lines: Vec<String> = Vec::new();
 
     // Read stdout and stderr concurrently, streaming lines as they arrive.
+    // Lines are always streamed to the TUI, but collection into Vec stops
+    // once max_lines or MAX_COLLECT_BYTES is reached (OOM protection).
     let sink_info = sink.map(|(s, id)| (s, id.to_string()));
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs),
@@ -152,6 +160,7 @@ pub async fn run_shell_command(
             stderr,
             &mut stdout_lines,
             &mut stderr_lines,
+            max_lines,
             &sink_info,
         ),
     )
@@ -188,11 +197,21 @@ pub async fn run_shell_command(
 }
 
 /// Read stdout and stderr concurrently, collecting lines and optionally streaming them.
+///
+/// Lines are always streamed to the TUI sink (if present), but collection into
+/// the Vecs is gated by two caps:
+///   - `max_lines` — total stdout + stderr lines collected
+///   - `MAX_COLLECT_BYTES` — total bytes collected (OOM protection)
+///
+/// Once either cap is hit, new lines are still streamed to the TUI but silently
+/// dropped from the Vecs. This keeps the TUI responsive while bounding memory
+/// for pathological commands.
 async fn read_streams(
     stdout: tokio::process::ChildStdout,
     stderr: tokio::process::ChildStderr,
     stdout_lines: &mut Vec<String>,
     stderr_lines: &mut Vec<String>,
+    max_lines: usize,
     sink_info: &Option<(&dyn EngineSink, String)>,
 ) -> std::io::Result<()> {
     let mut stdout_reader = BufReader::new(stdout).lines();
@@ -200,6 +219,8 @@ async fn read_streams(
 
     let mut stdout_done = false;
     let mut stderr_done = false;
+    let mut collected_bytes: usize = 0;
+    let mut collected_lines: usize = 0;
 
     while !stdout_done || !stderr_done {
         tokio::select! {
@@ -213,7 +234,13 @@ async fn read_streams(
                                 is_stderr: false,
                             });
                         }
-                        stdout_lines.push(l);
+                        if collected_lines < max_lines
+                            && collected_bytes < MAX_COLLECT_BYTES
+                        {
+                            collected_bytes += l.len();
+                            collected_lines += 1;
+                            stdout_lines.push(l);
+                        }
                     }
                     None => stdout_done = true,
                 }
@@ -228,7 +255,13 @@ async fn read_streams(
                                 is_stderr: true,
                             });
                         }
-                        stderr_lines.push(l);
+                        if collected_lines < max_lines
+                            && collected_bytes < MAX_COLLECT_BYTES
+                        {
+                            collected_bytes += l.len();
+                            collected_lines += 1;
+                            stderr_lines.push(l);
+                        }
                     }
                     None => stderr_done = true,
                 }
@@ -333,12 +366,14 @@ fn format_summary(exit_code: i32, stdout_lines: &[String], stderr_lines: &[Strin
     out
 }
 
-/// Build the full (untruncated) output for DB storage.
+/// Build the full output for DB storage.
 ///
 /// Stored in `messages.full_content` and searchable via RecallContext.
-/// Capped at 200 KB to prevent pathological commands from bloating the DB.
+/// Capped at 2 MB — generous enough for RecallContext to find errors deep in
+/// build/test output, while still preventing pathological commands from
+/// bloating the SQLite DB.
 fn format_full_output(exit_code: i32, stdout_lines: &[String], stderr_lines: &[String]) -> String {
-    const MAX_FULL_OUTPUT_BYTES: usize = 200 * 1024;
+    const MAX_FULL_OUTPUT_BYTES: usize = 2 * 1024 * 1024; // 2 MB
 
     let mut out = format!("Exit code: {exit_code}\n");
     if !stdout_lines.is_empty() {
@@ -357,7 +392,7 @@ fn format_full_output(exit_code: i32, stdout_lines: &[String], stderr_lines: &[S
         while !out.is_char_boundary(out.len()) {
             out.pop();
         }
-        out.push_str("\n\n[... output truncated at 200KB ...]");
+        out.push_str("\n\n[... output truncated at 2MB ...]");
     }
 
     out
@@ -498,11 +533,12 @@ mod tests {
     }
 
     #[test]
-    fn test_format_full_output_capped_at_200kb() {
-        let stdout: Vec<String> = (0..50_000).map(|i| format!("line {i}: padding")).collect();
+    fn test_format_full_output_capped_at_2mb() {
+        // Each line is ~16 bytes; 200K lines ≈ 3.2 MB → should truncate.
+        let stdout: Vec<String> = (0..200_000).map(|i| format!("line {i}: padding")).collect();
         let full = format_full_output(0, &stdout, &[]);
-        assert!(full.len() <= 200 * 1024 + 50); // 200KB + truncation message
-        assert!(full.contains("truncated at 200KB"));
+        assert!(full.len() <= 2 * 1024 * 1024 + 50); // 2MB + truncation message
+        assert!(full.contains("truncated at 2MB"));
     }
 
     #[test]
@@ -514,6 +550,28 @@ mod tests {
         };
         assert_eq!(so.summary, "Exit code: 0");
         assert_eq!(so.full_output.unwrap(), "full output here");
+    }
+
+    #[tokio::test]
+    async fn collection_stops_at_max_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Generate 50 lines of output but cap collection at 10.
+        let args = serde_json::json!({
+            "command": "seq 1 50"
+        });
+        let result = run_shell_command(tmp.path(), &args, 10, &bg(), None)
+            .await
+            .unwrap();
+        // Summary should reflect that we only collected 10 lines.
+        assert!(
+            result.summary.contains("stdout: 10 lines"),
+            "Expected 10 collected lines, got: {}",
+            result.summary
+        );
+        // Full output should NOT contain lines beyond the cap.
+        let full = result.full_output.unwrap();
+        assert!(full.contains("1"), "Should contain first line");
+        assert!(!full.contains("\n50\n"), "Should NOT contain line 50");
     }
 
     #[test]
