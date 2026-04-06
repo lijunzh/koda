@@ -10,7 +10,7 @@ use koda_core::{
     db::{Database, Role},
     engine::{EngineCommand, EngineEvent, sink::TestSink},
     inference::{self, InferenceContext},
-    providers::mock::MockProvider,
+    providers::{LlmProvider, mock::MockProvider},
     tools::ToolRegistry,
 };
 use std::path::PathBuf;
@@ -62,7 +62,42 @@ impl Env {
             .unwrap();
     }
 
+    /// Run inference with a MockProvider (convenience wrapper, asserts success).
     pub async fn run_inference(&self, provider: &MockProvider) -> Vec<EngineEvent> {
+        self.run_inference_dyn(provider).await
+    }
+
+    /// Run inference with any LlmProvider, asserts success.
+    pub async fn run_inference_dyn(&self, provider: &dyn LlmProvider) -> Vec<EngineEvent> {
+        let (result, events) = self.run_inference_result(provider).await;
+        assert!(result.is_ok(), "inference_loop failed: {:?}", result.err());
+        events
+    }
+
+    /// Run inference and return Result + events (for testing error paths).
+    pub async fn run_inference_result(
+        &self,
+        provider: &dyn LlmProvider,
+    ) -> (anyhow::Result<()>, Vec<EngineEvent>) {
+        self.run_inference_full(provider, CancellationToken::new())
+            .await
+    }
+
+    /// Run inference with a cancellation token.
+    pub async fn run_inference_cancellable(
+        &self,
+        provider: &dyn LlmProvider,
+        cancel: CancellationToken,
+    ) -> (anyhow::Result<()>, Vec<EngineEvent>) {
+        self.run_inference_full(provider, cancel).await
+    }
+
+    /// Full inference run with all knobs exposed.
+    async fn run_inference_full(
+        &self,
+        provider: &dyn LlmProvider,
+        cancel: CancellationToken,
+    ) -> (anyhow::Result<()>, Vec<EngineEvent>) {
         let sink = TestSink::new();
         let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
         let tool_defs = self.tool_defs();
@@ -81,13 +116,12 @@ impl Env {
             pending_images: None,
             mode: ApprovalMode::Auto,
             sink: &sink,
-            cancel: CancellationToken::new(),
+            cancel,
             cmd_rx: &mut cmd_rx,
             file_tracker: &mut file_tracker,
         })
         .await;
 
-        assert!(result.is_ok(), "inference_loop failed: {:?}", result.err());
-        sink.events()
+        (result, sink.events())
     }
 }
