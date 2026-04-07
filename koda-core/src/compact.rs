@@ -300,6 +300,19 @@ fn build_summary_prompt(conversation_text: &str) -> String {
 /// The analysis block improves summary quality (model "thinks" before writing)
 /// but has no informational value once the summary is written. Stripping it
 /// saves tokens in the ongoing context.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::compact::strip_analysis_block;
+///
+/// let input = "<analysis>\nthinking...\n</analysis>\n\n<summary>\nThe result.\n</summary>";
+/// let result = strip_analysis_block(input);
+/// assert_eq!(result, "The result.");
+///
+/// // Plain text without tags passes through unchanged:
+/// assert_eq!(strip_analysis_block("just text"), "just text");
+/// ```
 pub fn strip_analysis_block(summary: &str) -> String {
     // Remove <analysis>...</analysis> including the tags
     let stripped = if let Some(start) = summary.find("<analysis>") {

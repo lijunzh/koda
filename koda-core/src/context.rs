@@ -24,6 +24,8 @@ pub fn get() -> (usize, usize) {
 }
 
 /// Get context usage as a percentage (0-100).
+///
+/// Returns 0 when max is zero (no division-by-zero panic).
 pub fn percentage() -> usize {
     let (used, max) = get();
     if max == 0 {
@@ -32,7 +34,9 @@ pub fn percentage() -> usize {
     (used * 100) / max
 }
 
-/// Format context usage for the footer: "4.1k/128k (3%)"
+/// Format context usage for the footer: "4.1k/128k (3%)".
+///
+/// Returns an empty string when max is zero.
 pub fn format_footer() -> String {
     let (used, max) = get();
     if max == 0 {

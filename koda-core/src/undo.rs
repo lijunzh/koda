@@ -120,11 +120,37 @@ impl UndoStack {
 }
 
 /// Check if a tool name is a file-mutating tool that should be snapshotted.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::undo::is_mutating_tool;
+///
+/// assert!(is_mutating_tool("Write"));
+/// assert!(is_mutating_tool("Edit"));
+/// assert!(is_mutating_tool("Delete"));
+/// assert!(!is_mutating_tool("Read"));
+/// assert!(!is_mutating_tool("Grep"));
+/// ```
 pub fn is_mutating_tool(name: &str) -> bool {
     matches!(name, "Write" | "Edit" | "Delete" | "Overwrite")
 }
 
 /// Extract the target file path from tool arguments.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::undo::extract_file_path;
+///
+/// let args = serde_json::json!({"file_path": "src/main.rs"});
+/// assert_eq!(extract_file_path("Write", &args), Some("src/main.rs".into()));
+/// assert_eq!(extract_file_path("Read", &args), None);
+///
+/// // Also accepts "path" as an alias:
+/// let args = serde_json::json!({"path": "lib.rs"});
+/// assert_eq!(extract_file_path("Edit", &args), Some("lib.rs".into()));
+/// ```
 pub fn extract_file_path(name: &str, args: &serde_json::Value) -> Option<String> {
     match name {
         "Write" | "Edit" | "Delete" | "Overwrite" => args
