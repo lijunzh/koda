@@ -7,10 +7,10 @@
 //!
 //! | Type | Role |
 //! |------|------|
-//! | [`TuiState`] | Idle vs. actively inferring |
+//! | `TuiState` | Idle vs. actively inferring |
 //! | [`MenuContent`] | What is shown in the menu area below the status bar |
-//! | [`PromptMode`] | Normal chat vs. wizard text entry |
-//! | [`ProviderWizard`] | Multi-step provider setup state machine |
+//! | `PromptMode` | Normal chat vs. wizard text entry |
+//! | `ProviderWizard` | Multi-step provider setup state machine |
 //! | `Term` | Type alias for the ratatui terminal backed by crossterm |
 
 use ratatui::{Terminal, backend::CrosstermBackend};
