@@ -10,9 +10,49 @@ use clap::{Parser, Subcommand};
 use koda_core::persistence::Persistence;
 use std::path::PathBuf;
 
-/// Koda 🐻 - Your AI coding bear.
+const LONG_ABOUT: &str = "Koda runs in two modes:
+
+  INTERACTIVE   Run `koda` (no arguments) to open the full TUI.
+                Type your question and press Enter.
+                Type /help inside for keybindings and all commands.
+
+  HEADLESS      Pass a prompt to get a single answer and exit.
+                Great for scripts, pipes, and CI pipelines.
+                  koda \"explain this codebase\"
+                  git diff | koda
+                  koda -p - < prompt.txt
+
+Configuration precedence (highest wins):
+  1. CLI flags     --model, --provider, --base-url
+  2. Env vars      KODA_MODEL, KODA_PROVIDER, KODA_BASE_URL
+  3. Saved config  set interactively with /model, /provider, /key
+  4. Built-in defaults
+
+API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, …)
+follow the same order. Keys saved with /key are loaded from the
+local keystore at startup and injected as env vars — shell env
+vars always win over stored keys.";
+
+const AFTER_HELP: &str = "Examples:
+  koda                                # interactive TUI (type /help inside)
+  koda \"explain this codebase\"       # one-shot question, then exit
+  koda -p \"fix the failing tests\"    # same, explicit flag form
+  koda -p -                           # read prompt from stdin
+  git diff | koda                     # pipe diff as the prompt
+  koda \"refactor\" --model o3         # one-shot with a specific model
+  KODA_MODEL=gemini-flash koda \"...\" # env-var model override
+  koda server --stdio                 # ACP stdio server for editor plugins
+  koda -s abc123 \"continue\"          # resume a saved session";
+
+/// Koda 🐻 - A high-performance AI coding agent built in Rust
 #[derive(Parser, Debug)]
-#[command(name = "koda", version, about)]
+#[command(
+    name = "koda",
+    version,
+    about,
+    long_about = LONG_ABOUT,
+    after_help = AFTER_HELP,
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -51,7 +91,7 @@ struct Cli {
     #[arg(long, env = "KODA_MODEL")]
     model: Option<String>,
 
-    /// LLM provider (openai, anthropic, lmstudio, gemini, groq, grok)
+    /// LLM provider (openai, anthropic, lmstudio, gemini, groq, grok, ollama)
     #[arg(long, env = "KODA_PROVIDER")]
     provider: Option<String>,
 
@@ -74,14 +114,19 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Start ACP server for external clients
+    /// Start an ACP (Agent Client Protocol) server for editor/client integrations
     Server {
+        /// WebSocket port (not yet implemented — use --stdio instead)
         #[arg(long, default_value = "9999")]
         port: u16,
+        /// Use stdin/stdout JSON-RPC transport (required for VS Code, Zed, etc.)
+        ///
+        /// Reads newline-delimited JSON-RPC 2.0 from stdin and writes to stdout.
+        /// This is the standard ACP transport for local agent integrations.
         #[arg(long)]
         stdio: bool,
     },
-    /// Connect CLI to a running server
+    /// Connect to a running Koda server (not yet implemented)
     Connect { url: String },
 }
 

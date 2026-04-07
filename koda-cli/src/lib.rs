@@ -82,7 +82,7 @@
 //!
 //! ## Keybindings
 //!
-//! ### Input mode
+//! ### Input
 //!
 //! | Key | Action |
 //! |-----|--------|
@@ -90,12 +90,31 @@
 //! | `Alt+Enter` | Insert newline (multi-line input) |
 //! | `Tab` | Autocomplete slash commands and `@file` paths |
 //! | `Shift+Tab` | Toggle approval mode (auto ↔ confirm) |
+//! | `↑ / ↓` | Cycle through input history |
+//! | `Ctrl+R` | Reverse history search |
+//!
+//! ### Navigation
+//!
+//! | Key | Action |
+//! |-----|--------|
+//! | `PgUp / PgDn` | Scroll history one page up / down |
+//! | `Home` | Jump to top of history |
+//! | `End` | Jump to bottom (latest output) |
+//! | Mouse scroll | Scroll conversation history |
+//! | `Ctrl+Y` | Copy last code block to clipboard |
+//! | `Ctrl+U` | Copy last assistant response to clipboard |
+//!
+//! ### Session control
+//!
+//! | Key | Action |
+//! |-----|--------|
 //! | `Esc` | Cancel current inference |
 //! | `Ctrl+C` | Cancel current inference |
-//! | `Up/Down` | Scroll through input history |
-//! | Mouse scroll | Scroll conversation history |
+//! | `Ctrl+D` | Quit koda |
 //!
-//! ### Approval prompt (y/n/a/f)
+//! ### Approval prompt
+//!
+//! These keys appear when the agent asks to execute a tool:
 //!
 //! | Key | Action |
 //! |-----|--------|
@@ -156,6 +175,42 @@
 //! - Activate a skill: `/skills <query>` or the `ActivateSkill` tool
 //! - Create custom skills: place `.md` files in `.koda/skills/` or
 //!   `~/.config/koda/skills/`
+//!
+//! ## Configuration precedence
+//!
+//! When multiple sources specify the model, provider, or API key, the
+//! **highest-priority source wins**:
+//!
+//! ```text
+//! 1. CLI flags          --model, --provider, --base-url
+//!        ↓ (override)
+//! 2. Env vars           KODA_MODEL, KODA_PROVIDER, KODA_BASE_URL
+//!        ↓ (set if not already in env)
+//! 3. Keystore / DB      saved by /model, /provider, /key (injected at startup)
+//!        ↓ (fallback)
+//! 4. Built-in defaults  Claude Sonnet via Anthropic
+//! ```
+//!
+//! API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …)
+//! follow the same chain. Keys saved with `/key` are stored in the local
+//! SQLite keystore and injected into the process environment at startup —
+//! but a key already in the shell environment takes precedence.
+//!
+//! **CI / scripting:** the interactive `/key`, `/model`, `/provider`
+//! wizards are great for local setup, but in automation always prefer
+//! env vars or CLI flags — they work without a terminal and compose
+//! cleanly with `direnv`, Docker, and GitHub Actions secrets.
+//!
+//! ```bash
+//! # Override model for one call without touching saved config
+//! koda "review auth.rs" --model o3
+//!
+//! # Per-project model via direnv (.envrc)
+//! export KODA_MODEL=gemini-2.5-pro
+//!
+//! # CI pipeline
+//! ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_KEY }} koda -p "check types"
+//! ```
 //!
 //! ## Providers and model aliases
 //!
