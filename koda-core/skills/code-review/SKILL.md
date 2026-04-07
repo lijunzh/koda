@@ -2,6 +2,7 @@
 name: code-review
 description: Senior code review — finds bugs, anti-patterns, and improvements
 tags: [review, quality, analysis, bugs]
+when_to_use: Use when asked to review code, a PR, a diff, or a specific file for bugs, design issues, or quality improvements.
 ---
 
 # Code Review

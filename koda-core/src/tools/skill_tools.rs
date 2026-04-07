@@ -82,6 +82,9 @@ pub fn list_skills(registry: &SkillRegistry, args: &serde_json::Value) -> String
             "  \u{1f4da} {} \u{2014} {}{}\n",
             meta.name, meta.description, tags
         ));
+        if let Some(wtu) = &meta.when_to_use {
+            out.push_str(&format!("    When to use: {wtu}\n"));
+        }
     }
     out.push_str(&format!(
         "\n{} skill(s). Use ActivateSkill to load one.",
@@ -116,12 +119,21 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Write a minimal valid SKILL.md to `<tmp>/.koda/skills/<skill_name>/SKILL.md`.
+    /// Write a SKILL.md with optional `when_to_use` frontmatter.
     fn write_project_skill(tmp: &TempDir, skill_name: &str, description: &str) {
         let dir = tmp.path().join(".koda").join("skills").join(skill_name);
         std::fs::create_dir_all(&dir).unwrap();
         let content = format!(
             "---\nname: {skill_name}\ndescription: {description}\ntags: [test]\n---\n\nInstructions for {skill_name}."
+        );
+        std::fs::write(dir.join("SKILL.md"), content).unwrap();
+    }
+
+    fn write_project_skill_with_when(tmp: &TempDir, skill_name: &str, when_to_use: &str) {
+        let dir = tmp.path().join(".koda").join("skills").join(skill_name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = format!(
+            "---\nname: {skill_name}\ndescription: A skill with guidance.\ntags: []\nwhen_to_use: {when_to_use}\n---\n\nInstructions."
         );
         std::fs::write(dir.join("SKILL.md"), content).unwrap();
     }
@@ -202,6 +214,34 @@ mod tests {
         let registry = SkillRegistry::discover(tmp.path());
         let result = list_skills(&registry, &json!({"query": "zzz-not-found-anywhere"} ));
         assert!(result.contains("No skills found matching"));
+    }
+
+    #[test]
+    fn test_list_skills_shows_when_to_use() {
+        let tmp = TempDir::new().unwrap();
+        write_project_skill_with_when(
+            &tmp,
+            "guided-skill",
+            "Use when the user asks to do the thing.",
+        );
+        let registry = SkillRegistry::discover(tmp.path());
+        let result = list_skills(&registry, &json!({}));
+        assert!(
+            result.contains("When to use: Use when the user asks to do the thing."),
+            "should surface when_to_use in listing: {result}"
+        );
+    }
+
+    #[test]
+    fn test_list_skills_omits_when_to_use_line_if_absent() {
+        // Use a bare registry (no built-ins) so we control exactly what's in it.
+        let mut registry = SkillRegistry::default();
+        registry.add_builtin("plain-skill", "no guidance", None, "content");
+        let result = list_skills(&registry, &json!({}));
+        assert!(
+            !result.contains("When to use:"),
+            "should not emit 'When to use:' when field is absent: {result}"
+        );
     }
 
     // ── activate_skill ─────────────────────────────────────────────────
