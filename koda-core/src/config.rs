@@ -1193,30 +1193,84 @@ mod tests {
     // ── sub-agent model inheritance ───────────────────────────────────────
 
     /// Simulate the dispatch logic: a parent on Gemini with a specific model
-    /// should be fully inherited by sub-agents that don't set their own.
+    /// should be fully inherited by a sub-agent that sets neither provider nor model.
     #[test]
     fn test_sub_agent_inherits_parent_provider_and_model() {
         let tmp = tempfile::TempDir::new().unwrap();
 
         // Parent is on Gemini with a specific model
-        let parent = KodaConfig::default_for_testing(ProviderType::Gemini)
-            .with_overrides(None, Some("gemini-2.0-flash".to_string()), None);
+        let parent = KodaConfig::default_for_testing(ProviderType::Gemini).with_overrides(
+            None,
+            Some("gemini-2.0-flash".to_string()),
+            None,
+        );
 
         // Load explore and apply the inheritance logic from sub_agent_dispatch
         let raw = KodaConfig::load_agent_json(tmp.path(), "explore").unwrap();
         let mut cfg = KodaConfig::load(tmp.path(), "explore").unwrap();
 
-        cfg = cfg.with_overrides(
-            Some(parent.base_url.clone()),
-            None,
-            Some(parent.provider_type.to_string()),
-        );
-        if raw.model.is_none() {
-            cfg = cfg.with_overrides(None, Some(parent.model.clone()), None);
+        // Mirrors sub_agent_dispatch: inherit everything when agent sets no provider
+        let agent_has_own_provider = raw.provider.is_some() || raw.base_url.is_some();
+        if !agent_has_own_provider {
+            let model_override = raw.model.is_none().then(|| parent.model.clone());
+            cfg = cfg.with_overrides(
+                Some(parent.base_url.clone()),
+                model_override,
+                Some(parent.provider_type.to_string()),
+            );
         }
 
-        assert_eq!(cfg.provider_type, ProviderType::Gemini, "provider must be inherited");
-        assert_eq!(cfg.model, "gemini-2.0-flash", "model must be inherited from parent");
+        assert_eq!(
+            cfg.provider_type,
+            ProviderType::Gemini,
+            "provider must be inherited"
+        );
+        assert_eq!(
+            cfg.model, "gemini-2.0-flash",
+            "model must be inherited from parent"
+        );
+    }
+
+    /// A sub-agent with its own provider must keep its routing even when the
+    /// parent uses a different provider — the JSON opt-in wins.
+    #[test]
+    fn test_sub_agent_own_provider_is_not_overridden() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        // Agent explicitly sets its own provider (e.g. a mock / local specialist)
+        std::fs::write(
+            agents_dir.join("local-scout.json"),
+            r#"{"name":"local-scout","system_prompt":"s","provider":"lmstudio","base_url":"http://localhost:1234/v1"}"#,
+        )
+        .unwrap();
+
+        let parent = KodaConfig::default_for_testing(ProviderType::Gemini).with_overrides(
+            None,
+            Some("gemini-2.0-flash".to_string()),
+            None,
+        );
+
+        let raw = KodaConfig::load_agent_json(tmp.path(), "local-scout").unwrap();
+        let mut cfg = KodaConfig::load(tmp.path(), "local-scout").unwrap();
+
+        let agent_has_own_provider = raw.provider.is_some() || raw.base_url.is_some();
+        if !agent_has_own_provider {
+            let model_override = raw.model.is_none().then(|| parent.model.clone());
+            cfg = cfg.with_overrides(
+                Some(parent.base_url.clone()),
+                model_override,
+                Some(parent.provider_type.to_string()),
+            );
+        }
+
+        // Agent's own provider must be preserved
+        assert_eq!(cfg.provider_type, ProviderType::LMStudio);
+        assert_ne!(
+            cfg.provider_type,
+            ProviderType::Gemini,
+            "parent provider must not bleed into agent with explicit provider"
+        );
     }
 
     /// A sub-agent that explicitly sets its own model must keep it even when
@@ -1226,30 +1280,37 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let agents_dir = tmp.path().join("agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
+        // Agent sets model preference but no explicit provider
         std::fs::write(
             agents_dir.join("specialist.json"),
             r#"{"name":"specialist","system_prompt":"s","model":"gemini-2.5-flash"}"#,
         )
         .unwrap();
 
-        let parent = KodaConfig::default_for_testing(ProviderType::Gemini)
-            .with_overrides(None, Some("gemini-2.0-flash-lite".to_string()), None);
+        let parent = KodaConfig::default_for_testing(ProviderType::Gemini).with_overrides(
+            None,
+            Some("gemini-2.0-flash-lite".to_string()),
+            None,
+        );
 
         let raw = KodaConfig::load_agent_json(tmp.path(), "specialist").unwrap();
         let mut cfg = KodaConfig::load(tmp.path(), "specialist").unwrap();
 
-        cfg = cfg.with_overrides(
-            Some(parent.base_url.clone()),
-            None,
-            Some(parent.provider_type.to_string()),
-        );
-        if raw.model.is_none() {
-            cfg = cfg.with_overrides(None, Some(parent.model.clone()), None);
+        let agent_has_own_provider = raw.provider.is_some() || raw.base_url.is_some();
+        if !agent_has_own_provider {
+            let model_override = raw.model.is_none().then(|| parent.model.clone());
+            cfg = cfg.with_overrides(
+                Some(parent.base_url.clone()),
+                model_override,
+                Some(parent.provider_type.to_string()),
+            );
         }
 
         // Provider inherited, but agent's own model is kept
         assert_eq!(cfg.provider_type, ProviderType::Gemini);
-        assert_eq!(cfg.model, "gemini-2.5-flash",
-            "agent's explicit model must not be overridden by parent");
+        assert_eq!(
+            cfg.model, "gemini-2.5-flash",
+            "agent's explicit model must not be overridden by parent"
+        );
     }
 }
