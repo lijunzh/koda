@@ -1,7 +1,41 @@
 //! ACP server over stdio JSON-RPC.
 //!
 //! Reads newline-delimited JSON from stdin, writes JSON-RPC messages to stdout.
-//! Implements the ACP lifecycle: Initialize → Authenticate → NewSession → Prompt → Cancel.
+//! Implements the [ACP (Agent Client Protocol)](https://agentclientprotocol.org)
+//! lifecycle over stdio:
+//!
+//! ```text
+//! Client → koda server --stdio
+//!
+//! → initialize         (negotiate protocol version)
+//! ← InitializeResponse
+//!
+//! → authenticate       (no-op for local agent, always succeeds)
+//! ← AuthenticateResponse
+//!
+//! → session/new        (create a session, returns session_id)
+//! ← NewSessionResponse
+//!
+//! → session/prompt     (send a user message; blocks until turn complete)
+//! ← [stream of session/update notifications]
+//! ← PromptResponse
+//!
+//! → Cancel notification (optional — cancels the running turn)
+//! ```
+//!
+//! ## Transport
+//!
+//! Messages are **newline-delimited JSON-RPC 2.0**. Each line is a complete,
+//! independent JSON object. The server reads from stdin line-by-line and
+//! writes to stdout via a background task to avoid blocking the read loop.
+//!
+//! ## Approval flow
+//!
+//! When the engine needs to execute a destructive tool, it emits an
+//! `ApprovalRequest` event. The server translates this into an outgoing
+//! `session/request_permission` JSON-RPC *request* to the client. The client
+//! sends back a `result` with `outcome: { selected: { option_id: "approve" } }`
+//! or `"reject"`. The mapping is handled by [`crate::acp_adapter`].
 
 use crate::acp_adapter::{self, AcpOutgoing, PendingApproval};
 use acp::Side;

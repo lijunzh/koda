@@ -15,6 +15,26 @@ use unicode_width::UnicodeWidthChar;
 /// the current row, it breaks *before* the word.
 ///
 /// For words longer than the terminal width, force-breaks mid-word.
+///
+/// # Examples
+///
+/// ```
+/// use koda_cli::wrap_util::visual_line_count;
+///
+/// // Short line — fits in one row
+/// assert_eq!(visual_line_count("hello world", 80), 1);
+///
+/// // Empty string counts as one row (the cursor still occupies a cell)
+/// assert_eq!(visual_line_count("", 80), 1);
+///
+/// // 160 identical chars at width 80 = 2 rows
+/// assert_eq!(visual_line_count(&"x".repeat(160), 80), 2);
+///
+/// // Word-wrap: the second word is wrapped to the next row
+/// // because 75 + 1 + 75 = 151 > 80
+/// let s = format!("{} {}", "a".repeat(75), "b".repeat(75));
+/// assert_eq!(visual_line_count(&s, 80), 2);
+/// ```
 pub fn visual_line_count(text: &str, width: usize) -> usize {
     if text.is_empty() {
         return 1;

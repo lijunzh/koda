@@ -12,40 +12,63 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Action to take after processing a REPL command.
+///
+/// Returned by [`handle_command`] and translated into UI-specific
+/// behavior by the TUI event loop (`tui_app.rs`) or the headless runner.
+/// Variants with no data are signals; variants with data carry parsed arguments.
 pub enum ReplAction {
+    /// `/exit` — terminate the session.
     Quit,
+    /// `/model <name>` — switch to a specific model or alias.
     SwitchModel(String),
+    /// `/model` (no arg) — open the interactive model picker.
     PickModel,
+    /// `/provider <name>` — configure a specific provider.
     SetupProvider(ProviderType, String), // (provider_type, base_url)
+    /// `/provider` (no arg) — open the interactive provider picker.
     PickProvider,
+    /// `/help` — show the help panel.
     ShowHelp,
+    /// `/sessions` (no arg) — open the session list picker.
     ListSessions,
+    /// `/sessions resume <id>` or `/sessions <id>` — resume a session.
     ResumeSession(String),
+    /// `/sessions delete <id>` — delete a session.
     DeleteSession(String),
-    /// Inject text as if the user typed it (used by /diff review, /diff commit)
+    /// Inject text as if the user typed it.
+    ///
+    /// Used by `/diff review` and `/diff commit` to inject a pre-built prompt.
     InjectPrompt(String),
-    /// Compact the conversation by summarizing history
+    /// `/compact` — summarise conversation history to free context tokens.
     Compact,
-    /// Purge compacted messages (optional age filter like "90d")
+    /// `/purge [<age>]` — delete archived messages older than `age`.
+    ///
+    /// Age is a string like `"90d"`, `"30d"`, etc. `None` means "all".
     Purge(Option<String>),
-    /// Expand Nth most recent tool output (1 = last)
+    /// `/expand [<n>]` — show the full output of the Nth-most-recent tool call.
+    ///
+    /// `n` defaults to 1 (most recent). Output is replayed untruncated.
     Expand(usize),
-    /// Toggle verbose tool output (None = toggle, Some = set)
+    /// `/verbose [on|off]` — toggle or set verbose tool output.
+    ///
+    /// `None` = toggle; `Some(true/false)` = set explicitly.
     Verbose(Option<bool>),
-    /// List available sub-agents
+    /// `/agent` — open the sub-agent picker.
     ListAgents,
-    /// Show git diff summary
+    /// `/diff` (no sub-command) — show the pending git diff summary.
     ShowDiff,
-    /// Memory management command
+    /// `/memory [save|<text>]` — view/append memory files.
     MemoryCommand(Option<String>),
-    /// Undo last turn's file mutations
+    /// `/undo` — revert file mutations from the last turn.
     Undo,
-    /// List available skills (optional search query)
+    /// `/skills [<query>]` — list available skills, optionally filtered.
     ListSkills(Option<String>),
-    /// Manage API keys
+    /// `/key` — open the API key manager.
     ManageKeys,
+    /// Command was handled internally (UI action already taken).
     #[allow(dead_code)]
     Handled,
+    /// Input was not a slash command — treat as a chat message.
     NotACommand,
 }
 

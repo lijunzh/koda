@@ -2,6 +2,16 @@
 //!
 //! Extracted from `tui_app.rs` to keep type definitions separate
 //! from the event loop logic. See #209.
+//!
+//! ## Key types
+//!
+//! | Type | Role |
+//! |------|------|
+//! | [`TuiState`] | Idle vs. actively inferring |
+//! | [`MenuContent`] | What is shown in the menu area below the status bar |
+//! | [`PromptMode`] | Normal chat vs. wizard text entry |
+//! | [`ProviderWizard`] | Multi-step provider setup state machine |
+//! | `Term` | Type alias for the ratatui terminal backed by crossterm |
 
 use ratatui::{Terminal, backend::CrosstermBackend};
 
@@ -35,11 +45,14 @@ pub(crate) enum TuiState {
 }
 
 /// What's currently shown in the `menu_area` below the status bar.
-/// Only one menu can be active at a time.
+///
+/// Only one menu can be active at a time. The TUI switches between
+/// variants in response to slash commands, `@` completions, and
+/// engine events (approval requests, loop cap, etc.).
 pub enum MenuContent {
-    /// Nothing — menu_area is empty.
+    /// Nothing — menu_area is empty (normal chat state).
     None,
-    /// Slash command dropdown (auto-appears on `/`).
+    /// Slash command dropdown (auto-appears when the user types `/`).
     Slash(SlashDropdown),
     /// Model picker dropdown (`/model` with no args).
     Model(ModelDropdown),
@@ -51,33 +64,34 @@ pub enum MenuContent {
     Key(ProviderDropdown),
     /// Session picker dropdown (`/sessions` with no args).
     Session(SessionDropdown),
-    /// File picker dropdown (auto-appears on `@`).
+    /// File picker dropdown (auto-appears when the user types `@`).
     File {
         dropdown: FileDropdown,
-        /// Text before the `@` token (to reconstruct the full input).
+        /// Text before the `@` token (to reconstruct the full input on selection).
         prefix: String,
     },
-    /// Wizard trail — completed steps shown dimmed during multi-step flow.
+    /// Wizard trail — completed steps shown dimmed during a multi-step flow.
     WizardTrail(Vec<(String, String)>),
-    /// Approval hotkey bar — shown during inference when engine requests approval.
+    /// Approval hotkey bar — shown during inference when the engine requests
+    /// a tool approval (`y`/`n`/`a`/`f`).
     Approval {
         id: String,
         tool_name: String,
         detail: String,
     },
-    /// AskUser input bar — model is asking a clarifying question.
+    /// AskUser input bar — the model is asking a clarifying question.
     AskUser {
         id: String,
         question: String,
         options: Vec<String>,
     },
-    /// Loop cap hotkey bar — continue or stop after iteration limit.
+    /// Loop cap hotkey bar — continue or stop after the iteration limit is hit.
     LoopCap,
     /// Purge confirmation bar — \[y\] confirm / \[n\] cancel.
     PurgeConfirm { min_age_days: u32, detail: String },
     /// Ctrl+R reverse history search overlay.
     HistorySearch {
-        /// Current search query.
+        /// Current search query (updated on each keystroke).
         query: String,
         /// Matching history entries, newest first (pre-computed on each keystroke).
         matches: Vec<String>,
