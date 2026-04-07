@@ -13,10 +13,29 @@ tool when it determines a skill is relevant.
 
 ## Creating custom skills
 
-Place `.md` files in `.koda/skills/` (project-local) or
-`~/.config/koda/skills/` (global). The filename becomes the skill name.
+Place a `SKILL.md` file inside a named directory under `.koda/skills/`
+(project-local) or `~/.config/koda/skills/` (global). The directory name
+becomes the skill name.
+
+```text
+.koda/
+  skills/
+    my-checklist/
+      SKILL.md        ← skill content goes here
+```
+
+### SKILL.md format
+
+Frontmatter is YAML between `---` fences; the body is the skill prompt:
 
 ```markdown
+---
+name: my-checklist
+description: One-line summary shown in ListSkills output.
+tags: [review, quality]
+when_to_use: Use when the user asks to review a pull request or a diff.
+---
+
 # My Review Checklist
 
 When reviewing code, always check:
@@ -24,6 +43,13 @@ When reviewing code, always check:
 - [ ] Error handling covers all paths
 - [ ] Tests cover the new logic
 ```
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | ✔ | Skill identifier (used with `ActivateSkill`) |
+| `description` | recommended | One-line summary shown in `ListSkills` |
+| `tags` | optional | Searchable tags: `[tag1, tag2]` |
+| `when_to_use` | recommended | Guidance for the model on when to activate this skill. Shown in `ListSkills` output so the model can self-route without hard-coded hints. |
 
 ## Skill lookup order
 

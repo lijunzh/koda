@@ -20,6 +20,11 @@ pub fn inject_builtin_skills(agent: &mut KodaAgent) {
     agent.tools.skill_registry.add_builtin(
         "koda_docs",
         "Koda user manual: commands, TUI, configuration, sessions, providers, and more.",
+        Some(
+            "Use when the user asks how to use Koda: commands, flags, TUI keybindings, \
+             configuration, sessions, providers, approval modes, skills, sub-agents, \
+             ACP server, or any other feature documented in the user manual.",
+        ),
         KODA_DOCS,
     );
 }
