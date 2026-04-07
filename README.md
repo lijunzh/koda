@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/lijunzh/koda/actions/workflows/ci.yml/badge.svg)](https://github.com/lijunzh/koda/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/koda-cli.svg)](https://crates.io/crates/koda-cli)
-[![docs.rs](https://docs.rs/koda-core/badge.svg)](https://docs.rs/koda-core)
+[![docs.rs](https://docs.rs/koda-cli/badge.svg)](https://docs.rs/koda-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A high-performance personal AI assistant built in Rust.
@@ -88,7 +88,8 @@ Place in `.koda/agents/` (project) or `~/.config/koda/agents/` (global).
 
 | Document | Content |
 |---|---|
-| [**API Reference**](https://docs.rs/koda-core) | Auto-generated from code |
+| [**User Manual**](https://docs.rs/koda-cli) | CLI reference, slash commands, providers, headless mode, sessions |
+| [**Engine API**](https://docs.rs/koda-core) | `koda-core` library docs for developers embedding the engine |
 | [**Design**](DESIGN.md) | Architecture principles |
 | [**CLAUDE.md**](CLAUDE.md) | Workspace layout, conventions |
 | [**Changelog**](CHANGELOG.md) | Version history |
