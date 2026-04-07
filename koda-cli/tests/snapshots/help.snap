@@ -1,0 +1,98 @@
+Koda runs in two modes:
+
+  INTERACTIVE   Run `koda` (no arguments) to open the full TUI.
+                Type your question and press Enter.
+                Type /help inside for keybindings and all commands.
+
+  HEADLESS      Pass a prompt to get a single answer and exit.
+                Great for scripts, pipes, and CI pipelines.
+                  koda "explain this codebase"
+                  git diff | koda
+                  koda -p - < prompt.txt
+
+Configuration precedence (highest wins):
+  1. CLI flags     --model, --provider, --base-url
+  2. Env vars      KODA_MODEL, KODA_PROVIDER, KODA_BASE_URL
+  3. Saved config  set interactively with /model, /provider, /key
+  4. Built-in defaults
+
+API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, …)
+follow the same order. Keys saved with /key are loaded from the
+local keystore at startup and injected as env vars — shell env
+vars always win over stored keys.
+
+Usage: koda [OPTIONS] [PROMPT] [COMMAND]
+
+Commands:
+  server   Start an ACP (Agent Client Protocol) server for editor/client integrations
+  connect  Connect to a running Koda server (not yet implemented)
+  help     Print this message or the help of the given subcommand(s)
+
+Arguments:
+  [PROMPT]
+          Positional prompt (alternative to -p). `koda "fix the bug"` is equivalent to `koda -p "fix the bug"`
+
+Options:
+  -p, --prompt <PROMPT>
+          Run a single prompt and exit (headless mode). Use "-" to read from stdin
+
+      --output-format <OUTPUT_FORMAT>
+          Output format for headless mode
+          
+          [default: text]
+          [possible values: text, json]
+
+  -a, --agent <AGENT>
+          Agent to use (matches a JSON file in agents/)
+          
+          [default: default]
+
+  -s, --resume <SESSION>
+          Session ID to resume (omit to start a new session)
+
+      --project-root <PROJECT_ROOT>
+          Project root directory (defaults to current directory)
+
+      --base-url <BASE_URL>
+          LLM provider base URL override
+          
+          [env: KODA_BASE_URL=]
+
+      --model <MODEL>
+          Model name override
+          
+          [env: KODA_MODEL=]
+
+      --provider <PROVIDER>
+          LLM provider (openai, anthropic, lmstudio, gemini, groq, grok, ollama)
+          
+          [env: KODA_PROVIDER=]
+
+      --max-tokens <MAX_TOKENS>
+          Maximum output tokens
+
+      --temperature <TEMPERATURE>
+          Sampling temperature (0.0 - 2.0)
+
+      --thinking-budget <THINKING_BUDGET>
+          Anthropic extended thinking budget (tokens)
+
+      --reasoning-effort <REASONING_EFFORT>
+          OpenAI reasoning effort (low, medium, high)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+Examples:
+  koda                                # interactive TUI (type /help inside)
+  koda "explain this codebase"       # one-shot question, then exit
+  koda -p "fix the failing tests"    # same, explicit flag form
+  koda -p -                           # read prompt from stdin
+  git diff | koda                     # pipe diff as the prompt
+  koda "refactor" --model o3         # one-shot with a specific model
+  KODA_MODEL=gemini-flash koda "..." # env-var model override
+  koda server --stdio                 # ACP stdio server for editor plugins
+  koda -s abc123 "continue"          # resume a saved session

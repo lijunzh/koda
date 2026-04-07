@@ -1,0 +1,17 @@
+Start an ACP (Agent Client Protocol) server for editor/client integrations
+
+Usage: koda server [OPTIONS]
+
+Options:
+      --port <PORT>
+          WebSocket port (not yet implemented — use --stdio instead)
+          
+          [default: 9999]
+
+      --stdio
+          Use stdin/stdout JSON-RPC transport (required for VS Code, Zed, etc.)
+          
+          Reads newline-delimited JSON-RPC 2.0 from stdin and writes to stdout. This is the standard ACP transport for local agent integrations.
+
+  -h, --help
+          Print help (see a summary with '-h')

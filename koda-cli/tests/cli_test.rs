@@ -95,6 +95,63 @@ fn test_cli_headless_piped_stdin_empty() {
     assert!(output.status.success());
 }
 
+/// Snapshot test — `koda --help` must match the committed snapshot.
+///
+/// When CLI flags change (new flag, renamed, removed, description edited)
+/// this test fails with a diff. That's your reminder to:
+///   1. Update the snapshot:
+///        cargo run -p koda-cli -- --help > koda-cli/tests/snapshots/help.snap
+///   2. Update `docs/src/cli-reference.md` to match.
+#[test]
+fn test_cli_help_snapshot() {
+    let output = Command::new(koda_bin())
+        .arg("--help")
+        .output()
+        .expect("Failed to run koda --help");
+
+    assert!(output.status.success());
+    let actual = String::from_utf8_lossy(&output.stdout);
+    let snapshot = include_str!("snapshots/help.snap");
+    assert_eq!(
+        actual.trim(),
+        snapshot.trim(),
+        concat!(
+            "\n\nkoda --help output changed — update snapshot + docs:\n",
+            "  cargo run -p koda-cli -- --help ",
+            "> koda-cli/tests/snapshots/help.snap\n",
+            "  # then edit docs/src/cli-reference.md\n"
+        )
+    );
+}
+
+/// Snapshot test — `koda server --help` must match the committed snapshot.
+///
+/// To update after an intentional change:
+///   1. cargo run -p koda-cli -- server --help \
+///        > koda-cli/tests/snapshots/server_help.snap
+///   2. Update `docs/src/acp.md` if server flags changed.
+#[test]
+fn test_cli_server_help_snapshot() {
+    let output = Command::new(koda_bin())
+        .args(["server", "--help"])
+        .output()
+        .expect("Failed to run koda server --help");
+
+    assert!(output.status.success());
+    let actual = String::from_utf8_lossy(&output.stdout);
+    let snapshot = include_str!("snapshots/server_help.snap");
+    assert_eq!(
+        actual.trim(),
+        snapshot.trim(),
+        concat!(
+            "\n\nkoda server --help output changed — update snapshot + docs:\n",
+            "  cargo run -p koda-cli -- server --help ",
+            "> koda-cli/tests/snapshots/server_help.snap\n",
+            "  # then edit docs/src/acp.md\n"
+        )
+    );
+}
+
 #[test]
 fn test_cli_output_format_validates() {
     let output = Command::new(koda_bin())
