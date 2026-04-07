@@ -228,3 +228,217 @@ fn get_git_diff() -> String {
         diff
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ReplAction, handle_command};
+    use koda_core::config::{KodaConfig, ProviderType};
+    use koda_core::providers::mock::{MockProvider, MockResponse};
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    fn dispatch(input: &str) -> ReplAction {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        let provider: Arc<RwLock<Box<dyn koda_core::providers::LlmProvider>>> =
+            Arc::new(RwLock::new(Box::new(MockProvider::new(vec![
+                MockResponse::Text(String::new()),
+            ]))));
+        rt.block_on(handle_command(input, &config, &provider))
+    }
+
+    #[test]
+    fn exit_command_returns_quit() {
+        assert!(matches!(dispatch("/exit"), ReplAction::Quit));
+    }
+
+    #[test]
+    fn model_bare_returns_pick_model() {
+        assert!(matches!(dispatch("/model"), ReplAction::PickModel));
+    }
+
+    #[test]
+    fn model_with_name_returns_switch_model() {
+        assert!(matches!(
+            dispatch("/model gpt-4o"),
+            ReplAction::SwitchModel(_)
+        ));
+        if let ReplAction::SwitchModel(name) = dispatch("/model gpt-4o") {
+            assert_eq!(name, "gpt-4o");
+        }
+    }
+
+    #[test]
+    fn provider_bare_returns_pick_provider() {
+        assert!(matches!(dispatch("/provider"), ReplAction::PickProvider));
+    }
+
+    #[test]
+    fn provider_with_name_returns_setup_provider() {
+        assert!(matches!(
+            dispatch("/provider openai"),
+            ReplAction::SetupProvider(_, _)
+        ));
+    }
+
+    #[test]
+    fn help_returns_show_help() {
+        assert!(matches!(dispatch("/help"), ReplAction::ShowHelp));
+    }
+
+    #[test]
+    fn diff_bare_returns_show_diff() {
+        assert!(matches!(dispatch("/diff"), ReplAction::ShowDiff));
+    }
+
+    #[test]
+    fn diff_review_returns_inject_prompt() {
+        assert!(matches!(
+            dispatch("/diff review"),
+            ReplAction::InjectPrompt(_)
+        ));
+    }
+
+    #[test]
+    fn diff_commit_returns_inject_prompt() {
+        assert!(matches!(
+            dispatch("/diff commit"),
+            ReplAction::InjectPrompt(_)
+        ));
+    }
+
+    #[test]
+    fn sessions_bare_returns_list_sessions() {
+        assert!(matches!(dispatch("/sessions"), ReplAction::ListSessions));
+    }
+
+    #[test]
+    fn sessions_delete_returns_delete_session() {
+        assert!(matches!(
+            dispatch("/sessions delete abc123"),
+            ReplAction::DeleteSession(_)
+        ));
+        if let ReplAction::DeleteSession(id) = dispatch("/sessions delete abc123") {
+            assert_eq!(id, "abc123");
+        }
+    }
+
+    #[test]
+    fn sessions_resume_returns_resume_session() {
+        assert!(matches!(
+            dispatch("/sessions resume abc123"),
+            ReplAction::ResumeSession(_)
+        ));
+        if let ReplAction::ResumeSession(id) = dispatch("/sessions resume abc123") {
+            assert_eq!(id, "abc123");
+        }
+    }
+
+    #[test]
+    fn sessions_bare_id_returns_resume_session() {
+        assert!(matches!(
+            dispatch("/sessions abc12345"),
+            ReplAction::ResumeSession(_)
+        ));
+    }
+
+    #[test]
+    fn expand_returns_expand() {
+        assert!(matches!(dispatch("/expand"), ReplAction::Expand(_)));
+        if let ReplAction::Expand(n) = dispatch("/expand") {
+            assert_eq!(n, 1);
+        }
+        if let ReplAction::Expand(n) = dispatch("/expand 3") {
+            assert_eq!(n, 3);
+        }
+    }
+
+    #[test]
+    fn verbose_bare_returns_toggle() {
+        assert!(matches!(dispatch("/verbose"), ReplAction::Verbose(None)));
+    }
+
+    #[test]
+    fn verbose_on_returns_true() {
+        assert!(matches!(
+            dispatch("/verbose on"),
+            ReplAction::Verbose(Some(true))
+        ));
+    }
+
+    #[test]
+    fn verbose_off_returns_false() {
+        assert!(matches!(
+            dispatch("/verbose off"),
+            ReplAction::Verbose(Some(false))
+        ));
+    }
+
+    #[test]
+    fn memory_bare_returns_memory_command() {
+        assert!(matches!(
+            dispatch("/memory"),
+            ReplAction::MemoryCommand(None)
+        ));
+    }
+
+    #[test]
+    fn memory_with_arg_returns_memory_command_some() {
+        assert!(matches!(
+            dispatch("/memory add test"),
+            ReplAction::MemoryCommand(Some(_))
+        ));
+        assert!(matches!(
+            dispatch("/memory global test"),
+            ReplAction::MemoryCommand(Some(_))
+        ));
+    }
+
+    #[test]
+    fn compact_returns_compact() {
+        assert!(matches!(dispatch("/compact"), ReplAction::Compact));
+    }
+
+    #[test]
+    fn agent_returns_list_agents() {
+        assert!(matches!(dispatch("/agent"), ReplAction::ListAgents));
+    }
+
+    #[test]
+    fn undo_returns_undo() {
+        assert!(matches!(dispatch("/undo"), ReplAction::Undo));
+    }
+
+    #[test]
+    fn skills_bare_returns_list_skills_none() {
+        assert!(matches!(dispatch("/skills"), ReplAction::ListSkills(None)));
+    }
+
+    #[test]
+    fn skills_with_query_returns_list_skills_some() {
+        assert!(matches!(
+            dispatch("/skills review"),
+            ReplAction::ListSkills(Some(_))
+        ));
+        if let ReplAction::ListSkills(Some(q)) = dispatch("/skills review") {
+            assert_eq!(q, "review");
+        }
+    }
+
+    #[test]
+    fn key_command_manages_keys() {
+        assert!(matches!(dispatch("/key"), ReplAction::ManageKeys));
+        assert!(matches!(dispatch("/keys"), ReplAction::ManageKeys));
+    }
+
+    #[test]
+    fn unknown_commands_fall_through() {
+        assert!(matches!(dispatch("/foobar"), ReplAction::NotACommand));
+        assert!(matches!(dispatch("/foo"), ReplAction::NotACommand));
+        assert!(matches!(dispatch("/set"), ReplAction::NotACommand));
+        assert!(matches!(dispatch("/config"), ReplAction::NotACommand));
+        assert!(matches!(dispatch("/transcript"), ReplAction::NotACommand));
+    }
+}

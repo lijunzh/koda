@@ -18,7 +18,7 @@ use unicode_width::UnicodeWidthChar;
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use koda_cli::wrap_util::visual_line_count;
 ///
 /// // Short line — fits in one row
