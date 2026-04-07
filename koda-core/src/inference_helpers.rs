@@ -37,6 +37,20 @@ pub const SYSTEM_PROMPT_OVERHEAD: usize = 100;
 /// Estimate token count for a set of messages.
 ///
 /// Uses a calibrated heuristic: `chars / CHARS_PER_TOKEN + PER_MESSAGE_OVERHEAD`.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::inference_helpers::estimate_tokens;
+/// use koda_core::providers::ChatMessage;
+///
+/// let messages = vec![
+///     ChatMessage::text("system", "You are helpful."),
+///     ChatMessage::text("user", "Hello world"),
+/// ];
+/// let tokens = estimate_tokens(&messages);
+/// assert!(tokens > 20 && tokens < 40);
+/// ```
 pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
     messages
         .iter()
@@ -77,6 +91,16 @@ pub fn assemble_messages(
 ///
 /// These are typically transient (LM Studio choking on malformed input,
 /// Ollama OOM, etc.) and should end the turn gracefully rather than crash.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::inference_helpers::is_server_error;
+///
+/// assert!(is_server_error(&anyhow::anyhow!("HTTP 500 from provider")));
+/// assert!(is_server_error(&anyhow::anyhow!("bad gateway")));
+/// assert!(!is_server_error(&anyhow::anyhow!("401 Unauthorized")));
+/// ```
 pub fn is_server_error(err: &anyhow::Error) -> bool {
     let msg = format!("{err:#}").to_lowercase();
     msg.contains("500")
@@ -91,6 +115,16 @@ pub fn is_server_error(err: &anyhow::Error) -> bool {
 ///
 /// Matches HTTP 429 (Too Many Requests) and Anthropic's HTTP 529 (overloaded),
 /// plus common text patterns across providers.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::inference_helpers::is_rate_limit_error;
+///
+/// assert!(is_rate_limit_error(&anyhow::anyhow!("429 Too Many Requests")));
+/// assert!(is_rate_limit_error(&anyhow::anyhow!("quota exceeded")));
+/// assert!(!is_rate_limit_error(&anyhow::anyhow!("prompt is too long")));
+/// ```
 pub fn is_rate_limit_error(err: &anyhow::Error) -> bool {
     let msg = format!("{err:#}").to_lowercase();
     msg.contains("429")
@@ -129,6 +163,16 @@ pub fn rate_limit_backoff(attempt: u32) -> std::time::Duration {
 /// - Anthropic: "prompt is too long", "input is too long"
 /// - OpenAI: "maximum context length exceeded", "context_length_exceeded"
 /// - Generic: HTTP 400/413 with size-related messages
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::inference_helpers::is_context_overflow_error;
+///
+/// assert!(is_context_overflow_error(&anyhow::anyhow!("prompt is too long")));
+/// assert!(is_context_overflow_error(&anyhow::anyhow!("context_length_exceeded")));
+/// assert!(!is_context_overflow_error(&anyhow::anyhow!("rate limit exceeded")));
+/// ```
 pub fn is_context_overflow_error(err: &anyhow::Error) -> bool {
     let msg = format!("{err:#}").to_lowercase();
     msg.contains("too long")

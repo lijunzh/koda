@@ -2,6 +2,38 @@
 //!
 //! All output is rendered as `ratatui::text::Line` / `Span` and written
 //! above the viewport via `insert_before()`. No ANSI strings.
+//!
+//! ## Pipeline
+//!
+//! ```text
+//! EngineEvent (from koda_core)
+//!     ↓
+//! TuiRenderer::render_to_buffer()
+//!     ↓  assembles styled Line<'static> values
+//! ScrollBuffer::push()            ← render cache (VecDeque)
+//!     ↓
+//! tui_app  →  Paragraph::new(buffer.all_lines()).scroll()
+//!     ↓
+//! ratatui Terminal::draw()
+//! ```
+//!
+//! ## Streaming text
+//!
+//! `TextDelta` events accumulate in `text_buf`. Complete lines (split at `\n`)
+//! are flushed through the markdown renderer ([`crate::md_render`]) immediately
+//! so the user sees progressive output. The partial tail is flushed on `TextDone`.
+//!
+//! ## Tool output
+//!
+//! `ToolOutputLine` events stream output in real time during long-running
+//! tool calls (e.g. `cargo build`). When `ToolCallResult` arrives, if output
+//! was already streamed the renderer just shows a compact exit-line summary
+//! rather than duplicating all output.
+//!
+//! ## Verbose mode
+//!
+//! Set `TuiRenderer::verbose = true` to suppress the
+//! [`koda_core::truncate`]-based collapsing. Every output line is shown.
 
 use crate::ansi_parse::parse_ansi_spans;
 use crate::scroll_buffer::ScrollBuffer;

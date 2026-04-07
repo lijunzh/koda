@@ -182,6 +182,27 @@ impl InputCompleter {
 ///
 /// An `@` counts as a file reference if it's preceded by whitespace
 /// or is at the start of the input (not an email address).
+///
+/// # Examples
+///
+/// ```
+/// use koda_cli::completer::find_last_at_token;
+///
+/// // Leading @ at position 0
+/// assert_eq!(find_last_at_token("@file.rs"), Some(0));
+///
+/// // @ after a space
+/// assert_eq!(find_last_at_token("explain @src/main.rs"), Some(8));
+///
+/// // Email address — no space before @, so it is NOT treated as a file ref
+/// assert_eq!(find_last_at_token("user@example.com"), None);
+///
+/// // Returns the LAST @ in multi-@ input
+/// assert_eq!(find_last_at_token("@a @b"), Some(3));
+///
+/// // No @ at all
+/// assert_eq!(find_last_at_token("just a normal prompt"), None);
+/// ```
 pub fn find_last_at_token(text: &str) -> Option<usize> {
     for (i, c) in text.char_indices().rev() {
         if c == '@' && (i == 0 || matches!(text.as_bytes()[i - 1], b' ' | b'\n')) {

@@ -35,6 +35,23 @@ pub enum AcpOutgoing {
 }
 
 /// Maps a Koda tool name to the ACP `ToolKind` enum.
+///
+/// # Examples
+///
+/// ```
+/// use agent_client_protocol_schema::ToolKind;
+/// use koda_cli::acp_adapter::map_tool_kind;
+///
+/// assert_eq!(map_tool_kind("Read"),    ToolKind::Read);
+/// assert_eq!(map_tool_kind("Write"),   ToolKind::Edit);
+/// assert_eq!(map_tool_kind("Bash"),    ToolKind::Execute);
+/// assert_eq!(map_tool_kind("Grep"),    ToolKind::Search);
+/// assert_eq!(map_tool_kind("Delete"),  ToolKind::Delete);
+/// assert_eq!(map_tool_kind("WebFetch"),ToolKind::Fetch);
+/// assert_eq!(map_tool_kind("Think"),   ToolKind::Think);
+/// // Unknown tools fall back to Other
+/// assert_eq!(map_tool_kind("InvokeAgent"), ToolKind::Other);
+/// ```
 pub fn map_tool_kind(name: &str) -> acp::ToolKind {
     match name {
         "Read" => acp::ToolKind::Read,

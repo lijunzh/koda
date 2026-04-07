@@ -221,6 +221,38 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
 
 /// Format file contexts into a string suitable for injection into the user
 /// message sent to the LLM.
+///
+/// Returns `None` when `files` is empty. Each file is wrapped in an XML
+/// `<file path="...">` tag and joined with a double newline.
+/// Contents exceeding 40 000 bytes are truncated with a note.
+///
+/// # Examples
+///
+/// ```
+/// use koda_cli::input::{FileContext, format_context_files};
+///
+/// // Empty list → None
+/// assert!(format_context_files(&[]).is_none());
+///
+/// // Single file → XML-tagged content
+/// let files = vec![FileContext {
+///     path: "src/main.rs".into(),
+///     content: "fn main() {}".into(),
+/// }];
+/// let out = format_context_files(&files).unwrap();
+/// assert!(out.contains("<file path=\"src/main.rs\">"));
+/// assert!(out.contains("fn main() {}"));
+/// assert!(out.contains("</file>"));
+///
+/// // Multiple files are joined with a blank line
+/// let two = vec![
+///     FileContext { path: "a.rs".into(), content: "// a".into() },
+///     FileContext { path: "b.rs".into(), content: "// b".into() },
+/// ];
+/// let out2 = format_context_files(&two).unwrap();
+/// assert!(out2.contains("a.rs"));
+/// assert!(out2.contains("b.rs"));
+/// ```
 pub fn format_context_files(files: &[FileContext]) -> Option<String> {
     if files.is_empty() {
         return None;
@@ -262,6 +294,28 @@ const PASTE_BLOCK_MAX_CHARS: usize = 40_000;
 ///
 /// Each block is wrapped in `<reference type="pasted" chars="N">...</reference>`
 /// so the model can distinguish pasted reference material from direct instructions.
+///
+/// Returns `None` when `blocks` is empty. Content exceeding 40 000 chars is
+/// truncated with a note.
+///
+/// # Examples
+///
+/// ```
+/// use koda_cli::input::{PasteBlock, format_paste_blocks};
+///
+/// // Empty list → None
+/// assert!(format_paste_blocks(&[]).is_none());
+///
+/// // Single block → tagged output
+/// let blocks = vec![PasteBlock {
+///     content: "SELECT 1;".into(),
+///     char_count: 9,
+/// }];
+/// let out = format_paste_blocks(&blocks).unwrap();
+/// assert!(out.contains("<reference type=\"pasted\" chars=\"9\">"));
+/// assert!(out.contains("SELECT 1;"));
+/// assert!(out.contains("</reference>"));
+/// ```
 pub fn format_paste_blocks(blocks: &[PasteBlock]) -> Option<String> {
     if blocks.is_empty() {
         return None;
