@@ -740,32 +740,38 @@
 //! - Version checks query crates.io only (no Koda-specific server)
 //! - You can audit every byte sent to the model by reading the DB directly
 
-pub mod acp_adapter;
-pub mod ansi_parse;
-pub mod completer;
-pub mod diff_render;
-pub mod headless;
-pub mod highlight;
-pub mod history_render;
-pub mod input;
-pub mod md_render;
-pub mod mouse_select;
-pub mod onboarding;
-pub mod repl;
-pub mod scroll_buffer;
-pub mod server;
-pub mod sink;
-pub mod startup;
-pub mod tool_history;
-pub mod tui_app;
-pub mod tui_commands;
-pub mod tui_context;
-pub mod tui_handlers_inference;
-pub mod tui_output;
-pub mod tui_render;
-pub mod tui_types;
-pub mod tui_viewport;
-pub mod tui_wizards;
-pub mod widgets;
-pub mod wrap_input;
-pub mod wrap_util;
+pub(crate) mod acp_adapter;
+pub(crate) mod ansi_parse;
+pub(crate) mod app;
+pub(crate) mod completer;
+pub(crate) mod diff_render;
+pub(crate) mod headless;
+pub(crate) mod highlight;
+pub(crate) mod history_render;
+pub(crate) mod input;
+pub(crate) mod md_render;
+pub(crate) mod mouse_select;
+pub(crate) mod onboarding;
+pub(crate) mod repl;
+pub(crate) mod scroll_buffer;
+pub(crate) mod server;
+pub(crate) mod sink;
+pub(crate) mod startup;
+pub(crate) mod tool_history;
+pub(crate) mod tui_app;
+pub(crate) mod tui_commands;
+pub(crate) mod tui_context;
+pub(crate) mod tui_handlers_inference;
+pub(crate) mod tui_output;
+pub(crate) mod tui_render;
+pub(crate) mod tui_types;
+pub(crate) mod tui_viewport;
+pub(crate) mod tui_wizards;
+pub(crate) mod widgets;
+pub(crate) mod wrap_input;
+pub(crate) mod wrap_util;
+
+/// Binary entry point. The only public symbol the `koda` binary needs.
+pub async fn run() -> anyhow::Result<()> {
+    app::run().await
+}
