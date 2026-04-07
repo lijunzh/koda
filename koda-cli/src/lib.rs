@@ -10,6 +10,7 @@
 pub(crate) mod acp_adapter;
 pub(crate) mod ansi_parse;
 pub(crate) mod app;
+pub(crate) mod builtin_skills;
 pub(crate) mod completer;
 pub(crate) mod diff_render;
 pub(crate) mod headless;

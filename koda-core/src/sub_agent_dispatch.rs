@@ -151,18 +151,48 @@ pub(crate) async fn execute_sub_agent(
         agent_name: agent_name.to_string(),
     });
 
-    // Fork inherits parent config; named agents load their own.
+    // Fork inherits parent config; named agents load their own persona
+    // but fall back to the parent's provider and model for anything not
+    // explicitly set in the agent JSON.
+    //
+    // Inheritance rules (applied only when the agent JSON leaves a field None):
+    //
+    // provider + base_url — inherited from parent when the agent JSON sets
+    //   neither. If the agent sets its own provider or base_url (e.g. a
+    //   test-only "mock" agent or a specialist routed to a different endpoint)
+    //   we respect that and leave it alone.
+    //
+    // model — inherited from parent only when (a) the agent JSON left it
+    //   unset AND (b) we are also inheriting the provider. Cross-provider
+    //   model names are not portable ("gemini-2.0-flash" means nothing on
+    //   Anthropic), so if the agent has its own provider we leave the model
+    //   resolved from that provider's defaults.
     let sub_config = if is_fork {
         parent_config.clone()
     } else {
-        let cfg = crate::config::KodaConfig::load(project_root, agent_name)
+        // Load the raw JSON first to see what the agent explicitly set.
+        let raw = crate::config::KodaConfig::load_agent_json(project_root, agent_name)
             .with_context(|| format!("Failed to load sub-agent: {agent_name}"))?;
-        // Inherit parent's base_url if same provider (respect agent-level routing).
-        if cfg.provider_type == parent_config.provider_type {
-            cfg.with_overrides(Some(parent_config.base_url.clone()), None, None)
-        } else {
-            cfg
+
+        let mut cfg = crate::config::KodaConfig::load(project_root, agent_name)
+            .with_context(|| format!("Failed to load sub-agent: {agent_name}"))?;
+
+        let agent_has_own_provider = raw.provider.is_some() || raw.base_url.is_some();
+
+        if !agent_has_own_provider {
+            // Inherit parent's provider, base_url, and (if unset) model.
+            // All three travel together: model names are provider-scoped.
+            let model_override = raw.model.is_none().then(|| parent_config.model.clone());
+            cfg = cfg.with_overrides(
+                Some(parent_config.base_url.clone()),
+                model_override,
+                Some(parent_config.provider_type.to_string()),
+            );
         }
+        // else: agent opted into its own provider — use its resolved config
+        // as-is. The agent JSON is responsible for any model it needs.
+
+        cfg
     };
 
     let sub_session = match session_id {

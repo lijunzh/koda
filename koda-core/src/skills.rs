@@ -169,6 +169,26 @@ impl SkillRegistry {
         self.skills.get(name).map(|s| s.content.as_str())
     }
 
+    /// Inject a built-in skill programmatically (e.g. from a downstream CLI).
+    ///
+    /// This lets host applications (like `koda-cli`) embed their own
+    /// documentation as a skill without coupling `koda-core` to any
+    /// application-specific content.  Call after [`Self::discover`].
+    ///
+    /// Overwrites any previously registered skill with the same name.
+    pub fn add_builtin(&mut self, name: &str, description: &str, content: &str) {
+        let skill = Skill {
+            meta: SkillMeta {
+                name: name.to_string(),
+                description: description.to_string(),
+                tags: vec![],
+                source: SkillSource::BuiltIn,
+            },
+            content: content.to_string(),
+        };
+        self.skills.insert(name.to_string(), skill);
+    }
+
     /// Number of discovered skills.
     pub fn len(&self) -> usize {
         self.skills.len()
@@ -305,6 +325,27 @@ Do the review.
         let results = registry.search("owasp");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "security-audit");
+    }
+
+    #[test]
+    fn test_add_builtin_injects_skill() {
+        let mut registry = SkillRegistry::default();
+        registry.add_builtin("my-app-docs", "My app user manual", "# My App\n\nDo stuff.");
+        assert_eq!(registry.len(), 1);
+        let content = registry.activate("my-app-docs").unwrap();
+        assert!(content.contains("Do stuff."));
+        // Source must be BuiltIn
+        let meta = registry.list();
+        assert!(matches!(meta[0].source, SkillSource::BuiltIn));
+    }
+
+    #[test]
+    fn test_add_builtin_overwrites_same_name() {
+        let mut registry = SkillRegistry::default();
+        registry.add_builtin("docs", "v1", "version one");
+        registry.add_builtin("docs", "v2", "version two");
+        assert_eq!(registry.len(), 1);
+        assert!(registry.activate("docs").unwrap().contains("version two"));
     }
 
     #[test]
