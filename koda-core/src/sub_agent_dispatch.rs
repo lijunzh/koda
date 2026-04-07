@@ -151,18 +151,42 @@ pub(crate) async fn execute_sub_agent(
         agent_name: agent_name.to_string(),
     });
 
-    // Fork inherits parent config; named agents load their own.
+    // Fork inherits parent config; named agents load their own persona
+    // but fall back to the parent's provider and model for anything not
+    // explicitly set in the agent JSON.
+    //
+    // Why always inherit the provider:
+    //   Sub-agents have no independent API credentials or routing config.
+    //   If the user is on Gemini, every sub-agent should use Gemini.
+    //
+    // Why fall back to parent's model:
+    //   Agent JSON can set a preferred model (e.g. a cheaper/faster one).
+    //   If it doesn't, the parent's active model is the only guaranteed
+    //   working choice — defaulting to a provider's "default model" can
+    //   silently route to a local endpoint with nothing loaded (this bug).
     let sub_config = if is_fork {
         parent_config.clone()
     } else {
-        let cfg = crate::config::KodaConfig::load(project_root, agent_name)
+        // Load the raw JSON first to see what the agent explicitly set.
+        let raw = crate::config::KodaConfig::load_agent_json(project_root, agent_name)
             .with_context(|| format!("Failed to load sub-agent: {agent_name}"))?;
-        // Inherit parent's base_url if same provider (respect agent-level routing).
-        if cfg.provider_type == parent_config.provider_type {
-            cfg.with_overrides(Some(parent_config.base_url.clone()), None, None)
-        } else {
-            cfg
+
+        let mut cfg = crate::config::KodaConfig::load(project_root, agent_name)
+            .with_context(|| format!("Failed to load sub-agent: {agent_name}"))?;
+
+        // Always inherit parent's provider + base_url.
+        cfg = cfg.with_overrides(
+            Some(parent_config.base_url.clone()),
+            None,
+            Some(parent_config.provider_type.to_string()),
+        );
+
+        // Inherit parent's model only when the agent JSON left it unset.
+        if raw.model.is_none() {
+            cfg = cfg.with_overrides(None, Some(parent_config.model.clone()), None);
         }
+
+        cfg
     };
 
     let sub_session = match session_id {

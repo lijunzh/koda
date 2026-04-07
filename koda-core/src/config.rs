@@ -615,6 +615,27 @@ impl KodaConfig {
         ("verify", include_str!("../agents/verify.json")),
     ];
 
+    /// Load the raw `AgentConfig` for an agent without resolving it into a
+    /// full `KodaConfig`. Preserves `Option<String>` fields so callers can
+    /// distinguish "explicitly set" from "not set" — used by sub-agent
+    /// dispatch to decide which parent fields to inherit.
+    ///
+    /// Search order mirrors `load`: project agents/ → built-in.
+    pub fn load_agent_json(project_root: &Path, agent_name: &str) -> Result<AgentConfig> {
+        let agents_dir =
+            Self::find_agents_dir(project_root).unwrap_or_else(|_| PathBuf::from("agents"));
+        let agent_file = agents_dir.join(format!("{agent_name}.json"));
+        if agent_file.exists() {
+            let json = std::fs::read_to_string(&agent_file)
+                .with_context(|| format!("Failed to read agent config: {agent_file:?}"))?;
+            serde_json::from_str(&json)
+                .with_context(|| format!("Failed to parse agent config: {agent_file:?}"))
+        } else {
+            Self::load_builtin(agent_name)
+                .ok_or_else(|| anyhow::anyhow!("Agent '{agent_name}' not found"))
+        }
+    }
+
     /// Try to load a built-in (embedded) agent by name.
     pub fn load_builtin(name: &str) -> Option<AgentConfig> {
         Self::BUILTIN_AGENTS
@@ -1130,5 +1151,105 @@ mod tests {
         let names: Vec<&str> = agents.iter().map(|(name, _)| name.as_str()).collect();
         assert!(names.contains(&"task"), "should have 'task' agent");
         assert!(names.contains(&"explore"), "should have 'explore' agent");
+    }
+
+    // ── load_agent_json ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_load_agent_json_returns_raw_options() {
+        // Built-in agents must not hardcode a model or provider so that
+        // sub-agent dispatch can inherit these from the parent session.
+        let tmp = tempfile::TempDir::new().unwrap();
+        for name in ["explore", "plan", "verify", "task"] {
+            let raw = KodaConfig::load_agent_json(tmp.path(), name)
+                .unwrap_or_else(|e| panic!("load_agent_json({name}) failed: {e}"));
+            assert!(
+                raw.model.is_none(),
+                "built-in agent '{name}' must not hardcode a model — \
+                 set it in the agent JSON if you need a provider-specific default"
+            );
+            assert!(
+                raw.provider.is_none(),
+                "built-in agent '{name}' must not hardcode a provider"
+            );
+        }
+    }
+
+    #[test]
+    fn test_load_agent_json_project_override_preserves_option() {
+        // A project-local agent that explicitly sets a model must preserve it.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("myscout.json"),
+            r#"{"name":"myscout","system_prompt":"scout","model":"claude-3-haiku"}"#,
+        )
+        .unwrap();
+        let raw = KodaConfig::load_agent_json(tmp.path(), "myscout").unwrap();
+        assert_eq!(raw.model.as_deref(), Some("claude-3-haiku"));
+    }
+
+    // ── sub-agent model inheritance ───────────────────────────────────────
+
+    /// Simulate the dispatch logic: a parent on Gemini with a specific model
+    /// should be fully inherited by sub-agents that don't set their own.
+    #[test]
+    fn test_sub_agent_inherits_parent_provider_and_model() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Parent is on Gemini with a specific model
+        let parent = KodaConfig::default_for_testing(ProviderType::Gemini)
+            .with_overrides(None, Some("gemini-2.0-flash".to_string()), None);
+
+        // Load explore and apply the inheritance logic from sub_agent_dispatch
+        let raw = KodaConfig::load_agent_json(tmp.path(), "explore").unwrap();
+        let mut cfg = KodaConfig::load(tmp.path(), "explore").unwrap();
+
+        cfg = cfg.with_overrides(
+            Some(parent.base_url.clone()),
+            None,
+            Some(parent.provider_type.to_string()),
+        );
+        if raw.model.is_none() {
+            cfg = cfg.with_overrides(None, Some(parent.model.clone()), None);
+        }
+
+        assert_eq!(cfg.provider_type, ProviderType::Gemini, "provider must be inherited");
+        assert_eq!(cfg.model, "gemini-2.0-flash", "model must be inherited from parent");
+    }
+
+    /// A sub-agent that explicitly sets its own model must keep it even when
+    /// the parent has a different model — the JSON preference wins.
+    #[test]
+    fn test_sub_agent_explicit_model_is_not_overridden() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("specialist.json"),
+            r#"{"name":"specialist","system_prompt":"s","model":"gemini-2.5-flash"}"#,
+        )
+        .unwrap();
+
+        let parent = KodaConfig::default_for_testing(ProviderType::Gemini)
+            .with_overrides(None, Some("gemini-2.0-flash-lite".to_string()), None);
+
+        let raw = KodaConfig::load_agent_json(tmp.path(), "specialist").unwrap();
+        let mut cfg = KodaConfig::load(tmp.path(), "specialist").unwrap();
+
+        cfg = cfg.with_overrides(
+            Some(parent.base_url.clone()),
+            None,
+            Some(parent.provider_type.to_string()),
+        );
+        if raw.model.is_none() {
+            cfg = cfg.with_overrides(None, Some(parent.model.clone()), None);
+        }
+
+        // Provider inherited, but agent's own model is kept
+        assert_eq!(cfg.provider_type, ProviderType::Gemini);
+        assert_eq!(cfg.model, "gemini-2.5-flash",
+            "agent's explicit model must not be overridden by parent");
     }
 }
