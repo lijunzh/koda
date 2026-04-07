@@ -48,6 +48,10 @@ pub struct SkillMeta {
     pub description: String,
     /// Searchable tags.
     pub tags: Vec<String>,
+    /// Guidance for the model on when to activate this skill.
+    /// Surfaced in `ListSkills` output so the model can decide without
+    /// hard-coded hints in `instructions.md`.
+    pub when_to_use: Option<String>,
     /// Where this skill was discovered.
     pub source: SkillSource,
 }
@@ -175,13 +179,23 @@ impl SkillRegistry {
     /// documentation as a skill without coupling `koda-core` to any
     /// application-specific content.  Call after [`Self::discover`].
     ///
+    /// `when_to_use` is shown in `ListSkills` output so the model knows
+    /// when to activate this skill without hard-coded `instructions.md` hints.
+    ///
     /// Overwrites any previously registered skill with the same name.
-    pub fn add_builtin(&mut self, name: &str, description: &str, content: &str) {
+    pub fn add_builtin(
+        &mut self,
+        name: &str,
+        description: &str,
+        when_to_use: Option<&str>,
+        content: &str,
+    ) {
         let skill = Skill {
             meta: SkillMeta {
                 name: name.to_string(),
                 description: description.to_string(),
                 tags: vec![],
+                when_to_use: when_to_use.map(str::to_string),
                 source: SkillSource::BuiltIn,
             },
             content: content.to_string(),
@@ -224,10 +238,13 @@ fn parse_skill_md(raw: &str, source: SkillSource) -> Option<Skill> {
     let frontmatter = &after_open[..close_pos].trim();
     let content = after_open[close_pos + 4..].trim_start().to_string();
 
-    // Simple YAML parsing (no serde_yaml dependency)
+    // Simple YAML parsing (no serde_yaml dependency).
+    // Supported keys: name, description, tags, when_to_use.
+    // Multi-line YAML values and complex types are intentionally not supported.
     let mut name = String::new();
     let mut description = String::new();
     let mut tags = Vec::new();
+    let mut when_to_use: Option<String> = None;
 
     for line in frontmatter.lines() {
         let line = line.trim();
@@ -235,6 +252,8 @@ fn parse_skill_md(raw: &str, source: SkillSource) -> Option<Skill> {
             name = val.trim().to_string();
         } else if let Some(val) = line.strip_prefix("description:") {
             description = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("when_to_use:") {
+            when_to_use = Some(val.trim().to_string());
         } else if let Some(val) = line.strip_prefix("tags:") {
             // Parse [tag1, tag2, tag3]
             let val = val.trim();
@@ -253,6 +272,7 @@ fn parse_skill_md(raw: &str, source: SkillSource) -> Option<Skill> {
             name,
             description,
             tags,
+            when_to_use,
             source,
         },
         content,
@@ -269,6 +289,7 @@ mod tests {
 name: code-review
 description: Senior code review
 tags: [review, quality]
+when_to_use: Use when asked to review code or a PR.
 ---
 
 # Code Review
@@ -279,8 +300,19 @@ Do the review.
         assert_eq!(skill.meta.name, "code-review");
         assert_eq!(skill.meta.description, "Senior code review");
         assert_eq!(skill.meta.tags, vec!["review", "quality"]);
+        assert_eq!(
+            skill.meta.when_to_use.as_deref(),
+            Some("Use when asked to review code or a PR.")
+        );
         assert!(skill.content.contains("# Code Review"));
         assert!(skill.content.contains("Do the review."));
+    }
+
+    #[test]
+    fn test_parse_when_to_use_absent() {
+        let raw = "---\nname: minimal\ndescription: minimal skill\ntags: []\n---\ncontent";
+        let skill = parse_skill_md(raw, SkillSource::BuiltIn).unwrap();
+        assert!(skill.meta.when_to_use.is_none());
     }
 
     #[test]
@@ -330,20 +362,29 @@ Do the review.
     #[test]
     fn test_add_builtin_injects_skill() {
         let mut registry = SkillRegistry::default();
-        registry.add_builtin("my-app-docs", "My app user manual", "# My App\n\nDo stuff.");
+        registry.add_builtin(
+            "my-app-docs",
+            "My app user manual",
+            Some("Use when the user asks about the app."),
+            "# My App\n\nDo stuff.",
+        );
         assert_eq!(registry.len(), 1);
         let content = registry.activate("my-app-docs").unwrap();
         assert!(content.contains("Do stuff."));
         // Source must be BuiltIn
         let meta = registry.list();
         assert!(matches!(meta[0].source, SkillSource::BuiltIn));
+        assert_eq!(
+            meta[0].when_to_use.as_deref(),
+            Some("Use when the user asks about the app.")
+        );
     }
 
     #[test]
     fn test_add_builtin_overwrites_same_name() {
         let mut registry = SkillRegistry::default();
-        registry.add_builtin("docs", "v1", "version one");
-        registry.add_builtin("docs", "v2", "version two");
+        registry.add_builtin("docs", "v1", None, "version one");
+        registry.add_builtin("docs", "v2", None, "version two");
         assert_eq!(registry.len(), 1);
         assert!(registry.activate("docs").unwrap().contains("version two"));
     }
