@@ -39,7 +39,9 @@ pub async fn run_headless(
         .query_and_apply_capabilities(tmp_provider.as_ref())
         .await;
 
-    let agent = Arc::new(KodaAgent::new(&config, project_root.clone(), &[]).await?);
+    let mut agent = KodaAgent::new(&config, project_root.clone(), &[]).await?;
+    crate::builtin_skills::inject_builtin_skills(&mut agent);
+    let agent = Arc::new(agent);
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<koda_core::engine::EngineCommand>(32);
     let mut session = KodaSession::new(session_id, agent, db, &config, ApprovalMode::Auto).await;
 

@@ -611,7 +611,6 @@ impl KodaConfig {
         ("default", include_str!("../agents/default.json")),
         ("task", include_str!("../agents/task.json")),
         ("explore", include_str!("../agents/explore.json")),
-        ("guide", include_str!("../agents/guide.json")),
         ("plan", include_str!("../agents/plan.json")),
         ("verify", include_str!("../agents/verify.json")),
     ];
