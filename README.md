@@ -1,4 +1,4 @@
-# Koda 🐻
+# Koda
 
 [![CI](https://github.com/lijunzh/koda/actions/workflows/ci.yml/badge.svg)](https://github.com/lijunzh/koda/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/koda-cli.svg)](https://crates.io/crates/koda-cli)
@@ -11,7 +11,7 @@
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Install
 
@@ -49,63 +49,21 @@ echo "review this diff" | koda
 koda server --stdio
 ```
 
-Inside the TUI, type `/help` to see all commands and keyboard shortcuts!
+Inside the TUI, type `/help` to see all commands and keyboard shortcuts.
 
 ---
 
-## 📚 Documentation
+## Documentation
 
 The complete **[Koda User Manual](https://lijunzh.github.io/koda/)** has everything you need:
 
 | Resource | Description |
 |---|---|
-| 📖 **[User Manual](https://lijunzh.github.io/koda/)** | CLI reference, slash commands, file attachments, approval modes, and custom agents. |
-| ⚙️ **[Engine API](https://docs.rs/koda-core)** | Developer docs for embedding the `koda-core` library. |
-| 🏗️ **[Design](DESIGN.md)** | Core architecture principles and philosophies. |
-| 🛠️ **[Contributing](CLAUDE.md)** | Workspace layout, coding conventions, and tests. |
-| 📜 **[Changelog](CHANGELOG.md)** | Version history. |
-
----
-
-## ✨ Highlights
-
-- **Local-First & Private:** Your conversations and API keys never leave your machine (stored in a local SQLite DB). Zero telemetry.
-- **14 LLM Providers:** Support for Anthropic, OpenAI, Gemini, DeepSeek, Groq, local models (Ollama, LM Studio), and more.
-- **Smart Model Aliases:** Use shortcuts like `--model sonnet` or `/model flash` to instantly route to the right provider. No need to memorize exact model IDs.
-- **18 Built-in Tools:** File operations, codebase search (`rg`), shell execution, web fetching, memory management, and dynamic sub-agents.
-- **Safe Execution:** Read-only tasks run automatically. Destructive actions prompt for your explicit approval (`Auto` vs `Confirm` modes).
-- **Rich TUI:** Fullscreen interface with syntax highlighting, mouse scrolling, diff previews, and a collapsible view for agent tool execution.
-- **Editor Integration:** Built-in [Agent Client Protocol (ACP)](https://agentclientprotocol.org) server for seamless use inside VS Code, Zed, etc.
-- **Skills:** Built-in expertise modules (code review, security audit) + support for user-created `.md` skills.
-
----
-
-## 🏗️ Architecture
-
-Koda is split into modular, reusable crates:
-
-```text
-koda/
-├── koda-cli/      # The CLI app (TUI, headless dispatch, ACP server)
-├── koda-core/     # The core engine (providers, inference loop, DB, tools)
-├── koda-ast/      # Tree-sitter AST analysis library
-└── koda-email/    # IMAP/SMTP email library
-```
-
----
-
-## 🛠️ Development
-
-```bash
-# Run the full test suite
-cargo test --workspace --features koda-core/test-support
-
-# Run lints
-cargo clippy --workspace
-
-# Run the CLI locally
-cargo run -p koda-cli
-```
+| [**User Manual**](https://lijunzh.github.io/koda/) | CLI reference, slash commands, file attachments, approval modes, and custom agents. |
+| [**Engine API**](https://docs.rs/koda-core) | Developer docs for embedding the `koda-core` library. |
+| [**Design**](DESIGN.md) | Core architecture principles and philosophies. |
+| [**Contributing**](CLAUDE.md) | Workspace layout, coding conventions, and tests. |
+| [**Changelog**](CHANGELOG.md) | Version history. |
 
 ## License
 
