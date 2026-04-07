@@ -28,3 +28,6 @@ Thumbs.db
 logs/
 *.log
 .koda_logs/
+
+# mdBook build output
+docs/book/
