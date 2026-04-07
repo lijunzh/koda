@@ -37,6 +37,7 @@
 - [ ] Destructive tools require confirmation in Normal mode
 - [ ] New tools added to `SAFE_PREFIXES` or `WRITE_TOOLS` comment as appropriate
 - [ ] CHANGELOG.md updated (if user-facing)
+- [ ] `docs/src/` updated (if user-facing behaviour changed)
 
 <!-- For LLM reviewers: focus on security (path traversal, shell injection,
      approval bypass), correctness, and DRY violations. Check that new tools
