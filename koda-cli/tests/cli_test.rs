@@ -97,11 +97,9 @@ fn test_cli_headless_piped_stdin_empty() {
 
 /// Snapshot test — `koda --help` must match the committed snapshot.
 ///
-/// When CLI flags change (new flag, renamed, removed, description edited)
-/// this test fails with a diff. That's your reminder to:
-///   1. Update the snapshot:
-///        cargo run -p koda-cli -- --help > koda-cli/tests/snapshots/help.snap
-///   2. Update `docs/src/cli-reference.md` to match.
+/// Fails when any CLI flag is added, removed, renamed, or its description
+/// edited. To update: run `cargo run -p koda-cli -- --help > \
+/// koda-cli/tests/snapshots/help.snap`, then edit `docs/src/cli-reference.md`.
 #[test]
 fn test_cli_help_snapshot() {
     let output = Command::new(koda_bin())
@@ -126,10 +124,9 @@ fn test_cli_help_snapshot() {
 
 /// Snapshot test — `koda server --help` must match the committed snapshot.
 ///
-/// To update after an intentional change:
-///   1. cargo run -p koda-cli -- server --help \
-///        > koda-cli/tests/snapshots/server_help.snap
-///   2. Update `docs/src/acp.md` if server flags changed.
+/// Fails when any server flag is added, removed, renamed, or its description
+/// edited. To update: run `cargo run -p koda-cli -- server --help > \
+/// koda-cli/tests/snapshots/server_help.snap`, then edit `docs/src/acp.md`.
 #[test]
 fn test_cli_server_help_snapshot() {
     let output = Command::new(koda_bin())
