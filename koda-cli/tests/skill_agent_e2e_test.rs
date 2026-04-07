@@ -149,7 +149,10 @@ fn unknown_skill_returns_not_found_gracefully() {
     ]"#;
     let (_stdout, stderr, success) = run_mock("activate a fake skill", responses);
     // The process should still succeed — the LLM just gets a "not found" tool result
-    assert!(success, "process crashed on missing skill.\nstderr: {stderr}");
+    assert!(
+        success,
+        "process crashed on missing skill.\nstderr: {stderr}"
+    );
     let clean = strip_ansi(&stderr);
     assert!(
         clean.contains("not found"),
