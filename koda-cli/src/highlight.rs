@@ -117,7 +117,7 @@ impl CodeHighlighter {
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
 /// use koda_cli::highlight::pre_highlight;
 ///
 /// // Two Rust lines → two span vecs

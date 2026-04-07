@@ -228,7 +228,7 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use koda_cli::input::{FileContext, format_context_files};
 ///
 /// // Empty list → None
@@ -300,7 +300,7 @@ const PASTE_BLOCK_MAX_CHARS: usize = 40_000;
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use koda_cli::input::{PasteBlock, format_paste_blocks};
 ///
 /// // Empty list → None

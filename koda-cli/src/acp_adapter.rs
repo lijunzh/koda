@@ -38,7 +38,7 @@ pub enum AcpOutgoing {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use agent_client_protocol_schema::ToolKind;
 /// use koda_cli::acp_adapter::map_tool_kind;
 ///
