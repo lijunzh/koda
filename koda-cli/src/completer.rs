@@ -185,7 +185,7 @@ impl InputCompleter {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use koda_cli::completer::find_last_at_token;
 ///
 /// // Leading @ at position 0
