@@ -346,14 +346,14 @@ fn show_help(buffer: &mut ScrollBuffer) {
     tui_output::emit_line(buffer, Line::styled("  Input", BOLD));
     tui_output::blank(buffer);
     let input_keys: &[(&str, &str)] = &[
-        ("Enter",       "Send message"),
-        ("Alt+Enter",   "Insert newline (multi-line input)"),
-        ("@file.rs",    "Attach file context to your message"),
-        ("@image.png",  "Attach image (vision-capable models)"),
-        ("↑ / ↓",      "Cycle through input history"),
-        ("Ctrl+R",      "Reverse history search"),
-        ("Tab",         "Autocomplete @file path or /command"),
-        ("Shift+Tab",   "Cycle approval mode (auto ↔ confirm)"),
+        ("Enter", "Send message"),
+        ("Alt+Enter", "Insert newline (multi-line input)"),
+        ("@file.rs", "Attach file context to your message"),
+        ("@image.png", "Attach image (vision-capable models)"),
+        ("↑ / ↓", "Cycle through input history"),
+        ("Ctrl+R", "Reverse history search"),
+        ("Tab", "Autocomplete @file path or /command"),
+        ("Shift+Tab", "Cycle approval mode (auto ↔ confirm)"),
     ];
     for (key, desc) in input_keys {
         tui_output::emit_line(
@@ -370,12 +370,12 @@ fn show_help(buffer: &mut ScrollBuffer) {
     tui_output::emit_line(buffer, Line::styled("  Navigation", BOLD));
     tui_output::blank(buffer);
     let nav_keys: &[(&str, &str)] = &[
-        ("PgUp / PgDn",    "Scroll history up / down one page"),
-        ("Home",           "Jump to top of history"),
-        ("End",            "Jump to bottom (latest output)"),
-        ("Mouse scroll",   "Scroll history"),
-        ("Ctrl+Y",         "Copy last code block to clipboard"),
-        ("Ctrl+U",         "Copy last assistant response to clipboard"),
+        ("PgUp / PgDn", "Scroll history up / down one page"),
+        ("Home", "Jump to top of history"),
+        ("End", "Jump to bottom (latest output)"),
+        ("Mouse scroll", "Scroll history"),
+        ("Ctrl+Y", "Copy last code block to clipboard"),
+        ("Ctrl+U", "Copy last assistant response to clipboard"),
     ];
     for (key, desc) in nav_keys {
         tui_output::emit_line(
@@ -393,7 +393,7 @@ fn show_help(buffer: &mut ScrollBuffer) {
     tui_output::blank(buffer);
     let session_keys: &[(&str, &str)] = &[
         ("Esc / Ctrl+C", "Cancel running inference"),
-        ("Ctrl+D",       "Quit koda"),
+        ("Ctrl+D", "Quit koda"),
     ];
     for (key, desc) in session_keys {
         tui_output::emit_line(
@@ -416,10 +416,10 @@ fn show_help(buffer: &mut ScrollBuffer) {
     );
     tui_output::blank(buffer);
     let approval_keys: &[(&str, &str)] = &[
-        ("y",   "Approve this tool call"),
-        ("n",   "Reject this tool call"),
-        ("a",   "Approve and switch to auto mode (no more prompts)"),
-        ("f",   "Reject and provide written feedback"),
+        ("y", "Approve this tool call"),
+        ("n", "Reject this tool call"),
+        ("a", "Approve and switch to auto mode (no more prompts)"),
+        ("f", "Reject and provide written feedback"),
         ("Esc", "Reject (same as n)"),
     ];
     for (key, desc) in approval_keys {

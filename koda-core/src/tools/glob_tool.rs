@@ -157,7 +157,10 @@ mod tests {
         // Cap at 2 results — there are 3 .rs files
         let args = json!({ "pattern": "**/*.rs" });
         let result = glob_search(tmp.path(), &args, 2).await.unwrap();
-        assert!(result.contains("Capped"), "should show cap message: {result}");
+        assert!(
+            result.contains("Capped"),
+            "should show cap message: {result}"
+        );
     }
 
     #[tokio::test]
