@@ -2,6 +2,8 @@
 //!
 //! Extracted from `tool_dispatch.rs` — handles `InvokeAgent` execution,
 //! background agent spawning, worktree provisioning, and sub-agent caching.
+//! Each sub-agent gets its own session, provider, and (optionally) worktree
+//! for isolation. Results are cached by `(agent_name, prompt_hash)`.
 
 use crate::approval::{self, ApprovalMode, ToolApproval};
 use crate::approval_flow::request_approval;

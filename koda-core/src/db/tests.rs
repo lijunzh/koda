@@ -1,4 +1,8 @@
 //! Tests for the SQLite persistence layer.
+//!
+//! Covers the `Persistence` trait methods on `Database`, message pruning
+//! helpers (`prune_mismatched_tool_calls`, `prune_null_content_messages`,
+//! `prune_whitespace_only_messages`), and interrupted turn detection.
 
 use super::queries::prune_mismatched_tool_calls;
 use super::queries::{

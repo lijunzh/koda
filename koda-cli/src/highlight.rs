@@ -131,4 +131,49 @@ mod tests {
         let result = h.highlight_line("let x = 42;");
         assert!(result.contains("\x1b["));
     }
+
+    #[test]
+    fn test_highlight_spans_rust() {
+        let mut h = CodeHighlighter::new("rust");
+        let spans = h.highlight_spans("fn main() {}");
+        assert!(!spans.is_empty(), "should produce at least one span");
+        // Spans should contain the full text
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("fn"));
+        assert!(text.contains("main"));
+    }
+
+    #[test]
+    fn test_highlight_spans_unknown_lang_passthrough() {
+        let mut h = CodeHighlighter::new("notalang");
+        let spans = h.highlight_spans("hello world");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), "hello world");
+    }
+
+    #[test]
+    fn test_pre_highlight_produces_per_line_spans() {
+        let content = "fn main() {}\nlet x = 42;\n";
+        let lines = pre_highlight(content, "rs");
+        assert_eq!(lines.len(), 2, "should produce one Vec<Span> per line");
+        for line_spans in &lines {
+            assert!(!line_spans.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_pre_highlight_empty_content() {
+        let lines = pre_highlight("", "rs");
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn test_stateful_multiline_string() {
+        // Highlighting should carry state across lines
+        let mut h = CodeHighlighter::new("rust");
+        let _line1 = h.highlight_spans("let s = \"");
+        let line2 = h.highlight_spans("hello\"");
+        // line2 should still produce spans (stateful parsing)
+        assert!(!line2.is_empty());
+    }
 }

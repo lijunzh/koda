@@ -2,6 +2,7 @@
 //!
 //! Tracks the current context usage (tokens used / max tokens) so the
 //! prompt and footer can display it. Updated after each inference turn.
+//! Uses `AtomicUsize` for lock-free reads from the TUI render thread.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -91,5 +92,27 @@ mod tests {
         // When max is zero, format_footer returns empty
         update(0, 0);
         assert_eq!(format_footer(), "");
+    }
+
+    #[test]
+    fn test_update_get_roundtrip() {
+        update(10_000, 128_000);
+        let (used, max) = get();
+        assert_eq!(used, 10_000);
+        assert_eq!(max, 128_000);
+    }
+
+    #[test]
+    fn test_percentage_full() {
+        update(128_000, 128_000);
+        assert_eq!(percentage(), 100);
+    }
+
+    #[test]
+    fn test_format_k_boundary() {
+        assert_eq!(format_k(999), "999");
+        assert_eq!(format_k(1_000), "1.0k");
+        assert_eq!(format_k(9_999), "10.0k");
+        assert_eq!(format_k(10_000), "10k");
     }
 }

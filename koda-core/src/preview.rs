@@ -496,4 +496,69 @@ mod tests {
             other => panic!("expected UnifiedDiff, got {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn test_delete_dir() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("subdir");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("file.txt"), "content").unwrap();
+
+        let args = json!({ "path": dir.to_str().unwrap(), "recursive": true });
+        let preview = compute("Delete", &args, tmp.path()).await.unwrap();
+        match preview {
+            DiffPreview::DeleteDir(d) => assert!(d.recursive),
+            other => panic!("expected DeleteDir, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_delete_dir_non_recursive() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("emptydir");
+        std::fs::create_dir(&dir).unwrap();
+
+        let args = json!({ "path": dir.to_str().unwrap() });
+        let preview = compute("Delete", &args, tmp.path()).await.unwrap();
+        match preview {
+            DiffPreview::DeleteDir(d) => assert!(!d.recursive),
+            other => panic!("expected DeleteDir, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_path() {
+        let tmp = TempDir::new().unwrap();
+        let args = json!({ "path": "nonexistent_file.rs" });
+        let preview = compute("Delete", &args, tmp.path()).await.unwrap();
+        assert!(matches!(preview, DiffPreview::PathNotFound));
+    }
+
+    #[tokio::test]
+    async fn test_write_new_file_truncates_long_content() {
+        let tmp = TempDir::new().unwrap();
+        // Create content with more lines than MAX_WRITE_NEW_LINES (60)
+        let content: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+        let args = json!({ "path": "big_new_file.rs", "content": content });
+
+        let preview = compute("Write", &args, tmp.path()).await.unwrap();
+        match preview {
+            DiffPreview::WriteNew(w) => {
+                assert_eq!(w.line_count, 100);
+                assert_eq!(w.first_lines.len(), 60);
+                assert!(w.truncated);
+            }
+            other => panic!("expected WriteNew, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_build_unified_diff_truncates_large_diffs() {
+        // Produce a diff with more than MAX_DIFF_LINES (120) changed lines
+        let old: String = (1..=200).map(|i| format!("old line {i}\n")).collect();
+        let new: String = (1..=200).map(|i| format!("new line {i}\n")).collect();
+
+        let diff = build_unified_diff("test.txt", &old, &new);
+        assert!(diff.truncated, "large diff should be truncated");
+    }
 }
