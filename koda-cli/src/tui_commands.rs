@@ -305,20 +305,28 @@ async fn handle_resume_session(
 ///
 /// Single source of truth: `completer::SLASH_COMMANDS` drives both
 /// Tab completion and this help screen.
+///
+/// Sections:
+/// 1. Commands — slash commands from the registry
+/// 2. Input — text entry and file attachment
+/// 3. Navigation — scroll and history search
+/// 4. Session control — cancel, quit, clipboard
+/// 5. Approval — keys shown when the engine requests tool approval
 fn show_help(buffer: &mut ScrollBuffer) {
     use crate::completer::SLASH_COMMANDS;
 
-    tui_output::blank(buffer);
-    tui_output::emit_line(buffer, Line::styled("  Koda — Commands", BOLD));
-    tui_output::blank(buffer);
-
-    // Compute column width from longest command name
+    // Column width: longest command label (cmd + arg_hint) + padding
     let max_cmd_len = SLASH_COMMANDS
         .iter()
-        .map(|(cmd, _, _)| cmd.len())
+        .map(|(cmd, _, hint)| cmd.len() + hint.map(|h| h.len() + 1).unwrap_or(0))
         .max()
         .unwrap_or(10);
+    let col = max_cmd_len.max(16) + 4; // at least 20 chars wide
 
+    // ── Commands ───────────────────────────────────────────────
+    tui_output::blank(buffer);
+    tui_output::emit_line(buffer, Line::styled("  Commands", BOLD));
+    tui_output::blank(buffer);
     for &(cmd, desc, arg_hint) in SLASH_COMMANDS {
         let label = match arg_hint {
             Some(hint) => format!("{cmd} {hint}"),
@@ -327,27 +335,99 @@ fn show_help(buffer: &mut ScrollBuffer) {
         tui_output::emit_line(
             buffer,
             Line::from(vec![
-                Span::styled(format!("  {label:<width$}", width = max_cmd_len + 12), CYAN),
+                Span::styled(format!("  {label:<col$}"), CYAN),
                 Span::styled(desc, DIM),
             ]),
         );
     }
 
+    // ── Input ──────────────────────────────────────────────────
     tui_output::blank(buffer);
-    tui_output::emit_line(buffer, Line::styled("  Shortcuts", BOLD));
+    tui_output::emit_line(buffer, Line::styled("  Input", BOLD));
     tui_output::blank(buffer);
-    let shortcuts = [
-        ("Shift+Tab", "Cycle approval mode (auto/confirm)"),
+    let input_keys: &[(&str, &str)] = &[
+        ("Enter", "Send message"),
         ("Alt+Enter", "Insert newline (multi-line input)"),
-        ("@file.rs", "Attach file context"),
-        ("@image.png", "Attach image (multi-modal)"),
+        ("@file.rs", "Attach file context to your message"),
+        ("@image.png", "Attach image (vision-capable models)"),
+        ("↑ / ↓", "Cycle through input history"),
+        ("Ctrl+R", "Reverse history search"),
+        ("Tab", "Autocomplete @file path or /command"),
+        ("Shift+Tab", "Cycle approval mode (auto ↔ confirm)"),
     ];
-    for (key, desc) in shortcuts {
+    for (key, desc) in input_keys {
         tui_output::emit_line(
             buffer,
             Line::from(vec![
-                Span::styled(format!("  {key:<width$}", width = max_cmd_len + 12), CYAN),
-                Span::styled(desc, DIM),
+                Span::styled(format!("  {key:<col$}"), CYAN),
+                Span::styled(*desc, DIM),
+            ]),
+        );
+    }
+
+    // ── Navigation ─────────────────────────────────────────────
+    tui_output::blank(buffer);
+    tui_output::emit_line(buffer, Line::styled("  Navigation", BOLD));
+    tui_output::blank(buffer);
+    let nav_keys: &[(&str, &str)] = &[
+        ("PgUp / PgDn", "Scroll history up / down one page"),
+        ("Home", "Jump to top of history"),
+        ("End", "Jump to bottom (latest output)"),
+        ("Mouse scroll", "Scroll history"),
+        ("Ctrl+Y", "Copy last code block to clipboard"),
+        ("Ctrl+U", "Copy last assistant response to clipboard"),
+    ];
+    for (key, desc) in nav_keys {
+        tui_output::emit_line(
+            buffer,
+            Line::from(vec![
+                Span::styled(format!("  {key:<col$}"), CYAN),
+                Span::styled(*desc, DIM),
+            ]),
+        );
+    }
+
+    // ── Session control ────────────────────────────────────────
+    tui_output::blank(buffer);
+    tui_output::emit_line(buffer, Line::styled("  Session control", BOLD));
+    tui_output::blank(buffer);
+    let session_keys: &[(&str, &str)] = &[
+        ("Esc / Ctrl+C", "Cancel running inference"),
+        ("Ctrl+D", "Quit koda"),
+    ];
+    for (key, desc) in session_keys {
+        tui_output::emit_line(
+            buffer,
+            Line::from(vec![
+                Span::styled(format!("  {key:<col$}"), CYAN),
+                Span::styled(*desc, DIM),
+            ]),
+        );
+    }
+
+    // ── Approval (shown when a tool needs confirmation) ────────
+    tui_output::blank(buffer);
+    tui_output::emit_line(
+        buffer,
+        Line::from(vec![
+            Span::styled("  Approval ", BOLD),
+            Span::styled("(when the agent asks to run a tool)", DIM),
+        ]),
+    );
+    tui_output::blank(buffer);
+    let approval_keys: &[(&str, &str)] = &[
+        ("y", "Approve this tool call"),
+        ("n", "Reject this tool call"),
+        ("a", "Approve and switch to auto mode (no more prompts)"),
+        ("f", "Reject and provide written feedback"),
+        ("Esc", "Reject (same as n)"),
+    ];
+    for (key, desc) in approval_keys {
+        tui_output::emit_line(
+            buffer,
+            Line::from(vec![
+                Span::styled(format!("  {key:<col$}"), CYAN),
+                Span::styled(*desc, DIM),
             ]),
         );
     }

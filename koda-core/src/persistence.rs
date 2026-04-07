@@ -32,6 +32,15 @@ pub enum Role {
 
 impl Role {
     /// String representation for database storage.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use koda_core::persistence::Role;
+    ///
+    /// assert_eq!(Role::User.as_str(), "user");
+    /// assert_eq!(Role::Assistant.as_str(), "assistant");
+    /// ```
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::System => "system",

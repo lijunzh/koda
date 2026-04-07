@@ -1,7 +1,9 @@
 //! `Persistence` trait implementation for `Database`.
 //!
 //! All SQL queries that fulfill the `Persistence` contract live here,
-//! along with the `prune_mismatched_tool_calls` helper.
+//! along with message sanitisation helpers that run on every `load_context`
+//! call: orphan tool-call pruning, null-content cleanup, and whitespace-only
+//! message removal.
 
 use anyhow::Result;
 use std::path::Path;

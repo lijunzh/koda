@@ -19,6 +19,19 @@ const MIN_CONTEXT: usize = 4_096;
 /// Matches known models by prefix/pattern. Returns the full context window
 /// in tokens. The caller should apply a usage budget (e.g., 95%) to leave
 /// room for the response.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::model_context::context_window_for_model;
+///
+/// assert_eq!(context_window_for_model("claude-sonnet-4-6"), 200_000);
+/// assert_eq!(context_window_for_model("gpt-4o"), 128_000);
+/// assert_eq!(context_window_for_model("gemini-2.5-pro"), 1_048_576);
+///
+/// // Unknown models get a conservative default:
+/// assert_eq!(context_window_for_model("mystery-model"), 128_000);
+/// ```
 pub fn context_window_for_model(model: &str) -> usize {
     let m = model.to_lowercase();
 

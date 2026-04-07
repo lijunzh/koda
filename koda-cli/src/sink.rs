@@ -44,3 +44,26 @@ impl EngineSink for CliSink {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emit_forwards_to_channel() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = CliSink::channel(tx);
+        sink.emit(EngineEvent::SpinnerStop);
+        let msg = rx.try_recv().expect("should receive event");
+        assert!(matches!(msg, UiEvent::Engine(EngineEvent::SpinnerStop)));
+    }
+
+    #[test]
+    fn emit_does_not_panic_on_closed_channel() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = CliSink::channel(tx);
+        drop(rx); // close the receiver
+        // Should not panic — just logs a warning
+        sink.emit(EngineEvent::SpinnerStop);
+    }
+}

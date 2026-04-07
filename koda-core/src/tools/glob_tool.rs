@@ -150,4 +150,34 @@ mod tests {
         assert!(result.contains("mod.rs"));
         assert!(!result.contains("main.rs")); // Not in src/tools
     }
+
+    #[tokio::test]
+    async fn test_glob_capped_results() {
+        let tmp = setup();
+        // Cap at 2 results — there are 3 .rs files
+        let args = json!({ "pattern": "**/*.rs" });
+        let result = glob_search(tmp.path(), &args, 2).await.unwrap();
+        assert!(
+            result.contains("Capped"),
+            "should show cap message: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_glob_missing_pattern_errors() {
+        let tmp = setup();
+        let args = json!({});
+        let result = glob_search(tmp.path(), &args, 200).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("pattern"));
+    }
+
+    #[tokio::test]
+    async fn test_glob_specific_filename() {
+        let tmp = setup();
+        let args = json!({ "pattern": "**/mod.rs" });
+        let result = glob_search(tmp.path(), &args, 200).await.unwrap();
+        assert!(result.contains("mod.rs"));
+        assert!(!result.contains("main.rs"));
+    }
 }

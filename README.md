@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/lijunzh/koda/actions/workflows/ci.yml/badge.svg)](https://github.com/lijunzh/koda/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/koda-cli.svg)](https://crates.io/crates/koda-cli)
-[![docs.rs](https://docs.rs/koda-core/badge.svg)](https://docs.rs/koda-core)
+[![docs.rs](https://docs.rs/koda-cli/badge.svg)](https://docs.rs/koda-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A high-performance personal AI assistant built in Rust.
@@ -29,25 +29,16 @@ On first run, an onboarding wizard guides you through provider and API key setup
 ## Quick Start
 
 ```bash
-koda                                # Interactive REPL (auto-detects local models)
-koda "fix the failing test"         # One-shot with positional prompt
-koda -p "explain auth.rs" -m opus   # Explicit model alias
-echo "review this diff" | koda      # Piped input
-koda server --stdio                 # ACP server for editor integration
+koda                            # Interactive TUI (auto-detects local models)
+koda "fix the failing test"     # One-shot prompt (headless)
+koda -p "explain auth.rs" -m opus  # Explicit model alias
+echo "review this diff" | koda  # Piped input
+koda server --stdio             # ACP server for editor integration
 ```
 
-Model aliases route to the right provider automatically:
-
-| Alias | Provider | Model |
-|---|---|---|
-| `flash-lite` | Gemini | gemini-2.0-flash-lite |
-| `flash` | Gemini | gemini-2.5-flash |
-| `pro` | Gemini | gemini-2.5-pro |
-| `haiku` | Anthropic | claude-3-5-haiku |
-| `sonnet` | Anthropic | claude-sonnet-4 |
-| `opus` | Anthropic | claude-opus-4 |
-
-Type `/help` in the REPL for all commands and shortcuts.
+Aliases like `opus`, `sonnet`, `flash`, `pro` route to the right provider automatically.
+Type `/help` in the TUI for all commands and shortcuts.
+Full reference → **[User Manual](https://docs.rs/koda-cli)**
 
 ## Highlights
 
@@ -66,29 +57,17 @@ Type `/help` in the REPL for all commands and shortcuts.
 ```
 koda/
 ├── koda-core/     # Engine library (providers, tools, inference, DB)
-├── koda-cli/      # CLI binary (REPL, TUI, approval UI, ACP server)
+├── koda-cli/      # CLI binary (TUI, headless, approval UI, ACP server)
 ├── koda-ast/      # Tree-sitter AST analysis library
 └── koda-email/    # Email via IMAP/SMTP library
 ```
-
-## Custom Agents
-
-```json
-{
-  "name": "testgen",
-  "system_prompt": "You are a test generation specialist.",
-  "model": "gemini-2.5-flash",
-  "allowed_tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
-}
-```
-
-Place in `.koda/agents/` (project) or `~/.config/koda/agents/` (global).
 
 ## Documentation
 
 | Document | Content |
 |---|---|
-| [**API Reference**](https://docs.rs/koda-core) | Auto-generated from code |
+| [**User Manual**](https://docs.rs/koda-cli) | CLI reference, slash commands, providers, headless mode, sessions |
+| [**Engine API**](https://docs.rs/koda-core) | `koda-core` library docs for developers embedding the engine |
 | [**Design**](DESIGN.md) | Architecture principles |
 | [**CLAUDE.md**](CLAUDE.md) | Workspace layout, conventions |
 | [**Changelog**](CHANGELOG.md) | Version history |

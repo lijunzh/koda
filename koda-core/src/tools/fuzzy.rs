@@ -18,6 +18,21 @@ use std::ops::Range;
 ///
 /// Never called when `haystack.contains(needle)` — exact matching is always
 /// tried first so this is the fallback path only.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::tools::fuzzy::fuzzy_match_ranges;
+///
+/// // File has trailing spaces that the model's edit stripped:
+/// let file = "fn foo() {\n    let x = 1;   \n}\n";
+/// let needle = "    let x = 1;";
+/// let matches = fuzzy_match_ranges(needle, file);
+/// assert_eq!(matches.len(), 1);
+///
+/// // No match at all:
+/// assert!(fuzzy_match_ranges("not here", file).is_empty());
+/// ```
 pub fn fuzzy_match_ranges(needle: &str, haystack: &str) -> Vec<Range<usize>> {
     // Strip trailing whitespace from every needle line.
     let norm_needle: Vec<&str> = needle.lines().map(str::trim_end).collect();

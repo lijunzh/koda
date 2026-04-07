@@ -2,6 +2,7 @@
 //!
 //! Tracks the current context usage (tokens used / max tokens) so the
 //! prompt and footer can display it. Updated after each inference turn.
+//! Uses `AtomicUsize` for lock-free reads from the TUI render thread.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -23,6 +24,8 @@ pub fn get() -> (usize, usize) {
 }
 
 /// Get context usage as a percentage (0-100).
+///
+/// Returns 0 when max is zero (no division-by-zero panic).
 pub fn percentage() -> usize {
     let (used, max) = get();
     if max == 0 {
@@ -31,7 +34,9 @@ pub fn percentage() -> usize {
     (used * 100) / max
 }
 
-/// Format context usage for the footer: "4.1k/128k (3%)"
+/// Format context usage for the footer: "4.1k/128k (3%)".
+///
+/// Returns an empty string when max is zero.
 pub fn format_footer() -> String {
     let (used, max) = get();
     if max == 0 {
@@ -91,5 +96,27 @@ mod tests {
         // When max is zero, format_footer returns empty
         update(0, 0);
         assert_eq!(format_footer(), "");
+    }
+
+    #[test]
+    fn test_update_get_roundtrip() {
+        update(10_000, 128_000);
+        let (used, max) = get();
+        assert_eq!(used, 10_000);
+        assert_eq!(max, 128_000);
+    }
+
+    #[test]
+    fn test_percentage_full() {
+        update(128_000, 128_000);
+        assert_eq!(percentage(), 100);
+    }
+
+    #[test]
+    fn test_format_k_boundary() {
+        assert_eq!(format_k(999), "999");
+        assert_eq!(format_k(1_000), "1.0k");
+        assert_eq!(format_k(9_999), "10.0k");
+        assert_eq!(format_k(10_000), "10k");
     }
 }

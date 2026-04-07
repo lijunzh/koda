@@ -1,7 +1,9 @@
 //! Approval flow and user interaction during tool execution.
 //!
 //! Extracted from `tool_dispatch.rs` — handles the async request/response
-//! dance for tool approvals and the `AskUser` tool.
+//! dance for tool approvals and the `AskUser` tool. Both functions emit
+//! an event via [`EngineSink`] and `select!` on the command channel,
+//! respecting cancellation tokens for graceful shutdown.
 
 use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
 

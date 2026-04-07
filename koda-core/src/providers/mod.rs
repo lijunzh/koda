@@ -123,6 +123,17 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     /// Create a simple text message (convenience for the common case).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use koda_core::providers::ChatMessage;
+    ///
+    /// let msg = ChatMessage::text("user", "Hello!");
+    /// assert_eq!(msg.role, "user");
+    /// assert_eq!(msg.content.as_deref(), Some("Hello!"));
+    /// assert!(msg.tool_calls.is_none());
+    /// ```
     pub fn text(role: &str, content: &str) -> Self {
         Self {
             role: role.to_string(),
