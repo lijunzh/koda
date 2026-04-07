@@ -127,14 +127,6 @@ pub fn build_system_prompt(
              \n\
              Sub-agent results are NOT visible to the user — always summarize key findings.\n",
         );
-
-        // Guide agent delegation hint
-        if available_agents.iter().any(|n| n == "guide") {
-            prompt.push_str(
-                "\nFor detailed questions about Koda’s features, commands, or architecture, \
-                 delegate to the `guide` agent. It fetches official documentation on demand.\n",
-            );
-        }
     } else {
         prompt.push_str(
             "\n\nNote: No sub-agents are configured. \

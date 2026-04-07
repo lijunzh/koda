@@ -17,7 +17,6 @@
 //! | **default** | Main interactive agent with all tools | Yes |
 //! | **task** | General-purpose worker for delegated tasks | Yes |
 //! | **explore** | Read-only code search specialist | No |
-//! | **guide** | Documentation assistant (fetches docs.rs) | No |
 //! | **plan** | Architecture and planning specialist | No |
 //! | **verify** | Code review and verification | No |
 //!

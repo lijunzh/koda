@@ -177,9 +177,10 @@ impl TuiContext {
             .map(|&(name, desc, _)| (name, desc))
             .collect();
 
-        let agent = Arc::new(
-            koda_core::agent::KodaAgent::new(&config, project_root.clone(), &commands).await?,
-        );
+        let mut agent =
+            koda_core::agent::KodaAgent::new(&config, project_root.clone(), &commands).await?;
+        crate::builtin_skills::inject_builtin_skills(&mut agent);
+        let agent = Arc::new(agent);
 
         let mut session = KodaSession::new(
             session_id,
