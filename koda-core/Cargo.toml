@@ -109,5 +109,9 @@ name = "inference_edge_test"
 required-features = ["test-support"]
 
 [[test]]
+name = "e2e_safety_test"
+required-features = ["test-support"]
+
+[[test]]
 name = "session_test"
 required-features = ["test-support"]
