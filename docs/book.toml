@@ -1,0 +1,18 @@
+[book]
+title       = "Koda — User Manual"
+authors     = ["Lijun Zhu"]
+language    = "en"
+src         = "src"
+description = "Complete reference for the Koda terminal-native AI coding agent."
+
+[output.html]
+default-theme        = "navy"
+git-repository-url   = "https://github.com/lijunzh/koda"
+edit-url-template    = "https://github.com/lijunzh/koda/edit/main/docs/src/{path}"
+additional-css       = []
+no-section-label     = false
+
+[output.html.search]
+enable         = true
+limit-results  = 20
+teaser-word-count = 30

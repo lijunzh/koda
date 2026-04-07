@@ -1,0 +1,14 @@
+# docs/sync.toml — last-synced git commit hashes for doc source files.
+#
+# When a source file changes AND the corresponding doc chapter is updated,
+# run:  ./scripts/check-docs-sync.sh --update
+#
+# CI runs check-docs-sync.sh in check mode. A stale hash = reminder to
+# update the docs chapter, not a hard failure (docs lag is annoying, not
+# broken).
+
+app_rs       = "697e1185200165c5edc1c7d748d26130513279a3"
+repl_rs      = "697e1185200165c5edc1c7d748d26130513279a3"
+headless_rs  = "c1e1857436f416e326c1ff3cd90e9922c2ea549b"
+tui_types_rs = "e9cf9e1091334a4b3cf81b77892c4ca79acc2599"
+startup_rs   = "039f117bbd6ce8f4fcd8721a23e615047e83fd2d"
