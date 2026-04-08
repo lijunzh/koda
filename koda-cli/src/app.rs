@@ -192,7 +192,12 @@ pub(crate) async fn run() -> Result<()> {
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
     tracing_subscriber::fmt()
         .with_writer(non_blocking)
-        .with_env_filter("koda_agent=debug")
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new("koda_core=info,koda_cli=info")
+            }),
+        )
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
         .init();
 
     tracing::info!("Koda starting. Project root: {:?}", project_root);
