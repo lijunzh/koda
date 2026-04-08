@@ -35,10 +35,25 @@ pub fn definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "InvokeAgent".to_string(),
-            description: "Delegate a task to a specialized sub-agent. The sub-agent runs \
-                independently with its own persona and tools, then returns its result. \
-                Omit agent_name to use the 'task' worker. Set agent_name to 'fork' \
-                to inherit the parent's full conversation context."
+            description: "Delegate a task to a specialized sub-agent.
+
+Use InvokeAgent when:
+- The task requires exploring many files or running many searches that would pollute your context
+- Work is independent and can run in parallel with your current reasoning
+- A specialist persona adds value (explore for search, plan for architecture, verify for testing)
+
+Do NOT use InvokeAgent when:
+- A single Read, Grep, or Glob would answer the question (overhead > benefit)
+- The task requires real-time back-and-forth with the user (sub-agents can't ask questions)
+- You've already loaded the relevant context (just do the work yourself)
+
+Key rules:
+- Sub-agent results are NOT shown to the user — you must summarize them in your reply
+- You can launch multiple InvokeAgent calls in one message to run agents in parallel
+- Always write a clear, self-contained prompt — the sub-agent hasn't seen your conversation
+- Include specific file paths, function names, and success criteria in your prompt
+- Omit agent_name to use the 'task' worker (full write access)
+- Use agent_name='fork' to give the sub-agent your full conversation context"
                 .to_string(),
             parameters: json!({
                 "type": "object",

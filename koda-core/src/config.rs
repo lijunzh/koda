@@ -376,6 +376,11 @@ pub struct AgentConfig {
     /// Set to `true` for agents that need to create or modify files.
     #[serde(default)]
     pub write_access: bool,
+    /// Skip injecting project/global memory into the system prompt. Default: false.
+    /// Read-only agents (explore, plan) don't need memory context — skipping it
+    /// saves tokens without affecting their ability to search the codebase.
+    #[serde(default)]
+    pub skip_memory: bool,
 }
 
 /// Runtime configuration assembled from CLI args, env vars, and agent JSON.
@@ -403,6 +408,9 @@ pub struct KodaConfig {
     pub model_settings: ModelSettings,
     /// Max inference iterations per turn.
     pub max_iterations: u32,
+    /// Skip injecting project/global memory into the system prompt.
+    /// Set by `skip_memory: true` in agent JSON. Default: `false`.
+    pub skip_memory: bool,
 }
 
 impl KodaConfig {
@@ -479,6 +487,7 @@ impl KodaConfig {
             agents_dir,
             model_settings: settings,
             max_iterations,
+            skip_memory: agent.skip_memory,
         })
     }
 
@@ -678,6 +687,7 @@ impl KodaConfig {
             agents_dir: PathBuf::from("agents"),
             model_settings,
             max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,
+            skip_memory: false,
         }
     }
 
