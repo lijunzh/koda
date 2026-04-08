@@ -180,6 +180,7 @@ impl TuiContext {
         let mut agent =
             koda_core::agent::KodaAgent::new(&config, project_root.clone(), &commands).await?;
         crate::builtin_skills::inject_builtin_skills(&mut agent);
+        agent.rebuild_system_prompt(&config, &commands);
         let agent = Arc::new(agent);
 
         let mut session = KodaSession::new(

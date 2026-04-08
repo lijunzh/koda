@@ -39,7 +39,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "ActivateSkill".to_string(),
-            description: "Activate a skill for expert instructions. Follow the returned guidance."
+            description: "Activate a skill to load its expert instructions into context. \
+                If the user's request matches a skill listed in the ## Skills section of \
+                the system prompt, you MUST call this tool FIRST — before writing any \
+                response. Do not answer from training data when a skill covers the topic."
                 .to_string(),
             parameters: json!({
                 "type": "object",

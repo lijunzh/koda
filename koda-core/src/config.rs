@@ -332,6 +332,10 @@ impl ModelSettings {
 pub struct AgentConfig {
     /// Agent identifier.
     pub name: String,
+    /// One-line description shown in the main agent's system prompt listing.
+    /// Optional — agents without a description are listed by name only.
+    #[serde(default)]
+    pub description: Option<String>,
     /// System prompt template.
     pub system_prompt: String,
     /// Allowlisted tool names (empty = all tools).
