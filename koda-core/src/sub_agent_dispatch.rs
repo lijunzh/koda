@@ -264,7 +264,11 @@ pub(crate) async fn execute_sub_agent(
         }
         tools.get_definitions(&sub_config.allowed_tools, &denied)
     };
-    let semantic_memory = memory::load(project_root)?;
+    let semantic_memory = if sub_config.skip_memory {
+        String::new()
+    } else {
+        memory::load(project_root)?
+    };
     let env = crate::prompt::EnvironmentInfo {
         project_root: effective_root_ref,
         model: &sub_config.model,
