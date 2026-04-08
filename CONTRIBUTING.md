@@ -12,6 +12,18 @@ cargo build
 cargo test --workspace --features koda-core/test-support
 ```
 
+## Local checks (one-time setup)
+
+Activate the pre-push hook to catch `fmt` and `clippy` failures before they
+hit CI:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook mirrors the Lint CI job exactly. Skip it for a WIP push with
+`git push --no-verify`.
+
 ## Reporting Issues
 
 The easiest contribution is

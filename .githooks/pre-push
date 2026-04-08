@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# .githooks/pre-push — mirrors the Lint CI job locally.
+#
+# Runs before every `git push`. Skip with `git push --no-verify` if you
+# need to push a WIP branch and let CI catch issues instead.
+#
+# One-time setup (per clone):
+#   git config core.hooksPath .githooks
+
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+ok()   { echo -e "${GREEN}✓${NC} $*"; }
+fail() { echo -e "${RED}✗${NC} $*"; }
+info() { echo -e "${YELLOW}→${NC} $*"; }
+
+info "Running pre-push checks (skip with --no-verify)..."
+echo
+
+# --- Format ------------------------------------------------------------------
+info "cargo fmt"
+if cargo fmt --all --check; then
+    ok "fmt clean"
+else
+    fail "fmt: run 'cargo fmt --all' to fix"
+    exit 1
+fi
+
+# --- Clippy ------------------------------------------------------------------
+info "cargo clippy"
+if cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings 2>&1; then
+    ok "clippy clean"
+else
+    fail "clippy: fix the warnings above"
+    exit 1
+fi
+
+echo
+ok "All checks passed — pushing."
