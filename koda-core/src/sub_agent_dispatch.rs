@@ -277,6 +277,7 @@ pub(crate) async fn execute_sub_agent(
         &tool_defs,
         &env,
         &[], // sub-agents have no REPL commands
+        &tools.skill_registry,
     );
 
     for _ in 0..loop_guard::MAX_SUB_AGENT_ITERATIONS {

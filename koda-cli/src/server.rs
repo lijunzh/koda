@@ -93,6 +93,7 @@ pub async fn run_stdio_server(project_root: PathBuf, mut config: KodaConfig) -> 
     // Build agent (tools, system prompt)
     let mut agent = KodaAgent::new(&config, project_root.clone(), &[]).await?;
     crate::builtin_skills::inject_builtin_skills(&mut agent);
+    agent.rebuild_system_prompt(&config, &[]);
     let agent = Arc::new(agent);
 
     let pending_approvals = Arc::new(Mutex::new(HashMap::new()));
