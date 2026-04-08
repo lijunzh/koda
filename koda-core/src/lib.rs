@@ -100,6 +100,8 @@ pub mod runtime_env;
 pub mod session;
 /// Last-used provider persistence (`~/.config/koda/settings.toml`).
 pub mod settings;
+/// Skill-scoped tool filtering — hard enforcement of `allowed_tools`.
+pub mod skill_scope;
 /// Skill discovery and activation (project, user, built-in).
 pub mod skills;
 /// Sub-agent result caching — zero-cost retries after compaction.
