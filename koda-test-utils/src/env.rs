@@ -1,7 +1,7 @@
-//! Shared test harness for E2E tests.
+//! Shared test environment for E2E tests.
 //!
-//! Provides `Env` — an isolated test environment with temp dir, DB,
-//! session, config, and tool registry.  Every E2E test file imports this.
+//! Provides [`Env`] — an isolated test environment with temp dir, DB,
+//! session, config, and tool registry.
 
 use koda_core::persistence::Persistence;
 use koda_core::{
@@ -18,22 +18,31 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Mutex to serialize tests that share process-global env vars
-/// (KODA_MOCK_RESPONSES). `#[tokio::test]` runs tests concurrently
+/// (KODA_MOCK_RESPONSES).  `#[tokio::test]` runs tests concurrently
 /// within the same process, so unsynchronized set_var/remove_var
 /// on the same env var is a data race.
-#[allow(dead_code)] // Only used by e2e_agent_test, but compiled into every test binary.
 pub static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// An isolated test environment with temp dir, DB, session, config,
+/// and tool registry.
 pub struct Env {
+    /// The temporary directory backing this environment.
+    /// Kept alive for the lifetime of `Env`.
     pub _tmp: tempfile::TempDir,
+    /// Path to the project root (inside `_tmp`).
     pub root: PathBuf,
+    /// SQLite database for this test.
     pub db: Database,
+    /// The test session ID.
     pub session_id: String,
+    /// Koda configuration for this test.
     pub config: KodaConfig,
+    /// Tool registry scoped to the test root.
     pub tools: ToolRegistry,
 }
 
 impl Env {
+    /// Create a fresh, isolated test environment.
     pub async fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
@@ -51,10 +60,12 @@ impl Env {
         }
     }
 
+    /// Get tool definitions (no disabled/allowed filters).
     pub fn tool_defs(&self) -> Vec<koda_core::providers::ToolDefinition> {
         self.tools.get_definitions(&[], &[])
     }
 
+    /// Insert a user message into the test session.
     pub async fn insert_user_message(&self, text: &str) {
         self.db
             .insert_message(&self.session_id, &Role::User, Some(text), None, None, None)
@@ -75,7 +86,6 @@ impl Env {
     }
 
     /// Run inference and return Result + events (for testing error paths).
-    #[allow(dead_code)] // Used by inference_edge_test, not all test binaries.
     pub async fn run_inference_result(
         &self,
         provider: &dyn LlmProvider,
@@ -85,7 +95,6 @@ impl Env {
     }
 
     /// Run inference with a cancellation token.
-    #[allow(dead_code)] // Used by inference_edge_test, not all test binaries.
     pub async fn run_inference_cancellable(
         &self,
         provider: &dyn LlmProvider,

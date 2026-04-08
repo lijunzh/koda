@@ -9,13 +9,13 @@ use koda_core::{
     approval::ApprovalMode,
     config::{KodaConfig, ProviderType},
     db::{Database, Persistence, Role},
-    engine::{EngineCommand, EngineEvent, event::TurnEndReason, sink::TestSink},
-    providers::{
-        ChatMessage, LlmProvider, LlmResponse, ModelInfo, StreamChunk, ToolDefinition,
-        mock::{MockProvider, MockResponse},
-    },
+    engine::{EngineCommand, EngineEvent, event::TurnEndReason},
+    providers::{LlmResponse, ModelInfo, StreamChunk},
     session::KodaSession,
     tools::ToolRegistry,
+};
+use koda_test_utils::{
+    ChatMessage, LlmProvider, MockProvider, MockResponse, TestSink, ToolDefinition,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
