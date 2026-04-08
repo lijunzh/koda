@@ -185,11 +185,24 @@ pub(crate) async fn run() -> Result<()> {
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
     let project_root = std::fs::canonicalize(&project_root)?;
 
-    // Initialize logging to file (invisible to user)
+    // Initialize logging to a per-process file (invisible to user).
+    //
+    // Each koda invocation gets its own log file named koda-<PID>.log.
+    // A 'latest' symlink is updated to point to it so users can always
+    // tail the current session without knowing the filename:
+    //   tail -f ~/.config/koda/logs/latest
     let log_dir = koda_core::db::config_dir()?.join("logs");
     std::fs::create_dir_all(&log_dir)?;
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "koda.log");
+    let log_filename = format!("koda-{}.log", std::process::id());
+    let file_appender = tracing_appender::rolling::never(&log_dir, &log_filename);
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    // Best-effort symlink — silently skip on non-unix or permission errors.
+    #[cfg(unix)]
+    {
+        let latest = log_dir.join("latest");
+        let _ = std::fs::remove_file(&latest);
+        let _ = std::os::unix::fs::symlink(log_dir.join(&log_filename), &latest);
+    }
     tracing_subscriber::fmt()
         .with_writer(non_blocking)
         .with_env_filter(
