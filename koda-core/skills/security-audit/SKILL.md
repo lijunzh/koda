@@ -3,6 +3,7 @@ name: security-audit
 description: Security vulnerability scan — finds vulnerabilities before attackers do
 tags: [security, audit, vulnerabilities, owasp]
 when_to_use: Use when asked to audit for security vulnerabilities, check for exposed secrets, review auth/access control, or assess dependency CVEs.
+allowed_tools: [Read, Grep, Glob, List, Bash]
 ---
 
 # Security Audit
