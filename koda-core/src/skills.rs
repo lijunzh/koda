@@ -138,18 +138,9 @@ impl SkillRegistry {
                 "security-audit",
                 include_str!("../skills/security-audit/SKILL.md"),
             ),
-            (
-                "simplify",
-                include_str!("../skills/simplify/SKILL.md"),
-            ),
-            (
-                "debug",
-                include_str!("../skills/debug/SKILL.md"),
-            ),
-            (
-                "remember",
-                include_str!("../skills/remember/SKILL.md"),
-            ),
+            ("simplify", include_str!("../skills/simplify/SKILL.md")),
+            ("debug", include_str!("../skills/debug/SKILL.md")),
+            ("remember", include_str!("../skills/remember/SKILL.md")),
         ];
 
         for (name, content) in builtins {
