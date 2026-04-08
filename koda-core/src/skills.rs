@@ -524,7 +524,7 @@ Do the review.
 
         let results = registry.search("review");
         // code-review, simplify, and remember all contain "review" in their metadata
-        assert!(results.len() >= 1);
+        assert!(!results.is_empty());
         assert!(results.iter().any(|s| s.name == "code-review"));
 
         let results = registry.search("security");
