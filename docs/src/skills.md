@@ -34,6 +34,9 @@ name: my-checklist
 description: One-line summary shown in ListSkills output.
 tags: [review, quality]
 when_to_use: Use when the user asks to review a pull request or a diff.
+allowed_tools: [Read, Grep, Glob]
+user_invocable: true
+argument_hint: <file_or_pr_url>
 ---
 
 # My Review Checklist
@@ -49,7 +52,13 @@ When reviewing code, always check:
 | `name` | ✔ | Skill identifier (used with `ActivateSkill`) |
 | `description` | recommended | One-line summary shown in `ListSkills` |
 | `tags` | optional | Searchable tags: `[tag1, tag2]` |
-| `when_to_use` | recommended | Guidance for the model on when to activate this skill. Shown in `ListSkills` output so the model can self-route without hard-coded hints. |
+| `when_to_use` | recommended | Guidance for the model on when to activate |
+| `allowed_tools` | optional | Restrict tools during activation (empty = all) |
+| `user_invocable` | optional | `false` = model-only, hidden from `/skills` |
+| `argument_hint` | optional | Usage hint (e.g. `<file_path>`) |
+
+> **Note:** Both underscore (`allowed_tools`) and hyphenated (`allowed-tools`)
+> field names are accepted for CC compatibility.
 
 ## Skill lookup order
 
