@@ -16,9 +16,30 @@ Help the user diagnose an issue they're encountering with koda. Work through the
 
 The user's issue: {{args}}
 
-If no issue was described, read the config and environment and summarise anything that looks wrong.
+If no issue was described, read the config, logs, and environment and summarise anything that looks wrong.
 
-## Step 1: Environment and API Keys
+## Step 1: Session Log
+
+Koda writes a rolling daily log to `~/.config/koda/logs/`. Read the most recent file:
+
+```bash
+# Find the latest log file
+ls -t ~/.config/koda/logs/ | head -5
+
+# Tail the last 50 lines (logs may be sparse until issue #758 lands)
+tail -50 ~/.config/koda/logs/koda.log.$(date +%Y-%m-%d) 2>/dev/null \
+  || tail -50 ~/.config/koda/logs/$(ls -t ~/.config/koda/logs/ | head -1) 2>/dev/null \
+  || echo "(no log file found)"
+```
+
+Search for errors and warnings:
+```bash
+grep -E "ERROR|WARN" ~/.config/koda/logs/koda.log.$(date +%Y-%m-%d) 2>/dev/null | tail -20
+```
+
+Note: logs are currently sparse — instrumentation is being improved in issue #758. If the log is empty, proceed to the steps below.
+
+## Step 2: Environment and API Keys
 
 Check which provider is configured and whether its key is present:
 
@@ -32,7 +53,7 @@ Common issues:
 - Key set but for wrong provider → check `~/.config/koda/settings.toml` for the active provider
 - Custom base URL pointing to unreachable endpoint
 
-## Step 2: Settings File
+## Step 3: Settings File
 
 Read the koda settings file:
 
@@ -45,7 +66,7 @@ Check for:
 - `model` — does it exist on that provider?
 - `base_url` — is it reachable?
 
-## Step 3: Agent and Skill Config
+## Step 4: Agent and Skill Config
 
 List any user-level agent or skill overrides:
 
@@ -56,7 +77,7 @@ ls ~/.config/koda/skills/ 2>/dev/null && echo "---skills above---" || echo "(no 
 
 If custom agents exist, read any that seem relevant to the issue.
 
-## Step 4: API Connectivity Test
+## Step 5: API Connectivity Test
 
 Test raw connectivity to the configured provider endpoint. Use the base URL from settings.toml or the provider default:
 
@@ -78,7 +99,7 @@ Expected: HTTP 200. Common failures:
 - 403 → key exists but no access to model
 - 000 or connection refused → network issue, wrong base URL, VPN required
 
-## Step 5: Memory Files
+## Step 6: Memory Files
 
 Check whether memory files exist and are well-formed:
 
@@ -90,10 +111,12 @@ wc -l ./CLAUDE.md 2>/dev/null || echo "(no CLAUDE.md)"
 
 Large memory files (>500 lines) can cause context overflow. If suspiciously large, read the first 50 lines.
 
-## Step 6: Summarise Findings
+## Step 7: Summarise Findings
 
 After running all steps, provide:
 
 1. **Root cause** (if found) — be specific
 2. **Fix** — exact command or change needed
-3. **If unresolved** — what additional information to collect (e.g., run koda with `RUST_LOG=debug koda ...` and share the output)
+3. **If unresolved** — what additional information to collect:
+   - Run koda with `RUST_LOG=koda_core=debug,koda_cli=debug koda ...` and share the resulting log file
+   - Or set `RUST_LOG=debug` for maximum verbosity (very noisy)
