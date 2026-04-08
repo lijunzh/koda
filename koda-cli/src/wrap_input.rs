@@ -25,7 +25,8 @@ pub fn render_wrapped_input(
     cursor_style: Style,
 ) {
     let lines = textarea.lines();
-    let (cursor_row, cursor_col) = textarea.cursor();
+    let cursor = textarea.cursor();
+    let (cursor_row, cursor_col) = (cursor.0, cursor.1);
     let width = area.width as usize;
 
     if width == 0 || area.height == 0 {
