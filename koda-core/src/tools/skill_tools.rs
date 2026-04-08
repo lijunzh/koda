@@ -81,9 +81,24 @@ pub fn list_skills(registry: &SkillRegistry, args: &serde_json::Value) -> String
         } else {
             format!(" [{}]", meta.tags.join(", "))
         };
+        let hint = meta
+            .argument_hint
+            .as_deref()
+            .map(|h| format!(" {h}"))
+            .unwrap_or_default();
+        let tools_note = if meta.allowed_tools.is_empty() {
+            String::new()
+        } else {
+            format!(" (Tools: {})", meta.allowed_tools.join(", "))
+        };
+        let visibility = if !meta.user_invocable {
+            " [model-only]"
+        } else {
+            ""
+        };
         out.push_str(&format!(
-            "  \u{1f4da} {} \u{2014} {}{}\n",
-            meta.name, meta.description, tags
+            "  \u{1f4da} {}{} \u{2014} {}{}{}{visibility}\n",
+            meta.name, hint, meta.description, tags, tools_note
         ));
         if let Some(wtu) = &meta.when_to_use {
             out.push_str(&format!("    When to use: {wtu}\n"));
@@ -97,15 +112,28 @@ pub fn list_skills(registry: &SkillRegistry, args: &serde_json::Value) -> String
 }
 
 /// Load a skill's full SKILL.md content by name.
+///
+/// Returns the skill content along with metadata about scoped tools
+/// (if `allowed_tools` is set in the skill's frontmatter).
 pub fn activate_skill(registry: &SkillRegistry, args: &serde_json::Value) -> String {
     let name = match args.get("skill_name").and_then(|v| v.as_str()) {
         Some(n) => n,
         None => return "Missing 'skill_name' parameter.".to_string(),
     };
 
-    match registry.activate(name) {
-        Some(content) => {
-            format!("Skill '{name}' activated. Follow these instructions:\n\n{content}")
+    match registry.get(name) {
+        Some(skill) => {
+            let mut result = format!(
+                "Skill '{name}' activated. Follow these instructions:\n\n{}",
+                skill.content
+            );
+            if !skill.meta.allowed_tools.is_empty() {
+                result.push_str(&format!(
+                    "\n\n[Skill scope: only use these tools: {}]",
+                    skill.meta.allowed_tools.join(", ")
+                ));
+            }
+            result
         }
         None => {
             let available: Vec<String> = registry.list().iter().map(|m| m.name.clone()).collect();
@@ -274,5 +302,79 @@ mod tests {
             "expected activation message: {result}"
         );
         assert!(result.contains("Instructions for alpha"));
+    }
+
+    #[test]
+    fn test_activate_skill_with_allowed_tools() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".koda").join("skills").join("scoped");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: scoped\ndescription: Scoped skill\ntags: []\nallowed_tools: [Read, Grep]\n---\n\nDo stuff.",
+        )
+        .unwrap();
+        let registry = SkillRegistry::discover(tmp.path());
+        let result = activate_skill(&registry, &json!({"skill_name": "scoped"}));
+        assert!(result.contains("activated"), "should activate: {result}");
+        assert!(result.contains("Do stuff."));
+        assert!(
+            result.contains("[Skill scope: only use these tools: Read, Grep]"),
+            "should include tool scope: {result}"
+        );
+    }
+
+    #[test]
+    fn test_list_skills_shows_allowed_tools() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".koda").join("skills").join("scoped");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: scoped\ndescription: Scoped\ntags: []\nallowed_tools: [Read, Grep]\n---\n\ncontent",
+        )
+        .unwrap();
+        let registry = SkillRegistry::discover(tmp.path());
+        let result = list_skills(&registry, &json!({}));
+        assert!(
+            result.contains("(Tools: Read, Grep)"),
+            "should show allowed tools: {result}"
+        );
+    }
+
+    #[test]
+    fn test_list_skills_shows_model_only_tag() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".koda").join("skills").join("hidden");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: hidden\ndescription: Hidden\ntags: []\nuser_invocable: false\n---\n\ncontent",
+        )
+        .unwrap();
+        let registry = SkillRegistry::discover(tmp.path());
+        let result = list_skills(&registry, &json!({}));
+        assert!(
+            result.contains("[model-only]"),
+            "should show model-only tag: {result}"
+        );
+    }
+
+    #[test]
+    fn test_list_skills_shows_argument_hint() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".koda").join("skills").join("pdf");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: pdf\ndescription: Generate PDF\ntags: []\nargument_hint: <file_path>\n---\n\ncontent",
+        )
+        .unwrap();
+        let registry = SkillRegistry::discover(tmp.path());
+        let result = list_skills(&registry, &json!({}));
+        assert!(
+            result.contains("pdf <file_path>"),
+            "should show argument hint: {result}"
+        );
     }
 }

@@ -161,14 +161,26 @@ pub fn build_system_prompt(
              Do not answer from training data when a skill covers the topic.\n\n",
         );
         for meta in &skills {
+            // Base: "- **name** — description"
+            let mut line = format!("- **{}** — {}", meta.name, meta.description);
+            // Append when_to_use if present
             if let Some(wtu) = &meta.when_to_use {
-                prompt.push_str(&format!(
-                    "- **{}** — {} — {}\n",
-                    meta.name, meta.description, wtu
-                ));
-            } else {
-                prompt.push_str(&format!("- **{}** — {}\n", meta.name, meta.description));
+                line.push_str(&format!(" — {wtu}"));
             }
+            // Append tool scope hint
+            if !meta.allowed_tools.is_empty() {
+                line.push_str(&format!(" (Tools: {})", meta.allowed_tools.join(", ")));
+            }
+            // Append argument hint
+            if let Some(hint) = &meta.argument_hint {
+                line.push_str(&format!(" `{hint}`"));
+            }
+            // Mark model-only skills
+            if !meta.user_invocable {
+                line.push_str(" [model-only]");
+            }
+            line.push('\n');
+            prompt.push_str(&line);
         }
         prompt.push_str(
             "\nCustom skills: `.koda/skills/<name>/SKILL.md` (project) \
@@ -434,6 +446,39 @@ mod tests {
         let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
         assert!(result.contains("**plain**"));
         assert!(result.contains("Plain skill"));
+    }
+
+    #[test]
+    fn test_skills_section_shows_metadata() {
+        use crate::skills::{Skill, SkillMeta, SkillSource};
+
+        let dir = TempDir::new().unwrap();
+        let env = test_env();
+        let mut registry = SkillRegistry::default();
+        // Inject a skill with all metadata fields populated
+        registry.skills.insert(
+            "scoped".to_string(),
+            Skill {
+                meta: SkillMeta {
+                    name: "scoped".to_string(),
+                    description: "Scoped skill".to_string(),
+                    tags: vec![],
+                    when_to_use: Some("Use for scoped work".to_string()),
+                    allowed_tools: vec!["Read".to_string(), "Grep".to_string()],
+                    user_invocable: false,
+                    argument_hint: Some("<file_path>".to_string()),
+                    source: SkillSource::BuiltIn,
+                },
+                content: "scoped content".to_string(),
+            },
+        );
+        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
+        assert!(result.contains("**scoped**"), "skill name");
+        assert!(result.contains("Scoped skill"), "description");
+        assert!(result.contains("Use for scoped work"), "when_to_use");
+        assert!(result.contains("(Tools: Read, Grep)"), "allowed_tools");
+        assert!(result.contains("`<file_path>`"), "argument_hint");
+        assert!(result.contains("[model-only]"), "user_invocable=false");
     }
 
     #[test]

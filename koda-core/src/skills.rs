@@ -40,6 +40,18 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// Metadata from a SKILL.md frontmatter.
+///
+/// ## Parity with Claude Code
+///
+/// These fields map to Claude Code's `FrontmatterData`:
+///
+/// | CC field | Koda field | Notes |
+/// |---|---|---|
+/// | `description` | `description` | |
+/// | `when_to_use` | `when_to_use` | |
+/// | `allowed-tools` | `allowed_tools` | Scoped tool access |
+/// | `user-invocable` | `user_invocable` | Default: `true` |
+/// | `argument-hint` | `argument_hint` | Usage guidance |
 #[derive(Debug, Clone)]
 pub struct SkillMeta {
     /// Skill name (derived from filename or frontmatter).
@@ -52,6 +64,18 @@ pub struct SkillMeta {
     /// Surfaced in `ListSkills` output so the model can decide without
     /// hard-coded hints in `instructions.md`.
     pub when_to_use: Option<String>,
+    /// Tool names allowed when this skill is active.
+    /// Empty = all tools available (default). Non-empty = only these tools.
+    /// Mirrors CC's `allowed-tools` frontmatter field.
+    pub allowed_tools: Vec<String>,
+    /// Whether users can invoke this skill (e.g. via `/skill-name`).
+    /// `true` (default) = shown in user-facing skill list.
+    /// `false` = model-only, not surfaced in `/skills` but still activatable.
+    /// Mirrors CC's `user-invocable` frontmatter field.
+    pub user_invocable: bool,
+    /// Usage hint shown when listing the skill (e.g. `"<file_path>"`)
+    /// Mirrors CC's `argument-hint` frontmatter field.
+    pub argument_hint: Option<String>,
     /// Where this skill was discovered.
     pub source: SkillSource,
 }
@@ -79,7 +103,7 @@ pub struct Skill {
 /// Registry of discovered skills.
 #[derive(Debug, Default)]
 pub struct SkillRegistry {
-    skills: HashMap<String, Skill>,
+    pub(crate) skills: HashMap<String, Skill>,
 }
 
 impl SkillRegistry {
@@ -151,6 +175,21 @@ impl SkillRegistry {
         metas
     }
 
+    /// List only user-invocable skills (excludes model-only skills).
+    ///
+    /// Used by the `/skills` REPL command and `ListSkills` when called
+    /// by the user (vs. the model discovering skills autonomously).
+    pub fn list_user_invocable(&self) -> Vec<&SkillMeta> {
+        let mut metas: Vec<&SkillMeta> = self
+            .skills
+            .values()
+            .filter(|s| s.meta.user_invocable)
+            .map(|s| &s.meta)
+            .collect();
+        metas.sort_by_key(|m| &m.name);
+        metas
+    }
+
     /// Search skills by query (matches name, description, tags).
     pub fn search(&self, query: &str) -> Vec<&SkillMeta> {
         let q = query.to_lowercase();
@@ -171,6 +210,14 @@ impl SkillRegistry {
     /// Activate a skill by name — returns the full content for context injection.
     pub fn activate(&self, name: &str) -> Option<&str> {
         self.skills.get(name).map(|s| s.content.as_str())
+    }
+
+    /// Get the full skill metadata + content by name.
+    ///
+    /// Used when activation needs to inspect `allowed_tools` or other
+    /// metadata beyond just the content string.
+    pub fn get(&self, name: &str) -> Option<&Skill> {
+        self.skills.get(name)
     }
 
     /// Inject a built-in skill programmatically (e.g. from a downstream CLI).
@@ -196,6 +243,9 @@ impl SkillRegistry {
                 description: description.to_string(),
                 tags: vec![],
                 when_to_use: when_to_use.map(str::to_string),
+                allowed_tools: vec![],
+                user_invocable: true,
+                argument_hint: None,
                 source: SkillSource::BuiltIn,
             },
             content: content.to_string(),
@@ -239,12 +289,16 @@ fn parse_skill_md(raw: &str, source: SkillSource) -> Option<Skill> {
     let content = after_open[close_pos + 4..].trim_start().to_string();
 
     // Simple YAML parsing (no serde_yaml dependency).
-    // Supported keys: name, description, tags, when_to_use.
+    // Supported keys: name, description, tags, when_to_use, allowed_tools,
+    //   user_invocable, argument_hint.
     // Multi-line YAML values and complex types are intentionally not supported.
     let mut name = String::new();
     let mut description = String::new();
     let mut tags = Vec::new();
     let mut when_to_use: Option<String> = None;
+    let mut allowed_tools: Vec<String> = Vec::new();
+    let mut user_invocable = true;
+    let mut argument_hint: Option<String> = None;
 
     for line in frontmatter.lines() {
         let line = line.trim();
@@ -254,6 +308,38 @@ fn parse_skill_md(raw: &str, source: SkillSource) -> Option<Skill> {
             description = val.trim().to_string();
         } else if let Some(val) = line.strip_prefix("when_to_use:") {
             when_to_use = Some(val.trim().to_string());
+        } else if let Some(val) = line
+            .strip_prefix("allowed_tools:")
+            .or_else(|| line.strip_prefix("allowed-tools:"))
+        {
+            // Parse [Tool1, Tool2] or comma-separated
+            let val = val.trim();
+            if let Some(inner) = val.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                allowed_tools = inner
+                    .split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect();
+            } else if !val.is_empty() {
+                allowed_tools = val
+                    .split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect();
+            }
+        } else if let Some(val) = line
+            .strip_prefix("user_invocable:")
+            .or_else(|| line.strip_prefix("user-invocable:"))
+        {
+            user_invocable = val.trim() != "false";
+        } else if let Some(val) = line
+            .strip_prefix("argument_hint:")
+            .or_else(|| line.strip_prefix("argument-hint:"))
+        {
+            let val = val.trim();
+            if !val.is_empty() {
+                argument_hint = Some(val.to_string());
+            }
         } else if let Some(val) = line.strip_prefix("tags:") {
             // Parse [tag1, tag2, tag3]
             let val = val.trim();
@@ -273,6 +359,9 @@ fn parse_skill_md(raw: &str, source: SkillSource) -> Option<Skill> {
             description,
             tags,
             when_to_use,
+            allowed_tools,
+            user_invocable,
+            argument_hint,
             source,
         },
         content,
@@ -304,8 +393,95 @@ Do the review.
             skill.meta.when_to_use.as_deref(),
             Some("Use when asked to review code or a PR.")
         );
+        assert!(skill.meta.allowed_tools.is_empty());
+        assert!(skill.meta.user_invocable);
+        assert!(skill.meta.argument_hint.is_none());
         assert!(skill.content.contains("# Code Review"));
         assert!(skill.content.contains("Do the review."));
+    }
+
+    #[test]
+    fn test_parse_allowed_tools() {
+        let raw = "---\nname: scoped\ndescription: Scoped skill\ntags: []\nallowed_tools: [Read, Grep, Glob]\n---\ncontent";
+        let skill = parse_skill_md(raw, SkillSource::BuiltIn).unwrap();
+        assert_eq!(skill.meta.allowed_tools, vec!["Read", "Grep", "Glob"]);
+    }
+
+    #[test]
+    fn test_parse_allowed_tools_hyphenated() {
+        let raw = "---\nname: scoped\ndescription: Scoped skill\ntags: []\nallowed-tools: [Read, Write]\n---\ncontent";
+        let skill = parse_skill_md(raw, SkillSource::BuiltIn).unwrap();
+        assert_eq!(skill.meta.allowed_tools, vec!["Read", "Write"]);
+    }
+
+    #[test]
+    fn test_parse_user_invocable_false() {
+        let raw = "---\nname: model-only\ndescription: hidden\ntags: []\nuser_invocable: false\n---\ncontent";
+        let skill = parse_skill_md(raw, SkillSource::BuiltIn).unwrap();
+        assert!(!skill.meta.user_invocable);
+    }
+
+    #[test]
+    fn test_parse_user_invocable_hyphenated() {
+        let raw = "---\nname: model-only\ndescription: hidden\ntags: []\nuser-invocable: false\n---\ncontent";
+        let skill = parse_skill_md(raw, SkillSource::BuiltIn).unwrap();
+        assert!(!skill.meta.user_invocable);
+    }
+
+    #[test]
+    fn test_parse_user_invocable_default_true() {
+        let raw = "---\nname: visible\ndescription: shown\ntags: []\n---\ncontent";
+        let skill = parse_skill_md(raw, SkillSource::BuiltIn).unwrap();
+        assert!(skill.meta.user_invocable);
+    }
+
+    #[test]
+    fn test_parse_argument_hint() {
+        let raw = "---\nname: pdf\ndescription: Generate PDF\ntags: []\nargument_hint: <file_path>\n---\ncontent";
+        let skill = parse_skill_md(raw, SkillSource::BuiltIn).unwrap();
+        assert_eq!(skill.meta.argument_hint.as_deref(), Some("<file_path>"));
+    }
+
+    #[test]
+    fn test_parse_argument_hint_hyphenated() {
+        let raw = "---\nname: pdf\ndescription: Generate PDF\ntags: []\nargument-hint: <output_dir>\n---\ncontent";
+        let skill = parse_skill_md(raw, SkillSource::BuiltIn).unwrap();
+        assert_eq!(skill.meta.argument_hint.as_deref(), Some("<output_dir>"));
+    }
+
+    #[test]
+    fn test_list_user_invocable_excludes_model_only() {
+        let mut registry = SkillRegistry::default();
+        registry.add_builtin("user-skill", "for users", None, "content");
+        // Manually insert a model-only skill
+        registry.skills.insert(
+            "model-skill".to_string(),
+            Skill {
+                meta: SkillMeta {
+                    name: "model-skill".to_string(),
+                    description: "model only".to_string(),
+                    tags: vec![],
+                    when_to_use: None,
+                    allowed_tools: vec![],
+                    user_invocable: false,
+                    argument_hint: None,
+                    source: SkillSource::BuiltIn,
+                },
+                content: "secret".to_string(),
+            },
+        );
+        assert_eq!(registry.list().len(), 2);
+        assert_eq!(registry.list_user_invocable().len(), 1);
+        assert_eq!(registry.list_user_invocable()[0].name, "user-skill");
+    }
+
+    #[test]
+    fn test_get_returns_full_skill() {
+        let mut registry = SkillRegistry::default();
+        registry.add_builtin("test", "desc", None, "body");
+        let skill = registry.get("test").unwrap();
+        assert_eq!(skill.meta.name, "test");
+        assert_eq!(skill.content, "body");
     }
 
     #[test]
