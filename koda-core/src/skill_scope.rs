@@ -72,17 +72,14 @@ impl SkillToolScope {
         registry: &SkillRegistry,
     ) {
         for (name, args) in tool_calls {
-            if name == "ActivateSkill" {
-                if let Some(skill_name) = args.get("skill_name").and_then(|v| v.as_str()) {
-                    if let Some(skill) = registry.get(skill_name) {
-                        if skill.meta.allowed_tools.is_empty() {
-                            self.allowed = None;
-                        } else {
-                            self.allowed = Some(skill.meta.allowed_tools.clone());
-                        }
-                    }
-                    // If skill not found, don't change scope — the error
-                    // message from activate_skill() is enough.
+            if name == "ActivateSkill"
+                && let Some(skill_name) = args.get("skill_name").and_then(|v| v.as_str())
+                && let Some(skill) = registry.get(skill_name)
+            {
+                if skill.meta.allowed_tools.is_empty() {
+                    self.allowed = None;
+                } else {
+                    self.allowed = Some(skill.meta.allowed_tools.clone());
                 }
             }
         }
