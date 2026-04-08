@@ -564,6 +564,7 @@ pub struct InferenceContext<'a> {
 }
 
 /// Run the inference loop: send messages, stream responses, dispatch tool calls.
+#[tracing::instrument(skip_all, fields(session_id = %ctx.session_id, agent = %ctx.config.agent_name))]
 pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     let InferenceContext {
         project_root,
