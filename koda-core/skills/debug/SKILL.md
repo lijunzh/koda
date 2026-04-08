@@ -20,24 +20,20 @@ If no issue was described, read the config, logs, and environment and summarise 
 
 ## Step 1: Session Log
 
-Koda writes a rolling daily log to `~/.config/koda/logs/`. Read the most recent file:
+Koda writes a per-process log to `~/.config/koda/logs/`. A `latest` symlink always points to the current session's file:
 
 ```bash
-# Find the latest log file
-ls -t ~/.config/koda/logs/ | head -5
+# Tail the current session log
+tail -50 ~/.config/koda/logs/latest 2>/dev/null || echo "(no log file found)"
 
-# Tail the last 50 lines (logs may be sparse until issue #758 lands)
-tail -50 ~/.config/koda/logs/koda.log.$(date +%Y-%m-%d) 2>/dev/null \
-  || tail -50 ~/.config/koda/logs/$(ls -t ~/.config/koda/logs/ | head -1) 2>/dev/null \
-  || echo "(no log file found)"
+# List recent log files
+ls -lt ~/.config/koda/logs/ | head -10
 ```
 
 Search for errors and warnings:
 ```bash
-grep -E "ERROR|WARN" ~/.config/koda/logs/koda.log.$(date +%Y-%m-%d) 2>/dev/null | tail -20
+grep -E "ERROR|WARN" ~/.config/koda/logs/latest 2>/dev/null | tail -20
 ```
-
-Note: logs are currently sparse — instrumentation is being improved in issue #758. If the log is empty, proceed to the steps below.
 
 ## Step 2: Environment and API Keys
 
