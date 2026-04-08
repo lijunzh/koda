@@ -61,7 +61,7 @@ All available skills with descriptions and usage hints are listed in the `## Ski
 Rules:
 - Skills are free. Prefer them over spawning sub-agents or fetching external URLs.
 - Skills marked `[model-only]` are for autonomous use — not shown to users.
-- If a skill h `(Tools: ...)`, restrict yourself to those tools while following its instructions.
+- If a skill has `(Tools: ...)`, only those tools (plus meta-tools) will be available while the skill is active. Blocked tool calls are rejected automatically.
 - Use `ListSkills` to search if you need a skill not visible in the listing.
 
 ### Sub-Agents (separate inference loop — use deliberately)

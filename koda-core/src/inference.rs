@@ -51,6 +51,7 @@ use crate::persistence::Persistence;
 use crate::providers::{
     ChatMessage, ImageData, LlmProvider, StreamChunk, TokenUsage, ToolCall, ToolDefinition,
 };
+use crate::skill_scope::SkillToolScope;
 use crate::tool_dispatch::{
     can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
 };
@@ -589,6 +590,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     let mut loop_detector = LoopDetector::new();
     let sub_agent_cache = crate::sub_agent_cache::SubAgentCache::new();
     let bg_agents = crate::bg_agent::new_shared();
+    let mut skill_scope = SkillToolScope::new();
     let mut total_prompt_tokens: i64 = 0;
     let mut total_completion_tokens: i64 = 0;
     let mut total_cache_read_tokens: i64 = 0;
@@ -677,6 +679,11 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let system_prompt_full = format!("{base_system_prompt}{progress}{todo_section}{git_line}");
         let system_message = ChatMessage::text("system", &system_prompt_full);
 
+        // Apply skill-scoped tool filtering: when a skill with `allowed_tools`
+        // is active, only those tools (+ meta-tools) are sent to the LLM.
+        let scoped_tool_defs = skill_scope.filter_tool_defs(tool_defs);
+        let active_tool_defs: &[ToolDefinition] = &scoped_tool_defs;
+
         // Build per-iteration immutable context for helpers
         let turn = TurnState {
             db,
@@ -686,7 +693,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             iteration,
             config,
             provider,
-            tool_defs,
+            tool_defs: active_tool_defs,
             sink,
             cancel: &cancel,
         };
@@ -705,7 +712,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let stream_result = try_with_rate_limit(
             provider,
             &messages,
-            tool_defs,
+            active_tool_defs,
             &config.model_settings,
             &cancel,
             sink,
@@ -943,6 +950,42 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             .cloned()
             .collect();
 
+        // Skill scope enforcement: reject tool calls blocked by the active scope.
+        // Blocked tools get an error result recorded without execution.
+        let remaining_tools = if skill_scope.is_active() {
+            let mut allowed = Vec::with_capacity(remaining_tools.len());
+            for tc in remaining_tools {
+                if let Some(err_msg) = skill_scope.check_tool_call(&tc.function_name) {
+                    let parsed_args: serde_json::Value =
+                        serde_json::from_str(&tc.arguments).unwrap_or_default();
+                    sink.emit(EngineEvent::ToolCallStart {
+                        id: tc.id.clone(),
+                        name: tc.function_name.clone(),
+                        args: parsed_args,
+                        is_sub_agent: false,
+                    });
+                    crate::tool_dispatch::record_tool_result(
+                        &tc,
+                        &err_msg,
+                        false,
+                        None,
+                        db,
+                        session_id,
+                        tools.caps.tool_result_chars,
+                        project_root,
+                        file_tracker,
+                        sink,
+                    )
+                    .await?;
+                } else {
+                    allowed.push(tc);
+                }
+            }
+            allowed
+        } else {
+            remaining_tools
+        };
+
         // Execute remaining tool calls — parallelize when possible
         if remaining_tools.len() > 1 && can_parallelize(&remaining_tools, mode, project_root) {
             execute_tools_parallel(
@@ -994,6 +1037,37 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 &bg_agents,
             )
             .await?;
+        }
+
+        // Update skill scope: if any ActivateSkill call was made, check whether
+        // the newly activated skill has allowed_tools.
+        {
+            let scope_calls: Vec<(String, serde_json::Value)> = tool_calls
+                .iter()
+                .map(|tc| {
+                    let args: serde_json::Value =
+                        serde_json::from_str(&tc.arguments).unwrap_or_default();
+                    (tc.function_name.clone(), args)
+                })
+                .collect();
+            let was_active = skill_scope.is_active();
+            skill_scope.update_from_tool_calls(&scope_calls, &tools.skill_registry);
+            // Log scope transitions
+            match (was_active, skill_scope.is_active()) {
+                (false, true) => {
+                    sink.emit(EngineEvent::Info {
+                        message: "\u{1f512} Skill tool scope activated — tool set restricted"
+                            .into(),
+                    });
+                }
+                (true, false) => {
+                    sink.emit(EngineEvent::Info {
+                        message: "\u{1f513} Skill tool scope cleared — full tool set restored"
+                            .into(),
+                    });
+                }
+                _ => {}
+            }
         }
 
         // Loop detection: same tool+args repeated REPEAT_THRESHOLD times → stop immediately.

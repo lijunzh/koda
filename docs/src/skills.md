@@ -60,6 +60,22 @@ When reviewing code, always check:
 > **Note:** Both underscore (`allowed_tools`) and hyphenated (`allowed-tools`)
 > field names are accepted for CC compatibility.
 
+### How `allowed_tools` enforcement works
+
+When a skill with `allowed_tools` is activated:
+
+1. **Tool definitions are filtered** — only the listed tools (plus meta-tools
+   like `ActivateSkill`, `ListSkills`, `ListAgents`, `InvokeAgent`, `AskUser`)
+   are sent to the LLM on subsequent turns.
+2. **Blocked tool calls are rejected** — if the model still attempts a blocked
+   tool (e.g., from cached context), the call returns an error explaining the
+   scope restriction.
+3. **Scope clears automatically** when a different skill without `allowed_tools`
+   is activated.
+
+Scope transitions are logged as info events (`🔒 scope activated` /
+`🔓 scope cleared`).
+
 ## Skill lookup order
 
 1. `.koda/skills/` (project-local, highest priority)
