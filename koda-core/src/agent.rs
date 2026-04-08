@@ -85,6 +85,7 @@ impl KodaAgent {
             &tool_defs,
             &env,
             commands,
+            &tools.skill_registry,
         );
 
         Ok(Self {
@@ -93,5 +94,27 @@ impl KodaAgent {
             tool_defs,
             system_prompt,
         })
+    }
+
+    /// Rebuild the system prompt from the agent's current skill registry.
+    ///
+    /// Call this after injecting additional skills (e.g. `inject_builtin_skills`)
+    /// so the rebuilt prompt includes all available skills in the `## Skills` section.
+    pub fn rebuild_system_prompt(&mut self, config: &KodaConfig, commands: &[(&str, &str)]) {
+        let semantic_memory = memory::load(&self.project_root).unwrap_or_default();
+        let env = crate::prompt::EnvironmentInfo {
+            project_root: &self.project_root,
+            model: &config.model,
+            platform: std::env::consts::OS,
+        };
+        self.system_prompt = crate::prompt::build_system_prompt(
+            &config.system_prompt,
+            &semantic_memory,
+            &config.agents_dir,
+            &self.tool_defs,
+            &env,
+            commands,
+            &self.tools.skill_registry,
+        );
     }
 }
