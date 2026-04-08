@@ -32,10 +32,22 @@ fi
 
 # --- Clippy ------------------------------------------------------------------
 info "cargo clippy"
-if cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings 2>&1; then
+if cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings; then
     ok "clippy clean"
 else
     fail "clippy: fix the warnings above"
+    exit 1
+fi
+
+# --- Check (no features) -----------------------------------------------------
+# Compiles every target without optional features to catch cfg-gated items
+# that are invisible when a feature flag is active. Mirrors CI exactly.
+# (This is what caught the missing required-features stanza in #737.)
+info "cargo check (no features)"
+if cargo check --workspace --all-targets; then
+    ok "check clean"
+else
+    fail "check: fix the errors above"
     exit 1
 fi
 
