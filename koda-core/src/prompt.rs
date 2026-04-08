@@ -162,7 +162,10 @@ pub fn build_system_prompt(
         );
         for meta in &skills {
             if let Some(wtu) = &meta.when_to_use {
-                prompt.push_str(&format!("- **{}** — {} — {}\n", meta.name, meta.description, wtu));
+                prompt.push_str(&format!(
+                    "- **{}** — {} — {}\n",
+                    meta.name, meta.description, wtu
+                ));
             } else {
                 prompt.push_str(&format!("- **{}** — {}\n", meta.name, meta.description));
             }
@@ -210,13 +213,11 @@ fn list_available_agents(agents_dir: &Path) -> Vec<(String, Option<String>)> {
             if name == "koda" || name == "default" {
                 return None;
             }
-            let description = std::fs::read_to_string(entry.path())
-                .ok()
-                .and_then(|json| {
-                    serde_json::from_str::<serde_json::Value>(&json)
-                        .ok()
-                        .and_then(|v| v["description"].as_str().map(str::to_string))
-                });
+            let description = std::fs::read_to_string(entry.path()).ok().and_then(|json| {
+                serde_json::from_str::<serde_json::Value>(&json)
+                    .ok()
+                    .and_then(|v| v["description"].as_str().map(str::to_string))
+            });
             Some((name, description))
         })
         .collect();
@@ -245,8 +246,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result =
-            build_system_prompt("You are helpful.", "", dir.path(), &[], &env, &[], &registry);
+        let result = build_system_prompt(
+            "You are helpful.",
+            "",
+            dir.path(),
+            &[],
+            &env,
+            &[],
+            &registry,
+        );
         assert!(result.starts_with("You are helpful."));
         assert!(result.contains("Doing Tasks"));
         assert!(result.contains("Koda Quick Reference"));
@@ -281,8 +289,15 @@ mod tests {
             description: "Read a file. Returns contents.".to_string(),
             parameters: serde_json::json!({}),
         }];
-        let result =
-            build_system_prompt("You are helpful.", "", dir.path(), &tools, &env, &[], &registry);
+        let result = build_system_prompt(
+            "You are helpful.",
+            "",
+            dir.path(),
+            &tools,
+            &env,
+            &[],
+            &registry,
+        );
         assert!(result.contains("**Read**"));
         assert!(result.contains("Read a file"));
     }
@@ -365,8 +380,7 @@ mod tests {
         let env = test_env();
         let registry = SkillRegistry::default();
         let commands = &[("/help", "Show help"), ("/exit", "Quit")];
-        let result =
-            build_system_prompt("Base.", "", dir.path(), &[], &env, commands, &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, commands, &registry);
         assert!(result.contains("`/help`"));
         assert!(result.contains("Show help"));
         assert!(result.contains("`/exit`"));
