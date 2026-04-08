@@ -76,6 +76,7 @@ async fn run_bg_agent(
 ///
 /// Results are cached in `sub_agent_cache` keyed by `(agent_name, prompt_hash)`.
 /// On cache hit, returns immediately without any LLM calls.
+#[tracing::instrument(skip_all, fields(agent_name, cached = false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_sub_agent(
     project_root: &Path,
@@ -93,6 +94,7 @@ pub(crate) async fn execute_sub_agent(
 ) -> Result<String> {
     let args: serde_json::Value = serde_json::from_str(arguments)?;
     let agent_name = args["agent_name"].as_str().unwrap_or("task");
+    tracing::Span::current().record("agent_name", agent_name);
     let prompt = args["prompt"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'prompt'"))?;
@@ -144,6 +146,7 @@ pub(crate) async fn execute_sub_agent(
         sink.emit(EngineEvent::Info {
             message: format!("  \u{26a1} {agent_name}: cache hit, skipping LLM call"),
         });
+        tracing::Span::current().record("cached", true);
         return Ok(cached);
     }
 

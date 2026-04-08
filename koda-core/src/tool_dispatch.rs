@@ -192,6 +192,7 @@ pub(crate) fn can_parallelize(
 }
 
 /// Execute a single tool call, returning (tool_call_id, result_output, success).
+#[tracing::instrument(skip_all, fields(tool = %tc.function_name))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_one_tool(
     tc: &ToolCall,
