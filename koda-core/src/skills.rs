@@ -138,6 +138,18 @@ impl SkillRegistry {
                 "security-audit",
                 include_str!("../skills/security-audit/SKILL.md"),
             ),
+            (
+                "simplify",
+                include_str!("../skills/simplify/SKILL.md"),
+            ),
+            (
+                "debug",
+                include_str!("../skills/debug/SKILL.md"),
+            ),
+            (
+                "remember",
+                include_str!("../skills/remember/SKILL.md"),
+            ),
         ];
 
         for (name, content) in builtins {
@@ -509,6 +521,9 @@ Do the review.
         assert!(registry.len() >= 2);
         assert!(registry.activate("code-review").is_some());
         assert!(registry.activate("security-audit").is_some());
+        assert!(registry.activate("simplify").is_some());
+        assert!(registry.activate("debug").is_some());
+        assert!(registry.activate("remember").is_some());
     }
 
     #[test]
@@ -517,8 +532,9 @@ Do the review.
         registry.load_builtin();
 
         let results = registry.search("review");
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].name, "code-review");
+        // code-review, simplify, and remember all contain "review" in their metadata
+        assert!(results.len() >= 1);
+        assert!(results.iter().any(|s| s.name == "code-review"));
 
         let results = registry.search("security");
         assert_eq!(results.len(), 1);
@@ -571,9 +587,14 @@ Do the review.
         registry.load_builtin();
 
         let list = registry.list();
-        assert!(list.len() >= 2);
-        assert_eq!(list[0].name, "code-review");
-        assert_eq!(list[1].name, "security-audit");
+        let names: Vec<&str> = list.iter().map(|s| s.name.as_str()).collect();
+        // Sorted alphabetically: code-review, debug, remember, security-audit, simplify
+        assert!(list.len() >= 5);
+        assert_eq!(names[0], "code-review");
+        assert_eq!(names[1], "debug");
+        assert_eq!(names[2], "remember");
+        assert_eq!(names[3], "security-audit");
+        assert_eq!(names[4], "simplify");
     }
 
     #[test]
