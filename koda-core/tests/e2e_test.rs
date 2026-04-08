@@ -3,22 +3,17 @@
 //! Mock provider → inference loop → real tools → DB persistence.
 //! All file operations happen in isolated temp directories.
 
-mod e2e_harness;
-
 use anyhow::Result;
 use async_trait::async_trait;
-use e2e_harness::Env;
 use koda_core::{
     approval::ApprovalMode,
     config::ModelSettings,
     engine::{EngineCommand, EngineEvent},
     inference::{self, InferenceContext},
     persistence::Persistence,
-    providers::{
-        ChatMessage, LlmProvider, LlmResponse, ModelInfo, StreamChunk, ToolDefinition,
-        mock::{MockProvider, MockResponse},
-    },
+    providers::{LlmResponse, ModelInfo, StreamChunk},
 };
+use koda_test_utils::{ChatMessage, Env, LlmProvider, MockProvider, MockResponse, ToolDefinition};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 

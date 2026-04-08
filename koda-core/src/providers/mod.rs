@@ -45,6 +45,7 @@ pub mod stream_collector;
 pub mod stream_tag_filter;
 
 /// Mock provider for deterministic testing.
+#[cfg(any(test, feature = "test-support"))]
 pub mod mock;
 
 use anyhow::Result;
@@ -348,6 +349,7 @@ pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider> {
             });
             Box::new(gemini::GeminiProvider::new(key, Some(&config.base_url)))
         }
+        #[cfg(any(test, feature = "test-support"))]
         ProviderType::Mock => Box::new(mock::MockProvider::from_env()),
         _ => Box::new(openai_compat::OpenAiCompatProvider::new(
             &config.base_url,

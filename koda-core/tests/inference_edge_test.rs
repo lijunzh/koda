@@ -6,14 +6,8 @@
 //!
 //! Run with: `cargo test -p koda-core --features test-support --test inference_edge_test`
 
-mod e2e_harness;
-
-use e2e_harness::Env;
-use koda_core::{
-    engine::EngineEvent,
-    persistence::Persistence,
-    providers::mock::{MockProvider, MockResponse},
-};
+use koda_core::{engine::EngineEvent, persistence::Persistence};
+use koda_test_utils::{Env, MockProvider, MockResponse};
 use tokio_util::sync::CancellationToken;
 
 // ── Rate limit retry ─────────────────────────────────────────

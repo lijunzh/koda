@@ -70,6 +70,7 @@ pub enum ProviderType {
     /// vLLM (local, OpenAI-compatible).
     Vllm,
     /// Mock provider for testing (reads KODA_MOCK_RESPONSES env var).
+    #[cfg(any(test, feature = "test-support"))]
     Mock,
 }
 
@@ -175,6 +176,7 @@ impl ProviderType {
                 env_key: "KODA_API_KEY",
                 api_key: false,
             },
+            #[cfg(any(test, feature = "test-support"))]
             Self::Mock => ProviderMeta {
                 name: "mock",
                 url: "http://localhost:0",
@@ -219,6 +221,7 @@ impl ProviderType {
                 "together" => Self::Together,
                 "fireworks" => Self::Fireworks,
                 "vllm" => Self::Vllm,
+                #[cfg(any(test, feature = "test-support"))]
                 "mock" => Self::Mock,
                 _ => Self::OpenAI,
             };

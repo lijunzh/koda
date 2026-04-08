@@ -1,18 +1,7 @@
 //! E2E tests: skills, compaction, and file ownership.
 
-mod e2e_harness;
-
-use e2e_harness::Env;
-use koda_core::{
-    compact,
-    db::Role,
-    engine::EngineEvent,
-    persistence::Persistence,
-    providers::{
-        LlmProvider,
-        mock::{MockProvider, MockResponse},
-    },
-};
+use koda_core::{compact, db::Role, engine::EngineEvent, persistence::Persistence};
+use koda_test_utils::{Env, LlmProvider, MockProvider, MockResponse};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 

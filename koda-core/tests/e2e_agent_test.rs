@@ -1,13 +1,7 @@
 //! E2E tests: sub-agent invocation and caching.
 
-mod e2e_harness;
-
-use e2e_harness::{ENV_MUTEX, Env};
-use koda_core::{
-    engine::EngineEvent,
-    persistence::Persistence,
-    providers::mock::{MockProvider, MockResponse},
-};
+use koda_core::{engine::EngineEvent, persistence::Persistence};
+use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 
 #[tokio::test]
 async fn test_sub_agent_invocation_e2e() {

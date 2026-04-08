@@ -8,11 +8,11 @@ use koda_core::{
     approval::ApprovalMode,
     config::{KodaConfig, ProviderType},
     db::{Database, Role},
-    engine::{EngineCommand, EngineEvent, sink::TestSink},
+    engine::{EngineCommand, EngineEvent},
     inference::{self, InferenceContext},
-    providers::mock::{MockProvider, MockResponse},
     tools::ToolRegistry,
 };
+use koda_test_utils::{MockProvider, MockResponse, TestSink};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
