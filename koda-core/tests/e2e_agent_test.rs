@@ -151,3 +151,107 @@ async fn test_sub_agent_cache_hit_skips_llm() {
         "should complete with final response: {last}"
     );
 }
+
+// ── skip_memory isolation (#769) ────────────────────────────────────────────
+
+/// Helper: creates `agents/<name>.json` under `env.root`.
+fn write_agent_config(env: &Env, name: &str, skip_memory: bool) {
+    let agents_dir = env.root.join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join(format!("{name}.json")),
+        serde_json::json!({
+            "name": name,
+            "system_prompt": "You are a lean test agent.",
+            "skip_memory": skip_memory,
+            "allowed_tools": [],
+            "provider": "mock",
+            "base_url": "http://localhost:0"
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+/// Runs one InvokeAgent call via the outer provider and returns the env-provider
+/// recorded calls (messages the sub-agent's MockProvider received).
+async fn invoke_agent_and_take_calls(
+    env: &Env,
+    agent_name: &str,
+) -> Vec<Vec<koda_core::providers::ChatMessage>> {
+    MockProvider::clear_env_calls();
+    env.insert_user_message(&format!("call {agent_name}")).await;
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({"agent_name": agent_name, "prompt": "go"}),
+        ),
+        MockResponse::Text("done".into()),
+    ]);
+    env.run_inference(&provider).await;
+    MockProvider::take_env_calls()
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn skip_memory_excludes_project_memory_from_sub_agent() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::new().await;
+
+    // Write a distinctive sentinel to the project memory file.
+    std::fs::write(env.root.join("MEMORY.md"), "SENTINEL_XYZ").unwrap();
+    write_agent_config(&env, "lean-agent", /* skip_memory */ true);
+
+    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
+    unsafe {
+        std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
+    }
+    let calls = invoke_agent_and_take_calls(&env, "lean-agent").await;
+    unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
+
+    assert!(
+        !calls.is_empty(),
+        "sub-agent provider should have been called"
+    );
+    let all_content: String = calls
+        .iter()
+        .flatten()
+        .filter_map(|m| m.content.as_deref())
+        .collect();
+    assert!(
+        !all_content.contains("SENTINEL_XYZ"),
+        "skip_memory: true must exclude project memory from sub-agent system prompt; got:\n{all_content}"
+    );
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn without_skip_memory_project_memory_reaches_sub_agent() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::new().await;
+
+    // Same sentinel — but this agent does NOT skip memory.
+    std::fs::write(env.root.join("MEMORY.md"), "SENTINEL_XYZ").unwrap();
+    write_agent_config(&env, "full-agent", /* skip_memory */ false);
+
+    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
+    unsafe {
+        std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
+    }
+    let calls = invoke_agent_and_take_calls(&env, "full-agent").await;
+    unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
+
+    assert!(
+        !calls.is_empty(),
+        "sub-agent provider should have been called"
+    );
+    let all_content: String = calls
+        .iter()
+        .flatten()
+        .filter_map(|m| m.content.as_deref())
+        .collect();
+    assert!(
+        all_content.contains("SENTINEL_XYZ"),
+        "skip_memory: false must include project memory in sub-agent system prompt; got:\n{all_content}"
+    );
+}

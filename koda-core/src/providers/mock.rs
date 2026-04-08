@@ -11,8 +11,8 @@ use crate::config::ModelSettings;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::mpsc;
 
 static MOCK_CALL_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -62,11 +62,31 @@ impl MockResponse {
     }
 }
 
+/// Returns the shared global Arc that all `from_env()` providers write to.
+///
+/// Tests call `MockProvider::take_env_calls()` (feature = "test-support") to
+/// inspect what messages the sub-agent provider received without needing a
+/// direct reference to the provider instance.
+fn global_env_calls() -> Arc<Mutex<Vec<Vec<ChatMessage>>>> {
+    static CALLS: OnceLock<Arc<Mutex<Vec<Vec<ChatMessage>>>>> = OnceLock::new();
+    CALLS
+        .get_or_init(|| Arc::new(Mutex::new(Vec::new())))
+        .clone()
+}
+
 /// A mock LLM provider that returns scripted responses.
 ///
-/// Responses are consumed in FIFO order. Panics if exhausted.
+/// Responses are consumed in FIFO order. Graceful fallback to empty text when
+/// the queue is exhausted.
+///
+/// Every `chat()` / `chat_stream()` call records the received messages in
+/// `recorded_calls`. Providers created via `from_env()` additionally write to
+/// a shared global, letting tests inspect sub-agent calls without holding a
+/// direct reference to the provider.
 pub struct MockProvider {
     responses: Mutex<Vec<MockResponse>>,
+    /// Records every messages slice passed to `chat()` / `chat_stream()`.
+    recorded_calls: Arc<Mutex<Vec<Vec<ChatMessage>>>>,
 }
 
 impl MockProvider {
@@ -74,6 +94,7 @@ impl MockProvider {
     pub fn new(responses: Vec<MockResponse>) -> Self {
         Self {
             responses: Mutex::new(responses),
+            recorded_calls: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -103,16 +124,40 @@ impl MockProvider {
                 }
             })
             .collect();
-        Self::new(responses)
+        Self {
+            responses: Mutex::new(responses),
+            recorded_calls: global_env_calls(),
+        }
     }
 
     fn next_response(&self) -> MockResponse {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
-            // Graceful fallback: return empty text (model is "done").
             return MockResponse::Text(String::new());
         }
         responses.remove(0)
+    }
+
+    /// All messages passed to `chat()` / `chat_stream()` on this instance.
+    pub fn recorded_calls(&self) -> Vec<Vec<ChatMessage>> {
+        self.recorded_calls.lock().unwrap().clone()
+    }
+
+    /// All messages received by any `from_env()` provider since the last
+    /// `clear_env_calls()`. Requires the `test-support` feature.
+    ///
+    /// Because `execute_sub_agent` creates providers internally via
+    /// `MockProvider::from_env()`, this is the only way for tests to inspect
+    /// what messages the sub-agent's provider actually received.
+    #[cfg(feature = "test-support")]
+    pub fn take_env_calls() -> Vec<Vec<ChatMessage>> {
+        std::mem::take(&mut *global_env_calls().lock().unwrap())
+    }
+
+    /// Clear the global `from_env()` call recorder.
+    #[cfg(feature = "test-support")]
+    pub fn clear_env_calls() {
+        global_env_calls().lock().unwrap().clear();
     }
 }
 
@@ -120,10 +165,11 @@ impl MockProvider {
 impl LlmProvider for MockProvider {
     async fn chat(
         &self,
-        _messages: &[ChatMessage],
+        messages: &[ChatMessage],
         _tools: &[ToolDefinition],
         _settings: &ModelSettings,
     ) -> Result<LlmResponse> {
+        self.recorded_calls.lock().unwrap().push(messages.to_vec());
         match self.next_response() {
             MockResponse::Text(text) => Ok(LlmResponse {
                 content: Some(text),
@@ -161,10 +207,11 @@ impl LlmProvider for MockProvider {
 
     async fn chat_stream(
         &self,
-        _messages: &[ChatMessage],
+        messages: &[ChatMessage],
         _tools: &[ToolDefinition],
         _settings: &ModelSettings,
     ) -> Result<mpsc::Receiver<StreamChunk>> {
+        self.recorded_calls.lock().unwrap().push(messages.to_vec());
         let response = self.next_response();
 
         // Error responses fail at the call site, not inside the stream.
