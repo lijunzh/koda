@@ -5,14 +5,8 @@
 //!
 //! Run with: `cargo test -p koda-core --features test-support --test e2e_safety_test`
 
-mod e2e_harness;
-
-use e2e_harness::Env;
-use koda_core::{
-    engine::EngineEvent,
-    persistence::Persistence,
-    providers::mock::{MockProvider, MockResponse},
-};
+use koda_core::{engine::EngineEvent, persistence::Persistence};
+use koda_test_utils::{Env, MockProvider, MockResponse};
 
 /// Find the first ToolCallResult output for a given tool name.
 fn find_tool_output(events: &[EngineEvent], tool: &str) -> Option<String> {

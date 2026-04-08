@@ -1794,6 +1794,7 @@ dependencies = [
  "glob",
  "ignore",
  "koda-email",
+ "koda-test-utils",
  "path-clean",
  "regex",
  "reqwest",
@@ -1825,6 +1826,18 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "koda-test-utils"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "koda-core",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

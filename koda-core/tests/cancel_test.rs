@@ -11,11 +11,12 @@ use koda_core::persistence::Persistence;
 use koda_core::{
     config::{KodaConfig, ProviderType},
     db::{Database, Role},
-    engine::{EngineCommand, EngineEvent, sink::TestSink},
+    engine::{EngineCommand, EngineEvent},
     inference::{self, InferenceContext},
-    providers::{ChatMessage, LlmProvider, LlmResponse, ModelInfo, StreamChunk, ToolDefinition},
+    providers::{LlmResponse, ModelInfo, StreamChunk},
     tools::ToolRegistry,
 };
+use koda_test_utils::{ChatMessage, LlmProvider, TestSink, ToolDefinition};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;

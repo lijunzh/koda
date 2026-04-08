@@ -3,13 +3,8 @@
 //! Covers tools that are only unit-tested elsewhere, plus v0.1.14
 //! regression tests for post-edit AST verification (#467/#504).
 
-mod e2e_harness;
-
-use e2e_harness::Env;
-use koda_core::{
-    engine::EngineEvent,
-    providers::mock::{MockProvider, MockResponse},
-};
+use koda_core::engine::EngineEvent;
+use koda_test_utils::{Env, MockProvider, MockResponse};
 
 // ── Glob ─────────────────────────────────────────────────────
 
