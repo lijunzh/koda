@@ -51,8 +51,11 @@ jobs:
           echo "✅ Tag v$TAG matches koda-core ($CORE_VER), koda-cli ($CLI_VER), koda-ast ($AST_VER), and koda-email ($EMAIL_VER)"
 
   # Cross-platform tests before shipping binaries.
+  # Depends on verify-version: no point burning 30+ min of cross-platform
+  # tests when the tag is wrong and the release is dead anyway.
   test:
     name: Test (${{ matrix.os }})
+    needs: verify-version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

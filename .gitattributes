@@ -1,0 +1,13 @@
+# Normalize line endings to LF for all text files.
+# Prevents snapshot/source mismatches on Windows checkouts
+# since we do not run Windows in CI.
+* text=auto eol=lf
+
+# Explicitly binary — never touch line endings.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.woff binary
+*.woff2 binary
