@@ -447,6 +447,11 @@ docs-size  (independent)   guards per-chapter byte cap on docs/src/*.md
   gaps, Windows catches platform-specific API errors (e.g. `std::os::unix`).
 - macOS omitted from `check`: POSIX like Linux; caught locally since dev is on macOS.
 
+**Branch ruleset required gates: `Test` and `Docs` only.**
+`Lint` and `Check` are transitively enforced via `test`'s `needs: [lint, check]` —
+adding them as explicit gates would be redundant. `Docs` is required separately
+because it is independent of the `test` chain.
+
 ### Coverage workflow (`coverage.yml`)
 
 Coverage is **not** a PR gate — it runs post-merge on `main` and is informational.
