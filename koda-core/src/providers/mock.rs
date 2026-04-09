@@ -11,6 +11,7 @@ use crate::config::ModelSettings;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::mpsc;
@@ -18,7 +19,7 @@ use tokio::sync::mpsc;
 static MOCK_CALL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// A scripted response for the mock provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MockResponse {
     /// Stream text content back as the LLM response.
     Text(String),

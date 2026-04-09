@@ -21,6 +21,7 @@
 //! ```
 
 mod env;
+pub mod golden;
 
 // ── Re-exports from koda-core (test-support gated) ─────────────────────────
 

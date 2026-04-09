@@ -11,7 +11,9 @@ name = "koda_test_utils"
 path = "src/lib.rs"
 
 [dependencies]
+async-trait = "0.1"
 koda-core = { path = "../koda-core", features = ["test-support"] }
+serde = { version = "1", features = ["derive"] }
 insta = { version = "1", features = ["yaml", "redactions"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }

@@ -1866,8 +1866,10 @@ name = "koda-test-utils"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "insta",
  "koda-core",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
