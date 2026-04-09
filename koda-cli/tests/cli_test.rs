@@ -108,8 +108,8 @@ fn test_cli_help_snapshot() {
         .expect("Failed to run koda --help");
 
     assert!(output.status.success());
-    let actual = String::from_utf8_lossy(&output.stdout);
-    let snapshot = include_str!("snapshots/help.snap");
+    let actual = String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n");
+    let snapshot = include_str!("snapshots/help.snap").replace("\r\n", "\n");
     assert_eq!(
         actual.trim(),
         snapshot.trim(),
@@ -135,8 +135,8 @@ fn test_cli_server_help_snapshot() {
         .expect("Failed to run koda server --help");
 
     assert!(output.status.success());
-    let actual = String::from_utf8_lossy(&output.stdout);
-    let snapshot = include_str!("snapshots/server_help.snap");
+    let actual = String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n");
+    let snapshot = include_str!("snapshots/server_help.snap").replace("\r\n", "\n");
     assert_eq!(
         actual.trim(),
         snapshot.trim(),

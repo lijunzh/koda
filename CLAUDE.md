@@ -72,9 +72,10 @@ cargo test -p koda-ast                                   # AST library + server 
 cargo test -p koda-email                                 # Email library + server tests
 cargo test -p koda-core --test perf_test                 # Run a specific test file
 cargo fmt --all                          # Format all crates
-cargo fmt --all --check                  # Check formatting (CI enforced)
-cargo clippy --workspace -- -D warnings  # Lint (CI enforced)
-cargo doc --workspace --no-deps          # Build docs
+cargo fmt --all --check                                                    # Check formatting (CI enforced)
+cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings  # Lint (CI enforced)
+cargo check --workspace --all-targets                                       # Compile-check all targets, no features (CI enforced, ubuntu + windows)
+cargo doc --workspace --no-deps                                             # Build docs
 ```
 
 ## Architecture
@@ -414,6 +415,59 @@ For capabilities that ship in the koda workspace (same release cycle):
 7. Add `--version` flag to `main.rs` (standalone server wrapper)
 8. Write integration tests in `tests/mcp_integration_test.rs`
 9. Update `release.yml`: version verify, build, package, publish, Homebrew
-10. Sync version with workspace (currently 0.2.1)
+10. Sync version with workspace (currently 0.2.3)
 11. Update this file (CLAUDE.md)
+
+## CI Workflows
+
+Four workflows live in `.github/workflows/`:
+
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| `ci.yml` | Pull requests to `main` | Gate PRs — lint, cross-platform check, test, doc, audit |
+| `coverage.yml` | Push to `main` | Post-merge coverage tracking with auto issue creation |
+| `release.yml` | Tag `v*` | Version verify, cross-platform test + build, publish, Homebrew |
+| `docs.yml` | Push to `main` (docs/ changes) | Build + deploy mdBook to GitHub Pages |
+
+### CI job DAG (`ci.yml`)
+
+```
+lint  ──┬──► test          lint = fmt + clippy (Linux only — no value on Windows)
+check ─┘                   check = cargo check --all-targets, no features
+                           matrix: [ubuntu-latest, windows-latest], fail-fast: false
+doc        (independent)   catches broken rustdoc regardless of lint
+audit      (independent)   reads Cargo.lock against advisories — orthogonal to code quality
+docs-size  (independent)   guards per-chapter byte cap on docs/src/*.md
+```
+
+- `test` gates on **both** `lint` and `check` — the expensive job never runs if cheap ones fail.
+- `doc`, `audit`, `docs-size` run unconditionally in parallel — they provide independent signals
+  and are fast enough that cancelling them on lint failure would lose information, not save time.
+- `check` uses `fail-fast: false` so both platforms always report — Ubuntu catches cfg-gated
+  gaps, Windows catches platform-specific API errors (e.g. `std::os::unix`).
+- macOS omitted from `check`: POSIX like Linux; caught locally since dev is on macOS.
+
+### Coverage workflow (`coverage.yml`)
+
+Coverage is **not** a PR gate — it runs post-merge on `main` and is informational.
+
+| Crate | Threshold |
+|---|---|
+| `koda-core` | ≥ 80% line coverage |
+| `koda-ast` | ≥ 80% line coverage |
+| `koda-email` | ≥ 70% line coverage |
+
+**Regression handling** — when any crate drops below threshold:
+1. Workflow run turns red → GitHub notifies via email.
+2. A GitHub issue is automatically created with label `coverage-regression`,
+   commit SHA, run link, and which crates failed.
+3. If an open `coverage-regression` issue already exists, a comment is added
+   instead (no spam). **The label is exclusively owned by `coverage.yml` —
+   do not apply it manually or from another workflow, as this breaks deduplication.**
+4. When coverage recovers, the open issue is auto-closed with a comment.
+
+**Why not a PR gate?** Coverage reruns the full test suite with instrumentation
+(2–5× slower). Blocking PRs doubles the test cost and slows feedback. The
+fix-forward model (merge → notify → fix PR) keeps PRs fast while maintaining
+accountability on `main`.
 

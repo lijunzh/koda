@@ -1,0 +1,153 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]   # Runs after every merge — informational, not a PR gate
+
+permissions:
+  contents: read
+  issues:   write      # Needed to open / comment on regression issues
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: koda-core coverage (≥ 80% lines)
+        id: core
+        continue-on-error: true
+        run: |
+          # --test-threads=1: compact::test_circuit_breaker mutates global
+          # atomic state; concurrent sibling tests can re-trip the circuit
+          # between reset_compact_failures() and the assertion.
+          cargo llvm-cov \
+            --lib -p koda-core \
+            --features koda-core/test-support \
+            --fail-under-lines 80 \
+            --lcov --output-path lcov-core.info \
+            -- --test-threads=1
+
+      - name: koda-ast coverage (≥ 80% lines)
+        id: ast
+        continue-on-error: true
+        run: |
+          cargo llvm-cov \
+            --lib -p koda-ast \
+            --fail-under-lines 80 \
+            --lcov --output-path lcov-ast.info
+
+      - name: koda-email coverage (≥ 70% lines)
+        id: email
+        continue-on-error: true
+        run: |
+          cargo llvm-cov \
+            --lib -p koda-email \
+            --fail-under-lines 70 \
+            --lcov --output-path lcov-email.info
+
+      - name: Upload lcov reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lcov-reports
+          path: lcov-*.info
+          retention-days: 7
+
+      # Open or update a GitHub issue when any crate drops below its threshold.
+      #
+      # DEDUPLICATION STRATEGY — label-based, not title-based:
+      #   The issue title includes the triggering commit SHA (human-readable
+      #   context) but the SHA changes every run, so title-matching would
+      #   create a new issue on every regression push. Instead we use the
+      #   'coverage-regression' label as the stable dedup key:
+      #     - open issues are found by label → commented on, not duplicated
+      #     - the label is EXCLUSIVELY owned by this workflow — do not apply
+      #       it manually or from any other workflow, or dedup will break
+      #   One open 'coverage-regression' issue exists at a time. It
+      #   accumulates comments until coverage recovers, then auto-closes.
+      - name: Report regression
+        if: |
+          steps.core.outcome == 'failure' ||
+          steps.ast.outcome  == 'failure' ||
+          steps.email.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Build the list of failing crates.
+          FAILED=""
+          [ "${{ steps.core.outcome }}"  = "failure" ] && FAILED="$FAILED\n- \`koda-core\` — below 80% line coverage"
+          [ "${{ steps.ast.outcome }}"   = "failure" ] && FAILED="$FAILED\n- \`koda-ast\`  — below 80% line coverage"
+          [ "${{ steps.email.outcome }}" = "failure" ] && FAILED="$FAILED\n- \`koda-email\` — below 70% line coverage"
+
+          COMMIT="${{ github.sha }}"
+          SHORT="${COMMIT:0:7}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          BODY="$(printf "## Coverage regression on \`main\`\n\nCommit: [\`%s\`](%s/commit/%s)\nRun: %s\n\n### Failing crates\n%b\n\n### Next steps\n1. Check the lcov reports attached to the [failed run](%s).\n2. Add tests to bring the affected crate(s) back above threshold.\n3. The issue will be closed automatically once coverage passes on \`main\` again." \
+            "$SHORT" "${{ github.server_url }}/${{ github.repository }}" "$COMMIT" \
+            "$RUN_URL" "$FAILED" "$RUN_URL")"
+
+          # Ensure the label exists (idempotent).
+          gh label create "coverage-regression" \
+            --description "Coverage dropped below threshold on main" \
+            --color "e11d48" 2>/dev/null || true
+
+          # Dedup: comment on existing open issue, or open a fresh one.
+          EXISTING=$(gh issue list \
+            --label "coverage-regression" \
+            --state open \
+            --json number \
+            --jq '.[0].number' 2>/dev/null)
+
+          if [ -n "$EXISTING" ]; then
+            echo "Coverage regression issue #$EXISTING already open — adding comment."
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create \
+              --title "Coverage regression on main ($SHORT)" \
+              --label "coverage-regression" \
+              --body "$BODY"
+          fi
+
+      # Auto-close the regression issue when coverage is green again.
+      - name: Close regression issue if green
+        if: |
+          steps.core.outcome  == 'success' &&
+          steps.ast.outcome   == 'success' &&
+          steps.email.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          EXISTING=$(gh issue list \
+            --label "coverage-regression" \
+            --state open \
+            --json number \
+            --jq '.[0].number' 2>/dev/null)
+
+          if [ -n "$EXISTING" ]; then
+            SHORT="${{ github.sha }}"
+            SHORT="${SHORT:0:7}"
+            gh issue close "$EXISTING" \
+              --comment "Coverage is back above threshold on \`main\` at commit \`$SHORT\`. 🎉"
+          fi
+
+      # Fail the workflow run so the badge goes red and GitHub notifies you.
+      - name: Fail if any crate below threshold
+        if: |
+          steps.core.outcome == 'failure' ||
+          steps.ast.outcome  == 'failure' ||
+          steps.email.outcome == 'failure'
+        run: exit 1
