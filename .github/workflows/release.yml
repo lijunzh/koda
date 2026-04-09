@@ -50,6 +50,36 @@ jobs:
           fi
           echo "✅ Tag v$TAG matches koda-core ($CORE_VER), koda-cli ($CLI_VER), koda-ast ($AST_VER), and koda-email ($EMAIL_VER)"
 
+      - name: Check intra-workspace dependency versions are consistent
+        # Catches stale version pins like `koda-email = { path = "...", version = "0.2.0" }`
+        # when the actual crate is already at 0.2.3 — which causes crates.io publish failures
+        # because the path dep is stripped on publish and the stale constraint is shipped instead.
+        run: |
+          CORE_VER=$(grep '^version' koda-core/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          CLI_VER=$(grep  '^version' koda-cli/Cargo.toml  | head -1 | sed 's/.*"\(.*\)"/\1/')
+          EMAIL_VER=$(grep '^version' koda-email/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          FAILED=0
+
+          # koda-core → koda-email
+          CORE_DEP_EMAIL=$(grep 'koda-email\s*=' koda-core/Cargo.toml | sed 's/.*version\s*=\s*"\([^"]*\)".*/\1/')
+          if [ "$CORE_DEP_EMAIL" != "$EMAIL_VER" ]; then
+            echo "::error::koda-core pins koda-email at $CORE_DEP_EMAIL but koda-email is $EMAIL_VER"
+            FAILED=1
+          fi
+
+          # koda-cli → koda-core
+          CLI_DEP_CORE=$(grep 'koda-core\s*=' koda-cli/Cargo.toml | head -1 | sed 's/.*version\s*=\s*"\([^"]*\)".*/\1/')
+          if [ "$CLI_DEP_CORE" != "$CORE_VER" ]; then
+            echo "::error::koda-cli pins koda-core at $CLI_DEP_CORE but koda-core is $CORE_VER"
+            FAILED=1
+          fi
+
+          if [ $FAILED -eq 1 ]; then
+            echo "Fix the stale version pins above before tagging a release."
+            exit 1
+          fi
+          echo "✅ All intra-workspace dependency version pins are consistent."
+
   # Cross-platform tests before shipping binaries.
   # Depends on verify-version: no point burning 30+ min of cross-platform
   # tests when the tag is wrong and the release is dead anyway.
