@@ -1,6 +1,6 @@
 [package]
 name = "koda-core"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 description = "Core engine for the Koda AI coding agent (macOS and Linux only)"
 license = "MIT"
@@ -63,7 +63,7 @@ futures-util = "0.3"
 anyhow = "1"
 
 # First-party workspace libraries (direct calls)
-koda-email = { path = "../koda-email", version = "0.2.5" }
+koda-email = { path = "../koda-email", version = "0.2.6" }
 
 # Async trait support
 async-trait = "0.1"

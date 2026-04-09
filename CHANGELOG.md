@@ -9,6 +9,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-04-09
+
+Patch release to fix the v0.2.5 `koda-cli` crates.io publish failure.
+
+### Fixed
+- **`koda-cli` build.rs panics during `cargo publish`** — the build script
+  read `../docs/src/SUMMARY.md` to embed the user manual at compile time.
+  `cargo publish` runs in an isolated sandbox where parent-directory paths
+  don't exist, causing a hard panic. This was the root cause behind every
+  failed crates.io publish since v0.2.3.
+
+### Changed
+- **Self-documentation: embedded manual → URL reference** — the `koda_docs`
+  built-in skill no longer bundles the full user manual into the binary
+  via `build.rs`. Instead, it provides a URL index pointing to the published
+  manual at https://lijunzh.github.io/koda/, and the agent uses `WebFetch`
+  to retrieve docs on demand. Benefits:
+  - Eliminates `build.rs` doc-bundling complexity (reduced from 87 → 15 lines)
+  - Docs are always up-to-date (served from GitHub Pages, not frozen at compile time)
+  - No binary bloat (~20 KB of markdown removed from every build)
+  - Matches Claude Code's approach (links to `code.claude.com/docs`)
+  - `build.rs` now only contains the Unix platform gate
+
+### Architecture note
+`koda_docs` remains a **skill** (passive context injection), not an agent
+(active sub-process). Skills are zero-cost prompt injection — the right
+primitive for "here's where to find information." It stays in **koda-cli**
+(product-specific) rather than koda-core (generic engine), using the
+existing `inject_builtin_skills()` seam.
+
 ## [0.2.5] - 2026-04-09
 
 Patch release to fix the v0.2.4 crates.io publish failure for `koda-cli`.
