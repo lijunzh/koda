@@ -9,6 +9,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-04-08
+
+Skills, tracing, testing, and security hardening release. 42 PRs merged since v0.2.2.
+
+### Added
+- **Built-in skills** (#736, #757) — `simplify`, `debug`, `remember` bundled
+  skills; offline docs embedded as a skill (guide agent deleted).
+- **Skill metadata** (#742, #747) — `when_to_use`, `allowed_tools`,
+  `user_invocable`, `argument_hint` fields on `SkillMeta`; surfaced in
+  `ListSkills` output.
+- **Dynamic system prompt injection** (#744) — skill + agent listings
+  injected into the system prompt at inference time (not config load).
+- **`allowed_tools` enforcement** (#751) — tool allow-lists enforced at
+  the execution layer, not just prompt level.
+- **Per-process log files** (#767) — each koda process writes to
+  `~/.koda/logs/<pid>.log` with a `latest` symlink.
+- **`#[tracing::instrument]`** (#763, #768) — structured spans on
+  `inference_loop`, `execute_one_tool`, and `execute_sub_agent`.
+- **Golden-file replay** (#776) — `RecordingProvider` / `ReplayProvider`
+  in `koda-test-utils` for deterministic conversation replay.
+- **`koda-test-utils` crate** (#772, #774) — dedicated test utility crate
+  with `Env`, `EnvBuilder`, `insta` snapshot support, and golden-file
+  harness.
+- **MockProvider call recording** (#770) — `recorded_calls()` and
+  `take_env_calls()` for inspecting sub-agent provider traffic.
+- **mdBook user manual** (#730) — full user manual at docs site, with
+  chapter size gate in CI (#761).
+- **Edit placeholder detection** (#708) — rejects `// ... rest of code`
+  omission placeholders in `Edit` tool `new_str`.
+
+### Fixed
+- **Tracing zero-bytes bug** (#763) — replaced dead `tracing_subscriber`
+  filter with `EnvFilter` + `FmtSpan::CLOSE`.
+- **Fork bomb classification** (#775) — `:(){ :|:& };:` and variants now
+  classified as `Destructive`.
+- **Shell output caps** (#710) — enforce collection caps and bump DB
+  storage to 2 MB.
+- **Agent parity** (#754) — deeper sub-agent prompts, `skip_memory`,
+  `allowed_tools` propagation.
+
+### Changed
+- **CI coverage gate** raised from 70% → 80% for koda-core + koda-ast (#722).
+- **CI consolidation** (#726) — optimized lint/test job dependencies.
+- **`pub(crate)` visibility** (#729) — all koda-cli modules scoped to
+  crate-internal.
+- **Dependency updates** — tokio 1.51.1, fastrand 2.4.1,
+  ratatui-textarea 0.9.0, similar 2→3, plus ~30 transitive bumps.
+
+### Testing
+- **350+ new tests** across 7 PRs (#709, #711, #712, #714, #718, #720,
+  #722, #725, #727) — approval flow, inference loop, DB methods, file
+  tools, E2E safety, email module.
+- **`insta` snapshot testing** (#774) — snapshot assertions for event
+  sequences and config serialization.
+- **`EnvBuilder` pattern** (#774) — fluent test setup replacing
+  imperative boilerplate.
+
 ## [0.2.2] - 2026-04-05
 
 Documentation, safety, and architecture release. 17 PRs merged since v0.2.1.
