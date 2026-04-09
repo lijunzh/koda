@@ -198,6 +198,9 @@ const DANGEROUS_PATTERNS: &[&str] = &[
     "gh release delete",
     "gh api",
     "gh auth ",
+    // Fork bombs and recursive function definitions
+    "(){",
+    "() {",
 ];
 
 // ── Classification ───────────────────────────────────────────
