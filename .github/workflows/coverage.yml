@@ -67,8 +67,17 @@ jobs:
           retention-days: 7
 
       # Open or update a GitHub issue when any crate drops below its threshold.
-      # Deduplicates: if an open coverage-regression issue already exists, adds
-      # a comment instead of opening a new one.
+      #
+      # DEDUPLICATION STRATEGY — label-based, not title-based:
+      #   The issue title includes the triggering commit SHA (human-readable
+      #   context) but the SHA changes every run, so title-matching would
+      #   create a new issue on every regression push. Instead we use the
+      #   'coverage-regression' label as the stable dedup key:
+      #     - open issues are found by label → commented on, not duplicated
+      #     - the label is EXCLUSIVELY owned by this workflow — do not apply
+      #       it manually or from any other workflow, or dedup will break
+      #   One open 'coverage-regression' issue exists at a time. It
+      #   accumulates comments until coverage recovers, then auto-closes.
       - name: Report regression
         if: |
           steps.core.outcome == 'failure' ||
