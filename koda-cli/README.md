@@ -32,7 +32,7 @@ Cycle with `Shift+Tab`:
 | **Auto** | Local mutations auto-approved, destructive ops need confirmation |
 | **Confirm** | Every non-read action requires confirmation |
 
-See the [README](https://github.com/lijunzh/koda) for full documentation.
+See the [User Manual](https://lijunzh.github.io/koda/) for full documentation.
 
 ## License
 

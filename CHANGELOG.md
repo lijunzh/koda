@@ -9,6 +9,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-04-09
+
+Patch release to fix the v0.2.4 crates.io publish failure for `koda-cli`.
+
+### Fixed
+- **`koda-cli` readme path** — `readme = "../README.md"` pointed outside the
+  package boundary, causing `cargo publish` to warn/fail. Changed to
+  `readme = "README.md"` (the crate's own README) (#797).
+- **`koda-core` missing crate metadata** — added `homepage`, `readme`,
+  `keywords`, and `categories` fields that were present on `koda-ast` and
+  `koda-email` but missing from `koda-core`, risking crates.io rejection (#797).
+- **crates.io index propagation** — doubled the inter-publish sleep from 60 s
+  to 120 s to give the sparse index enough time to reflect newly published
+  dependencies before downstream crates attempt to resolve them (#797).
+
 ## [0.2.4] - 2026-04-09
 
 Patch release to correct a broken v0.2.3 crates.io publish.
