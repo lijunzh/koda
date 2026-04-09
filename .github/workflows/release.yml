@@ -131,10 +131,13 @@ jobs:
 
   publish:
     name: Publish to crates.io
-    needs: build
+    needs: github-release
     runs-on: ubuntu-latest
     environment: crates-io
     continue-on-error: true
+    # crates.io versions are immutable — publish only after github-release
+    # confirms binaries are good. Runs in parallel with update-homebrew;
+    # the two are independent distribution channels.
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -163,7 +166,7 @@ jobs:
 
   github-release:
     name: GitHub Release
-    needs: build  # Only depends on build, not publish
+    needs: build  # fans out to update-homebrew and publish in parallel
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
