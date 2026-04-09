@@ -41,16 +41,63 @@ pub struct Env {
     pub tools: ToolRegistry,
 }
 
-impl Env {
-    /// Create a fresh, isolated test environment.
-    pub async fn new() -> Self {
+/// Builder for [`Env`] — customise provider, context window, agent name, etc.
+///
+/// ```rust,ignore
+/// let env = Env::builder()
+///     .max_context_tokens(100_000)
+///     .provider_type(ProviderType::Mock)
+///     .build()
+///     .await;
+/// ```
+pub struct EnvBuilder {
+    provider_type: ProviderType,
+    agent_name: String,
+    max_context_tokens: Option<usize>,
+}
+
+impl Default for EnvBuilder {
+    fn default() -> Self {
+        Self {
+            provider_type: ProviderType::LMStudio,
+            agent_name: "test-agent".into(),
+            max_context_tokens: None,
+        }
+    }
+}
+
+impl EnvBuilder {
+    /// Override the provider type (default: `LMStudio`).
+    pub fn provider_type(mut self, p: ProviderType) -> Self {
+        self.provider_type = p;
+        self
+    }
+
+    /// Override the agent name stored in the session (default: `"test-agent"`).
+    pub fn agent_name(mut self, name: impl Into<String>) -> Self {
+        self.agent_name = name.into();
+        self
+    }
+
+    /// Override `max_context_tokens` on the config (default: provider default).
+    pub fn max_context_tokens(mut self, n: usize) -> Self {
+        self.max_context_tokens = Some(n);
+        self
+    }
+
+    /// Build the environment.  Creates a temp dir, DB, session, and tool registry.
+    pub async fn build(self) -> Env {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
         let db = Database::init(&root).await.unwrap();
-        let session_id = db.create_session("test-agent", &root).await.unwrap();
-        let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        let session_id = db.create_session(&self.agent_name, &root).await.unwrap();
+        let mut config = KodaConfig::default_for_testing(self.provider_type);
+        if let Some(n) = self.max_context_tokens {
+            config.max_context_tokens = n;
+            config.model_settings.max_context_tokens = n;
+        }
         let tools = ToolRegistry::new(root.clone(), config.max_context_tokens);
-        Self {
+        Env {
             _tmp: tmp,
             root,
             db,
@@ -58,6 +105,18 @@ impl Env {
             config,
             tools,
         }
+    }
+}
+
+impl Env {
+    /// Create a fresh, isolated test environment with defaults.
+    pub async fn new() -> Self {
+        Self::builder().build().await
+    }
+
+    /// Start building a customised environment.
+    pub fn builder() -> EnvBuilder {
+        EnvBuilder::default()
     }
 
     /// Get tool definitions (no disabled/allowed filters).
@@ -67,8 +126,13 @@ impl Env {
 
     /// Insert a user message into the test session.
     pub async fn insert_user_message(&self, text: &str) {
+        self.insert_message(&Role::User, text).await;
+    }
+
+    /// Insert a message with any role into the test session.
+    pub async fn insert_message(&self, role: &Role, text: &str) {
         self.db
-            .insert_message(&self.session_id, &Role::User, Some(text), None, None, None)
+            .insert_message(&self.session_id, role, Some(text), None, None, None)
             .await
             .unwrap();
     }

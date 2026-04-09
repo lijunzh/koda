@@ -7,94 +7,60 @@ use anyhow::Result;
 use async_trait::async_trait;
 use koda_core::{
     approval::ApprovalMode,
-    config::{KodaConfig, ProviderType},
-    db::{Database, Persistence, Role},
     engine::{EngineCommand, EngineEvent, event::TurnEndReason},
+    persistence::Persistence,
     providers::{LlmResponse, ModelInfo, StreamChunk},
     session::KodaSession,
     tools::ToolRegistry,
 };
 use koda_test_utils::{
-    ChatMessage, LlmProvider, MockProvider, MockResponse, TestSink, ToolDefinition,
+    ChatMessage, Env, LlmProvider, MockProvider, MockResponse, TestSink, ToolDefinition,
 };
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-// ── Shared test harness ──────────────────────────────────────────────────────
+// ── Session-specific helper ──────────────────────────────────────────────────
 
-struct Env {
-    _tmp: tempfile::TempDir,
-    root: PathBuf,
-    db: Database,
-    session_id: String,
-    config: KodaConfig,
-}
+/// Build a KodaSession, injecting an arbitrary provider.
+///
+/// Bypasses `KodaSession::new()` (which calls `create_provider` internally)
+/// so tests can supply a pre-configured MockProvider.  A fresh ToolRegistry
+/// is created each call because ToolRegistry does not implement Clone.
+async fn make_session(
+    env: &Env,
+    provider: Box<dyn LlmProvider>,
+) -> (KodaSession, CancellationToken) {
+    let cancel = CancellationToken::new();
+    let tools = ToolRegistry::new(env.root.clone(), env.config.max_context_tokens);
 
-impl Env {
-    async fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().to_path_buf();
-        let db = Database::init(&root).await.unwrap();
-        let session_id = db.create_session("test-agent", &root).await.unwrap();
-        let config = KodaConfig::default_for_testing(ProviderType::Mock);
-        Self {
-            _tmp: tmp,
-            root,
-            db,
-            session_id,
-            config,
-        }
-    }
+    let agent = Arc::new(koda_core::agent::KodaAgent {
+        project_root: env.root.clone(),
+        tools,
+        tool_defs: ToolRegistry::new(env.root.clone(), env.config.max_context_tokens)
+            .get_definitions(&[], &[]),
+        system_prompt: "You are a test assistant.".to_string(),
+    });
 
-    async fn insert_user_message(&self, text: &str) {
-        self.db
-            .insert_message(&self.session_id, &Role::User, Some(text), None, None, None)
-            .await
-            .unwrap();
-    }
+    // Wire the DB+session into the ToolRegistry so RecallContext works.
+    agent
+        .tools
+        .set_session(Arc::new(env.db.clone()), env.session_id.clone());
 
-    /// Build a KodaSession, injecting an arbitrary provider.
-    ///
-    /// Bypasses `KodaSession::new()` (which calls `create_provider` internally)
-    /// so tests can supply a pre-configured MockProvider.  A fresh ToolRegistry
-    /// is created each call because ToolRegistry does not implement Clone.
-    async fn make_session(
-        &self,
-        provider: Box<dyn LlmProvider>,
-    ) -> (KodaSession, CancellationToken) {
-        let cancel = CancellationToken::new();
-        let tools = ToolRegistry::new(self.root.clone(), self.config.max_context_tokens);
+    let file_tracker =
+        koda_core::file_tracker::FileTracker::new(&env.session_id, env.db.clone()).await;
 
-        let agent = Arc::new(koda_core::agent::KodaAgent {
-            project_root: self.root.clone(),
-            tools,
-            tool_defs: ToolRegistry::new(self.root.clone(), self.config.max_context_tokens)
-                .get_definitions(&[], &[]),
-            system_prompt: "You are a test assistant.".to_string(),
-        });
-
-        // Wire the DB+session into the ToolRegistry so RecallContext works.
-        agent
-            .tools
-            .set_session(Arc::new(self.db.clone()), self.session_id.clone());
-
-        let file_tracker =
-            koda_core::file_tracker::FileTracker::new(&self.session_id, self.db.clone()).await;
-
-        let session = KodaSession {
-            id: self.session_id.clone(),
-            agent,
-            db: self.db.clone(),
-            provider,
-            mode: ApprovalMode::Auto,
-            cancel: cancel.clone(),
-            file_tracker,
-            title_set: false,
-        };
-        (session, cancel)
-    }
+    let session = KodaSession {
+        id: env.session_id.clone(),
+        agent,
+        db: env.db.clone(),
+        provider,
+        mode: ApprovalMode::Auto,
+        cancel: cancel.clone(),
+        file_tracker,
+        title_set: false,
+    };
+    (session, cancel)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -109,7 +75,7 @@ async fn session_run_turn_emits_turn_start_and_end() {
     let provider = Box::new(MockProvider::new(vec![MockResponse::Text(
         "Hello!".to_string(),
     )]));
-    let (mut session, _cancel) = env.make_session(provider).await;
+    let (mut session, _cancel) = make_session(&env, provider).await;
 
     let sink = TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
@@ -201,7 +167,7 @@ async fn session_cancellation_produces_turn_end_cancelled() {
         }
     }
 
-    let (mut session, cancel) = env.make_session(Box::new(HangingProvider)).await;
+    let (mut session, cancel) = make_session(&env, Box::new(HangingProvider)).await;
 
     // Cancel after 100 ms so the test completes quickly.
     let cancel_clone = cancel.clone();
@@ -261,7 +227,7 @@ async fn session_persists_messages_across_two_turns() {
     let provider1 = Box::new(MockProvider::new(vec![MockResponse::Text(
         "first answer".to_string(),
     )]));
-    let (mut session1, _cancel1) = env.make_session(provider1).await;
+    let (mut session1, _cancel1) = make_session(&env, provider1).await;
     let sink1 = TestSink::new();
     let (_, mut cmd_rx1) = mpsc::channel::<EngineCommand>(1);
     session1
@@ -289,7 +255,7 @@ async fn session_persists_messages_across_two_turns() {
     )]));
     // A new KodaSession sharing the same DB and session_id represents the
     // continuation of the conversation after, e.g., a model swap.
-    let (mut session2, _cancel2) = env.make_session(provider2).await;
+    let (mut session2, _cancel2) = make_session(&env, provider2).await;
     let sink2 = TestSink::new();
     let (_, mut cmd_rx2) = mpsc::channel::<EngineCommand>(1);
     session2
