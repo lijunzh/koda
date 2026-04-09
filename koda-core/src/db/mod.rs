@@ -49,12 +49,27 @@ pub fn config_dir() -> Result<std::path::PathBuf> {
         .ok()
         .map(std::path::PathBuf::from)
         .or_else(|| {
+            // Unix: $HOME/.config  (XDG Base Directory spec fallback)
             std::env::var("HOME")
                 .ok()
                 .map(|h| std::path::PathBuf::from(h).join(".config"))
         })
+        .or({
+            // Windows: %APPDATA%  (e.g. C:\Users\Alice\AppData\Roaming)
+            #[cfg(windows)]
+            {
+                std::env::var("APPDATA").ok().map(std::path::PathBuf::from)
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
+        })
         .ok_or_else(|| {
-            anyhow::anyhow!("Cannot determine config directory (set HOME or XDG_CONFIG_HOME)")
+            anyhow::anyhow!(
+                "Cannot determine config directory \
+                 (set XDG_CONFIG_HOME, HOME, or APPDATA)"
+            )
         })?;
     Ok(base.join("koda"))
 }

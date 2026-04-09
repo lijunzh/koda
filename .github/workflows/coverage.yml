@@ -22,6 +22,10 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: coverage  # LLVM-instrumented artifacts — separate from ci.yml
+                                # keys so instrumented and normal builds never
+                                # contaminate each other's caches.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov

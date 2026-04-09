@@ -60,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -83,8 +83,6 @@ jobs:
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-14
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -100,8 +98,7 @@ jobs:
           cargo build --release --target ${{ matrix.target }} -p koda-ast
           cargo build --release --target ${{ matrix.target }} -p koda-email
 
-      - name: Package (unix)
-        if: runner.os != 'Windows'
+      - name: Package
         run: |
           mkdir koda-${{ matrix.target }}
           cp target/${{ matrix.target }}/release/koda koda-${{ matrix.target }}/
@@ -110,24 +107,11 @@ jobs:
           cp README.md LICENSE koda-${{ matrix.target }}/
           tar czf koda-${{ matrix.target }}.tar.gz koda-${{ matrix.target }}
 
-      - name: Package (windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          mkdir koda-${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/koda.exe koda-${{ matrix.target }}/
-          cp target/${{ matrix.target }}/release/koda-ast.exe koda-${{ matrix.target }}/
-          cp target/${{ matrix.target }}/release/koda-email.exe koda-${{ matrix.target }}/
-          cp README.md LICENSE koda-${{ matrix.target }}/
-          7z a koda-${{ matrix.target }}.zip koda-${{ matrix.target }}/
-
       - uses: actions/upload-artifact@v7
         with:
           name: koda-${{ matrix.target }}
-          path: |
-            koda-${{ matrix.target }}.tar.gz
-            koda-${{ matrix.target }}.zip
-          if-no-files-found: ignore
+          path: koda-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
 
   publish:
     name: Publish to crates.io
@@ -195,9 +179,7 @@ jobs:
         uses: softprops/action-gh-release@v2.6.1
         with:
           body_path: release_body.md
-          files: |
-            artifacts/*.tar.gz
-            artifacts/*.zip
+          files: artifacts/*.tar.gz
 
   update-homebrew:
     name: Update Homebrew Tap
