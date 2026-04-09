@@ -9,9 +9,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.2.3] - 2026-04-08
+## [0.2.3] - 2026-04-09
 
 Skills, tracing, testing, and security hardening release. 42 PRs merged since v0.2.2.
+
+### Removed
+- **Windows support dropped** (#788, closes #791) — koda's `Bash` tool
+  uses `sh`, which is not a Windows primitive. Supporting Windows properly
+  requires a separate PowerShell tool, Windows-native process-group kill
+  semantics, and platform-specific path handling throughout — a different
+  product. Attempting to build koda on Windows now produces a clear
+  compile-time error with a pointer to WSL2.
+  **Supported platforms: macOS (x86_64 + arm64) and Linux (x86_64 + arm64).
+  Windows users: use WSL2.**
 
 ### Added
 - **Built-in skills** (#736, #757) — `simplify`, `debug`, `remember` bundled
