@@ -127,24 +127,51 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       # Publish order follows dependency graph:
       # koda-ast, koda-email (no workspace deps) → koda-core → koda-cli
+      #
+      # Each step is idempotent: "already exists" on crates.io is treated as
+      # success so a re-run after a partial publish doesn't break.
       - name: Publish koda-ast
-        run: cargo publish -p koda-ast
+        run: |
+          out=$(cargo publish -p koda-ast 2>&1); rc=$?
+          echo "$out"
+          if [ $rc -ne 0 ]; then
+            echo "$out" | grep -q "already exists" || exit $rc
+            echo "koda-ast already published — skipping."
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: Publish koda-email
-        run: cargo publish -p koda-email
+        run: |
+          out=$(cargo publish -p koda-email 2>&1); rc=$?
+          echo "$out"
+          if [ $rc -ne 0 ]; then
+            echo "$out" | grep -q "already exists" || exit $rc
+            echo "koda-email already published — skipping."
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: Wait for crates.io index
         run: sleep 60
       - name: Publish koda-core
-        run: cargo publish -p koda-core
+        run: |
+          out=$(cargo publish -p koda-core 2>&1); rc=$?
+          echo "$out"
+          if [ $rc -ne 0 ]; then
+            echo "$out" | grep -q "already exists" || exit $rc
+            echo "koda-core already published — skipping."
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: Wait for crates.io index
         run: sleep 60
       - name: Publish koda-cli
-        run: cargo publish -p koda-cli
+        run: |
+          out=$(cargo publish -p koda-cli 2>&1); rc=$?
+          echo "$out"
+          if [ $rc -ne 0 ]; then
+            echo "$out" | grep -q "already exists" || exit $rc
+            echo "koda-cli already published — skipping."
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
