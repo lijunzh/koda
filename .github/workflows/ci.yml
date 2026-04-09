@@ -42,8 +42,6 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: check  # stable across branches & workflow edits → primary key always hits
       - name: cargo check (all targets, no features)
         # Catches cfg-gated items invisible behind feature flags AND
         # platform-specific compile errors (e.g. std::os::unix on Windows).
