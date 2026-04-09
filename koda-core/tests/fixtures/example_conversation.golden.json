@@ -1,0 +1,14 @@
+{
+  "provider": "mock",
+  "model": "example",
+  "responses": [
+    { "ToolCalls": [
+      {
+        "id": "call_001",
+        "function_name": "Read",
+        "arguments": "{\"path\": \"README.md\"}"
+      }
+    ]},
+    { "Text": "I've read the README. It describes Koda, a coding agent." }
+  ]
+}

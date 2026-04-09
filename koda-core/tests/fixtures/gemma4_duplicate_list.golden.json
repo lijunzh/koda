@@ -1,0 +1,19 @@
+{
+  "provider": "lm-studio",
+  "model": "google/gemma-4-26b-a4b",
+  "responses": [
+    { "ToolCalls": [
+      { "id": "call_0", "function_name": "List", "arguments": "{\"path\":\".\"}" },
+      { "id": "call_1", "function_name": "List", "arguments": "{\"path\":\".\"}" },
+      { "id": "call_2", "function_name": "List", "arguments": "{\"path\":\".\"}" },
+      { "id": "call_3", "function_name": "List", "arguments": "{\"path\":\".\"}" },
+      { "id": "call_4", "function_name": "List", "arguments": "{\"path\":\".\"}" },
+      { "id": "call_5", "function_name": "List", "arguments": "{\"path\":\".\"}" },
+      { "id": "call_6", "function_name": "List", "arguments": "{\"path\":\".\"}" },
+      { "id": "call_7", "function_name": "List", "arguments": "{\"path\":\".\"}" },
+      { "id": "call_8", "function_name": "List", "arguments": "{\"path\":\".\"}" },
+      { "id": "call_9", "function_name": "List", "arguments": "{\"path\":\".\"}" }
+    ]},
+    { "Text": "Here are the files in the current directory." }
+  ]
+}
