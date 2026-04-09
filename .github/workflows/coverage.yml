@@ -44,9 +44,11 @@ jobs:
         id: ast
         continue-on-error: true
         run: |
+          # TEST ONLY: threshold raised to 99 to verify regression issue creation.
+          # Revert in the next PR.
           cargo llvm-cov \
             --lib -p koda-ast \
-            --fail-under-lines 80 \
+            --fail-under-lines 99 \
             --lcov --output-path lcov-ast.info
 
       - name: koda-email coverage (≥ 70% lines)
