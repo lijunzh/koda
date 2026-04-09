@@ -50,6 +50,36 @@ jobs:
           fi
           echo "✅ Tag v$TAG matches koda-core ($CORE_VER), koda-cli ($CLI_VER), koda-ast ($AST_VER), and koda-email ($EMAIL_VER)"
 
+      - name: Check intra-workspace dependency versions are consistent
+        # Catches stale version pins like `koda-email = { path = "...", version = "0.2.0" }`
+        # when the actual crate is already at 0.2.3 — which causes crates.io publish failures
+        # because the path dep is stripped on publish and the stale constraint is shipped instead.
+        run: |
+          CORE_VER=$(grep '^version' koda-core/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          CLI_VER=$(grep  '^version' koda-cli/Cargo.toml  | head -1 | sed 's/.*"\(.*\)"/\1/')
+          EMAIL_VER=$(grep '^version' koda-email/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          FAILED=0
+
+          # koda-core → koda-email
+          CORE_DEP_EMAIL=$(grep 'koda-email\s*=' koda-core/Cargo.toml | sed 's/.*version\s*=\s*"\([^"]*\)".*/\1/')
+          if [ "$CORE_DEP_EMAIL" != "$EMAIL_VER" ]; then
+            echo "::error::koda-core pins koda-email at $CORE_DEP_EMAIL but koda-email is $EMAIL_VER"
+            FAILED=1
+          fi
+
+          # koda-cli → koda-core
+          CLI_DEP_CORE=$(grep 'koda-core\s*=' koda-cli/Cargo.toml | head -1 | sed 's/.*version\s*=\s*"\([^"]*\)".*/\1/')
+          if [ "$CLI_DEP_CORE" != "$CORE_VER" ]; then
+            echo "::error::koda-cli pins koda-core at $CLI_DEP_CORE but koda-core is $CORE_VER"
+            FAILED=1
+          fi
+
+          if [ $FAILED -eq 1 ]; then
+            echo "Fix the stale version pins above before tagging a release."
+            exit 1
+          fi
+          echo "✅ All intra-workspace dependency version pins are consistent."
+
   # Cross-platform tests before shipping binaries.
   # Depends on verify-version: no point burning 30+ min of cross-platform
   # tests when the tag is wrong and the release is dead anyway.
@@ -118,60 +148,31 @@ jobs:
     needs: github-release
     runs-on: ubuntu-latest
     environment: crates-io
-    continue-on-error: true
-    # crates.io versions are immutable — publish only after github-release
-    # confirms binaries are good. Runs in parallel with update-homebrew;
-    # the two are independent distribution channels.
+    # crates.io versions are immutable. If this job fails, do NOT paper over
+    # it — bump to the next patch version instead and cut a fresh release.
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       # Publish order follows dependency graph:
       # koda-ast, koda-email (no workspace deps) → koda-core → koda-cli
-      #
-      # Each step is idempotent: "already exists" on crates.io is treated as
-      # success so a re-run after a partial publish doesn't break.
       - name: Publish koda-ast
-        run: |
-          out=$(cargo publish -p koda-ast 2>&1); rc=$?
-          echo "$out"
-          if [ $rc -ne 0 ]; then
-            echo "$out" | grep -q "already exists" || exit $rc
-            echo "koda-ast already published — skipping."
-          fi
+        run: cargo publish -p koda-ast
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: Publish koda-email
-        run: |
-          out=$(cargo publish -p koda-email 2>&1); rc=$?
-          echo "$out"
-          if [ $rc -ne 0 ]; then
-            echo "$out" | grep -q "already exists" || exit $rc
-            echo "koda-email already published — skipping."
-          fi
+        run: cargo publish -p koda-email
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: Wait for crates.io index
         run: sleep 60
       - name: Publish koda-core
-        run: |
-          out=$(cargo publish -p koda-core 2>&1); rc=$?
-          echo "$out"
-          if [ $rc -ne 0 ]; then
-            echo "$out" | grep -q "already exists" || exit $rc
-            echo "koda-core already published — skipping."
-          fi
+        run: cargo publish -p koda-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - name: Wait for crates.io index
         run: sleep 60
       - name: Publish koda-cli
-        run: |
-          out=$(cargo publish -p koda-cli 2>&1); rc=$?
-          echo "$out"
-          if [ $rc -ne 0 ]; then
-            echo "$out" | grep -q "already exists" || exit $rc
-            echo "koda-cli already published — skipping."
-          fi
+        run: cargo publish -p koda-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 

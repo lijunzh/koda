@@ -9,7 +9,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.2.3] - 2026-04-09
+## [0.2.4] - 2026-04-09
+
+Patch release to correct a broken v0.2.3 crates.io publish.
+
+### Fixed
+- **crates.io publish** — v0.2.3 was only partially published: `koda-ast` and
+  `koda-email` reached the registry but `koda-core` and `koda-cli` did not,
+  leaving the release in an inconsistent state. Root causes:
+  - Stale intra-workspace version pin: `koda-core` declared
+    `koda-email = { version = "0.2.0" }` while the crate was at `0.2.3`.
+    `cargo publish` strips `path` deps and ships only the version constraint,
+    causing an ambiguous resolution against the freshly-indexed crate (#794).
+  - Missing crate metadata (`repository`, `homepage`, `readme`, `keywords`,
+    `categories`, `authors`) on `koda-ast` and `koda-email` (#794).
+  - crates.io index propagation window too short (`sleep 30` → `sleep 60`) (#794).
+- **Release CI hardening** (#795, #796):
+  - `continue-on-error: true` removed from the publish job — a failed publish
+    now correctly fails the release workflow instead of going silently green.
+  - New `verify-version` gate checks that every intra-workspace `version` pin
+    matches the actual crate version, catching stale pins before any build or
+    publish step runs.
+
 
 Skills, tracing, testing, and security hardening release. 42 PRs merged since v0.2.2.
 
