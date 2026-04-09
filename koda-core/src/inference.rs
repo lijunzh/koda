@@ -796,7 +796,35 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         // providers — the canonical fast-path is a single HashMap lookup — and
         // must happen here (not in providers) so dispatch, approval, loop guard,
         // undo, and persistence all see consistent canonical names.
-        let tool_calls = crate::tool_normalize::normalize_tool_calls(stream_result.tool_calls);
+        let dedup = crate::tool_normalize::normalize_tool_calls(stream_result.tool_calls);
+        let tool_calls = dedup.calls;
+
+        // Log deduplication / capping so it's visible in traces.
+        if !dedup.duplicate_ids.is_empty() {
+            let n = dedup.duplicate_ids.len();
+            tracing::warn!(
+                duplicates = n,
+                "Deduplicated {n} identical tool calls in single response"
+            );
+            sink.emit(EngineEvent::Warn {
+                message: format!(
+                    "Model emitted {n} duplicate tool call(s) — deduplicated to {} unique.",
+                    tool_calls.len(),
+                ),
+            });
+        }
+        if dedup.capped {
+            tracing::warn!(
+                kept = tool_calls.len(),
+                "Tool calls capped at per-turn limit"
+            );
+            sink.emit(EngineEvent::Warn {
+                message: format!(
+                    "Model requested too many tool calls — capped at {}.",
+                    tool_calls.len(),
+                ),
+            });
+        }
         let usage = stream_result.usage;
         let char_count = stream_result.char_count;
 
@@ -1036,6 +1064,21 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 &sub_agent_cache,
                 file_tracker,
                 &bg_agents,
+            )
+            .await?;
+        }
+
+        // Record synthetic results for deduplicated tool calls.
+        // The model expects one tool result per ID it emitted, even for
+        // duplicates we didn't execute.
+        for dup_id in &dedup.duplicate_ids {
+            db.insert_message(
+                session_id,
+                &Role::Tool,
+                Some("Duplicate tool call — result already returned for an identical call."),
+                None,
+                Some(dup_id),
+                None,
             )
             .await?;
         }
