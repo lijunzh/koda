@@ -9,6 +9,17 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
+    // koda requires Unix (macOS or Linux).
+    // The Bash tool uses `sh` which does not exist on Windows.
+    // Fail at compile time so users get a clear message instead of a broken binary.
+    if std::env::var("CARGO_CFG_UNIX").is_err() {
+        panic!(
+            "koda requires a Unix-like operating system (macOS or Linux). \
+             Windows is not supported. On Windows, use WSL2 instead: \
+             https://learn.microsoft.com/windows/wsl"
+        );
+    }
+
     let docs_dir = Path::new("../docs/src");
     let summary_path = docs_dir.join("SUMMARY.md");
 

@@ -37,12 +37,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings
 
   check:
-    name: Check (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+    name: Check
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -55,13 +51,9 @@ jobs:
         run: cargo check --workspace --all-targets
 
   test:
-    name: Test (${{ matrix.os }})
+    name: Test
     needs: [lint, check]
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false   # let both platforms report independently
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable

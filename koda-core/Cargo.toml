@@ -2,7 +2,7 @@
 name = "koda-core"
 version = "0.2.3"
 edition = "2024"
-description = "Core engine for the Koda AI coding agent"
+description = "Core engine for the Koda AI coding agent (macOS and Linux only)"
 license = "MIT"
 repository = "https://github.com/lijunzh/koda"
 authors = ["Lijun Zhu"]

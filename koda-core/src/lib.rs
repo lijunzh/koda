@@ -36,6 +36,17 @@
 //!
 //! See `DESIGN.md` in the repository root for the full architectural rationale.
 
+// koda-core requires a Unix-like OS (macOS or Linux).
+// The built-in shell tool uses `sh` which does not exist on Windows.
+// Windows users: install WSL2 — https://learn.microsoft.com/windows/wsl
+#![cfg_attr(
+    not(unix),
+    compile_error(
+        "koda-core requires a Unix-like operating system (macOS or Linux). \
+         Windows is not supported. On Windows, use WSL2 instead: \
+         https://learn.microsoft.com/windows/wsl"
+    )
+)]
 #![warn(missing_docs)]
 
 /// Sub-agent configuration, discovery, and invocation.
