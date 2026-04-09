@@ -38,6 +38,7 @@ fn find_all_tool_outputs(events: &[EngineEvent], tool: &str) -> Vec<String> {
 // ── Symlink sandbox escape (Codex: safety_tests, Gemini: symlink-install) ──
 
 #[tokio::test]
+#[cfg(unix)]
 async fn read_via_symlink_outside_sandbox_is_blocked() {
     let env = Env::new().await;
 
