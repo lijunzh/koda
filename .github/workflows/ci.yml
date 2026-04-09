@@ -55,15 +55,20 @@ jobs:
         run: cargo check --workspace --all-targets
 
   test:
-    name: Test
+    name: Test (${{ matrix.os }})
     needs: [lint, check]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false   # let both platforms report independently
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test  # stable across branches & workflow edits
+          shared-key: test  # OS already baked into rust-cache primary key;
+                            # no cross-contamination between ubuntu and windows
       - run: cargo test --workspace --features koda-core/test-support
 
   doc:
