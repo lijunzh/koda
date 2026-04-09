@@ -71,6 +71,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 test-support = []
 
 [dev-dependencies]
+insta = { version = "1", features = ["yaml", "redactions"] }
 koda-test-utils = { path = "../koda-test-utils" }
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }

@@ -34,3 +34,4 @@ pub use koda_core::providers::{ChatMessage, LlmProvider, ToolDefinition};
 // ── This crate's own utilities ─────────────────────────────────────────────
 
 pub use env::{ENV_MUTEX, Env, EnvBuilder};
+pub use insta;
