@@ -2,12 +2,12 @@
 name = "koda-cli"
 version = "0.2.3"
 edition = "2024"
-description = "A high-performance AI coding agent built in Rust"
+description = "A high-performance AI coding agent for macOS and Linux"
 license = "MIT"
 repository = "https://github.com/lijunzh/koda"
 homepage = "https://github.com/lijunzh/koda"
 readme = "../README.md"
-keywords = ["ai", "coding-agent", "llm", "cli", "rust"]
+keywords = ["ai", "coding-agent", "llm", "cli", "unix"]
 categories = ["command-line-utilities", "development-tools"]
 authors = ["Lijun Zhu"]
 
