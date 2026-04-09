@@ -184,7 +184,7 @@ pub fn normalize_tool_name(name: &str) -> String {
 /// A safety cap to prevent runaway models (especially local ones) from
 /// issuing hundreds of tool calls in a single turn.  The cap applies
 /// *after* deduplication.
-const MAX_TOOL_CALLS_PER_TURN: usize = 20;
+pub const MAX_TOOL_CALLS_PER_TURN: usize = 20;
 
 /// Normalize + deduplicate + cap tool calls from a single model response.
 ///
