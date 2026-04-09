@@ -8,7 +8,7 @@ use crate::*;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use koda_core::persistence::Persistence;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const LONG_ABOUT: &str = "Koda runs in two modes:
 
@@ -193,6 +193,7 @@ pub(crate) async fn run() -> Result<()> {
     //   tail -f ~/.config/koda/logs/latest
     let log_dir = koda_core::db::config_dir()?.join("logs");
     std::fs::create_dir_all(&log_dir)?;
+    prune_old_logs(&log_dir, 50);
     let log_filename = format!("koda-{}.log", std::process::id());
     let file_appender = tracing_appender::rolling::never(&log_dir, &log_filename);
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
@@ -322,6 +323,35 @@ fn resolve_headless_prompt(cli: &Cli) -> Result<Option<String>> {
     }
 
     Ok(None)
+}
+
+/// Prune old `koda-<PID>.log` files, keeping only the `keep` most recent by mtime.
+///
+/// Called on startup before the new log file is created. Prevents unbounded
+/// file-count accumulation (e.g. 18 000+ files after a year of heavy use).
+/// All errors are silently discarded — a prune failure is never fatal.
+fn prune_old_logs(log_dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(log_dir) else {
+        return;
+    };
+    let mut files: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name();
+            let s = name.to_string_lossy();
+            s.starts_with("koda-") && s.ends_with(".log")
+        })
+        .filter_map(|e| {
+            e.metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|t| (t, e.path()))
+        })
+        .collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    for (_, path) in files.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Check if stdin is a terminal (not piped).
