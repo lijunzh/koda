@@ -427,6 +427,16 @@ Four workflows live in `.github/workflows/`:
 | `ci.yml` | Pull requests to `main` | Gate PRs — lint, cross-platform check, test, doc, audit |
 | `coverage.yml` | Push to `main` | Post-merge coverage tracking with auto issue creation |
 | `release.yml` | Tag `v*` | Version verify, cross-platform test + build, publish, Homebrew |
+
+Release job chain:
+```
+verify-version → test → build → github-release ─┬→ update-homebrew
+                                                 └→ publish (crates.io)
+```
+crates.io and Homebrew are independent distribution channels — both fan
+out from `github-release` in parallel. Publishing to crates.io only after
+`github-release` ensures binaries are confirmed good before committing to
+an immutable version number; it does not need to wait for Homebrew.
 | `docs.yml` | Push to `main` (docs/ changes) | Build + deploy mdBook to GitHub Pages |
 
 ### CI job DAG (`ci.yml`)
