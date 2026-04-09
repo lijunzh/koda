@@ -55,7 +55,7 @@ expression: results
 - - dd if=/dev/zero of=/dev/sda
   - Destructive
 - - ":(){ :|:& };:"
-  - LocalMutation
+  - Destructive
 - - git push --force
   - Destructive
 - - shutdown -h now
