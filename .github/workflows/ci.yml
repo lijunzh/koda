@@ -58,7 +58,6 @@ jobs:
 
   doc:
     name: Docs
-    needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -70,7 +69,6 @@ jobs:
 
   audit:
     name: Security Audit
-    needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
