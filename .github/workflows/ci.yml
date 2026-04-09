@@ -30,34 +30,31 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings
-      - name: Check (no features)
-        # Compile every target without optional features to catch cfg-gated
-        # items that are invisible when a feature flag is absent.  This is
-        # what caught the missing [[test]] / required-features stanza for
-        # e2e_safety_test (fixes #737) — CI always ran with
-        # --features koda-core/test-support so the gap was never visible.
+
+  check:
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (all targets, no features)
+        # Catches cfg-gated items invisible behind feature flags AND
+        # platform-specific compile errors (e.g. std::os::unix on Windows).
         run: cargo check --workspace --all-targets
 
   test:
     name: Test
-    needs: lint
+    needs: [lint, check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --features koda-core/test-support
-
-  check-windows:
-    name: Check (windows-latest)
-    needs: lint
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: cargo check (all targets)
-        run: cargo check --workspace --all-targets --features koda-core/test-support
 
   doc:
     name: Docs
