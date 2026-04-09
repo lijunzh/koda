@@ -25,6 +25,7 @@ mod env;
 // ── Re-exports from koda-core (test-support gated) ─────────────────────────
 
 pub use koda_core::config::{KodaConfig, ProviderType};
+pub use koda_core::db::Role;
 pub use koda_core::engine::EngineEvent;
 pub use koda_core::engine::sink::TestSink;
 pub use koda_core::providers::mock::{MockProvider, MockResponse};
@@ -32,4 +33,5 @@ pub use koda_core::providers::{ChatMessage, LlmProvider, ToolDefinition};
 
 // ── This crate's own utilities ─────────────────────────────────────────────
 
-pub use env::{ENV_MUTEX, Env};
+pub use env::{ENV_MUTEX, Env, EnvBuilder};
+pub use insta;
