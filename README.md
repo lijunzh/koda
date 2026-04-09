@@ -53,17 +53,24 @@ Inside the TUI, type `/help` to see all commands and keyboard shortcuts.
 
 ---
 
-## Documentation
+## Workspace Crates
 
-The complete **[Koda User Manual](https://lijunzh.github.io/koda/)** has everything you need:
+| Crate | Description |
+|---|---|
+| [**koda-cli**](koda-cli/) | Terminal frontend (TUI + headless + ACP server) |
+| [**koda-core**](koda-core/) | Engine library — providers, tools, inference loop |
+| [**koda-ast**](koda-ast/) | MCP server for tree-sitter AST analysis |
+| [**koda-email**](koda-email/) | MCP server for IMAP/SMTP email integration |
+
+## Documentation
 
 | Resource | Description |
 |---|---|
-| [**User Manual**](https://lijunzh.github.io/koda/) | CLI reference, slash commands, file attachments, approval modes, and custom agents. |
-| [**Engine API**](https://docs.rs/koda-core) | Developer docs for embedding the `koda-core` library. |
-| [**Design**](DESIGN.md) | Core architecture principles and philosophies. |
-| [**Contributing**](CLAUDE.md) | Workspace layout, coding conventions, and tests. |
-| [**Changelog**](CHANGELOG.md) | Version history. |
+| [**User Manual**](https://lijunzh.github.io/koda/) | CLI reference, slash commands, approval modes, and custom agents |
+| [**Engine API**](https://docs.rs/koda-core) | Developer docs for embedding `koda-core` |
+| [**Design**](DESIGN.md) | Architecture principles and philosophies |
+| [**Contributing**](CLAUDE.md) | Workspace layout, coding conventions, and tests |
+| [**Changelog**](CHANGELOG.md) | Version history |
 
 ## License
 

@@ -1,12 +1,12 @@
 [package]
 name = "koda-cli"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 description = "A high-performance AI coding agent for macOS and Linux"
 license = "MIT"
 repository = "https://github.com/lijunzh/koda"
 homepage = "https://github.com/lijunzh/koda"
-readme = "../README.md"
+readme = "README.md"
 keywords = ["ai", "coding-agent", "llm", "cli", "unix"]
 categories = ["command-line-utilities", "development-tools"]
 authors = ["Lijun Zhu"]
@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core engine
-koda-core = { path = "../koda-core", version = "0.2.4" }
+koda-core = { path = "../koda-core", version = "0.2.5" }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -69,6 +69,6 @@ harness = false
 
 [dev-dependencies]
 tempfile = "3"
-koda-core = { path = "../koda-core", version = "0.2.4", features = ["test-support"] }
+koda-core = { path = "../koda-core", version = "0.2.5", features = ["test-support"] }
 serde_json = "1"
 
