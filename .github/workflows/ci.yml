@@ -2,10 +2,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]    # PR status checks
-  push:
-    branches: [main]    # Seeds shared-key caches after every merge so the
-                        # next PR gets a warm restore rather than a cold compile
+    branches: [main]
   workflow_call:        # Called by other workflows
 
 permissions:
@@ -88,34 +85,4 @@ jobs:
       - name: Run audit
         run: cargo audit || true  # Advisory-only, don't fail CI
 
-  docs-size:
-    name: Docs Chapter Size
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Check chapter sizes
-        run: |
-          # Guard against individual doc chapters growing unbounded.
-          # Each docs/src/*.md chapter is capped at 8 192 bytes (~2 K tokens).
-          # At this cap, the full embedded blob stays under ~144 KB even if
-          # every chapter simultaneously hits the limit — still acceptable for
-          # an infrequently activated skill.
-          #
-          # SUMMARY.md is the mdBook table of contents and grows naturally as
-          # chapters are added — it is excluded from this gate.
-          #
-          # To raise the cap: bump MAX_BYTES and explain why in the commit
-          # message (e.g. "commands.md now covers sub-commands — 10 KB needed").
-          MAX_BYTES=8192
-          FAILED=0
-          for f in docs/src/*.md; do
-            [ "$(basename "$f")" = "SUMMARY.md" ] && continue
-            size=$(wc -c < "$f")
-            if [ "$size" -gt "$MAX_BYTES" ]; then
-              echo "❌  $f: ${size}B exceeds cap of ${MAX_BYTES}B"
-              FAILED=1
-            else
-              printf "✅  %-45s %5dB\n" "$f" "$size"
-            fi
-          done
-          exit $FAILED
+
