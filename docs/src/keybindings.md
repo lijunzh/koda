@@ -19,8 +19,6 @@
 | `Home` | Jump to top of history |
 | `End` | Jump to bottom (latest output) |
 | Mouse scroll | Scroll conversation history |
-| `Ctrl+Y` | Copy last code block to clipboard |
-| `Ctrl+U` | Copy last assistant response to clipboard |
 
 ## Session control
 
