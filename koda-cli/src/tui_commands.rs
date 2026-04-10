@@ -13,6 +13,9 @@ use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
 use crate::tui_render::TuiRenderer;
 use koda_core::persistence::Persistence;
+// For /copy transcript export:
+use crate::mouse_select::copy_to_clipboard;
+use crate::transcript;
 
 use koda_core::agent::KodaAgent;
 use koda_core::approval;
@@ -171,6 +174,10 @@ pub async fn handle_slash_command(
         ReplAction::ManageKeys => {
             crate::tui_wizards::handle_keys(buffer);
             SlashAction::OpenKeyMenu
+        }
+        ReplAction::Copy(ref dest) => {
+            handle_copy(buffer, session, dest.as_deref()).await;
+            SlashAction::Continue
         }
         ReplAction::Handled => SlashAction::Continue,
         ReplAction::NotACommand => SlashAction::Continue,
@@ -467,6 +474,71 @@ fn handle_expand(buffer: &mut ScrollBuffer, renderer: &TuiRenderer, n: usize) {
                         "No tool output #{n}. Have {total} recorded (use /expand 1\u{2013}{total})."
                     ),
                 );
+            }
+        }
+    }
+}
+
+// ── /copy ────────────────────────────────────────────────
+
+/// Export the session transcript to clipboard or a Markdown file.
+///
+/// - `dest = None`        → copy to system clipboard
+/// - `dest = Some(path)`  → write Markdown to that file path
+///
+/// Uses `transcript::render` to produce a structured Markdown document
+/// from all session messages (system messages excluded).
+async fn handle_copy(
+    buffer: &mut ScrollBuffer,
+    session: &koda_core::session::KodaSession,
+    dest: Option<&str>,
+) {
+    // Fetch all messages — `load_all_messages` includes compacted history.
+    let messages = match session.db.load_all_messages(&session.id).await {
+        Ok(msgs) => msgs,
+        Err(e) => {
+            tui_output::err_msg(buffer, format!("Could not load messages: {e}"));
+            return;
+        }
+    };
+
+    // Try to get the session title for a nicer header.
+    let title_storage;
+    let session_title: Option<&str> = match session
+        .db
+        .list_sessions(200, std::path::Path::new("/"))
+        .await
+    {
+        Ok(sessions) => {
+            title_storage = sessions
+                .into_iter()
+                .find(|s| s.id == session.id)
+                .and_then(|s| s.title);
+            title_storage.as_deref()
+        }
+        Err(_) => None,
+    };
+
+    let md = transcript::render(&messages, session_title);
+
+    match dest {
+        None => {
+            // Clipboard copy via arboard (same fn used by mouse-select).
+            match copy_to_clipboard(&md) {
+                Ok(msg) => tui_output::ok_msg(buffer, format!("Transcript {msg}")),
+                Err(e) => tui_output::err_msg(buffer, e),
+            }
+        }
+        Some(path) => {
+            // File export.
+            match std::fs::write(path, &md) {
+                Ok(()) => {
+                    let lines = md.lines().count();
+                    tui_output::ok_msg(buffer, format!("Saved {lines} lines → {path}"));
+                }
+                Err(e) => {
+                    tui_output::err_msg(buffer, format!("Could not write {path}: {e}"));
+                }
             }
         }
     }

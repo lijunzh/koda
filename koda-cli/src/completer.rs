@@ -17,6 +17,11 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
         "Summarize conversation to reclaim context",
         None,
     ),
+    (
+        "/copy",
+        "Copy session transcript to clipboard (or /copy file.md to save)",
+        Some("[file.md]"),
+    ),
     ("/diff", "Show git diff (review, commit)", None),
     ("/exit", "Quit the session", None),
     ("/expand", "Show full output of last tool call", None),

@@ -37,9 +37,13 @@
 
 use crate::ansi_parse::parse_ansi_spans;
 use crate::scroll_buffer::ScrollBuffer;
-use crate::tui_output::{self, AMBER, BOLD, CYAN, DIM, MAGENTA, ORANGE, RED, YELLOW};
+use crate::tui_output::{
+    self, AMBER, BOLD, CYAN, DIM, MAGENTA, ORANGE, READ_CONTENT, RED, TOOL_PREFIX, WRITE_CONTENT,
+    YELLOW,
+};
 use crate::widgets::status_bar::TurnStats;
 use koda_core::engine::EngineEvent;
+use koda_core::tools::{ToolEffect, classify_tool};
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -195,15 +199,28 @@ impl TuiRenderer {
                 line,
                 is_stderr,
             } => {
-                self.streaming_tool_ids.insert(id);
-                let (prefix, style) = if is_stderr {
+                self.streaming_tool_ids.insert(id.clone());
+                // Determine content style from the tool type: read-only tools
+                // (Read, Grep, List…) get a legible off-white; mutating tools
+                // (Bash, Write, Edit…) stay dim — fixing #804 issue #3.
+                let tool_name = self
+                    .pending_tool_args
+                    .get(&id)
+                    .map(|(n, _)| n.as_str())
+                    .unwrap_or("");
+                let (prefix, content_style) = if is_stderr {
                     ("  \u{2502}e ", RED)
+                } else if matches!(classify_tool(tool_name), ToolEffect::ReadOnly) {
+                    ("  \u{2502} ", READ_CONTENT)
                 } else {
-                    ("  \u{2502} ", DIM)
+                    ("  \u{2502} ", WRITE_CONTENT)
                 };
                 tui_output::emit_line(
                     buffer,
-                    Line::from(vec![Span::styled(prefix, DIM), Span::styled(line, style)]),
+                    Line::from(vec![
+                        Span::styled(prefix, TOOL_PREFIX),
+                        Span::styled(line, content_style),
+                    ]),
                 );
             }
             EngineEvent::ToolCallResult { id, name, output } => {

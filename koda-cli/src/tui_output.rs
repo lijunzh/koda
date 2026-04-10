@@ -29,6 +29,21 @@ pub const MAGENTA: Style = Style::new().fg(Color::Magenta);
 pub const ORANGE: Style = Style::new().fg(Color::Rgb(255, 165, 0));
 pub const AMBER: Style = Style::new().fg(Color::Rgb(255, 191, 0));
 
+/// Structural glyphs (│ └ ●) — always dim regardless of tool type.
+pub const TOOL_PREFIX: Style = Style::new().fg(Color::DarkGray);
+
+/// Content from read-only tools (Read, Grep, List, Glob …).
+///
+/// Slightly off-white — readable without comassistant prose.
+/// This is the main fix for #804 issue #3: read output was previously
+/// indistinguishable from muted/dim decorative text.
+pub const READ_CONTENT: Style = Style::new().fg(Color::Rgb(198, 200, 209)); // cool light gray
+
+/// Content from mutating tools (Bash stdout, Write/Edit diffs, etc.).
+///
+/// Kept dim — users rarely need to follow this verbatim.
+pub const WRITE_CONTENT: Style = Style::new().fg(Color::DarkGray);
+
 // Warm palette — earthy tones for koda's bear identity.
 pub const WARM_TITLE: Style = Style::new()
     .fg(Color::Rgb(229, 192, 123)) // soft gold #e5c07b

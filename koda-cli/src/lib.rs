@@ -35,6 +35,7 @@ pub(crate) mod server;
 pub(crate) mod sink;
 pub(crate) mod startup;
 pub(crate) mod tool_history;
+pub(crate) mod transcript;
 pub(crate) mod tui_app;
 pub(crate) mod tui_commands;
 pub(crate) mod tui_context;

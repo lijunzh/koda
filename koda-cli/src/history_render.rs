@@ -5,13 +5,16 @@
 //! Keeps the history view compact — tool results are summarized, not
 //! replayed in full.
 
+use std::collections::HashMap;
+
 use koda_core::persistence::{Message, Role};
+use koda_core::tools::{ToolEffect, classify_tool};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 
-use crate::tui_output::{BOLD, DIM};
+use crate::tui_output::{BOLD, DIM, READ_CONTENT, TOOL_PREFIX, WRITE_CONTENT};
 
 /// Maximum lines of tool output to show inline in history replay.
 const TOOL_OUTPUT_PREVIEW_LINES: usize = 3;
@@ -20,9 +23,29 @@ const TOOL_OUTPUT_PREVIEW_LINES: usize = 3;
 ///
 /// Renders user messages with a `❯` prompt, assistant text with a `───`
 /// separator, tool calls as `● ToolName detail`, and tool results as
-/// abbreviated summaries.
+/// abbreviated summaries. Tool result styling is differentiated by tool type:
+/// read-only tools (Read, Grep, List…) render their content in a readable
+/// light color; mutating tools (Bash, Write, Edit…) stay dim.
 pub fn render_history_messages(messages: &[Message]) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Build a tool_call_id → tool_name map so tool result messages can
+    // look up which tool produced them and pick the right content style.
+    let mut tool_id_to_name: HashMap<String, String> = HashMap::new();
+    for msg in messages {
+        if msg.role == Role::Assistant
+            && let Some(ref tc_json) = msg.tool_calls
+            && let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json)
+        {
+            for call in calls {
+                if let (Some(id), Some(name)) =
+                    (call["id"].as_str(), call["function"]["name"].as_str())
+                {
+                    tool_id_to_name.insert(id.to_string(), name.to_string());
+                }
+            }
+        }
+    }
 
     for msg in messages {
         match msg.role {
@@ -36,7 +59,13 @@ pub fn render_history_messages(messages: &[Message]) -> Vec<Line<'static>> {
                 render_assistant_message(&mut lines, msg);
             }
             Role::Tool => {
-                render_tool_result(&mut lines, msg);
+                let tool_name = msg
+                    .tool_call_id
+                    .as_deref()
+                    .and_then(|id| tool_id_to_name.get(id))
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                render_tool_result(&mut lines, msg, tool_name);
             }
         }
     }
@@ -131,13 +160,22 @@ fn render_tool_call_headers(lines: &mut Vec<Line<'static>>, tc_json: &str) {
 }
 
 /// Render a tool result message (abbreviated).
-fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message) {
+///
+/// Content style is determined by the tool type:
+/// - Read-only tools (Read, Grep, List, Glob…) → `READ_CONTENT` (legible light gray)
+/// - Mutating tools (Bash, Write, Edit…)        → `WRITE_CONTENT` (dim, less important)
+fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message, tool_name: &str) {
     let content = msg.content.as_deref().unwrap_or("");
     let total_lines = content.lines().count();
 
+    let content_style = match classify_tool(tool_name) {
+        ToolEffect::ReadOnly => READ_CONTENT,
+        _ => WRITE_CONTENT,
+    };
+
     if total_lines == 0 {
         lines.push(Line::from(vec![
-            Span::styled("  \u{2514} ", DIM),
+            Span::styled("  \u{2514} ", TOOL_PREFIX),
             Span::styled("(empty)", DIM),
         ]));
         return;
@@ -147,21 +185,21 @@ fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message) {
         // Short output — show in full
         for line in content.lines() {
             lines.push(Line::from(vec![
-                Span::styled("  \u{2502} ", DIM),
-                Span::raw(line.to_string()),
+                Span::styled("  \u{2502} ", TOOL_PREFIX),
+                Span::styled(line.to_string(), content_style),
             ]));
         }
     } else {
         // Long output — show preview + count
         for line in content.lines().take(TOOL_OUTPUT_PREVIEW_LINES) {
             lines.push(Line::from(vec![
-                Span::styled("  \u{2502} ", DIM),
-                Span::raw(line.to_string()),
+                Span::styled("  \u{2502} ", TOOL_PREFIX),
+                Span::styled(line.to_string(), content_style),
             ]));
         }
         let hidden = total_lines - TOOL_OUTPUT_PREVIEW_LINES;
         lines.push(Line::from(vec![
-            Span::styled("  \u{2514} ", DIM),
+            Span::styled("  \u{2514} ", TOOL_PREFIX),
             Span::styled(format!("... {hidden} more line(s)"), DIM),
         ]));
     }
