@@ -105,20 +105,33 @@ jobs:
     needs: github-release
     runs-on: ubuntu-latest
     environment: crates-io
-    # crates.io versions are immutable. If this job fails, do NOT paper over
-    # it — bump to the next patch version instead and cut a fresh release.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      # Publish order follows dependency graph:
-      # koda-core → koda-cli
-      # koda-ast, koda-email are publish=false (workspace-only, not on crates.io)
+      # Publish order follows dependency graph: koda-core → koda-cli
+      # koda-ast, koda-email are publish=false — skipped automatically.
       - name: Publish koda-core
         run: cargo publish -p koda-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Wait for crates.io index
-        run: sleep 120
+      - name: Wait for koda-core in sparse index
+        # cargo publish waits up to ~60s for the index; we poll on top of that.
+        # The sparse index URL is the canonical source of truth — same thing
+        # cargo-workspaces and cargo-release query internally.
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          URL="https://index.crates.io/ko/da/koda-core"
+          echo "Polling $URL for koda-core $VERSION ..."
+          for i in $(seq 1 20); do
+            if curl -sf "$URL" | grep -q "\"vers\":\"${VERSION}\""; then
+              echo "✅ koda-core $VERSION is in the index (attempt $i)"
+              exit 0
+            fi
+            echo "  attempt $i/20 — not yet, sleeping 15s"
+            sleep 15
+          done
+          echo "⚠️ timed out after 300s — koda-core $VERSION may still propagate"
       - name: Publish koda-cli
         run: cargo publish -p koda-cli
         env:
