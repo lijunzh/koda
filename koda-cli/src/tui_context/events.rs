@@ -131,13 +131,6 @@ impl TuiContext {
             (KeyCode::End, _) => {
                 self.scroll_buffer.scroll_to_bottom();
             }
-            // Clipboard: Ctrl+Y = copy last code block, Ctrl+U = copy last response
-            (KeyCode::Char('y'), m) if m.contains(KeyModifiers::CONTROL) => {
-                self.copy_to_clipboard(m.contains(KeyModifiers::SHIFT));
-            }
-            (KeyCode::Char('u'), m) if m.contains(KeyModifiers::CONTROL) => {
-                self.copy_to_clipboard(true);
-            }
             (KeyCode::BackTab, _) => {
                 let new_mode = approval::cycle_mode(&self.shared_mode);
                 let _ = self
@@ -302,54 +295,6 @@ impl TuiContext {
             }
 
             _ => {}
-        }
-    }
-
-    // ── Clipboard ─────────────────────────────────────────────
-
-    fn copy_to_clipboard(&mut self, shift: bool) {
-        let text = if shift {
-            self.scroll_buffer.last_response()
-        } else {
-            self.scroll_buffer.last_code_block()
-        };
-        match text {
-            Some(content) => {
-                match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(&content)) {
-                    Ok(()) => {
-                        let label = if shift { "response" } else { "code block" };
-                        let preview: String = content.chars().take(60).collect();
-                        self.scroll_buffer.push(Line::from(vec![
-                            Span::styled("  \u{1f4cb} ", Style::default().fg(Color::Green)),
-                            Span::styled(
-                                format!("Copied {label} to clipboard"),
-                                Style::default().fg(Color::Green),
-                            ),
-                            Span::styled(
-                                format!(" ({preview}…)"),
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                        ]));
-                    }
-                    Err(e) => {
-                        self.scroll_buffer.push(Line::styled(
-                            format!("  \u{2717} Clipboard error: {e}"),
-                            Style::default().fg(Color::Red),
-                        ));
-                    }
-                }
-            }
-            None => {
-                let label = if shift {
-                    "No response to copy."
-                } else {
-                    "No code block to copy."
-                };
-                self.scroll_buffer.push(Line::styled(
-                    format!("  {label}"),
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
         }
     }
 

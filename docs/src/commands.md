@@ -138,6 +138,39 @@ collapsed a long `cargo build` or `grep` result during streaming.
 /expand 3    ← show full output of the 3rd most recent tool call
 ```
 
+## `/copy [<n>]`
+
+Copies the Nth-most-recent **assistant response** to the system clipboard.
+Defaults to the most recent response (`n=1`).
+
+```text
+/copy      ← copy the last response
+/copy 2    ← copy the second-to-last response
+/copy 5    ← copy the fifth-to-last response
+```
+
+Reads from the full session DB, so compacted (summarised) responses are
+included in the count. A one-line preview is shown in the confirmation.
+
+## `/export [<file.md>]`
+
+Exports the full session transcript as a Markdown document.
+
+```text
+/export                    ← auto-named file in the current directory
+/export notes/session.md   ← write to a specific path
+```
+
+When no path is given, the filename is derived from the first user message
+and the current UTC time:
+
+```text
+koda-20260410-143022-refactor-the-auth-module.md
+```
+
+The transcript includes all user messages, assistant responses, and a
+summary of every tool call. System prompts are excluded.
+
 ## `/verbose [on|off]`
 
 Toggles verbose tool output. By default Koda collapses long outputs

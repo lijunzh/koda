@@ -9,6 +9,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- **`/copy` repurposed — copies last assistant response to clipboard** — `/copy`
+  now copies the Nth-most-recent assistant text response to the system clipboard
+  (default `n=1`; `/copy 2` = second-to-last). Reads from the full session DB
+  so compacted history is included.
+- **`/export [file.md]` — full transcript export** — renamed from the old `/copy`.
+  Without an argument, auto-generates a timestamped filename from the first user
+  prompt (`koda-YYYYMMDD-HHMMSS-<slug>.md`) and writes to the current directory.
+  Explicit path still supported: `/export notes/session.md`.
+
+### Removed
+- **`Ctrl+Y` (copy last code block) and `Ctrl+U` (copy last response)** — both
+  keybindings are removed. Use `/copy` to copy the last response via command.
+
 ## [0.2.7] - 2026-04-10
 
 CI-only release. No functional changes to koda-core or koda-cli.
