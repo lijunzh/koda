@@ -1,6 +1,6 @@
 [package]
 name = "koda-core"
-version = "0.2.6"
+version = "0.2.7"
 edition = "2024"
 description = "Core engine for the Koda AI coding agent (macOS and Linux only)"
 license = "MIT"
