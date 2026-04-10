@@ -7,6 +7,15 @@
 //! This crate's public API surface is exactly one function:
 //! [`run()`] — called by `main.rs`. Everything else is `pub(crate)`.
 
+// koda requires Unix (macOS or Linux). The Bash tool uses `sh` which does
+// not exist on Windows. Fail at compile time with a clear message.
+#[cfg(not(unix))]
+compile_error!(
+    "koda requires a Unix-like operating system (macOS or Linux). \
+     Windows is not supported. On Windows, use WSL2 instead: \
+     https://learn.microsoft.com/windows/wsl"
+);
+
 pub(crate) mod acp_adapter;
 pub(crate) mod ansi_parse;
 pub(crate) mod app;

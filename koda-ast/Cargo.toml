@@ -1,7 +1,8 @@
 [package]
 name = "koda-ast"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
+publish = false # workspace-only; not published to crates.io
 description = "MCP server for tree-sitter AST analysis — part of the koda ecosystem"
 license = "MIT"
 repository = "https://github.com/lijunzh/koda"

@@ -87,10 +87,6 @@ pub fn classify_tool(name: &str) -> ToolEffect {
         // Delete is destructive (irreversible without undo)
         "Delete" => ToolEffect::Destructive,
 
-        // Email tools
-        "EmailRead" | "EmailSearch" => ToolEffect::ReadOnly,
-        "EmailSend" => ToolEffect::LocalMutation,
-
         // Unknown tools — default to LocalMutation (conservative)
         _ => ToolEffect::LocalMutation,
     }
@@ -150,27 +146,6 @@ use std::time::SystemTime;
 
 use crate::output_caps::OutputCaps;
 
-/// Load email config from env, returning a `ToolResult` error if not configured.
-///
-/// Used by EmailRead, EmailSend, EmailSearch to avoid repeating the same
-/// match-and-return-error boilerplate three times.
-macro_rules! require_email_config {
-    ($self:ident) => {
-        match koda_email::config::EmailConfig::from_env() {
-            Ok(c) => c,
-            Err(e) => {
-                return ToolResult {
-                    output: format!(
-                        "Email not configured: {e:#}\n\n{}",
-                        koda_email::config::EmailConfig::setup_instructions()
-                    ),
-                    success: false,
-                    full_output: None,
-                };
-            }
-        }
-    };
-}
 use crate::providers::ToolDefinition;
 
 /// Shared file-read cache: tracks (size, mtime) per cache key so we can
@@ -275,18 +250,6 @@ impl ToolRegistry {
         // RecallContext — on-demand history retrieval
         let recall_def = recall::definition();
         definitions.insert(recall_def.name.clone(), recall_def);
-        // First-party library tools (direct calls)
-        for td in koda_email::tool_definitions() {
-            definitions.insert(
-                td.name.to_string(),
-                ToolDefinition {
-                    name: td.name.to_string(),
-                    description: td.description.to_string(),
-                    parameters: serde_json::from_str(td.parameters_json).unwrap_or_default(),
-                },
-            );
-        }
-
         let skill_registry = crate::skills::SkillRegistry::discover(&project_root);
 
         Self {
@@ -534,44 +497,6 @@ impl ToolRegistry {
                 }
             }
 
-            // First-party library tools — direct calls
-            "EmailRead" => {
-                let config = require_email_config!(self);
-                let count = args["count"].as_u64().unwrap_or(5).clamp(1, 20) as u32;
-                match koda_email::imap_client::read_emails(&config, count).await {
-                    Ok(emails) if emails.is_empty() => Ok("No emails found in INBOX.".to_string()),
-                    Ok(emails) => Ok(format_email_list(&emails)),
-                    Err(e) => Err(anyhow::anyhow!("Error reading emails: {e:#}")),
-                }
-            }
-
-            "EmailSend" => {
-                let config = require_email_config!(self);
-                let to = args["to"].as_str().unwrap_or("");
-                let subject = args["subject"].as_str().unwrap_or("");
-                let body = args["body"].as_str().unwrap_or("");
-                koda_email::smtp_client::send_email(&config, to, subject, body)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Error sending email: {e:#}"))
-            }
-
-            "EmailSearch" => {
-                let config = require_email_config!(self);
-                let query = args["query"].as_str().unwrap_or("");
-                let max = args["max_results"].as_u64().unwrap_or(10).clamp(1, 50) as u32;
-                match koda_email::imap_client::search_emails(&config, query, max).await {
-                    Ok(emails) if emails.is_empty() => {
-                        Ok(format!("No emails found matching: {query}"))
-                    }
-                    Ok(emails) => Ok(format!(
-                        "Found {} result(s) for \"{query}\":\n\n{}",
-                        emails.len(),
-                        format_email_list(&emails)
-                    )),
-                    Err(e) => Err(anyhow::anyhow!("Error searching emails: {e:#}")),
-                }
-            }
-
             "InvokeAgent" => {
                 // Handled by tool_dispatch.rs before reaching here.
                 // This branch should not be reached in normal flow.
@@ -662,30 +587,6 @@ pub fn safe_resolve_path(project_root: &Path, requested: &str) -> Result<PathBuf
     }
 
     Ok(resolved)
-}
-
-/// Format email summaries for LLM-friendly output.
-fn format_email_list(emails: &[koda_email::imap_client::EmailSummary]) -> String {
-    emails
-        .iter()
-        .enumerate()
-        .map(|(i, e)| {
-            format!(
-                "{}. [{}] {}\n   From: {}\n   Date: {}\n   {}\n",
-                i + 1,
-                e.uid,
-                e.subject,
-                e.from,
-                e.date,
-                if e.snippet.is_empty() {
-                    "(no preview)"
-                } else {
-                    &e.snippet
-                }
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[cfg(test)]
@@ -841,11 +742,6 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
                 fact.to_string()
             };
             format!("Save to memory: {preview}")
-        }
-        "EmailSend" => {
-            let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("?");
-            let subject = args.get("subject").and_then(|v| v.as_str()).unwrap_or("?");
-            format!("Send email to {to}: {subject}")
         }
         _ => format!("Execute: {tool_name}"),
     }
