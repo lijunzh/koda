@@ -42,11 +42,12 @@ impl TodoStatus {
         }
     }
 
-    fn emoji(&self) -> &'static str {
+    /// Checkbox-style marker — universally understood.
+    fn checkbox(&self) -> &'static str {
         match self {
-            Self::Pending => "○",
-            Self::InProgress => "◑",
-            Self::Completed => "●",
+            Self::Pending => "[ ]",
+            Self::InProgress => "[→]",
+            Self::Completed => "[x]",
         }
     }
 }
@@ -73,17 +74,17 @@ impl TodoPriority {
         }
     }
 
-    fn label(&self) -> &'static str {
+    /// Compact suffix shown after the task content (only for high priority).
+    fn suffix(&self) -> &'static str {
         match self {
-            Self::High => "!",
-            Self::Medium => "·",
-            Self::Low => " ",
+            Self::High => " ⚡",
+            Self::Medium | Self::Low => "",
         }
     }
 }
 
 /// A single task in the session todo list.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TodoItem {
     /// Human-readable task description.
     pub content: String,
@@ -142,6 +143,11 @@ pub fn definitions() -> Vec<ToolDefinition> {
 // ── Handler ─────────────────────────────────────────────────────────────────
 
 /// Write the full todo list for this session.
+///
+/// **Content-aware dedup**: if the incoming list is identical to what's
+/// already stored, we skip the write and return a short "unchanged"
+/// message. This prevents the model from burning tool calls (and
+/// triggering loop detection) by re-emitting the same plan.
 pub async fn todo_write(db: &Database, session_id: &str, args: &Value) -> Result<String> {
     let raw = args
         .get("todos")
@@ -182,6 +188,21 @@ pub async fn todo_write(db: &Database, session_id: &str, args: &Value) -> Result
         });
     }
 
+    // ── Content-aware dedup ──────────────────────────────────────────
+    // Compare with what's already stored. If identical, skip the write
+    // and tell the model explicitly so it stops re-emitting the same plan.
+    if let Ok(Some(existing_json)) = db.get_todo(session_id).await
+        && let Ok(existing) = serde_json::from_str::<Vec<TodoItem>>(&existing_json)
+        && existing == todos
+    {
+        return Ok(format!(
+            "Todo list unchanged ({} task{}). \
+             Do not call TodoWrite again unless you are changing a task's status or content.",
+            todos.len(),
+            if todos.len() == 1 { "" } else { "s" }
+        ));
+    }
+
     let json = serde_json::to_string(&todos)?;
     db.set_todo(session_id, &json).await?;
 
@@ -214,35 +235,31 @@ pub async fn get_todo_section(db: &Database, session_id: &str) -> String {
 
     let mut out = "\n## Current Tasks\n".to_string();
     for t in &active {
-        out.push_str(&format!(
-            "{} [{}] {}\n",
-            t.status.emoji(),
-            t.priority.label(),
-            t.content
-        ));
+        out.push_str(&format!("{}{}\n", format_item(t), t.priority.suffix(),));
     }
     out
 }
 
 // ── Formatting ──────────────────────────────────────────────────────────────
 
+/// Format a single todo item: `[x] Task description`
+fn format_item(t: &TodoItem) -> String {
+    format!("{} {}", t.status.checkbox(), t.content)
+}
+
 fn format_todo_list(todos: &[TodoItem]) -> String {
     if todos.is_empty() {
         return "Todo list cleared.".to_string();
     }
 
-    let mut out = format!(
-        "Todo list updated ({} task{}):\n",
-        todos.len(),
-        if todos.len() == 1 { "" } else { "s" }
-    );
+    let completed = todos
+        .iter()
+        .filter(|t| t.status == TodoStatus::Completed)
+        .count();
+
+    let mut out = format!("Todo list updated ({}/{} done):\n", completed, todos.len(),);
     for t in todos {
-        out.push_str(&format!(
-            "  {} [{}] {}\n",
-            t.status.emoji(),
-            t.priority.label(),
-            t.content
-        ));
+        out.push_str(&format!("  {}{}\n", format_item(t), t.priority.suffix()));
     }
     out
 }
@@ -273,8 +290,9 @@ mod tests {
             ]
         });
         let out = todo_write(&db, &sid, &args).await.unwrap();
-        assert!(out.contains("2 tasks"));
-        assert!(out.contains("Add tests"));
+        assert!(out.contains("0/2 done"));
+        assert!(out.contains("[ ] Add tests"));
+        assert!(out.contains("[→] Write docs"));
 
         let section = get_todo_section(&db, &sid).await;
         assert!(section.contains("Add tests"));
@@ -371,15 +389,87 @@ mod tests {
             priority: TodoPriority::High,
         }];
         let out = format_todo_list(&todos);
-        assert!(out.contains("1 task)"));
-        assert!(out.contains("◑"));
-        assert!(out.contains("Ship it"));
+        assert!(out.contains("0/1 done"));
+        assert!(out.contains("[→] Ship it"));
+        // High priority gets a suffix
+        assert!(out.contains("⚡"));
     }
 
     #[test]
-    fn status_emoji_coverage() {
-        assert_eq!(TodoStatus::Pending.emoji(), "○");
-        assert_eq!(TodoStatus::InProgress.emoji(), "◑");
-        assert_eq!(TodoStatus::Completed.emoji(), "●");
+    fn format_completed_task() {
+        let todos = vec![
+            TodoItem {
+                content: "Done thing".into(),
+                status: TodoStatus::Completed,
+                priority: TodoPriority::Medium,
+            },
+            TodoItem {
+                content: "Todo thing".into(),
+                status: TodoStatus::Pending,
+                priority: TodoPriority::Low,
+            },
+        ];
+        let out = format_todo_list(&todos);
+        assert!(out.contains("1/2 done"));
+        assert!(out.contains("[x] Done thing"));
+        assert!(out.contains("[ ] Todo thing"));
+        // Medium/Low priority: no suffix
+        assert!(!out.contains("⚡") || !out.contains("Done thing ⚡"));
+    }
+
+    #[test]
+    fn status_checkbox_coverage() {
+        assert_eq!(TodoStatus::Pending.checkbox(), "[ ]");
+        assert_eq!(TodoStatus::InProgress.checkbox(), "[→]");
+        assert_eq!(TodoStatus::Completed.checkbox(), "[x]");
+    }
+
+    #[tokio::test]
+    async fn dedup_skips_identical_write() {
+        let (db, _dir, sid) = test_db().await;
+        let args = json!({
+            "todos": [
+                {"content": "Task A", "status": "pending", "priority": "high"},
+                {"content": "Task B", "status": "in_progress", "priority": "medium"},
+            ]
+        });
+        // First write — should persist and return full list
+        let out1 = todo_write(&db, &sid, &args).await.unwrap();
+        assert!(out1.contains("0/2 done"));
+
+        // Second write with identical content — should short-circuit
+        let out2 = todo_write(&db, &sid, &args).await.unwrap();
+        assert!(
+            out2.contains("unchanged"),
+            "identical call should return 'unchanged', got: {out2}"
+        );
+        assert!(
+            out2.contains("Do not call TodoWrite again"),
+            "should tell model to stop calling"
+        );
+    }
+
+    #[tokio::test]
+    async fn dedup_allows_status_change() {
+        let (db, _dir, sid) = test_db().await;
+        let args1 = json!({
+            "todos": [
+                {"content": "Task A", "status": "pending", "priority": "high"},
+            ]
+        });
+        todo_write(&db, &sid, &args1).await.unwrap();
+
+        // Same content but status changed — should NOT short-circuit
+        let args2 = json!({
+            "todos": [
+                {"content": "Task A", "status": "completed", "priority": "high"},
+            ]
+        });
+        let out = todo_write(&db, &sid, &args2).await.unwrap();
+        assert!(
+            out.contains("1/1 done"),
+            "status change should write normally, got: {out}"
+        );
+        assert!(out.contains("[x] Task A"));
     }
 }
