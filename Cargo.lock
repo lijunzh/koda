@@ -1761,7 +1761,7 @@ dependencies = [
 
 [[package]]
 name = "koda-ast"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "petgraph",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "koda-cli"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "agent-client-protocol-schema",
  "ansi-to-tui",
@@ -1817,7 +1817,7 @@ dependencies = [
 
 [[package]]
 name = "koda-core"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1826,7 +1826,6 @@ dependencies = [
  "glob",
  "ignore",
  "insta",
- "koda-email",
  "koda-test-utils",
  "path-clean",
  "regex",
@@ -1845,7 +1844,7 @@ dependencies = [
 
 [[package]]
 name = "koda-email"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "imap",
