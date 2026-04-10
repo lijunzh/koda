@@ -1826,7 +1826,6 @@ dependencies = [
  "glob",
  "ignore",
  "insta",
- "koda-email",
  "koda-test-utils",
  "path-clean",
  "regex",

@@ -103,15 +103,12 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         ("WebFetch", ToolEffect::ReadOnly),
         ("WebSearch", ToolEffect::ReadOnly),
         ("InvokeAgent", ToolEffect::ReadOnly),
-        ("EmailRead", ToolEffect::ReadOnly),
-        ("EmailSearch", ToolEffect::ReadOnly),
         // Local mutations
         ("Write", ToolEffect::LocalMutation),
         ("Edit", ToolEffect::LocalMutation),
         ("Bash", ToolEffect::LocalMutation),
         ("MemoryWrite", ToolEffect::LocalMutation),
         ("TodoWrite", ToolEffect::LocalMutation),
-        ("EmailSend", ToolEffect::LocalMutation),
         // Destructive
         ("Delete", ToolEffect::Destructive),
     ]

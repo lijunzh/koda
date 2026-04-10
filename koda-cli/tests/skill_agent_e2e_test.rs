@@ -108,10 +108,10 @@ fn koda_docs_skill_appears_in_list_skills() {
     );
 }
 
-/// ActivateSkill for `koda_docs` must return the bundled manual.
+/// ActivateSkill for `koda_docs` must return the URL index.
 ///
 /// The tool result (printed to stderr line-by-line) must contain
-/// "Koda User Manual" — the H1 header emitted by build.rs.
+/// the docs URL — the online manual reference.
 #[test]
 fn koda_docs_skill_activates_and_returns_manual_content() {
     let responses = r#"[
@@ -131,10 +131,10 @@ fn koda_docs_skill_activates_and_returns_manual_content() {
         clean.contains("koda_docs"),
         "expected skill name in activation output.\nstderr: {clean}"
     );
-    // The H1 header that build.rs writes first in the compiled doc bundle
+    // The URL index pointing to the online manual
     assert!(
-        clean.contains("Koda User Manual"),
-        "expected manual header in tool result.\nstderr: {clean}"
+        clean.contains("https://lijunzh.github.io/koda/"),
+        "expected docs URL in tool result.\nstderr: {clean}"
     );
 }
 

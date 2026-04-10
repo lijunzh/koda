@@ -26,18 +26,33 @@ Patch release to fix the v0.2.5 `koda-cli` crates.io publish failure.
   via `build.rs`. Instead, it provides a URL index pointing to the published
   manual at https://lijunzh.github.io/koda/, and the agent uses `WebFetch`
   to retrieve docs on demand. Benefits:
-  - Eliminates `build.rs` doc-bundling complexity (reduced from 87 → 15 lines)
+  - Eliminates `build.rs` entirely (reduced from 87 lines → deleted)
+  - Unix platform gate moved to `compile_error!` in `lib.rs` (zero build overhead)
   - Docs are always up-to-date (served from GitHub Pages, not frozen at compile time)
   - No binary bloat (~20 KB of markdown removed from every build)
   - Matches Claude Code's approach (links to `code.claude.com/docs`)
-  - `build.rs` now only contains the Unix platform gate
+- **koda-ast marked `publish = false`** — koda-ast is a standalone MCP server
+  with zero dependents in the workspace. Removed from crates.io publish pipeline,
+  GitHub Release binaries, and Homebrew formula. Still built and usable locally.
+- **Email tools removed from koda-core** — `EmailRead`, `EmailSend`, and
+  `EmailSearch` were hardcoded in koda-core as direct calls to the `koda-email`
+  library. This was a DRY violation: the exact same tools exist as a standalone
+  MCP server in `koda-email/src/main.rs`. Users who want email can configure
+  koda-email as an MCP server instead. This removes the `koda-email` dependency
+  from koda-core entirely.
+- **koda-email marked `publish = false`** — no longer a crates.io dependency.
+  Still builds as a standalone MCP server binary for optional use.
+- **Release workflow simplified** — publish chain reduced from 4 crates
+  (koda-ast → koda-email → koda-core → koda-cli) to 2
+  (koda-core → koda-cli). One fewer 120-second crates.io index wait.
 
 ### Architecture note
 `koda_docs` remains a **skill** (passive context injection), not an agent
 (active sub-process). Skills are zero-cost prompt injection — the right
 primitive for "here's where to find information." It stays in **koda-cli**
 (product-specific) rather than koda-core (generic engine), using the
-existing `inject_builtin_skills()` seam.
+existing `inject_builtin_skills()` seam. `build.rs` is fully deleted —
+the Unix platform gate uses `#[cfg(not(unix))] compile_error!()` instead.
 
 ## [0.2.5] - 2026-04-09
 

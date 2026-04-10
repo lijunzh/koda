@@ -28,9 +28,6 @@ const CANONICAL: &[&str] = &[
     "Bash",
     "Delete",
     "Edit",
-    "EmailRead",
-    "EmailSearch",
-    "EmailSend",
     "Glob",
     "Grep",
     "InvokeAgent",
@@ -137,11 +134,6 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
     // Skill tools
     m.insert("list_skills".into(), "ListSkills");
     m.insert("activate_skill".into(), "ActivateSkill");
-
-    // Email
-    m.insert("email_read".into(), "EmailRead");
-    m.insert("email_send".into(), "EmailSend");
-    m.insert("email_search".into(), "EmailSearch");
 
     // Recall
     m.insert("recall_context".into(), "RecallContext");
@@ -283,9 +275,6 @@ mod tests {
         assert_eq!(normalize_tool_name("invoke_agent"), "InvokeAgent");
         assert_eq!(normalize_tool_name("list_skills"), "ListSkills");
         assert_eq!(normalize_tool_name("activate_skill"), "ActivateSkill");
-        assert_eq!(normalize_tool_name("email_read"), "EmailRead");
-        assert_eq!(normalize_tool_name("email_send"), "EmailSend");
-        assert_eq!(normalize_tool_name("email_search"), "EmailSearch");
         assert_eq!(normalize_tool_name("memory_read"), "MemoryRead");
         assert_eq!(normalize_tool_name("memory_write"), "MemoryWrite");
         assert_eq!(normalize_tool_name("recall_context"), "RecallContext");
