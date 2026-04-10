@@ -75,18 +75,114 @@ fn strip_quotes(s: &str) -> &str {
     }
 }
 
+/// Remove shell escape backslashes from a path (POSIX only).
+///
+/// Handles paths like `/Users/foo/Screenshot\ 2026-04-09\ at\ 4.37.01\u{202f}PM.png`
+/// by stripping single backslashes used as escape chars while preserving
+/// literal backslashes (`\\` → `\`).
+///
+/// Borrowed from Gemini CLI's `unescapePath` and Claude Code's
+/// `stripBackslashEscapes`.
+fn unescape_path(path: &str) -> String {
+    if cfg!(windows) {
+        // On Windows, backslashes are path separators — don't strip them.
+        return path.to_string();
+    }
+    let mut result = String::with_capacity(path.len());
+    let mut chars = path.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            // Backslash: consume the next char literally (space, parens, etc.)
+            if let Some(next) = chars.next() {
+                result.push(next);
+            } else {
+                // Trailing backslash — keep it
+                result.push(c);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Shell-aware tokenizer that keeps backslash-escaped and quoted paths intact.
+///
+/// Unlike `split_whitespace()`, this handles:
+/// - Backslash-escaped spaces: `path\ with\ spaces` → single token
+/// - Quoted strings: `"path with spaces"` or `'path with spaces'` → single token
+/// - Regular whitespace splitting for everything else
+///
+/// Inspired by Gemini CLI's regex-based `@path` parsing and Claude Code's
+/// `stripBackslashEscapes`.
+fn tokenize_shell_aware(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+
+    while let Some(&c) = chars.peek() {
+        match c {
+            // ── Whitespace: flush current token ──
+            ' ' | '\t' | '\n' | '\r' => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+                chars.next();
+            }
+            // ── Backslash: escape the next character ──
+            '\\' => {
+                chars.next(); // consume '\\'
+                // Keep the backslash + next char as-is in the token
+                // (unescape_path strips them later for path tokens)
+                current.push('\\');
+                if let Some(&next) = chars.peek() {
+                    current.push(next);
+                    chars.next();
+                }
+            }
+            // ── Quoted string: consume until matching close quote ──
+            '"' | '\'' => {
+                let quote = c;
+                current.push(quote);
+                chars.next(); // consume opening quote
+                while let Some(&inner) = chars.peek() {
+                    current.push(inner);
+                    chars.next();
+                    if inner == quote {
+                        break;
+                    }
+                }
+            }
+            // ── Regular character ──
+            _ => {
+                current.push(c);
+                chars.next();
+            }
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
 /// Check if a token looks like a bare file path (absolute, ~/, or ./ prefixed).
 fn looks_like_file_path(token: &str) -> bool {
     let cleaned = strip_quotes(token);
-    cleaned.starts_with('/')
-        || cleaned.starts_with("~/")
-        || cleaned.starts_with("./")
-        || cleaned.starts_with("..")
-        // Windows absolute paths: C:\ or D:\
-        || (cleaned.len() >= 3
-            && cleaned.as_bytes()[0].is_ascii_alphabetic()
-            && cleaned.as_bytes()[1] == b':'
-            && (cleaned.as_bytes()[2] == b'\\' || cleaned.as_bytes()[2] == b'/'))
+    // Also try with backslash escapes removed
+    let unescaped = unescape_path(cleaned);
+    let check = |s: &str| -> bool {
+        s.starts_with('/')
+            || s.starts_with("~/")
+            || s.starts_with("./")
+            || s.starts_with("..")
+            // Windows absolute paths: C:\\ or D:\\
+            || (s.len() >= 3
+                && s.as_bytes()[0].is_ascii_alphabetic()
+                && s.as_bytes()[1] == b':'
+                && (s.as_bytes()[2] == b'\\' || s.as_bytes()[2] == b'/'))
+    };
+    check(cleaned) || check(&unescaped)
 }
 
 /// Try to load an image file, returning the ImageData if successful.
@@ -108,21 +204,24 @@ fn try_load_image(path: &Path, display_path: &str) -> Option<ImageData> {
     }
 }
 
-/// Resolve a bare path token to an absolute path, expanding ~ if needed.
+/// Resolve a bare path token to an absolute path, expanding ~ and
+/// stripping shell escapes.
 fn resolve_bare_path(token: &str) -> Option<PathBuf> {
     let cleaned = strip_quotes(token);
-    if let Some(rest) = cleaned.strip_prefix("~/") {
+    let unescaped = unescape_path(cleaned);
+    let path_str = unescaped.as_str();
+    if let Some(rest) = path_str.strip_prefix("~/") {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .ok()?;
         Some(PathBuf::from(home).join(rest))
     } else {
-        let p = PathBuf::from(cleaned);
+        let p = PathBuf::from(path_str);
         if p.is_absolute() {
             Some(p)
         } else {
             // Relative paths like ./foo or ../foo — resolve from cwd
-            std::env::current_dir().ok().map(|cwd| cwd.join(cleaned))
+            std::env::current_dir().ok().map(|cwd| cwd.join(path_str))
         }
     }
 }
@@ -134,7 +233,7 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
     let mut context_files = Vec::new();
     let mut images = Vec::new();
 
-    for token in input.split_whitespace() {
+    for token in tokenize_shell_aware(input) {
         // ── @path references (explicit) ───────────────────────
         if let Some(raw_path) = token.strip_prefix('@') {
             if raw_path.is_empty() {
@@ -142,21 +241,23 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
                 continue;
             }
 
+            // Strip quotes and shell escapes for the actual path
             let raw_path = strip_quotes(raw_path);
+            let clean_path = unescape_path(raw_path);
 
             // Security: reject paths that escape the project root
-            let full_path = match koda_core::tools::safe_resolve_path(project_root, raw_path) {
+            let full_path = match koda_core::tools::safe_resolve_path(project_root, &clean_path) {
                 Ok(p) => p,
                 Err(_) => {
-                    tracing::warn!("@file path escapes project root: {raw_path}");
+                    tracing::warn!("@file path escapes project root: {clean_path}");
                     prompt_parts.push(token.to_string());
                     continue;
                 }
             };
 
             // Image files → base64 encode for multi-modal
-            if is_image_file(raw_path) {
-                if let Some(img) = try_load_image(&full_path, raw_path) {
+            if is_image_file(&clean_path) {
+                if let Some(img) = try_load_image(&full_path, &clean_path) {
                     images.push(img);
                 } else {
                     prompt_parts.push(token.to_string());
@@ -168,12 +269,12 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
             match std::fs::read_to_string(&full_path) {
                 Ok(content) => {
                     context_files.push(FileContext {
-                        path: raw_path.to_string(),
+                        path: clean_path,
                         content,
                     });
                 }
                 Err(_) => {
-                    eprintln!("  \x1b[33m\u{26a0} Could not read: {raw_path}\x1b[0m");
+                    eprintln!("  \x1b[33m\u{26a0} Could not read: {clean_path}\x1b[0m");
                     prompt_parts.push(token.to_string());
                 }
             }
@@ -181,11 +282,13 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
         }
 
         // ── Bare image paths (drag-and-drop) ──────────────────
-        // Detect absolute/relative paths to image files pasted directly
-        let unquoted = strip_quotes(token);
-        if looks_like_file_path(token)
-            && is_image_file(unquoted)
-            && let Some(resolved) = resolve_bare_path(token)
+        // Detect absolute/relative paths to image files pasted directly.
+        // After shell-aware tokenization, paths with escaped spaces like
+        // `/Users/foo/Screenshot\ 2026-04-09.png` arrive as one token.
+        let unescaped = unescape_path(strip_quotes(&token));
+        if looks_like_file_path(&token)
+            && is_image_file(&unescaped)
+            && let Some(resolved) = resolve_bare_path(&token)
             && resolved.exists()
         {
             let display = resolved.display().to_string();
@@ -195,7 +298,7 @@ pub fn process_input(input: &str, project_root: &Path) -> ProcessedInput {
             }
         }
 
-        prompt_parts.push(token.to_string());
+        prompt_parts.push(token);
     }
 
     let prompt = prompt_parts.join(" ");
@@ -492,8 +595,97 @@ mod tests {
         // Windows paths
         assert!(looks_like_file_path("C:\\Users\\test\\img.png"));
         assert!(looks_like_file_path("D:/tmp/img.png"));
+        // Backslash-escaped path (starts with /)
+        assert!(looks_like_file_path("/Users/foo/Screenshot\\ 2026.png"));
         assert!(!looks_like_file_path("just-a-word"));
         assert!(!looks_like_file_path("relative.png"));
+    }
+
+    // ── tokenize_shell_aware tests ───────────────────────────
+
+    #[test]
+    fn test_tokenize_simple() {
+        assert_eq!(tokenize_shell_aware("hello world"), vec!["hello", "world"],);
+    }
+
+    #[test]
+    fn test_tokenize_backslash_spaces() {
+        let tokens = tokenize_shell_aware(
+            "explain /Users/foo/Screenshot\\ 2026-04-09\\ at\\ 4.37.01\\ PM.png",
+        );
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0], "explain");
+        assert_eq!(
+            tokens[1],
+            "/Users/foo/Screenshot\\ 2026-04-09\\ at\\ 4.37.01\\ PM.png",
+        );
+    }
+
+    #[test]
+    fn test_tokenize_double_quoted() {
+        let tokens = tokenize_shell_aware(r#"explain "/Users/foo/Screenshot 2026.png" please"#);
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0], "explain");
+        assert_eq!(tokens[1], "\"/Users/foo/Screenshot 2026.png\"");
+        assert_eq!(tokens[2], "please");
+    }
+
+    #[test]
+    fn test_tokenize_single_quoted() {
+        let tokens = tokenize_shell_aware("explain '/Users/foo/Screenshot 2026.png'");
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0], "explain");
+        assert_eq!(tokens[1], "'/Users/foo/Screenshot 2026.png'");
+    }
+
+    #[test]
+    fn test_tokenize_at_ref_with_escaped_spaces() {
+        let tokens = tokenize_shell_aware("what is @docs/my\\ file.rs");
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0], "what");
+        assert_eq!(tokens[1], "is");
+        assert_eq!(tokens[2], "@docs/my\\ file.rs");
+    }
+
+    #[test]
+    fn test_tokenize_mixed() {
+        let tokens = tokenize_shell_aware("fix @code.rs /tmp/err\\ log.png normal-word");
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0], "fix");
+        assert_eq!(tokens[1], "@code.rs");
+        assert_eq!(tokens[2], "/tmp/err\\ log.png");
+        assert_eq!(tokens[3], "normal-word");
+    }
+
+    #[test]
+    fn test_tokenize_empty() {
+        assert!(tokenize_shell_aware("").is_empty());
+        assert!(tokenize_shell_aware("   ").is_empty());
+    }
+
+    // ── unescape_path tests ─────────────────────────────────
+
+    #[test]
+    fn test_unescape_path_spaces() {
+        assert_eq!(
+            unescape_path("/Users/foo/Screenshot\\ 2026.png"),
+            "/Users/foo/Screenshot 2026.png",
+        );
+    }
+
+    #[test]
+    fn test_unescape_path_parens() {
+        assert_eq!(unescape_path("file\\ \\(1\\).png"), "file (1).png",);
+    }
+
+    #[test]
+    fn test_unescape_path_no_escapes() {
+        assert_eq!(unescape_path("/simple/path.rs"), "/simple/path.rs");
+    }
+
+    #[test]
+    fn test_unescape_path_trailing_backslash() {
+        assert_eq!(unescape_path("trailing\\"), "trailing\\");
     }
 
     #[test]
@@ -522,6 +714,57 @@ mod tests {
         let result = process_input(&input, dir.path());
         assert_eq!(result.prompt, "explain");
         assert_eq!(result.images.len(), 1);
+    }
+
+    #[test]
+    fn test_drag_and_drop_escaped_spaces() {
+        let dir = TempDir::new().unwrap();
+        let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        // Create a file with spaces in its name
+        let img_path = dir.path().join("Screenshot 2026-04-09 at 4.37.01 PM.png");
+        fs::write(&img_path, png_bytes).unwrap();
+
+        // Simulate terminal drag-and-drop: backslash-escaped spaces
+        let escaped_path = img_path.display().to_string().replace(' ', "\\ ");
+        let input = format!("what is this {escaped_path}");
+        let result = process_input(&input, dir.path());
+        assert_eq!(result.prompt, "what is this");
+        assert_eq!(
+            result.images.len(),
+            1,
+            "image should be loaded from escaped path"
+        );
+        assert_eq!(result.images[0].media_type, "image/png");
+    }
+
+    #[test]
+    fn test_drag_and_drop_quoted_spaces() {
+        let dir = TempDir::new().unwrap();
+        let png_bytes: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        let img_path = dir.path().join("Screenshot 2026.png");
+        fs::write(&img_path, png_bytes).unwrap();
+
+        // Simulate terminal drag-and-drop: double-quoted path
+        let input = format!("what is this \"{}\"", img_path.display());
+        let result = process_input(&input, dir.path());
+        assert_eq!(result.prompt, "what is this");
+        assert_eq!(
+            result.images.len(),
+            1,
+            "image should be loaded from quoted path"
+        );
+    }
+
+    #[test]
+    fn test_at_ref_with_escaped_spaces() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("my file.rs");
+        fs::write(&file_path, "fn main() {}").unwrap();
+
+        let result = process_input("explain @my\\ file.rs", dir.path());
+        assert_eq!(result.prompt, "explain");
+        assert_eq!(result.context_files.len(), 1);
+        assert_eq!(result.context_files[0].content, "fn main() {}");
     }
 
     #[test]
