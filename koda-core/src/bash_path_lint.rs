@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 
 use crate::bash_safety::split_command_segments;
 use crate::bash_safety::strip_env_vars;
+use crate::bash_safety::strip_quoted_strings;
 
 /// Whether `resolved` is a path that is safe to access outside the project root.
 ///
@@ -156,41 +157,6 @@ enum CdTarget {
     Home,
     Dynamic,
     Path(String),
-}
-
-/// Replace content inside matched single/double quotes with spaces.
-///
-/// This prevents paths embedded in commit messages, echo strings, and
-/// heredoc bodies from being falsely flagged as path escapes (#562).
-///
-/// ```text
-/// git commit -m "allow /tmp and /dev/*"  →  git commit -m "                    "
-/// echo 'fixed /etc/hosts'               →  echo '                '
-/// ```
-fn strip_quoted_strings(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\'' || c == '"' {
-            result.push(c); // keep the opening quote
-            // Replace everything until the matching close quote with spaces
-            let mut found_close = false;
-            for inner in chars.by_ref() {
-                if inner == c {
-                    result.push(c); // keep the closing quote
-                    found_close = true;
-                    break;
-                }
-                result.push(' ');
-            }
-            if !found_close {
-                // Unterminated quote — already replaced content, just continue
-            }
-        } else {
-            result.push(c);
-        }
-    }
-    result
 }
 
 /// Extract the target of a `cd` command from a segment.
