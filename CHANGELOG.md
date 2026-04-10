@@ -9,6 +9,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-04-10
+
+CI-only release. No functional changes to koda-core or koda-cli.
+
+### Fixed
+- **crates.io publish pipeline** — `cargo publish -p koda-cli` was failing
+  on slow crates.io index days because a fixed `sleep` wasn't enough for
+  koda-core to appear in the sparse index before koda-cli tried to resolve
+  it as a dependency. Replaced the sleep with a poll loop that queries
+  `https://index.crates.io/ko/da/koda-core` directly — the same mechanism
+  used internally by cargo-workspaces and cargo-release — and exits as soon
+  as the version appears (up to 5 min, matching crates.io's propagation SLO).
+  koda-cli has not been successfully published to crates.io since v0.2.2;
+  this release establishes a clean, verified baseline.
+
 ## [0.2.6] - 2026-04-09
 
 Patch release to fix the v0.2.5 `koda-cli` crates.io publish failure.
