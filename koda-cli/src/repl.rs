@@ -70,11 +70,15 @@ pub enum ReplAction {
     Handled,
     /// Input was not a slash command — treat as a chat message.
     NotACommand,
-    /// `/copy [<file.md>]` — export the conversation transcript.
+    /// `/copy [<n>]` — copy the Nth-most-recent assistant response to clipboard.
     ///
-    /// Without an argument: copy to clipboard.
-    /// With a filename: save to that file as Markdown.
-    Copy(Option<String>),
+    /// `n` defaults to 1 (most recent). `/copy 2` copies the second-to-last, etc.
+    CopyResponse(usize),
+    /// `/export [<file.md>]` — export the full session transcript.
+    ///
+    /// Without an argument: write to a auto-named file in the current directory.
+    /// With a filename: write Markdown to that path.
+    Export(Option<String>),
 }
 
 /// Parse and handle a slash command. Returns the action for the main loop.
@@ -162,7 +166,11 @@ pub async fn handle_command(
 
         "/key" | "/keys" => ReplAction::ManageKeys,
 
-        "/copy" => ReplAction::Copy(arg.map(|s| s.to_string())),
+        "/copy" => {
+            let n: usize = arg.and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
+            ReplAction::CopyResponse(n)
+        }
+        "/export" => ReplAction::Export(arg.map(|s| s.to_string())),
 
         _ => ReplAction::NotACommand,
     }
@@ -447,5 +455,26 @@ mod tests {
         assert!(matches!(dispatch("/set"), ReplAction::NotACommand));
         assert!(matches!(dispatch("/config"), ReplAction::NotACommand));
         assert!(matches!(dispatch("/transcript"), ReplAction::NotACommand));
+        assert!(matches!(dispatch("/export"), ReplAction::Export(None)));
+        assert!(matches!(
+            dispatch("/export koda.md"),
+            ReplAction::Export(Some(_))
+        ));
+    }
+
+    #[test]
+    fn copy_defaults_to_last_response() {
+        assert!(matches!(dispatch("/copy"), ReplAction::CopyResponse(1)));
+    }
+
+    #[test]
+    fn copy_with_n_returns_nth() {
+        assert!(matches!(dispatch("/copy 3"), ReplAction::CopyResponse(3)));
+    }
+
+    #[test]
+    fn copy_with_zero_clamps_to_one() {
+        // 0 is nonsensical — clamp to 1 via .max(1)
+        assert!(matches!(dispatch("/copy 0"), ReplAction::CopyResponse(1)));
     }
 }

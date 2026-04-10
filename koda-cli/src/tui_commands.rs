@@ -175,8 +175,12 @@ pub async fn handle_slash_command(
             crate::tui_wizards::handle_keys(buffer);
             SlashAction::OpenKeyMenu
         }
-        ReplAction::Copy(ref dest) => {
-            handle_copy(buffer, session, dest.as_deref()).await;
+        ReplAction::CopyResponse(n) => {
+            handle_copy_response(buffer, session, n).await;
+            SlashAction::Continue
+        }
+        ReplAction::Export(ref dest) => {
+            handle_export(buffer, session, dest.as_deref()).await;
             SlashAction::Continue
         }
         ReplAction::Handled => SlashAction::Continue,
@@ -381,8 +385,6 @@ fn show_help(buffer: &mut ScrollBuffer) {
         ("Home", "Jump to top of history"),
         ("End", "Jump to bottom (latest output)"),
         ("Mouse scroll", "Scroll history"),
-        ("Ctrl+Y", "Copy last code block to clipboard"),
-        ("Ctrl+U", "Copy last assistant response to clipboard"),
     ];
     for (key, desc) in nav_keys {
         tui_output::emit_line(
@@ -483,12 +485,78 @@ fn handle_expand(buffer: &mut ScrollBuffer, renderer: &TuiRenderer, n: usize) {
 
 /// Export the session transcript to clipboard or a Markdown file.
 ///
-/// - `dest = None`        → copy to system clipboard
-/// - `dest = Some(path)`  → write Markdown to that file path
+/// `/copy [n]` — copy the Nth-most-recent assistant response to clipboard.
+///
+/// Loads messages from the DB, filters to assistant turns with text content,
+/// and copies the Nth-last one (1 = most recent).
+async fn handle_copy_response(
+    buffer: &mut ScrollBuffer,
+    session: &koda_core::session::KodaSession,
+    n: usize,
+) {
+    let messages = match session.db.load_all_messages(&session.id).await {
+        Ok(msgs) => msgs,
+        Err(e) => {
+            tui_output::err_msg(buffer, format!("Could not load messages: {e}"));
+            return;
+        }
+    };
+
+    // Collect assistant messages that have non-empty text content.
+    let responses: Vec<&str> = messages
+        .iter()
+        .filter_map(|m| {
+            use koda_core::persistence::Role;
+            if m.role == Role::Assistant {
+                m.content.as_deref().filter(|c| !c.trim().is_empty())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let total = responses.len();
+    if total == 0 {
+        tui_output::dim_msg(buffer, "No assistant responses to copy.".into());
+        return;
+    }
+    if n > total {
+        tui_output::err_msg(
+            buffer,
+            format!(
+                "Only {total} response{} in this session.",
+                if total == 1 { "" } else { "s" }
+            ),
+        );
+        return;
+    }
+
+    // responses is oldest-first; Nth-last = index (total - n)
+    let content = responses[total - n];
+    let label = if n == 1 {
+        "last response".to_string()
+    } else {
+        format!("response #{n} from end")
+    };
+
+    match copy_to_clipboard(content) {
+        Ok(msg) => {
+            let preview: String = content.chars().take(60).collect();
+            let preview = preview.replace('\n', " ");
+            tui_output::ok_msg(buffer, format!("Copied {label} {msg} — {preview}\u{2026}"));
+        }
+        Err(e) => tui_output::err_msg(buffer, e),
+    }
+}
+
+/// `/export [<file.md>]` — export the full session transcript.
+///
+/// - `dest = None`        → auto-name from first user prompt + timestamp, write to CWD
+/// - `dest = Some(path)`  → write Markdown to that explicit path
 ///
 /// Uses `transcript::render` to produce a structured Markdown document
 /// from all session messages (system messages excluded).
-async fn handle_copy(
+async fn handle_export(
     buffer: &mut ScrollBuffer,
     session: &koda_core::session::KodaSession,
     dest: Option<&str>,
@@ -521,25 +589,204 @@ async fn handle_copy(
 
     let md = transcript::render(&messages, session_title);
 
-    match dest {
+    let path_owned;
+    let path: &str = match dest {
+        Some(p) => p,
         None => {
-            // Clipboard copy via arboard (same fn used by mouse-select).
-            match copy_to_clipboard(&md) {
-                Ok(msg) => tui_output::ok_msg(buffer, format!("Transcript {msg}")),
-                Err(e) => tui_output::err_msg(buffer, e),
-            }
+            path_owned = export_default_filename(&messages);
+            &path_owned
         }
-        Some(path) => {
-            // File export.
-            match std::fs::write(path, &md) {
-                Ok(()) => {
-                    let lines = md.lines().count();
-                    tui_output::ok_msg(buffer, format!("Saved {lines} lines → {path}"));
-                }
-                Err(e) => {
-                    tui_output::err_msg(buffer, format!("Could not write {path}: {e}"));
-                }
-            }
+    };
+
+    match std::fs::write(path, &md) {
+        Ok(()) => {
+            let lines = md.lines().count();
+            tui_output::ok_msg(buffer, format!("Saved {lines} lines \u{2192} {path}"));
         }
+        Err(e) => {
+            tui_output::err_msg(buffer, format!("Could not write {path}: {e}"));
+        }
+    }
+}
+
+/// Generate a default export filename from the first user message + UTC timestamp.
+///
+/// Format: `koda-YYYYMMDD-HHMMSS-<slug>.md`  (slug from first user prompt, max 40 chars).
+/// Falls back to `koda-YYYYMMDD-HHMMSS.md` when no user message exists.
+fn export_default_filename(messages: &[koda_core::persistence::Message]) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Manual UTC decomposition — no chrono dep needed.
+    let (y, mo, d, h, mi, s) = decompose_utc(secs);
+    let ts = format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}");
+
+    let slug: String = messages
+        .iter()
+        .find(|m| {
+            use koda_core::persistence::Role;
+            m.role == Role::User
+        })
+        .and_then(|m| m.content.as_deref())
+        .map(|c| {
+            c.lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+                .take(50)
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join("-")
+                .to_lowercase()
+        })
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            // Hard cap at 40 chars, respecting char boundaries.
+            if s.len() > 40 {
+                s[..40].trim_end_matches('-').to_string()
+            } else {
+                s
+            }
+        })
+        .unwrap_or_default();
+
+    if slug.is_empty() {
+        format!("koda-{ts}.md")
+    } else {
+        format!("koda-{ts}-{slug}.md")
+    }
+}
+
+/// Decompose a Unix timestamp (seconds) into (year, month, day, hour, min, sec) UTC.
+/// No external crates required — just enough calendar math for a filename.
+fn decompose_utc(mut secs: u64) -> (u64, u64, u64, u64, u64, u64) {
+    let s = secs % 60;
+    secs /= 60;
+    let mi = secs % 60;
+    secs /= 60;
+    let h = secs % 24;
+    secs /= 24; // days since epoch
+
+    // Gregorian calendar: 400-year cycle = 146097 days.
+    let (mut y, mut days) = (1970u64, secs);
+    loop {
+        let leap = if y % 400 == 0 {
+            true
+        } else if y % 100 == 0 {
+            false
+        } else {
+            y % 4 == 0
+        };
+        let dy = if leap { 366 } else { 365 };
+        if days < dy {
+            break;
+        }
+        days -= dy;
+        y += 1;
+    }
+    let leap = if y % 400 == 0 {
+        true
+    } else if y % 100 == 0 {
+        false
+    } else {
+        y % 4 == 0
+    };
+    let month_days: [u64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut mo = 1u64;
+    for &md in &month_days {
+        if days < md {
+            break;
+        }
+        days -= md;
+        mo += 1;
+    }
+    (y, mo, days + 1, h, mi, s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::export_default_filename;
+    use koda_core::persistence::{Message, Role};
+
+    fn user_msg(content: &str) -> Message {
+        Message {
+            id: 0,
+            session_id: "test".into(),
+            role: Role::User,
+            content: Some(content.to_string()),
+            full_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            thinking_tokens: None,
+            created_at: None,
+        }
+    }
+
+    #[test]
+    fn filename_format_no_messages() {
+        let name = export_default_filename(&[]);
+        // koda-YYYYMMDD-HHMMSS.md
+        assert!(name.starts_with("koda-"), "got: {name}");
+        assert!(name.ends_with(".md"), "got: {name}");
+    }
+
+    #[test]
+    fn filename_includes_slug_from_first_user_msg() {
+        let msgs = vec![user_msg("Refactor the auth module")];
+        let name = export_default_filename(&msgs);
+        assert!(name.contains("refactor"), "got: {name}");
+        assert!(name.contains("auth"), "got: {name}");
+        assert!(name.ends_with(".md"), "got: {name}");
+    }
+
+    #[test]
+    fn filename_slug_is_lowercase_hyphenated() {
+        let msgs = vec![user_msg("Fix Bug In Parser")];
+        let name = export_default_filename(&msgs);
+        assert!(name.contains("fix-bug-in-parser"), "got: {name}");
+    }
+
+    #[test]
+    fn filename_slug_capped_at_40_chars() {
+        let long = "a".repeat(200);
+        let msgs = vec![user_msg(&long)];
+        let name = export_default_filename(&msgs);
+        // slug portion after the second "-" should be <= 40 chars
+        let slug_part = name
+            .trim_start_matches("koda-")
+            .split('-')
+            .skip(2) // skip YYYYMMDD and HHMMSS
+            .collect::<Vec<_>>()
+            .join("-");
+        let slug_no_ext = slug_part.trim_end_matches(".md");
+        assert!(
+            slug_no_ext.len() <= 40,
+            "slug too long ({} chars): {slug_no_ext}",
+            slug_no_ext.len()
+        );
     }
 }
