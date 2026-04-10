@@ -41,9 +41,6 @@ jobs:
           echo "✅ Tag v$TAG matches koda-core ($CORE_VER) and koda-cli ($CLI_VER)"
 
       - name: Check intra-workspace dependency versions are consistent
-        # Catches stale version pins like `koda-email = { path = "...", version = "0.2.0" }`
-        # when the actual crate is already at 0.2.3 — which causes crates.io publish failures
-        # because the path dep is stripped on publish and the stale constraint is shipped instead.
         run: |
           CORE_VER=$(grep '^version' koda-core/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           CLI_VER=$(grep  '^version' koda-cli/Cargo.toml  | head -1 | sed 's/.*"\(.*\)"/\1/')
