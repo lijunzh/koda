@@ -70,6 +70,11 @@ pub enum ReplAction {
     Handled,
     /// Input was not a slash command — treat as a chat message.
     NotACommand,
+    /// `/copy [<file.md>]` — export the conversation transcript.
+    ///
+    /// Without an argument: copy to clipboard.
+    /// With a filename: save to that file as Markdown.
+    Copy(Option<String>),
 }
 
 /// Parse and handle a slash command. Returns the action for the main loop.
@@ -156,6 +161,8 @@ pub async fn handle_command(
         "/skills" => ReplAction::ListSkills(arg.map(|s| s.to_string())),
 
         "/key" | "/keys" => ReplAction::ManageKeys,
+
+        "/copy" => ReplAction::Copy(arg.map(|s| s.to_string())),
 
         _ => ReplAction::NotACommand,
     }
