@@ -27,7 +27,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: lint  # stable across branches & workflow edits
+          shared-key: test-support  # shared with test: same features, same targets
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -56,8 +56,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test  # OS already baked into rust-cache primary key;
-                            # no cross-contamination between ubuntu and windows
+          shared-key: test-support  # shared with lint: same features, same targets
       - run: cargo test --workspace --features koda-core/test-support
 
   doc:
