@@ -232,8 +232,11 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
     }
 
     // Layer 1: dangerous patterns → Destructive
+    // Strip quoted strings first so patterns inside grep arguments, commit
+    // messages, etc. are not falsely flagged (#802).
+    let unquoted = strip_quoted_strings(trimmed);
     for pat in DANGEROUS_PATTERNS {
-        if trimmed.contains(pat) {
+        if unquoted.contains(pat) {
             return ToolEffect::Destructive;
         }
     }
@@ -398,6 +401,38 @@ pub fn split_command_segments(command: &str) -> Vec<&str> {
     segments
 }
 
+/// Replace content inside single and double quotes with spaces.
+///
+/// Prevents patterns inside quoted strings (e.g. grep arguments, commit
+/// messages) from being mistakenly matched as dangerous commands.
+///
+/// ```text
+/// grep -A30 "cargo publish -p koda"  →  grep -A30 "                    "
+/// git commit -m 'fix: rm old file'   →  git commit -m '                '
+/// ```
+pub fn strip_quoted_strings(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\'' || c == '"' {
+            result.push(c);
+            let mut found_close = false;
+            for inner in chars.by_ref() {
+                if inner == c {
+                    result.push(c);
+                    found_close = true;
+                    break;
+                }
+                result.push(' ');
+            }
+            if !found_close {}
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 /// Strip leading environment variable assignments (e.g., `FOO=bar command`).
 ///
 /// # Examples
@@ -506,6 +541,25 @@ mod tests {
                 classify_bash_command(cmd),
                 ToolEffect::ReadOnly,
                 "expected ReadOnly: {cmd}"
+            );
+        }
+    }
+
+    /// Dangerous patterns inside quoted grep/log arguments must not trigger (#802).
+    #[test]
+    fn test_quoted_dangerous_pattern_not_flagged() {
+        for cmd in [
+            // Exact command from issue #802
+            r#"cd /Users/lijun/repo/koda && gh run view 24209573810 --log | grep -A30 "cargo publish -p koda-cli" | tail -20"#,
+            // Other false-positive patterns
+            r#"grep -r "npm publish" ."#,
+            r#"grep "rm -rf" logs/"#,
+            r#"grep "cargo publish" Makefile"#,
+        ] {
+            assert_ne!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "should not be Destructive (pattern is inside quotes): {cmd}"
             );
         }
     }
