@@ -159,7 +159,6 @@ enum CdTarget {
     Path(String),
 }
 
-
 /// Extract the target of a `cd` command from a segment.
 fn extract_cd_target(segment: &str) -> Option<CdTarget> {
     let seg = segment.trim();
