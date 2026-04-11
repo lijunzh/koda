@@ -17,8 +17,8 @@ env:
   RUSTFLAGS: -Dwarnings
 
 jobs:
-  lint:
-    name: Lint
+  test:
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -27,37 +27,16 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test-support  # shared with test: same features, same targets
+          shared-key: test-support
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings
-
-  check:
-    name: Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: check  # stable across branches & workflow edits → primary key always hits
-      - name: cargo check (all targets, no features)
-        # Catches cfg-gated items invisible behind feature flags AND
-        # platform-specific compile errors (e.g. std::os::unix on Windows).
+      - name: Check (no features)
+        # Catches cfg-gated items invisible behind feature flags.
         run: cargo check --workspace --all-targets
-
-  test:
-    name: Test
-    needs: [lint, check]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: test-support  # shared with lint: same features, same targets
-      - run: cargo test --workspace --features koda-core/test-support
+      - name: Test
+        run: cargo test --workspace --features koda-core/test-support
 
   doc:
     name: Docs
