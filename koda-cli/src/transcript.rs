@@ -359,7 +359,10 @@ mod tests {
         msg.thinking_content = Some("Let me think step by step: 6 x 7 = 42.".into());
 
         let out = render(&[msg], None);
-        assert!(out.contains("The answer is 42."), "response text must appear");
+        assert!(
+            out.contains("The answer is 42."),
+            "response text must appear"
+        );
         assert!(
             out.contains("Thinking"),
             "thinking block header must appear in transcript"

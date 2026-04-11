@@ -1222,9 +1222,16 @@ async fn thinking_content_persists_and_is_loaded_in_context() {
     let (db, _tmp) = setup().await;
     let session = db.create_session("default", _tmp.path()).await.unwrap();
 
-    db.insert_message(&session, &Role::User, Some("what is 2+2?"), None, None, None)
-        .await
-        .unwrap();
+    db.insert_message(
+        &session,
+        &Role::User,
+        Some("what is 2+2?"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     let assistant_id = db
         .insert_message(
