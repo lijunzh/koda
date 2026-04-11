@@ -1840,6 +1840,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shlex",
  "similar 3.0.0",
  "sqlx",
  "tempfile",

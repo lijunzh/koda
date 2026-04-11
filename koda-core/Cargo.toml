@@ -56,6 +56,9 @@ base64 = "0.22"
 # SHA-256 content hashing (edit staleness detection — Gemini CLI strategy)
 sha2 = "0.10"
 
+# POSIX shell tokenization (bash safety classification — replaces substring matching, #807)
+shlex = "1"
+
 # HTTP client (for LLM API)
 reqwest = { version = "0.13", features = ["json", "stream"] }
 
