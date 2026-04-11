@@ -171,32 +171,52 @@ async fn max_tokens_continues_loop() {
 // ── Loop detection ───────────────────────────────────────────
 
 #[tokio::test]
-async fn loop_detection_stops_repeated_tool_calls() {
+async fn loop_detection_injects_feedback_then_stops() {
     let env = Env::new().await;
     env.insert_user_message("keep trying").await;
 
-    // Produce the same tool call repeatedly. The loop detector should fire
-    // after REPEAT_THRESHOLD (3) identical mutating tool calls.
-    // Each MockResponse is consumed by a separate chat_stream call.
-    // After tool execution, the loop re-enters and calls chat_stream again.
+    // Produce the same tool call repeatedly. The loop detector fires after
+    // 5 consecutive identical calls (matching Gemini CLI's threshold).
+    // First detection: injects feedback and continues.
+    // Second detection: hard stops.
+    // Need 10 repeated calls: 5 to trigger feedback + 5 more to hard stop.
     let repeated_call =
         MockResponse::tool_call("Bash", serde_json::json!({"command": "echo stuck"}));
     let provider = MockProvider::new(vec![
-        repeated_call.clone(), // iteration 0: tool call → execute → loop
-        repeated_call.clone(), // iteration 1: tool call → execute → loop
-        repeated_call.clone(), // iteration 2: tool call → loop detector fires
-        // Fallback in case detection doesn't fire at exactly 3:
-        repeated_call.clone(),
-        repeated_call.clone(),
+        repeated_call.clone(), // 1st consecutive
+        repeated_call.clone(), // 2nd
+        repeated_call.clone(), // 3rd
+        repeated_call.clone(), // 4th
+        repeated_call.clone(), // 5th → InjectFeedback, clear, continue
+        repeated_call.clone(), // 1st consecutive (reset)
+        repeated_call.clone(), // 2nd
+        repeated_call.clone(), // 3rd
+        repeated_call.clone(), // 4th
+        repeated_call.clone(), // 5th → HardStop
         MockResponse::Text("unreachable".into()),
     ]);
     let events = env.run_inference(&provider).await;
 
-    // Should detect the loop and emit a warning.
-    let has_loop_warn = events
-        .iter()
-        .any(|e| matches!(e, EngineEvent::Warn { message } if message.contains("Loop guard")));
-    assert!(has_loop_warn, "expected loop detection warning: {events:?}");
+    // Should see the feedback injection warning first
+    let has_feedback = events.iter().any(|e| {
+        matches!(
+            e,
+            EngineEvent::Warn { message } if message.contains("Loop detected")
+        )
+    });
+    assert!(
+        has_feedback,
+        "expected feedback injection warning: {events:?}"
+    );
+
+    // Should see the hard stop warning second
+    let has_hard_stop = events.iter().any(|e| {
+        matches!(
+            e,
+            EngineEvent::Warn { message } if message.contains("Loop guard")
+        )
+    });
+    assert!(has_hard_stop, "expected hard stop warning: {events:?}");
 }
 
 // ── Eager tool execution (ToolCallReady) ─────────────────────

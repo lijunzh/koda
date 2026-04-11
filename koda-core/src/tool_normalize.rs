@@ -168,51 +168,19 @@ pub fn normalize_tool_name(name: &str) -> String {
     name.to_string()
 }
 
-/// Normalize + deduplicate tool calls from a single model response.
+/// Normalize all tool calls in a batch.
 ///
-/// 1. **Normalize** — map model-emitted names to canonical PascalCase.
-/// 2. **Deduplicate** — collapse identical `(name, args)` pairs.  The
-///    first occurrence's ID is kept; duplicate IDs are returned in
-///    `DeduplicatedToolCalls::duplicate_ids` so the caller can record
-///    a synthetic tool result for each (the model expects one per ID).
-///
-/// No per-turn cap is applied — frontier models legitimately emit 20+
-/// parallel tool calls (e.g. reading many files at once). Runaway loops
-/// are caught by the loop guard (`REPEAT_THRESHOLD`, `NAME_SATURATION_THRESHOLD`)
-/// and the hard iteration cap (`MAX_ITERATIONS_DEFAULT`).
-pub fn normalize_tool_calls(tool_calls: Vec<ToolCall>) -> DeduplicatedToolCalls {
-    use std::collections::HashSet;
-
-    let mut seen: HashSet<(String, String)> = HashSet::new();
-    let mut unique = Vec::new();
-    let mut duplicate_ids = Vec::new();
-
-    for mut tc in tool_calls {
+/// Maps model-emitted names to canonical PascalCase. No deduplication,
+/// no per-turn cap — frontier models legitimately emit 30+ parallel
+/// calls (e.g. reading many files at once). If a model emits duplicate
+/// calls, the user should see that and switch models, not have us
+/// silently paper over it. Loops are caught by the consecutive-call
+/// detector in `loop_guard.rs`.
+pub fn normalize_tool_calls(mut tool_calls: Vec<ToolCall>) -> Vec<ToolCall> {
+    for tc in &mut tool_calls {
         tc.function_name = normalize_tool_name(&tc.function_name);
-        let key = (tc.function_name.clone(), tc.arguments.clone());
-        if seen.contains(&key) {
-            duplicate_ids.push(tc.id);
-        } else {
-            seen.insert(key);
-            unique.push(tc);
-        }
     }
-
-    DeduplicatedToolCalls {
-        calls: unique,
-        duplicate_ids,
-    }
-}
-
-/// Result of [`normalize_tool_calls`]: unique calls + metadata about duplicates.
-#[derive(Debug)]
-pub struct DeduplicatedToolCalls {
-    /// Unique, normalized tool calls.
-    pub calls: Vec<ToolCall>,
-    /// IDs of tool calls that were duplicates of an earlier call in the
-    /// same response.  The caller should record a synthetic tool result
-    /// for each (e.g. "Duplicate call — result already returned.").
-    pub duplicate_ids: Vec<String>,
+    tool_calls
 }
 
 #[cfg(test)]
@@ -341,15 +309,16 @@ mod tests {
             },
             ToolCall {
                 id: "3".into(),
-                function_name: "Read".into(), // already canonical
+                function_name: "Read".into(),
                 arguments: r#"{"path":"y"}"#.into(),
                 thought_signature: None,
             },
         ];
         let normalized = normalize_tool_calls(calls);
-        assert_eq!(normalized.calls[0].function_name, "List");
-        assert_eq!(normalized.calls[1].function_name, "Read");
-        assert_eq!(normalized.calls[2].function_name, "Read");
+        assert_eq!(normalized[0].function_name, "List");
+        assert_eq!(normalized[1].function_name, "Read");
+        assert_eq!(normalized[2].function_name, "Read");
+        assert_eq!(normalized.len(), 3); // no dedup
     }
 
     // ── Every canonical name has a lowercase alias ──────────────
@@ -363,76 +332,6 @@ mod tests {
                 name,
                 "Missing lowercase alias for '{name}'"
             );
-        }
-    }
-
-    // ── Deduplication ───────────────────────────────────────────
-
-    #[test]
-    fn dedup_collapses_identical_calls() {
-        let args = "{\"path\":\".\"}";
-        let calls = vec![
-            tc("1", "List", args),
-            tc("2", "List", args),
-            tc("3", "List", args),
-        ];
-        let result = normalize_tool_calls(calls);
-        assert_eq!(result.calls.len(), 1);
-        assert_eq!(result.calls[0].id, "1");
-        assert_eq!(result.duplicate_ids, vec!["2", "3"]);
-    }
-
-    #[test]
-    fn dedup_keeps_different_args() {
-        let calls = vec![
-            tc("1", "Read", "{\"path\":\"a.rs\"}"),
-            tc("2", "Read", "{\"path\":\"b.rs\"}"),
-        ];
-        let result = normalize_tool_calls(calls);
-        assert_eq!(result.calls.len(), 2);
-        assert!(result.duplicate_ids.is_empty());
-    }
-
-    #[test]
-    fn dedup_66_identical_list_calls() {
-        // Models may emit many identical tool calls in a single response (#773)
-        let calls: Vec<ToolCall> = (0..66)
-            .map(|i| tc(&format!("call_{i}"), "list", "{\"path\":\".\"}"))
-            .collect();
-        let result = normalize_tool_calls(calls);
-        assert_eq!(result.calls.len(), 1, "should collapse 66 → 1");
-        assert_eq!(result.duplicate_ids.len(), 65);
-        assert_eq!(result.calls[0].function_name, "List"); // also normalized
-    }
-
-    #[test]
-    fn many_unique_calls_not_capped() {
-        // Frontier models legitimately emit 30+ parallel tool calls.
-        // Dedup should pass them all through without truncation.
-        let calls: Vec<ToolCall> = (0..30)
-            .map(|i| {
-                tc(
-                    &format!("call_{i}"),
-                    "Read",
-                    &format!("{{\"path\":\"file_{i}.rs\"}}"),
-                )
-            })
-            .collect();
-        let result = normalize_tool_calls(calls);
-        assert_eq!(
-            result.calls.len(),
-            30,
-            "all unique calls should pass through"
-        );
-        assert!(result.duplicate_ids.is_empty());
-    }
-
-    fn tc(id: &str, name: &str, args: &str) -> ToolCall {
-        ToolCall {
-            id: id.into(),
-            function_name: name.into(),
-            arguments: args.into(),
-            thought_signature: None,
         }
     }
 

@@ -46,7 +46,7 @@ use crate::inference_helpers::{
     estimate_tokens, is_context_overflow_error, is_image_rejection_error, is_rate_limit_error,
     is_server_error, rate_limit_backoff,
 };
-use crate::loop_guard::LoopDetector;
+use crate::loop_guard::{LoopAction, LoopDetector};
 use crate::persistence::Persistence;
 use crate::providers::{
     ChatMessage, ImageData, LlmProvider, StreamChunk, TokenUsage, ToolCall, ToolDefinition,
@@ -603,7 +603,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     let mut made_tool_calls = false;
     let mut retried_empty = false;
     let mut loop_detector = LoopDetector::new();
-    let mut consecutive_tool_only: u32 = 0;
     let sub_agent_cache = crate::sub_agent_cache::SubAgentCache::new();
     let bg_agents = crate::bg_agent::new_shared();
     let mut skill_scope = SkillToolScope::new();
@@ -699,23 +698,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         // is active, only those tools (+ meta-tools) are sent to the LLM.
         let scoped_tool_defs = skill_scope.filter_tool_defs(tool_defs);
 
-        // If the model has produced N consecutive tool-call-only responses
-        // (tools but no text), suppress tool definitions for this turn to
-        // force it to generate a text response. This prevents models
-        // from looping infinitely through tool calls (#826).
-        let active_tool_defs: &[ToolDefinition] =
-            if consecutive_tool_only >= crate::loop_guard::TOOL_ONLY_RESPONSE_LIMIT {
-                sink.emit(EngineEvent::Info {
-                    message: format!(
-                        "Model produced {} consecutive tool-only responses — \
-                         suppressing tools for this turn to prompt a text reply.",
-                        consecutive_tool_only,
-                    ),
-                });
-                &[]
-            } else {
-                &scoped_tool_defs
-            };
+        let active_tool_defs: &[ToolDefinition] = &scoped_tool_defs;
 
         // Build per-iteration immutable context for helpers
         let turn = TurnState {
@@ -868,33 +851,9 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         // HashMap lookup — and must happen here (not in providers) so dispatch,
         // approval, loop guard, undo, and persistence all see consistent
         // canonical names.
-        let dedup = crate::tool_normalize::normalize_tool_calls(stream_result.tool_calls);
-        let tool_calls = dedup.calls;
-
-        // Log deduplication / capping so it's visible in traces.
-        if !dedup.duplicate_ids.is_empty() {
-            let n = dedup.duplicate_ids.len();
-            tracing::warn!(
-                duplicates = n,
-                "Deduplicated {n} identical tool calls in single response"
-            );
-            sink.emit(EngineEvent::Warn {
-                message: format!(
-                    "Model emitted {n} duplicate tool call(s) — deduplicated to {} unique.",
-                    tool_calls.len(),
-                ),
-            });
-        }
+        let tool_calls = crate::tool_normalize::normalize_tool_calls(stream_result.tool_calls);
         let usage = stream_result.usage;
         let char_count = stream_result.char_count;
-
-        // Track consecutive tool-call-only responses (no text output).
-        // Reset when the model produces any text alongside or instead of tools.
-        if !tool_calls.is_empty() && full_text.trim().is_empty() {
-            consecutive_tool_only += 1;
-        } else {
-            consecutive_tool_only = 0;
-        }
 
         // Empty response after tool use — retry once before giving up.
         if tool_calls.is_empty()
@@ -1144,21 +1103,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             .await?;
         }
 
-        // Record synthetic results for deduplicated tool calls.
-        // The model expects one tool result per ID it emitted, even for
-        // duplicates we didn't execute.
-        for dup_id in &dedup.duplicate_ids {
-            db.insert_message(
-                session_id,
-                &Role::Tool,
-                Some("Duplicate tool call — result already returned for an identical call."),
-                None,
-                Some(dup_id),
-                None,
-            )
-            .await?;
-        }
-
         // Update skill scope: if any ActivateSkill call was made, check whether
         // the newly activated skill has allowed_tools.
         {
@@ -1190,17 +1134,45 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             }
         }
 
-        // Loop detection: repeated tool calls or tool-name saturation → stop.
-        if let Some(culprit) = loop_detector.record(&tool_calls) {
-            let tool_name = culprit.split(':').next().unwrap_or(&culprit);
-            sink.emit(EngineEvent::Warn {
-                message: format!(
-                    "Loop guard: '{tool_name}' called repeatedly — \
-                     stopping to avoid wasted tokens. \
-                     If the model was making progress, send a follow-up message to continue."
-                ),
-            });
-            break Ok(());
+        // Loop detection: consecutive identical tool calls → feedback or stop.
+        // Modeled after Gemini CLI: first detection injects a nudge message,
+        // second detection (model ignored feedback) hard-stops.
+        match loop_detector.record(&tool_calls) {
+            LoopAction::Ok => {}
+            LoopAction::InjectFeedback(detail) => {
+                tracing::warn!(%detail, "Loop detected — injecting feedback");
+                sink.emit(EngineEvent::Warn {
+                    message: format!(
+                        "Loop detected: {detail}. Injecting feedback to nudge the model."
+                    ),
+                });
+                // Inject a system-style user message to redirect the model.
+                db.insert_message(
+                    session_id,
+                    &Role::User,
+                    Some(&format!(
+                        "System: Potential loop detected — {detail}. \
+                         Please take a step back and confirm you're making forward progress. \
+                         If not, analyze your previous actions and try a different approach. \
+                         Avoid repeating the same tool calls without new results."
+                    )),
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
+                loop_detector.clear_after_feedback();
+                // Continue the loop — give the model a chance to recover
+            }
+            LoopAction::HardStop(detail) => {
+                sink.emit(EngineEvent::Warn {
+                    message: format!(
+                        "Loop guard: {detail} — model ignored feedback, stopping. \
+                         Send a follow-up message to continue."
+                    ),
+                });
+                break Ok(());
+            }
         }
 
         iteration += 1;
