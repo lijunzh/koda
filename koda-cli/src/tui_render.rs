@@ -144,6 +144,7 @@ impl TuiRenderer {
             }
             EngineEvent::ThinkingDelta { text } => {
                 self.think_buf.push_str(&text);
+                // Emit complete lines immediately
                 while let Some(pos) = self.think_buf.find('\n') {
                     let line_text = self.think_buf[..pos].to_string();
                     self.think_buf = self.think_buf[pos + 1..].to_string();
@@ -152,6 +153,19 @@ impl TuiRenderer {
                         Line::from(vec![
                             Span::styled("  \u{2502} ", DIM),
                             Span::styled(line_text, DIM),
+                        ]),
+                    );
+                }
+                // Flush partial line if the buffer is getting long (prevents
+                // the UI from appearing frozen when models like Gemma 4 emit
+                // long thinking stretches without newlines — issue #823).
+                if self.think_buf.len() > 120 {
+                    let partial = std::mem::take(&mut self.think_buf);
+                    tui_output::emit_line(
+                        buffer,
+                        Line::from(vec![
+                            Span::styled("  \u{2502} ", DIM),
+                            Span::styled(partial, DIM),
                         ]),
                     );
                 }
