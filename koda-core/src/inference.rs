@@ -603,6 +603,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     let mut made_tool_calls = false;
     let mut retried_empty = false;
     let mut loop_detector = LoopDetector::new();
+    let mut consecutive_tool_only: u32 = 0;
     let sub_agent_cache = crate::sub_agent_cache::SubAgentCache::new();
     let bg_agents = crate::bg_agent::new_shared();
     let mut skill_scope = SkillToolScope::new();
@@ -697,7 +698,24 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         // Apply skill-scoped tool filtering: when a skill with `allowed_tools`
         // is active, only those tools (+ meta-tools) are sent to the LLM.
         let scoped_tool_defs = skill_scope.filter_tool_defs(tool_defs);
-        let active_tool_defs: &[ToolDefinition] = &scoped_tool_defs;
+
+        // If the model has produced N consecutive tool-call-only responses
+        // (tools but no text), suppress tool definitions for this turn to
+        // force it to generate a text response. This prevents local models
+        // from looping infinitely through tool calls (#826).
+        let active_tool_defs: &[ToolDefinition] =
+            if consecutive_tool_only >= crate::loop_guard::TOOL_ONLY_RESPONSE_LIMIT {
+                sink.emit(EngineEvent::Info {
+                    message: format!(
+                        "Model produced {} consecutive tool-only responses — \
+                         suppressing tools for this turn to prompt a text reply.",
+                        consecutive_tool_only,
+                    ),
+                });
+                &[]
+            } else {
+                &scoped_tool_defs
+            };
 
         // Build per-iteration immutable context for helpers
         let turn = TurnState {
@@ -881,6 +899,14 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         }
         let usage = stream_result.usage;
         let char_count = stream_result.char_count;
+
+        // Track consecutive tool-call-only responses (no text output).
+        // Reset when the model produces any text alongside or instead of tools.
+        if !tool_calls.is_empty() && full_text.trim().is_empty() {
+            consecutive_tool_only += 1;
+        } else {
+            consecutive_tool_only = 0;
+        }
 
         // Empty response after tool use — retry once before giving up.
         if tool_calls.is_empty()
