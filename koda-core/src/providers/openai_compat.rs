@@ -154,6 +154,12 @@ struct StreamDelta {
     /// Reasoning content from o1/o3/o4-mini models.
     #[serde(default)]
     reasoning_content: Option<String>,
+    /// Thinking content from Gemma 4 and other models via LM Studio.
+    #[serde(default)]
+    thinking_content: Option<String>,
+    /// Alternative thinking field used by some local model servers.
+    #[serde(default)]
+    thought_content: Option<String>,
     tool_calls: Option<Vec<StreamToolCall>>,
 }
 
@@ -197,8 +203,15 @@ impl OpenAiChunkParser {
 
 impl ChunkParser for OpenAiChunkParser {
     fn process_line(&mut self, data: &str) -> Vec<StreamChunk> {
-        let Ok(chunk) = serde_json::from_str::<StreamChatResponse>(data) else {
-            return vec![];
+        let chunk = match serde_json::from_str::<StreamChatResponse>(data) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::debug!(
+                    "OpenAI-compat: failed to parse SSE chunk: {e} — raw: {truncated}",
+                    truncated = &data[..data.len().min(200)]
+                );
+                return vec![];
+            }
         };
 
         let mut chunks = Vec::new();
@@ -218,11 +231,17 @@ impl ChunkParser for OpenAiChunkParser {
                 };
             }
 
-            // Reasoning content (o1/o3/o4-mini)
-            if let Some(reasoning) = &choice.delta.reasoning_content
-                && !reasoning.is_empty()
-            {
-                chunks.push(StreamChunk::ThinkingDelta(reasoning.clone()));
+            // Reasoning / thinking content (o1/o3/o4-mini, Gemma 4, etc.)
+            // Models and local servers may use different field names.
+            let thinking = choice
+                .delta
+                .reasoning_content
+                .as_deref()
+                .or(choice.delta.thinking_content.as_deref())
+                .or(choice.delta.thought_content.as_deref())
+                .unwrap_or_default();
+            if !thinking.is_empty() {
+                chunks.push(StreamChunk::ThinkingDelta(thinking.to_string()));
             }
 
             // Text delta — run through <think> tag filter
