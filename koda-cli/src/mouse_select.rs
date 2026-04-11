@@ -232,16 +232,12 @@ pub(crate) fn apply_selection_highlight<'a>(
     result
 }
 
-/// Copy text to system clipboard, returning a user-friendly message.
+/// Copy text to the system clipboard, returning a short status phrase.
+///
+/// Delegates to [`crate::clipboard`] which auto-selects arboard (local),
+/// OSC 52 (SSH), or OSC 52 + tmux passthrough depending on the environment.
 pub(crate) fn copy_to_clipboard(text: &str) -> Result<String, String> {
-    match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
-        Ok(()) => {
-            let preview: String = text.chars().take(50).collect();
-            let lines = text.lines().count();
-            Ok(format!("Copied {lines} line(s): {preview}…"))
-        }
-        Err(e) => Err(format!("Clipboard error: {e}")),
-    }
+    crate::clipboard::copy_to_clipboard(text)
 }
 
 #[cfg(test)]
