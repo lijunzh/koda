@@ -197,26 +197,45 @@ async fn loop_detection_injects_feedback_then_stops() {
     ]);
     let events = env.run_inference(&provider).await;
 
-    // Should see the feedback injection warning first
-    let has_feedback = events.iter().any(|e| {
-        matches!(
-            e,
-            EngineEvent::Warn { message } if message.contains("Loop detected")
-        )
+    // Should see the feedback injection warning first — with count + tool name
+    let feedback_msg = events.iter().find_map(|e| match e {
+        EngineEvent::Warn { message } if message.contains("Loop detected") => {
+            Some(message.as_str())
+        }
+        _ => None,
     });
     assert!(
-        has_feedback,
+        feedback_msg.is_some(),
         "expected feedback injection warning: {events:?}"
     );
+    let feedback_msg = feedback_msg.unwrap();
+    assert!(
+        feedback_msg.contains("5"),
+        "feedback warning should include repeat count: {feedback_msg}"
+    );
+    assert!(
+        feedback_msg.contains("Bash"),
+        "feedback warning should name the culprit tool: {feedback_msg}"
+    );
 
-    // Should see the hard stop warning second
-    let has_hard_stop = events.iter().any(|e| {
-        matches!(
-            e,
-            EngineEvent::Warn { message } if message.contains("Loop guard")
-        )
+    // Should see the hard stop warning second — also with count + tool name
+    let hard_stop_msg = events.iter().find_map(|e| match e {
+        EngineEvent::Warn { message } if message.contains("Loop guard") => Some(message.as_str()),
+        _ => None,
     });
-    assert!(has_hard_stop, "expected hard stop warning: {events:?}");
+    assert!(
+        hard_stop_msg.is_some(),
+        "expected hard stop warning: {events:?}"
+    );
+    let hard_stop_msg = hard_stop_msg.unwrap();
+    assert!(
+        hard_stop_msg.contains("5"),
+        "hard stop warning should include repeat count: {hard_stop_msg}"
+    );
+    assert!(
+        hard_stop_msg.contains("Bash"),
+        "hard stop warning should name the culprit tool: {hard_stop_msg}"
+    );
 }
 
 // ── Eager tool execution (ToolCallReady) ─────────────────────
