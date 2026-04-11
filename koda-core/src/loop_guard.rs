@@ -88,6 +88,10 @@ impl LoopDetector {
     /// Record a batch of tool calls.
     /// Returns `Some(culprit_description)` when a loop is detected.
     pub fn record(&mut self, tool_calls: &[ToolCall]) -> Option<String> {
+        // Collect unique tool names in this batch — parallel calls to the
+        // same tool in one response are intentional, not a loop signal.
+        let mut batch_names: Vec<&str> = Vec::new();
+
         for tc in tool_calls {
             let fp = fingerprint(&tc.function_name, &tc.arguments);
 
@@ -97,9 +101,15 @@ impl LoopDetector {
                 self.window.pop_front();
             }
 
-            self.name_window.push_back(tc.function_name.clone());
-            if self.name_window.len() > WINDOW_SIZE {
-                self.name_window.pop_front();
+            // Deduplicate names per batch: 10 parallel Read calls = 1 entry,
+            // not 10. This prevents false positives when the model reads
+            // many files at once (which we explicitly encourage).
+            if !batch_names.contains(&tc.function_name.as_str()) {
+                batch_names.push(&tc.function_name);
+                self.name_window.push_back(tc.function_name.clone());
+                if self.name_window.len() > WINDOW_SIZE {
+                    self.name_window.pop_front();
+                }
             }
 
             // Ring buffer for display always tracks all tools
@@ -272,6 +282,37 @@ mod tests {
                 d.record(&[call(name, &args)]).is_none(),
                 "mixed tools should not trigger (call {i})"
             );
+        }
+    }
+
+    #[test]
+    fn parallel_reads_in_one_batch_not_a_loop() {
+        // 10 parallel Read calls in a single batch should NOT trigger
+        // saturation — the model is doing what we asked (read many files
+        // at once). Only sequential batches should count.
+        let mut d = LoopDetector::new();
+        let batch: Vec<ToolCall> = (0..10)
+            .map(|i| call("Read", &format!("{{\"path\":\"file{i}.rs\"}}")))
+            .collect();
+        assert!(
+            d.record(&batch).is_none(),
+            "parallel reads in one batch should not trigger saturation"
+        );
+    }
+
+    #[test]
+    fn parallel_reads_across_batches_triggers_saturation() {
+        // But if the model keeps sending Read-only batches across many
+        // iterations, that IS a loop.
+        let mut d = LoopDetector::new();
+        for i in 0..NAME_SATURATION_THRESHOLD {
+            let batch = vec![call("Read", &format!("{{\"path\":\"file{i}.rs\"}}"))];
+            let result = d.record(&batch);
+            if i < NAME_SATURATION_THRESHOLD - 1 {
+                assert!(result.is_none(), "should not trigger at batch {i}");
+            } else {
+                assert!(result.is_some(), "should trigger at batch {i}");
+            }
         }
     }
 
