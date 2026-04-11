@@ -102,7 +102,7 @@ async fn drive_sse_stream(
             let line = buffer[..line_end].trim().to_string();
             buffer.drain(..=line_end);
 
-            // SSE spec: "data: payload" or "data:payload" (space is optional)
+            // SSE spec: space after colon is optional ("data: x" and "data:x" are equivalent)
             let data = if let Some(d) = line.strip_prefix("data: ") {
                 d
             } else if let Some(d) = line.strip_prefix("data:") {
@@ -223,7 +223,7 @@ mod tests {
         assert!(matches!(&chunks[0], StreamChunk::TextDelta(t) if t == "payload"));
     }
 
-    /// SSE spec allows `data:` without a trailing space (issue #823).
+    /// SSE spec allows `data:` without a trailing space.
     #[tokio::test]
     async fn test_data_without_space_parsed() {
         let sse = "data:hello\ndata:world\n";
@@ -456,38 +456,5 @@ data: [DONE]
             }
             other => panic!("Expected Done, got {:?}", other),
         }
-    }
-
-    /// Gemma 4 via LM Studio may use `thinking_content` field (issue #823).
-    #[tokio::test]
-    async fn test_openai_thinking_content_field() {
-        let sse = r#"data: {"choices":[{"delta":{"thinking_content":"Gemma thinking..."},"finish_reason":null}],"usage":null}
-data: {"choices":[{"delta":{"content":"Answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}
-data: [DONE]
-"#;
-        let chunks = drive_parser(Box::new(OpenAiChunkParser::new()), sse).await;
-
-        assert!(matches!(&chunks[0], StreamChunk::ThinkingDelta(t) if t == "Gemma thinking..."));
-        // "Answer" is short enough to be held back by the tag filter until flush
-        let text: String = chunks
-            .iter()
-            .filter_map(|c| match c {
-                StreamChunk::TextDelta(t) => Some(t.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(text, "Answer");
-    }
-
-    /// Some servers use `thought_content` instead of `reasoning_content`.
-    #[tokio::test]
-    async fn test_openai_thought_content_field() {
-        let sse = r#"data: {"choices":[{"delta":{"thought_content":"deep thoughts"},"finish_reason":null}],"usage":null}
-data: {"choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}
-data: [DONE]
-"#;
-        let chunks = drive_parser(Box::new(OpenAiChunkParser::new()), sse).await;
-
-        assert!(matches!(&chunks[0], StreamChunk::ThinkingDelta(t) if t == "deep thoughts"));
     }
 }

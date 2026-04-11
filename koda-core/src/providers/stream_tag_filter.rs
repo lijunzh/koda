@@ -1,8 +1,9 @@
 //! Streaming tag filter for LLM responses.
 //!
-//! Models served via OpenAI-compatible endpoints may emit XML tags and special
-//! tokens directly in their text output instead of using structured APIs.
-//! This filter intercepts them at the **provider layer**:
+//! Models using OpenAI-compatible endpoints (DeepSeek, Qwen, Llama, etc.)
+//! may emit XML tags and special tokens directly in their text output
+//! instead of using structured API fields. This filter intercepts them
+//! at the **provider layer**:
 //!
 //! - **Thinking tags** (`<think>`, `<thinking>`, `<reasoning>`, `<reflection>`)
 //!   → converted to `ThinkingDelta` chunks

@@ -156,19 +156,6 @@ impl TuiRenderer {
                         ]),
                     );
                 }
-                // Flush partial line if the buffer is getting long (prevents
-                // the UI from appearing frozen when models like Gemma 4 emit
-                // long thinking stretches without newlines — issue #823).
-                if self.think_buf.len() > 120 {
-                    let partial = std::mem::take(&mut self.think_buf);
-                    tui_output::emit_line(
-                        buffer,
-                        Line::from(vec![
-                            Span::styled("  \u{2502} ", DIM),
-                            Span::styled(partial, DIM),
-                        ]),
-                    );
-                }
             }
             EngineEvent::ThinkingDone => {
                 if !self.think_buf.is_empty() {
