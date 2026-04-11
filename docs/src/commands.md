@@ -158,8 +158,11 @@ Exports the full session transcript as a Markdown document.
 
 ```text
 /export                    ← auto-named file in the current directory
-/export notes/session.md   ← write to a specific path
+/export notes/session.md   ← write to a specific relative path
 ```
+
+Paths must be relative to the current directory. Absolute paths and `..`
+traversal are rejected.
 
 When no path is given, the filename is derived from the first user message
 and the current UTC time:

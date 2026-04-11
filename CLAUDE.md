@@ -119,6 +119,7 @@ koda/
 │   │   ├── session.rs      # KodaSession (per-conversation: DB, provider, settings)
 │   │   ├── settings.rs     # Runtime settings (approval mode, etc.)
 │   │   ├── skills.rs       # Skill discovery and activation
+│   │   ├── skill_scope.rs  # Skill-scoped tool allow/deny enforcement
 │   │   ├── sub_agent_cache.rs # Sub-agent provider/model config cache
 │   │   ├── tool_dispatch.rs# Tool dispatch — routes tool calls to the registry
 │   │   ├── tool_normalize.rs # Tool name normalization (snake_case → PascalCase)
@@ -164,6 +165,8 @@ koda/
 │   │   ├── main.rs         # CLI entry point (clap)
 │   │   ├── lib.rs          # Crate root (exports acp_adapter)
 │   │   ├── tui_app.rs      # Main TUI event loop (ratatui Viewport::Fullscreen)
+│   │   ├── app.rs          # App struct: aggregated TUI state + lifecycle
+│   │   ├── builtin_skills.rs # Built-in skill definitions (URL index)
 │   │   ├── tui_context/    # TUI shared mutable state (split into submodules)
 │   │   │   ├── mod.rs      # TuiContext struct, event loop, command dispatch
 │   │   │   ├── events.rs   # Key/mouse handling, clipboard, history persistence
@@ -186,12 +189,15 @@ koda/
 │   │   ├── startup.rs      # Startup banner rendering
 │   │   ├── repl.rs         # Slash command parsing + provider/model lists
 │   │   ├── input.rs        # @file reference processing + image loading
+│   │   ├── transcript.rs   # Session transcript renderer (Markdown export)
 │   │   ├── headless.rs     # Single-prompt headless mode
 │   │   ├── sink.rs         # CliSink (unbounded channel forwarding for TUI)
 │   │   ├── server.rs       # ACP server over stdio JSON-RPC
 │   │   ├── acp_adapter.rs  # ACP protocol adapter
 │   │   ├── onboarding.rs   # First-run wizard (provider + API key setup)
 │   │   └── tool_history.rs # Tool output history for /expand
+│   │   ├── wrap_input.rs   # Input wrapping and paste detection
+│   │   └── wrap_util.rs    # Visual line-width utilities
 │   │   └── widgets/        # TUI widgets
 │   │       ├── mod.rs      # Widget module root
 │   │       ├── dropdown.rs # Generic dropdown widget
@@ -324,11 +330,17 @@ from production builds to keep `koda-core`'s public API clean.
 - `tests/new_tools_test.rs` — glob, tool naming
 - `tests/guarantee_matrix_test.rs` — approval mode × tool effect matrix
 - `tests/inference_recovery_test.rs` — rate-limit retry, context overflow
+- `tests/inference_edge_test.rs` — loop detection, empty tool calls
+- `tests/e2e_safety_test.rs` — approval gates, bash safety classification
 - `tests/session_test.rs` — session lifecycle, TurnStart/TurnEnd events
 - `tests/purge_test.rs` — /purge feature (compacted stats, age filter)
 - `tests/perf_test.rs` — DB, grep, markdown throughput
 - `tests/capabilities_test.rs` — capabilities.md freshness
 - `tests/tool_wiring_test.rs` — every tool routable + approval-handled
+- `tests/tool_normalize_test.rs` — snake_case → PascalCase normalization
+- `tests/golden_test.rs` — snapshot / golden file tests
+- `tests/snapshot_test.rs` — tool definition schema snapshots
+- `tests/token_audit.rs` — token estimation accuracy checks
 
 #### koda-cli
 
@@ -339,6 +351,7 @@ from production builds to keep `koda-core`'s public API clean.
 - `tests/cli_test.rs` — binary subprocess invocation
 - `tests/regression_test.rs` — REPL dispatch, input processing
 - `tests/server_test.rs` — ACP server integration (JSON-RPC lifecycle)
+- `tests/skill_agent_e2e_test.rs` — skill activation + agent switching E2E
 
 **Smoke tests** (MockProvider, CI-safe):
 - `tests/smoke_test.rs` — headless mode: text responses, tool use, session resume, `--resume` flag
@@ -415,7 +428,7 @@ For capabilities that ship in the koda workspace (same release cycle):
 7. Add `--version` flag to `main.rs` (standalone server wrapper)
 8. Write integration tests in `tests/mcp_integration_test.rs`
 9. Update `release.yml`: version verify, build, package, publish, Homebrew
-10. Sync version with workspace (currently 0.2.3)
+10. Sync version with workspace (currently 0.2.7)
 11. Update this file (CLAUDE.md)
 
 ## CI Workflows

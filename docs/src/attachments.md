@@ -20,11 +20,14 @@ For vision-capable models (Claude, Gemini, GPT-4o), attach images directly:
 
 ```text
 > what does @screenshot.png show?
-> explain the architecture in @diagram.svg
+> explain the architecture in @diagram.png
 ```
 
 Supported formats: PNG, JPEG, GIF, WEBP. Images are base64-encoded and
 sent inline to the model API.
+
+Non-image files (SVG, PDF, etc.) attached via `@` are sent as text content,
+not as vision input.
 
 ## Large pastes
 
