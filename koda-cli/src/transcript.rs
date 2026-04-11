@@ -349,4 +349,24 @@ mod tests {
         assert!(!out.contains("line1"));
         assert!(out.contains("3 line(s) of output"));
     }
+
+    #[test]
+    fn thinking_content_renders_as_blockquote() {
+        // thinking_content is Claude's chain-of-thought — it is intentionally
+        // included in the exported transcript as a blockquote so the user can
+        // review the model's reasoning (#819).
+        let mut msg = make_msg(Role::Assistant, "The answer is 42.");
+        msg.thinking_content = Some("Let me think step by step: 6 x 7 = 42.".into());
+
+        let out = render(&[msg], None);
+        assert!(out.contains("The answer is 42."), "response text must appear");
+        assert!(
+            out.contains("Thinking"),
+            "thinking block header must appear in transcript"
+        );
+        assert!(
+            out.contains("Let me think step by step"),
+            "thinking content must appear in transcript"
+        );
+    }
 }

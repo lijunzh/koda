@@ -663,6 +663,29 @@ mod tests {
         assert!(tokenize_shell_aware("   ").is_empty());
     }
 
+    #[test]
+    fn test_tokenize_unicode_cjk_path() {
+        // CJK characters in paths must be preserved verbatim — they're
+        // regular characters to the tokenizer, no escaping needed.
+        let tokens = tokenize_shell_aware("read /home/用户/文件.rs please");
+        assert_eq!(tokens, vec!["read", "/home/用户/文件.rs", "please"]);
+    }
+
+    #[test]
+    fn test_tokenize_trailing_backslash() {
+        // A trailing backslash (incomplete escape) should not panic and
+        // should be kept as-is so unescape_path can handle it downstream.
+        let tokens = tokenize_shell_aware("fix bad\\");
+        assert_eq!(tokens, vec!["fix", "bad\\"]);
+    }
+
+    #[test]
+    fn test_tokenize_multiple_consecutive_spaces() {
+        // Multiple spaces between tokens must not produce empty tokens.
+        let tokens = tokenize_shell_aware("fix  the  bug");
+        assert_eq!(tokens, vec!["fix", "the", "bug"]);
+    }
+
     // ── unescape_path tests ─────────────────────────────────
 
     #[test]

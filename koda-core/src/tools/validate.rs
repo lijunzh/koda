@@ -21,15 +21,15 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// Format a monotonic `Instant` age into a compact human-readable string.
+/// Format a duration into a compact human-readable age string.
 ///
 /// ```text
 /// <5s  → "just now"
 /// <60s → "12s ago"
 /// else → "3m ago"
 /// ```
-fn fmt_age(instant: std::time::Instant) -> String {
-    let secs = instant.elapsed().as_secs();
+fn fmt_age(age: std::time::Duration) -> String {
+    let secs = age.as_secs();
     if secs < 5 {
         "just now".to_string()
     } else if secs < 60 {
@@ -85,7 +85,7 @@ fn writer_hint(
         && let Ok(guard) = lw.lock()
         && let Some((tool, when)) = guard.get(resolved)
     {
-        return format!(" (last written by {} {})", tool, fmt_age(*when));
+        return format!(" (last written by {} {})", tool, fmt_age(when.elapsed()));
     }
     // Fall back to the most recent Bash call — it may have modified the file
     // indirectly (formatter, build script, etc.).
@@ -93,7 +93,7 @@ fn writer_hint(
         && let Ok(guard) = lb.lock()
         && let Some((snippet, when)) = guard.as_ref()
     {
-        return format!(" (Bash ran {}: `{}`)", fmt_age(*when), snippet);
+        return format!(" (Bash ran {}: `{}`)", fmt_age(when.elapsed()), snippet);
     }
     String::new()
 }
@@ -894,5 +894,38 @@ mod tests {
                 .await
                 .is_none()
         );
+    }
+
+    // ── fmt_age boundary values (#819) ───────────────────────
+
+    #[test]
+    fn fmt_age_under_5s_is_just_now() {
+        assert_eq!(fmt_age(std::time::Duration::from_secs(0)), "just now");
+        assert_eq!(fmt_age(std::time::Duration::from_secs(4)), "just now");
+    }
+
+    #[test]
+    fn fmt_age_exactly_5s() {
+        // Boundary: 5s is the first value that produces "Xs ago".
+        assert_eq!(fmt_age(std::time::Duration::from_secs(5)), "5s ago");
+    }
+
+    #[test]
+    fn fmt_age_under_60s() {
+        assert_eq!(fmt_age(std::time::Duration::from_secs(30)), "30s ago");
+        assert_eq!(fmt_age(std::time::Duration::from_secs(59)), "59s ago");
+    }
+
+    #[test]
+    fn fmt_age_exactly_60s() {
+        // Boundary: 60s is the first value that produces "Xm ago".
+        assert_eq!(fmt_age(std::time::Duration::from_secs(60)), "1m ago");
+    }
+
+    #[test]
+    fn fmt_age_minutes() {
+        assert_eq!(fmt_age(std::time::Duration::from_secs(90)), "1m ago");
+        assert_eq!(fmt_age(std::time::Duration::from_secs(120)), "2m ago");
+        assert_eq!(fmt_age(std::time::Duration::from_secs(3600)), "60m ago");
     }
 }

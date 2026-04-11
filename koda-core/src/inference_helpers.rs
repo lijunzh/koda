@@ -342,6 +342,14 @@ mod tests {
         assert!(is_image_rejection_error(&anyhow::anyhow!(
             "Vision capability not available"
         )));
+        // Anthropic — model does not support vision (#819)
+        assert!(is_image_rejection_error(&anyhow::anyhow!(
+            "400 Bad Request: Images are not supported for this model"
+        )));
+        // Anthropic — invalid image data (base64 corruption, wrong format)
+        assert!(is_image_rejection_error(&anyhow::anyhow!(
+            "400 Bad Request: Invalid image: unable to decode image data"
+        )));
     }
 
     #[test]
