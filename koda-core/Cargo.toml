@@ -53,6 +53,9 @@ uuid = { version = "1", features = ["v4"] }
 # Base64 encoding (for image support)
 base64 = "0.22"
 
+# SHA-256 content hashing (edit staleness detection — Gemini CLI strategy)
+sha2 = "0.10"
+
 # HTTP client (for LLM API)
 reqwest = { version = "0.13", features = ["json", "stream"] }
 

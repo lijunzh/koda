@@ -2,11 +2,19 @@
 //!
 //! Tests path safety, file CRUD, and directory listing.
 
+use koda_core::tools::FileReadCache;
 use koda_core::tools::file_tools;
 use koda_core::tools::safe_resolve_path;
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
+
+/// Convenience: fresh empty read cache for tests that don't need pre-seeded state.
+fn empty_cache() -> FileReadCache {
+    Arc::new(Mutex::new(HashMap::new()))
+}
 
 #[test]
 fn test_write_then_read_new_file() {
@@ -50,7 +58,9 @@ async fn test_edit_file_replacement() {
         "path": "example.rs",
         "replacements": [{"old_str": "\"old\"", "new_str": "\"new\""}]
     });
-    file_tools::edit_file(tmp.path(), &args).await.unwrap();
+    file_tools::edit_file(tmp.path(), &args, &empty_cache())
+        .await
+        .unwrap();
     let result = std::fs::read_to_string(tmp.path().join("example.rs")).unwrap();
     assert!(result.contains("\"new\""));
     assert!(!result.contains("\"old\""));
@@ -68,7 +78,9 @@ async fn test_edit_file_delete_snippet() {
         "path": "with_comment.rs",
         "replacements": [{"old_str": "// TODO: remove this\n", "new_str": ""}]
     });
-    file_tools::edit_file(tmp.path(), &args).await.unwrap();
+    file_tools::edit_file(tmp.path(), &args, &empty_cache())
+        .await
+        .unwrap();
     let result = std::fs::read_to_string(tmp.path().join("with_comment.rs")).unwrap();
     assert!(!result.contains("TODO"));
     assert!(result.contains("fn main"));
@@ -86,7 +98,9 @@ async fn test_edit_replace_all_replaces_every_occurrence() {
         "path": "vars.rs",
         "replacements": [{"old_str": "foo", "new_str": "bar", "replace_all": true}]
     });
-    let result = file_tools::edit_file(tmp.path(), &args).await.unwrap();
+    let result = file_tools::edit_file(tmp.path(), &args, &empty_cache())
+        .await
+        .unwrap();
     let content = std::fs::read_to_string(tmp.path().join("vars.rs")).unwrap();
     assert!(
         !content.contains("foo"),
@@ -97,21 +111,24 @@ async fn test_edit_replace_all_replaces_every_occurrence() {
 }
 
 #[tokio::test]
-async fn test_edit_without_replace_all_only_replaces_first() {
+/// Multi-match without replace_all must error with line numbers, not silently
+/// replace the first occurrence (changed in #814).
+async fn test_edit_without_replace_all_errors_on_multi_match() {
     let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("vars.rs"), "let foo = 1;\nlet foo = 2;\n").unwrap();
     let args = json!({
         "path": "vars.rs",
         "replacements": [{"old_str": "foo", "new_str": "bar"}]
     });
-    file_tools::edit_file(tmp.path(), &args).await.unwrap();
+    let err = file_tools::edit_file(tmp.path(), &args, &empty_cache())
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("matches 2 times"), "expected count: {msg}");
+    assert!(msg.contains("lines"), "expected line numbers: {msg}");
+    // File must be untouched
     let content = std::fs::read_to_string(tmp.path().join("vars.rs")).unwrap();
-    assert_eq!(
-        content.matches("foo").count(),
-        1,
-        "second occurrence should remain"
-    );
-    assert_eq!(content.matches("bar").count(), 1, "only first replaced");
+    assert_eq!(content, "let foo = 1;\nlet foo = 2;\n");
 }
 
 #[tokio::test]
@@ -122,7 +139,9 @@ async fn test_edit_replace_all_single_occurrence_no_count_label() {
         "path": "one.rs",
         "replacements": [{"old_str": "old", "new_str": "new", "replace_all": true}]
     });
-    let result = file_tools::edit_file(tmp.path(), &args).await.unwrap();
+    let result = file_tools::edit_file(tmp.path(), &args, &empty_cache())
+        .await
+        .unwrap();
     let content = std::fs::read_to_string(tmp.path().join("one.rs")).unwrap();
     assert!(content.contains("new"));
     // Single occurrence: no "(N occurrences replaced)" label needed

@@ -1839,6 +1839,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "similar 3.0.0",
  "sqlx",
  "tempfile",

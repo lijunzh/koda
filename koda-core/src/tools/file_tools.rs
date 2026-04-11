@@ -20,6 +20,8 @@
 //! with an error. Absolute paths are also rejected unless they resolve within
 //! the project root.
 
+use sha2::{Digest, Sha256};
+
 use super::safe_resolve_path;
 use crate::providers::ToolDefinition;
 use anyhow::Result;
@@ -217,9 +219,9 @@ pub async fn read_file(
     // we don't need to re-read and re-stream it to the LLM. It's already in the conversation context.
     {
         let cache_guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(&(cached_size, cached_mtime)) = cache_guard.get(&cache_key)
-            && cached_size == size
-            && cached_mtime == mtime
+        if let Some((cached_size, cached_mtime, _)) = cache_guard.get(&cache_key)
+            && *cached_size == size
+            && *cached_mtime == mtime
         {
             return Ok(format!(
                 "[File '{}' is unchanged since last read. Full content is already in \
@@ -229,6 +231,10 @@ pub async fn read_file(
             ));
         }
     }
+
+    // For full-file reads we compute a SHA-256 content hash to enable
+    // staleness detection in edit_file (Gemini CLI strategy).
+    let mut content_sha256 = String::new();
 
     let output = match (start_line, num_lines) {
         (Some(start), Some(count)) => {
@@ -256,6 +262,11 @@ pub async fn read_file(
         _ => {
             // Full read with token safety cap
             let content = tokio::fs::read_to_string(&resolved).await?;
+
+            // Hash the raw (un-truncated) content so edit_file can detect if
+            // the file changes between this read and the subsequent write.
+            content_sha256 = format!("{:x}", Sha256::digest(content.as_bytes()));
+
             if content.len() > 20_000 {
                 // Snap to char boundary to avoid panic on multi-byte chars
                 let mut end = 20_000;
@@ -276,7 +287,7 @@ pub async fn read_file(
     // Update the cache after a successful read
     {
         let mut cache_guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-        cache_guard.insert(cache_key, (size, mtime));
+        cache_guard.insert(cache_key, (size, mtime, content_sha256));
     }
 
     Ok(output)
@@ -318,8 +329,39 @@ pub async fn write_file(project_root: &Path, args: &Value) -> Result<String> {
     ))
 }
 
+/// Convert a byte offset in `content` to a 1-based line number.
+fn byte_offset_to_line(content: &str, offset: usize) -> usize {
+    content[..offset.min(content.len())]
+        .chars()
+        .filter(|&c| c == '\n')
+        .count()
+        + 1
+}
+
+/// Return the 1-based line numbers of every occurrence of `needle` in `haystack`.
+fn match_line_numbers(haystack: &str, needle: &str) -> Vec<usize> {
+    let mut line_nos = Vec::new();
+    let mut start = 0;
+    while let Some(rel) = haystack[start..].find(needle) {
+        let abs = start + rel;
+        line_nos.push(byte_offset_to_line(haystack, abs));
+        start = abs + 1; // advance past this hit to find the next
+    }
+    line_nos
+}
+
 /// Apply targeted find-and-replace edits to an existing file.
-pub async fn edit_file(project_root: &Path, args: &Value) -> Result<String> {
+///
+/// Staleness check: if the model previously read this file (full read) the
+/// cached SHA-256 is compared against the current on-disk hash before any
+/// write.  A mismatch means an external process (bash, the user, another
+/// agent) changed the file since the model last saw it — the edit is
+/// rejected so the model can re-read and retry with fresh text.
+pub async fn edit_file(
+    project_root: &Path,
+    args: &Value,
+    cache: &super::FileReadCache,
+) -> Result<String> {
     let path_str = args["file_path"]
         .as_str()
         .or_else(|| args["path"].as_str())
@@ -330,6 +372,33 @@ pub async fn edit_file(project_root: &Path, args: &Value) -> Result<String> {
 
     let resolved = safe_resolve_path(project_root, path_str)?;
     let mut content = tokio::fs::read_to_string(&resolved).await?;
+
+    // ── Staleness check (SHA-256, Gemini CLI strategy) ────────────────────
+    //
+    // The full-read cache key matches what read_file stores for a whole-file
+    // read (start_line=None, num_lines=None).  If we have a cached hash for
+    // this file and it doesn't match the on-disk content, an external change
+    // (bash, the user, another agent) happened since the model last read it.
+    // Reject the edit so the model re-reads instead of clobbering changes.
+    let full_key = format!("{}:None:None", resolved.display());
+    {
+        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, _, cached_hash)) = guard.get(&full_key)
+            && !cached_hash.is_empty()
+        {
+            let current_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+            if *cached_hash != current_hash {
+                anyhow::bail!(
+                    "File '{}' has changed on disk since you last read it \
+                     (SHA-256 mismatch). Re-read the file to get the current \
+                     content before editing.",
+                    path_str
+                );
+            }
+        }
+    }
+    // ──────────────────────────────────────────────────────────────────────
+
     let mut changes = Vec::new();
 
     for (i, replacement) in replacements.iter().enumerate() {
@@ -346,10 +415,11 @@ pub async fn edit_file(project_root: &Path, args: &Value) -> Result<String> {
 
         let replace_all = replacement["replace_all"].as_bool().unwrap_or(false);
 
-        // ── Exact match path ──────────────────────────────────────────────
+        // ── Exact match path ─────────────────────────────────────────────────────────────
         if content.contains(old_str) {
+            let count = content.matches(old_str).count();
+
             if replace_all {
-                let count = content.matches(old_str).count();
                 content = content.replace(old_str, new_str);
                 for line in old_str.lines() {
                     changes.push(format!("-{line}"));
@@ -360,6 +430,22 @@ pub async fn edit_file(project_root: &Path, args: &Value) -> Result<String> {
                 if count > 1 {
                     changes.push(format!("({count} occurrences replaced)"));
                 }
+            } else if count > 1 {
+                // Multiple exact matches: report line numbers so the model
+                // can tighten the snippet in one shot (Claude Code strategy).
+                let lines = match_line_numbers(&content, old_str);
+                let line_list = lines
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                anyhow::bail!(
+                    "Replacement {i}: 'old_str' matches {count} times in '{}' \
+                     (at lines {line_list}). Set replace_all=true to replace \
+                     every occurrence, or expand the snippet to uniquely \
+                     identify the one you want.",
+                    path_str
+                );
             } else {
                 content = content.replacen(old_str, new_str, 1);
                 for line in old_str.lines() {
@@ -390,9 +476,14 @@ pub async fn edit_file(project_root: &Path, args: &Value) -> Result<String> {
                     content = format!("{}{}{}", &content[..r.start], new_str, &content[r.end..]);
                 }
                 n => anyhow::bail!(
-                    "Replacement {i}: 'old_str' is ambiguous — {n} fuzzy matches in '{}'. \
-                     Use a more specific snippet.",
-                    path_str
+                    "Replacement {i}: 'old_str' is ambiguous — {n} fuzzy matches \
+                     in '{}' (at lines {}). Use a more specific snippet.",
+                    path_str,
+                    ranges
+                        .iter()
+                        .map(|r| byte_offset_to_line(&content, r.start).to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             }
         }
@@ -715,7 +806,7 @@ mod tests {
             "file_path": "edit_me.txt",
             "replacements": [{"old_str": "foo", "new_str": "baz"}]
         });
-        let result = edit_file(tmp.path(), &args).await.unwrap();
+        let result = edit_file(tmp.path(), &args, &cache()).await.unwrap();
         assert!(result.contains("Applied 1 edit"));
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "hello world\nbaz bar");
     }
@@ -730,23 +821,32 @@ mod tests {
             "file_path": "multi.txt",
             "replacements": [{"old_str": "aaa", "new_str": "zzz", "replace_all": true}]
         });
-        let result = edit_file(tmp.path(), &args).await.unwrap();
+        let result = edit_file(tmp.path(), &args, &cache()).await.unwrap();
         assert!(result.contains("3 occurrences"));
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "zzz bbb zzz ccc zzz");
     }
 
+    /// Multi-match without replace_all must now error with line numbers instead
+    /// of silently clobbering the first occurrence.
     #[tokio::test]
-    async fn edit_file_replaces_first_only_by_default() {
+    async fn edit_file_multi_match_errors_with_line_numbers() {
         let tmp = tempfile::tempdir().unwrap();
-        let f = tmp.path().join("first_only.txt");
-        std::fs::write(&f, "aaa bbb aaa").unwrap();
+        let f = tmp.path().join("multi_match.txt");
+        std::fs::write(&f, "aaa\nbbb\naaa").unwrap();
 
         let args = json!({
-            "file_path": "first_only.txt",
+            "file_path": "multi_match.txt",
             "replacements": [{"old_str": "aaa", "new_str": "zzz"}]
         });
-        edit_file(tmp.path(), &args).await.unwrap();
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "zzz bbb aaa");
+        let err = edit_file(tmp.path(), &args, &cache()).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("matches 2 times"), "expected count: {msg}");
+        assert!(
+            msg.contains("lines"),
+            "expected line numbers mention: {msg}"
+        );
+        // File must be untouched
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "aaa\nbbb\naaa");
     }
 
     #[tokio::test]
@@ -759,7 +859,7 @@ mod tests {
             "file_path": "edit_me.txt",
             "replacements": [{"old_str": "not here", "new_str": "x"}]
         });
-        let result = edit_file(tmp.path(), &args).await;
+        let result = edit_file(tmp.path(), &args, &cache()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -774,7 +874,7 @@ mod tests {
             "file_path": "edit.txt",
             "replacements": [{"old_str": "", "new_str": "x"}]
         });
-        let result = edit_file(tmp.path(), &args).await;
+        let result = edit_file(tmp.path(), &args, &cache()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty"));
     }
@@ -792,8 +892,52 @@ mod tests {
                 {"old_str": "gamma", "new_str": "GAMMA"}
             ]
         });
-        edit_file(tmp.path(), &args).await.unwrap();
+        edit_file(tmp.path(), &args, &cache()).await.unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "ALPHA beta GAMMA");
+    }
+
+    /// Staleness guard: if the read cache has a SHA-256 for a file and the
+    /// file changes on disk, edit_file must reject the write.
+    #[tokio::test]
+    async fn edit_file_staleness_check_rejects_changed_file() {
+        use sha2::{Digest, Sha256};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("staleness.txt");
+        let original = "line one\nline two\n";
+        std::fs::write(&f, original).unwrap();
+
+        // Simulate a prior full read: store the hash of `original` in the cache.
+        let hash = format!("{:x}", Sha256::digest(original.as_bytes()));
+        let key = format!("{}:None:None", f.display());
+        let c = cache();
+        {
+            let mut g = c.lock().unwrap();
+            g.insert(
+                key,
+                (original.len() as u64, std::time::SystemTime::now(), hash),
+            );
+        }
+
+        // An external agent now changes the file.
+        std::fs::write(&f, "completely different content\n").unwrap();
+
+        // Edit must be rejected with a staleness error.
+        let args = json!({
+            "file_path": "staleness.txt",
+            "replacements": [{"old_str": "line one", "new_str": "LINE ONE"}]
+        });
+        let err = edit_file(tmp.path(), &args, &c).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("changed on disk") || msg.contains("SHA-256"),
+            "expected staleness error: {msg}"
+        );
+        // File must still have the external-agent content, not the edit.
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            "completely different content\n"
+        );
     }
 
     // ── Delete ───────────────────────────────────────────────────

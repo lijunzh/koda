@@ -150,7 +150,7 @@ async fn validate_edit(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&cache_key)
-            .map(|&(_, mtime)| mtime);
+            .map(|(_, mtime, _)| *mtime);
         if let Some(cm) = cached_mtime
             && cm != current_mtime
         {
@@ -661,7 +661,7 @@ mod tests {
     fn make_cache(path: &std::path::Path, mtime: SystemTime) -> super::super::FileReadCache {
         let cache = super::super::FileReadCache::default();
         let key = format!("{}:None:None", path.display());
-        cache.lock().unwrap().insert(key, (0, mtime));
+        cache.lock().unwrap().insert(key, (0, mtime, String::new()));
         cache
     }
 

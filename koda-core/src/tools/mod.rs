@@ -148,12 +148,18 @@ use crate::output_caps::OutputCaps;
 
 use crate::providers::ToolDefinition;
 
-/// Shared file-read cache: tracks (size, mtime) per cache key so we can
-/// detect stale reads and avoid re-streaming unchanged files.
+/// Shared file-read cache: tracks `(size, mtime, sha256_hex)` per cache key.
+///
+/// The SHA-256 field is populated on full-file reads and used by `edit_file`
+/// to detect whether the file changed between when the model last read it and
+/// when it attempts an edit (Gemini CLI strategy, better than mtime-only because
+/// mtime has 1-second granularity and can miss sub-second bash mutations).
+///
+/// `sha256_hex` is empty for line-range reads where only a slice was fetched.
 ///
 /// Wrapped in `Arc` so parent and sub-agent `ToolRegistry` instances
 /// share the same cache — reads by one agent benefit all others.
-pub type FileReadCache = Arc<std::sync::Mutex<HashMap<String, (u64, SystemTime)>>>;
+pub type FileReadCache = Arc<std::sync::Mutex<HashMap<String, (u64, SystemTime, String)>>>;
 
 /// Tracks which tool last wrote each absolute file path.
 ///
@@ -435,7 +441,7 @@ impl ToolRegistry {
             // File tools
             "Read" => file_tools::read_file(&self.project_root, &args, &self.read_cache).await,
             "Write" => file_tools::write_file(&self.project_root, &args).await,
-            "Edit" => file_tools::edit_file(&self.project_root, &args).await,
+            "Edit" => file_tools::edit_file(&self.project_root, &args, &self.read_cache).await,
             "Delete" => file_tools::delete_file(&self.project_root, &args).await,
             "List" => {
                 file_tools::list_files(&self.project_root, &args, self.caps.list_entries).await
