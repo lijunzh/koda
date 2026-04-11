@@ -411,9 +411,16 @@ mod tests {
     async fn shell_timeout_returns_timeout_message() {
         let tmp = tempfile::tempdir().unwrap();
         let args = serde_json::json!({"command": "sleep 5", "timeout": 1});
-        let result = run_shell_command(tmp.path(), &args, 256, &bg(), None, &crate::sandbox::SandboxMode::None)
-            .await
-            .unwrap();
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            256,
+            &bg(),
+            None,
+            &crate::sandbox::SandboxMode::None,
+        )
+        .await
+        .unwrap();
         assert!(
             result.summary.contains("timed out"),
             "Expected timeout message, got: {}",
@@ -425,9 +432,16 @@ mod tests {
     async fn shell_respects_custom_timeout_parameter() {
         let tmp = tempfile::tempdir().unwrap();
         let args = serde_json::json!({"command": "echo hello", "timeout": 5});
-        let result = run_shell_command(tmp.path(), &args, 256, &bg(), None, &crate::sandbox::SandboxMode::None)
-            .await
-            .unwrap();
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            256,
+            &bg(),
+            None,
+            &crate::sandbox::SandboxMode::None,
+        )
+        .await
+        .unwrap();
         assert!(
             result.summary.contains("hello"),
             "Fast command should succeed: {}",
@@ -439,9 +453,16 @@ mod tests {
     async fn shell_default_timeout_is_applied_when_not_specified() {
         let tmp = tempfile::tempdir().unwrap();
         let args = serde_json::json!({"command": "echo world"});
-        let result = run_shell_command(tmp.path(), &args, 256, &bg(), None, &crate::sandbox::SandboxMode::None)
-            .await
-            .unwrap();
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            256,
+            &bg(),
+            None,
+            &crate::sandbox::SandboxMode::None,
+        )
+        .await
+        .unwrap();
         assert!(
             result.summary.contains("world"),
             "Command without explicit timeout should work: {}",
@@ -454,9 +475,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let registry = BgRegistry::new();
         let args = serde_json::json!({"command": "sleep 60", "background": true});
-        let result = run_shell_command(tmp.path(), &args, 256, &registry, None, &crate::sandbox::SandboxMode::None)
-            .await
-            .unwrap();
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            256,
+            &registry,
+            None,
+            &crate::sandbox::SandboxMode::None,
+        )
+        .await
+        .unwrap();
         assert!(
             result.summary.contains("Background process started"),
             "{}",
@@ -475,9 +503,16 @@ mod tests {
     async fn background_false_runs_synchronously() {
         let tmp = tempfile::tempdir().unwrap();
         let args = serde_json::json!({"command": "echo sync", "background": false});
-        let result = run_shell_command(tmp.path(), &args, 256, &bg(), None, &crate::sandbox::SandboxMode::None)
-            .await
-            .unwrap();
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            256,
+            &bg(),
+            None,
+            &crate::sandbox::SandboxMode::None,
+        )
+        .await
+        .unwrap();
         assert!(result.summary.contains("sync"), "{}", result.summary);
         assert!(
             !result.summary.contains("PID:"),
@@ -559,9 +594,16 @@ mod tests {
         let args = serde_json::json!({
             "command": "seq 1 50"
         });
-        let result = run_shell_command(tmp.path(), &args, 10, &bg(), None, &crate::sandbox::SandboxMode::None)
-            .await
-            .unwrap();
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            10,
+            &bg(),
+            None,
+            &crate::sandbox::SandboxMode::None,
+        )
+        .await
+        .unwrap();
         // Summary should reflect that we only collected 10 lines.
         assert!(
             result.summary.contains("stdout: 10 lines"),
@@ -615,7 +657,7 @@ mod tests {
             256,
             &bg(),
             Some((sink.as_ref(), "test_id")),
-        &crate::sandbox::SandboxMode::None,
+            &crate::sandbox::SandboxMode::None,
         )
         .await
         .unwrap();

@@ -326,10 +326,14 @@ mod tests {
     async fn macos_allows_read_outside_project() {
         let dir = tempfile::tempdir().unwrap();
         // /etc/hosts is a stable readable file on every macOS system.
-        let status = build("cat /etc/hosts > /dev/null", dir.path(), &SandboxMode::Project)
-            .status()
-            .await
-            .unwrap();
+        let status = build(
+            "cat /etc/hosts > /dev/null",
+            dir.path(),
+            &SandboxMode::Project,
+        )
+        .status()
+        .await
+        .unwrap();
         assert!(status.success(), "reads outside project must be allowed");
     }
 }

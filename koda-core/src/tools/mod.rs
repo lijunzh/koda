@@ -236,7 +236,11 @@ impl ToolRegistry {
     ///
     /// `max_context_tokens` scales all output caps (see `OutputCaps`).
     pub fn new(project_root: PathBuf, max_context_tokens: usize) -> Self {
-        Self::with_sandbox(project_root, max_context_tokens, crate::sandbox::SandboxMode::None)
+        Self::with_sandbox(
+            project_root,
+            max_context_tokens,
+            crate::sandbox::SandboxMode::None,
+        )
     }
 
     /// Create a new registry with a specific sandbox mode.
