@@ -43,8 +43,8 @@ use crate::engine::{EngineCommand, EngineEvent, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
     AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages,
-    estimate_tokens, is_context_overflow_error, is_rate_limit_error, is_server_error,
-    rate_limit_backoff,
+    estimate_tokens, is_context_overflow_error, is_image_rejection_error, is_rate_limit_error,
+    is_server_error, rate_limit_backoff,
 };
 use crate::loop_guard::LoopDetector;
 use crate::persistence::Persistence;
@@ -718,6 +718,13 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         // Pre-flight budget check: if context is critically high, compact first
         let messages = preflight_compact_if_needed(&turn, messages).await?;
 
+        // Track whether this turn carried image attachments so we can surface
+        // a targeted warning if the provider rejects them.
+        let had_images = turn
+            .pending_images
+            .map(|imgs| !imgs.is_empty())
+            .unwrap_or(false);
+
         // Stream the response (with rate limit retry)
         sink.emit(EngineEvent::SpinnerStart {
             message: "Thinking...".into(),
@@ -769,6 +776,18 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                         "Provider returned a server error: {e:#}. \
                          This often means the model can't handle the current \
                          conversation state. Try a different model or start a new session."
+                    ),
+                });
+                return Ok(());
+            }
+            Err(e) if had_images && is_image_rejection_error(&e) => {
+                sink.emit(EngineEvent::SpinnerStop);
+                sink.emit(EngineEvent::Warn {
+                    message: format!(
+                        "⚠ This model rejected the image attachment — \
+                         it likely does not support vision input. \
+                         Switch to a vision-capable model such as \
+                         claude-sonnet, gemini-flash, or gpt-4o. ({e})"
                     ),
                 });
                 return Ok(());

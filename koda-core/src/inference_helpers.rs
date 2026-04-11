@@ -184,6 +184,32 @@ pub fn is_context_overflow_error(err: &anyhow::Error) -> bool {
         || (msg.contains("413") && msg.contains("too large"))
 }
 
+/// Detect if an error is a provider rejection of image / vision input.
+///
+/// Fires when the model or API endpoint does not support multimodal input and
+/// returns an explicit error rather than silently ignoring the image bytes.
+/// Matches the documented rejection messages from OpenAI-compat servers
+/// (LM Studio, Ollama), the OpenAI API, and Gemini.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::inference_helpers::is_image_rejection_error;
+///
+/// assert!(is_image_rejection_error(&anyhow::anyhow!("This model does not support image input")));
+/// assert!(is_image_rejection_error(&anyhow::anyhow!("Invalid image. The model does not support vision input.")));
+/// assert!(is_image_rejection_error(&anyhow::anyhow!("multimodal content is not supported")));
+/// assert!(!is_image_rejection_error(&anyhow::anyhow!("rate limit exceeded")));
+/// assert!(!is_image_rejection_error(&anyhow::anyhow!("prompt is too long")));
+/// ```
+pub fn is_image_rejection_error(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}").to_lowercase();
+    // "image" alone is too broad; require it alongside a support-denial word.
+    (msg.contains("image") && (msg.contains("support") || msg.contains("invalid")))
+        || msg.contains("vision")
+        || msg.contains("multimodal")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,5 +320,42 @@ mod tests {
     fn test_is_not_server_error_for_auth() {
         let err = anyhow::anyhow!("401 Unauthorized");
         assert!(!is_server_error(&err));
+    }
+
+    #[test]
+    fn test_is_image_rejection_error_matches() {
+        // LM Studio / Ollama
+        assert!(is_image_rejection_error(&anyhow::anyhow!(
+            "LLM API returned 400: This model does not support image input"
+        )));
+        // OpenAI
+        assert!(is_image_rejection_error(&anyhow::anyhow!(
+            "Invalid image. The model does not support vision input."
+        )));
+        // Generic multimodal rejection
+        assert!(is_image_rejection_error(&anyhow::anyhow!(
+            "multimodal content is not supported by this endpoint"
+        )));
+        // Case-insensitive
+        assert!(is_image_rejection_error(&anyhow::anyhow!(
+            "Vision capability not available"
+        )));
+    }
+
+    #[test]
+    fn test_is_image_rejection_error_no_false_positives() {
+        assert!(!is_image_rejection_error(&anyhow::anyhow!(
+            "rate limit exceeded"
+        )));
+        assert!(!is_image_rejection_error(&anyhow::anyhow!(
+            "prompt is too long"
+        )));
+        assert!(!is_image_rejection_error(&anyhow::anyhow!(
+            "502 bad gateway"
+        )));
+        // "image" alone without support/invalid context should not match
+        assert!(!is_image_rejection_error(&anyhow::anyhow!(
+            "failed to load image/png from request body"
+        )));
     }
 }
