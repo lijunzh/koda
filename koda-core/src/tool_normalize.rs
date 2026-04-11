@@ -168,24 +168,18 @@ pub fn normalize_tool_name(name: &str) -> String {
     name.to_string()
 }
 
-/// Normalize all tool calls in a batch.
-///
-/// Called once after `collect_stream()` returns, before dispatch/approval.
-/// Maximum tool calls per single model response.
-///
-/// A safety cap to prevent runaway models from issuing hundreds of tool
-/// calls in a single turn.  The cap applies *after* deduplication.
-pub const MAX_TOOL_CALLS_PER_TURN: usize = 20;
-
-/// Normalize + deduplicate + cap tool calls from a single model response.
+/// Normalize + deduplicate tool calls from a single model response.
 ///
 /// 1. **Normalize** — map model-emitted names to canonical PascalCase.
 /// 2. **Deduplicate** — collapse identical `(name, args)` pairs.  The
 ///    first occurrence's ID is kept; duplicate IDs are returned in
 ///    `DeduplicatedToolCalls::duplicate_ids` so the caller can record
 ///    a synthetic tool result for each (the model expects one per ID).
-/// 3. **Cap** — truncate to [`MAX_TOOL_CALLS_PER_TURN`] to prevent
-///    runaway models from issuing hundreds of calls.
+///
+/// No per-turn cap is applied — frontier models legitimately emit 20+
+/// parallel tool calls (e.g. reading many files at once). Runaway loops
+/// are caught by the loop guard (`REPEAT_THRESHOLD`, `NAME_SATURATION_THRESHOLD`)
+/// and the hard iteration cap (`MAX_ITERATIONS_DEFAULT`).
 pub fn normalize_tool_calls(tool_calls: Vec<ToolCall>) -> DeduplicatedToolCalls {
     use std::collections::HashSet;
 
@@ -204,29 +198,21 @@ pub fn normalize_tool_calls(tool_calls: Vec<ToolCall>) -> DeduplicatedToolCalls 
         }
     }
 
-    let capped = unique.len() > MAX_TOOL_CALLS_PER_TURN;
-    if capped {
-        unique.truncate(MAX_TOOL_CALLS_PER_TURN);
-    }
-
     DeduplicatedToolCalls {
         calls: unique,
         duplicate_ids,
-        capped,
     }
 }
 
 /// Result of [`normalize_tool_calls`]: unique calls + metadata about duplicates.
 #[derive(Debug)]
 pub struct DeduplicatedToolCalls {
-    /// Unique, normalized tool calls (max [`MAX_TOOL_CALLS_PER_TURN`]).
+    /// Unique, normalized tool calls.
     pub calls: Vec<ToolCall>,
     /// IDs of tool calls that were duplicates of an earlier call in the
     /// same response.  The caller should record a synthetic tool result
     /// for each (e.g. "Duplicate call — result already returned.").
     pub duplicate_ids: Vec<String>,
-    /// `true` if the list was truncated to the per-turn cap.
-    pub capped: bool,
 }
 
 #[cfg(test)]
@@ -394,7 +380,6 @@ mod tests {
         assert_eq!(result.calls.len(), 1);
         assert_eq!(result.calls[0].id, "1");
         assert_eq!(result.duplicate_ids, vec!["2", "3"]);
-        assert!(!result.capped);
     }
 
     #[test]
@@ -421,7 +406,9 @@ mod tests {
     }
 
     #[test]
-    fn cap_limits_tool_calls() {
+    fn many_unique_calls_not_capped() {
+        // Frontier models legitimately emit 30+ parallel tool calls.
+        // Dedup should pass them all through without truncation.
         let calls: Vec<ToolCall> = (0..30)
             .map(|i| {
                 tc(
@@ -432,9 +419,12 @@ mod tests {
             })
             .collect();
         let result = normalize_tool_calls(calls);
-        assert_eq!(result.calls.len(), MAX_TOOL_CALLS_PER_TURN);
-        assert!(result.capped);
-        assert!(result.duplicate_ids.is_empty()); // all unique, just capped
+        assert_eq!(
+            result.calls.len(),
+            30,
+            "all unique calls should pass through"
+        );
+        assert!(result.duplicate_ids.is_empty());
     }
 
     fn tc(id: &str, name: &str, args: &str) -> ToolCall {

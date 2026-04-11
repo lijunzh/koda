@@ -885,18 +885,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 ),
             });
         }
-        if dedup.capped {
-            tracing::warn!(
-                kept = tool_calls.len(),
-                "Tool calls capped at per-turn limit"
-            );
-            sink.emit(EngineEvent::Warn {
-                message: format!(
-                    "Model requested too many tool calls — capped at {}.",
-                    tool_calls.len(),
-                ),
-            });
-        }
         let usage = stream_result.usage;
         let char_count = stream_result.char_count;
 
