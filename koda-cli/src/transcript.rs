@@ -112,7 +112,20 @@ pub fn render(messages: &[Message], session_title: Option<&str>) -> String {
             Role::Assistant => {
                 out.push_str("## 🤖 Assistant\n\n");
 
-                // Text content first
+                // Thinking block (Claude extended thinking) — before text
+                if let Some(ref thinking) = msg.thinking_content
+                    && !thinking.trim().is_empty()
+                {
+                    out.push_str("> 💭 **Thinking**\n");
+                    for line in thinking.trim().lines() {
+                        out.push_str("> ");
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                    out.push('\n');
+                }
+
+                // Text content
                 if let Some(ref content) = msg.content {
                     let trimmed = content.trim();
                     if !trimmed.is_empty() {
@@ -271,6 +284,7 @@ mod tests {
             cache_read_tokens: None,
             cache_creation_tokens: None,
             thinking_tokens: None,
+            thinking_content: None,
             created_at: None,
         }
     }

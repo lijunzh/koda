@@ -98,6 +98,11 @@ pub struct Message {
     pub cache_creation_tokens: Option<i64>,
     /// Reasoning/thinking tokens.
     pub thinking_tokens: Option<i64>,
+    /// Full thinking/reasoning text produced by Claude extended thinking.
+    ///
+    /// `None` for non-Claude models, or when thinking was disabled.
+    /// Persisted so the content can be re-rendered on session resume.
+    pub thinking_content: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: Option<String>,
 }
@@ -259,6 +264,12 @@ pub trait Persistence: Send + Sync {
     /// `StreamChunk::Done` — not after user cancellation or a network error.
     /// A `NULL` `completed_at` means the message is in-progress or was interrupted.
     async fn mark_message_complete(&self, message_id: i64) -> Result<()>;
+
+    /// Persist thinking/reasoning text for an assistant message.
+    ///
+    /// Called only for Claude with extended thinking enabled. All other
+    /// providers leave `thinking_content` NULL.
+    async fn update_message_thinking_content(&self, message_id: i64, content: &str) -> Result<()>;
 
     // ── Token usage ──
 

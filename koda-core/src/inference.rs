@@ -89,6 +89,12 @@ struct TurnState<'a> {
 struct StreamResult {
     /// Accumulated text content from the response.
     text: String,
+    /// All thinking/reasoning content produced during the stream, in order.
+    ///
+    /// Empty string when the model produced no thinking blocks (non-Claude
+    /// providers, or Claude with thinking disabled). Persisted to the DB so
+    /// it can be re-rendered on session resume.
+    thinking_content: String,
     /// Tool calls requested by the model.
     tool_calls: Vec<ToolCall>,
     /// Results from tools executed eagerly during streaming.
@@ -370,7 +376,10 @@ async fn collect_stream(
     let mut usage = TokenUsage::default();
     let mut first_token = true;
     let mut char_count: usize = 0;
-    let mut native_think_buf = String::new();
+    // Permanent accumulator — never cleared, flows into StreamResult.
+    let mut thinking_content = String::new();
+    // True while we are inside a thinking block (between ThinkingStart and ThinkingDone).
+    let mut in_thinking_block = false;
     let mut response_banner_shown = false;
     let mut thinking_banner_shown = false;
     let mut interrupted = false;
@@ -394,6 +403,7 @@ async fn collect_stream(
             });
             return StreamResult {
                 text: full_text,
+                thinking_content,
                 tool_calls,
                 eager_results,
                 usage,
@@ -408,10 +418,10 @@ async fn collect_stream(
         match chunk {
             StreamChunk::TextDelta(delta) => {
                 if first_token {
-                    if !native_think_buf.is_empty() {
+                    if in_thinking_block {
                         sink.emit(EngineEvent::SpinnerStop);
                         sink.emit(EngineEvent::ThinkingDone);
-                        native_think_buf.clear();
+                        in_thinking_block = false;
                         thinking_banner_shown = true;
                     }
                     sink.emit(EngineEvent::SpinnerStop);
@@ -435,19 +445,20 @@ async fn collect_stream(
                     sink.emit(EngineEvent::ThinkingStart);
                     thinking_banner_shown = true;
                 }
+                in_thinking_block = true;
                 sink.emit(EngineEvent::ThinkingDelta {
                     text: delta.clone(),
                 });
-                native_think_buf.push_str(&delta);
+                thinking_content.push_str(&delta);
             }
             StreamChunk::ToolCallReady(tc) => {
                 // A single tool call finished streaming (Anthropic content_block_stop).
                 // If it's read-only and auto-approved, execute it now while
                 // subsequent tool calls are still being streamed.
-                if !native_think_buf.is_empty() {
+                if in_thinking_block {
                     sink.emit(EngineEvent::SpinnerStop);
                     sink.emit(EngineEvent::ThinkingDone);
-                    native_think_buf.clear();
+                    in_thinking_block = false;
                 }
                 let args: serde_json::Value =
                     serde_json::from_str(&tc.arguments).unwrap_or_default();
@@ -469,20 +480,20 @@ async fn collect_stream(
                 tool_calls.push(tc);
             }
             StreamChunk::ToolCalls(tcs) => {
-                if !native_think_buf.is_empty() {
+                if in_thinking_block {
                     sink.emit(EngineEvent::SpinnerStop);
                     sink.emit(EngineEvent::ThinkingDone);
-                    native_think_buf.clear();
+                    in_thinking_block = false;
                 }
                 sink.emit(EngineEvent::SpinnerStop);
                 // Append — some tool calls may already be in the list from ToolCallReady
                 tool_calls.extend(tcs);
             }
             StreamChunk::Done(u) => {
-                if !native_think_buf.is_empty() {
+                if in_thinking_block {
                     sink.emit(EngineEvent::SpinnerStop);
                     sink.emit(EngineEvent::ThinkingDone);
-                    native_think_buf.clear();
+                    // `in_thinking_block` not cleared — loop breaks immediately.
                 }
                 usage = u;
                 break;
@@ -499,6 +510,7 @@ async fn collect_stream(
                 });
                 return StreamResult {
                     text: full_text,
+                    thinking_content,
                     tool_calls,
                     eager_results,
                     usage,
@@ -518,6 +530,7 @@ async fn collect_stream(
 
     StreamResult {
         text: full_text,
+        thinking_content,
         tool_calls,
         eager_results,
         usage,
@@ -769,16 +782,27 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let stream_result = collect_stream(&mut rx, sink, &cancel, tools, mode, project_root).await;
 
         if stream_result.interrupted {
-            if !stream_result.text.is_empty() {
-                db.insert_message(
-                    session_id,
-                    &Role::Assistant,
-                    Some(&stream_result.text),
-                    None,
-                    None,
-                    None,
-                )
-                .await?;
+            let has_text = !stream_result.text.is_empty();
+            let has_thinking = !stream_result.thinking_content.is_empty();
+            if has_text || has_thinking {
+                let mid = db
+                    .insert_message(
+                        session_id,
+                        &Role::Assistant,
+                        if has_text {
+                            Some(stream_result.text.as_str())
+                        } else {
+                            None
+                        },
+                        None,
+                        None,
+                        None,
+                    )
+                    .await?;
+                if has_thinking {
+                    db.update_message_thinking_content(mid, &stream_result.thinking_content)
+                        .await?;
+                }
             }
             return Ok(());
         }
@@ -790,6 +814,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         }
 
         let full_text = stream_result.text;
+        let stream_thinking = stream_result.thinking_content;
         // Normalize tool names from model output to canonical PascalCase (#548).
         // Models (especially local/small ones via OpenAI-compat APIs) may emit
         // lowercase or snake_case names ("list", "read_file"). This runs for all
@@ -868,6 +893,14 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         // Mark the message as fully delivered. This distinguishes clean
         // completions from interrupted/in-progress turns on session resume.
         db.mark_message_complete(msg_id).await?;
+
+        // Persist thinking content produced by Claude extended thinking.
+        // Only set for assistant messages from models with thinking enabled;
+        // all other providers leave this empty and we skip the UPDATE.
+        if !stream_thinking.is_empty() {
+            db.update_message_thinking_content(msg_id, &stream_thinking)
+                .await?;
+        }
 
         // If no tool calls, we already streamed the response — done
         if tool_calls.is_empty() {
@@ -1243,6 +1276,8 @@ mod tests {
         )
         .await;
 
+        // Thinking content must be captured in the dedicated field.
+        assert_eq!(result.thinking_content, "Let me think...");
         // Thinking deltas should NOT appear in the text output.
         assert_eq!(result.text, "Answer!");
     }

@@ -354,6 +354,7 @@ mod tests {
             cache_read_tokens: None,
             cache_creation_tokens: None,
             thinking_tokens: None,
+            thinking_content: None,
             created_at: None,
         }
     }

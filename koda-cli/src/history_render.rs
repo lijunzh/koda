@@ -117,6 +117,24 @@ fn render_assistant_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
     // Response separator
     lines.push(Line::styled("  \u{2500}\u{2500}\u{2500}", DIM));
 
+    // Thinking block — rendered before text, matching live streaming style:
+    //   💭 Thinking...      ← header
+    //   │ <line>            ← one line per newline in thinking_content
+    if let Some(ref thinking) = msg.thinking_content
+        && !thinking.is_empty()
+    {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("\u{1f4ad} Thinking", DIM),
+        ]));
+        for line in thinking.lines() {
+            lines.push(Line::from(vec![
+                Span::styled("  \u{2502} ", DIM),
+                Span::styled(line.to_string(), DIM),
+            ]));
+        }
+    }
+
     // Text content (markdown rendered as plain styled text for history)
     if let Some(ref content) = msg.content
         && !content.is_empty()
@@ -287,6 +305,7 @@ mod tests {
             cache_read_tokens: None,
             cache_creation_tokens: None,
             thinking_tokens: None,
+            thinking_content: None,
             created_at: None,
         }
     }

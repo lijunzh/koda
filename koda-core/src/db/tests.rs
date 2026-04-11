@@ -384,6 +384,7 @@ fn test_prune_mismatched_tool_calls_unit() {
             cache_read_tokens: None,
             cache_creation_tokens: None,
             thinking_tokens: None,
+            thinking_content: None,
             created_at: None,
         }
     }
@@ -581,6 +582,7 @@ fn test_prune_null_content_drops_ghost_assistant() {
             cache_read_tokens: None,
             cache_creation_tokens: None,
             thinking_tokens: None,
+            thinking_content: None,
             created_at: None,
         }
     }
@@ -636,6 +638,7 @@ fn test_prune_whitespace_only_drops_blank_assistant() {
             cache_read_tokens: None,
             cache_creation_tokens: None,
             thinking_tokens: None,
+            thinking_content: None,
             created_at: None,
         }
     }
@@ -719,6 +722,7 @@ fn msg(role: Role, content: &str) -> Message {
         cache_read_tokens: None,
         cache_creation_tokens: None,
         thinking_tokens: None,
+        thinking_content: None,
         created_at: None,
     }
 }

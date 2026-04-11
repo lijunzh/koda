@@ -159,6 +159,7 @@ impl Database {
                 cache_read_tokens INTEGER,
                 cache_creation_tokens INTEGER,
                 thinking_tokens INTEGER,
+                thinking_content TEXT,
                 agent_name TEXT,
                 compacted_at TEXT,
                 completed_at DATETIME,
@@ -298,7 +299,7 @@ impl Database {
         let rows: Vec<MessageRow> = sqlx::query_as(
             "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
-                    cache_read_tokens, cache_creation_tokens, thinking_tokens,
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content,
                     created_at
              FROM messages
              WHERE session_id = ? AND id < ? AND compacted_at IS NULL
@@ -352,6 +353,7 @@ pub(crate) struct MessageRow {
     pub cache_read_tokens: Option<i64>,
     pub cache_creation_tokens: Option<i64>,
     pub thinking_tokens: Option<i64>,
+    pub thinking_content: Option<String>,
     pub created_at: Option<String>,
 }
 
@@ -396,6 +398,7 @@ impl From<MessageRow> for Message {
             cache_read_tokens: r.cache_read_tokens,
             cache_creation_tokens: r.cache_creation_tokens,
             thinking_tokens: r.thinking_tokens,
+            thinking_content: r.thinking_content,
             created_at: r.created_at,
         }
     }
