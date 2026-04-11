@@ -15,6 +15,7 @@
 | `--temperature <F>` | | Sampling temperature (0.0–2.0) |
 | `--thinking-budget <N>` | | Anthropic extended thinking budget (tokens) |
 | `--reasoning-effort <L>` | | OpenAI reasoning effort (`low`, `medium`, `high`) |
+| `--sandbox <MODE>` | `KODA_SANDBOX` | Bash tool sandbox: `none` (default) or `project` (restrict writes to project dir + `/tmp`) |
 | `--output-format <FMT>` | | Headless output format: `text` (default) or `json` |
 | `--project-root <DIR>` | | Project root (defaults to cwd) |
 
