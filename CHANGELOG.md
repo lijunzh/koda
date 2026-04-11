@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 > **Lineage:** This project continues from [`koda-agent`](https://github.com/lijunzh/koda-agent) (archived at v0.1.5).
 > Versions v0.1.0–v0.1.5 of `koda-agent` are documented in that repository's CHANGELOG.
 
-## [Unreleased]
+## [0.2.8] - 2026-04-11
 
 ### Added
 - **Thinking block persistence** — Claude's `💭 Thinking…` blocks are now
