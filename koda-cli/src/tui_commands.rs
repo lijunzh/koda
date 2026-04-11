@@ -627,16 +627,16 @@ async fn handle_export(
 /// Format: `koda-YYYYMMDD-HHMMSS-<slug>.md`  (slug from first user prompt, max 40 chars).
 /// Falls back to `koda-YYYYMMDD-HHMMSS.md` when no user message exists.
 fn export_default_filename(messages: &[koda_core::persistence::Message]) -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    // Manual UTC decomposition — no chrono dep needed.
-    let (y, mo, d, h, mi, s) = decompose_utc(secs);
-    let ts = format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}");
+    let dt = crate::util::utc_now();
+    let ts = format!(
+        "{:04}{:02}{:02}-{:02}{:02}{:02}",
+        dt.year(),
+        dt.month() as u8,
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        dt.second(),
+    );
 
     let slug: String = messages
         .iter()
@@ -672,65 +672,6 @@ fn export_default_filename(messages: &[koda_core::persistence::Message]) -> Stri
     } else {
         format!("koda-{ts}-{slug}.md")
     }
-}
-
-/// Decompose a Unix timestamp (seconds) into (year, month, day, hour, min, sec) UTC.
-/// No external crates required — just enough calendar math for a filename.
-fn decompose_utc(mut secs: u64) -> (u64, u64, u64, u64, u64, u64) {
-    let s = secs % 60;
-    secs /= 60;
-    let mi = secs % 60;
-    secs /= 60;
-    let h = secs % 24;
-    secs /= 24; // days since epoch
-
-    // Gregorian calendar: 400-year cycle = 146097 days.
-    let (mut y, mut days) = (1970u64, secs);
-    loop {
-        let leap = if y % 400 == 0 {
-            true
-        } else if y % 100 == 0 {
-            false
-        } else {
-            y % 4 == 0
-        };
-        let dy = if leap { 366 } else { 365 };
-        if days < dy {
-            break;
-        }
-        days -= dy;
-        y += 1;
-    }
-    let leap = if y % 400 == 0 {
-        true
-    } else if y % 100 == 0 {
-        false
-    } else {
-        y % 4 == 0
-    };
-    let month_days: [u64; 12] = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut mo = 1u64;
-    for &md in &month_days {
-        if days < md {
-            break;
-        }
-        days -= md;
-        mo += 1;
-    }
-    (y, mo, days + 1, h, mi, s)
 }
 
 #[cfg(test)]

@@ -56,6 +56,10 @@ tracing-appender = "0.2"
 # Error handling
 anyhow = "1"
 
+# Date/time — already a transitive dep via ratatui; declared directly so
+# callers aren't silently depending on an undeclared transitive.
+time = "0.3"
+
 # Base64 encoding (for image input)
 base64 = "0.22"
 agent-client-protocol-schema = { version = "0.11", features = ["unstable_session_model", "unstable_session_list", "unstable"] }
