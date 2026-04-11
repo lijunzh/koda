@@ -591,7 +591,20 @@ async fn handle_export(
 
     let path_owned;
     let path: &str = match dest {
-        Some(p) => p,
+        Some(p) => {
+            // Reject paths that escape CWD — absolute paths and ".." traversal.
+            let dest_path = std::path::Path::new(p);
+            if dest_path.is_absolute() || p.contains("..") {
+                tui_output::err_msg(
+                    buffer,
+                    "Export path must be relative to the current directory \
+                     (no absolute paths or \"..\" traversal)."
+                        .into(),
+                );
+                return;
+            }
+            p
+        }
         None => {
             path_owned = export_default_filename(&messages);
             &path_owned
@@ -649,11 +662,8 @@ fn export_default_filename(messages: &[koda_core::persistence::Message]) -> Stri
         .filter(|s| !s.is_empty())
         .map(|s| {
             // Hard cap at 40 chars, respecting char boundaries.
-            if s.len() > 40 {
-                s[..40].trim_end_matches('-').to_string()
-            } else {
-                s
-            }
+            let truncated: String = s.chars().take(40).collect();
+            truncated.trim_end_matches('-').to_string()
         })
         .unwrap_or_default();
 

@@ -31,6 +31,15 @@ use koda_core::tools::{ToolEffect, classify_tool};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Truncate a string to at most `max` characters, appending `…` if truncated.
+/// Safe on multi-byte UTF-8 (never splits a codepoint).
+fn truncate_with_ellipsis(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((idx, _)) => format!("{}…", &s[..idx]),
+        None => s.to_string(),
+    }
+}
+
 /// Maximum content lines to include per tool result in the transcript.
 const RESULT_PREVIEW_LINES: usize = 10;
 
@@ -228,8 +237,8 @@ fn tool_detail_summary(name: &str, args_json: &str) -> String {
         }
         "Bash" => {
             let cmd = args["command"].as_str().unwrap_or("");
-            if cmd.len() > 80 {
-                format!("{}…", &cmd[..77])
+            if cmd.chars().count() > 80 {
+                truncate_with_ellipsis(cmd, 77)
             } else {
                 cmd.to_string()
             }
@@ -252,8 +261,8 @@ fn tool_detail_summary(name: &str, args_json: &str) -> String {
             if let Some(obj) = args.as_object() {
                 for (_, v) in obj.iter().take(1) {
                     if let Some(s) = v.as_str() {
-                        return if s.len() > 80 {
-                            format!("{}…", &s[..77])
+                        return if s.chars().count() > 80 {
+                            truncate_with_ellipsis(s, 77)
                         } else {
                             s.to_string()
                         };

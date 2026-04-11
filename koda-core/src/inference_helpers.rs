@@ -206,8 +206,10 @@ pub fn is_image_rejection_error(err: &anyhow::Error) -> bool {
     let msg = format!("{err:#}").to_lowercase();
     // "image" alone is too broad; require it alongside a support-denial word.
     (msg.contains("image") && (msg.contains("support") || msg.contains("invalid")))
-        || msg.contains("vision")
-        || msg.contains("multimodal")
+        || (msg.contains("vision")
+            && (msg.contains("support") || msg.contains("not") || msg.contains("unavailable")))
+        || (msg.contains("multimodal")
+            && (msg.contains("support") || msg.contains("not") || msg.contains("unavailable")))
 }
 
 #[cfg(test)]
@@ -356,6 +358,13 @@ mod tests {
         // "image" alone without support/invalid context should not match
         assert!(!is_image_rejection_error(&anyhow::anyhow!(
             "failed to load image/png from request body"
+        )));
+        // Bare "vision" or "multimodal" without denial context → no match
+        assert!(!is_image_rejection_error(&anyhow::anyhow!(
+            "Invalid API key for vision endpoint"
+        )));
+        assert!(!is_image_rejection_error(&anyhow::anyhow!(
+            "multimodal endpoint rate limit"
         )));
     }
 }
