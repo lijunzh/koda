@@ -18,14 +18,36 @@
 
 use super::safe_resolve_path;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+/// Format a monotonic `Instant` age into a compact human-readable string.
+///
+/// ```text
+/// <5s  → "just now"
+/// <60s → "12s ago"
+/// else → "3m ago"
+/// ```
+fn fmt_age(instant: std::time::Instant) -> String {
+    let secs = instant.elapsed().as_secs();
+    if secs < 5 {
+        "just now".to_string()
+    } else if secs < 60 {
+        format!("{secs}s ago")
+    } else {
+        format!("{}m ago", secs / 60)
+    }
+}
 
 /// Validate a tool call before approval.
 ///
 /// `read_cache` is the session file-read cache.  When provided, `validate_edit`
 /// uses it to detect files that have been modified on disk since the model last
 /// read them — catching the most common source of lost-context edits.
+///
+/// `last_writer` and `last_bash` add context to staleness errors: instead of a
+/// generic "file was modified" message the model sees which tool was responsible
+/// and how long ago it ran (#804 item 7).
 ///
 /// Returns `None` if the call looks valid, or `Some(error_message)` describing
 /// why it will fail. The error message is fed back to the model so it can
@@ -35,14 +57,45 @@ pub async fn validate_tool_call(
     args: &serde_json::Value,
     project_root: &Path,
     read_cache: Option<&super::FileReadCache>,
+    last_writer: Option<&super::LastWriterCache>,
+    last_bash: Option<&super::LastBashCache>,
 ) -> Option<String> {
     match tool_name {
-        "Edit" => validate_edit(args, project_root, read_cache).await,
+        "Edit" => validate_edit(args, project_root, read_cache, last_writer, last_bash).await,
         "Write" => validate_write(args, project_root).await,
         "Delete" => validate_delete(args, project_root).await,
         "Bash" => validate_bash(args),
         _ => None,
     }
+}
+
+/// Build a parenthetical hint describing what tool last modified a file.
+///
+/// Priority:
+/// 1. A recorded Write/Edit entry for this exact path  → " (last written by Edit 3s ago)"
+/// 2. A recent Bash invocation (possible indirect modifier) → " (Bash ran 2s ago: `cargo fmt ...`)"
+/// 3. Neither known                                        → "" (empty; generic message is fine)
+fn writer_hint(
+    resolved: &PathBuf,
+    last_writer: Option<&super::LastWriterCache>,
+    last_bash: Option<&super::LastBashCache>,
+) -> String {
+    // Check for a direct Write/Edit record for this path.
+    if let Some(lw) = last_writer
+        && let Ok(guard) = lw.lock()
+        && let Some((tool, when)) = guard.get(resolved)
+    {
+        return format!(" (last written by {} {})", tool, fmt_age(*when));
+    }
+    // Fall back to the most recent Bash call — it may have modified the file
+    // indirectly (formatter, build script, etc.).
+    if let Some(lb) = last_bash
+        && let Ok(guard) = lb.lock()
+        && let Some((snippet, when)) = guard.as_ref()
+    {
+        return format!(" (Bash ran {}: `{}`)", fmt_age(*when), snippet);
+    }
+    String::new()
 }
 
 /// Edit: file must exist, replacements must be non-empty, each old_str must
@@ -52,6 +105,8 @@ async fn validate_edit(
     args: &serde_json::Value,
     project_root: &Path,
     read_cache: Option<&super::FileReadCache>,
+    last_writer: Option<&super::LastWriterCache>,
+    last_bash: Option<&super::LastBashCache>,
 ) -> Option<String> {
     let path_str = args["file_path"]
         .as_str()
@@ -99,10 +154,12 @@ async fn validate_edit(
         if let Some(cm) = cached_mtime
             && cm != current_mtime
         {
+            // Build a context hint naming the responsible tool so the model
+            // doesn't have to guess why the file changed (#804 item 7).
+            let hint = writer_hint(&resolved, last_writer, last_bash);
             return Some(format!(
-                "File '{}' has been modified on disk since you last read it. \
+                "File '{path_str}' has been modified on disk since you last read it{hint}. \
                  Read it again to get the current content before editing.",
-                path_str
             ));
         }
     }
@@ -377,14 +434,20 @@ mod tests {
             "path": "hello.txt",
             "replacements": [{"old_str": "line two", "new_str": "line TWO"}]
         });
-        assert!(validate_edit(&args, dir.path(), None).await.is_none());
+        assert!(
+            validate_edit(&args, dir.path(), None, None, None)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
     async fn edit_missing_path() {
         let dir = setup();
         let args = json!({"replacements": [{"old_str": "x", "new_str": "y"}]});
-        let err = validate_edit(&args, dir.path(), None).await.unwrap();
+        let err = validate_edit(&args, dir.path(), None, None, None)
+            .await
+            .unwrap();
         assert!(err.contains("path"), "{err}");
     }
 
@@ -395,7 +458,9 @@ mod tests {
             "path": "nope.txt",
             "replacements": [{"old_str": "x", "new_str": "y"}]
         });
-        let err = validate_edit(&args, dir.path(), None).await.unwrap();
+        let err = validate_edit(&args, dir.path(), None, None, None)
+            .await
+            .unwrap();
         assert!(err.contains("Cannot read"), "{err}");
         assert!(err.contains("Write"), "{err}"); // suggests Write
     }
@@ -404,7 +469,9 @@ mod tests {
     async fn edit_empty_replacements() {
         let dir = setup();
         let args = json!({"path": "hello.txt", "replacements": []});
-        let err = validate_edit(&args, dir.path(), None).await.unwrap();
+        let err = validate_edit(&args, dir.path(), None, None, None)
+            .await
+            .unwrap();
         assert!(err.contains("empty"), "{err}");
     }
 
@@ -415,7 +482,9 @@ mod tests {
             "path": "hello.txt",
             "replacements": [{"old_str": "", "new_str": "y"}]
         });
-        let err = validate_edit(&args, dir.path(), None).await.unwrap();
+        let err = validate_edit(&args, dir.path(), None, None, None)
+            .await
+            .unwrap();
         assert!(err.contains("empty"), "{err}");
     }
 
@@ -433,7 +502,9 @@ mod tests {
             "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
         });
         assert!(
-            validate_edit(&args, dir.path(), None).await.is_none(),
+            validate_edit(&args, dir.path(), None, None, None)
+                .await
+                .is_none(),
             "fuzzy match should pass validation"
         );
     }
@@ -445,7 +516,9 @@ mod tests {
             "path": "hello.txt",
             "replacements": [{"old_str": "does not exist", "new_str": "y"}]
         });
-        let err = validate_edit(&args, dir.path(), None).await.unwrap();
+        let err = validate_edit(&args, dir.path(), None, None, None)
+            .await
+            .unwrap();
         assert!(err.contains("not found"), "{err}");
     }
 
@@ -456,7 +529,9 @@ mod tests {
             "path": "hello.txt",
             "replacements": [{"old_str": "line one"}]
         });
-        let err = validate_edit(&args, dir.path(), None).await.unwrap();
+        let err = validate_edit(&args, dir.path(), None, None, None)
+            .await
+            .unwrap();
         assert!(err.contains("new_str"), "{err}");
     }
 
@@ -534,7 +609,11 @@ mod tests {
             "file_path": "hello.txt",
             "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
         });
-        assert!(validate_edit(&args, dir.path(), None).await.is_none());
+        assert!(
+            validate_edit(&args, dir.path(), None, None, None)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -596,7 +675,7 @@ mod tests {
             "path": "hello.txt",
             "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
         });
-        let err = validate_edit(&args, dir.path(), Some(&cache))
+        let err = validate_edit(&args, dir.path(), Some(&cache), None, None)
             .await
             .unwrap();
         assert!(err.contains("modified on disk"), "{err}");
@@ -615,7 +694,7 @@ mod tests {
             "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
         });
         assert!(
-            validate_edit(&args, dir.path(), Some(&cache))
+            validate_edit(&args, dir.path(), Some(&cache), None, None)
                 .await
                 .is_none(),
             "up-to-date file should not trigger stale warning"
@@ -632,11 +711,69 @@ mod tests {
             "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
         });
         assert!(
-            validate_edit(&args, dir.path(), Some(&empty_cache))
+            validate_edit(&args, dir.path(), Some(&empty_cache), None, None)
                 .await
                 .is_none(),
             "no cache entry should not trigger stale warning"
         );
+    }
+
+    // ── Staleness hint messages (#804 item 7) ─────────────────
+
+    #[tokio::test]
+    async fn stale_file_hints_last_writer_tool() {
+        let dir = setup();
+        let file = dir.path().join("hello.txt");
+        let cache = make_cache(&file, SystemTime::UNIX_EPOCH);
+
+        // Populate last_writer with an Edit entry for this file.
+        let last_writer = super::super::LastWriterCache::default();
+        last_writer.lock().unwrap().insert(
+            file.clone(),
+            ("Edit".to_string(), std::time::Instant::now()),
+        );
+
+        let args = json!({
+            "path": "hello.txt",
+            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+        });
+        let err = validate_edit(&args, dir.path(), Some(&cache), Some(&last_writer), None)
+            .await
+            .unwrap();
+        assert!(err.contains("modified on disk"), "{err}");
+        assert!(err.contains("last written by Edit"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn stale_file_hints_bash_when_no_writer_entry() {
+        let dir = setup();
+        let file = dir.path().join("hello.txt");
+        let cache = make_cache(&file, SystemTime::UNIX_EPOCH);
+
+        // No last_writer entry for this file — fall through to last_bash.
+        let last_writer = super::super::LastWriterCache::default();
+        let last_bash = super::super::LastBashCache::default();
+        *last_bash.lock().unwrap() = Some((
+            "cargo fmt -- src/bash_safety.rs".to_string(),
+            std::time::Instant::now(),
+        ));
+
+        let args = json!({
+            "path": "hello.txt",
+            "replacements": [{"old_str": "line two", "new_str": "LINE TWO"}]
+        });
+        let err = validate_edit(
+            &args,
+            dir.path(),
+            Some(&cache),
+            Some(&last_writer),
+            Some(&last_bash),
+        )
+        .await
+        .unwrap();
+        assert!(err.contains("modified on disk"), "{err}");
+        assert!(err.contains("Bash ran"), "{err}");
+        assert!(err.contains("cargo fmt"), "{err}");
     }
 
     // ── Omission placeholder detection ────────────────────────
@@ -735,7 +872,9 @@ mod tests {
                 "new_str": "// rest of code ..."
             }]
         });
-        let err = validate_edit(&args, dir.path(), None).await.unwrap();
+        let err = validate_edit(&args, dir.path(), None, None, None)
+            .await
+            .unwrap();
         assert!(err.contains("omission placeholder"), "{err}");
     }
 
@@ -750,6 +889,10 @@ mod tests {
             }]
         });
         // "..." without a known prefix should NOT be detected
-        assert!(validate_edit(&args, dir.path(), None).await.is_none());
+        assert!(
+            validate_edit(&args, dir.path(), None, None, None)
+                .await
+                .is_none()
+        );
     }
 }

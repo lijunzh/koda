@@ -155,6 +155,20 @@ use crate::providers::ToolDefinition;
 /// share the same cache — reads by one agent benefit all others.
 pub type FileReadCache = Arc<std::sync::Mutex<HashMap<String, (u64, SystemTime)>>>;
 
+/// Tracks which tool last wrote each absolute file path.
+///
+/// Keyed by canonical `PathBuf`; value is `(tool_name, when)` using a
+/// monotonic `Instant`. Populated on every successful Write and Edit so
+/// the validation layer can include the responsible tool in staleness
+/// error messages (#804 item 7).
+pub type LastWriterCache = Arc<std::sync::Mutex<HashMap<PathBuf, (String, std::time::Instant)>>>;
+
+/// Tracks the most recent successful Bash invocation.
+///
+/// Stores `(command_snippet, when)`. Only the latest call is kept — enough
+/// context to tell the model "Bash ran 2s ago, it may have changed the file".
+pub type LastBashCache = Arc<std::sync::Mutex<Option<(String, std::time::Instant)>>>;
+
 /// Result of executing a tool.
 ///
 /// The `success` field is set automatically by `ToolRegistry::execute()` —
@@ -190,6 +204,10 @@ pub struct ToolRegistry {
     project_root: PathBuf,
     definitions: HashMap<String, ToolDefinition>,
     read_cache: FileReadCache,
+    /// Per-file last-writer tracking for richer staleness errors (#804 item 7).
+    last_writer: LastWriterCache,
+    /// Most recent Bash invocation for staleness error context (#804 item 7).
+    last_bash: LastBashCache,
     /// Undo stack for file mutations.
     pub undo: std::sync::Mutex<crate::undo::UndoStack>,
     /// Discovered skills.
@@ -256,6 +274,8 @@ impl ToolRegistry {
             project_root,
             definitions,
             read_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            last_writer: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            last_bash: Arc::new(std::sync::Mutex::new(None)),
             undo: std::sync::Mutex::new(crate::undo::UndoStack::new()),
             skill_registry,
             db: std::sync::RwLock::new(None),
@@ -277,6 +297,16 @@ impl ToolRegistry {
     /// Get a clone of the `Arc` file-read cache for sharing with sub-agents.
     pub fn file_read_cache(&self) -> FileReadCache {
         Arc::clone(&self.read_cache)
+    }
+
+    /// Get a clone of the last-writer cache for passing to validation.
+    pub fn last_writer_cache(&self) -> LastWriterCache {
+        Arc::clone(&self.last_writer)
+    }
+
+    /// Get a clone of the last-bash cache for passing to validation.
+    pub fn last_bash_cache(&self) -> LastBashCache {
+        Arc::clone(&self.last_bash)
     }
 
     /// Attach database + session for tools that need history access.
@@ -429,11 +459,26 @@ impl ToolRegistry {
                 )
                 .await;
                 return match shell_result {
-                    Ok(so) => ToolResult {
-                        output: so.summary,
-                        success: true,
-                        full_output: so.full_output,
-                    },
+                    Ok(so) => {
+                        // Record the invocation so validate_edit can hint at it
+                        // in staleness error messages (#804 item 7).
+                        let snippet = args["command"]
+                            .as_str()
+                            .unwrap_or("")
+                            .chars()
+                            .take(72)
+                            .collect::<String>();
+                        if !snippet.is_empty()
+                            && let Ok(mut guard) = self.last_bash.lock()
+                        {
+                            *guard = Some((snippet, std::time::Instant::now()));
+                        }
+                        ToolResult {
+                            output: so.summary,
+                            success: true,
+                            full_output: so.full_output,
+                        }
+                    }
                     Err(e) => ToolResult {
                         output: format!("Error: {e}"),
                         success: false,
@@ -534,11 +579,22 @@ impl ToolRegistry {
         };
 
         match result {
-            Ok(output) => ToolResult {
-                output,
-                success: true,
-                full_output: None,
-            },
+            Ok(output) => {
+                // Record successful Write/Edit so the validation layer can
+                // name the responsible tool in staleness error messages.
+                if matches!(name, "Write" | "Edit")
+                    && let Some(path) =
+                        crate::file_tracker::resolve_file_path_from_args(&args, &self.project_root)
+                    && let Ok(mut guard) = self.last_writer.lock()
+                {
+                    guard.insert(path, (name.to_string(), std::time::Instant::now()));
+                }
+                ToolResult {
+                    output,
+                    success: true,
+                    full_output: None,
+                }
+            }
             Err(e) => ToolResult {
                 output: format!("Error: {e}"),
                 success: false,
