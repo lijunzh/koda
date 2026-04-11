@@ -131,15 +131,19 @@ impl Widget for StatusBar<'_> {
             ));
         }
 
-        // Queue indicator
+        // Queue indicator — show count + Ctrl+U hint
         if self.queue_len > 0 {
             spans.push(Span::styled(
                 "\u{2502}",
                 Style::default().fg(Color::Rgb(60, 60, 60)),
             ));
             spans.push(Span::styled(
-                format!(" {} queued ", self.queue_len),
+                format!(" \u{1f4cb} {} queued ", self.queue_len),
                 Style::default().fg(Color::Yellow),
+            ));
+            spans.push(Span::styled(
+                "^U clear ",
+                Style::default().fg(Color::Rgb(100, 100, 100)),
             ));
         }
 

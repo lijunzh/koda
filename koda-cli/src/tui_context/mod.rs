@@ -455,12 +455,19 @@ impl TuiContext {
         if let Some(queued) = self.input_queue.pop_front() {
             let mode = approval::read_mode(&self.shared_mode);
             let icon = match mode {
-                ApprovalMode::Confirm => "🔒",
-                ApprovalMode::Auto => "⚡",
+                ApprovalMode::Confirm => "\u{1f512}",
+                ApprovalMode::Auto => "\u{26a1}",
+            };
+            let remaining = self.input_queue.len();
+            let suffix = if remaining > 0 {
+                format!(" (+{remaining} queued)")
+            } else {
+                String::new()
             };
             self.scroll_buffer.push(Line::from(vec![
                 Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
                 Span::raw(queued.clone()),
+                Span::styled(suffix, Style::default().fg(Color::DarkGray)),
             ]));
             return Some(queued);
         }
