@@ -1,10 +1,10 @@
 //! Tool name normalization — maps model-emitted variants to canonical PascalCase.
 //!
-//! Models (especially smaller/local ones via OpenAI-compatible APIs) sometimes
-//! emit tool names in lowercase (`list`, `read`) or snake_case (`list_files`,
-//! `read_file`) instead of the canonical PascalCase (`List`, `Read`). This
-//! module provides a single normalization point at the API boundary so all
-//! downstream code (dispatch, approval, loop guard, undo) sees canonical names.
+//! Models sometimes emit tool names in lowercase (`list`, `read`) or
+//! snake_case (`list_files`, `read_file`) instead of the canonical PascalCase
+//! (`List`, `Read`). This module provides a single normalization point at the
+//! API boundary so all downstream code (dispatch, approval, loop guard, undo)
+//! sees canonical names.
 //!
 //! ## Design
 //!
@@ -173,9 +173,8 @@ pub fn normalize_tool_name(name: &str) -> String {
 /// Called once after `collect_stream()` returns, before dispatch/approval.
 /// Maximum tool calls per single model response.
 ///
-/// A safety cap to prevent runaway models (especially local ones) from
-/// issuing hundreds of tool calls in a single turn.  The cap applies
-/// *after* deduplication.
+/// A safety cap to prevent runaway models from issuing hundreds of tool
+/// calls in a single turn.  The cap applies *after* deduplication.
 pub const MAX_TOOL_CALLS_PER_TURN: usize = 20;
 
 /// Normalize + deduplicate + cap tool calls from a single model response.
@@ -411,7 +410,7 @@ mod tests {
 
     #[test]
     fn dedup_66_identical_list_calls() {
-        // Reproduces #773: Gemma 4 emitting 66 identical List calls
+        // Models may emit many identical tool calls in a single response (#773)
         let calls: Vec<ToolCall> = (0..66)
             .map(|i| tc(&format!("call_{i}"), "list", "{\"path\":\".\"}"))
             .collect();

@@ -55,8 +55,8 @@ const WINDOW_SIZE: usize = 20;
 
 /// After this many consecutive tool-call-only responses (no text), tool
 /// definitions are suppressed for one turn to force a text response.
-/// Prevents models (especially local ones) from entering infinite
-/// tool-call loops without ever producing output (#826).
+/// Prevents models from entering infinite tool-call loops without ever
+/// producing output (#826).
 pub const TOOL_ONLY_RESPONSE_LIMIT: u32 = 5;
 
 /// How many recent tool names to show in the hard-cap prompt.

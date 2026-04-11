@@ -108,11 +108,11 @@ limitations — they'll be obsolete before they're stable.
 - **Don't scaffold around weakness.** Model tiers, capability probes, and
   verbose fallback prompts are building for today. Delete them
 - **Frontier models, standard APIs.** Koda targets frontier-class models
-  (Claude, GPT-4o, Gemini, o3/o4-mini) via their standard APIs. We do not
-  invest engineering effort in workarounds for small local models or
-  non-conforming API servers. If a local server diverges from the OpenAI
-  API spec, the fix belongs in the server, not in koda. Local model quirks
-  are temporary — frontier model capabilities compound. See
+  via their standard APIs — whether cloud-hosted (Claude, GPT-4o, Gemini)
+  or locally served (Qwen, DeepSeek, Llama via LM Studio/Ollama/vLLM).
+  We support the OpenAI-compatible API spec faithfully but do not add
+  workarounds for individual models' non-conforming behavior. If a model
+  emits malformed output, the fix belongs upstream. See
   [#831](https://github.com/lijunzh/koda/issues/831) for rationale
 - **Expand the surface.** Email, calendar, knowledge management — these
   are bets on where AI will be, not where it is

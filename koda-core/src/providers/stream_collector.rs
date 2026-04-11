@@ -102,7 +102,12 @@ async fn drive_sse_stream(
             let line = buffer[..line_end].trim().to_string();
             buffer.drain(..=line_end);
 
-            let Some(data) = line.strip_prefix("data: ") else {
+            // SSE spec: space after colon is optional ("data: x" and "data:x" are equivalent)
+            let data = if let Some(d) = line.strip_prefix("data: ") {
+                d
+            } else if let Some(d) = line.strip_prefix("data:") {
+                d
+            } else {
                 continue;
             };
 
@@ -170,7 +175,12 @@ mod tests {
 
         for line in sse_text.lines() {
             let trimmed = line.trim();
-            let Some(data) = trimmed.strip_prefix("data: ") else {
+            // Mirror the real SSE parser: accept both `data: ` and `data:`
+            let data = if let Some(d) = trimmed.strip_prefix("data: ") {
+                d
+            } else if let Some(d) = trimmed.strip_prefix("data:") {
+                d
+            } else {
                 continue;
             };
             if data.trim() == "[DONE]" {
@@ -211,6 +221,28 @@ mod tests {
 
         assert_eq!(chunks.len(), 2); // 1 delta + Done
         assert!(matches!(&chunks[0], StreamChunk::TextDelta(t) if t == "payload"));
+    }
+
+    /// SSE spec allows `data:` without a trailing space.
+    #[tokio::test]
+    async fn test_data_without_space_parsed() {
+        let sse = "data:hello\ndata:world\n";
+        let chunks = drive_parser(Box::new(EchoParser::new()), sse).await;
+
+        assert_eq!(chunks.len(), 3); // 2 deltas + Done
+        assert!(matches!(&chunks[0], StreamChunk::TextDelta(t) if t == "hello"));
+        assert!(matches!(&chunks[1], StreamChunk::TextDelta(t) if t == "world"));
+    }
+
+    /// Mixed `data: ` and `data:` lines should both be parsed.
+    #[tokio::test]
+    async fn test_data_mixed_space_variants() {
+        let sse = "data: with-space\ndata:no-space\n";
+        let chunks = drive_parser(Box::new(EchoParser::new()), sse).await;
+
+        assert_eq!(chunks.len(), 3);
+        assert!(matches!(&chunks[0], StreamChunk::TextDelta(t) if t == "with-space"));
+        assert!(matches!(&chunks[1], StreamChunk::TextDelta(t) if t == "no-space"));
     }
 
     // ── Anthropic parser fixture tests ────────────────────────────

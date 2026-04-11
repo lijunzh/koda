@@ -701,7 +701,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
 
         // If the model has produced N consecutive tool-call-only responses
         // (tools but no text), suppress tool definitions for this turn to
-        // force it to generate a text response. This prevents local models
+        // force it to generate a text response. This prevents models
         // from looping infinitely through tool calls (#826).
         let active_tool_defs: &[ToolDefinition] =
             if consecutive_tool_only >= crate::loop_guard::TOOL_ONLY_RESPONSE_LIMIT {
@@ -824,8 +824,8 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
 
         if stream_result.interrupted {
             // Kill the background HTTP reader immediately so the TCP
-            // connection closes and LM Studio (or any single-slot
-            // local server) can accept the next request (#825).
+            // connection closes and the server (LM Studio, vLLM, or any single-slot
+            // server) can accept the next request (#825).
             sse_handle.abort();
             let has_text = !stream_result.text.is_empty();
             let has_thinking = !stream_result.thinking_content.is_empty();
@@ -863,11 +863,11 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let full_text = stream_result.text;
         let stream_thinking = stream_result.thinking_content;
         // Normalize tool names from model output to canonical PascalCase (#548).
-        // Models (especially local/small ones via OpenAI-compat APIs) may emit
-        // lowercase or snake_case names ("list", "read_file"). This runs for all
-        // providers — the canonical fast-path is a single HashMap lookup — and
-        // must happen here (not in providers) so dispatch, approval, loop guard,
-        // undo, and persistence all see consistent canonical names.
+        // Models may emit lowercase or snake_case names ("list", "read_file").
+        // This runs for all providers — the canonical fast-path is a single
+        // HashMap lookup — and must happen here (not in providers) so dispatch,
+        // approval, loop guard, undo, and persistence all see consistent
+        // canonical names.
         let dedup = crate::tool_normalize::normalize_tool_calls(stream_result.tool_calls);
         let tool_calls = dedup.calls;
 
