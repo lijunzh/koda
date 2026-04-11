@@ -80,6 +80,13 @@ Options:
       --reasoning-effort <REASONING_EFFORT>
           OpenAI reasoning effort (low, medium, high)
 
+      --sandbox <SANDBOX>
+          Sandbox mode for Bash tool invocations: none (default) or project. "project" restricts writes to the project dir + /tmp. Requires sandbox-exec on macOS or bwrap on Linux
+          
+          [env: KODA_SANDBOX=]
+          [default: none]
+          [possible values: none, project]
+
   -h, --help
           Print help (see a summary with '-h')
 

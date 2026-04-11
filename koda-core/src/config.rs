@@ -414,6 +414,8 @@ pub struct KodaConfig {
     /// Skip injecting project/global memory into the system prompt.
     /// Set by `skip_memory: true` in agent JSON. Default: `false`.
     pub skip_memory: bool,
+    /// Sandbox mode for Bash tool invocations. Default: `SandboxMode::None`.
+    pub sandbox: crate::sandbox::SandboxMode,
 }
 
 impl KodaConfig {
@@ -491,6 +493,7 @@ impl KodaConfig {
             model_settings: settings,
             max_iterations,
             skip_memory: agent.skip_memory,
+            sandbox: crate::sandbox::SandboxMode::None,
         })
     }
 
@@ -558,6 +561,12 @@ impl KodaConfig {
         if let Some(re) = reasoning_effort {
             self.model_settings.reasoning_effort = Some(re);
         }
+        self
+    }
+
+    /// Override the sandbox mode (e.g. from `--sandbox project` on the CLI).
+    pub fn with_sandbox(mut self, mode: crate::sandbox::SandboxMode) -> Self {
+        self.sandbox = mode;
         self
     }
 
@@ -691,6 +700,7 @@ impl KodaConfig {
             model_settings,
             max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,
             skip_memory: false,
+            sandbox: crate::sandbox::SandboxMode::None,
         }
     }
 

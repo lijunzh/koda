@@ -253,7 +253,11 @@ pub(crate) async fn execute_sub_agent(
     let effective_root_ref = effective_root.as_path();
 
     let tools = {
-        let registry = ToolRegistry::new(effective_root.clone(), sub_config.max_context_tokens);
+        let registry = ToolRegistry::with_sandbox(
+            effective_root.clone(),
+            sub_config.max_context_tokens,
+            sub_config.sandbox.clone(),
+        );
         match parent_cache {
             Some(cache) => registry.with_shared_cache(cache),
             None => registry,

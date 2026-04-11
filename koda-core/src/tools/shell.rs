@@ -35,7 +35,6 @@ use anyhow::Result;
 use serde_json::{Value, json};
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// Hard ceiling to prevent LLM-controlled DoS via huge timeout values.
@@ -109,6 +108,7 @@ pub async fn run_shell_command(
     max_lines: usize,
     bg: &BgRegistry,
     sink: Option<(&dyn EngineSink, &str)>,
+    sandbox: &crate::sandbox::SandboxMode,
 ) -> Result<ShellOutput> {
     let command = args["command"]
         .as_str()
@@ -121,7 +121,7 @@ pub async fn run_shell_command(
     );
 
     if background {
-        let msg = spawn_background(project_root, command, bg)?;
+        let msg = spawn_background(project_root, command, bg, sandbox)?;
         return Ok(ShellOutput {
             summary: msg,
             full_output: None,
@@ -133,11 +133,8 @@ pub async fn run_shell_command(
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .min(MAX_TIMEOUT_SECS);
 
-    // Spawn with piped stdout/stderr for line-by-line streaming.
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .current_dir(project_root)
+    // Spawn via sandbox wrapper (may be a no-op for SandboxMode::None).
+    let mut child = crate::sandbox::build(command, project_root, sandbox)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -275,12 +272,15 @@ async fn read_streams(
 ///
 /// Returns immediately with PID + instructions. Sync because `spawn()` doesn't
 /// need to await — only `output()` / `wait()` block.
-fn spawn_background(project_root: &Path, command: &str, bg: &BgRegistry) -> Result<String> {
-    let child = Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .current_dir(project_root)
-        // Detach stdio so the process doesn't block on terminal I/O.
+fn spawn_background(
+    project_root: &Path,
+    command: &str,
+    bg: &BgRegistry,
+    sandbox: &crate::sandbox::SandboxMode,
+) -> Result<String> {
+    // tokio::process::Command doesn't impl std's Stdio easily in sync context;
+    // re-build as std Command for the detached spawn.
+    let child = crate::sandbox::build(command, project_root, sandbox)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -411,9 +411,16 @@ mod tests {
     async fn shell_timeout_returns_timeout_message() {
         let tmp = tempfile::tempdir().unwrap();
         let args = serde_json::json!({"command": "sleep 5", "timeout": 1});
-        let result = run_shell_command(tmp.path(), &args, 256, &bg(), None)
-            .await
-            .unwrap();
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            256,
+            &bg(),
+            None,
+            &crate::sandbox::SandboxMode::None,
+        )
+        .await
+        .unwrap();
         assert!(
             result.summary.contains("timed out"),
             "Expected timeout message, got: {}",
@@ -425,9 +432,16 @@ mod tests {
     async fn shell_respects_custom_timeout_parameter() {
         let tmp = tempfile::tempdir().unwrap();
         let args = serde_json::json!({"command": "echo hello", "timeout": 5});
-        let result = run_shell_command(tmp.path(), &args, 256, &bg(), None)
-            .await
-            .unwrap();
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            256,
+            &bg(),
+            None,
+            &crate::sandbox::SandboxMode::None,
+        )
+        .await
+        .unwrap();
         assert!(
             result.summary.contains("hello"),
             "Fast command should succeed: {}",
@@ -439,9 +453,16 @@ mod tests {
     async fn shell_default_timeout_is_applied_when_not_specified() {
         let tmp = tempfile::tempdir().unwrap();
         let args = serde_json::json!({"command": "echo world"});
-        let result = run_shell_command(tmp.path(), &args, 256, &bg(), None)
-            .await
-            .unwrap();
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            256,
+            &bg(),
+            None,
+            &crate::sandbox::SandboxMode::None,
+        )
+        .await
+        .unwrap();
         assert!(
             result.summary.contains("world"),
             "Command without explicit timeout should work: {}",
@@ -454,9 +475,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let registry = BgRegistry::new();
         let args = serde_json::json!({"command": "sleep 60", "background": true});
-        let result = run_shell_command(tmp.path(), &args, 256, &registry, None)
-            .await
-            .unwrap();
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            256,
+            &registry,
+            None,
+            &crate::sandbox::SandboxMode::None,
+        )
+        .await
+        .unwrap();
         assert!(
             result.summary.contains("Background process started"),
             "{}",
@@ -475,9 +503,16 @@ mod tests {
     async fn background_false_runs_synchronously() {
         let tmp = tempfile::tempdir().unwrap();
         let args = serde_json::json!({"command": "echo sync", "background": false});
-        let result = run_shell_command(tmp.path(), &args, 256, &bg(), None)
-            .await
-            .unwrap();
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            256,
+            &bg(),
+            None,
+            &crate::sandbox::SandboxMode::None,
+        )
+        .await
+        .unwrap();
         assert!(result.summary.contains("sync"), "{}", result.summary);
         assert!(
             !result.summary.contains("PID:"),
@@ -559,9 +594,16 @@ mod tests {
         let args = serde_json::json!({
             "command": "seq 1 50"
         });
-        let result = run_shell_command(tmp.path(), &args, 10, &bg(), None)
-            .await
-            .unwrap();
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            10,
+            &bg(),
+            None,
+            &crate::sandbox::SandboxMode::None,
+        )
+        .await
+        .unwrap();
         // Summary should reflect that we only collected 10 lines.
         assert!(
             result.summary.contains("stdout: 10 lines"),
@@ -615,6 +657,7 @@ mod tests {
             256,
             &bg(),
             Some((sink.as_ref(), "test_id")),
+            &crate::sandbox::SandboxMode::None,
         )
         .await
         .unwrap();

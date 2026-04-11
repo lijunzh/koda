@@ -107,6 +107,8 @@ pub mod prompt;
 pub mod providers;
 /// Thread-safe runtime environment — replaces `std::env::set_var`.
 pub mod runtime_env;
+/// Process sandboxing for the Bash tool (macOS seatbelt / Linux bwrap).
+pub mod sandbox;
 /// Session lifecycle — create, resume, list, delete.
 pub mod session;
 /// Last-used provider persistence (`~/.config/koda/settings.toml`).
