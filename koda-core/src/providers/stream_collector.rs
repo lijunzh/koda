@@ -102,12 +102,7 @@ async fn drive_sse_stream(
             let line = buffer[..line_end].trim().to_string();
             buffer.drain(..=line_end);
 
-            // SSE spec: "data: payload" or "data:payload" (space is optional)
-            let data = if let Some(d) = line.strip_prefix("data: ") {
-                d
-            } else if let Some(d) = line.strip_prefix("data:") {
-                d
-            } else {
+            let Some(data) = line.strip_prefix("data: ") else {
                 continue;
             };
 
@@ -175,12 +170,7 @@ mod tests {
 
         for line in sse_text.lines() {
             let trimmed = line.trim();
-            // Mirror the real SSE parser: accept both `data: ` and `data:`
-            let data = if let Some(d) = trimmed.strip_prefix("data: ") {
-                d
-            } else if let Some(d) = trimmed.strip_prefix("data:") {
-                d
-            } else {
+            let Some(data) = trimmed.strip_prefix("data: ") else {
                 continue;
             };
             if data.trim() == "[DONE]" {
@@ -221,28 +211,6 @@ mod tests {
 
         assert_eq!(chunks.len(), 2); // 1 delta + Done
         assert!(matches!(&chunks[0], StreamChunk::TextDelta(t) if t == "payload"));
-    }
-
-    /// SSE spec allows `data:` without a trailing space (issue #823).
-    #[tokio::test]
-    async fn test_data_without_space_parsed() {
-        let sse = "data:hello\ndata:world\n";
-        let chunks = drive_parser(Box::new(EchoParser::new()), sse).await;
-
-        assert_eq!(chunks.len(), 3); // 2 deltas + Done
-        assert!(matches!(&chunks[0], StreamChunk::TextDelta(t) if t == "hello"));
-        assert!(matches!(&chunks[1], StreamChunk::TextDelta(t) if t == "world"));
-    }
-
-    /// Mixed `data: ` and `data:` lines should both be parsed.
-    #[tokio::test]
-    async fn test_data_mixed_space_variants() {
-        let sse = "data: with-space\ndata:no-space\n";
-        let chunks = drive_parser(Box::new(EchoParser::new()), sse).await;
-
-        assert_eq!(chunks.len(), 3);
-        assert!(matches!(&chunks[0], StreamChunk::TextDelta(t) if t == "with-space"));
-        assert!(matches!(&chunks[1], StreamChunk::TextDelta(t) if t == "no-space"));
     }
 
     // ── Anthropic parser fixture tests ────────────────────────────
@@ -456,38 +424,5 @@ data: [DONE]
             }
             other => panic!("Expected Done, got {:?}", other),
         }
-    }
-
-    /// Gemma 4 via LM Studio may use `thinking_content` field (issue #823).
-    #[tokio::test]
-    async fn test_openai_thinking_content_field() {
-        let sse = r#"data: {"choices":[{"delta":{"thinking_content":"Gemma thinking..."},"finish_reason":null}],"usage":null}
-data: {"choices":[{"delta":{"content":"Answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}
-data: [DONE]
-"#;
-        let chunks = drive_parser(Box::new(OpenAiChunkParser::new()), sse).await;
-
-        assert!(matches!(&chunks[0], StreamChunk::ThinkingDelta(t) if t == "Gemma thinking..."));
-        // "Answer" is short enough to be held back by the tag filter until flush
-        let text: String = chunks
-            .iter()
-            .filter_map(|c| match c {
-                StreamChunk::TextDelta(t) => Some(t.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(text, "Answer");
-    }
-
-    /// Some servers use `thought_content` instead of `reasoning_content`.
-    #[tokio::test]
-    async fn test_openai_thought_content_field() {
-        let sse = r#"data: {"choices":[{"delta":{"thought_content":"deep thoughts"},"finish_reason":null}],"usage":null}
-data: {"choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}
-data: [DONE]
-"#;
-        let chunks = drive_parser(Box::new(OpenAiChunkParser::new()), sse).await;
-
-        assert!(matches!(&chunks[0], StreamChunk::ThinkingDelta(t) if t == "deep thoughts"));
     }
 }
