@@ -110,6 +110,13 @@ struct Cli {
     /// OpenAI reasoning effort (low, medium, high)
     #[arg(long)]
     reasoning_effort: Option<String>,
+
+    /// Sandbox mode for Bash tool invocations: none (default) or project.
+    /// "project" restricts writes to the project dir + /tmp.
+    /// Requires sandbox-exec on macOS or bwrap on Linux.
+    #[arg(long, env = "KODA_SANDBOX", default_value = "none",
+          value_parser = ["none", "project"])]
+    sandbox: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -161,7 +168,8 @@ pub(crate) async fn run() -> Result<()> {
                             cli.temperature,
                             cli.thinking_budget,
                             cli.reasoning_effort.clone(),
-                        );
+                        )
+                        .with_sandbox(koda_core::sandbox::SandboxMode::parse(&cli.sandbox));
                     server::run_stdio_server(project_root, config).await?;
                 } else {
                     eprintln!("WebSocket server (--port {port}) not yet implemented. Use --stdio.");
@@ -234,7 +242,8 @@ pub(crate) async fn run() -> Result<()> {
                 cli.temperature,
                 cli.thinking_budget,
                 cli.reasoning_effort,
-            );
+            )
+            .with_sandbox(koda_core::sandbox::SandboxMode::parse(&cli.sandbox));
         let session_id = match cli.session {
             Some(id) => id,
             None => db.create_session(&config.agent_name, &project_root).await?,
@@ -266,7 +275,8 @@ pub(crate) async fn run() -> Result<()> {
             cli.temperature,
             cli.thinking_budget,
             cli.reasoning_effort,
-        );
+        )
+        .with_sandbox(koda_core::sandbox::SandboxMode::parse(&cli.sandbox));
 
     // Initialize database is already done above
 

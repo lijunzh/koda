@@ -69,7 +69,11 @@ impl KodaAgent {
         project_root: PathBuf,
         commands: &[(&str, &str)],
     ) -> Result<Self> {
-        let tools = ToolRegistry::new(project_root.clone(), config.max_context_tokens);
+        let tools = ToolRegistry::with_sandbox(
+            project_root.clone(),
+            config.max_context_tokens,
+            config.sandbox.clone(),
+        );
         let tool_defs = tools.get_definitions(&config.allowed_tools, &config.disallowed_tools);
 
         let semantic_memory = memory::load(&project_root)?;
