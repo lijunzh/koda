@@ -10,7 +10,6 @@ use super::{
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 
 /// Client for OpenAI-compatible APIs.
 pub struct OpenAiCompatProvider {
@@ -463,7 +462,7 @@ impl LlmProvider for OpenAiCompatProvider {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
         settings: &crate::config::ModelSettings,
-    ) -> Result<mpsc::Receiver<StreamChunk>> {
+    ) -> Result<super::stream_collector::SseCollector> {
         let request = Self::build_request(messages, tools, &settings.model, Some(true), settings);
 
         let mut req = self
@@ -486,10 +485,10 @@ impl LlmProvider for OpenAiCompatProvider {
             anyhow::bail!("LLM API returned {status}: {body}");
         }
 
-        let rx =
+        let collector =
             super::stream_collector::spawn_sse_collector(resp, Box::new(OpenAiChunkParser::new()));
 
-        Ok(rx)
+        Ok(collector)
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {

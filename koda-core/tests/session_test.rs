@@ -9,7 +9,7 @@ use koda_core::{
     approval::ApprovalMode,
     engine::{EngineCommand, EngineEvent, event::TurnEndReason},
     persistence::Persistence,
-    providers::{LlmResponse, ModelInfo, StreamChunk},
+    providers::{LlmResponse, ModelInfo},
     session::KodaSession,
     tools::ToolRegistry,
 };
@@ -155,7 +155,7 @@ async fn session_cancellation_produces_turn_end_cancelled() {
             _: &[ChatMessage],
             _: &[ToolDefinition],
             _: &koda_core::config::ModelSettings,
-        ) -> Result<mpsc::Receiver<StreamChunk>> {
+        ) -> Result<koda_core::providers::stream_collector::SseCollector> {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             unreachable!()
         }

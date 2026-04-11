@@ -163,6 +163,21 @@ impl TuiContext {
     // ── Post-turn cleanup ──────────────────────────────────────
 
     async fn post_turn_cleanup(&mut self, ui_rx: &mut mpsc::UnboundedReceiver<UiEvent>) {
+        // If the turn was cancelled, clear the input queue so queued
+        // messages don't immediately start a new turn that may block
+        // on a single-slot local server (LM Studio, ollama) (#825).
+        if self.session.cancel.is_cancelled() && !self.input_queue.is_empty() {
+            let n = self.input_queue.len();
+            self.input_queue.clear();
+            self.scroll_buffer.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("\u{1f6ab} Cleared {n} queued message(s)"),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        }
+
         self.tui_state = TuiState::Idle;
         self.inference_start = None;
         self.session.cancel = tokio_util::sync::CancellationToken::new();

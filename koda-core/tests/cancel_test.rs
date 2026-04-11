@@ -13,7 +13,7 @@ use koda_core::{
     db::{Database, Role},
     engine::{EngineCommand, EngineEvent},
     inference::{self, InferenceContext},
-    providers::{LlmResponse, ModelInfo, StreamChunk},
+    providers::{LlmResponse, ModelInfo},
     tools::ToolRegistry,
 };
 use koda_test_utils::{ChatMessage, LlmProvider, TestSink, ToolDefinition};
@@ -42,7 +42,7 @@ impl LlmProvider for SlowProvider {
         _messages: &[ChatMessage],
         _tools: &[ToolDefinition],
         _settings: &koda_core::config::ModelSettings,
-    ) -> Result<mpsc::Receiver<StreamChunk>> {
+    ) -> Result<koda_core::providers::stream_collector::SseCollector> {
         // Simulate a model that hangs on the initial HTTP request
         tokio::time::sleep(Duration::from_secs(60)).await;
         unreachable!("should be cancelled before this returns")

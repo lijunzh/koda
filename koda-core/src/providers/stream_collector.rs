@@ -29,6 +29,19 @@ pub trait ChunkParser: Send + 'static {
     fn finish(&mut self) -> Vec<StreamChunk>;
 }
 
+/// Result of [`spawn_sse_collector`]: the chunk receiver and a handle
+/// that can be [`abort`](tokio::task::JoinHandle::abort)ed to kill the
+/// background HTTP read when the caller no longer needs the stream
+/// (e.g. user pressed Ctrl+C).
+#[derive(Debug)]
+pub struct SseCollector {
+    /// Channel receiver yielding parsed [`StreamChunk`]s.
+    pub rx: mpsc::Receiver<StreamChunk>,
+    /// Task handle for the background HTTP reader — call `.abort()`
+    /// to immediately close the TCP connection on cancellation.
+    pub handle: tokio::task::JoinHandle<()>,
+}
+
 /// Spawn a task that reads an SSE byte stream, parses chunks via the given
 /// [`ChunkParser`], and sends [`StreamChunk`]s to the returned receiver.
 ///
@@ -38,13 +51,16 @@ pub trait ChunkParser: Send + 'static {
 /// - `data: ` prefix stripping (non-data lines are ignored)
 /// - `[DONE]` sentinel (standard SSE terminator used by OpenAI)
 /// - Graceful finalization when the stream closes without `[DONE]`
+///
+/// Call [`SseCollector::handle`]`.abort()` to immediately kill the
+/// background reader and close the HTTP connection (#825).
 pub fn spawn_sse_collector(
     response: reqwest::Response,
     parser: Box<dyn ChunkParser>,
-) -> mpsc::Receiver<StreamChunk> {
+) -> SseCollector {
     let (tx, rx) = mpsc::channel(64);
-    tokio::spawn(drive_sse_stream(response, parser, tx));
-    rx
+    let handle = tokio::spawn(drive_sse_stream(response, parser, tx));
+    SseCollector { rx, handle }
 }
 
 /// Inner driver: read SSE lines from a byte stream and dispatch to the parser.

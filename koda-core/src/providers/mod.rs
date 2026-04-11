@@ -300,13 +300,14 @@ pub trait LlmProvider: Send + Sync {
     ) -> Result<LlmResponse>;
 
     /// Send a streaming chat completion request.
-    /// Returns a channel receiver that yields chunks as they arrive.
+    /// Returns an [`stream_collector::SseCollector`] with the chunk receiver and a task handle
+    /// that can be aborted to immediately kill the HTTP read (#825).
     async fn chat_stream(
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
         settings: &crate::config::ModelSettings,
-    ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>>;
+    ) -> Result<stream_collector::SseCollector>;
 
     /// List available models from the provider.
     async fn list_models(&self) -> Result<Vec<ModelInfo>>;

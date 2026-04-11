@@ -211,7 +211,7 @@ impl LlmProvider for MockProvider {
         messages: &[ChatMessage],
         _tools: &[ToolDefinition],
         _settings: &ModelSettings,
-    ) -> Result<mpsc::Receiver<StreamChunk>> {
+    ) -> Result<super::stream_collector::SseCollector> {
         self.recorded_calls.lock().unwrap().push(messages.to_vec());
         let response = self.next_response();
 
@@ -231,7 +231,7 @@ impl LlmProvider for MockProvider {
 
         let (tx, rx) = mpsc::channel(32);
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             match response {
                 MockResponse::Text(text) => {
                     // Stream in small chunks to simulate real streaming.
@@ -302,7 +302,7 @@ impl LlmProvider for MockProvider {
             }
         });
 
-        Ok(rx)
+        Ok(super::stream_collector::SseCollector { rx, handle })
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
@@ -327,7 +327,7 @@ mod tests {
     #[tokio::test]
     async fn test_text_response() {
         let provider = MockProvider::new(vec![MockResponse::Text("hello".into())]);
-        let rx = provider
+        let collector = provider
             .chat_stream(
                 &[],
                 &[],
@@ -336,7 +336,7 @@ mod tests {
             .await
             .unwrap();
 
-        let chunks: Vec<_> = collect_chunks(rx).await;
+        let chunks: Vec<_> = collect_chunks(collector).await;
         assert!(
             chunks
                 .iter()
@@ -351,7 +351,7 @@ mod tests {
             "Bash",
             serde_json::json!({"command": "echo hi"}),
         )]);
-        let rx = provider
+        let collector = provider
             .chat_stream(
                 &[],
                 &[],
@@ -360,7 +360,7 @@ mod tests {
             .await
             .unwrap();
 
-        let chunks: Vec<_> = collect_chunks(rx).await;
+        let chunks: Vec<_> = collect_chunks(collector).await;
         assert!(
             chunks
                 .iter()
@@ -382,7 +382,10 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("boom"));
     }
 
-    async fn collect_chunks(mut rx: mpsc::Receiver<StreamChunk>) -> Vec<StreamChunk> {
+    async fn collect_chunks(
+        collector: crate::providers::stream_collector::SseCollector,
+    ) -> Vec<StreamChunk> {
+        let mut rx = collector.rx;
         let mut chunks = Vec::new();
         while let Some(chunk) = rx.recv().await {
             chunks.push(chunk);
@@ -584,8 +587,8 @@ mod tests {
     async fn test_stream_text_max_tokens() {
         let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::TextMaxTokens("hi there".into())]);
-        let rx = provider.chat_stream(&[], &[], &settings).await.unwrap();
-        let chunks = collect_chunks(rx).await;
+        let collector = provider.chat_stream(&[], &[], &settings).await.unwrap();
+        let chunks = collect_chunks(collector).await;
         // Should end with Done with stop_reason = "max_tokens"
         let done = chunks
             .iter()
@@ -602,8 +605,8 @@ mod tests {
             arguments: "{}".into(),
             thought_signature: None,
         }])]);
-        let rx = provider.chat_stream(&[], &[], &settings).await.unwrap();
-        let chunks = collect_chunks(rx).await;
+        let collector = provider.chat_stream(&[], &[], &settings).await.unwrap();
+        let chunks = collect_chunks(collector).await;
         // Should have a ToolCallReady chunk
         assert!(
             chunks
@@ -620,8 +623,8 @@ mod tests {
             partial_text: "partial output".into(),
             error: "connection dropped".into(),
         }]);
-        let rx = provider.chat_stream(&[], &[], &settings).await.unwrap();
-        let chunks = collect_chunks(rx).await;
+        let collector = provider.chat_stream(&[], &[], &settings).await.unwrap();
+        let chunks = collect_chunks(collector).await;
         assert!(
             chunks
                 .iter()
