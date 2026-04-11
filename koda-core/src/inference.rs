@@ -50,6 +50,7 @@ use crate::loop_guard::LoopDetector;
 use crate::persistence::Persistence;
 use crate::providers::{
     ChatMessage, ImageData, LlmProvider, StreamChunk, TokenUsage, ToolCall, ToolDefinition,
+    stream_collector::SseCollector,
 };
 use crate::skill_scope::SkillToolScope;
 use crate::tool_dispatch::{
@@ -265,7 +266,7 @@ async fn try_with_rate_limit(
     model_settings: &crate::config::ModelSettings,
     cancel: &CancellationToken,
     sink: &dyn EngineSink,
-) -> Result<Option<mpsc::Receiver<StreamChunk>>> {
+) -> Result<Option<SseCollector>> {
     let mut last_err = None;
     for attempt in 0..RATE_LIMIT_MAX_RETRIES {
         let result = tokio::select! {
@@ -273,7 +274,7 @@ async fn try_with_rate_limit(
             _ = cancel.cancelled() => return Ok(None),
         };
         match result {
-            Ok(rx) => return Ok(Some(rx)),
+            Ok(collector) => return Ok(Some(collector)),
             Err(e) if is_rate_limit_error(&e) && attempt + 1 < RATE_LIMIT_MAX_RETRIES => {
                 let delay = rate_limit_backoff(attempt);
                 sink.emit(EngineEvent::SpinnerStop);
@@ -305,7 +306,7 @@ async fn try_with_rate_limit(
 async fn try_overflow_recovery(
     turn: &TurnState<'_>,
     original_err: anyhow::Error,
-) -> Result<Option<(mpsc::Receiver<StreamChunk>, Vec<ChatMessage>)>> {
+) -> Result<Option<(SseCollector, Vec<ChatMessage>)>> {
     turn.sink.emit(EngineEvent::SpinnerStop);
     turn.sink.emit(EngineEvent::Warn {
         message: "\u{26a0}\u{fe0f} Provider rejected request (context overflow). \
@@ -342,13 +343,13 @@ async fn try_overflow_recovery(
     turn.sink.emit(EngineEvent::SpinnerStart {
         message: "Retrying...".into(),
     });
-    let rx = tokio::select! {
+    let collector = tokio::select! {
         result = turn.provider.chat_stream(&messages, turn.tool_defs, &turn.config.model_settings) => {
             result.context("LLM inference failed after compaction retry")?
         }
         _ = turn.cancel.cancelled() => return Ok(None),
     };
-    Ok(Some((rx, messages)))
+    Ok(Some((collector, messages)))
 }
 
 /// Collect a streamed LLM response, executing read-only tools eagerly.
@@ -741,8 +742,8 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         .await;
 
         // Handle cancellation during rate limit retries
-        let stream_result = match stream_result {
-            Ok(Some(rx)) => Ok(rx),
+        let stream_result: Result<SseCollector> = match stream_result {
+            Ok(Some(c)) => Ok(c),
             Ok(None) => {
                 sink.emit(EngineEvent::SpinnerStop);
                 sink.emit(EngineEvent::Warn {
@@ -755,8 +756,11 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
 
         // Graceful recovery: if the provider returns a context-overflow error,
         // compact and retry once before giving up.
-        let mut rx = match stream_result {
-            Ok(rx) => rx,
+        let SseCollector {
+            mut rx,
+            handle: sse_handle,
+        } = match stream_result {
+            Ok(c) => c,
             Err(e) if is_context_overflow_error(&e) => {
                 match try_overflow_recovery(&turn, e).await? {
                     Some((rx, _updated)) => rx,
@@ -801,6 +805,10 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         let stream_result = collect_stream(&mut rx, sink, &cancel, tools, mode, project_root).await;
 
         if stream_result.interrupted {
+            // Kill the background HTTP reader immediately so the TCP
+            // connection closes and LM Studio (or any single-slot
+            // local server) can accept the next request (#825).
+            sse_handle.abort();
             let has_text = !stream_result.text.is_empty();
             let has_thinking = !stream_result.thinking_content.is_empty();
             if has_text || has_thinking {
@@ -827,8 +835,10 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         }
 
         // Network drop: warning already emitted by collect_stream.
+        // Network drop: warning already emitted by collect_stream.
         // Discard the partial response — storing it would corrupt the session.
         if stream_result.network_error.is_some() {
+            sse_handle.abort();
             return Ok(());
         }
 

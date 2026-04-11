@@ -144,14 +144,16 @@ impl<P: LlmProvider> LlmProvider for RecordingProvider<P> {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
         settings: &ModelSettings,
-    ) -> Result<mpsc::Receiver<StreamChunk>> {
+    ) -> Result<koda_core::providers::stream_collector::SseCollector> {
         let result = self.inner.chat_stream(messages, tools, settings).await;
         match result {
-            Ok(mut rx) => {
+            Ok(collector) => {
+                let mut rx = collector.rx;
+                let _old_handle = collector.handle;
                 // Collect the full stream, record it, then re-emit via a new channel.
                 let (tx, new_rx) = mpsc::channel(256);
                 let responses = self.responses.clone();
-                tokio::spawn(async move {
+                let handle = tokio::spawn(async move {
                     let mut text = String::new();
                     let mut tool_calls = Vec::new();
                     let mut had_network_error = false;
@@ -188,7 +190,7 @@ impl<P: LlmProvider> LlmProvider for RecordingProvider<P> {
                     responses.lock().unwrap().push(mock);
                 });
 
-                Ok(new_rx)
+                Ok(koda_core::providers::stream_collector::SseCollector { rx: new_rx, handle })
             }
             Err(e) => {
                 let msg = format!("{e:#}");

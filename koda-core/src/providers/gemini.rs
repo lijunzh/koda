@@ -529,7 +529,7 @@ impl LlmProvider for GeminiProvider {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
         settings: &crate::config::ModelSettings,
-    ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
+    ) -> Result<super::stream_collector::SseCollector> {
         let model = &settings.model;
         let (contents, system_instruction) = self.convert_messages(messages);
         let api_tools = Self::build_tools(tools);
@@ -558,10 +558,10 @@ impl LlmProvider for GeminiProvider {
             anyhow::bail!("Gemini API returned {status}: {body}");
         }
 
-        let rx =
+        let collector =
             super::stream_collector::spawn_sse_collector(resp, Box::new(GeminiChunkParser::new()));
 
-        Ok(rx)
+        Ok(collector)
     }
 }
 

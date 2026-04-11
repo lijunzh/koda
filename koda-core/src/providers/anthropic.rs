@@ -631,7 +631,7 @@ impl LlmProvider for AnthropicProvider {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
         settings: &crate::config::ModelSettings,
-    ) -> Result<tokio::sync::mpsc::Receiver<StreamChunk>> {
+    ) -> Result<super::stream_collector::SseCollector> {
         let (api_model, extended_ctx) = resolve_model(&settings.model);
         let system = messages
             .iter()
@@ -694,12 +694,12 @@ impl LlmProvider for AnthropicProvider {
             anyhow::bail!("Anthropic API returned {status}: {body}");
         }
 
-        let rx = super::stream_collector::spawn_sse_collector(
+        let collector = super::stream_collector::spawn_sse_collector(
             resp,
             Box::new(AnthropicChunkParser::new()),
         );
 
-        Ok(rx)
+        Ok(collector)
     }
 }
 

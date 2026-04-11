@@ -11,7 +11,7 @@ use koda_core::{
     engine::{EngineCommand, EngineEvent},
     inference::{self, InferenceContext},
     persistence::Persistence,
-    providers::{LlmResponse, ModelInfo, StreamChunk},
+    providers::{LlmResponse, ModelInfo},
 };
 use koda_test_utils::{ChatMessage, Env, LlmProvider, MockProvider, MockResponse, ToolDefinition};
 use tokio::sync::mpsc;
@@ -240,7 +240,7 @@ async fn test_cancel_during_streaming() {
             _: &[ChatMessage],
             _: &[ToolDefinition],
             _: &ModelSettings,
-        ) -> Result<mpsc::Receiver<StreamChunk>> {
+        ) -> Result<koda_core::providers::stream_collector::SseCollector> {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             unreachable!()
         }
