@@ -9,6 +9,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **Thinking block persistence** — Claude's `💭 Thinking…` blocks are now
+  persisted to the database and rendered on session resume / in transcripts.
+  Previously only streamed live and lost on exit (#812).
+- **Tool-type-aware output styling** — read-only tool outputs (Read, Grep,
+  Glob) render in dim text; mutating tools (Write, Edit, Bash) render in
+  bold. Makes scan-reading conversation history much easier (#809).
+- **Image rejection warning** — when a model/endpoint doesn't support vision
+  input, Koda surfaces an actionable warning ("switch to a vision-capable
+  model") instead of silently failing or showing a cryptic API error (#813).
+- **Edit staleness last-writer context** — when a stale-file edit fails,
+  the error now names the tool that last modified the file and how long ago,
+  so the model can self-correct (#815).
+
 ### Changed
 - **`/copy` repurposed — copies last assistant response to clipboard** — `/copy`
   now copies the Nth-most-recent assistant text response to the system clipboard
@@ -17,7 +31,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`/export [file.md]` — full transcript export** — renamed from the old `/copy`.
   Without an argument, auto-generates a timestamped filename from the first user
   prompt (`koda-YYYYMMDD-HHMMSS-<slug>.md`) and writes to the current directory.
-  Explicit path still supported: `/export notes/session.md`.
+  Explicit path still supported: `/export notes/session.md`. Only relative paths
+  accepted (absolute paths and `..` traversal are rejected).
+- **Loop detection message** — reworded from misleading "identical arguments —
+  rephrase the task" to actionable "called 3× with similar arguments — send a
+  follow-up message to continue" (#816).
+
+### Fixed
+- **Image paths with spaces** — macOS drag-and-drop paths with backslash-escaped
+  spaces (e.g. `Screenshot\ 2026-04-09\ at\ 4.37.01\ PM.png`) are now correctly
+  tokenized instead of splitting on spaces (#805).
+- **TodoWrite loop detection** — content-aware dedup prevents the model from
+  re-emitting identical todo lists that trigger false loop detection. Checkbox
+  display upgraded from Unicode circles to `[ ]`/`[→]`/`[x]` (#806).
+- **Quoted strings in bash safety check** — patterns like `grep "rm -rf" logs/`
+  no longer false-positive as destructive. `strip_quoted_strings()` now also
+  handles backslash-escaped quotes inside double-quoted strings (#803, #817).
+- **UTF-8 panics in transcript/export** — byte-index slicing (`&s[..77]`) that
+  panicked on multi-byte characters (CJK, emoji) replaced with char-safe
+  truncation (#817).
+- **`is_image_rejection_error` false positives** — bare "vision" substring
+  match tightened to require conjunction with support-denial words, preventing
+  auth errors from being misclassified (#817).
+- **`/export` path traversal** — user-supplied paths are now validated; absolute
+  paths and `..` traversal are rejected (#817).
 
 ### Removed
 - **`Ctrl+Y` (copy last code block) and `Ctrl+U` (copy last response)** — both
