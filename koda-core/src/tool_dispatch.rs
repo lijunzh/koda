@@ -505,11 +505,15 @@ pub(crate) async fn execute_tools_sequential(
         // with an approval prompt that will inevitably fail.
         if let Some(error) = {
             let cache = tools.file_read_cache();
+            let last_writer = tools.last_writer_cache();
+            let last_bash = tools.last_bash_cache();
             tools::validate::validate_tool_call(
                 &tc.function_name,
                 &parsed_args,
                 project_root,
                 Some(&cache),
+                Some(&last_writer),
+                Some(&last_bash),
             )
             .await
         } {
