@@ -3,11 +3,22 @@
 //! Tracks recent tool call fingerprints in a sliding window and flags
 //! when the same tool+args combination repeats too many times.
 //!
-//! ## Detection method
+//! ## Detection methods
 //!
-//! Each tool call is fingerprinted as `(tool_name, hash(args))`. The guard
-//! maintains a sliding window of the last N fingerprints. When the same
-//! fingerprint appears more than the threshold, a loop is detected.
+//! Two complementary strategies catch runaway loops:
+//!
+//! 1. **Exact fingerprint** — `(tool_name, hash(args))` repeated
+//!    `REPEAT_THRESHOLD` times in the window → immediate stop.
+//!    Catches: model retrying the same command verbatim.
+//!
+//! 2. **Tool-name saturation** — same *tool name* (any args) appears
+//!    `NAME_SATURATION_THRESHOLD` times in the window → immediate stop.
+//!    Catches: model calling `Bash(ls -la)`, `Bash(ls -l)`, `Bash(ls)`…
+//!    with slightly varying args (#826).
+//!
+//! Both strategies track *all* tools — read-only and mutating alike.
+//! A model that calls `List` or `Grep` 8 times in 20 calls is clearly
+//! stuck, regardless of whether those tools have side-effects.
 //!
 //! ## What happens on detection
 //!
@@ -31,8 +42,13 @@ pub const MAX_ITERATIONS_DEFAULT: u32 = 200;
 /// Hard cap for sub-agent loops.
 pub const MAX_SUB_AGENT_ITERATIONS: usize = 20;
 
-/// How many times the same fingerprint must appear to flag a loop.
+/// How many times the same exact fingerprint (tool+args) must appear to flag a loop.
 pub const REPEAT_THRESHOLD: usize = 3;
+
+/// How many times the same *tool name* (any args) must appear in the
+/// window to flag a saturation loop. Higher than `REPEAT_THRESHOLD`
+/// because it's normal to call the same tool a few times with different args.
+pub const NAME_SATURATION_THRESHOLD: usize = 8;
 
 /// Sliding window size (individual tool calls, not batches).
 const WINDOW_SIZE: usize = 20;
@@ -45,9 +61,11 @@ const DISPLAY_RECENT: usize = 5;
 /// Tracks repeated tool call patterns.
 #[derive(Default)]
 pub struct LoopDetector {
-    /// Sliding window of recent tool fingerprints.
+    /// Sliding window of recent tool fingerprints (tool+args).
     window: VecDeque<String>,
-    /// Ring buffer of the last N tool names (for display only).
+    /// Parallel window of just tool names (for saturation check).
+    name_window: VecDeque<String>,
+    /// Ring buffer of the last N tool names (for display).
     recent: VecDeque<String>,
 }
 
@@ -56,23 +74,26 @@ impl LoopDetector {
     pub fn new() -> Self {
         Self {
             window: VecDeque::new(),
+            name_window: VecDeque::new(),
             recent: VecDeque::new(),
         }
     }
 
     /// Record a batch of tool calls.
-    /// Returns `Some(repeated_fingerprint)` when a loop is detected.
+    /// Returns `Some(culprit_description)` when a loop is detected.
     pub fn record(&mut self, tool_calls: &[ToolCall]) -> Option<String> {
         for tc in tool_calls {
             let fp = fingerprint(&tc.function_name, &tc.arguments);
 
-            // Sliding window for loop detection ONLY tracks mutating tools.
-            // Repeating read-only operations is handled by stale-read optimization.
-            if crate::tools::is_mutating_tool(&tc.function_name) {
-                self.window.push_back(fp);
-                if self.window.len() > WINDOW_SIZE {
-                    self.window.pop_front();
-                }
+            // Track ALL tools — read-only loops are just as wasteful (#826).
+            self.window.push_back(fp);
+            if self.window.len() > WINDOW_SIZE {
+                self.window.pop_front();
+            }
+
+            self.name_window.push_back(tc.function_name.clone());
+            if self.name_window.len() > WINDOW_SIZE {
+                self.name_window.pop_front();
             }
 
             // Ring buffer for display always tracks all tools
@@ -91,14 +112,28 @@ impl LoopDetector {
     }
 
     fn check(&self) -> Option<String> {
-        let mut counts: HashMap<&str, usize> = HashMap::new();
+        // Strategy 1: exact fingerprint repeated REPEAT_THRESHOLD times
+        let mut fp_counts: HashMap<&str, usize> = HashMap::new();
         for fp in &self.window {
-            *counts.entry(fp.as_str()).or_insert(0) += 1;
+            *fp_counts.entry(fp.as_str()).or_insert(0) += 1;
         }
-        counts
-            .into_iter()
-            .find(|(_, n)| *n >= REPEAT_THRESHOLD)
-            .map(|(fp, _)| fp.to_string())
+        if let Some((fp, _)) = fp_counts.iter().find(|(_, n)| **n >= REPEAT_THRESHOLD) {
+            return Some(fp.to_string());
+        }
+
+        // Strategy 2: same tool name saturates the window (#826)
+        let mut name_counts: HashMap<&str, usize> = HashMap::new();
+        for name in &self.name_window {
+            *name_counts.entry(name.as_str()).or_insert(0) += 1;
+        }
+        if let Some((name, count)) = name_counts
+            .iter()
+            .find(|(_, n)| **n >= NAME_SATURATION_THRESHOLD)
+        {
+            return Some(format!("{name} (×{count} with varying args)"));
+        }
+
+        None
     }
 }
 
@@ -178,15 +213,55 @@ mod tests {
     }
 
     #[test]
-    fn ignores_readonly_tools() {
+    fn detects_readonly_tool_loop() {
+        // Read-only tools are now tracked (#826)
         let mut d = LoopDetector::new();
         let tc = call("Read", "{\"path\":\"src/main.rs\"}");
         assert!(d.record(std::slice::from_ref(&tc)).is_none());
         assert!(d.record(std::slice::from_ref(&tc)).is_none());
-        assert!(d.record(std::slice::from_ref(&tc)).is_none());
-        assert!(d.record(std::slice::from_ref(&tc)).is_none());
-        // Even 4 repetitions shouldn't trigger because Read is ignored
-        assert!(d.check().is_none());
+        assert!(
+            d.record(std::slice::from_ref(&tc)).is_some(),
+            "read-only tools should be caught at REPEAT_THRESHOLD"
+        );
+    }
+
+    #[test]
+    fn detects_name_saturation_with_varying_args() {
+        // Same tool name but different args each time (#826)
+        let mut d = LoopDetector::new();
+        for i in 0..NAME_SATURATION_THRESHOLD {
+            let args = format!("{{\"command\":\"ls -variant-{i}\"}}");
+            let result = d.record(&[call("Bash", &args)]);
+            if i < NAME_SATURATION_THRESHOLD - 1 {
+                assert!(result.is_none(), "should not trigger at call {i}");
+            } else {
+                assert!(result.is_some(), "should trigger at call {i}");
+                assert!(
+                    result.unwrap().contains("varying args"),
+                    "should mention varying args"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_tools_no_false_positive() {
+        // Alternating between different tools shouldn't trigger saturation
+        let mut d = LoopDetector::new();
+        for i in 0..20 {
+            let name = if i % 3 == 0 {
+                "Bash"
+            } else if i % 3 == 1 {
+                "Read"
+            } else {
+                "List"
+            };
+            let args = format!("{{\"i\":{i}}}");
+            assert!(
+                d.record(&[call(name, &args)]).is_none(),
+                "mixed tools should not trigger (call {i})"
+            );
+        }
     }
 
     #[test]
