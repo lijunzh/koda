@@ -193,10 +193,9 @@ async fn loop_detection_stops_repeated_tool_calls() {
     let events = env.run_inference(&provider).await;
 
     // Should detect the loop and emit a warning.
-    let has_loop_warn = events.iter().any(|e| {
-        matches!(e, EngineEvent::Warn { message } if message.contains("Loop detected")
-            || message.contains("repeating"))
-    });
+    let has_loop_warn = events
+        .iter()
+        .any(|e| matches!(e, EngineEvent::Warn { message } if message.contains("Loop guard")));
     assert!(has_loop_warn, "expected loop detection warning: {events:?}");
 }
 

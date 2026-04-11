@@ -11,8 +11,9 @@
 //!
 //! ## What happens on detection
 //!
-//! - **Soft limit** (repeated tool calls): injects a system message telling
-//!   the model it's looping, asking it to try a different approach
+//! - **Soft limit** (repeated tool calls): emits a `Warn` event naming the
+//!   culprit tool and repeat count; the turn ends and the user can send a
+//!   follow-up message to continue
 //! - **Hard limit** (iteration cap): prompts the user interactively to
 //!   continue or stop — falls back to stop in headless environments
 //!
@@ -31,7 +32,7 @@ pub const MAX_ITERATIONS_DEFAULT: u32 = 200;
 pub const MAX_SUB_AGENT_ITERATIONS: usize = 20;
 
 /// How many times the same fingerprint must appear to flag a loop.
-const REPEAT_THRESHOLD: usize = 3;
+pub const REPEAT_THRESHOLD: usize = 3;
 
 /// Sliding window size (individual tool calls, not batches).
 const WINDOW_SIZE: usize = 20;

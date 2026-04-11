@@ -1169,10 +1169,12 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         // Loop detection: same tool+args repeated REPEAT_THRESHOLD times → stop immediately.
         if let Some(fp) = loop_detector.record(&tool_calls) {
             let culprit = fp.split(':').next().unwrap_or("unknown");
+            let n = crate::loop_guard::REPEAT_THRESHOLD;
             sink.emit(EngineEvent::Warn {
                 message: format!(
-                    "Loop detected: '{culprit}' is repeating with identical arguments. \
-                     Stopping to avoid wasted work. Rephrase the task or check for ambiguity."
+                    "Loop guard: '{culprit}' was called {n}× with similar arguments — \
+                     stopping to avoid wasted tokens. \
+                     If the model was making progress, send a follow-up message to continue."
                 ),
             });
             break Ok(());
