@@ -210,11 +210,16 @@ mod tests {
     }
 
     #[test]
-    fn different_args_not_a_loop() {
+    fn different_args_below_saturation_not_a_loop() {
+        // Different args should NOT trigger the exact-fingerprint check.
+        // Stay below NAME_SATURATION_THRESHOLD to avoid the saturation check.
         let mut d = LoopDetector::new();
-        for i in 0..10 {
+        for i in 0..NAME_SATURATION_THRESHOLD - 1 {
             let args = format!("{{\"path\":\"file{i}.rs\"}}");
-            assert!(d.record(&[call("Edit", &args)]).is_none());
+            assert!(
+                d.record(&[call("Edit", &args)]).is_none(),
+                "should not trigger at call {i}"
+            );
         }
     }
 
