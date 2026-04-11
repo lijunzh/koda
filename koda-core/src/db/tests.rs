@@ -1167,3 +1167,94 @@ async fn test_kv_list_prefix() {
     assert!(keys.contains(&"cfg:bar"));
     assert!(!keys.contains(&"other:baz"));
 }
+
+// ── thinking_content (#819) ────────────────────────────────────────────
+
+#[tokio::test]
+async fn thinking_content_round_trip() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    let id = db
+        .insert_message(&session, &Role::Assistant, Some("answer"), None, None, None)
+        .await
+        .unwrap();
+
+    db.update_message_thinking_content(id, "I should think carefully about this…")
+        .await
+        .unwrap();
+
+    let msgs = db.load_context(&session).await.unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(
+        msgs[0].thinking_content.as_deref(),
+        Some("I should think carefully about this…"),
+        "thinking_content should survive a round-trip through the DB"
+    );
+}
+
+#[tokio::test]
+async fn thinking_content_null_by_default() {
+    // Messages for non-Claude models should have NULL thinking_content.
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    db.insert_message(&session, &Role::User, Some("hello"), None, None, None)
+        .await
+        .unwrap();
+    db.insert_message(&session, &Role::Assistant, Some("hi"), None, None, None)
+        .await
+        .unwrap();
+
+    let msgs = db.load_context(&session).await.unwrap();
+    for msg in &msgs {
+        assert!(
+            msg.thinking_content.is_none(),
+            "thinking_content should be None when never written (role: {:?})",
+            msg.role
+        );
+    }
+}
+
+#[tokio::test]
+async fn thinking_content_persists_and_is_loaded_in_context() {
+    // Simulates session resume: write thinking content, then re-load context.
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    db.insert_message(
+        &session,
+        &Role::User,
+        Some("what is 2+2?"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let assistant_id = db
+        .insert_message(
+            &session,
+            &Role::Assistant,
+            Some("It is 4."),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    db.update_message_thinking_content(assistant_id, "2+2=4 trivially")
+        .await
+        .unwrap();
+
+    // Reload context (as session resume would).
+    let msgs = db.load_context(&session).await.unwrap();
+    let assistant = msgs.iter().find(|m| m.role == Role::Assistant).unwrap();
+    assert_eq!(
+        assistant.thinking_content.as_deref(),
+        Some("2+2=4 trivially"),
+        "thinking_content must survive context reload (session resume path)"
+    );
+}
