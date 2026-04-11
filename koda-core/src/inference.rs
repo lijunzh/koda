@@ -836,7 +836,6 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         }
 
         // Network drop: warning already emitted by collect_stream.
-        // Network drop: warning already emitted by collect_stream.
         // Discard the partial response — storing it would corrupt the session.
         if stream_result.network_error.is_some() {
             sse_handle.abort();
