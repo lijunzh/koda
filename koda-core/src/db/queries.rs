@@ -268,6 +268,20 @@ impl Persistence for Database {
         Ok(())
     }
 
+    /// Persist the accumulated thinking/reasoning text for an assistant message.
+    ///
+    /// Called after `insert_message` so the INSERT signature stays lean —
+    /// only assistant messages from Claude with extended thinking enabled will
+    /// ever call this. All other callers of `insert_message` are unaffected.
+    async fn update_message_thinking_content(&self, message_id: i64, content: &str) -> Result<()> {
+        sqlx::query("UPDATE messages SET thinking_content = ? WHERE id = ?")
+            .bind(content)
+            .bind(message_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Load active (non-compacted) messages for a session.
     ///
     /// Returns messages in chronological order. Compacted messages
@@ -280,7 +294,7 @@ impl Persistence for Database {
         let mut messages: Vec<Message> = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
-                    cache_read_tokens, cache_creation_tokens, thinking_tokens,
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content,
                     created_at
              FROM messages
              WHERE session_id = ? AND compacted_at IS NULL
@@ -307,7 +321,7 @@ impl Persistence for Database {
         let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
                     prompt_tokens, completion_tokens,
-                    cache_read_tokens, cache_creation_tokens, thinking_tokens,
+                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content,
                     created_at
              FROM messages
              WHERE session_id = ?
