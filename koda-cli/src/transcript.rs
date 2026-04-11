@@ -29,7 +29,6 @@
 use koda_core::persistence::{Message, Role};
 use koda_core::tools::{ToolEffect, classify_tool};
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Truncate a string to at most `max` characters, appending `…` if truncated.
 /// Safe on multi-byte UTF-8 (never splits a codepoint).
@@ -43,38 +42,17 @@ fn truncate_with_ellipsis(s: &str, max: usize) -> String {
 /// Maximum content lines to include per tool result in the transcript.
 const RESULT_PREVIEW_LINES: usize = 10;
 
-/// Format a Unix timestamp as `YYYY-MM-DD HH:MM` (UTC).
-///
-/// Uses pure stdlib — no chrono dep needed.
+/// Format the current UTC time as `YYYY-MM-DD HH:MM UTC` for the transcript header.
 fn format_utc_now() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    // Simple manual UTC decomposition (no DST, no timezone tables).
-    let mins_total = secs / 60;
-    let hours_total = mins_total / 60;
-    let days_total = hours_total / 24;
-    let min = mins_total % 60;
-    let hour = hours_total % 24;
-    // Gregorian calendar approximation for year/month/day.
-    let (year, month, day) = gregorian_from_days(days_total as u32);
-    format!("{year:04}-{month:02}-{day:02} {hour:02}:{min:02} UTC")
-}
-
-/// Convert days-since-epoch to (year, month, day) in the proleptic Gregorian calendar.
-fn gregorian_from_days(mut z: u32) -> (u32, u32, u32) {
-    z += 719_468;
-    let era = z / 146_097;
-    let doe = z % 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
+    let dt = crate::util::utc_now();
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+        dt.year(),
+        dt.month() as u8,
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+    )
 }
 
 /// Generate a Markdown transcript from a slice of session messages.
