@@ -321,6 +321,7 @@ async fn handle_crossterm_event_inline(
                 key,
                 cancel_token,
                 cmd_tx,
+                scroll_buffer,
                 menu,
                 prompt_mode,
                 pending_approval_id,
@@ -344,6 +345,7 @@ async fn handle_inference_key_inline(
     key: crossterm::event::KeyEvent,
     cancel_token: &tokio_util::sync::CancellationToken,
     cmd_tx: &mpsc::Sender<EngineCommand>,
+    scroll_buffer: &mut ScrollBuffer,
     menu: &mut MenuContent,
     prompt_mode: &mut PromptMode,
     pending_approval_id: &mut Option<String>,
@@ -510,6 +512,15 @@ async fn handle_inference_key_inline(
                 history.push(text.clone());
                 let _ = db.history_push(&text).await;
                 *history_idx = None;
+
+                // Visual echo so the user can see what they queued.
+                let preview = truncate_preview(&text, 80);
+                scroll_buffer.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("📋 Queued: ", Style::default().fg(Color::Yellow)),
+                    Span::styled(preview, Style::default().fg(Color::DarkGray)),
+                ]));
+
                 input_queue.push_back(text);
             }
         }
@@ -518,6 +529,20 @@ async fn handle_inference_key_inline(
         }
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
             cancel_token.cancel();
+        }
+        // Ctrl+U: clear the input queue without cancelling inference.
+        (KeyCode::Char('u'), m) if m.contains(KeyModifiers::CONTROL) => {
+            if !input_queue.is_empty() {
+                let n = input_queue.len();
+                input_queue.clear();
+                scroll_buffer.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("🚫 Cleared {n} queued message(s)"),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
         }
         (KeyCode::BackTab, _) => {
             approval::cycle_mode(shared_mode);
@@ -534,6 +559,19 @@ async fn handle_inference_key_inline(
             completer.reset();
             textarea.input(Event::Key(key));
         }
+    }
+}
+
+/// Truncate a string to `max_chars`, replacing newlines with ↵ and
+/// appending "…" if it was shortened.
+fn truncate_preview(s: &str, max_chars: usize) -> String {
+    let flat: String = s.chars().map(|c| if c == '\n' { '↵' } else { c }).collect();
+    if flat.len() <= max_chars {
+        flat
+    } else {
+        let mut out: String = flat.chars().take(max_chars.saturating_sub(1)).collect();
+        out.push('…');
+        out
     }
 }
 
