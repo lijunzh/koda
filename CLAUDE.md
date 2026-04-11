@@ -455,25 +455,22 @@ an immutable version number; it does not need to wait for Homebrew.
 ### CI job DAG (`ci.yml`)
 
 ```
-lint  ──┬──► test          lint = fmt + clippy (Linux only — no value on Windows)
-check ─┘                   check = cargo check --all-targets, no features
-                           matrix: [ubuntu-latest, windows-latest], fail-fast: false
-doc        (independent)   catches broken rustdoc regardless of lint
-audit      (independent)   reads Cargo.lock against advisories — orthogonal to code quality
-docs-size  (independent)   guards per-chapter byte cap on docs/src/*.md
+test (fmt → clippy → check → test)   single container, compile once
+doc        (independent)              catches broken rustdoc regardless of test
+audit      (independent)              reads Cargo.lock against advisories — orthogonal to code quality
 ```
 
-- `test` gates on **both** `lint` and `check` — the expensive job never runs if cheap ones fail.
-- `doc`, `audit`, `docs-size` run unconditionally in parallel — they provide independent signals
-  and are fast enough that cancelling them on lint failure would lose information, not save time.
-- `check` uses `fail-fast: false` so both platforms always report — Ubuntu catches cfg-gated
-  gaps, Windows catches platform-specific API errors (e.g. `std::os::unix`).
-- macOS omitted from `check`: POSIX like Linux; caught locally since dev is on macOS.
+- `test` runs all checks sequentially in one container: `cargo fmt --check` → `cargo clippy`
+  → `cargo check --all-targets` (no features, catches cfg-gated gaps) → `cargo test`.
+  A failure in any step aborts the rest — fast-fail is preserved within the job.
+- One container = one compile chain = no redundant recompilation across separate runners.
+  The pre-push hook mirrors this sequence locally, so CI is a clean-environment confirmation
+  rather than a first-discovery gate.
+- `doc`, `audit` run unconditionally in parallel — independent signals, fast enough that
+  cancelling them on test failure would lose information, not save time.
 
 **Branch ruleset required gates: `Test` and `Docs` only.**
-`Lint` and `Check` are transitively enforced via `test`'s `needs: [lint, check]` —
-adding them as explicit gates would be redundant. `Docs` is required separately
-because it is independent of the `test` chain.
+`Docs` is required separately because it is independent of the `test` job.
 
 ### Coverage workflow (`coverage.yml`)
 
