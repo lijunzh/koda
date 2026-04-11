@@ -7,6 +7,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 > **Lineage:** This project continues from [`koda-agent`](https://github.com/lijunzh/koda-agent) (archived at v0.1.5).
 > Versions v0.1.0–v0.1.5 of `koda-agent` are documented in that repository's CHANGELOG.
 
+## [0.2.9] - 2026-04-11
+
+### Added
+- **Bash safety: token-level classification (shlex + `DangerCheck` enum)** —
+  Replaces substring matching with POSIX shell tokenisation via the `shlex`
+  crate. `grep "cargo publish" .` and `grep $'cargo publish' .` are now
+  correctly `ReadOnly` instead of falsely `Destructive`. Private items
+  (`rm`, `sudo`, `git push -f`, `gh pr merge`, …) are expressed as a typed
+  `DangerCheck` enum instead of a flat `&[&str]` list, eliminating the whole
+  class of quoted-argument false positives (#807, #823, #841).
+- **Edit staleness guard** — `edit_file` now computes a SHA-256 of the
+  file content on every full read and rejects a subsequent edit if the file
+  has changed on disk since the model last read it (external bash tool, the
+  user, another agent). Implements the Gemini CLI strategy (#814, #839).
+- **Edit multi-match line numbers** — when `old_str` matches more than once,
+  the error now lists the exact line numbers so the model can tighten its
+  snippet in one shot instead of guessing (#814, #839).
+- **Clipboard: OSC 52 fallback for SSH and tmux** — `/copy` and Ctrl+Y now
+  work over SSH and inside tmux sessions via OSC 52 terminal escape sequences
+  and `tmux load-buffer -w`. Detects SSH via `SSH_CONNECTION` (not `SSH_TTY`,
+  which persists in tmux panes after local reattach) (#837).
+- **Type-during-inference queue UX** — keystrokes typed while the model is
+  streaming are queued and replayed immediately when the response completes;
+  the status bar shows pending queue depth (#828).
+
+### Changed
+- **Loop detection: Gemini CLI model (feedback injection)** — replaces the
+  old windowed-fingerprint hard stop with a two-phase approach: first
+  detection injects a "take a step back" system message to nudge the model;
+  second detection (model ignored the feedback) hard-stops. Threshold raised
+  to 5 consecutive identical calls (matches Gemini CLI's
+  `TOOL_CALL_LOOP_THRESHOLD`) (#826, #829, #831, #832).
+- **Per-turn tool call deduplication and cap removed** — frontier models
+  legitimately emit 30+ parallel tool calls in a single response. Dedup and
+  the 20-call cap suppressed valid parallel work. Repeated patterns across
+  turns are now the loop guard's responsibility (#831, #832).
+- **SSE parser: accept `data:` without trailing space** — the SSE spec
+  (RFC) makes the space optional; Gemma 4 and some self-hosted models omit
+  it. Fixes frozen inference on affected endpoints (#823, #824).
+- **UTC date formatting centralised** — three copies of manual Gregorian
+  calendar math replaced with a single `util::utc_now()` backed by the
+  `time` v0.3 crate already in the dependency tree (#818, #833).
+
+### Fixed
+- **Ctrl+C aborts background HTTP reader** — `SseCollector` now exposes a
+  `JoinHandle`; on cancellation the handle is `abort()`ed immediately so the
+  TCP connection closes and single-slot servers (LM Studio, vLLM) can accept
+  the next request without waiting for the timeout (#825, #827).
+- **Duplicate comment removed** — copy-paste artifact in `inference.rs`
+  ("Network drop: warning already emitted" appeared twice on consecutive
+  lines).
+
+### Internal / CI
+- Lint + check merged into the test job — one container, one compile; no
+  duplicate build time (#838).
+- Test coverage expanded: thinking block persistence, `fmt_age`, tokenizer
+  edge cases (CJK paths, trailing backslash, consecutive spaces), image
+  rejection heuristics, loop guard repeat count and tool name (#834, #835).
+- Behavioral bash-safety tests moved to `koda-core/tests/bash_safety_test.rs`
+  (external contract); 20 behavioral + 11 internal = 31 tests (#841).
+
 ## [0.2.8] - 2026-04-11
 
 ### Added
