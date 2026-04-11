@@ -414,17 +414,44 @@ pub fn strip_quoted_strings(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\'' || c == '"' {
+        if c == '\'' {
+            // Single quotes: no escape sequences in bash — everything until
+            // the next unescaped single quote is literal content.
             result.push(c);
             let mut found_close = false;
             for inner in chars.by_ref() {
-                if inner == c {
+                if inner == '\'' {
                     result.push(c);
                     found_close = true;
                     break;
                 }
                 result.push(' ');
             }
+            // Unterminated quote — content already replaced with spaces.
+            if !found_close {}
+        } else if c == '"' {
+            // Double quotes: backslash escapes the next character (\" stays
+            // inside the string, \\ is a literal backslash, etc.).
+            result.push(c);
+            let mut found_close = false;
+            while let Some(inner) = chars.next() {
+                if inner == '\\' {
+                    // Escaped character — consume the next char as literal
+                    // content (replaced with spaces, same as unescaped content).
+                    result.push(' '); // the backslash
+                    if chars.next().is_some() {
+                        result.push(' '); // the escaped char
+                    }
+                    continue;
+                }
+                if inner == '"' {
+                    result.push(c);
+                    found_close = true;
+                    break;
+                }
+                result.push(' ');
+            }
+            // Unterminated quote — content already replaced with spaces.
             if !found_close {}
         } else {
             result.push(c);
@@ -562,6 +589,29 @@ mod tests {
                 "should not be Destructive (pattern is inside quotes): {cmd}"
             );
         }
+    }
+
+    #[test]
+    fn test_strip_quoted_handles_backslash_escaped_quotes() {
+        // Escaped double-quote inside double-quoted string stays inside.
+        assert_eq!(
+            strip_quoted_strings(r#"echo "it\"s fine" ; ls"#),
+            r#"echo "          " ; ls"#,
+        );
+        // Backslash-escaped quote should NOT prematurely close the string.
+        // Without the fix, the \" would close the quote and expose "; rm -rf /".
+        let stripped = strip_quoted_strings(r#"echo "safe\" ; rm -rf /""#);
+        assert!(
+            !stripped.contains("rm -rf"),
+            "dangerous command should be hidden inside quotes: {stripped}"
+        );
+        // Single quotes: no backslash handling in bash — '\'' is actually
+        // close-quote + literal-backslash + open-close-empty-quote, so the
+        // text after it (`t stop`) is outside quotes and visible.
+        assert_eq!(
+            strip_quoted_strings(r"echo 'can'\''t stop'"),
+            r"echo '   '\''t stop'",
+        );
     }
 
     #[test]
