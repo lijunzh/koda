@@ -5,11 +5,11 @@
 //!
 //! Three-phase pipeline (#807):
 //!
-//! 1. **Raw structural check** — [`RAW_DANGER_PATTERNS`] matched against the
+//! 1. **Raw structural check** — `RAW_DANGER_PATTERNS` matched against the
 //!    quote-stripped string: backticks, `$(`, pipes-to-shells, fork-bomb syntax.
 //! 2. **Write side-effect check** — quote-aware `>` / `>>` / `| tee` detection.
 //! 3. **Token-level check** — each pipeline segment is tokenised with
-//!    [`shlex::split`] (POSIX); tokens matched against [`DANGER_CHECKS`] (typed
+//!    [`shlex::split`] (POSIX); tokens matched against `DANGER_CHECKS` (typed
 //!    enum, not flat substrings). Unparseable segments fail-open → LocalMutation.
 //!
 //! This replaces the old `strip_quoted_strings().contains(pat)` approach, which
@@ -259,8 +259,8 @@ const RAW_DANGER_PATTERNS: &[&str] = &[
 /// Returns the *most dangerous* effect found across all pipeline/chain segments:
 /// 1. Raw structural patterns on quote-stripped string → Destructive
 /// 2. Write side-effects (`>`, `>>`, `| tee`) → LocalMutation
-/// 3. Per-segment shlex tokenisation vs [`DANGER_CHECKS`] → Destructive
-/// 4. Per-segment allowlist vs [`READ_ONLY_PREFIXES`] → ReadOnly / LocalMutation
+/// 3. Per-segment shlex tokenisation vs `DANGER_CHECKS` → Destructive
+/// 4. Per-segment allowlist vs `READ_ONLY_PREFIXES` → ReadOnly / LocalMutation
 ///
 /// Segments that fail shlex tokenisation fail-open to `LocalMutation`.
 ///
@@ -467,7 +467,7 @@ pub fn split_command_segments(command: &str) -> Vec<&str> {
 
 /// Replace content inside single and double quotes with spaces.
 ///
-/// Used before [`RAW_DANGER_PATTERNS`] matching to suppress false positives
+/// Used before `RAW_DANGER_PATTERNS` matching to suppress false positives
 /// from quoted arguments (e.g. `grep "cargo publish" .`).
 pub fn strip_quoted_strings(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
