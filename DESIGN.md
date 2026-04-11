@@ -114,6 +114,17 @@ limitations — they'll be obsolete before they're stable.
   workarounds for individual models' non-conforming behavior. If a model
   emits malformed output, the fix belongs upstream. See
   [#831](https://github.com/lijunzh/koda/issues/831) for rationale
+- **Don't over-compensate for weak models.** If a model emits 66 identical
+  tool calls, the answer is "use a better model," not a dedup layer that
+  silently papers over the problem. Safety mechanisms should match what
+  frontier agents actually ship — not what we imagine might go wrong.
+  A code review of Claude Code (zero loop detection), Codex (zero), and
+  Gemini CLI (consecutive-call detection + feedback injection) informed
+  our approach: consecutive identical calls → feedback injection → hard
+  stop only if the model ignores feedback. No windowed fingerprinting,
+  no tool-name saturation, no tool-only suppression, no per-turn caps.
+  See [#823](https://github.com/lijunzh/koda/issues/823) for the full
+  analysis
 - **Expand the surface.** Email, calendar, knowledge management — these
   are bets on where AI will be, not where it is
 
