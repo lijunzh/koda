@@ -132,7 +132,7 @@ impl TuiContext {
                 self.scroll_buffer.scroll_to_bottom();
             }
             (KeyCode::BackTab, _) => {
-                let new_mode = approval::cycle_mode(&self.shared_mode);
+                let new_mode = trust::cycle_trust(&self.shared_mode);
                 let _ = self
                     .session
                     .db
@@ -172,10 +172,11 @@ impl TuiContext {
             // Persist to DB (fire-and-forget)
             let _ = self.session.db.history_push(&text).await;
             self.history_idx = None;
-            let mode = approval::read_mode(&self.shared_mode);
+            let mode = trust::read_trust(&self.shared_mode);
             let icon = match mode {
-                ApprovalMode::Confirm => "\u{1f512}",
-                ApprovalMode::Auto => "\u{26a1}",
+                TrustMode::Plan => "\u{1f4cb}",
+                TrustMode::Safe => "\u{1f512}",
+                TrustMode::Auto => "\u{26a1}",
             };
             self.scroll_buffer.push(Line::from(vec![
                 Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),

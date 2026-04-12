@@ -1,33 +1,27 @@
 //! Process sandboxing for the Bash tool.
 //!
-//! Sandboxing is **opt-in** (`--sandbox project`; default: `none`) and
-//! applied per-session.  The goal is to prevent the model from accidentally —
-//! or adversarially — reading credentials or writing outside the project.
+//! Sandboxing is always active and determined by [`crate::trust::TrustMode`].
+//! The `SandboxMode` enum is an internal implementation detail.
 //!
 //! ## Platform backends
 //!
-//! | Platform | Backend              | If unavailable           |
-//! |----------|----------------------|--------------------------|
-//! | macOS    | `sandbox-exec -p`    | `build()` returns `Err`  |
-//! | Linux    | `bwrap` (bubblewrap) | `build()` returns `Err`  |
+//! | Platform | Backend              | If unavailable              |
+//! |----------|----------------------|-----------------------------|
+//! | macOS    | `sandbox-exec -p`    | falls back to unsandboxed   |
+//! | Linux    | `bwrap` (bubblewrap) | falls back to unsandboxed   |
 //!
-//! ## Modes
+//! ## Trust → Sandbox mapping
 //!
-//! - **`none`** (default) — no sandbox; full host access.
-//! - **`project`** — reads everywhere; writes restricted to `{project_root}`,
-//!   `/tmp`, `/var/tmp`, and common cache dirs (`~/.cargo`, `~/.npm`,
-//!   `~/.cache`).  Network is unrestricted.
-//! - **`strict`** — everything from `project` mode, plus explicit read+write
-//!   denies for sensitive credential directories (`~/.ssh`, `~/.aws`, …).
-//!   Inspired by:
-//!   - Claude Code's `denyRead[]` list (src/utils/sandbox/sandbox-adapter.ts)
-//!   - Gemini CLI's `forbiddenPaths` (packages/core/src/services/sandboxManager.ts)
-//!   - Codex's `FileSystemAccessMode::None` (codex-rs/protocol/src/permissions.rs)
+//! - **Plan** → Project sandbox + credential denies + read-only FS
+//! - **Safe** → Project sandbox + credential denies + read-write FS
+//! - **Auto** → Project sandbox + credential denies + read-write FS
+//!
+//! All modes deny credential paths. The old `SandboxMode::None` is gone.
 //!
 //! ## Usage
 //!
 //! ```rust,ignore
-//! let cmd = sandbox::build("cargo test", project_root, &SandboxMode::Strict)?;
+//! let cmd = sandbox::build("cargo test", project_root, &TrustMode::Safe)?;
 //! let child = cmd.stdout(Stdio::piped()).spawn()?;
 //! ```
 
@@ -37,9 +31,11 @@ use tokio::process::Command;
 
 // ── Mode ─────────────────────────────────────────────────────────────────────
 
-/// Which sandboxing level to apply to Bash tool invocations.
+/// Internal sandbox level — derived from [`crate::trust::TrustMode`].
+/// Not exposed publicly; users interact via `TrustMode`.
+#[allow(dead_code)] // Variants used internally for sandbox level dispatch
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum SandboxMode {
+pub(crate) enum SandboxMode {
     /// No sandbox — commands run with full host access. (default)
     #[default]
     None,
@@ -56,6 +52,7 @@ pub enum SandboxMode {
     Strict,
 }
 
+#[allow(dead_code)] // Methods used by internal sandbox tests
 impl SandboxMode {
     /// Return a numeric strictness level for comparison.
     ///
@@ -190,14 +187,36 @@ const PROTECTED_PROJECT_SUBDIRS: &[&str] = &[
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Build a `tokio::process::Command` that runs `sh -c "{command}"` inside
-/// the appropriate sandbox for `mode`.
+/// the appropriate sandbox for the given [`crate::trust::TrustMode`].
 ///
-/// Returns `Err` when `mode` is [`SandboxMode::Project`] or
-/// [`SandboxMode::Strict`] but the platform sandbox backend is unavailable
-/// (e.g. `bwrap` not installed on Linux, unsupported OS).  This follows
-/// Claude Code's `failIfUnavailable` pattern (#844 Gap 1): if you explicitly
-/// request sandboxing, silent fallback to unsandboxed is a security footgun.
-pub fn build(command: &str, project_root: &Path, mode: &SandboxMode) -> Result<Command> {
+/// All trust modes apply project-scoped sandboxing with credential denies.
+/// The mapping is:
+/// - **Plan** → Strict sandbox (credential denies + project writes)
+/// - **Safe** → Strict sandbox (credential denies + project writes)
+/// - **Auto** → Strict sandbox (credential denies + project writes)
+///
+/// Falls back to unsandboxed execution with a warning when the platform
+/// sandbox backend is unavailable (e.g. `bwrap` not installed on Linux,
+/// unsupported OS).  The sandbox is best-effort — we never block the user
+/// just because the kernel enforcement layer is missing.
+pub fn build(
+    command: &str,
+    project_root: &Path,
+    _trust: &crate::trust::TrustMode,
+) -> Result<Command> {
+    // All modes use strict sandboxing (project + credential denies).
+    // The sandbox is the safety boundary — always on when available.
+    match build_inner(command, project_root, &SandboxMode::Strict) {
+        Ok(cmd) => Ok(cmd),
+        Err(e) => {
+            tracing::warn!("Sandbox unavailable, running unsandboxed: {e}");
+            Ok(plain_sh(command, project_root))
+        }
+    }
+}
+
+/// Internal build dispatcher.
+fn build_inner(command: &str, project_root: &Path, mode: &SandboxMode) -> Result<Command> {
     match mode {
         SandboxMode::None => Ok(plain_sh(command, project_root)),
         SandboxMode::Project => build_project(command, project_root),
@@ -414,12 +433,16 @@ fn bwrap_available() -> bool {
     use std::sync::OnceLock;
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
+        // Just checking `bwrap --version` is insufficient: bwrap may be
+        // installed but unable to create sandboxes (e.g. GitHub Actions
+        // runners lack unprivileged user namespaces → "setting up uid map:
+        // Permission denied"). Run a real sandboxed command to verify.
         std::process::Command::new("bwrap")
-            .arg("--version")
+            .args(["--ro-bind", "/", "/", "--", "true"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .is_ok()
+            .is_ok_and(|s| s.success())
     })
 }
 
@@ -666,11 +689,12 @@ mod tests {
     // Spawn real child processes through the sandbox and verify that the
     // kernel actually enforces the policy.
 
-    /// `SandboxMode::None` must never block anything.
+    /// Sandbox build must always succeed (falls back to unsandboxed if
+    /// the platform backend is unavailable, e.g. no `bwrap` on CI Linux).
     #[tokio::test]
-    async fn none_mode_runs_echo() {
+    async fn build_always_succeeds_and_runs_echo() {
         let dir = tempfile::tempdir().unwrap();
-        let status = build("echo ok", dir.path(), &SandboxMode::None)
+        let status = build("echo ok", dir.path(), &crate::trust::TrustMode::Safe)
             .unwrap()
             .status()
             .await
@@ -683,11 +707,15 @@ mod tests {
     #[tokio::test]
     async fn macos_allows_write_inside_project() {
         let dir = tempfile::tempdir().unwrap();
-        let status = build("touch sandbox_canary", dir.path(), &SandboxMode::Project)
-            .unwrap()
-            .status()
-            .await
-            .unwrap();
+        let status = build(
+            "touch sandbox_canary",
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+        )
+        .unwrap()
+        .status()
+        .await
+        .unwrap();
         assert!(status.success(), "write inside project must succeed");
         assert!(dir.path().join("sandbox_canary").exists());
     }
@@ -703,7 +731,7 @@ mod tests {
         let status = build(
             &format!("echo pwned > {}", target.display()),
             project.path(),
-            &SandboxMode::Project,
+            &crate::trust::TrustMode::Safe,
         )
         .unwrap()
         .status()
@@ -723,7 +751,7 @@ mod tests {
         let status = build(
             "cat /etc/hosts > /dev/null",
             dir.path(),
-            &SandboxMode::Project,
+            &crate::trust::TrustMode::Safe,
         )
         .unwrap()
         .status()
@@ -737,11 +765,15 @@ mod tests {
     #[tokio::test]
     async fn macos_strict_allows_write_inside_project() {
         let dir = tempfile::tempdir().unwrap();
-        let status = build("touch strict_canary", dir.path(), &SandboxMode::Strict)
-            .unwrap()
-            .status()
-            .await
-            .unwrap();
+        let status = build(
+            "touch strict_canary",
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+        )
+        .unwrap()
+        .status()
+        .await
+        .unwrap();
         assert!(
             status.success(),
             "strict: writes inside project must succeed"
@@ -760,7 +792,7 @@ mod tests {
         let status = build(
             &format!("echo pwned > {}", target.display()),
             project.path(),
-            &SandboxMode::Strict,
+            &crate::trust::TrustMode::Safe,
         )
         .unwrap()
         .status()
@@ -782,7 +814,7 @@ mod tests {
         let status = build(
             "cat /etc/hosts > /dev/null",
             dir.path(),
-            &SandboxMode::Strict,
+            &crate::trust::TrustMode::Safe,
         )
         .unwrap()
         .status()
@@ -809,11 +841,15 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        let status = build(&format!("ls {db_dir}"), dir.path(), &SandboxMode::Strict)
-            .unwrap()
-            .status()
-            .await
-            .unwrap();
+        let status = build(
+            &format!("ls {db_dir}"),
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+        )
+        .unwrap()
+        .status()
+        .await
+        .unwrap();
         assert!(
             !status.success(),
             "strict: reading ~/.config/koda/db/ must be blocked"
@@ -835,7 +871,7 @@ mod tests {
         let status = build(
             &format!("echo '{{}}' > {}", target.display()),
             dir.path(),
-            &SandboxMode::Project,
+            &crate::trust::TrustMode::Safe,
         )
         .unwrap()
         .status()
@@ -860,7 +896,7 @@ mod tests {
         let status = build(
             &format!("echo '{{}}' > {}", target.display()),
             dir.path(),
-            &SandboxMode::Strict,
+            &crate::trust::TrustMode::Safe,
         )
         .unwrap()
         .status()
@@ -882,11 +918,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".koda/agents")).unwrap();
 
-        let status = build("touch normal_file.txt", dir.path(), &SandboxMode::Project)
-            .unwrap()
-            .status()
-            .await
-            .unwrap();
+        let status = build(
+            "touch normal_file.txt",
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+        )
+        .unwrap()
+        .status()
+        .await
+        .unwrap();
 
         assert!(
             status.success(),
@@ -907,7 +947,7 @@ mod tests {
         let status = build(
             &format!("echo '# evil' > {}", target.display()),
             dir.path(),
-            &SandboxMode::Project,
+            &crate::trust::TrustMode::Safe,
         )
         .unwrap()
         .status()

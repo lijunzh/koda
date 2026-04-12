@@ -1,6 +1,6 @@
-//! Guarantee matrix verification tests (#307, #293 Phase E).
+//! Guarantee matrix verification tests (#307, #293 Phase E, updated #855).
 //!
-//! Tests every row × column in the approval mode guarantee matrix.
+//! Tests every row × column in the TrustMode guarantee matrix.
 //! Each test verifies the ToolApproval returned by check_tool() for
 //! a specific (action, mode) pair.
 //!
@@ -19,9 +19,13 @@
 //! 12. WebFetch (GET)
 //! 13. gh issue create (LocalMutation bash)
 //!
-//! Columns: Auto, Confirm
+//! Columns: Auto, Safe
+//!
+//! Key design change in #855: Auto mode auto-approves destructive ops
+//! (sandbox enforces the perimeter). Only outside-project writes and
+//! path escapes still need confirmation in Auto mode.
 
-use koda_core::approval::{ApprovalMode, ToolApproval, check_tool};
+use koda_core::trust::{ToolApproval, TrustMode, check_tool};
 use std::path::Path;
 
 fn root() -> &'static Path {
@@ -30,8 +34,8 @@ fn root() -> &'static Path {
 
 /// Helper: check a tool in both modes and return (auto, confirm).
 fn check_both(tool: &str, args: &serde_json::Value) -> (ToolApproval, ToolApproval) {
-    let auto = check_tool(tool, args, ApprovalMode::Auto, Some(root()));
-    let confirm = check_tool(tool, args, ApprovalMode::Confirm, Some(root()));
+    let auto = check_tool(tool, args, TrustMode::Auto, Some(root()));
+    let confirm = check_tool(tool, args, TrustMode::Safe, Some(root()));
     (auto, confirm)
 }
 
@@ -83,7 +87,8 @@ fn matrix_write_outside_project() {
 fn matrix_delete_files() {
     let args = serde_json::json!({"file_path": "old.rs"});
     let (auto, confirm) = check_both("Delete", &args);
-    assert_eq!(auto, ToolApproval::NeedsConfirmation);
+    // Auto: sandbox enforces perimeter, destructive ops auto-approved
+    assert_eq!(auto, ToolApproval::AutoApprove);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
 
@@ -113,7 +118,8 @@ fn matrix_bash_write_side_effect() {
 fn matrix_destructive_bash() {
     let args = serde_json::json!({"command": "rm -rf target/"});
     let (auto, confirm) = check_both("Bash", &args);
-    assert_eq!(auto, ToolApproval::NeedsConfirmation);
+    // Auto: sandbox enforces perimeter, destructive ops auto-approved
+    assert_eq!(auto, ToolApproval::AutoApprove);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
 

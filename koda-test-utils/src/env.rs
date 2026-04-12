@@ -5,13 +5,13 @@
 
 use koda_core::persistence::Persistence;
 use koda_core::{
-    approval::ApprovalMode,
     config::{KodaConfig, ProviderType},
     db::{Database, Role},
     engine::{EngineCommand, EngineEvent, sink::TestSink},
     inference::{self, InferenceContext},
     providers::{LlmProvider, mock::MockProvider},
     tools::ToolRegistry,
+    trust::TrustMode,
 };
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -189,7 +189,7 @@ impl Env {
             tools: &self.tools,
             tool_defs: &tool_defs,
             pending_images: None,
-            mode: ApprovalMode::Auto,
+            mode: TrustMode::Auto,
             sink: &sink,
             cancel,
             cmd_rx: &mut cmd_rx,

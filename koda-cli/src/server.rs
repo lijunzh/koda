@@ -42,12 +42,12 @@ use acp::Side;
 use agent_client_protocol_schema as acp;
 use anyhow::Result;
 use koda_core::agent::KodaAgent;
-use koda_core::approval::ApprovalMode;
 use koda_core::config::KodaConfig;
 use koda_core::db::{Database, Role};
 use koda_core::engine::EngineCommand;
 use koda_core::persistence::Persistence;
 use koda_core::session::KodaSession;
+use koda_core::trust::TrustMode;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI64;
@@ -311,7 +311,7 @@ async fn handle_new_session(
         state.agent.clone(),
         state.db.clone(),
         &state.config,
-        ApprovalMode::Auto,
+        TrustMode::Auto,
     )
     .await;
 

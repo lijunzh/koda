@@ -224,7 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn cross_session_resume_preserves_ownership_for_approval() {
-        use crate::approval::{ApprovalMode, ToolApproval, check_tool_with_tracker};
+        use crate::trust::{ToolApproval, TrustMode, check_tool_with_tracker};
 
         let (db, _dir) = test_db().await;
         let session_id = "resume-test";
@@ -252,7 +252,7 @@ mod tests {
                 check_tool_with_tracker(
                     "Delete",
                     &args,
-                    ApprovalMode::Auto,
+                    TrustMode::Auto,
                     Some(root),
                     Some(&tracker),
                 ),

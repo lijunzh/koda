@@ -108,7 +108,7 @@ pub async fn run_shell_command(
     max_lines: usize,
     bg: &BgRegistry,
     sink: Option<(&dyn EngineSink, &str)>,
-    sandbox: &crate::sandbox::SandboxMode,
+    trust: &crate::trust::TrustMode,
 ) -> Result<ShellOutput> {
     let command = args["command"]
         .as_str()
@@ -121,7 +121,7 @@ pub async fn run_shell_command(
     );
 
     if background {
-        let msg = spawn_background(project_root, command, bg, sandbox)?;
+        let msg = spawn_background(project_root, command, bg, trust)?;
         return Ok(ShellOutput {
             summary: msg,
             full_output: None,
@@ -133,8 +133,8 @@ pub async fn run_shell_command(
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .min(MAX_TIMEOUT_SECS);
 
-    // Spawn via sandbox wrapper (may be a no-op for SandboxMode::None).
-    let mut child = crate::sandbox::build(command, project_root, sandbox)?
+    // Spawn via sandbox wrapper (enforced for all trust modes).
+    let mut child = crate::sandbox::build(command, project_root, trust)?
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -276,11 +276,11 @@ fn spawn_background(
     project_root: &Path,
     command: &str,
     bg: &BgRegistry,
-    sandbox: &crate::sandbox::SandboxMode,
+    trust: &crate::trust::TrustMode,
 ) -> Result<String> {
-    // Spawn via sandbox wrapper (may be a no-op for SandboxMode::None).
+    // Spawn via sandbox wrapper (enforced for all trust modes).
     // Detach stdio so the process doesn't block on terminal I/O.
-    let child = crate::sandbox::build(command, project_root, sandbox)?
+    let child = crate::sandbox::build(command, project_root, trust)?
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -417,7 +417,7 @@ mod tests {
             256,
             &bg(),
             None,
-            &crate::sandbox::SandboxMode::None,
+            &crate::trust::TrustMode::Safe,
         )
         .await
         .unwrap();
@@ -438,7 +438,7 @@ mod tests {
             256,
             &bg(),
             None,
-            &crate::sandbox::SandboxMode::None,
+            &crate::trust::TrustMode::Safe,
         )
         .await
         .unwrap();
@@ -459,7 +459,7 @@ mod tests {
             256,
             &bg(),
             None,
-            &crate::sandbox::SandboxMode::None,
+            &crate::trust::TrustMode::Safe,
         )
         .await
         .unwrap();
@@ -481,7 +481,7 @@ mod tests {
             256,
             &registry,
             None,
-            &crate::sandbox::SandboxMode::None,
+            &crate::trust::TrustMode::Safe,
         )
         .await
         .unwrap();
@@ -509,7 +509,7 @@ mod tests {
             256,
             &bg(),
             None,
-            &crate::sandbox::SandboxMode::None,
+            &crate::trust::TrustMode::Safe,
         )
         .await
         .unwrap();
@@ -600,7 +600,7 @@ mod tests {
             10,
             &bg(),
             None,
-            &crate::sandbox::SandboxMode::None,
+            &crate::trust::TrustMode::Safe,
         )
         .await
         .unwrap();
@@ -657,7 +657,7 @@ mod tests {
             256,
             &bg(),
             Some((sink.as_ref(), "test_id")),
-            &crate::sandbox::SandboxMode::None,
+            &crate::trust::TrustMode::Safe,
         )
         .await
         .unwrap();

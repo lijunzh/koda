@@ -65,26 +65,27 @@ fn mock_text_response_returns_json() {
     );
 }
 
-// ── Headless safety: destructive commands rejected (#700) ────
+// ── Headless safety: destructive commands auto-approved in sandbox (#855) ────
 
 #[test]
-fn mock_destructive_bash_rejected_in_headless() {
-    // Model tries to run `rm -rf /` — headless should reject it.
-    // The mock response asks for a Bash tool call with a destructive command.
+fn mock_destructive_bash_auto_approved_in_headless() {
+    // Model tries to run `rm -rf /tmp/nonexistent_test_dir` — headless (Auto mode)
+    // now auto-approves all actions within the project sandbox (#855).
+    // The sandbox kernel enforcement is the safety boundary, not the approval prompt.
     let responses = r#"[
         {"tool":"Bash","args":{"command":"rm -rf /tmp/nonexistent_test_dir"}},
-        {"text":"I tried to delete but it was rejected."}
+        {"text":"Done."}
     ]"#;
 
     let (_stdout, stderr, success) = run_mock("delete everything", responses);
     assert!(
         success,
-        "Process should succeed (model recovers).\nstderr: {stderr}"
+        "Process should succeed (Auto mode approves within sandbox).\nstderr: {stderr}"
     );
-    // The rejection message should appear on stderr
+    // In Auto mode, destructive actions should NOT be rejected
     assert!(
-        stderr.contains("Rejected destructive action"),
-        "Expected rejection message on stderr.\nstderr: {stderr}"
+        !stderr.contains("Rejected destructive action"),
+        "Should not reject destructive action in Auto mode.\nstderr: {stderr}"
     );
 }
 

@@ -13,12 +13,12 @@ use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
 use crate::tui_render::TuiRenderer;
 use koda_core::persistence::Persistence;
+use koda_core::trust;
 // For /copy transcript export:
 use crate::mouse_select::copy_to_clipboard;
 use crate::transcript;
 
 use koda_core::agent::KodaAgent;
-use koda_core::approval;
 use koda_core::config::KodaConfig;
 use koda_core::providers::LlmProvider;
 use koda_core::session::KodaSession;
@@ -43,7 +43,7 @@ pub async fn handle_slash_command(
     config: &mut KodaConfig,
     provider: &Arc<RwLock<Box<dyn LlmProvider>>>,
     session: &mut KodaSession,
-    shared_mode: &approval::SharedMode,
+    shared_mode: &trust::SharedTrustMode,
     renderer: &mut TuiRenderer,
     project_root: &std::path::Path,
     agent: &Arc<KodaAgent>,
@@ -231,7 +231,7 @@ async fn handle_resume_session(
     session: &mut KodaSession,
     id: &str,
     project_root: &std::path::Path,
-    shared_mode: &approval::SharedMode,
+    shared_mode: &trust::SharedTrustMode,
 ) {
     use tui_output::GREEN;
     if session.id.starts_with(id) {
@@ -267,9 +267,9 @@ async fn handle_resume_session(
                         );
                         // Restore persisted approval mode (#590)
                         if let Ok(Some(mode_str)) = session.db.get_session_mode(&session.id).await
-                            && let Some(m) = approval::ApprovalMode::parse(&mode_str)
+                            && let Some(m) = trust::TrustMode::parse(&mode_str)
                         {
-                            approval::set_mode(shared_mode, m);
+                            trust::set_trust(shared_mode, m);
                         }
                         // Read idle time BEFORE load_context updates last_accessed_at.
                         let idle_secs = session

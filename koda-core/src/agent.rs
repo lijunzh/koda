@@ -69,10 +69,10 @@ impl KodaAgent {
         project_root: PathBuf,
         commands: &[(&str, &str)],
     ) -> Result<Self> {
-        let tools = ToolRegistry::with_sandbox(
+        let tools = ToolRegistry::with_trust(
             project_root.clone(),
             config.max_context_tokens,
-            config.sandbox.clone(),
+            config.trust,
         );
         let tool_defs = tools.get_definitions(&config.allowed_tools, &config.disallowed_tools);
 

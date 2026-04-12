@@ -52,6 +52,7 @@
 /// Sub-agent configuration, discovery, and invocation.
 pub mod agent;
 /// Tool approval modes, safety gates, and shared mode state.
+/// Deprecated: prefer [`trust`] module. This module re-exports from `trust`.
 pub mod approval;
 /// Approval flow and user interaction during tool execution.
 pub(crate) mod approval_flow;
@@ -129,6 +130,8 @@ pub mod tool_normalize;
 pub mod tools;
 /// Token-safe output truncation.
 pub mod truncate;
+/// Unified trust mode — single permission knob replacing ApprovalMode × SandboxMode.
+pub mod trust;
 /// Undo stack for file mutations.
 pub mod undo;
 /// Version string and update-check helpers.

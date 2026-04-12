@@ -48,12 +48,12 @@ async fn test_empty_args_default_to_empty_object() {
 /// return NeedsConfirmation/AutoApproved — never panic or crash.
 #[test]
 fn test_all_tools_handled_by_approval() {
-    use koda_core::approval::{ApprovalMode, ToolApproval, check_tool};
+    use koda_core::trust::{ToolApproval, TrustMode, check_tool};
 
     let empty_args = serde_json::json!({});
     for name in all_tool_names() {
         // Should not panic in any mode
-        let result = check_tool(&name, &empty_args, ApprovalMode::Confirm, None);
+        let result = check_tool(&name, &empty_args, TrustMode::Safe, None);
         // Verify it returns a valid variant (not a crash)
         match result {
             ToolApproval::AutoApprove | ToolApproval::NeedsConfirmation | ToolApproval::Blocked => {

@@ -227,8 +227,8 @@ pub struct ToolRegistry {
     /// Background process registry — tracks processes spawned with `background: true`.
     /// Dropped (SIGTERM all) when the session ends.
     pub bg_registry: bg_process::BgRegistry,
-    /// Sandbox mode for Bash tool invocations.
-    sandbox: crate::sandbox::SandboxMode,
+    /// Trust mode — determines sandbox configuration for Bash tool.
+    trust: crate::trust::TrustMode,
 }
 
 impl ToolRegistry {
@@ -236,18 +236,18 @@ impl ToolRegistry {
     ///
     /// `max_context_tokens` scales all output caps (see `OutputCaps`).
     pub fn new(project_root: PathBuf, max_context_tokens: usize) -> Self {
-        Self::with_sandbox(
+        Self::with_trust(
             project_root,
             max_context_tokens,
-            crate::sandbox::SandboxMode::None,
+            crate::trust::TrustMode::Safe,
         )
     }
 
-    /// Create a new registry with a specific sandbox mode.
-    pub fn with_sandbox(
+    /// Create a new registry with a specific trust mode.
+    pub fn with_trust(
         project_root: PathBuf,
         max_context_tokens: usize,
-        sandbox: crate::sandbox::SandboxMode,
+        trust: crate::trust::TrustMode,
     ) -> Self {
         let mut definitions = HashMap::new();
 
@@ -303,7 +303,7 @@ impl ToolRegistry {
             session_id: std::sync::RwLock::new(None),
             caps: OutputCaps::for_context(max_context_tokens),
             bg_registry: bg_process::BgRegistry::new(),
-            sandbox,
+            trust,
         }
     }
 
@@ -478,7 +478,7 @@ impl ToolRegistry {
                     self.caps.shell_output_lines,
                     &self.bg_registry,
                     sink_for_streaming,
-                    &self.sandbox,
+                    &self.trust,
                 )
                 .await;
                 return match shell_result {

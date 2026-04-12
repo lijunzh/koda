@@ -13,9 +13,9 @@ use crate::tui_viewport::draw_viewport;
 
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use futures_util::StreamExt;
-use koda_core::approval::{self, ApprovalMode};
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent};
 use koda_core::persistence::Persistence;
+use koda_core::trust::{self, TrustMode};
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -58,7 +58,7 @@ impl TuiContext {
                 self.scroll_buffer.clamp_offset(term_w, term_h);
 
                 // Redraw viewport
-                let mode = approval::read_mode(&self.shared_mode);
+                let mode = trust::read_trust(&self.shared_mode);
                 let ctx = self.context_pct;
                 let _ = self.terminal.draw(|f| {
                     draw_viewport(
@@ -294,7 +294,7 @@ async fn handle_crossterm_event_inline(
     prompt_mode: &mut PromptMode,
     pending_approval_id: &mut Option<String>,
     textarea: &mut ratatui_textarea::TextArea<'static>,
-    shared_mode: &koda_core::approval::SharedMode,
+    shared_mode: &koda_core::trust::SharedTrustMode,
     completer: &mut crate::completer::InputCompleter,
     history: &mut Vec<String>,
     history_idx: &mut Option<usize>,
@@ -365,7 +365,7 @@ async fn handle_inference_key_inline(
     prompt_mode: &mut PromptMode,
     pending_approval_id: &mut Option<String>,
     textarea: &mut ratatui_textarea::TextArea<'static>,
-    shared_mode: &koda_core::approval::SharedMode,
+    shared_mode: &koda_core::trust::SharedTrustMode,
     completer: &mut crate::completer::InputCompleter,
     history: &mut Vec<String>,
     history_idx: &mut Option<usize>,
@@ -379,7 +379,7 @@ async fn handle_inference_key_inline(
             KeyCode::Char('y') | KeyCode::Char('Y') => Some(ApprovalDecision::Approve),
             KeyCode::Char('n') | KeyCode::Char('N') => Some(ApprovalDecision::Reject),
             KeyCode::Char('a') | KeyCode::Char('A') => {
-                approval::set_mode(shared_mode, ApprovalMode::Auto);
+                trust::set_trust(shared_mode, TrustMode::Auto);
                 Some(ApprovalDecision::Approve)
             }
             KeyCode::Char('f') | KeyCode::Char('F') => {
@@ -560,7 +560,7 @@ async fn handle_inference_key_inline(
             }
         }
         (KeyCode::BackTab, _) => {
-            approval::cycle_mode(shared_mode);
+            trust::cycle_trust(shared_mode);
         }
         (KeyCode::Tab, KeyModifiers::NONE) => {
             let current = textarea.lines().join("\n");
