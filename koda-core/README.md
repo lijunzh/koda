@@ -9,7 +9,7 @@ Pure logic with zero terminal dependencies — communicates exclusively through
 
 - **LLM providers** — 14 providers (Anthropic, OpenAI, Gemini, Groq, Ollama, LM Studio, etc.)
 - **Tool system** — 20+ built-in tools (file ops, shell, search, memory, agents)
-- **Per-tool approval** — two modes (Auto/Confirm) with effect-based safety classification
+- **Per-tool approval** — three trust modes (Plan/Safe/Auto) with effect-based safety classification
 - **Inference loop** — streaming tool-use loop with parallel execution
 - **SQLite persistence** — sessions, messages, compaction
 

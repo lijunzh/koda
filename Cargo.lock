@@ -1767,7 +1767,7 @@ dependencies = [
 
 [[package]]
 name = "koda-ast"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "anyhow",
  "petgraph",
@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "koda-email"
-version = "0.2.8"
+version = "0.2.11"
 dependencies = [
  "anyhow",
  "imap",

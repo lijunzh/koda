@@ -29,15 +29,17 @@ within the project sandbox are auto-approved.
 
 ## Approval behaviour by trust mode
 
-| Category | Tools | Auto | Safe |
-|----------|-------|------|------|
-| Read-only | Read, Grep, Glob, ListFiles, WebFetch, WebSearch, TodoRead, RecallContext | ✅ Auto | ✅ Auto |
-| Internal | Think, ActivateSkill | ✅ Auto | ✅ Auto |
-| Mutations | Write, Edit, MemoryWrite, TodoWrite | ✅ Auto | ⏸ Prompt |
-| Destructive | Delete | ✅ Auto | ⏸ Prompt |
-| Agent calls | InvokeAgent | ✅ Auto | ✅ Auto |
-| User interaction | AskUser | ⏸ Prompt | ⏸ Prompt |
-| Safe shell | `git status`, `grep`, `cargo test` | ✅ Auto | ✅ Auto |
-| Mutating shell | `echo > file`, `gh issue create` | ✅ Auto | ⏸ Prompt |
-| Destructive shell | `rm -rf`, `sudo`, `git push --force` | ✅ Auto | ⏸ Prompt |
-| Outside-project write | Write/Edit to paths outside project root | ⏸ Prompt | ⏸ Prompt |
+| Category | Tools | Plan | Safe | Auto |
+|----------|-------|------|------|------|
+| Read-only | Read, Grep, Glob, ListFiles, WebFetch, WebSearch, TodoRead, RecallContext | ✅ Auto | ✅ Auto | ✅ Auto |
+| Internal | Think, ActivateSkill | ✅ Auto | ✅ Auto | ✅ Auto |
+| Mutations | Write, Edit, MemoryWrite, TodoWrite | ❌ Deny | ⏸ Prompt | ✅ Auto |
+| Destructive | Delete | ❌ Deny | ⏸ Prompt | ✅ Auto |
+| Agent calls | InvokeAgent | ✅ Auto | ✅ Auto | ✅ Auto |
+| User interaction | AskUser | ⏸ Prompt | ⏸ Prompt | ⏸ Prompt |
+| Safe shell | `git status`, `grep`, `cargo test` | ✅ Auto | ✅ Auto | ✅ Auto |
+| Mutating shell | `echo > file`, `gh issue create` | ❌ Deny | ⏸ Prompt | ✅ Auto |
+| Destructive shell | `rm -rf`, `sudo`, `git push --force` | ❌ Deny | ⏸ Prompt | ✅ Auto |
+| Outside-project write | Write/Edit to paths outside project root | ❌ Deny | ⏸ Prompt | ⏸ Prompt |
+
+See [Trust modes](./approval.md) for the canonical policy matrix.

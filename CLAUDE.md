@@ -338,7 +338,7 @@ from production builds to keep `koda-core`'s public API clean.
 **Integration tests** — no feature flag:
 - `tests/file_tools_test.rs` — path safety, file CRUD
 - `tests/new_tools_test.rs` — glob, tool naming
-- `tests/guarantee_matrix_test.rs` — approval mode × tool effect matrix
+- `tests/guarantee_matrix_test.rs` — trust mode × tool effect matrix
 - `tests/inference_recovery_test.rs` — rate-limit retry, context overflow
 - `tests/inference_edge_test.rs` — loop detection, empty tool calls
 - `tests/e2e_safety_test.rs` — approval gates, bash safety classification
@@ -438,7 +438,7 @@ For capabilities that ship in the koda workspace (same release cycle):
 7. Add `--version` flag to `main.rs` (standalone server wrapper)
 8. Write integration tests in `tests/mcp_integration_test.rs`
 9. Update `release.yml`: version verify, build, package, publish, Homebrew
-10. Sync version with workspace (currently 0.2.8)
+10. Sync version with workspace (currently 0.2.11)
 11. Update this file (CLAUDE.md)
 
 ## CI Workflows
