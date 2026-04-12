@@ -60,6 +60,7 @@ impl TuiContext {
                 // Redraw viewport
                 let mode = trust::read_trust(&self.shared_mode);
                 let ctx = self.context_pct;
+                let mcp_info = self.agent.mcp_status_bar_info();
                 let _ = self.terminal.draw(|f| {
                     draw_viewport(
                         f,
@@ -77,6 +78,7 @@ impl TuiContext {
                         &self.menu,
                         &self.scroll_buffer,
                         self.mouse_selection.as_ref(),
+                        mcp_info,
                     );
                 });
 

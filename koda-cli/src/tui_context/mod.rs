@@ -359,6 +359,7 @@ impl TuiContext {
         let textarea = &self.textarea;
         let config = &self.config;
         let selection = self.mouse_selection.as_ref();
+        let mcp_info = self.agent.mcp_status_bar_info();
 
         let mut history_rect = None;
         if let Err(e) = self.terminal.draw(|f| {
@@ -376,6 +377,7 @@ impl TuiContext {
                 menu,
                 scroll_buffer,
                 selection,
+                mcp_info,
             ));
         }) {
             tracing::debug!("draw skipped: {e}");

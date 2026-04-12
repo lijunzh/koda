@@ -223,6 +223,10 @@ pub async fn handle_slash_command(
             .await;
             SlashAction::Continue
         }
+        ReplAction::McpReconnect { ref name } => {
+            crate::tui_mcp::handle_mcp_reconnect(buffer, agent, name.clone()).await;
+            SlashAction::Continue
+        }
         ReplAction::Handled => SlashAction::Continue,
         ReplAction::NotACommand => SlashAction::Continue,
     }

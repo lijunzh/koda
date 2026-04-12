@@ -8,6 +8,7 @@
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_types::{MenuContent, PromptMode, Term, TuiState};
 use crate::widgets::status_bar::StatusBar;
+use koda_core::mcp::manager::McpStatusBarInfo;
 
 use anyhow::Result;
 use koda_core::trust::TrustMode;
@@ -38,6 +39,7 @@ pub(crate) fn draw_viewport(
     menu: &MenuContent,
     scroll_buffer: &ScrollBuffer,
     selection: Option<&crate::mouse_select::Selection>,
+    mcp_info: Option<McpStatusBarInfo>,
 ) -> ratatui::layout::Rect {
     let area = frame.area();
 
@@ -160,6 +162,9 @@ pub(crate) fn draw_viewport(
     // Show scroll position indicator when not at bottom
     if !scroll_buffer.is_sticky() {
         sb = sb.with_scroll_info(scroll_buffer.offset(), scroll_buffer.len());
+    }
+    if let Some(mcp) = mcp_info {
+        sb = sb.with_mcp_info(mcp);
     }
     frame.render_widget(sb, status_row);
 

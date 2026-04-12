@@ -105,6 +105,11 @@ pub enum ReplAction {
         /// Server name to remove.
         name: String,
     },
+    /// `/mcp reconnect <name>` — reconnect a failed/disconnected server.
+    McpReconnect {
+        /// Server name to reconnect.
+        name: String,
+    },
 }
 
 /// Parse and handle a slash command. Returns the action for the main loop.
@@ -264,6 +269,14 @@ fn parse_mcp_subcommand(arg: Option<&str>) -> ReplAction {
                 None => return ReplAction::McpList,
             };
             ReplAction::McpRemove { name }
+        }
+
+        "reconnect" | "retry" | "restart" => {
+            let name = match tokens.next() {
+                Some(n) => n.to_string(),
+                None => return ReplAction::McpList,
+            };
+            ReplAction::McpReconnect { name }
         }
 
         _ => ReplAction::McpList,
@@ -725,5 +738,32 @@ mod tests {
     #[test]
     fn mcp_add_http_missing_name_shows_list() {
         assert!(matches!(dispatch("/mcp add-http"), ReplAction::McpList));
+    }
+
+    // ── /mcp reconnect parsing ─────────────────────────────
+
+    #[test]
+    fn mcp_reconnect_parses_name() {
+        match dispatch("/mcp reconnect playwright") {
+            ReplAction::McpReconnect { name } => assert_eq!(name, "playwright"),
+            other => panic!("expected McpReconnect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_reconnect_aliases() {
+        assert!(matches!(
+            dispatch("/mcp retry playwright"),
+            ReplAction::McpReconnect { .. }
+        ));
+        assert!(matches!(
+            dispatch("/mcp restart playwright"),
+            ReplAction::McpReconnect { .. }
+        ));
+    }
+
+    #[test]
+    fn mcp_reconnect_missing_name_shows_list() {
+        assert!(matches!(dispatch("/mcp reconnect"), ReplAction::McpList));
     }
 }
