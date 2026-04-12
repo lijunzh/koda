@@ -264,9 +264,7 @@ fn protected_subdir_deny_rules_macos(root: &str) -> String {
     for rel in PROTECTED_PROJECT_SUBDIRS {
         let p = Path::new(root).join(rel);
         let canonical = p.canonicalize().unwrap_or(p).to_string_lossy().into_owned();
-        rules.push_str(&format!(
-            "(deny file-write* (subpath \"{canonical}\"))\n"
-        ));
+        rules.push_str(&format!("(deny file-write* (subpath \"{canonical}\"))\n"));
     }
     rules
 }
