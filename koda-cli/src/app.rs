@@ -111,11 +111,12 @@ struct Cli {
     #[arg(long)]
     reasoning_effort: Option<String>,
 
-    /// Sandbox mode for Bash tool invocations: none (default) or project.
+    /// Sandbox mode for Bash tool invocations: none (default), project, or strict.
     /// "project" restricts writes to the project dir + /tmp.
+    /// "strict" also blocks reads of credential dirs (~/.ssh, ~/.aws, ~/.gnupg, …).
     /// Requires sandbox-exec on macOS or bwrap on Linux.
     #[arg(long, env = "KODA_SANDBOX", default_value = "none",
-          value_parser = ["none", "project"])]
+          value_parser = ["none", "project", "strict"])]
     sandbox: String,
 }
 
