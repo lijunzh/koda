@@ -44,7 +44,7 @@ Add to `.mcp.json` (use env var references — don't hardcode credentials):
 > **⚠️ Security:** Never hardcode email credentials in `.mcp.json` — if that
 > file is committed to a repo, your inbox is exposed. Set `EMAIL_USER` and
 > `EMAIL_PASS` as environment variables or use koda's built-in keystore
-> (`/provider` wizard stores credentials encrypted at `~/.config/koda/keys`).
+> (`/key` wizard stores credentials in the SQLite KV store at `~/.config/koda/db/koda.db`, file mode 0600).
 
 ## MCP tools exposed
 

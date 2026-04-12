@@ -224,7 +224,7 @@ pub(crate) async fn run() -> Result<()> {
 
     tracing::info!("Koda starting. Project root: {:?}", project_root);
 
-    // Initialize database early — keys and settings live here (#693)
+    // Initialize database early — keys and last-provider recall live here (#693)
     let db = koda_core::db::Database::init(&koda_core::db::config_dir()?).await?;
 
     // Load and inject stored API keys (env vars take precedence)

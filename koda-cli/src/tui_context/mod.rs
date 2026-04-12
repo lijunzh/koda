@@ -121,7 +121,7 @@ impl TuiContext {
         first_run: bool,
     ) -> Result<Self> {
         // Restore last-used provider from DB (#693)
-        if let Ok(Some(last)) = koda_core::settings::load_last_provider(&db).await {
+        if let Ok(Some(last)) = koda_core::last_provider::load_last_provider(&db).await {
             let ptype =
                 koda_core::config::ProviderType::from_url_or_name("", Some(&last.provider_type));
             config.provider_type = ptype;

@@ -411,7 +411,7 @@ pub(crate) fn handle_memory(
 }
 
 pub(crate) async fn save_provider(config: &KodaConfig, db: &koda_core::db::Database) {
-    let _ = koda_core::settings::save_last_provider(
+    let _ = koda_core::last_provider::save_last_provider(
         db,
         &config.provider_type.to_string(),
         &config.base_url,

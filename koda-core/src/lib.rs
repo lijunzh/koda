@@ -83,6 +83,8 @@ pub mod inference;
 pub mod inference_helpers;
 /// Credential storage — `keys.toml` with env var fallback.
 pub mod keystore;
+/// Last-used provider recall (stored in SQLite KV store, not a config file).
+pub mod last_provider;
 /// Loop detection — catches runaway repeated tool calls.
 pub mod loop_guard;
 /// Project memory — `MEMORY.md` / `CLAUDE.md` read/write.
@@ -111,8 +113,6 @@ pub mod runtime_env;
 pub mod sandbox;
 /// Session lifecycle — create, resume, list, delete.
 pub mod session;
-/// Last-used provider persistence (`~/.config/koda/settings.toml`).
-pub mod settings;
 /// Skill-scoped tool filtering — hard enforcement of `allowed_tools`.
 pub mod skill_scope;
 /// Skill discovery and activation (project, user, built-in).

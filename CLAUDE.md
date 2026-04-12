@@ -117,7 +117,7 @@ koda/
 │   │   ├── prompt.rs       # System prompt construction
 │   │   ├── runtime_env.rs  # Thread-safe runtime env for API keys
 │   │   ├── session.rs      # KodaSession (per-conversation: DB, provider, settings)
-│   │   ├── settings.rs     # Runtime settings (approval mode, etc.)
+│   │   ├── last_provider.rs # Last-used provider recall (SQLite KV, not a config file)
 │   │   ├── skills.rs       # Skill discovery and activation
 │   │   ├── skill_scope.rs  # Skill-scoped tool allow/deny enforcement
 │   │   ├── sub_agent_cache.rs # Sub-agent provider/model config cache
