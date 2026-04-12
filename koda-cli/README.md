@@ -23,34 +23,38 @@ koda -p "fix the bug in auth.rs"  # Headless one-shot
 koda server --stdio               # ACP server for editor integration
 ```
 
-## Approval modes
+## Trust modes
 
 Cycle with `Shift+Tab`:
 
 | Mode | Behavior |
 |------|----------|
-| **Auto** | Local mutations auto-approved, destructive ops need confirmation |
-| **Confirm** | Every non-read action requires confirmation |
+| **Safe** (default) | Confirm every side effect. Read-only tools auto-approved. |
+| **Auto** | Auto-approve all actions within the project sandbox. |
+
+A third mode, **Plan**, is available for agent definitions that need
+investigation-only access — all writes are denied.
+
+```bash
+# Start in Auto mode
+koda --mode auto
+
+# Via environment variable
+export KODA_MODE=auto
+```
 
 ## Sandbox
 
-Opt-in process sandboxing restricts what the Bash tool can do:
+The kernel sandbox is **always active** — every Bash command runs inside
+a sandboxed process with credential protection. No opt-out.
 
-```bash
-# Restrict writes to project dir + /tmp
-koda --sandbox project
-
-# + block reads to credential dirs (~/.ssh, ~/.aws, ~/.gnupg, …)
-koda --sandbox strict
-
-# Via environment variable
-export KODA_SANDBOX=strict
-```
+- **Writes** restricted to project dir + `/tmp` + cache dirs
+- **Credential dirs** blocked: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, …
+- **Agent files** protected: `.koda/agents/` and `.koda/skills/` are read-only
 
 macOS uses `sandbox-exec` (seatbelt); Linux uses `bwrap` (bubblewrap).
-Sub-agents inherit the parent’s sandbox mode and can never run weaker.
-See the [sandbox reference](https://lijunzh.github.io/koda/sandbox.html)
-for the full list of protected paths.
+Sub-agents inherit the parent's trust mode via `TrustMode::clamp()` and
+can never run with less protection.
 
 See the [User Manual](https://lijunzh.github.io/koda/) for full documentation.
 

@@ -415,7 +415,7 @@ The layout is the same — just managed by the app instead of the terminal.
 ### Folder-Scoped Permissions (P2)
 
 Writes outside `project_root` always require explicit confirmation,
-regardless of approval mode. Bash commands are linted for path escapes
+regardless of trust mode. Bash commands are linted for path escapes
 before execution.
 
 Defense in depth with three layers — path resolution at execution, path
@@ -423,34 +423,35 @@ checks at approval, and heuristic bash linting. The LLM is semi-trusted
 (can make mistakes, not adversarial). The concern is accidental blast
 radius, not targeted attacks.
 
-For operational details, see the [approval module docs](https://docs.rs/koda-core/latest/koda_core/approval/).
+For operational details, see the [trust module docs](https://docs.rs/koda-core/latest/koda_core/trust/).
 
 ### Security Model (P2)
 
-Per-tool safety classification with two approval modes and hardcoded floors
+Per-tool safety classification with three trust modes and hardcoded floors
 that override mode settings for high-risk operations.
 
 The LLM is semi-trusted — capable of mistakes, not adversarial. Every tool
 call is classified into one of four effects (ReadOnly, LocalMutation,
-Destructive, RemoteAction). Approval modes (Auto/Confirm) determine which
-effects need confirmation. Hardcoded floors ensure destructive operations
-and outside-project writes always require confirmation regardless of mode.
+Destructive, RemoteAction). TrustMode (Plan/Safe/Auto) determines which
+effects need confirmation. Hardcoded floors ensure outside-project writes
+always require confirmation regardless of mode. The kernel sandbox
+(always active) enforces the perimeter.
 
-For approval mode tables, tool effect matrix, and operational details, see
-the [approval module docs](https://docs.rs/koda-core/latest/koda_core/approval/).
+For trust mode tables, tool effect matrix, and operational details, see
+the [trust module docs](https://docs.rs/koda-core/latest/koda_core/trust/).
 
 **Key design choices**:
-- Sub-agents inherit the parent's approval mode (clamped — Auto parent still
-  gets Confirm child if the child is set to Confirm)
-- **Kernel-level sandboxing** — opt-in via `--sandbox project|strict`.  macOS
-  uses `sandbox-exec` (seatbelt); Linux uses `bwrap` (bubblewrap).  Child
-  agents inherit the parent's sandbox mode via a "never weaken" rule.
+- Sub-agents inherit the parent’s trust mode (clamped via `TrustMode::clamp()`
+  — child can never run with less protection than parent)
+- **Kernel-level sandboxing** — always active. macOS uses `sandbox-exec`
+  (seatbelt); Linux uses `bwrap` (bubblewrap). Credential directories
+  are always protected.
 
 **Accepted risks**:
-1. Sandbox is opt-in (default: `none`) — users must explicitly enable it
-2. Shell command parsing is heuristic — complex pipelines can bypass
-3. Outside-project writes in Confirm mode show confirm prompt instead of clean block
-4. Network is unrestricted in all sandbox modes (required for `cargo fetch`, `npm install`)
+1. Shell command parsing is heuristic — complex pipelines can bypass classification
+2. Network is unrestricted in all modes (required for `cargo fetch`, `npm install`)
+3. If the sandbox backend is unavailable (e.g. no bwrap on Linux), Koda falls
+   back to unsandboxed execution with a warning rather than hard-erroring
 
 ### File Lifecycle Tracking (P2)
 
@@ -458,11 +459,11 @@ Track file create/edit/delete ownership per turn to auto-approve deleting
 files that koda created in the same turn.
 
 A common pattern — scaffold a temp file, use it, delete it — requires two
-confirmation prompts. The second ("approve delete?") is redundant when koda
+confirmation prompts. The second (“approve delete?”) is redundant when koda
 just created the file moments ago. The file tracker (`file_tracker.rs`)
 records which files were created/edited per turn. `check_tool()` in
-`approval.rs` queries the tracker: if a Delete targets a file koda created
-this turn, it's auto-approved.
+`trust.rs` queries the tracker: if a Delete targets a file koda created
+this turn, it’s auto-approved.
 
 **Implementation choices**:
 - Paths are canonicalized (`std::fs::canonicalize()` + `path_clean::clean()`

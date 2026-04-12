@@ -15,7 +15,7 @@
 - [File & image attachments](./attachments.md)
 - [Slash commands](./commands.md)
 - [Keybindings](./keybindings.md)
-- [Approval modes](./approval.md)
+- [Trust modes](./approval.md)
 - [Sandbox](./sandbox.md)
 
 # Managing sessions

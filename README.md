@@ -66,7 +66,7 @@ Inside the TUI, type `/help` to see all commands and keyboard shortcuts.
 
 | Resource | Description |
 |---|---|
-| [**User Manual**](https://lijunzh.github.io/koda/) | CLI reference, slash commands, approval modes, and custom agents |
+| [**User Manual**](https://lijunzh.github.io/koda/) | CLI reference, slash commands, trust modes, and custom agents |
 | [**Engine API**](https://docs.rs/koda-core) | Developer docs for embedding `koda-core` |
 | [**Design**](DESIGN.md) | Architecture principles and philosophies |
 | [**Contributing**](CLAUDE.md) | Workspace layout, coding conventions, and tests |

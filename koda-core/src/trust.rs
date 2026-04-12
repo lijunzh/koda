@@ -127,7 +127,10 @@ impl From<u8> for TrustMode {
         match v {
             0 => Self::Plan,
             1 => Self::Safe,
-            _ => Self::Auto,
+            2 => Self::Auto,
+            // Fail-safe: unknown values default to Safe (most restrictive
+            // interactive mode) rather than Auto (#860).
+            _ => Self::Safe,
         }
     }
 }
@@ -266,10 +269,17 @@ pub fn check_tool_with_tracker(
             }
         },
         TrustMode::Auto => match effect {
-            ToolEffect::ReadOnly
-            | ToolEffect::RemoteAction
-            | ToolEffect::LocalMutation
-            | ToolEffect::Destructive => ToolApproval::AutoApprove,
+            ToolEffect::ReadOnly => ToolApproval::AutoApprove,
+            ToolEffect::RemoteAction | ToolEffect::LocalMutation | ToolEffect::Destructive => {
+                // Safety net: if the kernel sandbox is unavailable, Auto mode
+                // loses its perimeter. Downgrade destructive/mutation ops to
+                // NeedsConfirmation so the user still gets a prompt (#860).
+                if crate::sandbox::is_available() {
+                    ToolApproval::AutoApprove
+                } else {
+                    ToolApproval::NeedsConfirmation
+                }
+            }
         },
     }
 }
@@ -405,7 +415,7 @@ mod tests {
         assert_eq!(TrustMode::from(0), TrustMode::Plan);
         assert_eq!(TrustMode::from(1), TrustMode::Safe);
         assert_eq!(TrustMode::from(2), TrustMode::Auto);
-        assert_eq!(TrustMode::from(99), TrustMode::Auto); // default fallback
+        assert_eq!(TrustMode::from(99), TrustMode::Safe); // fail-safe to Safe (#860)
     }
 
     #[test]
@@ -482,21 +492,39 @@ mod tests {
 
     #[test]
     fn test_auto_approves_non_outside() {
-        for tool in ["Write", "Edit", "WebFetch", "TodoWrite"] {
+        // On platforms with sandbox available, Auto mode auto-approves mutations.
+        // If sandbox is unavailable, mutations downgrade to NeedsConfirmation (#860).
+        let expected = if crate::sandbox::is_available() {
+            ToolApproval::AutoApprove
+        } else {
+            ToolApproval::NeedsConfirmation
+        };
+        for tool in ["Write", "Edit", "TodoWrite"] {
             assert_eq!(
                 check_tool(tool, &serde_json::json!({}), TrustMode::Auto, None),
-                ToolApproval::AutoApprove,
-                "{tool} should auto-approve in Auto mode"
+                expected,
+                "{tool} in Auto mode"
             );
         }
+        // Read-only tools always auto-approve regardless of sandbox.
+        assert_eq!(
+            check_tool("WebFetch", &serde_json::json!({}), TrustMode::Auto, None),
+            ToolApproval::AutoApprove,
+        );
     }
 
     #[test]
     fn test_auto_approves_destructive() {
-        // In Auto mode, destructive ops are auto-approved (sandbox enforces perimeter)
+        // In Auto mode, destructive ops are auto-approved when sandbox is available.
+        // Without sandbox, they downgrade to NeedsConfirmation (#860).
+        let expected = if crate::sandbox::is_available() {
+            ToolApproval::AutoApprove
+        } else {
+            ToolApproval::NeedsConfirmation
+        };
         assert_eq!(
             check_tool("Delete", &serde_json::json!({}), TrustMode::Auto, None),
-            ToolApproval::AutoApprove,
+            expected,
         );
     }
 

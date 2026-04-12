@@ -1,31 +1,24 @@
 # Sandbox
 
-Koda can sandbox Bash tool commands to prevent the model from accidentally
-(or adversarially) reading credentials or writing outside the project.
+Koda's kernel sandbox is **always active** — every Bash command runs
+inside a sandboxed process. The sandbox enforces the perimeter; the
+[trust mode](./approval.md) controls whether you see a confirmation
+prompt before each mutation.
 
-## Modes
+## What's protected
 
-| Mode | Writes | Reads | Network |
-|------|--------|-------|---------|
-| `none` (default) | Unrestricted | Unrestricted | Unrestricted |
-| `project` | Project dir + `/tmp` + cache dirs only | Unrestricted | Unrestricted |
-| `strict` | Same as `project` | Blocks credential dirs | Unrestricted |
+### Write restrictions
 
-## Usage
+Bash commands can only write to:
+- The project directory
+- `/tmp` and standard cache dirs (`~/.cache`, `~/.cargo`, etc.)
 
-```bash
-# CLI flag
-koda --sandbox project
-koda --sandbox strict
+### Credential protection
 
-# Environment variable
-export KODA_SANDBOX=strict
-koda
-```
+The following directories and files are blocked from both read and write
+access, preventing the model from exfiltrating secrets:
 
-## What's protected in strict mode
-
-**Directories** blocked from read+write:
+**Directories:**
 - `~/.ssh` — SSH private keys
 - `~/.aws` — AWS credentials
 - `~/.gnupg` — GPG private keys
@@ -39,23 +32,22 @@ koda
 - `~/.config/helm` — Helm registry auth
 - `~/.config/koda/db` — Koda's SQLite DB (contains API keys)
 
-**Files** blocked:
+**Files:**
 `~/.netrc`, `~/.git-credentials`, `~/.npmrc`, `~/.pypirc`,
 `~/.docker/config.json`, `~/.vault-token`, `~/.env`
 
-## Agent-file protection
+### Agent-file protection
 
-In all sandbox modes (`project` and `strict`), writes to `.koda/agents/`
-and `.koda/skills/` within the project are blocked. This prevents a
-sandboxed command from modifying agent definitions that could alter system
-prompts or tool access on the next session.
+In all modes, writes to `.koda/agents/` and `.koda/skills/` within the
+project are blocked. This prevents a sandboxed command from modifying
+agent definitions that could alter system prompts or tool access.
 
 ## Sub-agent inheritance
 
-Child agents inherit the parent's sandbox mode and can never run with
-less protection. If the parent runs with `--sandbox strict` but the
-agent JSON specifies `sandbox: "project"` (or omits it), the child
-still runs with `strict`.
+Child agents inherit the parent's trust mode and sandbox via
+`TrustMode::clamp()` — a child can never run with less protection than
+its caller. If the parent runs in Safe mode, the child runs in Safe mode
+even if the agent JSON specifies `"mode": "auto"`.
 
 ## Platform backends
 
@@ -65,5 +57,6 @@ still runs with `strict`.
 | Linux | `bwrap` (bubblewrap) | `apt install bubblewrap` |
 | Windows | Not supported | — |
 
-If you request sandboxing but the backend is unavailable, the command
-**fails with an error** rather than silently running unsandboxed.
+If the platform backend is unavailable (e.g. `bwrap` not installed on
+Linux), Koda falls back to unsandboxed execution with a warning logged
+via `tracing::warn!`. Install the backend for full protection.

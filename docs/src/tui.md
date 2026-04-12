@@ -11,18 +11,18 @@ Run `koda` with no arguments to open the full-screen TUI.
 │  ✓ Bash (exit 0)                                                         │
 │                                                                          │
 │  All tests pass! Here's what I changed in `auth.rs` …                   │
-├────────────── claude-sonnet · auto · 34% · 8s ───────────────────────────┤
+├────────────── claude-sonnet · 🔒 safe · 34% · 8s ───────────────────────────┤
 │  > _                                                                     │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-The status bar shows: **model** · **approval mode** · **context %** · **elapsed**
+The status bar shows: **model** · **trust mode** · **context %** · **elapsed**
 
 ## Layout
 
 - **Top panel** — conversation history. Scrollable; supports syntax-highlighted
   code blocks, rendered markdown, and collapsible tool-call summaries.
-- **Status bar** — live view of model, approval mode, context usage, and
+- **Status bar** — live view of model, trust mode, context usage, and
   inference time.
 - **Input** — multi-line editor with history, tab-completion for slash commands
   and `@file` paths, and reverse-search (`Ctrl+R`).

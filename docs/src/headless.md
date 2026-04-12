@@ -32,17 +32,19 @@ koda "list exported functions in lib.rs" > functions.txt
 | `0` | Turn completed successfully |
 | `1` | Error (API failure, bad config, …) |
 
-## Approval in headless mode
+## Trust mode in headless mode
 
-There is no human to approve tool calls. Koda automatically:
+There is no human to approve tool calls. Koda applies a **headless
+policy** — more restrictive than interactive Auto mode:
 
 - **Approves** read-only tools: Read, Grep, Glob, WebFetch
-- **Approves** safe write tools: Write, Edit (files only)
-- **Rejects** destructive Bash commands (`rm -rf`, `git push --force`, …)
+- **Approves** safe write tools: Write, Edit (files within the project)
+- **Rejects** all destructive operations: `Delete` tool, `rm -rf`,
+  `git push --force`, etc.
 - **Skips** AskUser questions (prints to stderr, continues with empty answer)
 
-Rejected actions are printed to stderr. The turn still completes with
-exit code 0 unless the API itself errors.
+The sandbox enforces credential protection and write restrictions
+regardless of trust mode.
 
 ## Output formats
 

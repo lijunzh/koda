@@ -1,15 +1,15 @@
 # Tools reference
 
-Koda exposes these tools to the model. In **Confirm** approval mode you'll
-be prompted before each mutating call. In **Auto** mode, only destructive
-Bash commands require confirmation.
+Koda exposes these tools to the model. In **Safe** trust mode you'll
+be prompted before each mutating call. In **Auto** mode, all actions
+within the project sandbox are auto-approved.
 
 | Tool | Effect | Description |
 |------|--------|-------------|
 | `Read` | Read-only | Read a file (with optional line range) |
 | `Write` | Mutating | Create or overwrite a file |
 | `Edit` | Mutating | Targeted text replacement within a file |
-| `Delete` | Mutating | Delete a file or directory |
+| `Delete` | Destructive | Delete a file or directory |
 | `Bash` | Varies | Run a shell command |
 | `Grep` | Read-only | Search for patterns across files (ripgrep) |
 | `Glob` | Read-only | List files matching a glob pattern |
@@ -27,13 +27,19 @@ Bash commands require confirmation.
 | `ListFiles` | Read-only | List directory contents |
 | `AskUser` | Interactive | Ask the user a clarifying question |
 
-## Approval behaviour by tool
+## Approval behaviour by trust mode
 
-| Category | Tools | Auto mode | Confirm mode |
-|----------|-------|-----------|--------------|
-| Read-only | Read, Grep, Glob, ListFiles, WebFetch, WebSearch, TodoRead, RecallContext | ✅ Auto | ✅ Auto |
-| Internal | Think, ActivateSkill | ✅ Auto | ✅ Auto |
-| Safe writes | Write, Edit, Delete, MemoryWrite, TodoWrite | ✅ Auto | ⏸ Prompt |
-| Agent calls | InvokeAgent | ✅ Auto | ⏸ Prompt |
-| User interaction | AskUser | ⏸ Prompt | ⏸ Prompt |
-| Destructive shell | `rm -rf`, `sudo`, `git push --force`, … | ⏸ Prompt | ⏸ Prompt |
+| Category | Tools | Plan | Safe | Auto |
+|----------|-------|------|------|------|
+| Read-only | Read, Grep, Glob, ListFiles, WebFetch, WebSearch, TodoRead, RecallContext | ✅ Auto | ✅ Auto | ✅ Auto |
+| Internal | Think, ActivateSkill | ✅ Auto | ✅ Auto | ✅ Auto |
+| Mutations | Write, Edit, MemoryWrite, TodoWrite | ❌ Deny | ⏸ Prompt | ✅ Auto |
+| Destructive | Delete | ❌ Deny | ⏸ Prompt | ✅ Auto |
+| Agent calls | InvokeAgent | ✅ Auto | ✅ Auto | ✅ Auto |
+| User interaction | AskUser | ⏸ Prompt | ⏸ Prompt | ⏸ Prompt |
+| Safe shell | `git status`, `grep`, `cargo test` | ✅ Auto | ✅ Auto | ✅ Auto |
+| Mutating shell | `echo > file`, `gh issue create` | ❌ Deny | ⏸ Prompt | ✅ Auto |
+| Destructive shell | `rm -rf`, `sudo`, `git push --force` | ❌ Deny | ⏸ Prompt | ✅ Auto |
+| Outside-project write | Write/Edit to paths outside project root | ❌ Deny | ⏸ Prompt | ⏸ Prompt |
+
+See [Trust modes](./approval.md) for the canonical policy matrix.

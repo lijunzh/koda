@@ -4,6 +4,43 @@ All notable changes to Koda are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.11] - 2026-04-12
+
+### Changed
+- **TrustMode replaces ApprovalMode × SandboxMode** — the two-layer
+  permission system (Auto/Confirm × None/Project/Strict) is replaced by a
+  single `TrustMode` enum with three modes (#855):
+  - **Plan** — sandbox on, all writes denied (investigation agents)
+  - **Safe** — sandbox on, confirm every side effect (user default)
+  - **Auto** — sandbox on, auto-approve all (autonomous coding)
+- **Sandbox always active** — kernel sandbox (macOS seatbelt / Linux bwrap)
+  with credential protection is always enforced. No more opt-in `--sandbox`
+  flag; the sandbox is the safety boundary, not the approval prompt.
+- **CLI flag change** — `--sandbox none|project|strict` removed; replaced
+  by `--mode safe|auto` (env: `KODA_MODE`). Default is `safe`.
+- **Status bar** — shows 📋 Plan, 🔒 Safe, or ⚡ Auto instead of
+  approval mode + sandbox mode.
+- **Sub-agent trust clamping** — child agents inherit parent's trust mode
+  via `TrustMode::clamp()` (never weaker than parent).
+- **Auto mode behavior** — destructive operations (Delete, `rm -rf`) are
+  now auto-approved in Auto mode. The kernel sandbox enforces the
+  perimeter; only writes outside the project root still require
+  confirmation.
+- **Graceful sandbox fallback** — `sandbox::build()` falls back to
+  unsandboxed execution with `tracing::warn!` when the platform backend
+  is unavailable (e.g. no `bwrap` on Linux), instead of hard-erroring.
+  `bwrap_available()` now probes with a real sandboxed command.
+- **Sandbox fallback safety net** — when the sandbox is unavailable and
+  trust mode is Auto, mutation/destructive ops downgrade to
+  `NeedsConfirmation` so the user still gets a prompt. `From<u8>` for
+  TrustMode now fail-safes to Safe instead of Auto (#860).
+
+### Fixed
+- **CI sandbox support** — all Linux CI jobs now install bubblewrap and
+  enable unprivileged user namespaces via `sysctl` (same approach as
+  OpenAI Codex CI). Previously bwrap was installed but couldn't create
+  sandboxes due to disabled user namespaces on GH Actions runners.
+
 > **Lineage:** This project continues from [`koda-agent`](https://github.com/lijunzh/koda-agent) (archived at v0.1.5).
 > Versions v0.1.0–v0.1.5 of `koda-agent` are documented in that repository's CHANGELOG.
 
