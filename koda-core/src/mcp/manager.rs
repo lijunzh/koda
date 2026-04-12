@@ -179,6 +179,60 @@ impl McpManager {
             .collect()
     }
 
+    /// Compact status for the TUI status bar.
+    ///
+    /// Returns `None` if no MCP servers are configured (hide the indicator).
+    pub fn status_bar_summary(&self) -> Option<McpStatusBarInfo> {
+        if self.clients.is_empty() {
+            return None;
+        }
+        let total = self.clients.len();
+        let connected = self
+            .clients
+            .values()
+            .filter(|c| c.status() == McpClientStatus::Connected)
+            .count();
+        let failed = self
+            .clients
+            .values()
+            .filter(|c| c.status() == McpClientStatus::Failed)
+            .count();
+        Some(McpStatusBarInfo {
+            connected,
+            failed,
+            total,
+        })
+    }
+
+    /// Reconnect a specific server by name.
+    ///
+    /// Disconnects the existing client (if any) and reconnects using the
+    /// stored config. Returns the number of tools discovered on success.
+    pub async fn reconnect_server(&mut self, name: &str) -> Result<usize> {
+        let client = self
+            .clients
+            .get_mut(name)
+            .with_context(|| format!("MCP server '{name}' not found"))?;
+
+        // Disconnect first.
+        client.disconnect().await;
+
+        // Purge old annotations for this server.
+        let prefix = format!("{name}__");
+        self.annotations.retain(|k, _| !k.starts_with(&prefix));
+
+        // Reconnect.
+        client.connect().await?;
+
+        // Re-cache annotations.
+        for tool in client.tools() {
+            self.annotations
+                .insert(tool.definition.name.clone(), tool.annotations.clone());
+        }
+
+        Ok(client.tools().len())
+    }
+
     /// Disconnect all servers.
     pub async fn shutdown(&mut self) {
         for client in self.clients.values_mut() {
@@ -260,6 +314,17 @@ pub struct McpServerStatus {
     pub tool_count: usize,
     /// Last error message (if failed).
     pub error: Option<String>,
+}
+
+/// Compact MCP status for the TUI status bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McpStatusBarInfo {
+    /// Number of connected servers.
+    pub connected: usize,
+    /// Number of failed servers.
+    pub failed: usize,
+    /// Total configured servers.
+    pub total: usize,
 }
 
 /// Convert MCP CallToolResult content into a plain string.

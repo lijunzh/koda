@@ -1,7 +1,8 @@
 //! Status bar widget for the inline TUI viewport.
 //!
-//! Shows: model name | approval mode | context usage bar | inference state
+//! Shows: model name | approval mode | context usage bar | MCP | inference state
 
+use koda_core::mcp::manager::McpStatusBarInfo;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -21,6 +22,8 @@ pub struct StatusBar<'a> {
     last_turn: Option<&'a TurnStats>,
     /// Scroll position info (offset, total) — shown when not at bottom.
     scroll_info: Option<(usize, usize)>,
+    /// MCP server status (None = no servers configured, hidden).
+    mcp_info: Option<McpStatusBarInfo>,
 }
 
 /// Stats from the most recent inference turn.
@@ -46,6 +49,7 @@ impl<'a> StatusBar<'a> {
             elapsed_secs: 0,
             last_turn: None,
             scroll_info: None,
+            mcp_info: None,
         }
     }
 
@@ -66,6 +70,11 @@ impl<'a> StatusBar<'a> {
 
     pub fn with_scroll_info(mut self, offset: usize, total: usize) -> Self {
         self.scroll_info = Some((offset, total));
+        self
+    }
+
+    pub fn with_mcp_info(mut self, info: McpStatusBarInfo) -> Self {
+        self.mcp_info = Some(info);
         self
     }
 }
@@ -118,6 +127,25 @@ impl Widget for StatusBar<'_> {
                 Style::default().fg(ctx_color),
             ),
         ];
+
+        // MCP server indicator (hidden when no servers configured)
+        if let Some(mcp) = self.mcp_info {
+            let mcp_color = if mcp.failed == 0 {
+                Color::Green
+            } else if mcp.connected > 0 {
+                Color::Yellow
+            } else {
+                Color::Red
+            };
+            spans.push(Span::styled(
+                "\u{2502}",
+                Style::default().fg(Color::Rgb(60, 60, 60)),
+            ));
+            spans.push(Span::styled(
+                format!(" \u{26a1}{}/{} ", mcp.connected, mcp.total),
+                Style::default().fg(mcp_color),
+            ));
+        }
 
         // Elapsed time during inference
         if self.elapsed_secs > 0 {

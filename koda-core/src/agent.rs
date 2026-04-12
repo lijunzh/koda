@@ -121,4 +121,13 @@ impl KodaAgent {
             &self.tools.skill_registry,
         );
     }
+
+    /// Compact MCP status for the TUI status bar.
+    ///
+    /// Returns `None` if no MCP servers are configured.
+    pub fn mcp_status_bar_info(&self) -> Option<crate::mcp::manager::McpStatusBarInfo> {
+        let mgr = self.tools.mcp_manager()?;
+        let guard = mgr.try_read().ok()?;
+        guard.status_bar_summary()
+    }
 }

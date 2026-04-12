@@ -39,6 +39,7 @@ pub async fn handle_mcp_list(
              /mcp add <name> <command> [args...]\n  \
              /mcp add-http <name> <url> [--token <bearer>]\n  \
              /mcp remove <name>\n  \
+             /mcp reconnect <name>\n  \
              /mcp list\n\
              \n\
              Examples:\n  \
@@ -334,4 +335,31 @@ async fn try_remove_from_live_manager(agent: &Arc<KodaAgent>, name: &str) -> boo
     };
     let mut mgr = mgr.write().await;
     mgr.remove_server(name).await
+}
+
+/// Handle `/mcp reconnect <name>`.
+pub async fn handle_mcp_reconnect(buffer: &mut ScrollBuffer, agent: &Arc<KodaAgent>, name: String) {
+    let Some(mgr) = agent.tools.mcp_manager() else {
+        tui_output::err_msg(buffer, "No MCP manager available.".into());
+        return;
+    };
+
+    tui_output::dim_msg(buffer, format!("Reconnecting MCP server '{name}'..."));
+
+    let result = {
+        let mut mgr = mgr.write().await;
+        mgr.reconnect_server(&name).await
+    };
+
+    match result {
+        Ok(tool_count) => {
+            tui_output::ok_msg(
+                buffer,
+                format!("MCP server '{name}' reconnected ({tool_count} tools)"),
+            );
+        }
+        Err(e) => {
+            tui_output::err_msg(buffer, format!("Failed to reconnect '{name}': {e}"));
+        }
+    }
 }
