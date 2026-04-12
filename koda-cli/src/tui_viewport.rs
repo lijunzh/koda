@@ -10,7 +10,7 @@ use crate::tui_types::{MenuContent, PromptMode, Term, TuiState};
 use crate::widgets::status_bar::StatusBar;
 
 use anyhow::Result;
-use koda_core::approval::ApprovalMode;
+use koda_core::trust::TrustMode;
 use ratatui::{
     Terminal, TerminalOptions, Viewport,
     backend::CrosstermBackend,
@@ -28,7 +28,7 @@ pub(crate) fn draw_viewport(
     frame: &mut ratatui::Frame,
     textarea: &TextArea,
     model: &str,
-    mode: ApprovalMode,
+    mode: TrustMode,
     context_pct: u32,
     state: TuiState,
     prompt_mode: &PromptMode,
@@ -108,8 +108,9 @@ pub(crate) fn draw_viewport(
         PromptMode::Chat => {
             let (icon, c) = match (state, mode) {
                 (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray),
-                (_, ApprovalMode::Confirm) => ("\u{1f512}", Color::Cyan),
-                (_, ApprovalMode::Auto) => ("\u{26a1}", Color::Green),
+                (_, TrustMode::Plan) => ("\u{1f4cb}", Color::DarkGray),
+                (_, TrustMode::Safe) => ("\u{1f512}", Color::Cyan),
+                (_, TrustMode::Auto) => ("\u{26a1}", Color::Green),
             };
             (format!("{icon}> "), c)
         }

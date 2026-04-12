@@ -21,13 +21,13 @@ use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
 use futures_util::StreamExt;
 use koda_core::agent::KodaAgent;
-use koda_core::approval::{self, ApprovalMode};
 use koda_core::config::KodaConfig;
 use koda_core::db::Role;
 use koda_core::engine::EngineCommand;
 use koda_core::persistence::Persistence;
 use koda_core::providers::LlmProvider;
 use koda_core::session::KodaSession;
+use koda_core::trust::{self, TrustMode};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -88,7 +88,7 @@ pub(crate) struct TuiContext {
     pub config: KodaConfig,
     pub provider: Arc<RwLock<Box<dyn LlmProvider>>>,
     pub session: KodaSession,
-    pub shared_mode: approval::SharedMode,
+    pub shared_mode: trust::SharedTrustMode,
     pub agent: Arc<KodaAgent>,
     pub project_root: PathBuf,
 }
@@ -188,7 +188,7 @@ impl TuiContext {
             agent.clone(),
             db.clone(),
             &config,
-            ApprovalMode::Auto,
+            TrustMode::Auto,
         )
         .await;
 
@@ -198,11 +198,11 @@ impl TuiContext {
         let initial_mode = {
             use koda_core::persistence::Persistence;
             match session.db.get_session_mode(&session.id).await {
-                Ok(Some(mode_str)) => ApprovalMode::parse(&mode_str).unwrap_or(ApprovalMode::Auto),
-                _ => ApprovalMode::Auto,
+                Ok(Some(mode_str)) => TrustMode::parse(&mode_str).unwrap_or(TrustMode::Auto),
+                _ => TrustMode::Auto,
             }
         };
-        let shared_mode = approval::new_shared_mode(initial_mode);
+        let shared_mode = trust::new_shared_trust(initial_mode);
 
         // Terminal + textarea
         let terminal = init_terminal()?;
@@ -344,7 +344,7 @@ impl TuiContext {
         let (w, h) = self.term_dims();
         self.scroll_buffer.clamp_offset(w, h);
 
-        let mode = approval::read_mode(&self.shared_mode);
+        let mode = trust::read_trust(&self.shared_mode);
         let ctx = self.context_pct;
         let tui_state = self.tui_state;
         let prompt_mode = &self.prompt_mode;
@@ -453,10 +453,11 @@ impl TuiContext {
             return Some(cmd);
         }
         if let Some(queued) = self.input_queue.pop_front() {
-            let mode = approval::read_mode(&self.shared_mode);
+            let mode = trust::read_trust(&self.shared_mode);
             let icon = match mode {
-                ApprovalMode::Confirm => "\u{1f512}",
-                ApprovalMode::Auto => "\u{26a1}",
+                TrustMode::Plan => "\u{1f4cb}",
+                TrustMode::Safe => "\u{1f512}",
+                TrustMode::Auto => "\u{26a1}",
             };
             let remaining = self.input_queue.len();
             let suffix = if remaining > 0 {
@@ -618,7 +619,7 @@ impl TuiContext {
             Some(processed.images)
         };
 
-        self.session.mode = approval::read_mode(&self.shared_mode);
+        self.session.mode = trust::read_trust(&self.shared_mode);
         self.session.update_provider(&self.config);
 
         CommandOutcome::StartInference { pending_images }

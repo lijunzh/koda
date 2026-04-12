@@ -27,7 +27,6 @@
 //!   `match` in `ToolRegistry::execute()`, not a `HashMap<String, Box<dyn Tool>>`.
 //!   Rust's exhaustive matching catches missing handlers at compile time.
 
-use crate::approval::{self, ApprovalMode, ToolApproval};
 use crate::approval_flow::{handle_ask_user, request_approval};
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
@@ -39,6 +38,7 @@ use crate::providers::ToolCall;
 use crate::sub_agent_cache::SubAgentCache;
 use crate::sub_agent_dispatch;
 use crate::tools;
+use crate::trust::{self, ToolApproval, TrustMode};
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -159,13 +159,13 @@ async fn track_file_lifecycle(
 
 pub(crate) fn can_parallelize(
     tool_calls: &[ToolCall],
-    mode: ApprovalMode,
+    mode: TrustMode,
     project_root: &Path,
 ) -> bool {
     let all_approved = !tool_calls.iter().any(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            approval::check_tool(&tc.function_name, &args, mode, Some(project_root)),
+            trust::check_tool(&tc.function_name, &args, mode, Some(project_root)),
             ToolApproval::NeedsConfirmation | ToolApproval::Blocked
         )
     });
@@ -201,7 +201,7 @@ pub(crate) async fn execute_one_tool(
     db: &Database,
     _session_id: &str,
     tools: &crate::tools::ToolRegistry,
-    mode: ApprovalMode,
+    mode: TrustMode,
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
@@ -257,7 +257,7 @@ pub(crate) async fn execute_tools_parallel(
     db: &Database,
     session_id: &str,
     tools: &crate::tools::ToolRegistry,
-    mode: ApprovalMode,
+    mode: TrustMode,
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
@@ -329,7 +329,7 @@ pub(crate) async fn execute_tools_split_batch(
     db: &Database,
     session_id: &str,
     tools: &crate::tools::ToolRegistry,
-    mode: ApprovalMode,
+    mode: TrustMode,
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
@@ -341,7 +341,7 @@ pub(crate) async fn execute_tools_split_batch(
     let (parallel, sequential): (Vec<_>, Vec<_>) = tool_calls.iter().partition(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            approval::check_tool(&tc.function_name, &args, mode, Some(project_root),),
+            trust::check_tool(&tc.function_name, &args, mode, Some(project_root),),
             ToolApproval::AutoApprove
         )
     });
@@ -449,7 +449,7 @@ pub(crate) async fn execute_tools_sequential(
     db: &Database,
     session_id: &str,
     tools: &crate::tools::ToolRegistry,
-    mode: ApprovalMode,
+    mode: TrustMode,
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
@@ -534,7 +534,7 @@ pub(crate) async fn execute_tools_sequential(
         }
 
         // Check approval for this tool call (with file ownership awareness, #465)
-        let approval = approval::check_tool_with_tracker(
+        let approval = trust::check_tool_with_tracker(
             &tc.function_name,
             &parsed_args,
             mode,
@@ -571,7 +571,7 @@ pub(crate) async fn execute_tools_sequential(
                 let detail = tools::describe_action(&tc.function_name, &parsed_args);
                 let diff_preview =
                     preview::compute(&tc.function_name, &parsed_args, project_root).await;
-                let effect = crate::approval::resolve_tool_effect(&tc.function_name, &parsed_args);
+                let effect = crate::trust::resolve_tool_effect(&tc.function_name, &parsed_args);
 
                 match request_approval(
                     sink,
@@ -668,7 +668,7 @@ mod tests {
         let calls = vec![make_tool_call("Read"), make_tool_call("Grep")];
         assert!(can_parallelize(
             &calls,
-            ApprovalMode::Confirm,
+            TrustMode::Safe,
             Path::new("/test/project")
         ));
     }
@@ -678,7 +678,7 @@ mod tests {
         let calls = vec![make_tool_call("Read"), make_tool_call("Write")];
         assert!(!can_parallelize(
             &calls,
-            ApprovalMode::Confirm,
+            TrustMode::Safe,
             Path::new("/test/project")
         ));
     }
@@ -697,7 +697,7 @@ mod tests {
         ];
         assert!(!can_parallelize(
             &calls,
-            ApprovalMode::Confirm,
+            TrustMode::Safe,
             Path::new("/test/project")
         ));
     }
@@ -707,7 +707,7 @@ mod tests {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("InvokeAgent")];
         assert!(can_parallelize(
             &calls,
-            ApprovalMode::Confirm,
+            TrustMode::Safe,
             Path::new("/test/project")
         ));
     }
@@ -730,7 +730,7 @@ mod tests {
         ];
         assert!(!can_parallelize(
             &calls,
-            ApprovalMode::Auto, // Auto mode would normally allow parallelization
+            TrustMode::Auto, // Auto mode would normally allow parallelization
             Path::new("/test/project")
         ));
     }
@@ -753,7 +753,7 @@ mod tests {
         ];
         assert!(can_parallelize(
             &calls,
-            ApprovalMode::Auto,
+            TrustMode::Auto,
             Path::new("/test/project")
         ));
     }
@@ -776,7 +776,7 @@ mod tests {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("Write")];
         assert!(!can_parallelize(
             &calls,
-            ApprovalMode::Confirm,
+            TrustMode::Safe,
             Path::new("/test/project")
         ));
     }
@@ -786,7 +786,7 @@ mod tests {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("Write")];
         assert!(can_parallelize(
             &calls,
-            ApprovalMode::Auto,
+            TrustMode::Auto,
             Path::new("/test/project")
         ));
     }

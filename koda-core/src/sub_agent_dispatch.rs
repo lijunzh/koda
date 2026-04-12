@@ -5,7 +5,6 @@
 //! Each sub-agent gets its own session, provider, and (optionally) worktree
 //! for isolation. Results are cached by `(agent_name, prompt_hash)`.
 
-use crate::approval::{self, ApprovalMode, ToolApproval};
 use crate::approval_flow::request_approval;
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
@@ -18,6 +17,7 @@ use crate::prompt::build_system_prompt;
 use crate::providers::{ChatMessage, ToolCall};
 use crate::sub_agent_cache::SubAgentCache;
 use crate::tools::{self, ToolRegistry};
+use crate::trust::{self, ToolApproval, TrustMode};
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -52,7 +52,7 @@ async fn run_bg_agent(
         &parent_config,
         &db,
         &sync_arguments,
-        ApprovalMode::Auto,
+        TrustMode::Auto,
         &null_sink,
         cancel,
         &mut cmd_rx,
@@ -83,7 +83,7 @@ pub(crate) async fn execute_sub_agent(
     parent_config: &KodaConfig,
     db: &Database,
     arguments: &str,
-    mode: ApprovalMode,
+    mode: TrustMode,
     sink: &dyn crate::engine::EngineSink,
     cancel: CancellationToken,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
@@ -171,14 +171,14 @@ pub(crate) async fn execute_sub_agent(
     //   Anthropic), so if the agent has its own provider we leave the model
     //   resolved from that provider's defaults.
     let sub_config = if is_fork {
-        // Fork inherits the parent config verbatim — including sandbox.
-        // The clone preserves sandbox; no `stricter()` needed since
+        // Fork inherits the parent config verbatim — including trust mode.
+        // The clone preserves trust; no clamping needed since
         // fork == exact copy.  Assertion guards against future changes
         // that might add config overrides to the fork path.
         let cfg = parent_config.clone();
         debug_assert!(
-            cfg.sandbox == parent_config.sandbox,
-            "fork must inherit parent sandbox exactly"
+            cfg.trust == parent_config.trust,
+            "fork must inherit parent trust exactly"
         );
         cfg
     } else {
@@ -204,18 +204,18 @@ pub(crate) async fn execute_sub_agent(
         // else: agent opted into its own provider — use its resolved config
         // as-is. The agent JSON is responsible for any model it needs.
 
-        // Inherit sandbox: child can never be weaker than parent (#845).
+        // Inherit trust: child can never exceed parent's trust (#845).
         // Same pattern as Codex's `apply_spawn_agent_runtime_overrides()`
         // which copies the parent's runtime sandbox_policy onto the child.
-        let child_sandbox = cfg.sandbox.clone();
-        cfg.sandbox = parent_config.sandbox.stricter(&cfg.sandbox);
-        if cfg.sandbox != child_sandbox {
+        let child_trust = cfg.trust;
+        cfg.trust = TrustMode::clamp(parent_config.trust, cfg.trust);
+        if cfg.trust != child_trust {
             tracing::info!(
                 agent = agent_name,
-                parent = %parent_config.sandbox,
-                child = %child_sandbox,
-                effective = %cfg.sandbox,
-                "sub-agent sandbox escalated to match parent",
+                parent = %parent_config.trust,
+                child = %child_trust,
+                effective = %cfg.trust,
+                "sub-agent trust clamped to match parent",
             );
         }
 
@@ -277,10 +277,10 @@ pub(crate) async fn execute_sub_agent(
     let effective_root_ref = effective_root.as_path();
 
     let tools = {
-        let registry = ToolRegistry::with_sandbox(
+        let registry = ToolRegistry::with_trust(
             effective_root.clone(),
             sub_config.max_context_tokens,
-            sub_config.sandbox.clone(),
+            sub_config.trust,
         );
         match parent_cache {
             Some(cache) => registry.with_shared_cache(cache),
@@ -392,7 +392,7 @@ pub(crate) async fn execute_sub_agent(
             // Sub-agents inherit the parent's approval mode
             let parsed_args: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or_default();
-            let approval = approval::check_tool(
+            let approval = trust::check_tool(
                 &tc.function_name,
                 &parsed_args,
                 mode,
@@ -421,8 +421,7 @@ pub(crate) async fn execute_sub_agent(
                     let detail = tools::describe_action(&tc.function_name, &parsed_args);
                     let diff_preview =
                         preview::compute(&tc.function_name, &parsed_args, effective_root_ref).await;
-                    let effect =
-                        crate::approval::resolve_tool_effect(&tc.function_name, &parsed_args);
+                    let effect = crate::trust::resolve_tool_effect(&tc.function_name, &parsed_args);
                     match request_approval(
                         sink,
                         cmd_rx,

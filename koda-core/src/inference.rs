@@ -36,7 +36,6 @@
 //! - **Rate Limit Retry (P2)**: Exponential backoff for 429 errors. Long
 //!   sessions with Opus hit rate limits regularly.
 
-use crate::approval::ApprovalMode;
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{EngineCommand, EngineEvent, EngineSink};
@@ -57,6 +56,7 @@ use crate::tool_dispatch::{
     can_parallelize, execute_tools_parallel, execute_tools_sequential, execute_tools_split_batch,
 };
 use crate::tools::ToolRegistry;
+use crate::trust::TrustMode;
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -368,7 +368,7 @@ async fn collect_stream(
     sink: &dyn EngineSink,
     cancel: &CancellationToken,
     tools: &ToolRegistry,
-    mode: ApprovalMode,
+    mode: TrustMode,
     project_root: &Path,
 ) -> StreamResult {
     let mut full_text = String::new();
@@ -565,8 +565,8 @@ pub struct InferenceContext<'a> {
     pub tool_defs: &'a [ToolDefinition],
     /// Images attached to the current prompt (consumed on first turn).
     pub pending_images: Option<Vec<ImageData>>,
-    /// Current approval mode.
-    pub mode: ApprovalMode,
+    /// Current trust mode.
+    pub mode: TrustMode,
     /// Event sink for streaming output to the client.
     pub sink: &'a dyn EngineSink,
     /// Cancellation token for graceful interruption.
@@ -1185,9 +1185,9 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::approval::ApprovalMode;
     use crate::engine::sink::TestSink;
     use crate::providers::{StreamChunk, TokenUsage, ToolCall};
+    use crate::trust::TrustMode;
     use tokio::sync::mpsc;
 
     /// Helper: create a ToolRegistry backed by a temp directory.
@@ -1214,15 +1214,7 @@ mod tests {
             // tx drops here → stream ends
         });
 
-        collect_stream(
-            &mut rx,
-            &sink,
-            &cancel,
-            &tools,
-            ApprovalMode::Auto,
-            tmp.path(),
-        )
-        .await
+        collect_stream(&mut rx, &sink, &cancel, &tools, TrustMode::Auto, tmp.path()).await
     }
 
     // ── Text streaming ───────────────────────────────────────────
@@ -1346,15 +1338,8 @@ mod tests {
             let _ = tx.send(StreamChunk::Done(TokenUsage::default())).await;
         });
 
-        let result = collect_stream(
-            &mut rx,
-            &sink,
-            &cancel,
-            &tools,
-            ApprovalMode::Auto,
-            tmp.path(),
-        )
-        .await;
+        let result =
+            collect_stream(&mut rx, &sink, &cancel, &tools, TrustMode::Auto, tmp.path()).await;
 
         assert_eq!(result.tool_calls.len(), 1, "tool call should be recorded");
         assert_eq!(result.eager_results.len(), 1, "should have 1 eager result");
@@ -1412,15 +1397,8 @@ mod tests {
             let _ = tx.send(StreamChunk::TextDelta(" ignored".into())).await;
         });
 
-        let result = collect_stream(
-            &mut rx,
-            &sink,
-            &cancel,
-            &tools,
-            ApprovalMode::Auto,
-            tmp.path(),
-        )
-        .await;
+        let result =
+            collect_stream(&mut rx, &sink, &cancel, &tools, TrustMode::Auto, tmp.path()).await;
 
         assert!(result.interrupted);
         assert!(result.network_error.is_none());

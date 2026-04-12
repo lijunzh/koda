@@ -6,12 +6,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use koda_core::{
-    approval::ApprovalMode,
     engine::{EngineCommand, EngineEvent, event::TurnEndReason},
     persistence::Persistence,
     providers::{LlmResponse, ModelInfo},
     session::KodaSession,
     tools::ToolRegistry,
+    trust::TrustMode,
 };
 use koda_test_utils::{
     ChatMessage, Env, LlmProvider, MockProvider, MockResponse, TestSink, ToolDefinition,
@@ -55,7 +55,7 @@ async fn make_session(
         agent,
         db: env.db.clone(),
         provider,
-        mode: ApprovalMode::Auto,
+        mode: TrustMode::Auto,
         cancel: cancel.clone(),
         file_tracker,
         title_set: false,

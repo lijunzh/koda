@@ -80,12 +80,12 @@ Options:
       --reasoning-effort <REASONING_EFFORT>
           OpenAI reasoning effort (low, medium, high)
 
-      --sandbox <SANDBOX>
-          Sandbox mode for Bash tool invocations: none (default), project, or strict. "project" restricts writes to the project dir + /tmp. "strict" also blocks reads of credential dirs (~/.ssh, ~/.aws, ~/.gnupg, …). Requires sandbox-exec on macOS or bwrap on Linux
+      --mode <MODE>
+          Trust mode: safe (default) or auto. "safe" confirms every side effect before executing. "auto" auto-approves all actions within the project sandbox. Sandbox with credential protection is always active
           
-          [env: KODA_SANDBOX=]
-          [default: none]
-          [possible values: none, project, strict]
+          [env: KODA_MODE=]
+          [default: safe]
+          [possible values: safe, auto]
 
   -h, --help
           Print help (see a summary with '-h')

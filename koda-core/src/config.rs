@@ -414,8 +414,8 @@ pub struct KodaConfig {
     /// Skip injecting project/global memory into the system prompt.
     /// Set by `skip_memory: true` in agent JSON. Default: `false`.
     pub skip_memory: bool,
-    /// Sandbox mode for Bash tool invocations. Default: `SandboxMode::None`.
-    pub sandbox: crate::sandbox::SandboxMode,
+    /// Trust mode for this session. Default: `TrustMode::Safe`.
+    pub trust: crate::trust::TrustMode,
 }
 
 impl KodaConfig {
@@ -493,7 +493,7 @@ impl KodaConfig {
             model_settings: settings,
             max_iterations,
             skip_memory: agent.skip_memory,
-            sandbox: crate::sandbox::SandboxMode::None,
+            trust: crate::trust::TrustMode::Safe,
         })
     }
 
@@ -564,9 +564,9 @@ impl KodaConfig {
         self
     }
 
-    /// Override the sandbox mode (e.g. from `--sandbox project` on the CLI).
-    pub fn with_sandbox(mut self, mode: crate::sandbox::SandboxMode) -> Self {
-        self.sandbox = mode;
+    /// Override the trust mode (e.g. from `--mode safe` on the CLI).
+    pub fn with_trust(mut self, mode: crate::trust::TrustMode) -> Self {
+        self.trust = mode;
         self
     }
 
@@ -700,7 +700,7 @@ impl KodaConfig {
             model_settings,
             max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,
             skip_memory: false,
-            sandbox: crate::sandbox::SandboxMode::None,
+            trust: crate::trust::TrustMode::Safe,
         }
     }
 

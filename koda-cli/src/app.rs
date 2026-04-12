@@ -111,13 +111,13 @@ struct Cli {
     #[arg(long)]
     reasoning_effort: Option<String>,
 
-    /// Sandbox mode for Bash tool invocations: none (default), project, or strict.
-    /// "project" restricts writes to the project dir + /tmp.
-    /// "strict" also blocks reads of credential dirs (~/.ssh, ~/.aws, ~/.gnupg, …).
-    /// Requires sandbox-exec on macOS or bwrap on Linux.
-    #[arg(long, env = "KODA_SANDBOX", default_value = "none",
-          value_parser = ["none", "project", "strict"])]
-    sandbox: String,
+    /// Trust mode: safe (default) or auto.
+    /// "safe" confirms every side effect before executing.
+    /// "auto" auto-approves all actions within the project sandbox.
+    /// Sandbox with credential protection is always active.
+    #[arg(long, env = "KODA_MODE", default_value = "safe",
+          value_parser = ["safe", "auto"])]
+    mode: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -170,7 +170,9 @@ pub(crate) async fn run() -> Result<()> {
                             cli.thinking_budget,
                             cli.reasoning_effort.clone(),
                         )
-                        .with_sandbox(koda_core::sandbox::SandboxMode::parse(&cli.sandbox));
+                        .with_trust(
+                            koda_core::trust::TrustMode::parse(&cli.mode).unwrap_or_default(),
+                        );
                     server::run_stdio_server(project_root, config).await?;
                 } else {
                     eprintln!("WebSocket server (--port {port}) not yet implemented. Use --stdio.");
@@ -244,7 +246,7 @@ pub(crate) async fn run() -> Result<()> {
                 cli.thinking_budget,
                 cli.reasoning_effort,
             )
-            .with_sandbox(koda_core::sandbox::SandboxMode::parse(&cli.sandbox));
+            .with_trust(koda_core::trust::TrustMode::parse(&cli.mode).unwrap_or_default());
         let session_id = match cli.session {
             Some(id) => id,
             None => db.create_session(&config.agent_name, &project_root).await?,
@@ -277,7 +279,7 @@ pub(crate) async fn run() -> Result<()> {
             cli.thinking_budget,
             cli.reasoning_effort,
         )
-        .with_sandbox(koda_core::sandbox::SandboxMode::parse(&cli.sandbox));
+        .with_trust(koda_core::trust::TrustMode::parse(&cli.mode).unwrap_or_default());
 
     // Initialize database is already done above
 

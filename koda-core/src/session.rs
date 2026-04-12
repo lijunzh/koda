@@ -15,7 +15,7 @@
 //!   ├─ database handle (SQLite)
 //!   ├─ session_id (UUID)
 //!   ├─ provider instance
-//!   ├─ approval mode (auto/confirm)
+//!   ├─ trust mode (plan/safe/auto)
 //!   └─ cancellation token
 //! ```
 //!
@@ -23,13 +23,13 @@
 //! (e.g., main REPL + background sub-agents) without shared mutable state.
 
 use crate::agent::KodaAgent;
-use crate::approval::ApprovalMode;
 use crate::config::KodaConfig;
 use crate::db::Database;
 use crate::engine::{EngineCommand, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference::InferenceContext;
 use crate::providers::{self, ImageData, LlmProvider};
+use crate::trust::TrustMode;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -38,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 
 /// A single conversation session with its own state.
 ///
-/// Each session has its own provider, approval mode, and cancel token.
+/// Each session has its own provider, trust mode, and cancel token.
 /// Multiple sessions can share the same `Arc<KodaAgent>`.
 pub struct KodaSession {
     /// Unique session identifier.
@@ -49,8 +49,8 @@ pub struct KodaSession {
     pub db: Database,
     /// LLM provider for this session.
     pub provider: Box<dyn LlmProvider>,
-    /// Current approval mode (Auto / Confirm).
-    pub mode: ApprovalMode,
+    /// Current trust mode (Plan / Safe / Auto).
+    pub mode: TrustMode,
     /// Cancellation token for graceful shutdown.
     pub cancel: CancellationToken,
     /// File lifecycle tracker — tracks files created by Koda (#465).
@@ -66,7 +66,7 @@ impl KodaSession {
         agent: Arc<KodaAgent>,
         db: Database,
         config: &KodaConfig,
-        mode: ApprovalMode,
+        mode: TrustMode,
     ) -> Self {
         let provider = providers::create_provider(config);
         // Wire db+session into ToolRegistry for RecallContext

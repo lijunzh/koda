@@ -6,12 +6,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use koda_core::{
-    approval::ApprovalMode,
     config::ModelSettings,
     engine::{EngineCommand, EngineEvent},
     inference::{self, InferenceContext},
     persistence::Persistence,
     providers::{LlmResponse, ModelInfo},
+    trust::TrustMode,
 };
 use koda_test_utils::{ChatMessage, Env, LlmProvider, MockProvider, MockResponse, ToolDefinition};
 use tokio::sync::mpsc;
@@ -167,7 +167,7 @@ async fn test_provider_error_emits_error_event() {
         tools: &env.tools,
         tool_defs: &tool_defs,
         pending_images: None,
-        mode: ApprovalMode::Auto,
+        mode: TrustMode::Auto,
         sink: &sink,
         cancel: CancellationToken::new(),
         cmd_rx: &mut cmd_rx,
@@ -276,7 +276,7 @@ async fn test_cancel_during_streaming() {
         tools: &env.tools,
         tool_defs: &tool_defs,
         pending_images: None,
-        mode: ApprovalMode::Auto,
+        mode: TrustMode::Auto,
         sink: &sink,
         cancel,
         cmd_rx: &mut cmd_rx,

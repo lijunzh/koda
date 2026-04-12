@@ -21,7 +21,7 @@
 //!
 //! Columns: Auto, Confirm
 
-use koda_core::approval::{ApprovalMode, ToolApproval, check_tool};
+use koda_core::trust::{ToolApproval, TrustMode, check_tool};
 use std::path::Path;
 
 fn root() -> &'static Path {
@@ -30,8 +30,8 @@ fn root() -> &'static Path {
 
 /// Helper: check a tool in both modes and return (auto, confirm).
 fn check_both(tool: &str, args: &serde_json::Value) -> (ToolApproval, ToolApproval) {
-    let auto = check_tool(tool, args, ApprovalMode::Auto, Some(root()));
-    let confirm = check_tool(tool, args, ApprovalMode::Confirm, Some(root()));
+    let auto = check_tool(tool, args, TrustMode::Auto, Some(root()));
+    let confirm = check_tool(tool, args, TrustMode::Safe, Some(root()));
     (auto, confirm)
 }
 

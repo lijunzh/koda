@@ -96,7 +96,7 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
         tools: &tools,
         tool_defs: &tool_defs,
         pending_images: None,
-        mode: koda_core::approval::ApprovalMode::Auto,
+        mode: koda_core::trust::TrustMode::Auto,
         sink: &sink,
         cancel,
         cmd_rx: &mut cmd_rx,
