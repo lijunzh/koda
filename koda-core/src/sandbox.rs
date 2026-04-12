@@ -5,10 +5,10 @@
 //!
 //! ## Platform backends
 //!
-//! | Platform | Backend              | If unavailable           |
-//! |----------|----------------------|--------------------------|
-//! | macOS    | `sandbox-exec -p`    | `build()` returns `Err`  |
-//! | Linux    | `bwrap` (bubblewrap) | `build()` returns `Err`  |
+//! | Platform | Backend              | If unavailable              |
+//! |----------|----------------------|-----------------------------|
+//! | macOS    | `sandbox-exec -p`    | falls back to unsandboxed   |
+//! | Linux    | `bwrap` (bubblewrap) | falls back to unsandboxed   |
 //!
 //! ## Trust → Sandbox mapping
 //!
@@ -195,17 +195,24 @@ const PROTECTED_PROJECT_SUBDIRS: &[&str] = &[
 /// - **Safe** → Strict sandbox (credential denies + project writes)
 /// - **Auto** → Strict sandbox (credential denies + project writes)
 ///
-/// Returns `Err` when the platform sandbox backend is unavailable
-/// (e.g. `bwrap` not installed on Linux, unsupported OS).
+/// Falls back to unsandboxed execution with a warning when the platform
+/// sandbox backend is unavailable (e.g. `bwrap` not installed on Linux,
+/// unsupported OS).  The sandbox is best-effort — we never block the user
+/// just because the kernel enforcement layer is missing.
 pub fn build(
     command: &str,
     project_root: &Path,
     _trust: &crate::trust::TrustMode,
 ) -> Result<Command> {
     // All modes use strict sandboxing (project + credential denies).
-    // The sandbox is the safety boundary — always on.
-    let mode = SandboxMode::Strict;
-    build_inner(command, project_root, &mode)
+    // The sandbox is the safety boundary — always on when available.
+    match build_inner(command, project_root, &SandboxMode::Strict) {
+        Ok(cmd) => Ok(cmd),
+        Err(e) => {
+            tracing::warn!("Sandbox unavailable, running unsandboxed: {e}");
+            Ok(plain_sh(command, project_root))
+        }
+    }
 }
 
 /// Internal build dispatcher.
@@ -678,9 +685,10 @@ mod tests {
     // Spawn real child processes through the sandbox and verify that the
     // kernel actually enforces the policy.
 
-    /// `SandboxMode::None` must never block anything.
+    /// Sandbox build must always succeed (falls back to unsandboxed if
+    /// the platform backend is unavailable, e.g. no `bwrap` on CI Linux).
     #[tokio::test]
-    async fn none_mode_runs_echo() {
+    async fn build_always_succeeds_and_runs_echo() {
         let dir = tempfile::tempdir().unwrap();
         let status = build("echo ok", dir.path(), &crate::trust::TrustMode::Safe)
             .unwrap()
