@@ -68,8 +68,9 @@ pub enum ToolEffect {
 ///
 /// Unknown tools default to `LocalMutation` (conservative — always asks).
 ///
-/// For MCP tools (names containing `__`), call [`classify_tool_with_mcp`]
-/// instead to use server-provided annotations.
+/// For MCP tools (names containing `__`), call
+/// [`ToolRegistry::classify_tool_with_mcp`] instead to use server-provided
+/// annotations.
 pub fn classify_tool(name: &str) -> ToolEffect {
     match name {
         // Pure reads — zero side-effects
@@ -356,15 +357,6 @@ impl ToolRegistry {
     /// Called after MCP servers have connected and discovered their tools.
     /// Tool definitions are merged into the registry so the LLM can see them.
     pub fn set_mcp_manager(&self, manager: Arc<tokio::sync::RwLock<crate::mcp::McpManager>>) {
-        // We can't await here (set_mcp_manager is sync), so we do a try_read.
-        // The manager should already be connected by the time this is called.
-        if let Ok(mgr) = manager.try_read() {
-            for def in mgr.all_tool_definitions() {
-                // We can't get &mut self, so skip dynamic insert for now.
-                // Tool definitions are returned via get_definitions_with_mcp().
-                let _ = def;
-            }
-        }
         if let Ok(mut guard) = self.mcp_manager.write() {
             *guard = Some(manager);
         }

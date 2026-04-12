@@ -216,15 +216,25 @@ pub struct McpServerStatus {
 }
 
 /// Convert MCP CallToolResult content into a plain string.
+///
+/// Text content is concatenated. Non-text content (images, blobs) is
+/// described inline so the LLM knows something was returned.
 fn call_tool_result_to_string(result: &rmcp::model::CallToolResult) -> String {
-    let parts: Vec<String> = result
-        .content
-        .iter()
-        .filter_map(|content| match &content.raw {
-            rmcp::model::RawContent::Text(text) => Some(text.text.clone()),
-            _ => None,
-        })
-        .collect();
+    let mut parts: Vec<String> = Vec::new();
+
+    for content in &result.content {
+        match &content.raw {
+            rmcp::model::RawContent::Text(text) => {
+                parts.push(text.text.clone());
+            }
+            other => {
+                // Describe non-text content so the LLM knows it was returned.
+                let kind = format!("{:?}", std::mem::discriminant(other));
+                tracing::debug!(content_type = %kind, "MCP tool returned non-text content");
+                parts.push(format!("[non-text content: {kind}]"));
+            }
+        }
+    }
 
     if parts.is_empty() {
         "(no output)".to_string()

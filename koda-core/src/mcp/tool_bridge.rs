@@ -77,7 +77,7 @@ pub struct McpToolAnnotations {
 
 /// Convert an rmcp Tool into a Koda ToolDefinition.
 ///
-/// The tool name is qualified with the rver name (`server__tool`).
+/// The tool name is qualified with the server name (`server__tool`).
 /// The JSON Schema `properties` field is fixed up if missing (some MCP
 /// servers omit it).
 pub fn mcp_tool_to_definition(

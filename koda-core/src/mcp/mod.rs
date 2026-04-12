@@ -18,15 +18,16 @@
 //! ## Config storage
 //!
 //! MCP server configs are stored globally in the SQLite `kv_store` table
-//! under the `mcp:` key prefix. Managed via `/mcp add` and `/mcp remove`
-//! slash commands — no config file needed.
+//! under the `mcp:` key prefix. Management UX (`/mcp add`, `/mcp remove`)
+//! is planned for Phase 2 — for now, configs are set programmatically via
+//! `config::save_mcp_config()`.
 //!
 //! ## Design decisions (#662)
 //!
 //! - **Global scope (user-level)** — not per-project. Accepted trade-off.
 //! - **Tool annotations → ToolEffect** — `destructiveHint`/`readOnlyHint`
 //!   map directly to the TrustMode approval matrix.
-//! - **Resources as tools** — LLM-discoverable, no special syntax.
+//! - **Resources** — planned for Phase 3 (not yet implemented).
 
 /// MCP server configuration types and database persistence.
 pub mod config;
