@@ -19,29 +19,47 @@ const DEFAULT_STARTUP_TIMEOUT_SEC: u64 = 30;
 /// Default timeout (seconds) for individual tool calls.
 const DEFAULT_TOOL_TIMEOUT_SEC: u64 = 120;
 
+/// Transport type for connecting to an MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "transport", rename_all = "snake_case")]
+pub enum McpTransport {
+    /// Spawn a child process and communicate over stdin/stdout.
+    Stdio {
+        /// Command to spawn.
+        command: String,
+        /// Arguments passed to the command.
+        #[serde(default)]
+        args: Vec<String>,
+        /// Additional environment variables for the server process.
+        #[serde(default)]
+        env: HashMap<String, String>,
+        /// Working directory for the server process.
+        #[serde(default)]
+        cwd: Option<String>,
+    },
+    /// Connect via Streamable HTTP (MCP 2025-03-26 spec).
+    Http {
+        /// Server URL (e.g. `http://localhost:8080/mcp`).
+        url: String,
+        /// Optional bearer token for `Authorization: Bearer <token>`.
+        #[serde(default)]
+        bearer_token: Option<String>,
+        /// Custom HTTP headers included with every request.
+        #[serde(default)]
+        headers: HashMap<String, String>,
+    },
+}
+
 /// Configuration for a single MCP server.
 ///
-/// Supports stdio transport (command + args) for v1.
-/// HTTP transport (`url` field) is reserved for v2.
+/// Supports stdio and HTTP (Streamable HTTP) transports.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct McpServerConfig {
-    // ── Stdio transport ───────────────────────────────────────────────
-    /// Command to spawn the MCP server process.
-    pub command: String,
+    /// Transport configuration.
+    #[serde(flatten)]
+    pub transport: McpTransport,
 
-    /// Arguments passed to the command.
-    #[serde(default)]
-    pub args: Vec<String>,
-
-    /// Additional environment variables for the server process.
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-
-    /// Working directory for the server process.
-    #[serde(default)]
-    pub cwd: Option<String>,
-
-    // ── Timeouts ──────────────────────────────────────────────────────
+    // ── Timeouts ───────────────────────────────────────────────────────
     /// Seconds to wait for the server to start and respond to `initialize`.
     #[serde(default = "default_startup_timeout")]
     pub startup_timeout_sec: u64,
@@ -71,8 +89,17 @@ fn default_tool_timeout() -> u64 {
 impl McpServerConfig {
     /// Validate the config. Returns an error if essential fields are missing.
     pub fn validate(&self) -> Result<()> {
-        if self.command.trim().is_empty() {
-            anyhow::bail!("MCP server config must specify a `command`");
+        match &self.transport {
+            McpTransport::Stdio { command, .. } => {
+                if command.trim().is_empty() {
+                    anyhow::bail!("MCP server config must specify a `command`");
+                }
+            }
+            McpTransport::Http { url, .. } => {
+                if url.trim().is_empty() {
+                    anyhow::bail!("MCP server config must specify a `url`");
+                }
+            }
         }
         Ok(())
     }
@@ -159,48 +186,61 @@ pub async fn list_mcp_server_names(db: &Database) -> Result<Vec<String>> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn validate_rejects_empty_command() {
-        let config = McpServerConfig {
-            command: "".into(),
-            args: vec![],
-            env: HashMap::new(),
-            cwd: None,
+    /// Helper: build a stdio config with defaults.
+    fn stdio_config(command: &str) -> McpServerConfig {
+        McpServerConfig {
+            transport: McpTransport::Stdio {
+                command: command.into(),
+                args: vec![],
+                env: HashMap::new(),
+                cwd: None,
+            },
             startup_timeout_sec: 30,
             tool_timeout_sec: 120,
             enabled_tools: None,
             disabled_tools: None,
-        };
-        assert!(config.validate().is_err());
+        }
+    }
+
+    /// Helper: build an HTTP config with defaults.
+    fn http_config(url: &str) -> McpServerConfig {
+        McpServerConfig {
+            transport: McpTransport::Http {
+                url: url.into(),
+                bearer_token: None,
+                headers: HashMap::new(),
+            },
+            startup_timeout_sec: 30,
+            tool_timeout_sec: 120,
+            enabled_tools: None,
+            disabled_tools: None,
+        }
     }
 
     #[test]
-    fn validate_accepts_valid_config() {
-        let config = McpServerConfig {
-            command: "npx".into(),
-            args: vec!["-y".into(), "@anthropic/mcp-playwright".into()],
-            env: HashMap::new(),
-            cwd: None,
-            startup_timeout_sec: 30,
-            tool_timeout_sec: 120,
-            enabled_tools: None,
-            disabled_tools: None,
-        };
-        assert!(config.validate().is_ok());
+    fn validate_rejects_empty_command() {
+        assert!(stdio_config("").validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_url() {
+        assert!(http_config("").validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_valid_stdio_config() {
+        assert!(stdio_config("npx").validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_valid_http_config() {
+        assert!(http_config("http://localhost:8080/mcp").validate().is_ok());
     }
 
     #[test]
     fn tool_filter_allowlist() {
-        let config = McpServerConfig {
-            command: "test".into(),
-            args: vec![],
-            env: HashMap::new(),
-            cwd: None,
-            startup_timeout_sec: 30,
-            tool_timeout_sec: 120,
-            enabled_tools: Some(vec!["navigate".into(), "click".into()]),
-            disabled_tools: None,
-        };
+        let mut config = stdio_config("test");
+        config.enabled_tools = Some(vec!["navigate".into(), "click".into()]);
         assert!(config.is_tool_allowed("navigate"));
         assert!(config.is_tool_allowed("click"));
         assert!(!config.is_tool_allowed("screenshot"));
@@ -208,43 +248,30 @@ mod tests {
 
     #[test]
     fn tool_filter_denylist() {
-        let config = McpServerConfig {
-            command: "test".into(),
-            args: vec![],
-            env: HashMap::new(),
-            cwd: None,
-            startup_timeout_sec: 30,
-            tool_timeout_sec: 120,
-            enabled_tools: None,
-            disabled_tools: Some(vec!["dangerous_tool".into()]),
-        };
+        let mut config = stdio_config("test");
+        config.disabled_tools = Some(vec!["dangerous_tool".into()]);
         assert!(config.is_tool_allowed("navigate"));
         assert!(!config.is_tool_allowed("dangerous_tool"));
     }
 
     #[test]
     fn tool_filter_allowlist_beats_denylist() {
-        let config = McpServerConfig {
-            command: "test".into(),
-            args: vec![],
-            env: HashMap::new(),
-            cwd: None,
-            startup_timeout_sec: 30,
-            tool_timeout_sec: 120,
-            enabled_tools: Some(vec!["safe".into()]),
-            disabled_tools: Some(vec!["safe".into()]), // contradicts — allowlist wins
-        };
+        let mut config = stdio_config("test");
+        config.enabled_tools = Some(vec!["safe".into()]);
+        config.disabled_tools = Some(vec!["safe".into()]); // contradicts — allowlist wins
         assert!(config.is_tool_allowed("safe"));
         assert!(!config.is_tool_allowed("other"));
     }
 
     #[test]
-    fn roundtrip_serde() {
+    fn roundtrip_serde_stdio() {
         let config = McpServerConfig {
-            command: "npx".into(),
-            args: vec!["-y".into(), "playwright-mcp".into()],
-            env: HashMap::from([("FOO".into(), "bar".into())]),
-            cwd: Some("/tmp".into()),
+            transport: McpTransport::Stdio {
+                command: "npx".into(),
+                args: vec!["-y".into(), "playwright-mcp".into()],
+                env: HashMap::from([("FOO".into(), "bar".into())]),
+                cwd: Some("/tmp".into()),
+            },
             startup_timeout_sec: 10,
             tool_timeout_sec: 60,
             enabled_tools: Some(vec!["navigate".into()]),
@@ -256,12 +283,37 @@ mod tests {
     }
 
     #[test]
-    fn serde_defaults_applied() {
-        let json = r#"{"command": "npx", "args": ["-y", "test"]}"#;
+    fn roundtrip_serde_http() {
+        let config = McpServerConfig {
+            transport: McpTransport::Http {
+                url: "http://localhost:8080/mcp".into(),
+                bearer_token: Some("my-secret".into()),
+                headers: HashMap::from([("X-Custom".into(), "value".into())]),
+            },
+            startup_timeout_sec: 15,
+            tool_timeout_sec: 90,
+            enabled_tools: None,
+            disabled_tools: None,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: McpServerConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(config, parsed);
+    }
+
+    #[test]
+    fn serde_defaults_applied_stdio() {
+        let json = r#"{"transport": "stdio", "command": "npx", "args": ["-y", "test"]}"#;
         let config: McpServerConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.startup_timeout_sec, 30);
         assert_eq!(config.tool_timeout_sec, 120);
-        assert!(config.env.is_empty());
         assert!(config.enabled_tools.is_none());
+    }
+
+    #[test]
+    fn serde_defaults_applied_http() {
+        let json = r#"{"transport": "http", "url": "http://localhost:8080/mcp"}"#;
+        let config: McpServerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.startup_timeout_sec, 30);
+        assert!(matches!(config.transport, McpTransport::Http { .. }));
     }
 }

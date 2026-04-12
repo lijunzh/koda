@@ -73,7 +73,11 @@ rmcp = { version = "1.4", default-features = false, features = [
     "client",
     "base64",
     "transport-child-process",
+    "transport-streamable-http-client-reqwest",
 ] }
+
+# HTTP types (HeaderName, HeaderValue) for MCP HTTP transport headers
+http = "1"
 
 # First-party workspace libraries (direct calls)
 

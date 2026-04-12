@@ -82,7 +82,7 @@ pub enum ReplAction {
     Export(Option<String>),
     /// `/mcp` or `/mcp list` — show MCP server list and status.
     McpList,
-    /// `/mcp add <name> <command> [args...]` — add a new MCP server.
+    /// `/mcp add <name> <command> [args...]` — add a stdio MCP server.
     McpAdd {
         /// Server name (user-chosen identifier).
         name: String,
@@ -90,6 +90,15 @@ pub enum ReplAction {
         command: String,
         /// Arguments for the command.
         args: Vec<String>,
+    },
+    /// `/mcp add-http <name> <url> [--token <bearer>]` — add an HTTP MCP server.
+    McpAddHttp {
+        /// Server name (user-chosen identifier).
+        name: String,
+        /// Server URL.
+        url: String,
+        /// Optional bearer token.
+        bearer_token: Option<String>,
     },
     /// `/mcp remove <name>` — remove an MCP server.
     McpRemove {
@@ -199,7 +208,8 @@ pub async fn handle_command(
 ///
 /// Syntax:
 /// - `/mcp` or `/mcp list`       — list servers
-/// - `/mcp add <name> <cmd> [args...]`  — add a server
+/// - `/mcp add <name> <cmd> [args...]`  — add a stdio server
+/// - `/mcp add-http <name> <url> [--token <t>]` — add an HTTP server
 /// - `/mcp remove <name>`        — remove a server
 fn parse_mcp_subcommand(arg: Option<&str>) -> ReplAction {
     let arg = match arg {
@@ -230,6 +240,24 @@ fn parse_mcp_subcommand(arg: Option<&str>) -> ReplAction {
             }
         }
 
+        "add-http" | "add_http" => {
+            let name = match tokens.next() {
+                Some(n) => n.to_string(),
+                None => return ReplAction::McpList,
+            };
+            let url = match tokens.next() {
+                Some(u) => u.to_string(),
+                None => return ReplAction::McpList,
+            };
+            // Parse optional --token <value>
+            let bearer_token = parse_optional_flag(&mut tokens, "--token");
+            ReplAction::McpAddHttp {
+                name,
+                url,
+                bearer_token,
+            }
+        }
+
         "remove" | "rm" | "delete" => {
             let name = match tokens.next() {
                 Some(n) => n.to_string(),
@@ -240,6 +268,22 @@ fn parse_mcp_subcommand(arg: Option<&str>) -> ReplAction {
 
         _ => ReplAction::McpList,
     }
+}
+
+/// Parse `--flag <value>` from remaining tokens. Consumes both tokens if found.
+fn parse_optional_flag(tokens: &mut std::str::SplitWhitespace<'_>, flag: &str) -> Option<String> {
+    // Peek: if the next token is the flag, consume it and the value.
+    // Unfortunately SplitWhitespace doesn't support peek, so we collect remaining.
+    // But this is called at the end of parsing so it's fine.
+    let remaining: Vec<&str> = tokens.collect();
+    let mut i = 0;
+    while i < remaining.len() {
+        if remaining[i] == flag && i + 1 < remaining.len() {
+            return Some(remaining[i + 1].to_string());
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Available providers for the interactive picker.
@@ -626,5 +670,60 @@ mod tests {
     #[test]
     fn mcp_unknown_subcommand_shows_list() {
         assert!(matches!(dispatch("/mcp foobar"), ReplAction::McpList));
+    }
+
+    // ── /mcp add-http parsing ─────────────────────────────────
+
+    #[test]
+    fn mcp_add_http_basic() {
+        match dispatch("/mcp add-http myapi http://localhost:8080/mcp") {
+            ReplAction::McpAddHttp {
+                name,
+                url,
+                bearer_token,
+            } => {
+                assert_eq!(name, "myapi");
+                assert_eq!(url, "http://localhost:8080/mcp");
+                assert!(bearer_token.is_none());
+            }
+            other => panic!("expected McpAddHttp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_add_http_with_token() {
+        match dispatch("/mcp add-http myapi http://localhost:8080/mcp --token secret123") {
+            ReplAction::McpAddHttp {
+                name,
+                url,
+                bearer_token,
+            } => {
+                assert_eq!(name, "myapi");
+                assert_eq!(url, "http://localhost:8080/mcp");
+                assert_eq!(bearer_token.as_deref(), Some("secret123"));
+            }
+            other => panic!("expected McpAddHttp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_add_http_underscore_alias() {
+        assert!(matches!(
+            dispatch("/mcp add_http myapi http://example.com"),
+            ReplAction::McpAddHttp { .. }
+        ));
+    }
+
+    #[test]
+    fn mcp_add_http_missing_url_shows_list() {
+        assert!(matches!(
+            dispatch("/mcp add-http myapi"),
+            ReplAction::McpList
+        ));
+    }
+
+    #[test]
+    fn mcp_add_http_missing_name_shows_list() {
+        assert!(matches!(dispatch("/mcp add-http"), ReplAction::McpList));
     }
 }
