@@ -117,23 +117,30 @@ impl std::fmt::Display for SandboxMode {
 
 // ── Sensitive credential paths (Strict mode) ─────────────────────────────────
 //
-// Directories and files blocked from reads *and* writes in Strict mode.
-// We follow Claude Code's `denyRead[]` and Gemini CLI's `forbiddenPaths`
-// pattern: define a fixed set of well-known credential paths, then place
-// explicit deny rules *after* the broad allow so last-match-wins semantics
-// take effect (seatbelt / bwrap tmpfs shadow).
+// Two tiers of credential protection:
 //
-// Rationale for each entry:
-//   .ssh            — private keys, authorized_keys, known_hosts
-//   .aws            — access key ID, secret key, session tokens
-//   .gnupg          — GPG private keys and trust database
-//   .kube           — kubeconfig with cluster tokens and client certs
-//   .azure          — Azure CLI token cache (msal_token_cache.bin, etc.)
-// ~/.config/gcloud  — gcloud CLI credentials and service account keys
-// ~/.config/koda/db — SQLite DB containing plaintext API keys in KV store (#847)
+// 1. **Write-only deny** (most paths) — CLI tools can *read* their own
+//    credentials (e.g. `gh`, `aws`, `kubectl`, `ssh`) but sandboxed
+//    commands cannot modify them.  This matches Codex's model where the
+//    entire host filesystem is mounted read-only via `--ro-bind / /` and
+//    credential directories receive no special treatment beyond that.
+//
+//    Risk accepted: a sandboxed command *can* read credential material
+//    and could exfiltrate it over the network.  Network-level egress
+//    restriction (Gap 4 in #844) is the proper mitigation — blocking
+//    reads without blocking network is security theater (#855).
+//
+// 2. **Full read+write deny** (`koda/db` only) — koda's own API keys
+//    live in a SQLite DB at `~/.config/koda/db/koda.db`.  The koda
+//    process runs *outside* the sandbox and doesn't need sandboxed-
+//    command access.  Blocking reads here prevents a `sqlite3` one-liner
+//    from dumping every stored API key (#847).
+//
+// Deny rules are placed *after* the broad allow so last-match-wins
+// semantics take effect (seatbelt on macOS, bwrap overlay on Linux).
 
-/// Credential *directories* under `$HOME` blocked in `Strict` mode.
-/// Matched with `(subpath …)` / `--tmpfs` to cover the whole tree.
+/// Credential *directories* under `$HOME` that are **write-protected** in
+/// Strict mode.  Reads are allowed so CLI tools can authenticate.
 const CREDENTIAL_SUBDIRS: &[&str] = &[
     ".ssh",            // SSH private keys, authorized_keys, known_hosts
     ".aws",            // AWS access key ID, secret key, session tokens
@@ -144,17 +151,25 @@ const CREDENTIAL_SUBDIRS: &[&str] = &[
     ".terraform.d",    // Terraform cloud tokens and plugin cache
 ];
 
-/// Credential directories under `$HOME/.config/` blocked in `Strict` mode.
+/// Credential directories under `$HOME/.config/` that are **write-protected**
+/// in Strict mode.  Reads are allowed so CLI tools can authenticate.
 const CREDENTIAL_CONFIG_SUBDIRS: &[&str] = &[
-    "gcloud",  // gcloud CLI credentials and service-account key files
-    "koda/db", // SQLite DB with plaintext API keys in kv_store table (#847)
-    "gh",      // GitHub CLI personal access tokens (hosts.yml)
-    "op",      // 1Password CLI session tokens
-    "helm",    // Helm registry auth
+    "gcloud", // gcloud CLI credentials and service-account key files
+    "gh",     // GitHub CLI personal access tokens (hosts.yml)
+    "op",     // 1Password CLI session tokens
+    "helm",   // Helm registry auth
 ];
 
-/// Individual credential *files* under `$HOME` blocked in `Strict` mode.
-/// Matched with `(literal …)` / `--ro-bind /dev/null` to block the exact path.
+/// Credential directories under `$HOME/.config/` where **both reads and
+/// writes** are denied.  These contain koda's own secrets that sandboxed
+/// commands have no legitimate reason to access.
+const CREDENTIAL_CONFIG_FULL_DENY: &[&str] = &[
+    "koda/db", // SQLite DB with plaintext API keys in kv_store table (#847)
+];
+
+/// Individual credential *files* under `$HOME` that are **write-protected**
+/// in Strict mode.  Reads are allowed so tools like `curl`, `git`, `npm`,
+/// and `docker` can authenticate.
 const CREDENTIAL_FILES: &[&str] = &[
     ".netrc",              // FTP/HTTP credentials (curl, wget, Netrc crate)
     ".git-credentials",    // git-credential-store plaintext token file
@@ -357,31 +372,38 @@ fn protected_subdir_deny_rules_macos(root: &str) -> String {
 
 /// Generate seatbelt deny rules for credential paths (Strict mode).
 ///
-/// The rules are placed *after* the broad `(allow file-read*)` rule so that
-/// seatbelt's last-match-wins semantics make them take precedence — the same
-/// technique used by Gemini CLI's `buildSeatbeltProfile` (forbiddenPaths
-/// section in packages/core/src/sandbox/macos/seatbeltArgsBuilder.ts).
+/// Two tiers:
+/// - **Write-only deny** for most paths — lets CLI tools read their own
+///   credentials while preventing sandboxed commands from modifying them.
+/// - **Full read+write deny** for `koda/db` only — koda’s own API keys
+///   should never be accessible from inside the sandbox (#847).
+///
+/// Rules are placed *after* the broad `(allow file-read*)` so that
+/// seatbelt’s last-match-wins semantics make them take precedence.
 #[cfg(target_os = "macos")]
 fn credential_deny_rules_macos(home: &str) -> String {
-    let mut rules =
-        String::from("; ── strict: deny reads+writes to credential dirs ──────────────\n");
+    let mut rules = String::from("; ── strict: write-protect credential dirs (reads allowed) ──\n");
 
+    // Tier 1 — write-only deny (CLI tools can still read).
     for rel in CREDENTIAL_SUBDIRS {
         let p = home_path(home, rel);
-        rules.push_str(&format!(
-            "(deny file-read* file-write* (subpath \"{p}\"))\n"
-        ));
+        rules.push_str(&format!("(deny file-write* (subpath \"{p}\"))\n"));
     }
     for rel in CREDENTIAL_CONFIG_SUBDIRS {
         let p = home_path(home, &format!(".config/{rel}"));
-        rules.push_str(&format!(
-            "(deny file-read* file-write* (subpath \"{p}\"))\n"
-        ));
+        rules.push_str(&format!("(deny file-write* (subpath \"{p}\"))\n"));
     }
     for rel in CREDENTIAL_FILES {
         let p = home_path(home, rel);
+        rules.push_str(&format!("(deny file-write* (literal \"{p}\"))\n"));
+    }
+
+    // Tier 2 — full read+write deny (koda’s own secrets).
+    rules.push_str("; ── strict: full deny for koda-internal secrets ─────────────\n");
+    for rel in CREDENTIAL_CONFIG_FULL_DENY {
+        let p = home_path(home, &format!(".config/{rel}"));
         rules.push_str(&format!(
-            "(deny file-read* file-write* (literal \"{p}\"))\n"
+            "(deny file-read* file-write* (subpath \"{p}\"))\n"
         ));
     }
     rules
@@ -515,16 +537,18 @@ fn linux_project(command: &str, project_root: &Path) -> Result<Command> {
     Ok(cmd)
 }
 
-/// Strict mode on Linux: project-mode base + tmpfs shadows over credential
-/// dirs (hides them by mounting an empty tmpfs at each sensitive path).
+/// Strict mode on Linux: project-mode base + credential write-protection
+/// and full deny for koda-internal secrets.
 ///
-/// Inspired by Codex's `--tmpfs` technique in codex-rs/linux-sandbox/src/bwrap.rs
-/// and Claude Code's `denyRead[]` list in src/utils/sandbox/sandbox-adapter.ts.
+/// The base command (`linux_base_cmd`) already mounts the entire root
+/// filesystem read-only via `--ro-bind / /`, so credential directories
+/// are inherently write-protected.  No additional rules are needed for
+/// write-deny — CLI tools like `gh`, `aws`, `kubectl` can read their
+/// own config files through the base read-only bind.
 ///
-/// For individual credential *files* we use `--ro-bind /dev/null <file>`,
-/// which makes the file appear empty inside the container while leaving the
-/// host untouched.  This is the same pattern Codex uses for sensitivity-scoped
-/// file shadowing.
+/// The only addition is a `--tmpfs` shadow for `koda/db` to block reads
+/// of koda's own API keys (#847).  All other credential paths remain
+/// readable (Codex-style model — see #855).
 #[cfg(target_os = "linux")]
 fn linux_strict(command: &str, project_root: &Path) -> Result<Command> {
     if !bwrap_available() {
@@ -536,24 +560,12 @@ fn linux_strict(command: &str, project_root: &Path) -> Result<Command> {
 
     let (mut cmd, home) = linux_base_cmd(project_root);
 
-    // Shadow credential directories with empty tmpfs mounts.
-    for rel in CREDENTIAL_SUBDIRS {
-        let p = format!("{home}/{rel}");
-        if Path::new(&p).exists() {
-            cmd.args(["--tmpfs", &p]);
-        }
-    }
-    for rel in CREDENTIAL_CONFIG_SUBDIRS {
+    // Full deny (read+write) for koda-internal secrets only.
+    // The base `--ro-bind / /` already write-protects everything else.
+    for rel in CREDENTIAL_CONFIG_FULL_DENY {
         let p = format!("{home}/.config/{rel}");
         if Path::new(&p).exists() {
             cmd.args(["--tmpfs", &p]);
-        }
-    }
-    // Shadow individual credential files with /dev/null.
-    for rel in CREDENTIAL_FILES {
-        let p = format!("{home}/{rel}");
-        if Path::new(&p).exists() {
-            cmd.args(["--ro-bind", "/dev/null", &p]);
         }
     }
 
@@ -625,35 +637,60 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn strict_profile_denies_ssh_dir() {
+    fn strict_profile_write_protects_ssh_dir() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
         let rules = credential_deny_rules_macos(&home);
         let ssh = home_path(&home, ".ssh");
         assert!(
-            rules.contains(&format!(
+            rules.contains(&format!("(deny file-write* (subpath \"{ssh}\"))")),
+            "strict profile must write-protect ~/.ssh"
+        );
+        // Reads should NOT be denied — CLI tools need credential access (#855).
+        assert!(
+            !rules.contains(&format!(
                 "(deny file-read* file-write* (subpath \"{ssh}\"))"
             )),
-            "strict profile must contain deny rule for ~/.ssh"
+            "strict profile must NOT read-deny ~/.ssh (breaks ssh/git)"
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn strict_profile_denies_aws_dir() {
+    fn strict_profile_write_protects_aws_dir() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
         let rules = credential_deny_rules_macos(&home);
         let aws = home_path(&home, ".aws");
         assert!(
-            rules.contains(&format!(
+            rules.contains(&format!("(deny file-write* (subpath \"{aws}\"))")),
+            "strict profile must write-protect ~/.aws"
+        );
+        assert!(
+            !rules.contains(&format!(
                 "(deny file-read* file-write* (subpath \"{aws}\"))"
             )),
-            "strict profile must contain deny rule for ~/.aws"
+            "strict profile must NOT read-deny ~/.aws (breaks aws CLI)"
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn strict_profile_denies_koda_db() {
+    fn strict_profile_write_protects_gh_dir() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
+        let rules = credential_deny_rules_macos(&home);
+        let gh = home_path(&home, ".config/gh");
+        assert!(
+            rules.contains(&format!("(deny file-write* (subpath \"{gh}\"))")),
+            "strict profile must write-protect ~/.config/gh"
+        );
+        assert!(
+            !rules.contains(&format!("(deny file-read* file-write* (subpath \"{gh}\"))")),
+            "strict profile must NOT read-deny ~/.config/gh (breaks gh CLI, #855)"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn strict_profile_fully_denies_koda_db() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
         let rules = credential_deny_rules_macos(&home);
         let koda_db = home_path(&home, ".config/koda/db");
@@ -661,21 +698,25 @@ mod tests {
             rules.contains(&format!(
                 "(deny file-read* file-write* (subpath \"{koda_db}\"))"
             )),
-            "strict profile must deny reads to ~/.config/koda/db (plaintext API keys in SQLite, #847)"
+            "strict profile must fully deny ~/.config/koda/db (plaintext API keys, #847)"
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn strict_profile_denies_credential_files() {
+    fn strict_profile_write_protects_credential_files() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
         let rules = credential_deny_rules_macos(&home);
         let netrc = home_path(&home, ".netrc");
         assert!(
-            rules.contains(&format!(
+            rules.contains(&format!("(deny file-write* (literal \"{netrc}\"))")),
+            "strict profile must write-protect ~/.netrc"
+        );
+        assert!(
+            !rules.contains(&format!(
                 "(deny file-read* file-write* (literal \"{netrc}\"))"
             )),
-            "strict profile must contain deny rule for ~/.netrc"
+            "strict profile must NOT read-deny ~/.netrc (breaks curl/wget)"
         );
     }
 
@@ -690,10 +731,17 @@ mod tests {
         // Simulate what macos_strict does: project profile then deny rules.
         let full = format!("{profile}{deny_rules}");
         let allow_pos = full.find("(allow file-read*)").unwrap();
+        // Full deny (koda/db) must come after broad allow.
         let deny_pos = full.find("(deny file-read* file-write*").unwrap();
         assert!(
             deny_pos > allow_pos,
             "deny rules must appear after the broad allow (last-match-wins)"
+        );
+        // Write-only deny must also come after broad allow.
+        let write_deny_pos = full.find("(deny file-write*").unwrap();
+        assert!(
+            write_deny_pos > allow_pos,
+            "write-deny rules must appear after the broad allow"
         );
     }
 
@@ -867,6 +915,63 @@ mod tests {
             !status.success(),
             "strict: reading ~/.config/koda/db/ must be blocked"
         );
+    }
+
+    /// Strict mode: reading `~/.ssh/` must now be allowed (#855).
+    ///
+    /// CLI tools like `ssh` and `git` need read access to their own credentials.
+    /// Only koda-internal secrets (`koda/db`) remain fully denied.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_strict_allows_ssh_read() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
+        let ssh_dir = format!("{home}/.ssh");
+        if !Path::new(&ssh_dir).exists() {
+            eprintln!("skip: {ssh_dir} does not exist");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let status = build(
+            &format!("ls {ssh_dir}"),
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+        )
+        .unwrap()
+        .status()
+        .await
+        .unwrap();
+        assert!(
+            status.success(),
+            "strict: reading ~/.ssh/ must be allowed (CLI tools need credential access, #855)"
+        );
+    }
+
+    /// Strict mode: writing to credential dirs must still be blocked.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_strict_blocks_ssh_write() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
+        let ssh_dir = format!("{home}/.ssh");
+        if !Path::new(&ssh_dir).exists() {
+            eprintln!("skip: {ssh_dir} does not exist");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let canary = format!("{ssh_dir}/sandbox_canary_test");
+        let status = build(
+            &format!("touch {canary}"),
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+        )
+        .unwrap()
+        .status()
+        .await
+        .unwrap();
+        assert!(
+            !status.success(),
+            "strict: writing to ~/.ssh/ must be blocked"
+        );
+        assert!(!Path::new(&canary).exists());
     }
 
     // ── Integration: agent-file write protection ──────────────────────────

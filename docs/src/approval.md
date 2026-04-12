@@ -32,18 +32,21 @@ approval prompt at the same time.
 **Writes** restricted to: project directory, `/tmp`, and standard cache
 dirs (`~/.cache`, `~/.cargo`, etc.).
 
-**Credential directories** blocked from read+write:
+**Credential directories** write-protected (reads allowed for CLI tools):
 `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.azure`,
 `~/.password-store`, `~/.terraform.d`, `~/.config/gcloud`,
-`~/.config/gh`, `~/.config/op`, `~/.config/helm`,
-`~/.config/koda/db`
+`~/.config/gh`, `~/.config/op`, `~/.config/helm`
 
-**Credential files** blocked:
+**Credential files** write-protected (reads allowed):
 `~/.netrc`, `~/.git-credentials`, `~/.npmrc`, `~/.pypirc`,
 `~/.docker/config.json`, `~/.vault-token`, `~/.env`
 
+**Fully blocked (read + write):** `~/.config/koda/db` (koda's own API keys)
+
 **Agent-file protection**: `.koda/agents/` and `.koda/skills/` are
 write-protected in all modes to prevent prompt injection.
+
+See [Sandbox](./sandbox.md) for full details and accepted-risk rationale.
 
 ## Trust mode × tool effect matrix
 
