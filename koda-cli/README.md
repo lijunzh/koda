@@ -32,6 +32,26 @@ Cycle with `Shift+Tab`:
 | **Auto** | Local mutations auto-approved, destructive ops need confirmation |
 | **Confirm** | Every non-read action requires confirmation |
 
+## Sandbox
+
+Opt-in process sandboxing restricts what the Bash tool can do:
+
+```bash
+# Restrict writes to project dir + /tmp
+koda --sandbox project
+
+# + block reads to credential dirs (~/.ssh, ~/.aws, ~/.gnupg, …)
+koda --sandbox strict
+
+# Via environment variable
+export KODA_SANDBOX=strict
+```
+
+macOS uses `sandbox-exec` (seatbelt); Linux uses `bwrap` (bubblewrap).
+Sub-agents inherit the parent’s sandbox mode and can never run weaker.
+See the [sandbox reference](https://lijunzh.github.io/koda/sandbox.html)
+for the full list of protected paths.
+
 See the [User Manual](https://lijunzh.github.io/koda/) for full documentation.
 
 ## License

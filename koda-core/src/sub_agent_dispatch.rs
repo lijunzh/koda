@@ -171,7 +171,16 @@ pub(crate) async fn execute_sub_agent(
     //   Anthropic), so if the agent has its own provider we leave the model
     //   resolved from that provider's defaults.
     let sub_config = if is_fork {
-        parent_config.clone()
+        // Fork inherits the parent config verbatim — including sandbox.
+        // The clone preserves sandbox; no `stricter()` needed since
+        // fork == exact copy.  Assertion guards against future changes
+        // that might add config overrides to the fork path.
+        let cfg = parent_config.clone();
+        debug_assert!(
+            cfg.sandbox == parent_config.sandbox,
+            "fork must inherit parent sandbox exactly"
+        );
+        cfg
     } else {
         // Load the raw JSON first to see what the agent explicitly set.
         let raw = crate::config::KodaConfig::load_agent_json(project_root, agent_name)

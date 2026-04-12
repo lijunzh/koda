@@ -7,6 +7,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 > **Lineage:** This project continues from [`koda-agent`](https://github.com/lijunzh/koda-agent) (archived at v0.1.5).
 > Versions v0.1.0–v0.1.5 of `koda-agent` are documented in that repository's CHANGELOG.
 
+## [0.2.10] - 2026-04-12
+
+### Added
+- **Sandbox for Bash tool** — opt-in process sandboxing via `--sandbox project`
+  or `--sandbox strict` (env var: `KODA_SANDBOX`).  macOS uses `sandbox-exec`
+  (seatbelt profiles, inline via `-p`); Linux uses `bwrap` (bubblewrap).
+  Fail-closed: if the backend is unavailable when sandboxing is requested, the
+  command fails rather than falling back to unsandboxed (#840, #843).
+- **Credential protection (strict mode)** — blocks reads and writes to
+  sensitive directories: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.azure`,
+  `~/.password-store`, `~/.terraform.d`, `~/.config/gcloud`, `~/.config/gh`,
+  `~/.config/op`, `~/.config/helm`, `~/.config/koda/db`; and files:
+  `~/.netrc`, `~/.git-credentials`, `~/.npmrc`, `~/.pypirc`,
+  `~/.docker/config.json`, `~/.vault-token`, `~/.env` (#847, #848).
+- **Agent-file write protection** — `.koda/agents/` and `.koda/skills/`
+  are write-protected in all sandbox modes to prevent prompt injection
+  via sandboxed commands (#849).
+- **Sub-agent sandbox inheritance** — child agents inherit the parent's
+  sandbox mode via a "never weaken" rule: `parent.stricter(&child)`.  A
+  sub-agent can never run with less protection than its caller (#845, #852).
+- **Seatbelt profile injection guard** — project root and home paths are
+  validated for special characters before interpolation into macOS seatbelt
+  profiles, preventing S-expression injection attacks.
+
+### Changed
+- **`settings.rs` → `last_provider.rs`** — renamed to accurately reflect the
+  module's purpose (last-used provider recall via SQLite KV). No logic
+  change (#846).
+- **`koda-email` README** — corrected credential storage reference to match
+  current architecture (SQLite KV store, not encrypted keystore).
+
 ## [0.2.9] - 2026-04-11
 
 ### Added

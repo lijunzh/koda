@@ -43,6 +43,11 @@ how mutations are gated:
   - `is_outside_project()`: checks file tool paths against project_root
   - `lint_bash_paths()`: heuristic bash command analysis for cd/path escapes
   - Startup warning when project_root == $HOME
+- **Process sandbox** (`sandbox.rs`): opt-in via `--sandbox project|strict`
+  - `project`: writes restricted to project + /tmp + cache dirs
+  - `strict`: + deny reads of credential dirs (~/.ssh, ~/.aws, etc.)
+  - macOS: `sandbox-exec -p` (seatbelt); Linux: `bwrap` (bubblewrap)
+  - Sub-agents inherit via `stricter()` — child can never weaken parent
 
 ## Documentation Rules
 
@@ -116,6 +121,7 @@ koda/
 │   │   ├── progress.rs     # Progress reporting helpers for long operations
 │   │   ├── prompt.rs       # System prompt construction
 │   │   ├── runtime_env.rs  # Thread-safe runtime env for API keys
+│   │   ├── sandbox.rs      # Process sandbox (macOS seatbelt + Linux bwrap)
 │   │   ├── session.rs      # KodaSession (per-conversation: DB, provider, settings)
 │   │   ├── last_provider.rs # Last-used provider recall (SQLite KV, not a config file)
 │   │   ├── skills.rs       # Skill discovery and activation

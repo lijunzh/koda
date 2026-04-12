@@ -278,8 +278,8 @@ fn spawn_background(
     bg: &BgRegistry,
     sandbox: &crate::sandbox::SandboxMode,
 ) -> Result<String> {
-    // tokio::process::Command doesn't impl std's Stdio easily in sync context;
-    // re-build as std Command for the detached spawn.
+    // Spawn via sandbox wrapper (may be a no-op for SandboxMode::None).
+    // Detach stdio so the process doesn't block on terminal I/O.
     let child = crate::sandbox::build(command, project_root, sandbox)?
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

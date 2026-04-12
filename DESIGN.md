@@ -442,12 +442,15 @@ the [approval module docs](https://docs.rs/koda-core/latest/koda_core/approval/)
 **Key design choices**:
 - Sub-agents inherit the parent's approval mode (clamped — Auto parent still
   gets Confirm child if the child is set to Confirm)
-- No kernel-level sandboxing yet — seccomp/landlock is a v1.0 concern
+- **Kernel-level sandboxing** — opt-in via `--sandbox project|strict`.  macOS
+  uses `sandbox-exec` (seatbelt); Linux uses `bwrap` (bubblewrap).  Child
+  agents inherit the parent's sandbox mode via a "never weaken" rule.
 
 **Accepted risks**:
-1. No kernel-level sandboxing — in-process only
+1. Sandbox is opt-in (default: `none`) — users must explicitly enable it
 2. Shell command parsing is heuristic — complex pipelines can bypass
 3. Outside-project writes in Confirm mode show confirm prompt instead of clean block
+4. Network is unrestricted in all sandbox modes (required for `cargo fetch`, `npm install`)
 
 ### File Lifecycle Tracking (P2)
 

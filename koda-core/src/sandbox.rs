@@ -137,12 +137,23 @@ impl std::fmt::Display for SandboxMode {
 
 /// Credential *directories* under `$HOME` blocked in `Strict` mode.
 /// Matched with `(subpath …)` / `--tmpfs` to cover the whole tree.
-const CREDENTIAL_SUBDIRS: &[&str] = &[".ssh", ".aws", ".gnupg", ".kube", ".azure"];
+const CREDENTIAL_SUBDIRS: &[&str] = &[
+    ".ssh",            // SSH private keys, authorized_keys, known_hosts
+    ".aws",            // AWS access key ID, secret key, session tokens
+    ".gnupg",          // GPG private keys and trust database
+    ".kube",           // kubeconfig with cluster tokens and client certs
+    ".azure",          // Azure CLI token cache (msal_token_cache.bin, etc.)
+    ".password-store", // pass(1) GPG-encrypted password store
+    ".terraform.d",    // Terraform cloud tokens and plugin cache
+];
 
 /// Credential directories under `$HOME/.config/` blocked in `Strict` mode.
 const CREDENTIAL_CONFIG_SUBDIRS: &[&str] = &[
     "gcloud",  // gcloud CLI credentials and service-account key files
     "koda/db", // SQLite DB with plaintext API keys in kv_store table (#847)
+    "gh",      // GitHub CLI personal access tokens (hosts.yml)
+    "op",      // 1Password CLI session tokens
+    "helm",    // Helm registry auth
 ];
 
 /// Individual credential *files* under `$HOME` blocked in `Strict` mode.
@@ -153,6 +164,8 @@ const CREDENTIAL_FILES: &[&str] = &[
     ".npmrc",              // npm registry auth token
     ".pypirc",             // PyPI upload API token
     ".docker/config.json", // Docker Hub credentials (auths, credsStore)
+    ".vault-token",        // HashiCorp Vault session token
+    ".env",                // dotenv secrets (common project-level pattern)
 ];
 
 // ── Agent-file write protection ──────────────────────────────────────────────
@@ -203,7 +216,7 @@ fn plain_sh(command: &str, project_root: &Path) -> Command {
 /// Dispatch to the platform-specific "project" sandbox builder.
 fn build_project(command: &str, project_root: &Path) -> Result<Command> {
     #[cfg(target_os = "macos")]
-    return Ok(macos_project(command, project_root));
+    return macos_project(command, project_root);
 
     #[cfg(target_os = "linux")]
     return linux_project(command, project_root);
@@ -218,7 +231,7 @@ fn build_project(command: &str, project_root: &Path) -> Result<Command> {
 /// Dispatch to the platform-specific "strict" sandbox builder.
 fn build_strict(command: &str, project_root: &Path) -> Result<Command> {
     #[cfg(target_os = "macos")]
-    return Ok(macos_strict(command, project_root));
+    return macos_strict(command, project_root);
 
     #[cfg(target_os = "linux")]
     return linux_strict(command, project_root);
@@ -228,6 +241,21 @@ fn build_strict(command: &str, project_root: &Path) -> Result<Command> {
         "Sandbox mode 'strict' requested but no sandbox backend available \
          on this platform. Supported: macOS (sandbox-exec), Linux (bwrap)."
     ))
+}
+
+/// Reject paths containing characters that could break seatbelt S-expression
+/// syntax.  A crafted `project_root` with `"` or `(` could inject arbitrary
+/// seatbelt rules into the profile string, completely defeating the sandbox.
+///
+/// We reject rather than escape because legitimate filesystem paths should
+/// never contain these characters, and escaping adds subtle semantic risk.
+#[cfg(target_os = "macos")]
+fn validate_seatbelt_path(s: &str) -> Result<()> {
+    const FORBIDDEN: &[char] = &['"', '\\', '(', ')', '\0'];
+    if let Some(c) = s.chars().find(|c| FORBIDDEN.contains(c)) {
+        anyhow::bail!("Path contains character {c:?} unsafe for seatbelt profile: {s:?}");
+    }
+    Ok(())
 }
 
 /// Canonicalize `{home}/{rel}` if the path exists; otherwise return raw path.
@@ -328,12 +356,14 @@ fn credential_deny_rules_macos(home: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_project(command: &str, project_root: &Path) -> Command {
+fn macos_project(command: &str, project_root: &Path) -> Result<Command> {
     let canonical = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
     let root = canonical.to_string_lossy();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
+    validate_seatbelt_path(&root)?;
+    validate_seatbelt_path(&home)?;
 
     let mut profile = macos_project_profile(&root, &home);
     // Deny writes to agent/skill files within the project (CC parity #844).
@@ -346,16 +376,18 @@ fn macos_project(command: &str, project_root: &Path) -> Command {
         .arg("-c")
         .arg(command)
         .current_dir(project_root);
-    cmd
+    Ok(cmd)
 }
 
 #[cfg(target_os = "macos")]
-fn macos_strict(command: &str, project_root: &Path) -> Command {
+fn macos_strict(command: &str, project_root: &Path) -> Result<Command> {
     let canonical = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
     let root = canonical.to_string_lossy();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
+    validate_seatbelt_path(&root)?;
+    validate_seatbelt_path(&home)?;
 
     // Start from the project profile then append credential deny rules.
     // Seatbelt evaluates rules in order; later rules win for the same path,
@@ -372,7 +404,7 @@ fn macos_strict(command: &str, project_root: &Path) -> Command {
         .arg("-c")
         .arg(command)
         .current_dir(project_root);
-    cmd
+    Ok(cmd)
 }
 
 // ── Linux: bwrap (bubblewrap) ─────────────────────────────────────────────────
@@ -421,11 +453,12 @@ fn linux_base_cmd(project_root: &Path) -> (Command, String) {
 
     // Deny writes to protected project subdirs (.koda/agents, .koda/skills).
     // Re-bind as read-only after the project-root writable bind (CC parity #844).
+    // Pre-create if absent so bwrap has a mountpoint — otherwise a sandboxed
+    // command could `mkdir -p` and write agent definitions.
     for rel in PROTECTED_PROJECT_SUBDIRS {
         let p = format!("{root}/{rel}");
-        if Path::new(&p).exists() {
-            cmd.args(["--ro-bind", &p, &p]);
-        }
+        let _ = std::fs::create_dir_all(&p);
+        cmd.args(["--ro-bind", &p, &p]);
     }
 
     (cmd, home)
@@ -860,5 +893,47 @@ mod tests {
             "project: normal writes must still work alongside agent protection"
         );
         assert!(dir.path().join("normal_file.txt").exists());
+    }
+
+    /// Project mode: writing to `.koda/skills/` inside the project must be
+    /// blocked (same protection as `.koda/agents/`).
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_project_blocks_write_to_koda_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".koda/skills")).unwrap();
+        let target = dir.path().join(".koda/skills/evil.md");
+
+        let status = build(
+            &format!("echo '# evil' > {}", target.display()),
+            dir.path(),
+            &SandboxMode::Project,
+        )
+        .unwrap()
+        .status()
+        .await
+        .unwrap();
+
+        assert!(
+            !status.success(),
+            "project: writes to .koda/skills/ must be blocked"
+        );
+        assert!(!target.exists(), "skill file must not have been created");
+    }
+
+    /// Seatbelt path validation: reject paths with characters that could
+    /// inject rules into the profile string.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_rejects_path_with_quote() {
+        let result = validate_seatbelt_path("/tmp/evil\")(allow file-write*");
+        assert!(result.is_err(), "path with quote must be rejected");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_accepts_normal_path() {
+        assert!(validate_seatbelt_path("/Users/test/project").is_ok());
+        assert!(validate_seatbelt_path("/tmp/koda-test-12345").is_ok());
     }
 }
