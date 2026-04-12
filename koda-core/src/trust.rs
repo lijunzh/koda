@@ -288,7 +288,36 @@ pub fn check_tool_with_tracker(
 ///
 /// For Bash, refines the generic `LocalMutation` classification by
 /// parsing the actual command string.
+///
+/// For MCP tools, falls back to `RemoteAction` unless a ToolRegistry
+/// is provided via [`resolve_tool_effect_with_registry`].
 pub fn resolve_tool_effect(tool_name: &str, args: &serde_json::Value) -> ToolEffect {
+    resolve_tool_effect_inner(tool_name, args, None)
+}
+
+/// Like [`resolve_tool_effect`] but uses the ToolRegistry for MCP-aware
+/// classification (#662).
+pub fn resolve_tool_effect_with_registry(
+    tool_name: &str,
+    args: &serde_json::Value,
+    registry: &crate::tools::ToolRegistry,
+) -> ToolEffect {
+    resolve_tool_effect_inner(tool_name, args, Some(registry))
+}
+
+fn resolve_tool_effect_inner(
+    tool_name: &str,
+    args: &serde_json::Value,
+    registry: Option<&crate::tools::ToolRegistry>,
+) -> ToolEffect {
+    // MCP tools: use registry annotations when available.
+    if crate::mcp::is_mcp_tool_name(tool_name) {
+        if let Some(reg) = registry {
+            return reg.classify_tool_with_mcp(tool_name);
+        }
+        return crate::tools::ToolEffect::RemoteAction;
+    }
+
     let base = crate::tools::classify_tool(tool_name);
 
     if tool_name == "Bash" {
