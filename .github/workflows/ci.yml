@@ -46,8 +46,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-support
-      - name: Install bubblewrap (sandbox backend)
-        run: sudo apt-get install -y bubblewrap
+      - name: Set up Linux sandbox (bubblewrap)
+        run: |
+          sudo apt-get install -y bubblewrap
+          # Enable unprivileged user namespaces so bwrap can sandbox.
+          # GH Actions runners disable this by default.
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          # Ubuntu 24.04+ additionally gates userns behind AppArmor.
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: Test
         run: cargo test --workspace --features koda-core/test-support
 

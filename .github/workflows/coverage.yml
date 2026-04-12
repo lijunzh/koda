@@ -29,8 +29,13 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
-      - name: Install bubblewrap (sandbox backend)
-        run: sudo apt-get install -y bubblewrap
+      - name: Set up Linux sandbox (bubblewrap)
+        run: |
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
 
       - name: koda-core coverage (≥ 80% lines)
         id: core

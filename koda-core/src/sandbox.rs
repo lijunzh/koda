@@ -433,12 +433,16 @@ fn bwrap_available() -> bool {
     use std::sync::OnceLock;
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
+        // Just checking `bwrap --version` is insufficient: bwrap may be
+        // installed but unable to create sandboxes (e.g. GitHub Actions
+        // runners lack unprivileged user namespaces → "setting up uid map:
+        // Permission denied"). Run a real sandboxed command to verify.
         std::process::Command::new("bwrap")
-            .arg("--version")
+            .args(["--ro-bind", "/", "/", "--", "true"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .is_ok()
+            .is_ok_and(|s| s.success())
     })
 }
 

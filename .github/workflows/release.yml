@@ -45,29 +45,25 @@ jobs:
   # Depends on verify-version: no point burning 30+ min of cross-platform
   # tests when the tag is wrong and the release is dead anyway.
   test:
-    name: Test (${{ matrix.name }})
+    name: Test (${{ matrix.os }})
     needs: verify-version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: linux-sandboxed
-            os: ubuntu-latest
-            install_bwrap: true
-          - name: linux-unsandboxed
-            os: ubuntu-latest
-            install_bwrap: false
-          - name: macos
-            os: macos-latest
-            install_bwrap: false
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install bubblewrap (Linux sandbox backend)
-        if: matrix.install_bwrap
-        run: sudo apt-get install -y bubblewrap
+      - name: Set up Linux sandbox (bubblewrap)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - run: cargo test --workspace --features koda-core/test-support
 
   build:
