@@ -45,19 +45,28 @@ jobs:
   # Depends on verify-version: no point burning 30+ min of cross-platform
   # tests when the tag is wrong and the release is dead anyway.
   test:
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.name }})
     needs: verify-version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - name: linux-sandboxed
+            os: ubuntu-latest
+            install_bwrap: true
+          - name: linux-unsandboxed
+            os: ubuntu-latest
+            install_bwrap: false
+          - name: macos
+            os: macos-latest
+            install_bwrap: false
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install bubblewrap (Linux sandbox backend)
-        if: runner.os == 'Linux'
+        if: matrix.install_bwrap
         run: sudo apt-get install -y bubblewrap
       - run: cargo test --workspace --features koda-core/test-support
 
