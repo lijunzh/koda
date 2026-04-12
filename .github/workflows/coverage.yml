@@ -29,6 +29,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
+      - name: Install bubblewrap (sandbox backend)
+        run: sudo apt-get install -y bubblewrap
 
       - name: koda-core coverage (≥ 80% lines)
         id: core
