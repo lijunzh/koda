@@ -180,6 +180,7 @@ fn build_strict(command: &str, project_root: &Path) -> Command {
 /// Canonicalize `{home}/{rel}` if the path exists; otherwise return raw path.
 /// This ensures seatbelt subpath/literal rules match the kernel's view of the
 /// path (e.g. `/var` → `/private/var` on macOS).
+#[cfg(target_os = "macos")]
 fn home_path(home: &str, rel: &str) -> String {
     let p = Path::new(home).join(rel);
     p.canonicalize().unwrap_or(p).to_string_lossy().into_owned()
