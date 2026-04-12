@@ -1,7 +1,8 @@
 //! Single MCP server client — wraps rmcp connection lifecycle.
 //!
-//! Each `McpClient` owns one connection to one MCP server process.
-//! It handles spawning, initialization, tool discovery, and tool invocation.
+//! Each `McpClient` owns one connection to one MCP server.
+//! It handles spawning (stdio) or connecting (HTTP), initialization,
+//! tool discovery, and tool invocation.
 
 use std::time::Duration;
 
@@ -9,11 +10,12 @@ use anyhow::{Context, Result};
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::RunningService;
+use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::child_process::TokioChildProcess;
 use serde_json::Value;
 use tokio::process::Command;
 
-use super::config::McpServerConfig;
+use super::config::{McpServerConfig, McpTransport};
 use super::tool_bridge::McpToolAnnotations;
 use crate::providers::ToolDefinition;
 
@@ -92,8 +94,7 @@ impl McpClient {
 
     /// Connect to the MCP server, initialize, and discover tools.
     ///
-    /// Spawns the server process via stdio transport, performs the MCP
-    /// handshake, and fetches the tool list.
+    /// Dispatches to stdio or HTTP transport based on config.
     pub async fn connect(&mut self) -> Result<()> {
         self.status = McpClientStatus::Connecting;
         self.last_error = None;
@@ -102,9 +103,14 @@ impl McpClient {
 
         match tokio::time::timeout(timeout, self.connect_inner()).await {
             Ok(Ok(())) => {
+                let transport_label = match &self.config.transport {
+                    McpTransport::Stdio { .. } => "stdio",
+                    McpTransport::Http { .. } => "http",
+                };
                 self.status = McpClientStatus::Connected;
                 tracing::info!(
                     server = %self.name,
+                    transport = transport_label,
                     tools = self.tools.len(),
                     "MCP server connected"
                 );
@@ -133,35 +139,89 @@ impl McpClient {
         }
     }
 
-    /// Inner connect logic (without timeout wrapper).
+    /// Inner connect logic — dispatches to the right transport.
     async fn connect_inner(&mut self) -> Result<()> {
-        // Build the command to spawn.
-        let mut cmd = Command::new(&self.config.command);
-        cmd.args(&self.config.args);
+        // Clone transport to avoid borrowing self.config while calling &mut self methods.
+        let transport = self.config.transport.clone();
+        match transport {
+            McpTransport::Stdio {
+                ref command,
+                ref args,
+                ref env,
+                ref cwd,
+            } => self.connect_stdio(command, args, env, cwd.as_deref()).await,
+            McpTransport::Http {
+                ref url,
+                ref bearer_token,
+                ref headers,
+            } => {
+                self.connect_http(url, bearer_token.as_deref(), headers)
+                    .await
+            }
+        }
+    }
 
-        // Set environment variables.
-        for (key, val) in &self.config.env {
+    /// Connect via stdio transport (spawn child process).
+    async fn connect_stdio(
+        &mut self,
+        command: &str,
+        args: &[String],
+        env: &std::collections::HashMap<String, String>,
+        cwd: Option<&str>,
+    ) -> Result<()> {
+        let mut cmd = Command::new(command);
+        cmd.args(args);
+        for (key, val) in env {
             cmd.env(key, val);
         }
-
-        // Set working directory if specified.
-        if let Some(ref cwd) = self.config.cwd {
+        if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }
 
-        // Spawn via stdio transport.
         let transport =
             TokioChildProcess::new(cmd).context("failed to spawn MCP server process")?;
-
-        // Connect and initialize as a client.
         let service = ().serve(transport).await.context("MCP handshake failed")?;
-
         self.service = Some(service);
+        self.discover_tools().await
+    }
 
-        // Discover tools.
-        self.discover_tools().await?;
+    /// Connect via Streamable HTTP transport.
+    async fn connect_http(
+        &mut self,
+        url: &str,
+        bearer_token: Option<&str>,
+        headers: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        use http::{HeaderName, HeaderValue};
+        use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 
-        Ok(())
+        let mut config = StreamableHttpClientTransportConfig::with_uri(url);
+
+        // Set bearer token.
+        if let Some(token) = bearer_token {
+            config.auth_header = Some(format!("Bearer {token}"));
+        }
+
+        // Set custom headers.
+        if !headers.is_empty() {
+            let mut header_map = std::collections::HashMap::new();
+            for (k, v) in headers {
+                let name = HeaderName::try_from(k.as_str())
+                    .with_context(|| format!("invalid HTTP header name: {k}"))?;
+                let value = HeaderValue::try_from(v.as_str())
+                    .with_context(|| format!("invalid HTTP header value for {k}"))?;
+                header_map.insert(name, value);
+            }
+            config.custom_headers = header_map;
+        }
+
+        // Enable session recovery for remote servers.
+        config.reinit_on_expired_session = true;
+
+        let transport = StreamableHttpClientTransport::from_config(config);
+        let service = ().serve(transport).await.context("MCP HTTP handshake failed")?;
+        self.service = Some(service);
+        self.discover_tools().await
     }
 
     /// Fetch the tool list from the connected server.

@@ -207,6 +207,22 @@ pub async fn handle_slash_command(
             crate::tui_mcp::handle_mcp_remove(buffer, session, agent, name.clone()).await;
             SlashAction::Continue
         }
+        ReplAction::McpAddHttp {
+            ref name,
+            ref url,
+            ref bearer_token,
+        } => {
+            crate::tui_mcp::handle_mcp_add_http(
+                buffer,
+                session,
+                agent,
+                name.clone(),
+                url.clone(),
+                bearer_token.clone(),
+            )
+            .await;
+            SlashAction::Continue
+        }
         ReplAction::Handled => SlashAction::Continue,
         ReplAction::NotACommand => SlashAction::Continue,
     }

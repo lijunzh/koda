@@ -18,8 +18,10 @@
 //! ## Config storage
 //!
 //! MCP server configs are stored globally in the SQLite `kv_store` table
-//! under the `mcp:` key prefix. Managed via `/mcp add`, `/mcp remove`,
-//! and `/mcp list` slash commands.
+//! under the `mcp:` key prefix. Managed via `/mcp add`, `/mcp add-http`,
+//! `/mcp remove`, and `/mcp list` slash commands.
+//!
+//! Supports both stdio (child process) and HTTP (Streamable HTTP) transports.
 //!
 //! ## Design decisions (#662)
 //!

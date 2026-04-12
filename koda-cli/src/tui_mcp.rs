@@ -7,7 +7,7 @@ use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
 
 use koda_core::agent::KodaAgent;
-use koda_core::mcp::config::{self, McpServerConfig};
+use koda_core::mcp::config::{self, McpServerConfig, McpTransport};
 use koda_core::session::KodaSession;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,11 +37,13 @@ pub async fn handle_mcp_list(
              \n\
              Usage:\n  \
              /mcp add <name> <command> [args...]\n  \
+             /mcp add-http <name> <url> [--token <bearer>]\n  \
              /mcp remove <name>\n  \
              /mcp list\n\
              \n\
-             Example:\n  \
-             /mcp add playwright npx -y @anthropic/mcp-playwright"
+             Examples:\n  \
+             /mcp add playwright npx -y @anthropic/mcp-playwright\n  \
+             /mcp add-http myapi http://localhost:8080/mcp --token secret123"
                 .to_string(),
         );
         return;
@@ -81,14 +83,19 @@ pub async fn handle_mcp_list(
         };
 
         let cmd_info = match config {
-            Some(c) => {
-                let full = if c.args.is_empty() {
-                    c.command.clone()
-                } else {
-                    format!("{} {}", c.command, c.args.join(" "))
-                };
-                format!("  cmd: {full}")
-            }
+            Some(c) => match &c.transport {
+                McpTransport::Stdio { command, args, .. } => {
+                    let full = if args.is_empty() {
+                        command.clone()
+                    } else {
+                        format!("{command} {}", args.join(" "))
+                    };
+                    format!("  cmd: {full}")
+                }
+                McpTransport::Http { url, .. } => {
+                    format!("  url: {url}")
+                }
+            },
             None => String::new(),
         };
 
@@ -121,10 +128,12 @@ pub async fn handle_mcp_add(
     args: Vec<String>,
 ) {
     let config = McpServerConfig {
-        command: command.clone(),
-        args: args.clone(),
-        env: HashMap::new(),
-        cwd: None,
+        transport: McpTransport::Stdio {
+            command: command.clone(),
+            args: args.clone(),
+            env: HashMap::new(),
+            cwd: None,
+        },
         startup_timeout_sec: 30,
         tool_timeout_sec: 120,
         enabled_tools: None,
@@ -157,6 +166,74 @@ pub async fn handle_mcp_add(
                 buffer,
                 format!(
                     "MCP server '{name}' added and connected ({tool_count} tools)\n  cmd: {cmd_display}"
+                ),
+            );
+        }
+        Some(Err(e)) => {
+            tui_output::warn_msg(
+                buffer,
+                format!(
+                    "MCP server '{name}' saved but failed to connect: {e}\n\
+                     It will retry on next session start."
+                ),
+            );
+        }
+        None => {
+            tui_output::ok_msg(
+                buffer,
+                format!("MCP server '{name}' saved. Will connect on next session start."),
+            );
+        }
+    }
+}
+
+/// Handle `/mcp add-http <name> <url> [--token <bearer>]`.
+pub async fn handle_mcp_add_http(
+    buffer: &mut ScrollBuffer,
+    session: &KodaSession,
+    agent: &Arc<KodaAgent>,
+    name: String,
+    url: String,
+    bearer_token: Option<String>,
+) {
+    let config = McpServerConfig {
+        transport: McpTransport::Http {
+            url: url.clone(),
+            bearer_token: bearer_token.clone(),
+            headers: HashMap::new(),
+        },
+        startup_timeout_sec: 30,
+        tool_timeout_sec: 120,
+        enabled_tools: None,
+        disabled_tools: None,
+    };
+
+    if let Err(e) = config.validate() {
+        tui_output::err_msg(buffer, format!("Invalid config: {e}"));
+        return;
+    }
+
+    // Persist to DB.
+    if let Err(e) = config::save_mcp_config(&session.db, &name, &config).await {
+        tui_output::err_msg(buffer, format!("Failed to save MCP config: {e}"));
+        return;
+    }
+
+    // Hot-reload: connect immediately if we have a manager.
+    let connect_result = try_add_to_live_manager(agent, name.clone(), config).await;
+
+    let token_hint = if bearer_token.is_some() {
+        " (with auth)"
+    } else {
+        ""
+    };
+
+    match connect_result {
+        Some(Ok((tool_count,))) => {
+            tui_output::ok_msg(
+                buffer,
+                format!(
+                    "MCP server '{name}' added via HTTP and connected ({tool_count} tools)\n  url: {url}{token_hint}"
                 ),
             );
         }
