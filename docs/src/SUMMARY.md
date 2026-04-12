@@ -16,6 +16,7 @@
 - [Slash commands](./commands.md)
 - [Keybindings](./keybindings.md)
 - [Approval modes](./approval.md)
+- [Sandbox](./sandbox.md)
 
 # Managing sessions
 

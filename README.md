@@ -53,6 +53,25 @@ Inside the TUI, type `/help` to see all commands and keyboard shortcuts.
 
 ---
 
+## Sandbox
+
+Opt-in process sandboxing restricts what the Bash tool can do:
+
+```bash
+# Restrict writes to project dir + /tmp
+koda --sandbox project
+
+# + block reads to credential dirs (~/.ssh, ~/.aws, ~/.gnupg, …)
+koda --sandbox strict
+
+# Via environment variable
+export KODA_SANDBOX=strict
+```
+
+macOS uses `sandbox-exec` (seatbelt); Linux uses `bwrap` (bubblewrap).
+Sub-agents inherit the parent's sandbox mode and can never run weaker.
+See `koda --help` for details.
+
 ## Workspace Crates
 
 | Crate | Description |
