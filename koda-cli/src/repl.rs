@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 /// Returned by [`handle_command`] and translated into UI-specific
 /// behavior by the TUI event loop (`tui_app.rs`) or the headless runner.
 /// Variants with no data are signals; variants with data carry parsed arguments.
+#[derive(Debug)]
 pub enum ReplAction {
     /// `/exit` — terminate the session.
     Quit,
@@ -79,6 +80,22 @@ pub enum ReplAction {
     /// Without an argument: write to a auto-named file in the current directory.
     /// With a filename: write Markdown to that path.
     Export(Option<String>),
+    /// `/mcp` or `/mcp list` — show MCP server list and status.
+    McpList,
+    /// `/mcp add <name> <command> [args...]` — add a new MCP server.
+    McpAdd {
+        /// Server name (user-chosen identifier).
+        name: String,
+        /// Command to spawn.
+        command: String,
+        /// Arguments for the command.
+        args: Vec<String>,
+    },
+    /// `/mcp remove <name>` — remove an MCP server.
+    McpRemove {
+        /// Server name to remove.
+        name: String,
+    },
 }
 
 /// Parse and handle a slash command. Returns the action for the main loop.
@@ -172,7 +189,56 @@ pub async fn handle_command(
         }
         "/export" => ReplAction::Export(arg.map(|s| s.to_string())),
 
+        "/mcp" => parse_mcp_subcommand(arg),
+
         _ => ReplAction::NotACommand,
+    }
+}
+
+/// Parse `/mcp` subcommands.
+///
+/// Syntax:
+/// - `/mcp` or `/mcp list`       — list servers
+/// - `/mcp add <name> <cmd> [args...]`  — add a server
+/// - `/mcp remove <name>`        — remove a server
+fn parse_mcp_subcommand(arg: Option<&str>) -> ReplAction {
+    let arg = match arg {
+        Some(a) if !a.is_empty() => a,
+        _ => return ReplAction::McpList,
+    };
+
+    let mut tokens = arg.split_whitespace();
+    let sub = tokens.next().unwrap_or("");
+
+    match sub {
+        "list" | "status" => ReplAction::McpList,
+
+        "add" => {
+            let name = match tokens.next() {
+                Some(n) => n.to_string(),
+                None => return ReplAction::McpList, // show usage via list
+            };
+            let command = match tokens.next() {
+                Some(c) => c.to_string(),
+                None => return ReplAction::McpList,
+            };
+            let args: Vec<String> = tokens.map(String::from).collect();
+            ReplAction::McpAdd {
+                name,
+                command,
+                args,
+            }
+        }
+
+        "remove" | "rm" | "delete" => {
+            let name = match tokens.next() {
+                Some(n) => n.to_string(),
+                None => return ReplAction::McpList,
+            };
+            ReplAction::McpRemove { name }
+        }
+
+        _ => ReplAction::McpList,
     }
 }
 
@@ -476,5 +542,89 @@ mod tests {
     fn copy_with_zero_clamps_to_one() {
         // 0 is nonsensical — clamp to 1 via .max(1)
         assert!(matches!(dispatch("/copy 0"), ReplAction::CopyResponse(1)));
+    }
+
+    // ── /mcp parsing ────────────────────────────────────────
+
+    #[test]
+    fn mcp_bare_returns_list() {
+        assert!(matches!(dispatch("/mcp"), ReplAction::McpList));
+    }
+
+    #[test]
+    fn mcp_list_subcommand() {
+        assert!(matches!(dispatch("/mcp list"), ReplAction::McpList));
+        assert!(matches!(dispatch("/mcp status"), ReplAction::McpList));
+    }
+
+    #[test]
+    fn mcp_add_parses_name_and_command() {
+        match dispatch("/mcp add playwright npx -y @anthropic/mcp-playwright") {
+            ReplAction::McpAdd {
+                name,
+                command,
+                args,
+            } => {
+                assert_eq!(name, "playwright");
+                assert_eq!(command, "npx");
+                assert_eq!(args, vec!["-y", "@anthropic/mcp-playwright"]);
+            }
+            other => panic!("expected McpAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_add_no_args() {
+        match dispatch("/mcp add mydb node") {
+            ReplAction::McpAdd {
+                name,
+                command,
+                args,
+            } => {
+                assert_eq!(name, "mydb");
+                assert_eq!(command, "node");
+                assert!(args.is_empty());
+            }
+            other => panic!("expected McpAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_add_missing_command_shows_list() {
+        // Missing command falls back to list (shows usage)
+        assert!(matches!(
+            dispatch("/mcp add playwright"),
+            ReplAction::McpList
+        ));
+    }
+
+    #[test]
+    fn mcp_add_missing_name_shows_list() {
+        assert!(matches!(dispatch("/mcp add"), ReplAction::McpList));
+    }
+
+    #[test]
+    fn mcp_remove_parses_name() {
+        match dispatch("/mcp remove playwright") {
+            ReplAction::McpRemove { name } => assert_eq!(name, "playwright"),
+            other => panic!("expected McpRemove, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_remove_aliases() {
+        assert!(matches!(
+            dispatch("/mcp rm playwright"),
+            ReplAction::McpRemove { .. }
+        ));
+        assert!(matches!(
+            dispatch("/mcp delete playwright"),
+            ReplAction::McpRemove { .. }
+        ));
+    }
+
+    #[test]
+    fn mcp_unknown_subcommand_shows_list() {
+        assert!(matches!(dispatch("/mcp foobar"), ReplAction::McpList));
     }
 }

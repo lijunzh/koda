@@ -32,6 +32,11 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ),
     ("/help", "Show commands and shortcuts", None),
     ("/key", "Manage API keys", None),
+    (
+        "/mcp",
+        "Manage MCP servers (add, remove, list)",
+        Some("[add|remove|list]"),
+    ),
     ("/memory", "View/save project & global memory", None),
     ("/model", "Pick a model (aliases + local)", None),
     ("/provider", "Browse all models from a provider", None),
