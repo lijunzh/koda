@@ -184,7 +184,20 @@ const PROTECTED_PROJECT_SUBDIRS: &[&str] = &[
     ".koda/skills", // Skill definitions (auto-discovered, full capabilities)
 ];
 
-// ── Public entry point ────────────────────────────────────────────────────────
+// ── Public entry point ────────────────────────────────────────────────────────────────────────
+
+/// Returns `true` if the platform sandbox backend is available.
+///
+/// Used by the trust layer to downgrade Auto → Safe when the sandbox
+/// is unavailable, ensuring destructive ops still get a confirmation
+/// prompt (#860).  Cached after first probe.
+pub fn is_available() -> bool {
+    use std::sync::OnceLock;
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        build_inner("true", std::path::Path::new("/tmp"), &SandboxMode::Strict).is_ok()
+    })
+}
 
 /// Build a `tokio::process::Command` that runs `sh -c "{command}"` inside
 /// the appropriate sandbox for the given [`crate::trust::TrustMode`].

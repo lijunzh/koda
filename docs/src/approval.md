@@ -22,6 +22,11 @@ with credential protection is **always enforced**. There is no opt-out.
 The sandbox is the safety boundary — the trust mode only controls whether
 you see a confirmation prompt before each mutation.
 
+If the sandbox backend is unavailable (e.g. `bwrap` not installed on
+Linux), Auto mode automatically downgrades mutation and destructive ops
+to require confirmation, so you never lose both the sandbox **and** the
+approval prompt at the same time.
+
 ## What the sandbox blocks
 
 **Writes** restricted to: project directory, `/tmp`, and standard cache

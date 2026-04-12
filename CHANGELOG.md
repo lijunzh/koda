@@ -30,6 +30,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   unsandboxed execution with `tracing::warn!` when the platform backend
   is unavailable (e.g. no `bwrap` on Linux), instead of hard-erroring.
   `bwrap_available()` now probes with a real sandboxed command.
+- **Sandbox fallback safety net** — when the sandbox is unavailable and
+  trust mode is Auto, mutation/destructive ops downgrade to
+  `NeedsConfirmation` so the user still gets a prompt. `From<u8>` for
+  TrustMode now fail-safes to Safe instead of Auto (#860).
 
 ### Fixed
 - **CI sandbox support** — all Linux CI jobs now install bubblewrap and

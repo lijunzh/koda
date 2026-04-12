@@ -32,6 +32,17 @@ fn root() -> &'static Path {
     Path::new("/home/user/project")
 }
 
+/// Expected Auto-mode approval for mutation/destructive ops.
+/// When sandbox is available, Auto auto-approves. Without sandbox,
+/// mutations downgrade to NeedsConfirmation (#860).
+fn auto_mutation_expected() -> ToolApproval {
+    if koda_core::sandbox::is_available() {
+        ToolApproval::AutoApprove
+    } else {
+        ToolApproval::NeedsConfirmation
+    }
+}
+
 /// Helper: check a tool in both modes and return (auto, confirm).
 fn check_both(tool: &str, args: &serde_json::Value) -> (ToolApproval, ToolApproval) {
     let auto = check_tool(tool, args, TrustMode::Auto, Some(root()));
@@ -67,7 +78,7 @@ fn matrix_read_outside_project() {
 fn matrix_write_inside_project() {
     let args = serde_json::json!({"path": "src/main.rs"});
     let (auto, confirm) = check_both("Write", &args);
-    assert_eq!(auto, ToolApproval::AutoApprove);
+    assert_eq!(auto, auto_mutation_expected());
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
 
@@ -88,7 +99,8 @@ fn matrix_delete_files() {
     let args = serde_json::json!({"file_path": "old.rs"});
     let (auto, confirm) = check_both("Delete", &args);
     // Auto: sandbox enforces perimeter, destructive ops auto-approved
-    assert_eq!(auto, ToolApproval::AutoApprove);
+    // (downgrades to NeedsConfirmation if sandbox unavailable, #860)
+    assert_eq!(auto, auto_mutation_expected());
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
 
@@ -108,7 +120,7 @@ fn matrix_safe_bash() {
 fn matrix_bash_write_side_effect() {
     let args = serde_json::json!({"command": "echo hello > output.txt"});
     let (auto, confirm) = check_both("Bash", &args);
-    assert_eq!(auto, ToolApproval::AutoApprove);
+    assert_eq!(auto, auto_mutation_expected());
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
 
@@ -119,7 +131,8 @@ fn matrix_destructive_bash() {
     let args = serde_json::json!({"command": "rm -rf target/"});
     let (auto, confirm) = check_both("Bash", &args);
     // Auto: sandbox enforces perimeter, destructive ops auto-approved
-    assert_eq!(auto, ToolApproval::AutoApprove);
+    // (downgrades to NeedsConfirmation if sandbox unavailable, #860)
+    assert_eq!(auto, auto_mutation_expected());
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
 
@@ -150,7 +163,7 @@ fn matrix_invoke_agent() {
 fn matrix_memory_write() {
     let args = serde_json::json!({"content": "remember this"});
     let (auto, confirm) = check_both("MemoryWrite", &args);
-    assert_eq!(auto, ToolApproval::AutoApprove);
+    assert_eq!(auto, auto_mutation_expected());
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
 
@@ -170,6 +183,6 @@ fn matrix_web_fetch() {
 fn matrix_gh_issue_create() {
     let args = serde_json::json!({"command": "gh issue create --title 'bug'"});
     let (auto, confirm) = check_both("Bash", &args);
-    assert_eq!(auto, ToolApproval::AutoApprove);
+    assert_eq!(auto, auto_mutation_expected());
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
