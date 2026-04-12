@@ -17,8 +17,8 @@ env:
   RUSTFLAGS: -Dwarnings
 
 jobs:
-  lint:
-    name: Lint
+  test:
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -27,7 +27,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: lint
+          shared-key: ci
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -35,17 +35,6 @@ jobs:
       - name: Check (no features)
         # Catches cfg-gated items invisible behind feature flags.
         run: cargo check --workspace --all-targets
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    needs: lint
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: test-support
       - name: Set up Linux sandbox (bubblewrap)
         run: |
           sudo apt-get install -y bubblewrap
