@@ -67,6 +67,10 @@ pub enum ToolEffect {
 /// via [`crate::bash_safety::classify_bash_command`].
 ///
 /// Unknown tools default to `LocalMutation` (conservative — always asks).
+///
+/// For MCP tools (names containing `__`), call
+/// [`ToolRegistry::classify_tool_with_mcp`] instead to use server-provided
+/// annotations.
 pub fn classify_tool(name: &str) -> ToolEffect {
     match name {
         // Pure reads — zero side-effects
@@ -86,6 +90,9 @@ pub fn classify_tool(name: &str) -> ToolEffect {
 
         // Delete is destructive (irreversible without undo)
         "Delete" => ToolEffect::Destructive,
+
+        // MCP tools — use annotations-based classification.
+        name if crate::mcp::is_mcp_tool_name(name) => ToolEffect::RemoteAction,
 
         // Unknown tools — default to LocalMutation (conservative)
         _ => ToolEffect::LocalMutation,
@@ -229,6 +236,9 @@ pub struct ToolRegistry {
     pub bg_registry: bg_process::BgRegistry,
     /// Trust mode — determines sandbox configuration for Bash tool.
     trust: crate::trust::TrustMode,
+    /// MCP connection manager — owns all MCP server connections (#662).
+    /// `None` until attached via `set_mcp_manager()`.
+    mcp_manager: std::sync::RwLock<Option<Arc<tokio::sync::RwLock<crate::mcp::McpManager>>>>,
 }
 
 impl ToolRegistry {
@@ -304,6 +314,7 @@ impl ToolRegistry {
             caps: OutputCaps::for_context(max_context_tokens),
             bg_registry: bg_process::BgRegistry::new(),
             trust,
+            mcp_manager: std::sync::RwLock::new(None),
         }
     }
 
@@ -339,6 +350,38 @@ impl ToolRegistry {
         if let Ok(mut guard) = self.session_id.write() {
             *guard = Some(session_id);
         }
+    }
+
+    /// Attach an MCP connection manager and register its tools (#662).
+    ///
+    /// Called after MCP servers have connected and discovered their tools.
+    /// Tool definitions are merged into the registry so the LLM can see them.
+    pub fn set_mcp_manager(&self, manager: Arc<tokio::sync::RwLock<crate::mcp::McpManager>>) {
+        if let Ok(mut guard) = self.mcp_manager.write() {
+            *guard = Some(manager);
+        }
+    }
+
+    /// Get the MCP manager (if attached).
+    pub fn mcp_manager(&self) -> Option<Arc<tokio::sync::RwLock<crate::mcp::McpManager>>> {
+        self.mcp_manager.read().ok().and_then(|guard| guard.clone())
+    }
+
+    /// Classify a tool, using MCP annotations when available.
+    ///
+    /// For built-in tools, delegates to `classify_tool()`.
+    /// For MCP tools, looks up cached annotations in the manager.
+    pub fn classify_tool_with_mcp(&self, name: &str) -> ToolEffect {
+        if crate::mcp::is_mcp_tool_name(name) {
+            if let Some(mgr) = self.mcp_manager()
+                && let Ok(mgr) = mgr.try_read()
+            {
+                return mgr.classify_tool(name);
+            }
+            // Fallback: no manager or lock contention.
+            return ToolEffect::RemoteAction;
+        }
+        classify_tool(name)
     }
 
     /// Get all built-in tool names.
@@ -388,12 +431,14 @@ impl ToolRegistry {
 
     /// Get tool definitions, optionally filtered by allow/deny lists.
     ///
+    /// Includes MCP tool definitions if a manager is attached.
+    ///
     /// - `allowed` non-empty → only those tools (allowlist).
     /// - `denied` non-empty → all tools except those (denylist).
     /// - Both empty → all tools.
     /// - If both are specified, allowlist wins (deny is ignored).
     pub fn get_definitions(&self, allowed: &[String], denied: &[String]) -> Vec<ToolDefinition> {
-        if !allowed.is_empty() {
+        let mut defs: Vec<ToolDefinition> = if !allowed.is_empty() {
             allowed
                 .iter()
                 .filter_map(|name| self.definitions.get(name).cloned())
@@ -406,7 +451,34 @@ impl ToolRegistry {
                 .collect()
         } else {
             self.definitions.values().cloned().collect()
+        };
+
+        // Append MCP tool definitions.
+        if let Some(mgr) = self.mcp_manager()
+            && let Ok(mgr) = mgr.try_read()
+        {
+            let mcp_defs = mgr.all_tool_definitions();
+            if !allowed.is_empty() {
+                // Allowlist mode: only include MCP tools in the allowlist.
+                for def in mcp_defs {
+                    if allowed.contains(&def.name) {
+                        defs.push(def);
+                    }
+                }
+            } else if !denied.is_empty() {
+                // Denylist mode: include MCP tools not in the denylist.
+                for def in mcp_defs {
+                    if !denied.contains(&def.name) {
+                        defs.push(def);
+                    }
+                }
+            } else {
+                // No filter: include all MCP tools.
+                defs.extend(mcp_defs);
+            }
         }
+
+        defs
     }
 
     /// Execute a tool by name with the given JSON arguments.
@@ -586,6 +658,37 @@ impl ToolRegistry {
             }
 
             other => {
+                // MCP tool dispatch (#662): route `server__tool` calls
+                // to the appropriate MCP server.
+                if crate::mcp::is_mcp_tool_name(other) {
+                    if let Some(mgr) = self.mcp_manager() {
+                        let result = {
+                            let mgr = mgr.read().await;
+                            mgr.call_tool(other, args.clone()).await
+                        };
+                        return match result {
+                            Ok(output) => ToolResult {
+                                output,
+                                success: true,
+                                full_output: None,
+                            },
+                            Err(e) => ToolResult {
+                                output: format!("Error: {e}"),
+                                success: false,
+                                full_output: None,
+                            },
+                        };
+                    }
+                    return ToolResult {
+                        output: format!(
+                            "MCP tool '{other}' not available — \
+                             no MCP servers connected."
+                        ),
+                        success: false,
+                        full_output: None,
+                    };
+                }
+
                 // Detect garbled tool names (JSON blobs, very long strings)
                 // — a sign the model can't do structured tool calling.
                 let warning = if other.contains('{') || other.len() > 64 {

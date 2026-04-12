@@ -68,6 +68,13 @@ futures-util = "0.3"
 # Error handling
 anyhow = "1"
 
+# MCP client — connect to external MCP servers (#662)
+rmcp = { version = "1.4", default-features = false, features = [
+    "client",
+    "base64",
+    "transport-child-process",
+] }
+
 # First-party workspace libraries (direct calls)
 
 # Async trait support

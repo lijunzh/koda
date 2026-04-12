@@ -71,6 +71,21 @@ impl KodaSession {
         let provider = providers::create_provider(config);
         // Wire db+session into ToolRegistry for RecallContext
         agent.tools.set_session(Arc::new(db.clone()), id.clone());
+
+        // Start MCP servers from DB config (#662)
+        // TODO(#662 Phase 2): Move MCP manager to app-level ownership so
+        // servers are shared across sessions and not duplicated on resume.
+        match crate::mcp::McpManager::start_from_db(&db).await {
+            Ok(manager) => {
+                if !manager.is_empty() {
+                    let mgr = Arc::new(tokio::sync::RwLock::new(manager));
+                    agent.tools.set_mcp_manager(mgr);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to start MCP servers (non-fatal)");
+            }
+        }
         let file_tracker = FileTracker::new(&id, db.clone()).await;
         Self {
             id,

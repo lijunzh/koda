@@ -88,6 +88,8 @@ pub mod keystore;
 pub mod last_provider;
 /// Loop detection — catches runaway repeated tool calls.
 pub mod loop_guard;
+/// MCP client — connect to external MCP servers (#662).
+pub mod mcp;
 /// Project memory — `MEMORY.md` / `CLAUDE.md` read/write.
 pub mod memory;
 /// Microcompact — lightweight tool result aging without full compaction.

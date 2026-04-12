@@ -421,7 +421,11 @@ pub(crate) async fn execute_sub_agent(
                     let detail = tools::describe_action(&tc.function_name, &parsed_args);
                     let diff_preview =
                         preview::compute(&tc.function_name, &parsed_args, effective_root_ref).await;
-                    let effect = crate::trust::resolve_tool_effect(&tc.function_name, &parsed_args);
+                    let effect = crate::trust::resolve_tool_effect_with_registry(
+                        &tc.function_name,
+                        &parsed_args,
+                        &tools,
+                    );
                     match request_approval(
                         sink,
                         cmd_rx,

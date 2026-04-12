@@ -1,0 +1,257 @@
+//! Single MCP server client — wraps rmcp connection lifecycle.
+//!
+//! Each `McpClient` owns one connection to one MCP server process.
+//! It handles spawning, initialization, tool discovery, and tool invocation.
+
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use rmcp::ServiceExt;
+use rmcp::model::CallToolRequestParams;
+use rmcp::service::RunningService;
+use rmcp::transport::child_process::TokioChildProcess;
+use serde_json::Value;
+use tokio::process::Command;
+
+use super::config::McpServerConfig;
+use super::tool_bridge::McpToolAnnotations;
+use crate::providers::ToolDefinition;
+
+/// Connection status of a single MCP server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpClientStatus {
+    /// Not yet connected.
+    Disconnected,
+    /// Connection in progress.
+    Connecting,
+    /// Connected and ready.
+    Connected,
+    /// Connection failed.
+    Failed,
+}
+
+/// A discovered MCP tool with its Koda-side definition and annotations.
+#[derive(Debug, Clone)]
+pub struct DiscoveredTool {
+    /// Koda tool definition (qualified name, description, schema).
+    pub definition: ToolDefinition,
+    /// MCP annotations for trust classification.
+    pub annotations: McpToolAnnotations,
+    /// Original (unqualified) tool name on the MCP server.
+    pub original_name: String,
+}
+
+/// Client for a single MCP server.
+pub struct McpClient {
+    /// Server name (user-assigned, e.g. "playwright").
+    name: String,
+    /// Server configuration.
+    config: McpServerConfig,
+    /// Running rmcp service (None when disconnected).
+    service: Option<RunningService<rmcp::service::RoleClient, ()>>,
+    /// Discovered tools after connection.
+    tools: Vec<DiscoveredTool>,
+    /// Current connection status.
+    status: McpClientStatus,
+    /// Error message from the last failed connection attempt.
+    last_error: Option<String>,
+}
+
+impl McpClient {
+    /// Create a new (disconnected) client for the given server.
+    pub fn new(name: String, config: McpServerConfig) -> Self {
+        Self {
+            name,
+            config,
+            service: None,
+            tools: Vec::new(),
+            status: McpClientStatus::Disconnected,
+            last_error: None,
+        }
+    }
+
+    /// Server name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Current connection status.
+    pub fn status(&self) -> McpClientStatus {
+        self.status
+    }
+
+    /// Last error message (if status is Failed).
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    /// Discovered tools (empty until connected).
+    pub fn tools(&self) -> &[DiscoveredTool] {
+        &self.tools
+    }
+
+    /// Connect to the MCP server, initialize, and discover tools.
+    ///
+    /// Spawns the server process via stdio transport, performs the MCP
+    /// handshake, and fetches the tool list.
+    pub async fn connect(&mut self) -> Result<()> {
+        self.status = McpClientStatus::Connecting;
+        self.last_error = None;
+
+        let timeout = Duration::from_secs(self.config.startup_timeout_sec);
+
+        match tokio::time::timeout(timeout, self.connect_inner()).await {
+            Ok(Ok(())) => {
+                self.status = McpClientStatus::Connected;
+                tracing::info!(
+                    server = %self.name,
+                    tools = self.tools.len(),
+                    "MCP server connected"
+                );
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                self.status = McpClientStatus::Failed;
+                self.last_error = Some(e.to_string());
+                tracing::warn!(
+                    server = %self.name,
+                    error = %e,
+                    "MCP server connection failed"
+                );
+                Err(e)
+            }
+            Err(_) => {
+                self.status = McpClientStatus::Failed;
+                let msg = format!(
+                    "MCP server '{}' startup timed out after {}s",
+                    self.name, self.config.startup_timeout_sec
+                );
+                self.last_error = Some(msg.clone());
+                tracing::warn!(server = %self.name, "{msg}");
+                Err(anyhow::anyhow!(msg))
+            }
+        }
+    }
+
+    /// Inner connect logic (without timeout wrapper).
+    async fn connect_inner(&mut self) -> Result<()> {
+        // Build the command to spawn.
+        let mut cmd = Command::new(&self.config.command);
+        cmd.args(&self.config.args);
+
+        // Set environment variables.
+        for (key, val) in &self.config.env {
+            cmd.env(key, val);
+        }
+
+        // Set working directory if specified.
+        if let Some(ref cwd) = self.config.cwd {
+            cmd.current_dir(cwd);
+        }
+
+        // Spawn via stdio transport.
+        let transport =
+            TokioChildProcess::new(cmd).context("failed to spawn MCP server process")?;
+
+        // Connect and initialize as a client.
+        let service = ().serve(transport).await.context("MCP handshake failed")?;
+
+        self.service = Some(service);
+
+        // Discover tools.
+        self.discover_tools().await?;
+
+        Ok(())
+    }
+
+    /// Fetch the tool list from the connected server.
+    async fn discover_tools(&mut self) -> Result<()> {
+        let service = self.service.as_ref().context("not connected")?;
+
+        let result = service
+            .list_tools(Default::default())
+            .await
+            .context("failed to list MCP tools")?;
+
+        self.tools.clear();
+
+        for tool in result.tools {
+            let tool_name: &str = &tool.name;
+
+            // Apply tool filtering.
+            if !self.config.is_tool_allowed(tool_name) {
+                tracing::debug!(
+                    server = %self.name,
+                    tool = %tool_name,
+                    "MCP tool filtered out by config"
+                );
+                continue;
+            }
+
+            let (definition, annotations) =
+                super::tool_bridge::mcp_tool_to_definition(&self.name, &tool);
+
+            self.tools.push(DiscoveredTool {
+                definition,
+                annotations,
+                original_name: tool_name.to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Call a tool on this MCP server.
+    ///
+    /// `tool_name` is the original (unqualified) name on the server.
+    /// `arguments` is the JSON arguments value.
+    pub async fn call_tool(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+    ) -> Result<rmcp::model::CallToolResult> {
+        let service = self.service.as_ref().context("MCP server not connected")?;
+
+        let timeout = Duration::from_secs(self.config.tool_timeout_sec);
+
+        let mut params = CallToolRequestParams::new(tool_name.to_string());
+        if let Value::Object(map) = arguments {
+            params.arguments = Some(map);
+        }
+
+        let result = tokio::time::timeout(timeout, service.call_tool(params))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "MCP tool call '{}' on server '{}' timed out after {}s",
+                    tool_name,
+                    self.name,
+                    self.config.tool_timeout_sec
+                )
+            })?
+            .context("MCP tool call failed")?;
+
+        Ok(result)
+    }
+
+    /// Disconnect from the MCP server.
+    pub async fn disconnect(&mut self) {
+        if let Some(service) = self.service.take() {
+            // RunningService is dropped, which cleans up the child process.
+            drop(service);
+        }
+        self.tools.clear();
+        self.status = McpClientStatus::Disconnected;
+        self.last_error = None;
+        tracing::info!(server = %self.name, "MCP server disconnected");
+    }
+}
+
+impl Drop for McpClient {
+    fn drop(&mut self) {
+        // Ensure the service is dropped (child process cleaned up).
+        if self.service.is_some() {
+            tracing::debug!(server = %self.name, "McpClient dropped while still connected");
+        }
+    }
+}
