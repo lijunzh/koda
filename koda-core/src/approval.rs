@@ -311,7 +311,7 @@ fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &
 // ── Settings persistence ──────────────────────────────────
 
 /// Re-export settings types for provider persistence.
-pub use crate::settings::LastProvider;
+pub use crate::last_provider::LastProvider;
 
 // ── Tests ─────────────────────────────────────────────────
 

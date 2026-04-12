@@ -1,11 +1,14 @@
-//! Last-used provider persistence (#693).
+//! Last-used provider recall (#693).
 //!
 //! Remembers the last provider/model/base-URL so Koda can auto-restore
 //! on next startup. Stored in SQLite via the [`crate::db`] KV store.
 //!
 //! This is **not** user configuration — Koda follows "customization over
-//! configuration" (see DESIGN.md). The only persisted state is which
+//! configuration" (see DESIGN.md §P1). The only persisted state is which
 //! provider the user last chose via `/model`.
+//!
+//! Renamed from `settings.rs` to avoid implying a user-editable config
+//! surface — koda has none.
 
 use crate::db::Database;
 use anyhow::Result;
