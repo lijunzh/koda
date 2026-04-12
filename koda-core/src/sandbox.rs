@@ -106,6 +106,7 @@ impl std::fmt::Display for SandboxMode {
 //   .kube           — kubeconfig with cluster tokens and client certs
 //   .azure          — Azure CLI token cache (msal_token_cache.bin, etc.)
 // ~/.config/gcloud  — gcloud CLI credentials and service account keys
+// ~/.config/koda/db — SQLite DB containing plaintext API keys in KV store (#847)
 
 /// Credential *directories* under `$HOME` blocked in `Strict` mode.
 /// Matched with `(subpath …)` / `--tmpfs` to cover the whole tree.
@@ -113,7 +114,8 @@ const CREDENTIAL_SUBDIRS: &[&str] = &[".ssh", ".aws", ".gnupg", ".kube", ".azure
 
 /// Credential directories under `$HOME/.config/` blocked in `Strict` mode.
 const CREDENTIAL_CONFIG_SUBDIRS: &[&str] = &[
-    "gcloud", // gcloud CLI credentials and service-account key files
+    "gcloud",  // gcloud CLI credentials and service-account key files
+    "koda/db", // SQLite DB with plaintext API keys in kv_store table (#847)
 ];
 
 /// Individual credential *files* under `$HOME` blocked in `Strict` mode.
@@ -488,6 +490,20 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn strict_profile_denies_koda_db() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
+        let rules = credential_deny_rules_macos(&home);
+        let koda_db = home_path(&home, ".config/koda/db");
+        assert!(
+            rules.contains(&format!(
+                "(deny file-read* file-write* (subpath \"{koda_db}\"))"
+            )),
+            "strict profile must deny reads to ~/.config/koda/db (plaintext API keys in SQLite, #847)"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn strict_profile_denies_credential_files() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
         let rules = credential_deny_rules_macos(&home);
@@ -641,6 +657,31 @@ mod tests {
         assert!(
             status.success(),
             "strict: reads to /etc/hosts must still be allowed"
+        );
+    }
+
+    /// Strict mode: reading `~/.config/koda/db/` must be blocked (#847).
+    ///
+    /// The koda SQLite DB contains plaintext API keys in the `kv_store` table.
+    /// A sandboxed bash command must not be able to `sqlite3` it.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_strict_blocks_koda_db_read() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
+        let db_dir = format!("{home}/.config/koda/db");
+        if !Path::new(&db_dir).exists() {
+            // DB dir doesn't exist on this machine — skip but don't fail.
+            eprintln!("skip: {db_dir} does not exist");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let status = build(&format!("ls {db_dir}"), dir.path(), &SandboxMode::Strict)
+            .status()
+            .await
+            .unwrap();
+        assert!(
+            !status.success(),
+            "strict: reading ~/.config/koda/db/ must be blocked"
         );
     }
 }
