@@ -188,6 +188,53 @@ impl McpManager {
         tracing::info!("all MCP servers disconnected");
     }
 
+    /// Add a server at runtime (hot-reload).
+    ///
+    /// Connects immediately. If a server with this name already exists,
+    /// it is disconnected first.
+    pub async fn add_server(&mut self, name: String, config: McpServerConfig) -> Result<()> {
+        // Disconnect any existing server with this name.
+        if let Some(mut old) = self.clients.remove(&name) {
+            old.disconnect().await;
+            // Remove stale annotations.
+            self.annotations.retain(|k, _| {
+                parse_mcp_tool_name(k)
+                    .map(|(s, _)| s != name)
+                    .unwrap_or(true)
+            });
+        }
+
+        let mut client = McpClient::new(name.clone(), config);
+        client.connect().await?;
+
+        // Cache annotations for the new tools.
+        for tool in client.tools() {
+            self.annotations
+                .insert(tool.definition.name.clone(), tool.annotations.clone());
+        }
+
+        self.clients.insert(name, client);
+        Ok(())
+    }
+
+    /// Remove and disconnect a server by name.
+    ///
+    /// Returns `true` if a server was found and removed.
+    pub async fn remove_server(&mut self, name: &str) -> bool {
+        if let Some(mut client) = self.clients.remove(name) {
+            client.disconnect().await;
+            self.annotations.retain(|k, _| {
+                parse_mcp_tool_name(k)
+                    .map(|(s, _)| s != name)
+                    .unwrap_or(true)
+            });
+            tracing::info!(server = %name, "MCP server removed");
+            true
+        } else {
+            false
+        }
+    }
+
     /// Is the manager empty (no servers configured)?
     pub fn is_empty(&self) -> bool {
         self.clients.is_empty()

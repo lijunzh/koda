@@ -1,0 +1,260 @@
+//! MCP server management handlers for `/mcp` slash commands.
+//!
+//! Extracted from [`crate::tui_commands`] to keep file sizes manageable.
+//! All output flows through the [`crate::scroll_buffer::ScrollBuffer`].
+
+use crate::scroll_buffer::ScrollBuffer;
+use crate::tui_output;
+
+use koda_core::agent::KodaAgent;
+use koda_core::mcp::config::{self, McpServerConfig};
+use koda_core::session::KodaSession;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// Handle `/mcp list` — show all configured servers and their status.
+pub async fn handle_mcp_list(
+    buffer: &mut ScrollBuffer,
+    session: &KodaSession,
+    agent: &Arc<KodaAgent>,
+) {
+    // Show status from live McpManager (if attached).
+    let live_statuses = get_live_statuses(agent).await;
+
+    // Also load configs from DB for servers that may not be connected.
+    let db_configs = match config::load_mcp_configs(&session.db).await {
+        Ok(c) => c,
+        Err(e) => {
+            tui_output::err_msg(buffer, format!("Failed to load MCP configs: {e}"));
+            return;
+        }
+    };
+
+    if db_configs.is_empty() && live_statuses.is_empty() {
+        tui_output::dim_msg(
+            buffer,
+            "No MCP servers configured.\n\
+             \n\
+             Usage:\n  \
+             /mcp add <name> <command> [args...]\n  \
+             /mcp remove <name>\n  \
+             /mcp list\n\
+             \n\
+             Example:\n  \
+             /mcp add playwright npx -y @anthropic/mcp-playwright"
+                .to_string(),
+        );
+        return;
+    }
+
+    let mut lines: Vec<String> = vec!["MCP Servers:".to_string(), String::new()];
+
+    // Merge DB configs with live status.
+    let all_names = {
+        let mut names: Vec<String> = db_configs.keys().cloned().collect();
+        for status in &live_statuses {
+            if !names.contains(&status.name) {
+                names.push(status.name.clone());
+            }
+        }
+        names.sort();
+        names
+    };
+
+    for name in &all_names {
+        let status = live_statuses.iter().find(|s| &s.name == name);
+        let config = db_configs.get(name);
+
+        let status_icon = match status {
+            Some(s) => match s.status {
+                koda_core::mcp::client::McpClientStatus::Connected => "🟢",
+                koda_core::mcp::client::McpClientStatus::Connecting => "🟡",
+                koda_core::mcp::client::McpClientStatus::Failed => "🔴",
+                koda_core::mcp::client::McpClientStatus::Disconnected => "⚪",
+            },
+            None => "⚪",
+        };
+
+        let tools_info = match status {
+            Some(s) if s.tool_count > 0 => format!(" ({} tools)", s.tool_count),
+            _ => String::new(),
+        };
+
+        let cmd_info = match config {
+            Some(c) => {
+                let full = if c.args.is_empty() {
+                    c.command.clone()
+                } else {
+                    format!("{} {}", c.command, c.args.join(" "))
+                };
+                format!("  cmd: {full}")
+            }
+            None => String::new(),
+        };
+
+        let error_info = match status {
+            Some(s) if s.error.is_some() => {
+                format!("  error: {}", s.error.as_deref().unwrap_or(""))
+            }
+            _ => String::new(),
+        };
+
+        lines.push(format!("  {status_icon} {name}{tools_info}"));
+        if !cmd_info.is_empty() {
+            lines.push(cmd_info);
+        }
+        if !error_info.is_empty() {
+            lines.push(error_info);
+        }
+    }
+
+    tui_output::dim_msg(buffer, lines.join("\n"));
+}
+
+/// Handle `/mcp add <name> <command> [args...]`.
+pub async fn handle_mcp_add(
+    buffer: &mut ScrollBuffer,
+    session: &KodaSession,
+    agent: &Arc<KodaAgent>,
+    name: String,
+    command: String,
+    args: Vec<String>,
+) {
+    let config = McpServerConfig {
+        command: command.clone(),
+        args: args.clone(),
+        env: HashMap::new(),
+        cwd: None,
+        startup_timeout_sec: 30,
+        tool_timeout_sec: 120,
+        enabled_tools: None,
+        disabled_tools: None,
+    };
+
+    // Validate first.
+    if let Err(e) = config.validate() {
+        tui_output::err_msg(buffer, format!("Invalid config: {e}"));
+        return;
+    }
+
+    // Save to DB.
+    if let Err(e) = config::save_mcp_config(&session.db, &name, &config).await {
+        tui_output::err_msg(buffer, format!("Failed to save config: {e}"));
+        return;
+    }
+
+    // Hot-reload: connect immediately if we have a manager.
+    let connect_result = try_add_to_live_manager(agent, name.clone(), config).await;
+
+    match connect_result {
+        Some(Ok((tool_count,))) => {
+            let cmd_display = if args.is_empty() {
+                command
+            } else {
+                format!("{command} {}", args.join(" "))
+            };
+            tui_output::ok_msg(
+                buffer,
+                format!(
+                    "MCP server '{name}' added and connected ({tool_count} tools)\n  cmd: {cmd_display}"
+                ),
+            );
+        }
+        Some(Err(e)) => {
+            tui_output::warn_msg(
+                buffer,
+                format!(
+                    "MCP server '{name}' saved but failed to connect: {e}\n\
+                     It will retry on next session start."
+                ),
+            );
+        }
+        None => {
+            tui_output::ok_msg(
+                buffer,
+                format!("MCP server '{name}' saved. Will connect on next session start."),
+            );
+        }
+    }
+}
+
+/// Handle `/mcp remove <name>`.
+pub async fn handle_mcp_remove(
+    buffer: &mut ScrollBuffer,
+    session: &KodaSession,
+    agent: &Arc<KodaAgent>,
+    name: String,
+) {
+    // Check it exists in DB.
+    let exists = match config::list_mcp_server_names(&session.db).await {
+        Ok(names) => names.contains(&name),
+        Err(e) => {
+            tui_output::err_msg(buffer, format!("Failed to check MCP configs: {e}"));
+            return;
+        }
+    };
+
+    if !exists {
+        tui_output::err_msg(buffer, format!("MCP server '{name}' not found."));
+        return;
+    }
+
+    // Remove from DB.
+    if let Err(e) = config::remove_mcp_config(&session.db, &name).await {
+        tui_output::err_msg(buffer, format!("Failed to remove config: {e}"));
+        return;
+    }
+
+    // Hot-reload: disconnect if live.
+    let was_live = try_remove_from_live_manager(agent, &name).await;
+
+    let extra = if was_live { " and disconnected" } else { "" };
+    tui_output::ok_msg(buffer, format!("MCP server '{name}' removed{extra}."));
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+/// Get live status summaries from the McpManager (if attached).
+async fn get_live_statuses(
+    agent: &Arc<KodaAgent>,
+) -> Vec<koda_core::mcp::manager::McpServerStatus> {
+    let Some(mgr) = agent.tools.mcp_manager() else {
+        return vec![];
+    };
+    let Ok(mgr) = mgr.try_read() else {
+        return vec![];
+    };
+    mgr.status_summary()
+}
+
+/// Try to add a server to the live McpManager. Returns None if no manager.
+async fn try_add_to_live_manager(
+    agent: &Arc<KodaAgent>,
+    name: String,
+    config: McpServerConfig,
+) -> Option<Result<(usize,), anyhow::Error>> {
+    let mgr = agent.tools.mcp_manager()?;
+    let mut mgr = mgr.write().await;
+    let result = mgr.add_server(name.clone(), config).await;
+    match &result {
+        Ok(()) => {
+            let tool_count = mgr
+                .status_summary()
+                .iter()
+                .find(|s| s.name == name)
+                .map(|s| s.tool_count)
+                .unwrap_or(0);
+            Some(Ok((tool_count,)))
+        }
+        Err(e) => Some(Err(anyhow::anyhow!("{e}"))),
+    }
+}
+
+/// Try to remove a server from the live McpManager. Returns whether it was live.
+async fn try_remove_from_live_manager(agent: &Arc<KodaAgent>, name: &str) -> bool {
+    let Some(mgr) = agent.tools.mcp_manager() else {
+        return false;
+    };
+    let mut mgr = mgr.write().await;
+    mgr.remove_server(name).await
+}

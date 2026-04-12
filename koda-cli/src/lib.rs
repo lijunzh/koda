@@ -41,6 +41,7 @@ pub(crate) mod tui_app;
 pub(crate) mod tui_commands;
 pub(crate) mod tui_context;
 pub(crate) mod tui_handlers_inference;
+pub(crate) mod tui_mcp;
 pub(crate) mod tui_output;
 pub(crate) mod tui_render;
 pub(crate) mod tui_types;

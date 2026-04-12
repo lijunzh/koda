@@ -18,9 +18,8 @@
 //! ## Config storage
 //!
 //! MCP server configs are stored globally in the SQLite `kv_store` table
-//! under the `mcp:` key prefix. Management UX (`/mcp add`, `/mcp remove`)
-//! is planned for Phase 2 — for now, configs are set programmatically via
-//! `config::save_mcp_config()`.
+//! under the `mcp:` key prefix. Managed via `/mcp add`, `/mcp remove`,
+//! and `/mcp list` slash commands.
 //!
 //! ## Design decisions (#662)
 //!

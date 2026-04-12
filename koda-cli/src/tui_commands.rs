@@ -183,6 +183,30 @@ pub async fn handle_slash_command(
             handle_export(buffer, session, dest.as_deref()).await;
             SlashAction::Continue
         }
+        ReplAction::McpList => {
+            crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
+            SlashAction::Continue
+        }
+        ReplAction::McpAdd {
+            ref name,
+            ref command,
+            ref args,
+        } => {
+            crate::tui_mcp::handle_mcp_add(
+                buffer,
+                session,
+                agent,
+                name.clone(),
+                command.clone(),
+                args.clone(),
+            )
+            .await;
+            SlashAction::Continue
+        }
+        ReplAction::McpRemove { ref name } => {
+            crate::tui_mcp::handle_mcp_remove(buffer, session, agent, name.clone()).await;
+            SlashAction::Continue
+        }
         ReplAction::Handled => SlashAction::Continue,
         ReplAction::NotACommand => SlashAction::Continue,
     }
