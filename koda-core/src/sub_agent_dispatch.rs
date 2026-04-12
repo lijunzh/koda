@@ -195,6 +195,21 @@ pub(crate) async fn execute_sub_agent(
         // else: agent opted into its own provider — use its resolved config
         // as-is. The agent JSON is responsible for any model it needs.
 
+        // Inherit sandbox: child can never be weaker than parent (#845).
+        // Same pattern as Codex's `apply_spawn_agent_runtime_overrides()`
+        // which copies the parent's runtime sandbox_policy onto the child.
+        let child_sandbox = cfg.sandbox.clone();
+        cfg.sandbox = parent_config.sandbox.stricter(&cfg.sandbox);
+        if cfg.sandbox != child_sandbox {
+            tracing::info!(
+                agent = agent_name,
+                parent = %parent_config.sandbox,
+                child = %child_sandbox,
+                effective = %cfg.sandbox,
+                "sub-agent sandbox escalated to match parent",
+            );
+        }
+
         cfg
     };
 

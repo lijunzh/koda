@@ -57,6 +57,32 @@ pub enum SandboxMode {
 }
 
 impl SandboxMode {
+    /// Return a numeric strictness level for comparison.
+    ///
+    /// Higher = stricter.  Used by `stricter()` to enforce the
+    /// "never weaken" invariant when inheriting from a parent.
+    fn level(&self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Project => 1,
+            Self::Strict => 2,
+        }
+    }
+
+    /// Return whichever of `self` and `other` is stricter.
+    ///
+    /// Used by sub-agent dispatch to enforce the invariant that a child
+    /// agent can never run with a weaker sandbox than its parent — the same
+    /// pattern as Codex's `apply_spawn_agent_runtime_overrides()` which
+    /// copies the parent's runtime `sandbox_policy` onto the child config.
+    pub fn stricter(&self, other: &Self) -> Self {
+        if self.level() >= other.level() {
+            self.clone()
+        } else {
+            other.clone()
+        }
+    }
+
     /// Parse from a CLI / env string (case-insensitive).
     ///
     /// Unknown values produce a warning and fall back to `None`.
@@ -474,6 +500,22 @@ mod tests {
     use super::*;
 
     // ── Unit: enum behaviour ───────────────────────────────────────────────
+
+    #[test]
+    fn stricter_returns_higher_level() {
+        use SandboxMode::*;
+        // Same mode → returns self
+        assert_eq!(None.stricter(&None), None);
+        assert_eq!(Project.stricter(&Project), Project);
+        assert_eq!(Strict.stricter(&Strict), Strict);
+        // Different modes → returns the stricter one
+        assert_eq!(None.stricter(&Project), Project);
+        assert_eq!(Project.stricter(&None), Project);
+        assert_eq!(None.stricter(&Strict), Strict);
+        assert_eq!(Strict.stricter(&None), Strict);
+        assert_eq!(Project.stricter(&Strict), Strict);
+        assert_eq!(Strict.stricter(&Project), Strict);
+    }
 
     #[test]
     fn parse_roundtrip() {
