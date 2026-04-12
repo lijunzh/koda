@@ -31,23 +31,26 @@ No phases, no tiers — the model drives execution directly.
 - **Built-in agents**: default (others via user-created agent configs)
 - **Git checkpointing** (`git.rs`): auto-snapshot before each turn
 
-Approval is per-tool. Two modes (Auto/Confirm) control
+Approval is per-tool. A single `TrustMode` enum (Plan/Safe/Auto) controls
 how mutations are gated:
 
-- **ToolEffect** (`approval.rs`): ReadOnly / LocalMutation / Destructive / RemoteAction
-  - Auto: local mutations auto-approved, destructive need confirmation
-  - Confirm: every non-read action needs confirmation
-- **Hardcoded floors**: destructive ops and outside-project writes always need
-  confirmation regardless of mode
-- **Folder scoping** (`approval.rs`, `bash_safety.rs`):
+- **TrustMode** (`trust.rs`): Plan (deny writes), Safe (confirm), Auto (auto-approve)
+- **ToolEffect** (`tools/mod.rs`): ReadOnly / LocalMutation / Destructive / RemoteAction
+  - Plan: only ReadOnly allowed; all mutations denied
+  - Safe: local mutations and destructive ops need confirmation
+  - Auto: everything auto-approved; sandbox enforces the perimeter
+- **Hardcoded floor**: outside-project writes always need confirmation
+  regardless of mode
+- **Folder scoping** (`trust.rs`, `bash_path_lint.rs`):
   - `is_outside_project()`: checks file tool paths against project_root
   - `lint_bash_paths()`: heuristic bash command analysis for cd/path escapes
   - Startup warning when project_root == $HOME
-- **Process sandbox** (`sandbox.rs`): opt-in via `--sandbox project|strict`
-  - `project`: writes restricted to project + /tmp + cache dirs
-  - `strict`: + deny reads of credential dirs (~/.ssh, ~/.aws, etc.)
+- **Process sandbox** (`sandbox.rs`): always-on kernel sandbox
+  - Writes restricted to project + /tmp + cache dirs
+  - Credential dirs blocked (~/.ssh, ~/.aws, etc.)
   - macOS: `sandbox-exec -p` (seatbelt); Linux: `bwrap` (bubblewrap)
-  - Sub-agents inherit via `stricter()` — child can never weaken parent
+  - Graceful fallback with `tracing::warn!` if backend unavailable
+  - Sub-agents inherit via `TrustMode::clamp()` — child can never weaken parent
 
 ## Documentation Rules
 
@@ -94,7 +97,7 @@ koda/
 │   ├── src/
 │   │   ├── lib.rs          # Crate root
 │   │   ├── agent.rs        # KodaAgent (shared config: tools, prompt)
-│   │   ├── approval.rs     # Approval modes + tool confirmation gates
+│   │   ├── approval.rs     # Approval flow helpers (delegates to trust.rs)
 │   │   ├── bash_path_lint.rs # Heuristic path-escape detection for bash commands
 │   │   ├── bash_safety.rs  # Bash command safety classification
 │   │   ├── bg_agent.rs     # Background sub-agent registry
@@ -121,7 +124,7 @@ koda/
 │   │   ├── progress.rs     # Progress reporting helpers for long operations
 │   │   ├── prompt.rs       # System prompt construction
 │   │   ├── runtime_env.rs  # Thread-safe runtime env for API keys
-│   │   ├── sandbox.rs      # Process sandbox (macOS seatbelt + Linux bwrap)
+│   │   ├── sandbox.rs      # Process sandbox (macOS seatbelt + Linux bwrap, always-on)
 │   │   ├── session.rs      # KodaSession (per-conversation: DB, provider, settings)
 │   │   ├── last_provider.rs # Last-used provider recall (SQLite KV, not a config file)
 │   │   ├── skills.rs       # Skill discovery and activation
@@ -130,6 +133,7 @@ koda/
 │   │   ├── tool_dispatch.rs# Tool dispatch — routes tool calls to the registry
 │   │   ├── tool_normalize.rs # Tool name normalization (snake_case → PascalCase)
 │   │   ├── approval_flow.rs# Approval logic extracted from tool dispatch
+│   │   ├── trust.rs        # TrustMode (Plan/Safe/Auto), ToolApproval, check_tool()
 │   │   ├── sub_agent_dispatch.rs # Sub-agent invocation dispatch
 │   │   ├── context_analysis.rs # Per-tool token breakdown + duplicate detection
 │   │   ├── truncate.rs     # Token-safe output truncation

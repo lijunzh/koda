@@ -7,7 +7,7 @@
 | `Enter` | Send message |
 | `Alt+Enter` | Insert newline (multi-line input) |
 | `Tab` | Autocomplete slash commands and `@file` paths |
-| `Shift+Tab` | Toggle approval mode (auto ↔ confirm) |
+| `Shift+Tab` | Cycle trust mode (Safe ↔ Auto) |
 | `↑ / ↓` | Cycle through input history |
 | `Ctrl+R` | Reverse history search |
 

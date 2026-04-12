@@ -15,7 +15,7 @@
 | `--temperature <F>` | | Sampling temperature (0.0–2.0) |
 | `--thinking-budget <N>` | | Anthropic extended thinking budget (tokens) |
 | `--reasoning-effort <L>` | | OpenAI reasoning effort (`low`, `medium`, `high`) |
-| `--sandbox <MODE>` | `KODA_SANDBOX` | Bash tool sandbox: `none` (default), `project` (restrict writes to project dir + `/tmp`), or `strict` (project + deny reads of credential dirs: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.azure`, `~/.config/gcloud`) |
+| `--mode <MODE>` | `KODA_MODE` | Trust mode: `safe` (default) or `auto`. Safe confirms every side effect; Auto auto-approves all actions within the project sandbox. Kernel sandbox with credential protection is always active |
 | `--output-format <FMT>` | | Headless output format: `text` (default) or `json` |
 | `--project-root <DIR>` | | Project root (defaults to cwd) |
 
