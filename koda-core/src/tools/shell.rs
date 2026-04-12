@@ -134,7 +134,7 @@ pub async fn run_shell_command(
         .min(MAX_TIMEOUT_SECS);
 
     // Spawn via sandbox wrapper (may be a no-op for SandboxMode::None).
-    let mut child = crate::sandbox::build(command, project_root, sandbox)
+    let mut child = crate::sandbox::build(command, project_root, sandbox)?
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -280,7 +280,7 @@ fn spawn_background(
 ) -> Result<String> {
     // tokio::process::Command doesn't impl std's Stdio easily in sync context;
     // re-build as std Command for the detached spawn.
-    let child = crate::sandbox::build(command, project_root, sandbox)
+    let child = crate::sandbox::build(command, project_root, sandbox)?
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

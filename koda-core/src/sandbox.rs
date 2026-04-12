@@ -6,10 +6,10 @@
 //!
 //! ## Platform backends
 //!
-//! | Platform | Backend              | Fallback on unavailable |
-//! |----------|----------------------|-------------------------|
-//! | macOS    | `sandbox-exec -p`    | warn + run unsandboxed  |
-//! | Linux    | `bwrap` (bubblewrap) | warn + run unsandboxed  |
+//! | Platform | Backend              | If unavailable           |
+//! |----------|----------------------|--------------------------|
+//! | macOS    | `sandbox-exec -p`    | `build()` returns `Err`  |
+//! | Linux    | `bwrap` (bubblewrap) | `build()` returns `Err`  |
 //!
 //! ## Modes
 //!
@@ -27,10 +27,11 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! let cmd = sandbox::build("cargo test", project_root, &SandboxMode::Strict);
+//! let cmd = sandbox::build("cargo test", project_root, &SandboxMode::Strict)?;
 //! let child = cmd.stdout(Stdio::piped()).spawn()?;
 //! ```
 
+use anyhow::Result;
 use std::path::Path;
 use tokio::process::Command;
 
@@ -128,18 +129,38 @@ const CREDENTIAL_FILES: &[&str] = &[
     ".docker/config.json", // Docker Hub credentials (auths, credsStore)
 ];
 
+// ── Agent-file write protection ──────────────────────────────────────────────
+//
+// Prevent sandboxed commands from modifying koda agent definitions or the
+// project-level system prompt.  Same pattern as Claude Code blocking writes
+// to `.claude/settings.json` and `.claude/agents/` — modifying these files
+// could alter system prompts, tool access, or sandbox policy on next session.
+//
+// These are subdirectories of the project root, denied in *all* sandbox modes
+// (project + strict).  The deny rule is placed *after* the project-root allow
+// so last-match-wins semantics apply.
+
+/// Directories under the project root that are write-protected in all sandbox
+/// modes.  Agent JSON files control system prompts and tool access — a
+/// sandboxed command must not be able to modify them.
+const PROTECTED_PROJECT_SUBDIRS: &[&str] = &[
+    ".koda/agents", // Agent definitions (system prompt, tools, sub-agents)
+    ".koda/skills", // Skill definitions (auto-discovered, full capabilities)
+];
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Build a `tokio::process::Command` that runs `sh -c "{command}"` inside
 /// the appropriate sandbox for `mode`.
 ///
-/// When `mode` is [`SandboxMode::Project`] or [`SandboxMode::Strict`] but the
-/// platform backend is unavailable (e.g. `bwrap` not installed on Linux), a
-/// warning is logged and an **unsandboxed** `Command` is returned — the caller
-/// does not need to handle the failure case.
-pub fn build(command: &str, project_root: &Path, mode: &SandboxMode) -> Command {
+/// Returns `Err` when `mode` is [`SandboxMode::Project`] or
+/// [`SandboxMode::Strict`] but the platform sandbox backend is unavailable
+/// (e.g. `bwrap` not installed on Linux, unsupported OS).  This follows
+/// Claude Code's `failIfUnavailable` pattern (#844 Gap 1): if you explicitly
+/// request sandboxing, silent fallback to unsandboxed is a security footgun.
+pub fn build(command: &str, project_root: &Path, mode: &SandboxMode) -> Result<Command> {
     match mode {
-        SandboxMode::None => plain_sh(command, project_root),
+        SandboxMode::None => Ok(plain_sh(command, project_root)),
         SandboxMode::Project => build_project(command, project_root),
         SandboxMode::Strict => build_strict(command, project_root),
     }
@@ -154,27 +175,33 @@ fn plain_sh(command: &str, project_root: &Path) -> Command {
 }
 
 /// Dispatch to the platform-specific "project" sandbox builder.
-fn build_project(command: &str, project_root: &Path) -> Command {
+fn build_project(command: &str, project_root: &Path) -> Result<Command> {
     #[cfg(target_os = "macos")]
-    return macos_project(command, project_root);
+    return Ok(macos_project(command, project_root));
 
     #[cfg(target_os = "linux")]
     return linux_project(command, project_root);
 
     #[allow(unreachable_code)]
-    plain_sh(command, project_root)
+    Err(anyhow::anyhow!(
+        "Sandbox mode 'project' requested but no sandbox backend available \
+         on this platform. Supported: macOS (sandbox-exec), Linux (bwrap)."
+    ))
 }
 
 /// Dispatch to the platform-specific "strict" sandbox builder.
-fn build_strict(command: &str, project_root: &Path) -> Command {
+fn build_strict(command: &str, project_root: &Path) -> Result<Command> {
     #[cfg(target_os = "macos")]
-    return macos_strict(command, project_root);
+    return Ok(macos_strict(command, project_root));
 
     #[cfg(target_os = "linux")]
     return linux_strict(command, project_root);
 
     #[allow(unreachable_code)]
-    plain_sh(command, project_root)
+    Err(anyhow::anyhow!(
+        "Sandbox mode 'strict' requested but no sandbox backend available \
+         on this platform. Supported: macOS (sandbox-exec), Linux (bwrap)."
+    ))
 }
 
 /// Canonicalize `{home}/{rel}` if the path exists; otherwise return raw path.
@@ -223,6 +250,27 @@ fn macos_project_profile(root: &str, home: &str) -> String {
     )
 }
 
+/// Generate seatbelt deny-write rules for protected project subdirectories.
+///
+/// Prevents sandboxed commands from modifying agent definitions or skills
+/// that could alter system prompts or tool access on next session.  Same
+/// pattern as Claude Code blocking writes to `.claude/settings.json` and
+/// `.claude/agents/`.
+#[cfg(target_os = "macos")]
+fn protected_subdir_deny_rules_macos(root: &str) -> String {
+    let mut rules = String::from(
+        "; ── deny writes to protected project subdirs (.koda/agents, .koda/skills) ──\n",
+    );
+    for rel in PROTECTED_PROJECT_SUBDIRS {
+        let p = Path::new(root).join(rel);
+        let canonical = p.canonicalize().unwrap_or(p).to_string_lossy().into_owned();
+        rules.push_str(&format!(
+            "(deny file-write* (subpath \"{canonical}\"))\n"
+        ));
+    }
+    rules
+}
+
 /// Generate seatbelt deny rules for credential paths (Strict mode).
 ///
 /// The rules are placed *after* the broad `(allow file-read*)` rule so that
@@ -257,17 +305,15 @@ fn credential_deny_rules_macos(home: &str) -> String {
 
 #[cfg(target_os = "macos")]
 fn macos_project(command: &str, project_root: &Path) -> Command {
-    // Resolve symlinks so the seatbelt subpath matcher sees the canonical
-    // path.  On macOS, /var is a symlink to /private/var; tempfile dirs land
-    // under /var/folders/… which the kernel presents as /private/var/folders/….
-    // Without canonicalization, `(subpath "/var/folders/…")` would never match.
     let canonical = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
     let root = canonical.to_string_lossy();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
 
-    let profile = macos_project_profile(&root, &home);
+    let mut profile = macos_project_profile(&root, &home);
+    // Deny writes to agent/skill files within the project (CC parity #844).
+    profile.push_str(&protected_subdir_deny_rules_macos(&root));
 
     let mut cmd = Command::new("sandbox-exec");
     cmd.arg("-p")
@@ -292,6 +338,7 @@ fn macos_strict(command: &str, project_root: &Path) -> Command {
     // so the denies override the earlier broad `(allow file-read*)`.
     // Same last-match-wins approach as Gemini CLI's seatbeltArgsBuilder.ts.
     let mut profile = macos_project_profile(&root, &home);
+    profile.push_str(&protected_subdir_deny_rules_macos(&root));
     profile.push_str(&credential_deny_rules_macos(&home));
 
     let mut cmd = Command::new("sandbox-exec");
@@ -347,24 +394,32 @@ fn linux_base_cmd(project_root: &Path) -> (Command, String) {
         }
     }
     cmd.args(["--dev", "/dev"]).args(["--proc", "/proc"]);
+
+    // Deny writes to protected project subdirs (.koda/agents, .koda/skills).
+    // Re-bind as read-only after the project-root writable bind (CC parity #844).
+    for rel in PROTECTED_PROJECT_SUBDIRS {
+        let p = format!("{root}/{rel}");
+        if Path::new(&p).exists() {
+            cmd.args(["--ro-bind", &p, &p]);
+        }
+    }
+
     (cmd, home)
 }
 
 #[cfg(target_os = "linux")]
-fn linux_project(command: &str, project_root: &Path) -> Command {
+fn linux_project(command: &str, project_root: &Path) -> Result<Command> {
     if !bwrap_available() {
-        tracing::warn!(
-            "sandbox=project requested but bwrap is not installed. \
-             Running without sandbox. \
+        anyhow::bail!(
+            "Sandbox mode 'project' requested but bwrap is not installed. \
              Install with: apt install bubblewrap  /  dnf install bubblewrap"
         );
-        return plain_sh(command, project_root);
     }
 
     let (mut cmd, _home) = linux_base_cmd(project_root);
     cmd.args(["--", "sh", "-c", command])
         .current_dir(project_root);
-    cmd
+    Ok(cmd)
 }
 
 /// Strict mode on Linux: project-mode base + tmpfs shadows over credential
@@ -378,14 +433,12 @@ fn linux_project(command: &str, project_root: &Path) -> Command {
 /// host untouched.  This is the same pattern Codex uses for sensitivity-scoped
 /// file shadowing.
 #[cfg(target_os = "linux")]
-fn linux_strict(command: &str, project_root: &Path) -> Command {
+fn linux_strict(command: &str, project_root: &Path) -> Result<Command> {
     if !bwrap_available() {
-        tracing::warn!(
-            "sandbox=strict requested but bwrap is not installed. \
-             Running without sandbox. \
+        anyhow::bail!(
+            "Sandbox mode 'strict' requested but bwrap is not installed. \
              Install with: apt install bubblewrap  /  dnf install bubblewrap"
         );
-        return plain_sh(command, project_root);
     }
 
     let (mut cmd, home) = linux_base_cmd(project_root);
@@ -413,7 +466,7 @@ fn linux_strict(command: &str, project_root: &Path) -> Command {
 
     cmd.args(["--", "sh", "-c", command])
         .current_dir(project_root);
-    cmd
+    Ok(cmd)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -545,6 +598,7 @@ mod tests {
     async fn none_mode_runs_echo() {
         let dir = tempfile::tempdir().unwrap();
         let status = build("echo ok", dir.path(), &SandboxMode::None)
+            .unwrap()
             .status()
             .await
             .unwrap();
@@ -557,6 +611,7 @@ mod tests {
     async fn macos_allows_write_inside_project() {
         let dir = tempfile::tempdir().unwrap();
         let status = build("touch sandbox_canary", dir.path(), &SandboxMode::Project)
+            .unwrap()
             .status()
             .await
             .unwrap();
@@ -577,6 +632,7 @@ mod tests {
             project.path(),
             &SandboxMode::Project,
         )
+        .unwrap()
         .status()
         .await
         .unwrap();
@@ -596,6 +652,7 @@ mod tests {
             dir.path(),
             &SandboxMode::Project,
         )
+        .unwrap()
         .status()
         .await
         .unwrap();
@@ -608,6 +665,7 @@ mod tests {
     async fn macos_strict_allows_write_inside_project() {
         let dir = tempfile::tempdir().unwrap();
         let status = build("touch strict_canary", dir.path(), &SandboxMode::Strict)
+            .unwrap()
             .status()
             .await
             .unwrap();
@@ -631,6 +689,7 @@ mod tests {
             project.path(),
             &SandboxMode::Strict,
         )
+        .unwrap()
         .status()
         .await
         .unwrap();
@@ -652,6 +711,7 @@ mod tests {
             dir.path(),
             &SandboxMode::Strict,
         )
+        .unwrap()
         .status()
         .await
         .unwrap();
@@ -677,6 +737,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let status = build(&format!("ls {db_dir}"), dir.path(), &SandboxMode::Strict)
+            .unwrap()
             .status()
             .await
             .unwrap();
@@ -684,5 +745,80 @@ mod tests {
             !status.success(),
             "strict: reading ~/.config/koda/db/ must be blocked"
         );
+    }
+
+    // ── Integration: agent-file write protection ──────────────────────────
+
+    /// Project mode: writing to `.koda/agents/` inside the project must be
+    /// blocked (CC parity #844 — settings file write protection).
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_project_blocks_write_to_koda_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create the .koda/agents/ directory so the deny rule kicks in.
+        std::fs::create_dir_all(dir.path().join(".koda/agents")).unwrap();
+        let target = dir.path().join(".koda/agents/evil.json");
+
+        let status = build(
+            &format!("echo '{{}}' > {}", target.display()),
+            dir.path(),
+            &SandboxMode::Project,
+        )
+        .unwrap()
+        .status()
+        .await
+        .unwrap();
+
+        assert!(
+            !status.success(),
+            "project: writes to .koda/agents/ must be blocked"
+        );
+        assert!(!target.exists(), "agent file must not have been created");
+    }
+
+    /// Strict mode: same protection for `.koda/agents/`.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_strict_blocks_write_to_koda_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".koda/agents")).unwrap();
+        let target = dir.path().join(".koda/agents/evil.json");
+
+        let status = build(
+            &format!("echo '{{}}' > {}", target.display()),
+            dir.path(),
+            &SandboxMode::Strict,
+        )
+        .unwrap()
+        .status()
+        .await
+        .unwrap();
+
+        assert!(
+            !status.success(),
+            "strict: writes to .koda/agents/ must be blocked"
+        );
+        assert!(!target.exists());
+    }
+
+    /// Project mode: writing to normal project files must still work
+    /// (regression check — don't over-deny).
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_project_allows_normal_writes_with_agents_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".koda/agents")).unwrap();
+
+        let status = build("touch normal_file.txt", dir.path(), &SandboxMode::Project)
+            .unwrap()
+            .status()
+            .await
+            .unwrap();
+
+        assert!(
+            status.success(),
+            "project: normal writes must still work alongside agent protection"
+        );
+        assert!(dir.path().join("normal_file.txt").exists());
     }
 }
