@@ -186,13 +186,22 @@ In practice, routing in-repo capabilities through stdio JSON-RPC added process
 management overhead and IPC failure modes for functionality that ships in the
 same workspace. [#431](https://github.com/lijunzh/koda/issues/431) migrated
 first-party tools to direct library calls. [#443](https://github.com/lijunzh/koda/issues/443)
-removed the now-unused MCP client entirely.
+removed the then-unused MCP client.
+
+**v0.2.12 re-introduced an MCP client** ([#855](https://github.com/lijunzh/koda/issues/855))
+for a fundamentally different purpose: connecting to *third-party* external MCP
+servers (Playwright, databases, Slack, user-defined APIs). First-party workspace
+crates (koda-ast, koda-email) still use direct library calls — no IPC, no process
+management for in-repo code. The MCP client is exclusively for extending Koda
+with capabilities outside the workspace.
 
 **Dependency graph**:
 ```
 koda-cli → koda-core  (inference engine + first-party tool calls)
                     → koda-ast   (direct library call from ToolRegistry)
                     → koda-email (direct library call from ToolRegistry)
+                    → McpManager (optional; connects to third-party MCP servers)
+                          → [playwright, db-tools, slack, …] (external, via stdio or HTTP)
 
 koda-ast/main.rs  → standalone MCP server (for external consumers)
 koda-email/main.rs → standalone MCP server (for external consumers)

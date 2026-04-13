@@ -188,3 +188,16 @@ during streaming. Verbose mode shows every line in real time.
 ## `/exit`
 
 Quit Koda. Equivalent to `Ctrl+D`.
+
+## `/mcp <sub-command>`
+
+Manage external MCP (Model Context Protocol) servers. See [MCP servers](./mcp.md)
+for the full reference.
+
+```text
+/mcp list                                  ← list configured servers + status
+/mcp add <name> <command> [args...]        ← add a stdio server
+/mcp add-http <name> <url> [--token <tok>] ← add an HTTP server
+/mcp reconnect <name>                      ← reconnect without restart
+/mcp remove <name>                         ← permanently delete a server
+```

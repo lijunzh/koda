@@ -4,6 +4,49 @@ All notable changes to Koda are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.12] - 2026-04-12
+
+### Added
+- **MCP client support** — Koda can now connect to external MCP servers as a
+  client, exposing their tools inside the Koda tool registry under the
+  `<server>__<tool>` naming convention. Supports both stdio (child-process)
+  and Streamable HTTP (MCP 2025-03-26 spec) transports (#855).
+- **`/mcp` slash commands** — five new TUI commands: `list`, `add`, `add-http`,
+  `reconnect`, `remove`. Hot-reload: servers connect immediately on `add` without
+  restarting the session.
+- **Tool filtering** — per-server `enabled_tools` allowlist and `disabled_tools`
+  denylist; allowlist takes priority when both are set.
+- **MCP docs** — new `docs/src/mcp.md` covering all commands, transport options,
+  tool naming, filtering, timeouts, and troubleshooting. `/mcp` added to
+  `commands.md` and the docs nav (`SUMMARY.md`).
+
+### Fixed
+- **SSRF on HTTP MCP transport** — `connect_http()` now validates the target URL
+  with `is_safe_url()` before opening any TCP connection, blocking private,
+  loopback, and link-local addresses (including `169.254.169.254`).
+- **Bearer token log exposure** — `McpTransport` now implements `Debug` manually,
+  replacing `bearer_token` values with `[redacted]` so tokens never appear in
+  logs or crash dumps.
+- **Server name routing collision** — `validate_server_name()` rejects names
+  containing `__` (the internal `<server>__<tool>` separator), empty names, and
+  names with non-ASCII-alphanumeric characters.
+- **Plaintext bearer warning** — `tracing::warn!` emitted when a bearer token is
+  sent over `http://` (not `https://`).
+- **Sandbox credential reads for CLI tools** — the sandbox now allows read access
+  to credential directories needed by common developer CLI tools (`~/.ssh`,
+  `~/.aws`, `~/.config/gcloud`, `~/.kube`, `~/.npmrc`, etc.) while still blocking
+  writes. Also updated `docs/src/sandbox.md` and `docs/src/approval.md` to
+  document the read-allow / write-deny security model (#866).
+
+### Changed
+- `rmcp` dependency aligned to `1.4` in `koda-ast` and `koda-email` (was `1.3`,
+  resolved to `1.4` via Cargo.lock — now explicit).
+- Stale "Phase 3" comment removed from `koda-core/src/mcp/mod.rs`.
+- **CI matrix expanded to macOS** — `ci.yml` and `coverage.yml` now run tests on
+  both `ubuntu-latest` and `macos-latest`, covering platform-specific code paths
+  (seatbelt sandbox, macOS credential rules). Lint (fmt/clippy) stays Linux-only
+  to avoid duplicate noise. Coverage merges per-platform lcov traces (#867).
+
 ## [0.2.11] - 2026-04-12
 
 ### Changed

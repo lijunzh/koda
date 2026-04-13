@@ -7,7 +7,7 @@ use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
 
 use koda_core::agent::KodaAgent;
-use koda_core::mcp::config::{self, McpServerConfig, McpTransport};
+use koda_core::mcp::config::{self, McpServerConfig, McpTransport, validate_server_name};
 use koda_core::session::KodaSession;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -141,6 +141,11 @@ pub async fn handle_mcp_add(
         disabled_tools: None,
     };
 
+    // Validate name, then config.
+    if let Err(e) = validate_server_name(&name) {
+        tui_output::err_msg(buffer, format!("Invalid server name: {e}"));
+        return;
+    }
     // Validate first.
     if let Err(e) = config.validate() {
         tui_output::err_msg(buffer, format!("Invalid config: {e}"));
@@ -209,6 +214,11 @@ pub async fn handle_mcp_add_http(
         disabled_tools: None,
     };
 
+    // Validate name, then config.
+    if let Err(e) = validate_server_name(&name) {
+        tui_output::err_msg(buffer, format!("Invalid server name: {e}"));
+        return;
+    }
     if let Err(e) = config.validate() {
         tui_output::err_msg(buffer, format!("Invalid config: {e}"));
         return;

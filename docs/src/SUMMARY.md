@@ -30,6 +30,7 @@
 - [Configuration precedence](./configuration.md)
 - [Custom agents](./agents.md)
 - [Skills](./skills.md)
+- [MCP servers](./mcp.md)
 
 # Reference
 

@@ -7,6 +7,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 
 use crate::db::Database;
 
@@ -20,7 +21,7 @@ const DEFAULT_STARTUP_TIMEOUT_SEC: u64 = 30;
 const DEFAULT_TOOL_TIMEOUT_SEC: u64 = 120;
 
 /// Transport type for connecting to an MCP server.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "transport", rename_all = "snake_case")]
 pub enum McpTransport {
     /// Spawn a child process and communicate over stdin/stdout.
@@ -48,6 +49,35 @@ pub enum McpTransport {
         #[serde(default)]
         headers: HashMap<String, String>,
     },
+}
+
+impl fmt::Debug for McpTransport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            McpTransport::Stdio {
+                command,
+                args,
+                env,
+                cwd,
+            } => f
+                .debug_struct("Stdio")
+                .field("command", command)
+                .field("args", args)
+                .field("env", env)
+                .field("cwd", cwd)
+                .finish(),
+            McpTransport::Http {
+                url,
+                bearer_token,
+                headers,
+            } => f
+                .debug_struct("Http")
+                .field("url", url)
+                .field("bearer_token", &bearer_token.as_ref().map(|_| "[redacted]"))
+                .field("headers", headers)
+                .finish(),
+        }
+    }
 }
 
 /// Configuration for a single MCP server.
@@ -84,6 +114,33 @@ fn default_startup_timeout() -> u64 {
 
 fn default_tool_timeout() -> u64 {
     DEFAULT_TOOL_TIMEOUT_SEC
+}
+
+/// Validate an MCP server name.
+///
+/// Names must be non-empty, contain only `[a-zA-Z0-9_-]`, and must not
+/// contain `__` (double-underscore), which is the tool-name separator used
+/// internally by Koda's tool routing (`<server>__<tool>`).
+pub fn validate_server_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        anyhow::bail!("MCP server name must not be empty");
+    }
+    if name.contains("__") {
+        anyhow::bail!(
+            "MCP server name '{name}' must not contain `__` \
+             (double-underscore is the tool-routing separator)"
+        );
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        anyhow::bail!(
+            "MCP server name '{name}' must contain only letters, digits, hyphens, \
+             or underscores"
+        );
+    }
+    Ok(())
 }
 
 impl McpServerConfig {
@@ -315,5 +372,69 @@ mod tests {
         let config: McpServerConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.startup_timeout_sec, 30);
         assert!(matches!(config.transport, McpTransport::Http { .. }));
+    }
+
+    // ── validate_server_name ──────────────────────────────────────────────
+
+    #[test]
+    fn server_name_rejects_empty() {
+        assert!(validate_server_name("").is_err());
+        assert!(validate_server_name("   ").is_err());
+    }
+
+    #[test]
+    fn server_name_rejects_double_underscore() {
+        assert!(validate_server_name("my__server").is_err());
+        assert!(validate_server_name("__leading").is_err());
+        assert!(validate_server_name("trailing__").is_err());
+    }
+
+    #[test]
+    fn server_name_rejects_invalid_chars() {
+        assert!(validate_server_name("my server").is_err()); // space
+        assert!(validate_server_name("my.server").is_err()); // dot
+        assert!(validate_server_name("my/server").is_err()); // slash
+    }
+
+    #[test]
+    fn server_name_accepts_valid() {
+        assert!(validate_server_name("playwright").is_ok());
+        assert!(validate_server_name("my-server").is_ok());
+        assert!(validate_server_name("server_1").is_ok()); // single underscore fine
+        assert!(validate_server_name("MyServer123").is_ok());
+    }
+
+    // ── McpTransport Debug redaction ─────────────────────────────────────
+
+    #[test]
+    fn debug_redacts_bearer_token() {
+        let t = McpTransport::Http {
+            url: "https://example.com/mcp".into(),
+            bearer_token: Some("super-secret-token".into()),
+            headers: HashMap::new(),
+        };
+        let debug_output = format!("{t:?}");
+        assert!(
+            !debug_output.contains("super-secret-token"),
+            "bearer token must not appear in Debug output: {debug_output}"
+        );
+        assert!(
+            debug_output.contains("[redacted]"),
+            "expected '[redacted]' in Debug output: {debug_output}"
+        );
+    }
+
+    #[test]
+    fn debug_shows_none_when_no_token() {
+        let t = McpTransport::Http {
+            url: "https://example.com/mcp".into(),
+            bearer_token: None,
+            headers: HashMap::new(),
+        };
+        let debug_output = format!("{t:?}");
+        assert!(
+            !debug_output.contains("[redacted]"),
+            "no token → should not show [redacted]: {debug_output}"
+        );
     }
 }
