@@ -14,8 +14,12 @@ env:
 
 jobs:
   coverage:
-    name: Coverage
-    runs-on: ubuntu-latest
+    name: Coverage (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -23,13 +27,12 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: coverage  # LLVM-instrumented artifacts — separate from ci.yml
-                                # keys so instrumented and normal builds never
-                                # contaminate each other's caches.
+          shared-key: coverage-${{ runner.os }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
       - name: Set up Linux sandbox (bubblewrap)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.unprivileged_userns_clone=1
@@ -73,43 +76,96 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: lcov-reports
+          name: lcov-reports-${{ runner.os }}
           path: lcov-*.info
           retention-days: 7
 
-      # Open or update a GitHub issue when any crate drops below its threshold.
-      #
-      # DEDUPLICATION STRATEGY — label-based, not title-based:
-      #   The issue title includes the triggering commit SHA (human-readable
-      #   context) but the SHA changes every run, so title-matching would
-      #   create a new issue on every regression push. Instead we use the
-      #   'coverage-regression' label as the stable dedup key:
-      #     - open issues are found by label → commented on, not duplicated
-      #     - the label is EXCLUSIVELY owned by this workflow — do not apply
-      #       it manually or from any other workflow, or dedup will break
-      #   One open 'coverage-regression' issue exists at a time. It
-      #   accumulates comments until coverage recovers, then auto-closes.
+      - name: Set outcome outputs
+        if: always()
+        id: outcomes
+        run: |
+          echo "core=${{ steps.core.outcome }}" >> $GITHUB_OUTPUT
+          echo "ast=${{ steps.ast.outcome }}" >> $GITHUB_OUTPUT
+          echo "email=${{ steps.email.outcome }}" >> $GITHUB_OUTPUT
+
+  # ── Merge lcov reports across platforms ────────────────────────────────
+  merge:
+    name: Merge Coverage Reports
+    needs: coverage
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Install lcov
+        run: sudo apt-get install -y lcov
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lcov-reports-*
+          merge-multiple: true
+          path: reports
+
+      - name: Merge per-crate reports
+        run: |
+          cd reports
+          # Merge each crate's reports across platforms.
+          for crate in core ast email; do
+            files=$(ls lcov-${crate}.info 2>/dev/null || true)
+            if [ -n "$files" ]; then
+              # If multiple files exist (from matrix), merge them.
+              # With merge-multiple they land in the same dir, but
+              # artifact names differ per-OS so we just concat all
+              # matching files.
+              lcov_args=""
+              for f in lcov-${crate}.info; do
+                lcov_args="$lcov_args --add-tracefile $f"
+              done
+              lcov $lcov_args --output-file merged-${crate}.info 2>/dev/null || \
+                cp lcov-${crate}.info merged-${crate}.info
+            fi
+          done
+
+          # Final unified report across all crates + platforms.
+          merge_args=""
+          for f in merged-*.info; do
+            [ -f "$f" ] && merge_args="$merge_args --add-tracefile $f"
+          done
+          if [ -n "$merge_args" ]; then
+            lcov $merge_args --output-file merged-all.info
+          fi
+
+      - name: Upload merged reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lcov-merged
+          path: reports/merged-*.info
+          retention-days: 7
+
+  # ── Report regressions ────────────────────────────────────────────────
+  report:
+    name: Report
+    needs: coverage
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v6
+
+      # Check if ANY platform reported a failure for any crate.
+      # The matrix outputs aren't directly accessible, so we check
+      # the overall job result — if any matrix leg failed, the job
+      # result is 'failure'.
       - name: Report regression
-        if: |
-          steps.core.outcome == 'failure' ||
-          steps.ast.outcome  == 'failure' ||
-          steps.email.outcome == 'failure'
+        if: needs.coverage.result == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Build the list of failing crates.
-          FAILED=""
-          [ "${{ steps.core.outcome }}"  = "failure" ] && FAILED="$FAILED\n- \`koda-core\` — below 80% line coverage"
-          [ "${{ steps.ast.outcome }}"   = "failure" ] && FAILED="$FAILED\n- \`koda-ast\`  — below 80% line coverage"
-          [ "${{ steps.email.outcome }}" = "failure" ] && FAILED="$FAILED\n- \`koda-email\` — below 70% line coverage"
-
           COMMIT="${{ github.sha }}"
           SHORT="${COMMIT:0:7}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-          BODY="$(printf "## Coverage regression on \`main\`\n\nCommit: [\`%s\`](%s/commit/%s)\nRun: %s\n\n### Failing crates\n%b\n\n### Next steps\n1. Check the lcov reports attached to the [failed run](%s).\n2. Add tests to bring the affected crate(s) back above threshold.\n3. The issue will be closed automatically once coverage passes on \`main\` again." \
+          BODY="$(printf "## Coverage regression on \`main\`\n\nCommit: [\`%s\`](%s/commit/%s)\nRun: %s\n\nOne or more crates dropped below their coverage threshold on at least one platform (Linux / macOS).\n\n### Next steps\n1. Check the lcov reports attached to the [failed run](%s).\n2. Add tests to bring the affected crate(s) back above threshold.\n3. The issue will be closed automatically once coverage passes on \`main\` again." \
             "$SHORT" "${{ github.server_url }}/${{ github.repository }}" "$COMMIT" \
-            "$RUN_URL" "$FAILED" "$RUN_URL")"
+            "$RUN_URL" "$RUN_URL")"
 
           # Ensure the label exists (idempotent).
           gh label create "coverage-regression" \
@@ -135,10 +191,7 @@ jobs:
 
       # Auto-close the regression issue when coverage is green again.
       - name: Close regression issue if green
-        if: |
-          steps.core.outcome  == 'success' &&
-          steps.ast.outcome   == 'success' &&
-          steps.email.outcome == 'success'
+        if: needs.coverage.result == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -157,8 +210,5 @@ jobs:
 
       # Fail the workflow run so the badge goes red and GitHub notifies you.
       - name: Fail if any crate below threshold
-        if: |
-          steps.core.outcome == 'failure' ||
-          steps.ast.outcome  == 'failure' ||
-          steps.email.outcome == 'failure'
+        if: needs.coverage.result == 'failure'
         run: exit 1
