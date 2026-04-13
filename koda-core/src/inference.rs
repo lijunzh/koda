@@ -839,6 +839,30 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         // Discard the partial response — storing it would corrupt the session.
         if stream_result.network_error.is_some() {
             sse_handle.abort();
+            // Write a sentinel system message so the model re-anchors to the
+            // correct task on the next "continue" (#875, #877).  Without this
+            // the model loads full session history and can latch onto an early
+            // unrelated user message instead of the current pending request.
+            let last_user = db.last_user_message(session_id).await.unwrap_or_default();
+            let sentinel = if last_user.is_empty() {
+                "[System] The previous inference turn terminated unexpectedly \
+                 due to a network error.  The session history above is intact. \
+                 Please resume from where you left off."
+                    .to_string()
+            } else {
+                format!(
+                    "[System] The previous inference turn terminated unexpectedly \
+                     due to a network error.  The session history above is intact. \
+                     The user's pending request was: \"{last_user}\". \
+                     Please resume from where you left off."
+                )
+            };
+            if let Err(e) = db
+                .insert_message(session_id, &Role::System, Some(&sentinel), None, None, None)
+                .await
+            {
+                tracing::warn!("Failed to write interruption sentinel to DB: {e:#}");
+            }
             return Ok(());
         }
 

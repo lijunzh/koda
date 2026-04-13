@@ -155,6 +155,19 @@ impl TuiContext {
                                     ),
                                 ]),
                             );
+                            // #875: guide the user before they type "continue"
+                            // — irrelevant early history is the most common cause
+                            // of the model responding to the wrong message (#877).
+                            self.scroll_buffer.push(
+                                Line::from(vec![
+                                    Span::raw("  "),
+                                    Span::styled(
+                                        "Tip: run /compact to trim unrelated early \
+                                         messages before typing \"continue\".",
+                                        Style::default().fg(Color::Yellow),
+                                    ),
+                                ]),
+                            );
                         }
                         break;
                     }
