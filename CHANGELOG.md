@@ -32,11 +32,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   names with non-ASCII-alphanumeric characters.
 - **Plaintext bearer warning** — `tracing::warn!` emitted when a bearer token is
   sent over `http://` (not `https://`).
+- **Sandbox credential reads for CLI tools** — the sandbox now allows read access
+  to credential directories needed by common developer CLI tools (`~/.ssh`,
+  `~/.aws`, `~/.config/gcloud`, `~/.kube`, `~/.npmrc`, etc.) while still blocking
+  writes. Also updated `docs/src/sandbox.md` and `docs/src/approval.md` to
+  document the read-allow / write-deny security model (#866).
 
 ### Changed
 - `rmcp` dependency aligned to `1.4` in `koda-ast` and `koda-email` (was `1.3`,
   resolved to `1.4` via Cargo.lock — now explicit).
 - Stale "Phase 3" comment removed from `koda-core/src/mcp/mod.rs`.
+- **CI matrix expanded to macOS** — `ci.yml` and `coverage.yml` now run tests on
+  both `ubuntu-latest` and `macos-latest`, covering platform-specific code paths
+  (seatbelt sandbox, macOS credential rules). Lint (fmt/clippy) stays Linux-only
+  to avoid duplicate noise. Coverage merges per-platform lcov traces (#867).
 
 ## [0.2.11] - 2026-04-12
 
