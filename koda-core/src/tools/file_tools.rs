@@ -22,7 +22,7 @@
 
 use sha2::{Digest, Sha256};
 
-use super::resolve_path_unrestricted;
+use super::resolve_read_path;
 use super::safe_resolve_path;
 use crate::providers::ToolDefinition;
 use anyhow::Result;
@@ -183,7 +183,7 @@ pub async fn read_file(
         .as_str()
         .or_else(|| args["path"].as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' argument"))?;
-    let resolved = resolve_path_unrestricted(project_root, path_str);
+    let resolved = resolve_read_path(project_root, path_str)?;
 
     // No symlink traversal check — reads are unrestricted (docs/src/sandbox.md).
 
@@ -563,8 +563,8 @@ pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -
         .or_else(|| args["path"].as_str())
         .unwrap_or(".");
     let recursive = args["recursive"].as_bool().unwrap_or(false);
-    let resolved = resolve_path_unrestricted(project_root, path_str);
-    let mut entries = Vec::new();
+    let resolved = resolve_read_path(project_root, path_str)?;
+    let mut entries: Vec<String> = Vec::new();
     let mut total_count: usize = 0;
 
     if recursive {

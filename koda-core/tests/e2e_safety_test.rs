@@ -73,7 +73,35 @@ async fn read_via_symlink_outside_project_succeeds() {
     );
 }
 
-// ── File paths with spaces (Gemini: file-system.test.ts) ───────────────────
+// ── Koda-internal secret protection (#882) ───────────────────────────────────
+//
+// The Read tool must reject ~/.config/koda/db regardless of trust mode.
+// This mirrors the bwrap/Seatbelt fully-deny rule applied to Bash.
+
+#[tokio::test]
+async fn read_tool_blocks_koda_db() {
+    let env = Env::new().await;
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".into());
+    let koda_db = format!("{home}/.config/koda/db/koda.db");
+
+    env.insert_user_message("read the koda database").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call("Read", serde_json::json!({"file_path": koda_db})),
+        MockResponse::Text("I tried to read it.".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    let output = find_tool_output(&events, "Read");
+    assert!(output.is_some(), "expected Read result: {events:?}");
+    let output = output.unwrap();
+    assert!(
+        output.contains("denied"),
+        "Read tool must reject ~/.config/koda/db: {output}"
+    );
+}
+
+// ── File paths with spaces (Gemini: file-system.test.ts) ─────────────────────
 
 #[tokio::test]
 async fn read_and_write_file_with_spaces_in_path() {
