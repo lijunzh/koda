@@ -18,6 +18,7 @@ use tokio::process::Command;
 use super::config::{McpServerConfig, McpTransport};
 use super::tool_bridge::McpToolAnnotations;
 use crate::providers::ToolDefinition;
+use crate::tools::web_fetch::is_safe_url;
 
 /// Connection status of a single MCP server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +195,23 @@ impl McpClient {
     ) -> Result<()> {
         use http::{HeaderName, HeaderValue};
         use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+
+        // SSRF protection: reject private/internal URLs before opening any connection.
+        if !is_safe_url(url) {
+            anyhow::bail!(
+                "MCP HTTP URL '{url}' is not allowed: private, loopback, or link-local \
+                 addresses are blocked to prevent SSRF attacks"
+            );
+        }
+
+        // Warn if sending a bearer token over plaintext HTTP.
+        if bearer_token.is_some() && url.starts_with("http://") {
+            tracing::warn!(
+                server = %self.name,
+                url = %url,
+                "MCP bearer token is being sent over plaintext HTTP — use HTTPS in production"
+            );
+        }
 
         let mut config = StreamableHttpClientTransportConfig::with_uri(url);
 

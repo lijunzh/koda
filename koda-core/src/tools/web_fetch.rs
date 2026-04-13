@@ -141,7 +141,7 @@ pub async fn web_fetch(args: &Value, max_body_chars: usize) -> Result<String> {
 }
 
 /// Check if an IP address is safe (not private/internal/loopback).
-fn is_safe_ip(ip: std::net::IpAddr) -> bool {
+pub(crate) fn is_safe_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(ipv4) => {
             let octets = ipv4.octets();
@@ -171,7 +171,7 @@ fn is_safe_ip(ip: std::net::IpAddr) -> bool {
 
 /// Check if a URL is safe to fetch (not internal/private network).
 /// Uses the `url` crate for robust parsing (handles userinfo@, IPv6, etc.).
-fn is_safe_url(url_str: &str) -> bool {
+pub(crate) fn is_safe_url(url_str: &str) -> bool {
     let Ok(parsed) = url::Url::parse(url_str) else {
         return false;
     };

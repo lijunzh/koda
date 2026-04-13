@@ -28,7 +28,7 @@
 //! - **Global scope (user-level)** — not per-project. Accepted trade-off.
 //! - **Tool annotations → ToolEffect** — `destructiveHint`/`readOnlyHint`
 //!   map directly to the TrustMode approval matrix.
-//! - **Resources** — planned for Phase 3 (not yet implemented).
+//! - **Resources** — not yet implemented.
 
 /// MCP server configuration types and database persistence.
 pub mod config;
