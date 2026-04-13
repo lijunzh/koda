@@ -9,8 +9,10 @@ impl TuiContext {
         match ev {
             Event::Resize(_, _) => {
                 // Clamp scroll offset for the new terminal dimensions.
-                let (w, h) = self.term_dims();
-                self.scroll_buffer.clamp_offset(w, h);
+                // Use history panel height, not full terminal height.
+                let (w, _) = self.term_dims();
+                let vh = (self.history_area_height as usize).max(1);
+                self.scroll_buffer.clamp_offset(w, vh);
             }
             Event::Mouse(mouse) => {
                 self.handle_mouse(mouse);
