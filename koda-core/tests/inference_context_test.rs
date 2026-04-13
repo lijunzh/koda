@@ -88,7 +88,7 @@ async fn context_percentage_reflects_actual_tokens_after_turn() {
             EngineEvent::ContextUsage { used, .. } => Some(*used),
             _ => None,
         })
-        .last()
+        .next_back()
         .expect("at least one ContextUsage event required");
 
     assert_eq!(
