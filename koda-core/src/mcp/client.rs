@@ -215,9 +215,11 @@ impl McpClient {
 
         let mut config = StreamableHttpClientTransportConfig::with_uri(url);
 
-        // Set bearer token.
+        // Set bearer token.  rmcp's StreamableHttpClientTransport passes
+        // auth_header to reqwest's `bearer_auth()`, which prepends "Bearer "
+        // automatically — so we store the raw token, not "Bearer {token}".
         if let Some(token) = bearer_token {
-            config.auth_header = Some(format!("Bearer {token}"));
+            config.auth_header = Some(token.to_string());
         }
 
         // Set custom headers.
@@ -322,6 +324,20 @@ impl McpClient {
         self.status = McpClientStatus::Disconnected;
         self.last_error = None;
         tracing::info!(server = %self.name, "MCP server disconnected");
+    }
+}
+
+impl McpClient {
+    /// Force status to a specific value (test-only).
+    #[cfg(feature = "test-support")]
+    pub fn set_status_for_test(&mut self, status: McpClientStatus) {
+        self.status = status;
+    }
+
+    /// Force last error (test-only).
+    #[cfg(feature = "test-support")]
+    pub fn set_last_error_for_test(&mut self, err: Option<String>) {
+        self.last_error = err;
     }
 }
 

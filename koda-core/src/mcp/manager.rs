@@ -301,6 +301,19 @@ impl McpManager {
             .filter(|c| c.status() == McpClientStatus::Connected)
             .count()
     }
+
+    // ── Test helpers ─────────────────────────────────────────────────────
+
+    /// Insert a pre-built client directly (test-only).
+    #[cfg(feature = "test-support")]
+    pub fn insert_client_for_test(&mut self, client: McpClient) {
+        let name = client.name().to_string();
+        for tool in client.tools() {
+            self.annotations
+                .insert(tool.definition.name.clone(), tool.annotations.clone());
+        }
+        self.clients.insert(name, client);
+    }
 }
 
 /// Status summary for a single MCP server.
@@ -352,5 +365,252 @@ fn call_tool_result_to_string(result: &rmcp::model::CallToolResult) -> String {
         "(no output)".to_string()
     } else {
         parts.join("\n")
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::super::config::{McpServerConfig, McpTransport};
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Build a dummy stdio config (won't actually connect).
+    fn dummy_config() -> McpServerConfig {
+        McpServerConfig {
+            transport: McpTransport::Stdio {
+                command: "false".into(),
+                args: vec![],
+                env: HashMap::new(),
+                cwd: None,
+            },
+            startup_timeout_sec: 1,
+            tool_timeout_sec: 1,
+            enabled_tools: None,
+            disabled_tools: None,
+        }
+    }
+
+    /// Build a manager with one disconnected and one failed client.
+    fn manager_with_mixed_clients() -> McpManager {
+        let mut mgr = McpManager::new();
+
+        let c1 = McpClient::new("server_a".into(), dummy_config());
+        // c1 stays Disconnected (default)
+        mgr.insert_client_for_test(c1);
+
+        let mut c2 = McpClient::new("server_b".into(), dummy_config());
+        c2.set_status_for_test(McpClientStatus::Failed);
+        c2.set_last_error_for_test(Some("connection refused".into()));
+        mgr.insert_client_for_test(c2);
+
+        mgr
+    }
+
+    // ── call_tool on disconnected server ───────────────────────────────
+
+    #[tokio::test]
+    async fn call_tool_on_disconnected_server_returns_err() {
+        let mgr = manager_with_mixed_clients();
+        let result = mgr
+            .call_tool("server_a__some_tool", serde_json::json!({}))
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not connected"),
+            "expected 'not connected' in: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_tool_on_nonexistent_server_returns_err() {
+        let mgr = McpManager::new();
+        let result = mgr.call_tool("ghost__tool", serde_json::json!({})).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("not found"), "expected 'not found' in: {msg}");
+    }
+
+    #[tokio::test]
+    async fn call_tool_with_invalid_name_returns_err() {
+        let mgr = McpManager::new();
+        let result = mgr.call_tool("no_separator", serde_json::json!({})).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid MCP tool name"),
+            "expected parse error in: {msg}"
+        );
+    }
+
+    // ── remove_server purges annotation cache ─────────────────────────
+
+    #[tokio::test]
+    async fn remove_server_purges_annotations() {
+        let mut mgr = McpManager::new();
+        let c = McpClient::new("myserver".into(), dummy_config());
+        mgr.insert_client_for_test(c);
+
+        // Manually insert an annotation as if the server had tools.
+        mgr.annotations
+            .insert("myserver__list_files".into(), McpToolAnnotations::default());
+        assert!(mgr.has_tool("myserver__list_files"));
+
+        let removed = mgr.remove_server("myserver").await;
+        assert!(removed);
+        assert!(
+            !mgr.has_tool("myserver__list_files"),
+            "annotation cache must be purged after remove"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_nonexistent_server_returns_false() {
+        let mut mgr = McpManager::new();
+        assert!(!mgr.remove_server("ghost").await);
+    }
+
+    // ── add_server: name collision ──────────────────────────────────
+
+    /// When `add_server` is called with a name that already exists the old
+    /// client and its annotations are purged BEFORE the new connect attempt.
+    /// Even if the new connect fails (dummy `false` command), the stale
+    /// annotations from the previous server must be gone.
+    #[tokio::test]
+    async fn add_server_collision_purges_old_annotations() {
+        let mut mgr = McpManager::new();
+
+        // Seed an existing client with a fake annotation.
+        let c = McpClient::new("myserver".into(), dummy_config());
+        mgr.insert_client_for_test(c);
+        mgr.annotations
+            .insert("myserver__old_tool".into(), McpToolAnnotations::default());
+        assert!(mgr.has_tool("myserver__old_tool"), "precondition");
+
+        // add_server with the same name — connect will fail (command `false`).
+        let result = mgr.add_server("myserver".into(), dummy_config()).await;
+        // We don’t care whether connect succeeded; the annotation purge
+        // must have happened regardless.
+        let _ = result;
+
+        assert!(
+            !mgr.has_tool("myserver__old_tool"),
+            "stale annotation must be purged on collision, even if reconnect fails"
+        );
+    }
+
+    // ── reconnect_server: stale annotations ─────────────────────────
+
+    /// `reconnect_server` must purge annotations for the given server
+    /// before attempting the reconnect.  Even if the reconnect fails
+    /// (dummy `false` command), stale entries must be gone.
+    #[tokio::test]
+    async fn reconnect_server_purges_stale_annotations() {
+        let mut mgr = McpManager::new();
+
+        let c = McpClient::new("db".into(), dummy_config());
+        mgr.insert_client_for_test(c);
+        mgr.annotations
+            .insert("db__query".into(), McpToolAnnotations::default());
+        mgr.annotations
+            .insert("db__insert".into(), McpToolAnnotations::default());
+        assert!(mgr.has_tool("db__query"), "precondition");
+
+        // Reconnect — connect will fail (command `false`), but annotations
+        // must be purged before the attempt.
+        let _ = mgr.reconnect_server("db").await;
+
+        assert!(
+            !mgr.has_tool("db__query"),
+            "db__query annotation must be purged after reconnect attempt"
+        );
+        assert!(
+            !mgr.has_tool("db__insert"),
+            "db__insert annotation must be purged after reconnect attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnect_server_nonexistent_returns_err() {
+        let mut mgr = McpManager::new();
+        let result = mgr.reconnect_server("ghost").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    // ── status_bar_summary states ─────────────────────────────────────
+
+    #[test]
+    fn status_bar_summary_empty_returns_none() {
+        let mgr = McpManager::new();
+        assert!(mgr.status_bar_summary().is_none());
+    }
+
+    #[test]
+    fn status_bar_summary_all_connected() {
+        let mut mgr = McpManager::new();
+        let mut c1 = McpClient::new("a".into(), dummy_config());
+        c1.set_status_for_test(McpClientStatus::Connected);
+        mgr.insert_client_for_test(c1);
+
+        let mut c2 = McpClient::new("b".into(), dummy_config());
+        c2.set_status_for_test(McpClientStatus::Connected);
+        mgr.insert_client_for_test(c2);
+
+        let info = mgr.status_bar_summary().unwrap();
+        assert_eq!(info.connected, 2);
+        assert_eq!(info.failed, 0);
+        assert_eq!(info.total, 2);
+    }
+
+    #[test]
+    fn status_bar_summary_partial_failure() {
+        let mgr = manager_with_mixed_clients();
+        let info = mgr.status_bar_summary().unwrap();
+        assert_eq!(info.connected, 0);
+        assert_eq!(info.failed, 1);
+        assert_eq!(info.total, 2);
+    }
+
+    #[test]
+    fn status_bar_summary_all_failed() {
+        let mut mgr = McpManager::new();
+        let mut c = McpClient::new("bad".into(), dummy_config());
+        c.set_status_for_test(McpClientStatus::Failed);
+        mgr.insert_client_for_test(c);
+
+        let info = mgr.status_bar_summary().unwrap();
+        assert_eq!(info.connected, 0);
+        assert_eq!(info.failed, 1);
+        assert_eq!(info.total, 1);
+    }
+
+    // ── call_tool_result_to_string ────────────────────────────────────
+
+    #[test]
+    fn result_to_string_text_content() {
+        use rmcp::model::{CallToolResult, Content};
+        let result = CallToolResult::success(vec![Content::text("hello"), Content::text("world")]);
+        assert_eq!(call_tool_result_to_string(&result), "hello\nworld");
+    }
+
+    #[test]
+    fn result_to_string_empty_content() {
+        let result = rmcp::model::CallToolResult::success(vec![]);
+        assert_eq!(call_tool_result_to_string(&result), "(no output)");
+    }
+
+    #[test]
+    fn result_to_string_non_text_content() {
+        use rmcp::model::{CallToolResult, Content};
+        // Image content is non-text — should produce a descriptive placeholder.
+        let result = CallToolResult::success(vec![Content::image("iVBOR", "image/png")]);
+        let output = call_tool_result_to_string(&result);
+        assert!(
+            output.contains("non-text content"),
+            "expected non-text placeholder in: {output}"
+        );
     }
 }

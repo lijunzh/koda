@@ -150,16 +150,24 @@ const CREDENTIAL_SUBDIRS: &[&str] = &[
     ".azure",          // Azure CLI token cache (msal_token_cache.bin, etc.)
     ".password-store", // pass(1) GPG-encrypted password store
     ".terraform.d",    // Terraform cloud tokens and plugin cache
+    ".claude",         // Claude Code settings and session tokens
+    ".android",        // Android SDK debug keystores and signing keys
 ];
 
 /// Credential directories under `$HOME/.config/` that are **write-protected**
 /// in Strict mode.  Reads are allowed so CLI tools can authenticate.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const CREDENTIAL_CONFIG_SUBDIRS: &[&str] = &[
-    "gcloud", // gcloud CLI credentials and service-account key files
-    "gh",     // GitHub CLI personal access tokens (hosts.yml)
-    "op",     // 1Password CLI session tokens
-    "helm",   // Helm registry auth
+    "gcloud",  // gcloud CLI credentials and service-account key files
+    "gh",      // GitHub CLI personal access tokens (hosts.yml)
+    "op",      // 1Password CLI session tokens
+    "helm",    // Helm registry auth
+    "netlify", // Netlify CLI access tokens
+    "vercel",  // Vercel CLI credentials
+    "fly",     // Fly.io CLI auth tokens
+    "doppler", // Doppler secrets manager tokens
+    "stripe",  // Stripe CLI API keys
+    "heroku",  // Heroku CLI OAuth tokens
 ];
 
 /// Credential directories under `$HOME/.config/` where **both reads and
@@ -693,6 +701,54 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn strict_profile_write_protects_claude_dir() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
+        let rules = credential_deny_rules_macos(&home);
+        let claude = home_path(&home, ".claude");
+        assert!(
+            rules.contains(&format!("(deny file-write* (subpath \"{claude}\"))")),
+            "strict profile must write-protect ~/.claude"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn strict_profile_write_protects_android_dir() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
+        let rules = credential_deny_rules_macos(&home);
+        let android = home_path(&home, ".android");
+        assert!(
+            rules.contains(&format!("(deny file-write* (subpath \"{android}\"))")),
+            "strict profile must write-protect ~/.android"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn strict_profile_write_protects_netlify_dir() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
+        let rules = credential_deny_rules_macos(&home);
+        let netlify = home_path(&home, ".config/netlify");
+        assert!(
+            rules.contains(&format!("(deny file-write* (subpath \"{netlify}\"))")),
+            "strict profile must write-protect ~/.config/netlify"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn strict_profile_write_protects_vercel_dir() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
+        let rules = credential_deny_rules_macos(&home);
+        let vercel = home_path(&home, ".config/vercel");
+        assert!(
+            rules.contains(&format!("(deny file-write* (subpath \"{vercel}\"))")),
+            "strict profile must write-protect ~/.config/vercel"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn strict_profile_fully_denies_koda_db() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
         let rules = credential_deny_rules_macos(&home);
@@ -1080,6 +1136,97 @@ mod tests {
             "project: writes to .koda/skills/ must be blocked"
         );
         assert!(!target.exists(), "skill file must not have been created");
+    }
+
+    // ── Integration: Linux bwrap credential enforcement ────────────────────
+    //
+    // Mirror the macOS seatbelt tests for bwrap on Linux.  The base bwrap
+    // command mounts `/ ` read-only, so credential dirs are write-protected
+    // by default.  Reads must still succeed (Codex-style model, #855).
+
+    /// Strict mode on Linux: `cat ~/.ssh/known_hosts` (or any file in ~/.ssh)
+    /// must succeed — bwrap inherits the root filesystem read-only, and the
+    /// SSH directory is included in that read-only view.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_strict_allows_ssh_read() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+        let ssh_dir = format!("{home}/.ssh");
+        if !Path::new(&ssh_dir).exists() {
+            eprintln!("skip: {ssh_dir} does not exist");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let status = build(
+            &format!("ls {ssh_dir}"),
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+        )
+        .unwrap()
+        .status()
+        .await
+        .unwrap();
+        assert!(
+            status.success(),
+            "linux strict: reading ~/.ssh/ must be allowed (CLI tools need credential access, #855)"
+        );
+    }
+
+    /// Strict mode on Linux: `touch ~/.ssh/canary` must fail — the base
+    /// bwrap `--ro-bind / /` makes the entire root filesystem read-only,
+    /// so writes to credential dirs are blocked without extra rules.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_strict_blocks_ssh_write() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+        let ssh_dir = format!("{home}/.ssh");
+        if !Path::new(&ssh_dir).exists() {
+            eprintln!("skip: {ssh_dir} does not exist");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let canary = format!("{ssh_dir}/bwrap_canary_test");
+        let status = build(
+            &format!("touch {canary}"),
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+        )
+        .unwrap()
+        .status()
+        .await
+        .unwrap();
+        assert!(
+            !status.success(),
+            "linux strict: writing to ~/.ssh/ must be blocked"
+        );
+        assert!(!Path::new(&canary).exists());
+    }
+
+    /// Strict mode on Linux: `cat ~/.aws/credentials` must succeed —
+    /// the AWS CLI needs to read credentials to authenticate.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_strict_allows_aws_read() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+        let aws_dir = format!("{home}/.aws");
+        if !Path::new(&aws_dir).exists() {
+            eprintln!("skip: {aws_dir} does not exist");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let status = build(
+            &format!("ls {aws_dir}"),
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+        )
+        .unwrap()
+        .status()
+        .await
+        .unwrap();
+        assert!(
+            status.success(),
+            "linux strict: reading ~/.aws/ must be allowed (aws CLI needs credentials)"
+        );
     }
 
     /// Seatbelt path validation: reject paths with characters that could

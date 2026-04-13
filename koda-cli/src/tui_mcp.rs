@@ -373,3 +373,189 @@ pub async fn handle_mcp_reconnect(buffer: &mut ScrollBuffer, agent: &Arc<KodaAge
         }
     }
 }
+
+// ── Tests ──────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scroll_buffer::ScrollBuffer;
+    use koda_core::config::{KodaConfig, ProviderType};
+    use koda_core::db::Database;
+    use koda_core::session::KodaSession;
+    use koda_core::trust::TrustMode;
+    use tempfile::TempDir;
+
+    // ── Helpers ───────────────────────────────────────────────────
+
+    fn make_buffer() -> ScrollBuffer {
+        ScrollBuffer::new(100)
+    }
+
+    /// Flatten all span content in the buffer into a single string for assertions.
+    fn buffer_text(buf: &ScrollBuffer) -> String {
+        buf.all_lines()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    }
+
+    /// Build a minimal test agent + session (no API key needed — mock provider).
+    async fn make_agent_and_session(tmp: &TempDir) -> (Arc<KodaAgent>, KodaSession) {
+        let mut config = KodaConfig::load(tmp.path(), "default").unwrap();
+        // Swap to mock so KodaSession::new() doesn’t warn about missing API key.
+        config.provider_type = ProviderType::Mock;
+
+        let agent = Arc::new(
+            KodaAgent::new(&config, tmp.path().to_owned(), &[])
+                .await
+                .unwrap(),
+        );
+        let db = Database::open(&tmp.path().join("koda.db")).await.unwrap();
+        let session = KodaSession::new(
+            "test-session".into(),
+            Arc::clone(&agent),
+            db,
+            &config,
+            TrustMode::Safe,
+        )
+        .await;
+        (agent, session)
+    }
+
+    // ── handle_mcp_reconnect: no manager ──────────────────────────────
+
+    #[tokio::test]
+    async fn reconnect_with_no_manager_shows_error() {
+        let tmp = TempDir::new().unwrap();
+        let (agent, _session) = make_agent_and_session(&tmp).await;
+        let mut buf = make_buffer();
+
+        // Fresh session with empty DB → no MCP servers → no manager attached.
+        handle_mcp_reconnect(&mut buf, &agent, "myserver".into()).await;
+
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("No MCP manager"),
+            "expected 'No MCP manager' in: {text}"
+        );
+    }
+
+    // ── handle_mcp_list: empty DB ───────────────────────────────────
+
+    #[tokio::test]
+    async fn list_empty_db_shows_usage_hint() {
+        let tmp = TempDir::new().unwrap();
+        let (agent, session) = make_agent_and_session(&tmp).await;
+        let mut buf = make_buffer();
+
+        handle_mcp_list(&mut buf, &session, &agent).await;
+
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("/mcp add"),
+            "expected usage hint with '/mcp add' in: {text}"
+        );
+        assert!(
+            text.contains("No MCP servers configured"),
+            "expected 'No MCP servers configured' in: {text}"
+        );
+    }
+
+    // ── handle_mcp_add: validation errors ────────────────────────────
+
+    #[tokio::test]
+    async fn add_with_invalid_name_shows_validation_error() {
+        let tmp = TempDir::new().unwrap();
+        let (agent, session) = make_agent_and_session(&tmp).await;
+        let mut buf = make_buffer();
+
+        // Names with spaces are invalid.
+        handle_mcp_add(
+            &mut buf,
+            &session,
+            &agent,
+            "bad name".into(),
+            "npx".into(),
+            vec![],
+        )
+        .await;
+
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("Invalid server name"),
+            "expected validation error in: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_with_empty_command_shows_config_error() {
+        let tmp = TempDir::new().unwrap();
+        let (agent, session) = make_agent_and_session(&tmp).await;
+        let mut buf = make_buffer();
+
+        // Empty command string → config validate() should reject it.
+        handle_mcp_add(
+            &mut buf,
+            &session,
+            &agent,
+            "valid-name".into(),
+            String::new(),
+            vec![],
+        )
+        .await;
+
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("Invalid config") || text.contains("empty"),
+            "expected config validation error in: {text}"
+        );
+    }
+
+    // ── handle_mcp_add_http: token hint ───────────────────────────────
+
+    #[tokio::test]
+    async fn add_http_with_invalid_name_shows_validation_error() {
+        let tmp = TempDir::new().unwrap();
+        let (agent, session) = make_agent_and_session(&tmp).await;
+        let mut buf = make_buffer();
+
+        handle_mcp_add_http(
+            &mut buf,
+            &session,
+            &agent,
+            "bad name!".into(),
+            "http://localhost:8080/mcp".into(),
+            None,
+        )
+        .await;
+
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("Invalid server name"),
+            "expected name validation error in: {text}"
+        );
+    }
+
+    // ── handle_mcp_remove: nonexistent server ─────────────────────────
+
+    #[tokio::test]
+    async fn remove_nonexistent_server_shows_error() {
+        let tmp = TempDir::new().unwrap();
+        let (agent, session) = make_agent_and_session(&tmp).await;
+        let mut buf = make_buffer();
+
+        handle_mcp_remove(&mut buf, &session, &agent, "ghost-server".into()).await;
+
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("ghost-server"),
+            "error should mention the server name in: {text}"
+        );
+        // Should show an error (not found / remove failed).
+        assert!(
+            text.contains("not found") || text.contains("Failed") || text.contains("no server"),
+            "expected not-found or error message in: {text}"
+        );
+    }
+}

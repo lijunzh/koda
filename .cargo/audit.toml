@@ -1,0 +1,21 @@
+# cargo-audit configuration
+# https://docs.rs/cargo-audit/latest/cargo_audit/config/
+
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0097 — rand 0.8.x / 0.9.x: unsound with custom log handler
+    #
+    # The advisory is triggered by two transitive dependency chains we don't
+    # directly control:
+    #   rand 0.8.5  ← phf_generator 0.11 ← termwiz ← ratatui (TUI rendering)
+    #   rand 0.9.2  ← tungstenite 0.29   ← tokio-tungstenite (WebSocket)
+    #
+    # rand 0.10.x (already in the lockfile via axum dev-dep) is NOT affected.
+    # The unsoundness only manifests when an application installs a custom
+    # global `log` handler *and* calls `rand::rng()` from inside that handler.
+    # koda uses `tracing`, not a custom `log` handler, so we are not exposed.
+    #
+    # Track resolution: remove this ignore once tungstenite ≥ 0.30 and
+    # phf_generator ≥ 0.12 ship with rand 0.10 bounds.
+    "RUSTSEC-2026-0097",
+]
