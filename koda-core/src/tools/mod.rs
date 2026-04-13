@@ -765,9 +765,10 @@ pub fn safe_resolve_path(project_root: &Path, requested: &str) -> Result<PathBuf
     if !resolved.starts_with(project_root) {
         anyhow::bail!(
             "Path {requested:?} is outside the project root ({project_root:?}). \
-             File tools (Read, Write, Edit, Glob, Grep) only work inside the \
-             project directory. Use the Bash tool to access files outside the \
-             project root."
+             File tools (Read, Write, Edit, Glob, Grep) are restricted to the \
+             project directory. Tell the user: to access this path, they can \
+             restart koda from a parent directory that contains both paths, or \
+             create a symlink inside the project root."
         );
     }
 
@@ -829,16 +830,21 @@ mod tests {
     }
 
     #[test]
-    fn test_outside_root_error_mentions_bash_tool() {
+    fn test_outside_root_error_is_actionable_for_user() {
         let err = safe_resolve_path(&root(), "../../etc/passwd").unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("Bash"),
-            "error message must direct the model to use Bash; got: {msg}"
+            msg.contains("outside the project root"),
+            "error must say 'outside the project root'; got: {msg}"
         );
         assert!(
-            msg.contains("outside the project root"),
-            "error message must say 'outside the project root'; got: {msg}"
+            msg.contains("Tell the user"),
+            "error must direct model to surface this to the user; got: {msg}"
+        );
+        // Must NOT suggest Bash — that would bypass the file-tool safety layer.
+        assert!(
+            !msg.contains("Bash"),
+            "error must not suggest Bash as a workaround; got: {msg}"
         );
     }
 
