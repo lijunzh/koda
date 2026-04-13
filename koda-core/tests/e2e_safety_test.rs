@@ -35,14 +35,19 @@ fn find_all_tool_outputs(events: &[EngineEvent], tool: &str) -> Vec<String> {
         .collect()
 }
 
-// ── Symlink sandbox escape (Codex: safety_tests, Gemini: symlink-install) ──
+// ── Symlink reads (Codex: safety_tests, Gemini: symlink-install) ──────────
+//
+// Reads are intentionally unrestricted (docs/src/sandbox.md).  A symlink
+// inside the project that points outside is treated like any other read —
+// the content is returned.  Only Write / Edit / Delete are scoped to the
+// project root.
 
 #[tokio::test]
 #[cfg(unix)]
-async fn read_via_symlink_outside_sandbox_is_blocked() {
+async fn read_via_symlink_outside_project_succeeds() {
     let env = Env::new().await;
 
-    // Create a symlink inside project root pointing outside.
+    // Create a file outside the project root and symlink it in.
     let outside_dir = tempfile::tempdir().unwrap();
     let secret = outside_dir.path().join("secret.txt");
     std::fs::write(&secret, "TOP SECRET DATA").unwrap();
@@ -54,21 +59,17 @@ async fn read_via_symlink_outside_sandbox_is_blocked() {
 
     let provider = MockProvider::new(vec![
         MockResponse::tool_call("Read", serde_json::json!({"file_path": "sneaky_link"})),
-        MockResponse::Text("I tried to read it.".into()),
+        MockResponse::Text("I read it.".into()),
     ]);
     let events = env.run_inference(&provider).await;
 
-    // The Read tool result should contain an error about escaping.
+    // Read should succeed and return the file content.
     let read_output = find_tool_output(&events, "Read");
     assert!(read_output.is_some(), "expected Read result: {events:?}");
     let output = read_output.unwrap();
     assert!(
-        output.contains("escape")
-            || output.contains("symlink")
-            || output.contains("outside")
-            || output.contains("resolve")
-            || output.contains("denied"),
-        "should block symlink escape: {output}"
+        output.contains("TOP SECRET DATA"),
+        "symlink read should return content: {output}"
     );
 }
 

@@ -51,5 +51,36 @@ else
     exit 1
 fi
 
+# --- Tests -------------------------------------------------------------------
+# Runs unit tests (--lib, fast) plus the integration test suites that are
+# policy-critical and complete in <5s. Slow suites (mcp_http_transport,
+# inference_edge, inference_recovery) are skipped here because they involve
+# real sleep/retry loops and would make the hook unusably slow; CI covers
+# them on every push.
+#
+# Root cause of #882: the hook ran lint only, missing an integration test
+# regression in e2e_safety_test. The unit-test pass (--lib) doesn't run
+# tests in tests/*.rs — you must name them explicitly.
+info "cargo test (unit + fast integration suites)"
+if cargo test --workspace --features koda-core/test-support --lib && \
+   cargo test -p koda-core --features koda-core/test-support \
+       --test bash_safety_test \
+       --test e2e_safety_test \
+       --test e2e_tools_test \
+       --test e2e_test \
+       --test e2e_agent_test \
+       --test e2e_skills_test \
+       --test file_tools_test \
+       --test golden_test \
+       --test guarantee_matrix_test \
+       --test new_tools_test \
+       --test tool_normalize_test \
+       --test tool_wiring_test; then
+    ok "all tests pass"
+else
+    fail "tests: fix failures above before pushing"
+    exit 1
+fi
+
 echo
 ok "All checks passed — pushing."
