@@ -18,8 +18,12 @@ env:
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -27,15 +31,22 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci
+          shared-key: ci-${{ runner.os }}
+      # Lint steps run only on Linux to avoid duplicate noise.
+      # If macOS-specific code triggers a lint that Linux misses, the
+      # platform-specific clippy/check in release.yml still catches it.
       - name: Format
+        if: runner.os == 'Linux'
         run: cargo fmt --all --check
       - name: Clippy
+        if: runner.os == 'Linux'
         run: cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings
       - name: Check (no features)
+        if: runner.os == 'Linux'
         # Catches cfg-gated items invisible behind feature flags.
         run: cargo check --workspace --all-targets
       - name: Set up Linux sandbox (bubblewrap)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y bubblewrap
           # Enable unprivileged user namespaces so bwrap can sandbox.
@@ -72,5 +83,3 @@ jobs:
         run: cargo install cargo-audit --locked
       - name: Run audit
         run: cargo audit || true  # Advisory-only, don't fail CI
-
-
