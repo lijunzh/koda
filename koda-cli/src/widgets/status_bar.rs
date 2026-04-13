@@ -218,3 +218,85 @@ impl Widget for StatusBar<'_> {
         Line::from(spans).render(area, buf);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+
+    /// Render a StatusBar into a buffer and return the text content.
+    fn render_bar(bar: StatusBar<'_>, width: u16) -> String {
+        let area = Rect::new(0, 0, width, 1);
+        let mut buf = Buffer::empty(area);
+        bar.render(area, &mut buf);
+        // Extract text from buffer cells.
+        (0..width)
+            .map(|x| buf.cell((x, 0)).map(|c| c.symbol()).unwrap_or(" "))
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn mcp_indicator_hidden_when_no_servers() {
+        let bar = StatusBar::new("gpt-4", "safe", 50);
+        let text = render_bar(bar, 120);
+        // No MCP info → no lightning bolt indicator.
+        assert!(!text.contains('⚡'), "MCP indicator should be hidden: {text}");
+    }
+
+    #[test]
+    fn mcp_indicator_shows_connected_count() {
+        let bar = StatusBar::new("gpt-4", "safe", 50).with_mcp_info(McpStatusBarInfo {
+            connected: 2,
+            failed: 0,
+            total: 3,
+        });
+        let text = render_bar(bar, 120);
+        assert!(text.contains("2/3"), "should show 2/3: {text}");
+    }
+
+    /// Find the fg color of the ⚡ MCP indicator in a rendered buffer.
+    fn mcp_indicator_color(info: McpStatusBarInfo) -> Color {
+        let bar = StatusBar::new("gpt-4", "safe", 50).with_mcp_info(info);
+        let area = Rect::new(0, 0, 120, 1);
+        let mut buf = Buffer::empty(area);
+        bar.render(area, &mut buf);
+        let mcp_cell = (0..120u16)
+            .find(|&x| buf.cell((x, 0)).map(|c| c.symbol()) == Some("⚡"))
+            .expect("should have ⚡ cell");
+        buf.cell((mcp_cell, 0)).unwrap().fg
+    }
+
+    #[test]
+    fn mcp_color_green_when_all_connected() {
+        let fg = mcp_indicator_color(McpStatusBarInfo {
+            connected: 3,
+            failed: 0,
+            total: 3,
+        });
+        assert_eq!(fg, Color::Green, "all connected → green");
+    }
+
+    #[test]
+    fn mcp_color_yellow_when_partial() {
+        let fg = mcp_indicator_color(McpStatusBarInfo {
+            connected: 1,
+            failed: 1,
+            total: 2,
+        });
+        assert_eq!(fg, Color::Yellow, "partial → yellow");
+    }
+
+    #[test]
+    fn mcp_color_red_when_all_failed() {
+        let fg = mcp_indicator_color(McpStatusBarInfo {
+            connected: 0,
+            failed: 2,
+            total: 2,
+        });
+        assert_eq!(fg, Color::Red, "all failed → red");
+    }
+}
