@@ -19,10 +19,12 @@ const KODA_DOCS_URL: &str = "https://lijunzh.github.io/koda/";
 pub fn inject_builtin_skills(agent: &mut KodaAgent) {
     agent.tools.skill_registry.add_builtin(
         "koda_docs",
-        "Koda user manual: commands, TUI, configuration, sessions, providers, and more.",
+        "Koda user manual: commands, TUI, configuration, security, sandbox, privacy, sessions, providers, and more.",
         Some(
             "Use when the user asks how to use Koda: commands, flags, TUI keybindings, \
-             configuration, sessions, providers, approval modes, skills, sub-agents, \
+             configuration, sessions, providers, approval modes, trust modes, \
+             sandbox, security, safety, privacy, undo, tools, MCP servers, \
+             context management, memory, file attachments, skills, sub-agents, \
              ACP server, or any other feature documented in the user manual. \
              Fetch the manual from the URL below with WebFetch.",
         ),
@@ -38,7 +40,17 @@ pub fn inject_builtin_skills(agent: &mut KodaAgent) {
              - {url}skills.html — skill system\n\
              - {url}approval.html — approval modes\n\
              - {url}headless.html — headless / CI mode\n\
-             - {url}cli-reference.html — full CLI reference",
+             - {url}cli-reference.html — full CLI reference\n\
+             - {url}sandbox.html — kernel sandbox, write restrictions, credential protection\n\
+             - {url}privacy.html — zero telemetry, local-only data, deletion\n\
+             - {url}tools.html — tools reference (all available tools)\n\
+             - {url}mcp.html — MCP server integration\n\
+             - {url}attachments.html — file and image attachments (@file)\n\
+             - {url}context.html — context window management\n\
+             - {url}memory.html — cross-session memory\n\
+             - {url}keybindings.html — full keybinding reference\n\
+             - {url}acp.html — ACP server (editor integration)\n\
+             - {url}introduction.html — overview and getting started",
             url = KODA_DOCS_URL,
         ),
     );
