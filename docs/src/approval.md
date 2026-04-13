@@ -34,8 +34,10 @@ dirs (`~/.cache`, `~/.cargo`, etc.).
 
 **Credential directories** write-protected (reads allowed for CLI tools):
 `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.azure`,
-`~/.password-store`, `~/.terraform.d`, `~/.config/gcloud`,
-`~/.config/gh`, `~/.config/op`, `~/.config/helm`
+`~/.password-store`, `~/.terraform.d`, `~/.claude`, `~/.android`,
+`~/.config/gcloud`, `~/.config/gh`, `~/.config/op`, `~/.config/helm`,
+`~/.config/netlify`, `~/.config/vercel`, `~/.config/fly`,
+`~/.config/doppler`, `~/.config/stripe`, `~/.config/heroku`
 
 **Credential files** write-protected (reads allowed):
 `~/.netrc`, `~/.git-credentials`, `~/.npmrc`, `~/.pypirc`,

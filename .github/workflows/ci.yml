@@ -82,4 +82,4 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Run audit
-        run: cargo audit || true  # Advisory-only, don't fail CI
+        run: cargo audit --deny unsound --deny yanked

@@ -29,10 +29,18 @@ beyond that.
 - `~/.azure` — Azure CLI tokens
 - `~/.password-store` — pass(1) encrypted passwords
 - `~/.terraform.d` — Terraform cloud tokens
+- `~/.claude` — Claude Code settings and session tokens
+- `~/.android` — Android SDK debug keystores and signing keys
 - `~/.config/gcloud` — gcloud CLI credentials
 - `~/.config/gh` — GitHub CLI PATs
 - `~/.config/op` — 1Password CLI tokens
 - `~/.config/helm` — Helm registry auth
+- `~/.config/netlify` — Netlify CLI access tokens
+- `~/.config/vercel` — Vercel CLI credentials
+- `~/.config/fly` — Fly.io CLI auth tokens
+- `~/.config/doppler` — Doppler secrets manager tokens
+- `~/.config/stripe` — Stripe CLI API keys
+- `~/.config/heroku` — Heroku CLI OAuth tokens
 
 **Write-protected files** (reads allowed):
 `~/.netrc`, `~/.git-credentials`, `~/.npmrc`, `~/.pypirc`,
