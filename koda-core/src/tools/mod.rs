@@ -764,7 +764,10 @@ pub fn safe_resolve_path(project_root: &Path, requested: &str) -> Result<PathBuf
     // Security check: must be within project root
     if !resolved.starts_with(project_root) {
         anyhow::bail!(
-            "Path escapes project root. Requested: {requested:?}, Resolved: {resolved:?}"
+            "Path {requested:?} is outside the project root ({project_root:?}). \
+             File tools (Read, Write, Edit, Glob, Grep) only work inside the \
+             project directory. Use the Bash tool to access files outside the \
+             project root."
         );
     }
 
@@ -823,6 +826,20 @@ mod tests {
     fn test_absolute_path_outside_root_blocked() {
         let result = safe_resolve_path(&root(), "/etc/shadow");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_outside_root_error_mentions_bash_tool() {
+        let err = safe_resolve_path(&root(), "../../etc/passwd").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Bash"),
+            "error message must direct the model to use Bash; got: {msg}"
+        );
+        assert!(
+            msg.contains("outside the project root"),
+            "error message must say 'outside the project root'; got: {msg}"
+        );
     }
 
     #[test]
