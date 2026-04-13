@@ -1,6 +1,6 @@
 [package]
 name = "koda-email"
-version = "0.2.11"
+version = "0.2.12"
 edition = "2024"
 publish = false # standalone MCP server; not published to crates.io
 description = "MCP server for email read/send/search via IMAP/SMTP — part of the koda ecosystem"
