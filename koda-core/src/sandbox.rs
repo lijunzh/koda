@@ -177,6 +177,30 @@ const CREDENTIAL_CONFIG_FULL_DENY: &[&str] = &[
     "koda/db", // SQLite DB with plaintext API keys in kv_store table (#847)
 ];
 
+/// Returns `true` when `path` falls inside a fully-denied location.
+///
+/// "Fully denied" means both reads **and** writes are blocked in the
+/// subprocess sandbox (bwrap / Seatbelt).  This function lets in-process
+/// file tools enforce the same policy so the restriction is uniform
+/// regardless of how the model accesses the path (Option A parity, #882).
+///
+/// Currently only `~/.config/koda/db` is fully denied — koda's own SQLite
+/// database containing plaintext API keys.  Ordinary credential directories
+/// (`~/.ssh`, `~/.aws`, …) are **not** included: reads are allowed there,
+/// mirroring the Bash sandbox which only write-protects them.
+///
+/// See issue #884 for the long-term plan (Option B: sandboxed worker process)
+/// which will replace this application-layer check with true OS enforcement.
+pub(crate) fn is_fully_denied(path: &Path) -> bool {
+    let Ok(home) = std::env::var("HOME") else {
+        return false;
+    };
+    let home = Path::new(&home);
+    CREDENTIAL_CONFIG_FULL_DENY
+        .iter()
+        .any(|rel| path.starts_with(home.join(".config").join(rel)))
+}
+
 /// Individual credential *files* under `$HOME` that are **write-protected**
 /// in Strict mode.  Reads are allowed so tools like `curl`, `git`, `npm`,
 /// and `docker` can authenticate.
@@ -638,6 +662,43 @@ mod tests {
         assert!(!SandboxMode::None.is_active());
         assert!(SandboxMode::Project.is_active());
         assert!(SandboxMode::Strict.is_active());
+    }
+
+    // ── Unit: is_fully_denied ──────────────────────────────────────────────
+
+    #[test]
+    fn fully_denied_blocks_koda_db() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".into());
+        let koda_db = Path::new(&home).join(".config/koda/db");
+        assert!(
+            is_fully_denied(&koda_db),
+            "~/.config/koda/db must be fully denied"
+        );
+        // Sub-paths inside it are also denied.
+        assert!(is_fully_denied(&koda_db.join("koda.db")));
+    }
+
+    #[test]
+    fn fully_denied_allows_credential_dirs() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".into());
+        let home = Path::new(&home);
+        // Credential dirs are write-protected but reads are allowed — they
+        // must NOT appear in the fully-denied list.
+        for rel in &[".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud"] {
+            assert!(
+                !is_fully_denied(&home.join(rel)),
+                "{rel} must NOT be fully denied (reads allowed)"
+            );
+        }
+    }
+
+    #[test]
+    fn fully_denied_allows_project_and_system_paths() {
+        assert!(!is_fully_denied(Path::new(
+            "/home/user/project/src/main.rs"
+        )));
+        assert!(!is_fully_denied(Path::new("/tmp/scratch.txt")));
+        assert!(!is_fully_denied(Path::new("/etc/hosts")));
     }
 
     // ── Unit: strict profile contains deny rules ───────────────────────────

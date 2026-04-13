@@ -752,6 +752,8 @@ impl ToolRegistry {
 /// assert!(safe_resolve_path(root, "../../etc/passwd").is_err());
 /// ```
 pub fn safe_resolve_path(project_root: &Path, requested: &str) -> Result<PathBuf> {
+    // NOTE: used only for Write / Edit / Delete.  Read-only tools call
+    // resolve_path_unrestricted — see docs/src/sandbox.md for the rationale.
     let requested_path = Path::new(requested);
 
     // Build absolute path and normalize (removes .., . etc.)
@@ -761,13 +763,60 @@ pub fn safe_resolve_path(project_root: &Path, requested: &str) -> Result<PathBuf
         project_root.join(requested_path).clean()
     };
 
-    // Security check: must be within project root
+    // Security check: must be within project root.
+    // Only Write / Edit / Delete are gated here — reads are unrestricted
+    // (see resolve_path_unrestricted and docs/src/sandbox.md).
     if !resolved.starts_with(project_root) {
         anyhow::bail!(
-            "Path escapes project root. Requested: {requested:?}, Resolved: {resolved:?}"
+            "Path {requested:?} is outside the project root ({project_root:?}). \
+             Write, Edit, and Delete are restricted to the project directory to \
+             prevent accidental modification of files outside the project. \
+             Tell the user: to write outside the project, restart koda from a \
+             parent directory that contains both paths."
         );
     }
 
+    Ok(resolved)
+}
+
+/// Normalise a path without enforcing any scope restriction.
+///
+/// Low-level primitive — **tool implementations should call
+/// [`resolve_read_path`] instead**, which adds the fully-denied list check
+/// that keeps in-process policy in sync with the subprocess sandbox.
+///
+/// Relative paths are resolved against `project_root`; absolute paths are
+/// cleaned in-place.  The result may point anywhere on the filesystem.
+pub fn resolve_path_unrestricted(project_root: &Path, requested: &str) -> PathBuf {
+    let path = Path::new(requested);
+    if path.is_absolute() {
+        path.to_path_buf().clean()
+    } else {
+        project_root.join(path).clean()
+    }
+}
+
+/// Normalise a read-only path and enforce the fully-denied list.
+///
+/// This is the entry-point for **all read-only tools** (Read, List, Grep,
+/// Glob).  It wraps [`resolve_path_unrestricted`] with a check against
+/// `sandbox::is_fully_denied` so that the same paths blocked by the
+/// subprocess sandbox (bwrap / Seatbelt) are also blocked when the model
+/// accesses them through in-process tools.
+///
+/// Currently the only denied path is `~/.config/koda/db` — koda's own SQLite
+/// database containing plaintext API keys.  Ordinary credential directories
+/// (`~/.ssh`, `~/.aws`, …) are readable, matching the Bash sandbox policy.
+///
+/// See issue #884 for Option B (OS-level enforcement via sandboxed worker).
+pub fn resolve_read_path(project_root: &Path, requested: &str) -> Result<PathBuf> {
+    let resolved = resolve_path_unrestricted(project_root, requested);
+    if crate::sandbox::is_fully_denied(&resolved) {
+        anyhow::bail!(
+            "Access to {requested:?} is denied: this path contains koda's \
+             internal secrets and cannot be read by model tool calls."
+        );
+    }
     Ok(resolved)
 }
 
@@ -826,9 +875,54 @@ mod tests {
     }
 
     #[test]
+    fn test_outside_root_error_is_actionable_for_user() {
+        let err = safe_resolve_path(&root(), "../../etc/passwd").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("outside the project root"),
+            "error must say 'outside the project root'; got: {msg}"
+        );
+        assert!(
+            msg.contains("Tell the user"),
+            "error must direct model to surface this to the user; got: {msg}"
+        );
+        // Must NOT suggest Bash — that would bypass the file-tool safety layer.
+        assert!(
+            !msg.contains("Bash"),
+            "error must not suggest Bash as a workaround; got: {msg}"
+        );
+    }
+
+    #[test]
     fn test_empty_path_resolves_to_root() {
         let result = safe_resolve_path(&root(), "").unwrap();
         assert_eq!(result, PathBuf::from("/home/user/project"));
+    }
+
+    // ── resolve_read_path ──────────────────────────────────────────────────
+
+    #[test]
+    fn read_path_allows_project_file() {
+        let p = resolve_read_path(&root(), "src/lib.rs").unwrap();
+        assert_eq!(p, PathBuf::from("/home/user/project/src/lib.rs"));
+    }
+
+    #[test]
+    fn read_path_allows_outside_project() {
+        // Reads outside the project root are intentionally unrestricted.
+        let p = resolve_read_path(&root(), "/etc/hosts").unwrap();
+        assert_eq!(p, PathBuf::from("/etc/hosts"));
+    }
+
+    #[test]
+    fn read_path_blocks_koda_db() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".into());
+        let koda_db = format!("{home}/.config/koda/db/koda.db");
+        let err = resolve_read_path(&root(), &koda_db).unwrap_err();
+        assert!(
+            err.to_string().contains("denied"),
+            "expected 'denied' in error, got: {err}"
+        );
     }
 }
 

@@ -5,7 +5,57 @@ inside a sandboxed process. The sandbox enforces the perimeter; the
 [trust mode](./approval.md) controls whether you see a confirmation
 prompt before each mutation.
 
-## What's protected
+## File tool read policy
+
+Koda's **Read, List, Grep, and Glob** tools are intentionally unrestricted —
+they can access any path on the filesystem the OS permits, including paths
+outside the project directory (e.g. `../other-repo`, `~/.ssh/config`).
+
+Only **Write, Edit, and Delete** are gated to the project root.
+
+### Why reads are unrestricted
+
+1. **Reads cannot mutate state.** The worst-case outcome of an out-of-scope
+   read is that the model sees something sensitive in its context window — which
+   you, watching the terminal, can also see. No irreversible damage occurs.
+
+2. **Bash already has the same reach.** The Bash tool runs inside the kernel
+   sandbox but has read access to the full filesystem. Restricting the Read
+   tool while leaving Bash unrestricted is security theater — the model just
+   falls back to `cat ../secret.txt`.
+
+3. **OS-level sandboxing is the real boundary.** On macOS (Seatbelt) and Linux
+   (bwrap), the sandbox already defines what the process can access at the
+   kernel level. Duplicating that check in the tool layer adds friction without
+   adding protection.
+
+4. **Cross-repo workflows are common.** Developers routinely ask koda to read
+   a sibling repo, a shared library, or a dotfile — restricting this forces
+   awkward workarounds.
+
+   This follows the Claude Code approach — Claude Code's `Read` tool imposes
+   no project-root scope check at all.
+
+### Accepted risk
+
+> ⚠️ **A carefully crafted prompt could trick the model into reading and
+> summarising sensitive files** — for example `~/.aws/credentials`,
+> `~/.ssh/id_rsa`, or `~/.netrc` — without explicit user consent. The
+> content would appear in the chat window but not be exfiltrated unless
+> the model also makes a network request (Bash + `curl`, WebFetch, etc.).
+>
+> **Mitigations:**
+> - Those files are **write-protected** by the kernel sandbox, so the model
+>   cannot modify or delete them.
+> - Network exfiltration via Bash is constrained by the sandbox's outbound
+>   network policy.
+> - Trust-mode `safe` requires explicit approval before every Bash command,
+>   which catches `curl`-style exfiltration attempts.
+>
+> If you work with highly sensitive secrets and want file-level read
+> protection, run koda in a containerised environment with access to only
+> the files you intend to expose.
+
 
 ### Write restrictions
 
