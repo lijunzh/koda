@@ -405,7 +405,10 @@ fn show_help(buffer: &mut ScrollBuffer) {
         ("Alt+Enter", "Insert newline (multi-line input)"),
         ("@file.rs", "Attach file context to your message"),
         ("@image.png", "Attach image (vision-capable models)"),
-        ("drag & drop", "Drop an image into the terminal to attach it"),
+        (
+            "drag & drop",
+            "Drop an image into the terminal to attach it",
+        ),
         ("↑ / ↓", "Cycle through input history"),
         ("Ctrl+R", "Reverse history search"),
         ("Tab", "Autocomplete @file path or /command"),
