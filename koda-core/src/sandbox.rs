@@ -141,6 +141,7 @@ impl std::fmt::Display for SandboxMode {
 
 /// Credential *directories* under `$HOME` that are **write-protected** in
 /// Strict mode.  Reads are allowed so CLI tools can authenticate.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const CREDENTIAL_SUBDIRS: &[&str] = &[
     ".ssh",            // SSH private keys, authorized_keys, known_hosts
     ".aws",            // AWS access key ID, secret key, session tokens
@@ -153,6 +154,7 @@ const CREDENTIAL_SUBDIRS: &[&str] = &[
 
 /// Credential directories under `$HOME/.config/` that are **write-protected**
 /// in Strict mode.  Reads are allowed so CLI tools can authenticate.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const CREDENTIAL_CONFIG_SUBDIRS: &[&str] = &[
     "gcloud", // gcloud CLI credentials and service-account key files
     "gh",     // GitHub CLI personal access tokens (hosts.yml)
@@ -170,6 +172,7 @@ const CREDENTIAL_CONFIG_FULL_DENY: &[&str] = &[
 /// Individual credential *files* under `$HOME` that are **write-protected**
 /// in Strict mode.  Reads are allowed so tools like `curl`, `git`, `npm`,
 /// and `docker` can authenticate.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const CREDENTIAL_FILES: &[&str] = &[
     ".netrc",              // FTP/HTTP credentials (curl, wget, Netrc crate)
     ".git-credentials",    // git-credential-store plaintext token file

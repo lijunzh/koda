@@ -70,7 +70,7 @@ even if the agent JSON specifies `"mode": "auto"`.
 ## Platform backends
 
 | Platform | Backend | Install |
-|----------|---------|---------||
+|----------|---------|---------|
 | macOS | `sandbox-exec` (seatbelt) | Built-in |
 | Linux | `bwrap` (bubblewrap) | `apt install bubblewrap` |
 | Windows | Not supported | — |
