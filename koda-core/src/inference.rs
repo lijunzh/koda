@@ -951,10 +951,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             // underreports for code, tool results, and JSON payloads.
             // This corrective event fires once per completed turn, after all
             // tool calls resolve, so the status bar reflects real usage.
-            crate::context::update(
-                total_prompt_tokens as usize,
-                config.max_context_tokens,
-            );
+            crate::context::update(total_prompt_tokens as usize, config.max_context_tokens);
             sink.emit(EngineEvent::ContextUsage {
                 used: total_prompt_tokens as usize,
                 max: config.max_context_tokens,

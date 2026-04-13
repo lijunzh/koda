@@ -47,7 +47,10 @@ async fn corrective_context_usage_uses_actual_prompt_tokens() {
         "last ContextUsage.used must equal actual prompt_tokens (10 from mock), \
          got {last_used}"
     );
-    assert_eq!(last_max, 200_000, "max must match configured context window");
+    assert_eq!(
+        last_max, 200_000,
+        "max must match configured context window"
+    );
 
     // The FIRST ContextUsage is the heuristic; it should differ from 10
     // for any non-trivial message (proves the correction is actually updating).
@@ -64,7 +67,8 @@ async fn corrective_context_usage_uses_actual_prompt_tokens() {
 #[tokio::test]
 async fn context_percentage_reflects_actual_tokens_after_turn() {
     let env = Env::builder().max_context_tokens(100_000).build().await;
-    env.insert_user_message("test message for context accuracy").await;
+    env.insert_user_message("test message for context accuracy")
+        .await;
 
     let provider = MockProvider::new(vec![MockResponse::Text("response".into())]);
     let (result, events) = env.run_inference_result(&provider).await;
