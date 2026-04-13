@@ -325,6 +325,20 @@ impl McpClient {
     }
 }
 
+impl McpClient {
+    /// Force status to a specific value (test-only).
+    #[cfg(feature = "test-support")]
+    pub fn set_status_for_test(&mut self, status: McpClientStatus) {
+        self.status = status;
+    }
+
+    /// Force last error (test-only).
+    #[cfg(feature = "test-support")]
+    pub fn set_last_error_for_test(&mut self, err: Option<String>) {
+        self.last_error = err;
+    }
+}
+
 impl Drop for McpClient {
     fn drop(&mut self) {
         // Ensure the service is dropped (child process cleaned up).
