@@ -92,6 +92,16 @@ test-support = []
 
 [dev-dependencies]
 insta = { version = "1", features = ["yaml", "redactions"] }
+# MCP HTTP integration test: rmcp server-side HTTP transport + axum
+rmcp = { version = "1.4", features = [
+    "server",
+    "macros",
+    "transport-streamable-http-server",
+    "transport-streamable-http-server-session",
+    "server-side-http",
+] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "tower-log"] }
+tower = "0.5"
 koda-test-utils = { path = "../koda-test-utils" }
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }

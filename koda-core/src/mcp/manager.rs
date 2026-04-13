@@ -372,8 +372,8 @@ fn call_tool_result_to_string(result: &rmcp::model::CallToolResult) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::config::{McpServerConfig, McpTransport};
+    use super::*;
     use std::collections::HashMap;
 
     /// Build a dummy stdio config (won't actually connect).
@@ -427,15 +427,10 @@ mod tests {
     #[tokio::test]
     async fn call_tool_on_nonexistent_server_returns_err() {
         let mgr = McpManager::new();
-        let result = mgr
-            .call_tool("ghost__tool", serde_json::json!({}))
-            .await;
+        let result = mgr.call_tool("ghost__tool", serde_json::json!({})).await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("not found"),
-            "expected 'not found' in: {msg}"
-        );
+        assert!(msg.contains("not found"), "expected 'not found' in: {msg}");
     }
 
     #[tokio::test]
@@ -459,10 +454,8 @@ mod tests {
         mgr.insert_client_for_test(c);
 
         // Manually insert an annotation as if the server had tools.
-        mgr.annotations.insert(
-            "myserver__list_files".into(),
-            McpToolAnnotations::default(),
-        );
+        mgr.annotations
+            .insert("myserver__list_files".into(), McpToolAnnotations::default());
         assert!(mgr.has_tool("myserver__list_files"));
 
         let removed = mgr.remove_server("myserver").await;
@@ -599,10 +592,7 @@ mod tests {
     #[test]
     fn result_to_string_text_content() {
         use rmcp::model::{CallToolResult, Content};
-        let result = CallToolResult::success(vec![
-            Content::text("hello"),
-            Content::text("world"),
-        ]);
+        let result = CallToolResult::success(vec![Content::text("hello"), Content::text("world")]);
         assert_eq!(call_tool_result_to_string(&result), "hello\nworld");
     }
 
@@ -616,9 +606,7 @@ mod tests {
     fn result_to_string_non_text_content() {
         use rmcp::model::{CallToolResult, Content};
         // Image content is non-text — should produce a descriptive placeholder.
-        let result = CallToolResult::success(vec![
-            Content::image("iVBOR", "image/png"),
-        ]);
+        let result = CallToolResult::success(vec![Content::image("iVBOR", "image/png")]);
         let output = call_tool_result_to_string(&result);
         assert!(
             output.contains("non-text content"),

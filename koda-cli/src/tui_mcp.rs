@@ -495,8 +495,15 @@ mod tests {
         let mut buf = make_buffer();
 
         // Empty command string → config validate() should reject it.
-        handle_mcp_add(&mut buf, &session, &agent, "valid-name".into(), String::new(), vec![])
-            .await;
+        handle_mcp_add(
+            &mut buf,
+            &session,
+            &agent,
+            "valid-name".into(),
+            String::new(),
+            vec![],
+        )
+        .await;
 
         let text = buffer_text(&buf);
         assert!(

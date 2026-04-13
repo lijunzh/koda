@@ -244,7 +244,10 @@ mod tests {
         let bar = StatusBar::new("gpt-4", "safe", 50);
         let text = render_bar(bar, 120);
         // No MCP info → no lightning bolt indicator.
-        assert!(!text.contains('⚡'), "MCP indicator should be hidden: {text}");
+        assert!(
+            !text.contains('⚡'),
+            "MCP indicator should be hidden: {text}"
+        );
     }
 
     #[test]
