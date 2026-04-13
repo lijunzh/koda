@@ -601,6 +601,64 @@ mod tests {
         assert!(buf.is_sticky());
     }
 
+    /// Regression: clamp_offset must use the history panel viewport height,
+    /// NOT the full terminal height. Using a too-large viewport computes
+    /// max_offset too small, clamping the user's scroll position toward
+    /// the bottom and re-engaging sticky during inference streaming.
+    #[test]
+    fn test_clamp_offset_with_correct_viewport_preserves_scroll() {
+        let mut buf = ScrollBuffer::new(2500);
+        // 50 lines of content
+        for i in 0..50 {
+            buf.push(make_line(&format!("line {i}")));
+        }
+
+        // User scrolls up 15 lines from the bottom
+        buf.scroll_up(15, W, 30);
+        assert_eq!(buf.offset(), 15);
+        assert!(!buf.is_sticky());
+
+        // With correct viewport (30 lines): max_offset = 50 - 30 = 20.
+        // 15 < 20 → no clamping.
+        buf.clamp_offset(W, 30);
+        assert_eq!(buf.offset(), 15);
+        assert!(
+            !buf.is_sticky(),
+            "correct viewport must NOT re-engage sticky"
+        );
+
+        // BUG CASE: if caller mistakenly passes full terminal height (40),
+        // max_offset = 50 - 40 = 10.  15 > 10 → clamped to 10.
+        // This is the wrong behavior the fix prevents.
+        buf.clamp_offset(W, 40);
+        assert_eq!(buf.offset(), 10, "over-large viewport incorrectly clamps");
+    }
+
+    /// Streaming new content while scrolled up must not snap to bottom.
+    #[test]
+    fn test_push_during_scrolled_up_preserves_position() {
+        let mut buf = ScrollBuffer::new(2500);
+        for i in 0..30 {
+            buf.push(make_line(&format!("line {i}")));
+        }
+
+        // User scrolls up 10 lines
+        buf.scroll_up(10, W, 20);
+        assert!(!buf.is_sticky());
+        assert_eq!(buf.offset(), 10);
+
+        // New content arrives (simulating inference streaming)
+        buf.push(make_line("streamed token"));
+        buf.push(make_line("another token"));
+
+        // Offset and sticky must be unchanged
+        assert_eq!(buf.offset(), 10);
+        assert!(
+            !buf.is_sticky(),
+            "push must not re-engage sticky when user scrolled up"
+        );
+    }
+
     #[test]
     fn test_prepend_lines() {
         let mut buf = ScrollBuffer::new(2500);

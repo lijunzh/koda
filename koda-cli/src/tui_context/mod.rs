@@ -341,8 +341,11 @@ impl TuiContext {
     pub fn draw(&mut self) -> Result<()> {
         // Clamp scroll offset to valid bounds before rendering.
         // Necessary after terminal resize changes wrapping math.
-        let (w, h) = self.term_dims();
-        self.scroll_buffer.clamp_offset(w, h);
+        // Use history panel height, not full terminal height — otherwise
+        // max_offset is too small and scrolling up re-engages sticky.
+        let (w, _) = self.term_dims();
+        let vh = (self.history_area_height as usize).max(1);
+        self.scroll_buffer.clamp_offset(w, vh);
 
         let mode = trust::read_trust(&self.shared_mode);
         let ctx = self.context_pct;

@@ -52,10 +52,15 @@ impl TuiContext {
             loop {
                 // Clamp scroll offset before drawing (resize may have
                 // changed wrapping, making the old offset invalid).
-                let (term_w, term_h) = crossterm::terminal::size()
+                // Use the actual history panel height, not the full terminal
+                // height — otherwise max_offset is too small and scrolling
+                // up during inference gets clamped back toward the bottom,
+                // re-engaging sticky_bottom.
+                let (term_w, _) = crossterm::terminal::size()
                     .map(|(c, r)| (c as usize, r as usize))
                     .unwrap_or((80, 24));
-                self.scroll_buffer.clamp_offset(term_w, term_h);
+                let hist_viewport = (self.history_area_height as usize).max(1);
+                self.scroll_buffer.clamp_offset(term_w, hist_viewport);
 
                 // Redraw viewport
                 let mode = trust::read_trust(&self.shared_mode);
@@ -307,10 +312,11 @@ async fn handle_crossterm_event_inline(
     use crossterm::event::MouseEventKind;
     match ev {
         Event::Resize(_, _) => {
-            let (w, h) = crossterm::terminal::size()
+            let (w, _) = crossterm::terminal::size()
                 .map(|(c, r)| (c as usize, r as usize))
                 .unwrap_or((80, 24));
-            scroll_buffer.clamp_offset(w, h);
+            // Use hist_h (history panel height), not full terminal height.
+            scroll_buffer.clamp_offset(w, hist_h);
         }
         Event::Mouse(mouse) => {
             let (w, _) = crossterm::terminal::size()
