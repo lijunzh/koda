@@ -1,7 +1,8 @@
 //! File system tools: Read, Write, Edit, Delete, and List.
 //!
-//! All paths are validated through `safe_resolve_path` to prevent escapes
-//! outside the project root.
+//! **Path policy** (see `docs/src/sandbox.md` for full rationale):
+//! - Read / List use `resolve_path_unrestricted` — any path on the filesystem.
+//! - Write / Edit / Delete use `safe_resolve_path` — restricted to project root.
 //!
 //! ## Tools
 //!
@@ -15,13 +16,13 @@
 //!
 //! ## Path safety
 //!
-//! All file paths are resolved relative to the project root. Attempts to
-//! access files outside the project (e.g., `../../../etc/passwd`) are blocked
-//! with an error. Absolute paths are also rejected unless they resolve within
-//! the project root.
+//! All file paths resolve relative to the project root for relative inputs, or
+//! as-is for absolute inputs.  Read / List accept any reachable path;
+//! Write / Edit / Delete are restricted to the project root (see sandbox.md).
 
 use sha2::{Digest, Sha256};
 
+use super::resolve_path_unrestricted;
 use super::safe_resolve_path;
 use crate::providers::ToolDefinition;
 use anyhow::Result;
@@ -182,25 +183,9 @@ pub async fn read_file(
         .as_str()
         .or_else(|| args["path"].as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' argument"))?;
-    let resolved = safe_resolve_path(project_root, path_str)?;
+    let resolved = resolve_path_unrestricted(project_root, path_str);
 
-    // Symlink traversal protection (#526): safe_resolve_path uses lexical
-    // normalization (path_clean) which can't detect symlinks. Since reads
-    // target existing files, we can canonicalize and verify the real path
-    // is still inside the project root.
-    if resolved.exists() {
-        let canon = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
-        let canon_root = project_root
-            .canonicalize()
-            .unwrap_or_else(|_| project_root.to_path_buf());
-        if !canon.starts_with(&canon_root) {
-            anyhow::bail!(
-                "Path escapes project root via symlink. Requested: {path_str:?}, \
-                 Real path: {}",
-                canon.display()
-            );
-        }
-    }
+    // No symlink traversal check — reads are unrestricted (docs/src/sandbox.md).
 
     let start_line = args["start_line"].as_u64();
     let num_lines = args["num_lines"].as_u64();
@@ -578,8 +563,7 @@ pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -
         .or_else(|| args["path"].as_str())
         .unwrap_or(".");
     let recursive = args["recursive"].as_bool().unwrap_or(false);
-    let resolved = safe_resolve_path(project_root, path_str)?;
-
+    let resolved = resolve_path_unrestricted(project_root, path_str);
     let mut entries = Vec::new();
     let mut total_count: usize = 0;
 
@@ -735,16 +719,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_file_path_escape_blocked() {
-        let tmp = tempfile::tempdir().unwrap();
-        let args = json!({"file_path": "../../../etc/passwd"});
-        let result = read_file(tmp.path(), &args, &cache()).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+    async fn read_file_can_reach_outside_project_root() {
+        // Reads are unrestricted (docs/src/sandbox.md).
+        // Create: /tmp/outer/secret.txt and /tmp/outer/project/
+        // Then read "../secret.txt" from project/.
+        let outer = tempfile::tempdir().unwrap();
+        let secret = outer.path().join("secret.txt");
+        std::fs::write(&secret, "outer content").unwrap();
+        let project = outer.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let args = json!({"file_path": "../secret.txt"});
+        let result = read_file(&project, &args, &cache()).await;
         assert!(
-            err.contains("escape") || err.contains("outside"),
-            "error should mention path escape: {err}"
+            result.is_ok(),
+            "read outside project root should succeed; got: {:?}",
+            result
         );
+        assert!(result.unwrap().contains("outer content"));
     }
 
     // ── Write ────────────────────────────────────────────────────

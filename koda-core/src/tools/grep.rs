@@ -20,7 +20,7 @@
 //! - **Grep tool**: fast, respects `.gitignore`, context-aware output caps
 //! - **`bash: grep/rg`**: only when you need complex flags the tool doesn't expose
 
-use super::safe_resolve_path;
+use super::resolve_path_unrestricted;
 use crate::providers::ToolDefinition;
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -69,7 +69,7 @@ pub async fn grep(project_root: &Path, args: &Value, max_matches: usize) -> Resu
         .unwrap_or(".");
     let case_insensitive = args["case_insensitive"].as_bool().unwrap_or(false);
 
-    let search_root = safe_resolve_path(project_root, path_str)?;
+    let search_root = resolve_path_unrestricted(project_root, path_str);
     let project_root = project_root.to_path_buf();
 
     // Run blocking file I/O off the tokio thread pool

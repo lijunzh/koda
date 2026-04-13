@@ -752,6 +752,8 @@ impl ToolRegistry {
 /// assert!(safe_resolve_path(root, "../../etc/passwd").is_err());
 /// ```
 pub fn safe_resolve_path(project_root: &Path, requested: &str) -> Result<PathBuf> {
+    // NOTE: used only for Write / Edit / Delete.  Read-only tools call
+    // resolve_path_unrestricted — see docs/src/sandbox.md for the rationale.
     let requested_path = Path::new(requested);
 
     // Build absolute path and normalize (removes .., . etc.)
@@ -761,18 +763,41 @@ pub fn safe_resolve_path(project_root: &Path, requested: &str) -> Result<PathBuf
         project_root.join(requested_path).clean()
     };
 
-    // Security check: must be within project root
+    // Security check: must be within project root.
+    // Only Write / Edit / Delete are gated here — reads are unrestricted
+    // (see resolve_path_unrestricted and docs/src/sandbox.md).
     if !resolved.starts_with(project_root) {
         anyhow::bail!(
             "Path {requested:?} is outside the project root ({project_root:?}). \
-             File tools (Read, Write, Edit, Glob, Grep) are restricted to the \
-             project directory. Tell the user: to access this path, they can \
-             restart koda from a parent directory that contains both paths, or \
-             create a symlink inside the project root."
+             Write, Edit, and Delete are restricted to the project directory to \
+             prevent accidental modification of files outside the project. \
+             Tell the user: to write outside the project, restart koda from a \
+             parent directory that contains both paths."
         );
     }
 
     Ok(resolved)
+}
+
+/// Normalise a path without enforcing any scope restriction.
+///
+/// Used by **read-only** tools (Read, List, Grep, Glob).  Relative paths are
+/// resolved against `project_root` (the process cwd); absolute paths are
+/// cleaned in-place.  The result may point anywhere on the filesystem.
+///
+/// # Security tradeoff
+///
+/// Reads are intentionally unrestricted — see `docs/src/sandbox.md`.  The
+/// short version: reads cannot mutate state, Bash already gives the same
+/// access, and OS-level sandboxing (bwrap / Seatbelt) is the real boundary.
+/// Only Write / Edit / Delete are gated by `safe_resolve_path`.
+pub fn resolve_path_unrestricted(project_root: &Path, requested: &str) -> PathBuf {
+    let path = Path::new(requested);
+    if path.is_absolute() {
+        path.to_path_buf().clean()
+    } else {
+        project_root.join(path).clean()
+    }
 }
 
 #[cfg(test)]

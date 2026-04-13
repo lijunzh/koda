@@ -14,7 +14,7 @@
 //! - Results are sorted alphabetically
 //! - Output is capped based on context window size
 
-use super::safe_resolve_path;
+use super::resolve_path_unrestricted;
 use crate::providers::ToolDefinition;
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -56,7 +56,7 @@ pub async fn glob_search(project_root: &Path, args: &Value, max_results: usize) 
         .as_str()
         .or_else(|| args["path"].as_str())
         .unwrap_or(".");
-    let base = safe_resolve_path(project_root, path_str)?;
+    let base = resolve_path_unrestricted(project_root, path_str);
 
     // Build full pattern relative to base directory
     let full_pattern = base.join(pattern);
@@ -71,11 +71,9 @@ pub async fn glob_search(project_root: &Path, args: &Value, max_results: usize) 
     for entry in glob_results {
         match entry {
             Ok(path) => {
-                // Security: ensure result is within project root
-                if !path.starts_with(project_root) {
-                    continue;
-                }
-                let relative = path.strip_prefix(project_root).unwrap_or(&path);
+                // Return paths relative to the search base; fall back to
+                // absolute if the path is somehow not under base.
+                let relative = path.strip_prefix(&base).unwrap_or(&path);
                 matches.push(relative.display().to_string());
                 if matches.len() >= max_results {
                     break;
