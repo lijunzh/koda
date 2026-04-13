@@ -479,6 +479,74 @@ mod tests {
         assert!(!mgr.remove_server("ghost").await);
     }
 
+    // ── add_server: name collision ──────────────────────────────────
+
+    /// When `add_server` is called with a name that already exists the old
+    /// client and its annotations are purged BEFORE the new connect attempt.
+    /// Even if the new connect fails (dummy `false` command), the stale
+    /// annotations from the previous server must be gone.
+    #[tokio::test]
+    async fn add_server_collision_purges_old_annotations() {
+        let mut mgr = McpManager::new();
+
+        // Seed an existing client with a fake annotation.
+        let c = McpClient::new("myserver".into(), dummy_config());
+        mgr.insert_client_for_test(c);
+        mgr.annotations
+            .insert("myserver__old_tool".into(), McpToolAnnotations::default());
+        assert!(mgr.has_tool("myserver__old_tool"), "precondition");
+
+        // add_server with the same name — connect will fail (command `false`).
+        let result = mgr.add_server("myserver".into(), dummy_config()).await;
+        // We don’t care whether connect succeeded; the annotation purge
+        // must have happened regardless.
+        let _ = result;
+
+        assert!(
+            !mgr.has_tool("myserver__old_tool"),
+            "stale annotation must be purged on collision, even if reconnect fails"
+        );
+    }
+
+    // ── reconnect_server: stale annotations ─────────────────────────
+
+    /// `reconnect_server` must purge annotations for the given server
+    /// before attempting the reconnect.  Even if the reconnect fails
+    /// (dummy `false` command), stale entries must be gone.
+    #[tokio::test]
+    async fn reconnect_server_purges_stale_annotations() {
+        let mut mgr = McpManager::new();
+
+        let c = McpClient::new("db".into(), dummy_config());
+        mgr.insert_client_for_test(c);
+        mgr.annotations
+            .insert("db__query".into(), McpToolAnnotations::default());
+        mgr.annotations
+            .insert("db__insert".into(), McpToolAnnotations::default());
+        assert!(mgr.has_tool("db__query"), "precondition");
+
+        // Reconnect — connect will fail (command `false`), but annotations
+        // must be purged before the attempt.
+        let _ = mgr.reconnect_server("db").await;
+
+        assert!(
+            !mgr.has_tool("db__query"),
+            "db__query annotation must be purged after reconnect attempt"
+        );
+        assert!(
+            !mgr.has_tool("db__insert"),
+            "db__insert annotation must be purged after reconnect attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnect_server_nonexistent_returns_err() {
+        let mut mgr = McpManager::new();
+        let result = mgr.reconnect_server("ghost").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
     // ── status_bar_summary states ─────────────────────────────────────
 
     #[test]
