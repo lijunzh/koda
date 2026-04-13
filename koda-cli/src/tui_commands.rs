@@ -405,6 +405,10 @@ fn show_help(buffer: &mut ScrollBuffer) {
         ("Alt+Enter", "Insert newline (multi-line input)"),
         ("@file.rs", "Attach file context to your message"),
         ("@image.png", "Attach image (vision-capable models)"),
+        (
+            "drag & drop",
+            "Drop an image into the terminal to attach it",
+        ),
         ("↑ / ↓", "Cycle through input history"),
         ("Ctrl+R", "Reverse history search"),
         ("Tab", "Autocomplete @file path or /command"),
@@ -458,32 +462,6 @@ fn show_help(buffer: &mut ScrollBuffer) {
         );
     }
 
-    // ── Approval (shown when a tool needs confirmation) ────────
-    tui_output::blank(buffer);
-    tui_output::emit_line(
-        buffer,
-        Line::from(vec![
-            Span::styled("  Approval ", BOLD),
-            Span::styled("(when the agent asks to run a tool)", DIM),
-        ]),
-    );
-    tui_output::blank(buffer);
-    let approval_keys: &[(&str, &str)] = &[
-        ("y", "Approve this tool call"),
-        ("n", "Reject this tool call"),
-        ("a", "Approve and switch to auto mode (no more prompts)"),
-        ("f", "Reject and provide written feedback"),
-        ("Esc", "Reject (same as n)"),
-    ];
-    for (key, desc) in approval_keys {
-        tui_output::emit_line(
-            buffer,
-            Line::from(vec![
-                Span::styled(format!("  {key:<col$}"), CYAN),
-                Span::styled(*desc, DIM),
-            ]),
-        );
-    }
     tui_output::blank(buffer);
 }
 
