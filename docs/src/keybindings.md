@@ -9,7 +9,7 @@
 | `Alt+Enter` | Insert newline (multi-line input) |
 | `Tab` | Autocomplete slash commands and `@file` paths |
 | `Shift+Tab` | Cycle trust mode (Safe ↔ Auto) |
-| `↑ / ↓` | Cycle through input history |
+| `↑ / ↓` | Cycle through input history (idle) · pop `later` queue into editor (during inference) |
 | `Ctrl+R` | Reverse history search |
 | `Ctrl+U` | Clear deferred (`later`) queue during inference |
 
