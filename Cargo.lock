@@ -1872,7 +1872,6 @@ dependencies = [
  "crossterm",
  "futures-util",
  "koda-core",
- "koda-ipc",
  "once_cell",
  "ratatui",
  "ratatui-textarea",
@@ -1889,7 +1888,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "unicode-width",
- "uuid",
 ]
 
 [[package]]
@@ -1905,7 +1903,6 @@ dependencies = [
  "http",
  "ignore",
  "insta",
- "koda-ipc",
  "koda-test-utils",
  "path-clean",
  "regex",
@@ -1942,17 +1939,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "koda-ipc"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
 ]
 
 [[package]]

@@ -81,9 +81,6 @@ http = "1"
 
 # First-party workspace libraries (direct calls)
 
-# IPC protocol — supervisor ↔ worker fetch routing (#884)
-koda-ipc = { path = "../koda-ipc", version = "0.1" }
-
 # Async trait support
 async-trait = "0.1"
 

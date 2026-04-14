@@ -84,17 +84,6 @@ pub async fn run_stdio_server(project_root: PathBuf, mut config: KodaConfig) -> 
     // Initialize database
     let db = Database::init(&koda_core::db::config_dir()?).await?;
 
-    // Start the IPC supervisor before spawning any worker processes (#884).
-    // Keeps the socket alive for the lifetime of the server — the RAII guard
-    // removes the socket file and unsets KODA_SUPERVISOR_SOCKET on drop.
-    let ipc_supervisor = crate::ipc_supervisor::IpcSupervisor::bind().await?;
-    tracing::info!(
-        socket = %ipc_supervisor.socket_path().display(),
-        "IPC supervisor started"
-    );
-    // Keep the supervisor alive for the server's lifetime.
-    let _ipc_supervisor = ipc_supervisor;
-
     // Query actual model capabilities before building agent
     let tmp_provider = koda_core::providers::create_provider(&config);
     config

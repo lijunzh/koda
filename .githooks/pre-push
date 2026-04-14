@@ -51,19 +51,6 @@ else
     exit 1
 fi
 
-# --- Docs -------------------------------------------------------------------
-# Builds rustdoc for every workspace crate with -D warnings, exactly mirroring
-# the CI "Docs" job. Catches broken intra-doc links and references to
-# non-existent items before they reach CI (root cause of post-#884 failure).
-# ~25 s on a warm cache; worth it given the test suite already takes minutes.
-info "cargo doc --workspace --no-deps"
-if RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet 2>&1; then
-    ok "docs clean"
-else
-    fail "docs: fix the errors above"
-    exit 1
-fi
-
 # --- Tests -------------------------------------------------------------------
 # Runs unit tests (--lib, fast) plus the integration test suites that are
 # policy-critical and complete in <5s. Slow suites (mcp_http_transport,

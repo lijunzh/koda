@@ -58,22 +58,6 @@ pub async fn web_fetch(args: &Value, max_body_chars: usize) -> Result<String> {
         anyhow::bail!("URL must start with http:// or https://");
     }
 
-    // ── Supervisor routing (#884) ─────────────────────────────────────────
-    //
-    // When this process is running as a sandboxed worker the supervisor holds
-    // all outbound network sockets.  Route the fetch through IPC so the
-    // supervisor can apply its own `is_safe_url()` check and audit log.
-    // The raw flag is silently ignored in this path — the supervisor always
-    // returns the stripped body; raw HTML is not needed for security-sensitive
-    // overnight workflows.
-    if let Some(sock) = koda_ipc::client::supervisor_socket_path() {
-        tracing::debug!(url, "WebFetch: routing through supervisor IPC");
-        let body = koda_ipc::client::fetch(&sock, url, Some(max_body_chars)).await?;
-        return Ok(body);
-    }
-
-    // ── Direct path (non-sandboxed) ────────────────────────────────────────
-
     // SSRF protection: block requests to internal/private networks
     if !is_safe_url(url) {
         anyhow::bail!(
@@ -157,7 +141,7 @@ pub async fn web_fetch(args: &Value, max_body_chars: usize) -> Result<String> {
 }
 
 /// Check if an IP address is safe (not private/internal/loopback).
-pub fn is_safe_ip(ip: std::net::IpAddr) -> bool {
+pub(crate) fn is_safe_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(ipv4) => {
             let octets = ipv4.octets();
@@ -187,7 +171,7 @@ pub fn is_safe_ip(ip: std::net::IpAddr) -> bool {
 
 /// Check if a URL is safe to fetch (not internal/private network).
 /// Uses the `url` crate for robust parsing (handles userinfo@, IPv6, etc.).
-pub fn is_safe_url(url_str: &str) -> bool {
+pub(crate) fn is_safe_url(url_str: &str) -> bool {
     let Ok(parsed) = url::Url::parse(url_str) else {
         return false;
     };
