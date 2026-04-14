@@ -6,26 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-### Added
-- **Headless network isolation** — `koda -p "..."` now spawns a sandboxed
-  `koda __worker` subprocess via `IpcSupervisor`. The worker process is
-  network-isolated (macOS: `sandbox-exec`; Linux: `unshare --net`) while the
-  supervisor retains full network access for LLM calls and `web_fetch`.  
-  All LLM traffic from the worker is proxied back through the supervisor's
-  `IpcLlmProvider` over a Unix domain socket so credentials never enter the
-  sandbox. Closes [#884] Phase 2. (#890)
-- **Task registry** (`koda-core/src/db/tasks.rs`) — `create_task` /
-  `complete_task` / `list_tasks` give the CLI a persistent record of every
-  headless run with start/end timestamps and exit codes.
-- **`IpcLlmProvider`** (`koda-core/src/providers/ipc.rs`) — a thin `LlmProvider`
-  implementation that serialises every chat request over the supervisor socket
-  instead of making a direct API call. Workers pick this up automatically when
-  `KODA_SUPERVISOR_SOCKET` is set.
-- **`koda_ipc::llm`** — IPC message types for LLM chat
-  (`IpcLlmRequest` / `IpcLlmResponse` / `IpcTokenUsage` / `IpcToolCall`).
-- **`WorkerConfig` struct** — replaces the eight-argument `spawn_worker`
-  call with a single config struct (DRY + clippy `too_many_arguments`).
-
 ### Fixed
 - **Ctrl+C resume broken across all providers** — typing `continue` after an
   interrupted turn sent two consecutive user-side messages to the API, causing
