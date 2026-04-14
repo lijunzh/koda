@@ -27,8 +27,8 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ("/expand", "Show full output of last tool call", None),
     (
         "/export",
-        "Export full session transcript to file",
-        Some("[file.md]"),
+        "Export session transcript (verbose default, --summary for concise)",
+        Some("[--summary] [file.md]"),
     ),
     ("/help", "Show commands and shortcuts", None),
     ("/key", "Manage API keys", None),

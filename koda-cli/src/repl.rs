@@ -75,11 +75,11 @@ pub enum ReplAction {
     ///
     /// `n` defaults to 1 (most recent). `/copy 2` copies the second-to-last, etc.
     CopyResponse(usize),
-    /// `/export [<file.md>]` — export the full session transcript.
+    /// `/export [--summary] [<file.md>]` — export the full session transcript.
     ///
-    /// Without an argument: write to a auto-named file in the current directory.
-    /// With a filename: write Markdown to that path.
-    Export(Option<String>),
+    /// Default: verbose (full fidelity — timestamps, token counts, all tool output).
+    /// `--summary`: concise, human-readable format.
+    Export { dest: Option<String>, summary: bool },
     /// `/mcp` or `/mcp list` — show MCP server list and status.
     McpList,
     /// `/mcp add <name> <command> [args...]` — add a stdio MCP server.
@@ -201,7 +201,21 @@ pub async fn handle_command(
             let n: usize = arg.and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
             ReplAction::CopyResponse(n)
         }
-        "/export" => ReplAction::Export(arg.map(|s| s.to_string())),
+        "/export" => {
+            // Parse optional `--summary` flag and destination.
+            let (summary, dest) = match arg {
+                Some(s) => {
+                    let parts: Vec<&str> = s.splitn(2, ' ').collect();
+                    if parts.first() == Some(&"--summary") {
+                        (true, parts.get(1).map(|d| d.to_string()))
+                    } else {
+                        (false, Some(s.to_string()))
+                    }
+                }
+                None => (false, None),
+            };
+            ReplAction::Export { dest, summary }
+        }
 
         "/mcp" => parse_mcp_subcommand(arg),
 
@@ -578,11 +592,39 @@ mod tests {
         assert!(matches!(dispatch("/set"), ReplAction::NotACommand));
         assert!(matches!(dispatch("/config"), ReplAction::NotACommand));
         assert!(matches!(dispatch("/transcript"), ReplAction::NotACommand));
-        assert!(matches!(dispatch("/export"), ReplAction::Export(None)));
+        assert!(matches!(
+            dispatch("/export"),
+            ReplAction::Export {
+                dest: None,
+                summary: false
+            }
+        ));
         assert!(matches!(
             dispatch("/export koda.md"),
-            ReplAction::Export(Some(_))
+            ReplAction::Export {
+                dest: Some(_),
+                summary: false
+            }
         ));
+        assert!(matches!(
+            dispatch("/export --summary"),
+            ReplAction::Export {
+                dest: None,
+                summary: true
+            }
+        ));
+        assert!(matches!(
+            dispatch("/export --summary notes.md"),
+            ReplAction::Export {
+                dest: Some(_),
+                summary: true
+            }
+        ));
+        // Verify the destination is correct when --summary has a filename.
+        if let ReplAction::Export { dest, summary } = dispatch("/export --summary notes.md") {
+            assert!(summary);
+            assert_eq!(dest.as_deref(), Some("notes.md"));
+        }
     }
 
     #[test]
