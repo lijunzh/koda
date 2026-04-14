@@ -287,6 +287,7 @@ impl Persistence for Database {
     /// Returns messages in chronological order. Compacted messages
     /// (archived by `/compact`) are excluded — their summary replaces them.
     /// Several sanitisation passes run before returning:
+    /// - Incomplete assistant messages (interrupted/network-error) are excluded (#875, #877)
     /// - Mismatched tool_use / tool_result pairs are pruned (#428)
     /// - Null-content assistant messages with no tool calls are dropped (#594)
     /// - Whitespace-only assistant messages are dropped (#594)
@@ -298,6 +299,7 @@ impl Persistence for Database {
                     created_at
              FROM messages
              WHERE session_id = ? AND compacted_at IS NULL
+               AND (role != 'assistant' OR completed_at IS NOT NULL)
              ORDER BY id ASC",
         )
         .bind(session_id)
@@ -598,13 +600,14 @@ impl Persistence for Database {
         .execute(&mut *tx)
         .await?;
 
-        // Insert a continuation hint so the LLM knows how to behave
+        // Insert a continuation hint so the LLM knows how to behave.
+        // Set completed_at immediately — synthetic messages are complete from birth.
         let continuation = "Your context was compacted. The previous message contains a summary of our earlier conversation. \
             Do not mention the summary or that compaction occurred. \
             Continue the conversation naturally based on the summarized context.";
         sqlx::query(
-            "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, prompt_tokens, completion_tokens)
-             VALUES (?, 'assistant', ?, NULL, NULL, NULL, NULL)",
+            "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, prompt_tokens, completion_tokens, completed_at)
+             VALUES (?, 'assistant', ?, NULL, NULL, NULL, NULL, datetime('now'))",
         )
         .bind(session_id)
         .bind(continuation)

@@ -327,9 +327,12 @@ mod tests {
             let tc_id = format!("tc_{i}");
             let tc_json =
                 format!(r#"[{{"id":"{tc_id}","function_name":"Read","arguments":"{{}}"}}]"#);
-            db.insert_message(&session, &Role::Assistant, None, Some(&tc_json), None, None)
+            let mid = db
+                .insert_message(&session, &Role::Assistant, None, Some(&tc_json), None, None)
                 .await
                 .unwrap();
+            // Mark complete — these represent finished turns that load_context must see.
+            db.mark_message_complete(mid).await.unwrap();
             db.insert_message(
                 &session,
                 &Role::Tool,
