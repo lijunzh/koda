@@ -66,6 +66,13 @@ impl TuiContext {
                 let mode = trust::read_trust(&self.shared_mode);
                 let ctx = self.context_pct;
                 let mcp_info = self.agent.mcp_status_bar_info();
+                let queue_total = self.later_queue.len();
+                let queue_preview: Vec<String> = self
+                    .later_queue
+                    .iter()
+                    .take(crate::widgets::queue_preview::MAX_VISIBLE)
+                    .cloned()
+                    .collect();
                 let _ = self.terminal.draw(|f| {
                     draw_viewport(
                         f,
@@ -75,7 +82,8 @@ impl TuiContext {
                         ctx,
                         self.tui_state,
                         &self.prompt_mode,
-                        self.later_queue.len(),
+                        &queue_preview,
+                        queue_total,
                         self.inference_start
                             .map(|s| s.elapsed().as_secs())
                             .unwrap_or(0),
@@ -597,6 +605,25 @@ async fn handle_inference_key_inline(
         }
         (KeyCode::BackTab, _) => {
             trust::cycle_trust(shared_mode);
+        }
+        // Up during inference: pop the last later_queue item back into the
+        // editor so the user can edit it before re-submitting.
+        // Falls back to normal textarea movement when the queue is empty.
+        (KeyCode::Up, KeyModifiers::NONE) => {
+            if let Some(popped) = later_queue.pop_back() {
+                textarea.select_all();
+                textarea.cut();
+                textarea.insert_str(&popped);
+                scroll_buffer.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "\u{21a9} Popped from later queue",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            } else {
+                textarea.input(Event::Key(key));
+            }
         }
         (KeyCode::Tab, KeyModifiers::NONE) => {
             let current = textarea.lines().join("\n");

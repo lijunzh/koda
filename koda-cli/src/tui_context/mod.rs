@@ -357,7 +357,15 @@ impl TuiContext {
         let ctx = self.context_pct;
         let tui_state = self.tui_state;
         let prompt_mode = &self.prompt_mode;
-        let queue_len = self.later_queue.len();
+        let queue_total = self.later_queue.len();
+        // Collect at most MAX_VISIBLE preview items *before* the terminal.draw
+        // borrow so we don't fight the borrow checker on &mut self.terminal.
+        let queue_preview: Vec<String> = self
+            .later_queue
+            .iter()
+            .take(crate::widgets::queue_preview::MAX_VISIBLE)
+            .cloned()
+            .collect();
         let elapsed = self
             .inference_start
             .map(|s| s.elapsed().as_secs())
@@ -380,7 +388,8 @@ impl TuiContext {
                 ctx,
                 tui_state,
                 prompt_mode,
-                queue_len,
+                &queue_preview,
+                queue_total,
                 elapsed,
                 last_turn,
                 menu,
