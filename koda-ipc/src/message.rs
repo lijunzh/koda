@@ -54,6 +54,10 @@ pub enum IpcRequestBody {
     /// The supervisor applies `is_safe_url()` validation before fetching.
     Fetch(FetchRequest),
 
+    /// LLM chat completion — worker delegates the API call to the supervisor
+    /// which holds the API keys and network access.
+    LlmChat(Box<crate::llm::IpcLlmRequest>),
+
     /// Graceful shutdown — worker is done and wants the supervisor to
     /// tear down the socket and exit cleanly.
     Shutdown,
@@ -85,6 +89,8 @@ pub struct IpcResponse {
 pub enum IpcResponseBody {
     /// Fetch succeeded.
     FetchOk(FetchResponse),
+    /// LLM chat completion succeeded.
+    LlmChatOk(crate::llm::IpcLlmResponse),
     /// Operation failed.  `message` is a human-readable error string safe to
     /// surface to the user (no secrets, no internal paths).
     Error { message: String },

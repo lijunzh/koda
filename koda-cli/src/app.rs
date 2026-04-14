@@ -136,6 +136,10 @@ enum Command {
     },
     /// Connect to a running Koda server (not yet implemented)
     Connect { url: String },
+    /// Internal: sandboxed headless worker spawned by the supervisor.
+    /// Not user-facing — hidden from help output.
+    #[command(name = "__worker", hide = true)]
+    Worker,
 }
 
 pub(crate) async fn run() -> Result<()> {
@@ -144,6 +148,16 @@ pub(crate) async fn run() -> Result<()> {
     // Handle subcommands first
     if let Some(cmd) = &cli.command {
         match cmd {
+            Command::Worker => {
+                // Sandboxed headless worker — spawned by IpcSupervisor.
+                // Runs before logging setup so the log file goes into the
+                // normal per-process location but doesn't race with the parent.
+                let exit_code = crate::worker::run_worker().await.unwrap_or_else(|e| {
+                    eprintln!("[koda-worker] fatal: {e}");
+                    1
+                });
+                std::process::exit(exit_code);
+            }
             Command::Server { port, stdio } => {
                 if *stdio {
                     let project_root = cli.project_root.clone().unwrap_or_else(|| {
@@ -251,15 +265,46 @@ pub(crate) async fn run() -> Result<()> {
             Some(id) => id,
             None => db.create_session(&config.agent_name, &project_root).await?,
         };
-        let exit_code = headless::run_headless(
-            project_root,
-            config,
-            db,
-            session_id,
-            prompt,
-            &cli.output_format,
+        // Register the task in the registry before spawning.
+        let task_id = uuid::Uuid::new_v4().to_string();
+        // Must match the path that `Database::init` uses: config_dir/db/koda.db
+        let db_path = koda_core::db::config_dir()?.join("db").join("koda.db");
+        db.create_task(
+            &task_id,
+            &prompt,
+            &session_id,
+            &project_root.to_string_lossy(),
         )
         .await?;
+
+        // Build the real LLM provider (supervisor uses it on behalf of the worker).
+        // Query capabilities now, before the worker is isolated from the network.
+        let mut cfg_for_caps = config.clone();
+        let tmp_provider = koda_core::providers::create_provider(&cfg_for_caps);
+        cfg_for_caps
+            .query_and_apply_capabilities(tmp_provider.as_ref())
+            .await;
+        let provider = koda_core::providers::create_provider(&cfg_for_caps);
+
+        // Start the IPC supervisor with the real provider.
+        let supervisor = crate::ipc_supervisor::IpcSupervisor::bind_with_llm(provider).await?;
+
+        tracing::info!(task_id = %task_id, session_id = %session_id, "spawning headless worker");
+        let mut child = supervisor
+            .spawn_worker(crate::ipc_supervisor::WorkerConfig {
+                prompt: &prompt,
+                session_id: &session_id,
+                project_root: &project_root,
+                db_path: &db_path,
+                agent: &cli.agent,
+                mode: &cli.mode,
+                output_format: &cli.output_format,
+            })
+            .await?;
+
+        let status = child.wait().await?;
+        let exit_code = status.code().unwrap_or(1);
+        db.complete_task(&task_id, exit_code).await?;
         std::process::exit(exit_code);
     }
 

@@ -37,6 +37,8 @@
 pub mod anthropic;
 /// Google Gemini API provider.
 pub mod gemini;
+/// IPC-backed provider for sandboxed headless workers.
+pub mod ipc;
 /// OpenAI-compatible provider (LM Studio, Ollama, vLLM, OpenRouter, etc.).
 pub mod openai_compat;
 /// Shared SSE stream collector for all providers.
@@ -331,6 +333,14 @@ use crate::config::{KodaConfig, ProviderType};
 
 /// Create an LLM provider from the given configuration.
 pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider> {
+    // Sandboxed worker: all LLM calls go through the supervisor over IPC.
+    // Check this first — the worker has no outbound TCP, so falling through
+    // to a real provider would fail at the first API call.
+    if let Some(sock) = koda_ipc::client::supervisor_socket_path() {
+        tracing::debug!(socket = %sock, "using IPC provider (sandboxed worker mode)");
+        return Box::new(ipc::IpcLlmProvider::new(sock, &config.model_settings.model));
+    }
+
     let api_key = crate::runtime_env::get(config.provider_type.env_key_name());
     match config.provider_type {
         ProviderType::Anthropic => {

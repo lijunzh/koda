@@ -38,6 +38,7 @@
 //! ```
 
 pub mod client;
+pub mod llm;
 pub mod message;
 pub mod transport;
 

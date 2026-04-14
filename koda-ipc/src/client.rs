@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 use tokio::io::BufReader;
 use tokio::net::UnixStream;
 
+use crate::llm::{IpcLlmRequest, IpcLlmResponse};
 use crate::message::{
     FetchRequest, HandshakeAck, HandshakeHello, IpcRequest, IpcRequestBody, IpcResponse,
     IpcResponseBody, PROTOCOL_VERSION,
@@ -94,6 +95,65 @@ pub async fn fetch(socket_path: &str, url: &str, max_body_chars: Option<usize>) 
         IpcResponseBody::FetchOk(f) => Ok(f.body),
         IpcResponseBody::Error { message } => bail!("supervisor fetch error: {message}"),
         IpcResponseBody::ShutdownAck => bail!("unexpected ShutdownAck for fetch request"),
+        IpcResponseBody::LlmChatOk(_) => bail!("unexpected LlmChatOk for fetch request"),
+    }
+}
+
+/// Ask the supervisor to execute an LLM chat completion and return the result.
+///
+/// Like [`fetch`], this handles the full connect → handshake → request → response
+/// cycle. The supervisor uses its own API keys and network access; the worker
+/// never needs to hold credentials or open outbound TCP connections.
+///
+/// # Errors
+///
+/// Returns an error if the socket is unreachable, the handshake is rejected,
+/// or the supervisor returns an `Error` response.
+pub async fn llm_chat(socket_path: &str, req: IpcLlmRequest) -> Result<IpcLlmResponse> {
+    let stream = UnixStream::connect(socket_path)
+        .await
+        .with_context(|| format!("connect to supervisor socket {socket_path}"))?;
+
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+
+    // ── Handshake ──────────────────────────────────────────────────────────
+    let hello = HandshakeHello {
+        protocol_version: PROTOCOL_VERSION,
+        koda_version: env!("CARGO_PKG_VERSION").into(),
+    };
+    send(&mut write_half, &hello)
+        .await
+        .context("send handshake hello")?;
+
+    let ack: HandshakeAck = recv(&mut reader).await.context("recv handshake ack")?;
+    if !ack.accepted {
+        anyhow::bail!(
+            "supervisor rejected handshake (protocol version {}): {}",
+            PROTOCOL_VERSION,
+            ack.message
+        );
+    }
+
+    // ── LLM chat request ───────────────────────────────────────────────────
+    let req_id = uuid::Uuid::new_v4().to_string();
+    let ipc_req = IpcRequest {
+        req_id: req_id.clone(),
+        body: IpcRequestBody::LlmChat(Box::new(req)),
+    };
+    send(&mut write_half, &ipc_req)
+        .await
+        .context("send llm_chat request")?;
+
+    let resp: IpcResponse = recv(&mut reader).await.context("recv llm_chat response")?;
+    if resp.req_id != req_id {
+        anyhow::bail!("req_id mismatch: sent {req_id}, got {}", resp.req_id);
+    }
+
+    match resp.body {
+        IpcResponseBody::LlmChatOk(r) => Ok(r),
+        IpcResponseBody::Error { message } => anyhow::bail!("supervisor llm_chat error: {message}"),
+        _ => anyhow::bail!("unexpected response body for llm_chat request"),
     }
 }
 

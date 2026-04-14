@@ -50,6 +50,7 @@ pub(crate) mod tui_viewport;
 pub(crate) mod tui_wizards;
 pub(crate) mod util;
 pub(crate) mod widgets;
+pub(crate) mod worker;
 pub(crate) mod wrap_input;
 pub(crate) mod wrap_util;
 

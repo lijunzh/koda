@@ -24,8 +24,11 @@
 //! - **queries.rs** — `Persistence` trait implementation (all SQL queries)
 
 pub mod queries;
+pub mod tasks;
 #[cfg(test)]
 mod tests;
+
+pub use tasks::{TaskRow, TaskStatus};
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
@@ -224,6 +227,23 @@ impl Database {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 input TEXT NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );",
+        )
+        .execute(pool)
+        .await?;
+
+        // Background task registry (#884 Phase 2).
+        // Tracks headless tasks spawned by the supervisor.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'running',
+                prompt TEXT NOT NULL,
+                session_id TEXT,
+                project_root TEXT,
+                created_at INTEGER NOT NULL,
+                completed_at INTEGER,
+                exit_code INTEGER
             );",
         )
         .execute(pool)
