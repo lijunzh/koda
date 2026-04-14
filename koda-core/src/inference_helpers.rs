@@ -65,25 +65,61 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
         .sum()
 }
 
+/// Synthetic assistant message injected between consecutive user-side messages.
+///
+/// Inserted in-memory by [`assemble_messages`] — never written to the DB.
+/// When Ctrl+C interrupts an inference turn the assistant message never lands,
+/// leaving the history ending on a user or tool message. The next user message
+/// (e.g. "continue") then produces back-to-back user-side turns that all three
+/// providers reject as invalid role alternation. The sentinel bridges the gap
+/// so the provider sees `user → assistant → user` regardless of where the
+/// interruption occurred. Self-correcting: once the model replies for real,
+/// the sentinel is no longer needed and disappears on the next load.
+pub const INTERRUPTED_TURN_SENTINEL: &str = "[Turn interrupted — pick up from where you left off.]";
+
 /// Assemble messages from DB history into ChatMessage vec.
+///
+/// Injects a synthetic `assistant` sentinel between any consecutive user-side
+/// messages (`user` or `tool` followed by a plain `user`). This repairs broken
+/// role alternation caused by an interrupted turn without touching the DB.
+/// All three providers (Anthropic, Gemini, OpenAI-compat) require alternating
+/// roles; Anthropic and Gemini remap `tool` → user-role internally, so the
+/// `tool → user` case is equally broken without the sentinel (#875).
 pub fn assemble_messages(
     system_message: &ChatMessage,
     history: &[crate::db::Message],
 ) -> Vec<ChatMessage> {
     let mut messages = vec![system_message.clone()];
+
     for msg in history {
+        let role = msg.role.as_str();
+        let is_plain_user = role == "user" && msg.tool_call_id.is_none();
+
+        // If a plain user message would immediately follow another user-side
+        // message, the provider will reject the request. Insert a sentinel
+        // assistant message to restore valid alternation (#875).
+        if is_plain_user {
+            let prev_is_user_side = messages
+                .last()
+                .is_some_and(|p| p.role == "user" || p.role == "tool");
+            if prev_is_user_side {
+                messages.push(ChatMessage::text("assistant", INTERRUPTED_TURN_SENTINEL));
+            }
+        }
+
         let tool_calls: Option<Vec<ToolCall>> = msg
             .tool_calls
             .as_deref()
             .and_then(|tc| serde_json::from_str(tc).ok());
         messages.push(ChatMessage {
-            role: msg.role.as_str().to_string(),
+            role: role.to_string(),
             content: msg.content.clone(),
             tool_calls,
             tool_call_id: msg.tool_call_id.clone(),
             images: None,
         });
     }
+
     messages
 }
 
@@ -215,6 +251,130 @@ pub fn is_image_rejection_error(err: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistence::{Message, Role};
+
+    /// Build a bare `Message` for unit tests — mirrors the helper in db/tests.rs.
+    fn msg(role: &str, content: Option<&str>, tool_call_id: Option<&str>) -> Message {
+        Message {
+            id: 0,
+            session_id: String::new(),
+            role: role.parse().unwrap_or(Role::User),
+            content: content.map(Into::into),
+            full_content: None,
+            tool_calls: None,
+            tool_call_id: tool_call_id.map(Into::into),
+            prompt_tokens: None,
+            completion_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            thinking_tokens: None,
+            thinking_content: None,
+            created_at: None,
+        }
+    }
+
+    fn system() -> ChatMessage {
+        ChatMessage::text("system", "You are helpful.")
+    }
+
+    // ── assemble_messages sentinel injection (#875) ───────────────────────────
+
+    /// Clean conversation — no interruption, no sentinel ever injected.
+    #[test]
+    fn no_sentinel_for_clean_conversation() {
+        let history = vec![
+            msg("user", Some("hello"), None),
+            msg("assistant", Some("hi!"), None),
+            msg("user", Some("refactor X"), None),
+            msg("assistant", Some("done"), None),
+        ];
+        let out = assemble_messages(&system(), &history);
+        // system + 4 history messages — sentinel would make it 6
+        assert_eq!(out.len(), 5, "no sentinel expected; got {out:?}");
+        assert!(
+            out.iter()
+                .all(|m| m.content.as_deref() != Some(INTERRUPTED_TURN_SENTINEL)),
+            "sentinel must not appear in clean conversation",
+        );
+    }
+
+    /// Ctrl+C during streaming: last DB message is `user`, then user says
+    /// "continue" — two consecutive `user` messages need the sentinel.
+    #[test]
+    fn sentinel_injected_for_user_after_user() {
+        let history = vec![
+            msg("user", Some("refactor X"), None),
+            // no assistant reply (Ctrl+C filtered it out)
+            msg("user", Some("continue"), None),
+        ];
+        let out = assemble_messages(&system(), &history);
+        // system + user + sentinel + user(continue)
+        assert_eq!(out.len(), 4, "expected sentinel; got {out:?}");
+        assert_eq!(out[2].role, "assistant");
+        assert_eq!(out[2].content.as_deref(), Some(INTERRUPTED_TURN_SENTINEL));
+        assert_eq!(out[3].content.as_deref(), Some("continue"));
+    }
+
+    /// Ctrl+C during tool execution: DB ends with a `tool` result, then user
+    /// says "continue". Anthropic + Gemini both remap tool→user-side, so the
+    /// sentinel is required for all three providers.
+    #[test]
+    fn sentinel_injected_for_user_after_tool_result() {
+        let history = vec![
+            msg("user", Some("read the file"), None),
+            msg("assistant", Some("sure"), None),
+            msg("tool", Some("file contents"), Some("tc_1")),
+            // assistant never processed the result (Ctrl+C)
+            msg("user", Some("continue"), None),
+        ];
+        let out = assemble_messages(&system(), &history);
+        // system + user + assistant + tool + sentinel + user(continue)
+        assert_eq!(
+            out.len(),
+            6,
+            "expected sentinel after tool result; got {out:?}"
+        );
+        assert_eq!(out[4].role, "assistant");
+        assert_eq!(out[4].content.as_deref(), Some(INTERRUPTED_TURN_SENTINEL));
+    }
+
+    /// Tool result immediately following an assistant message is valid — no sentinel.
+    #[test]
+    fn no_sentinel_before_tool_result() {
+        let history = vec![
+            msg("user", Some("read it"), None),
+            msg("assistant", Some("ok"), None),
+            msg("tool", Some("contents"), Some("tc_1")),
+        ];
+        let out = assemble_messages(&system(), &history);
+        assert_eq!(out.len(), 4);
+        assert!(
+            out.iter().all(|m| m.role != "assistant"
+                || m.content.as_deref() != Some(INTERRUPTED_TURN_SENTINEL))
+        );
+    }
+
+    /// Multiple tool results back-to-back — no sentinel between them.
+    #[test]
+    fn no_sentinel_between_consecutive_tool_results() {
+        let history = vec![
+            msg("user", Some("do stuff"), None),
+            msg("assistant", Some("calling tools"), None),
+            msg("tool", Some("r1"), Some("tc_1")),
+            msg("tool", Some("r2"), Some("tc_2")),
+        ];
+        let out = assemble_messages(&system(), &history);
+        assert_eq!(out.len(), 5); // system + 4 messages, no sentinel
+    }
+
+    /// First user message follows system — system is not user-side, so no sentinel.
+    #[test]
+    fn no_sentinel_for_first_user_message() {
+        let history = vec![msg("user", Some("hello"), None)];
+        let out = assemble_messages(&system(), &history);
+        assert_eq!(out.len(), 2); // system + user
+        assert_eq!(out[1].role, "user");
+    }
 
     #[test]
     fn test_is_context_overflow_error() {

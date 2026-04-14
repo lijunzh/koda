@@ -4,6 +4,19 @@ All notable changes to Koda are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+- **Ctrl+C resume broken across all providers** — typing `continue` after an
+  interrupted turn sent two consecutive user-side messages to the API, causing
+  a 400/422 rejection on every provider. `assemble_messages` now injects a
+  synthetic assistant sentinel between any consecutive user-side messages
+  at assembly time (never written to DB, disappears after the next real
+  reply). Covers both the streaming-interrupted case (`user → user`) and the
+  tool-result-interrupted case (`tool → user`), which Anthropic and Gemini
+  both treat as two consecutive user messages after their internal remapping
+  (#875).
+
 ## [0.2.12] - 2026-04-12
 
 ### Added
