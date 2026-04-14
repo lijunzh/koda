@@ -75,7 +75,7 @@ impl TuiContext {
                         ctx,
                         self.tui_state,
                         &self.prompt_mode,
-                        self.input_queue.len(),
+                        self.later_queue.len(),
                         self.inference_start
                             .map(|s| s.elapsed().as_secs())
                             .unwrap_or(0),
@@ -111,7 +111,7 @@ impl TuiContext {
                             &mut self.completer,
                             &mut self.history,
                             &mut self.history_idx,
-                            &mut self.input_queue,
+                            &mut self.later_queue,
                             &mut self.paste_blocks,
                             &db_handle,
                         ).await;
@@ -170,16 +170,16 @@ impl TuiContext {
     // ── Post-turn cleanup ──────────────────────────────────────
 
     async fn post_turn_cleanup(&mut self, ui_rx: &mut mpsc::UnboundedReceiver<UiEvent>) {
-        // If the turn was cancelled, clear the input queue so queued
-        // messages don't immediately start a new turn that may block
-        // on a single-slot local server (LM Studio, ollama) (#825).
-        if self.session.cancel.is_cancelled() && !self.input_queue.is_empty() {
-            let n = self.input_queue.len();
-            self.input_queue.clear();
+        // If the turn was cancelled, clear the later_queue so deferred
+        // messages don’t immediately fire a new turn that may block on a
+        // single-slot local server (LM Studio, ollama) (#825).
+        if self.session.cancel.is_cancelled() && !self.later_queue.is_empty() {
+            let n = self.later_queue.len();
+            self.later_queue.clear();
             self.scroll_buffer.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    format!("\u{1f6ab} Cleared {n} queued message(s)"),
+                    format!("\u{1f6ab} Cleared {n} deferred message(s)"),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]));
@@ -305,7 +305,7 @@ async fn handle_crossterm_event_inline(
     completer: &mut crate::completer::InputCompleter,
     history: &mut Vec<String>,
     history_idx: &mut Option<usize>,
-    input_queue: &mut std::collections::VecDeque<String>,
+    later_queue: &mut std::collections::VecDeque<String>,
     paste_blocks: &mut Vec<input::PasteBlock>,
     db: &koda_core::db::Database,
 ) {
@@ -353,7 +353,7 @@ async fn handle_crossterm_event_inline(
                 completer,
                 history,
                 history_idx,
-                input_queue,
+                later_queue,
                 db,
             )
             .await;
@@ -377,7 +377,7 @@ async fn handle_inference_key_inline(
     completer: &mut crate::completer::InputCompleter,
     history: &mut Vec<String>,
     history_idx: &mut Option<usize>,
-    input_queue: &mut std::collections::VecDeque<String>,
+    later_queue: &mut std::collections::VecDeque<String>,
     db: &koda_core::db::Database,
 ) {
     // Approval hotkeys
@@ -527,6 +527,9 @@ async fn handle_inference_key_inline(
         (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
             textarea.insert_newline();
         }
+        // Enter during inference — default lane is "next" (mid-turn steer).
+        // The text is sent directly to the engine as QueueNext; it will be
+        // injected before the next provider request in the current turn.
         (KeyCode::Enter, KeyModifiers::NONE) => {
             let text = textarea.lines().join("\n");
             if !text.trim().is_empty() {
@@ -536,15 +539,40 @@ async fn handle_inference_key_inline(
                 let _ = db.history_push(&text).await;
                 *history_idx = None;
 
-                // Visual echo so the user can see what they queued.
                 let preview = truncate_preview(&text, 80);
                 scroll_buffer.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled("📋 Queued: ", Style::default().fg(Color::Yellow)),
+                    Span::styled("\u{1f4e5} Next: ", Style::default().fg(Color::Green)),
                     Span::styled(preview, Style::default().fg(Color::DarkGray)),
                 ]));
 
-                input_queue.push_back(text);
+                let _ = cmd_tx.send(EngineCommand::QueueNext { text }).await;
+            }
+        }
+        // Ctrl+J during inference — "later" lane: defer text until after the
+        // current turn fully completes, then batch with other later items into
+        // one new turn.
+        (KeyCode::Char('j'), m) if m.contains(KeyModifiers::CONTROL) => {
+            let text = textarea.lines().join("\n");
+            if !text.trim().is_empty() {
+                textarea.select_all();
+                textarea.cut();
+                history.push(text.clone());
+                let _ = db.history_push(&text).await;
+                *history_idx = None;
+
+                let preview = truncate_preview(&text, 80);
+                let later_n = later_queue.len() + 1;
+                scroll_buffer.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("\u{1f4cb} Later ({later_n}): "),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::styled(preview, Style::default().fg(Color::DarkGray)),
+                ]));
+
+                later_queue.push_back(text);
             }
         }
         (KeyCode::Esc, _) => {
@@ -553,15 +581,15 @@ async fn handle_inference_key_inline(
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
             cancel_token.cancel();
         }
-        // Ctrl+U: clear the input queue without cancelling inference.
+        // Ctrl+U: clear the later_queue (deferred messages) without cancelling inference.
         (KeyCode::Char('u'), m) if m.contains(KeyModifiers::CONTROL) => {
-            if !input_queue.is_empty() {
-                let n = input_queue.len();
-                input_queue.clear();
+            if !later_queue.is_empty() {
+                let n = later_queue.len();
+                later_queue.clear();
                 scroll_buffer.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
-                        format!("🚫 Cleared {n} queued message(s)"),
+                        format!("\u{1f6ab} Cleared {n} deferred message(s)"),
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]));
