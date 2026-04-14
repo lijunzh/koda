@@ -340,6 +340,19 @@ pub enum EngineCommand {
     ///
     /// Currently handled client-side. Defined for wire protocol completeness.
     Quit,
+
+    /// User typed a message during inference and wants it injected into the
+    /// **current** turn before the next provider request.
+    ///
+    /// The engine drains all pending `QueueNext` commands at the top of each
+    /// loop iteration, batches them with `\n\n`, and inserts one user message
+    /// into session history before re-querying the provider.  This is the
+    /// "mid-turn steer" lane — the TUI's `later_queue` handles the separate
+    /// "after this turn" lane entirely on the client side.
+    QueueNext {
+        /// The text the user submitted.
+        text: String,
+    },
 }
 
 /// An image attached to a user prompt.
@@ -693,6 +706,19 @@ mod tests {
         };
         let json = serde_json::to_string(&cmd_stop).unwrap();
         let _: EngineCommand = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn test_queue_next_roundtrip() {
+        let cmd = EngineCommand::QueueNext {
+            text: "also add tests".into(),
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert!(json.contains("\"type\":\"queue_next\""));
+        let deserialized: EngineCommand = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(deserialized, EngineCommand::QueueNext { ref text } if text == "also add tests")
+        );
     }
 
     #[test]

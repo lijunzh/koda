@@ -4,12 +4,14 @@
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Send message |
+| `Enter` | Send message (or queue as **next** during inference) |
+| `Ctrl+J` | Queue message as **later** during inference (deferred turn) |
 | `Alt+Enter` | Insert newline (multi-line input) |
 | `Tab` | Autocomplete slash commands and `@file` paths |
 | `Shift+Tab` | Cycle trust mode (Safe ↔ Auto) |
 | `↑ / ↓` | Cycle through input history |
 | `Ctrl+R` | Reverse history search |
+| `Ctrl+U` | Clear deferred (`later`) queue during inference |
 
 ## Navigation
 

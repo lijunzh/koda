@@ -62,7 +62,13 @@ pub(crate) struct TuiContext {
 
     // ── Control flow ──────────────────────────────────────────
     pub paste_blocks: Vec<input::PasteBlock>,
-    pub input_queue: VecDeque<String>,
+    /// Inputs queued during inference for injection into the **next** turn
+    /// after the current one completes.  All pending items are joined with
+    /// `\n\n` and submitted as a single new turn ("later" lane).
+    ///
+    /// Mid-turn injection ("next" lane) is handled by sending
+    /// `EngineCommand::QueueNext` directly to the engine via `cmd_tx`.
+    pub later_queue: VecDeque<String>,
     pub pending_command: Option<String>,
     pub should_quit: bool,
     pub silent_compact_deferred: bool,
@@ -316,7 +322,7 @@ impl TuiContext {
             provider_wizard: None,
             pending_approval_id: None,
             paste_blocks: Vec::new(),
-            input_queue: VecDeque::new(),
+            later_queue: VecDeque::new(),
             pending_command: None,
             should_quit: false,
             silent_compact_deferred: false,
@@ -351,7 +357,7 @@ impl TuiContext {
         let ctx = self.context_pct;
         let tui_state = self.tui_state;
         let prompt_mode = &self.prompt_mode;
-        let queue_len = self.input_queue.len();
+        let queue_len = self.later_queue.len();
         let elapsed = self
             .inference_start
             .map(|s| s.elapsed().as_secs())
@@ -452,30 +458,38 @@ impl TuiContext {
     // Command dispatch (slash commands, dropdown openers, inference prep)
     // ═══════════════════════════════════════════════════════════
 
-    /// Dequeue the next pending or queued input string, if any.
+    /// Dequeue the next pending input, if any.
+    ///
+    /// Priority order:
+    /// 1. `pending_command` — set by slash commands that need a follow-up prompt
+    /// 2. `later_queue` — all items are joined with `\n\n` and returned as one
+    ///    batched string so they become a single new inference turn.
     fn dequeue_input(&mut self) -> Option<String> {
         if let Some(cmd) = self.pending_command.take() {
             return Some(cmd);
         }
-        if let Some(queued) = self.input_queue.pop_front() {
+        if !self.later_queue.is_empty() {
+            // Drain the whole later_queue and batch into one turn.
+            let items: Vec<String> = self.later_queue.drain(..).collect();
             let mode = trust::read_trust(&self.shared_mode);
             let icon = match mode {
                 TrustMode::Plan => "\u{1f4cb}",
                 TrustMode::Safe => "\u{1f512}",
                 TrustMode::Auto => "\u{26a1}",
             };
-            let remaining = self.input_queue.len();
-            let suffix = if remaining > 0 {
-                format!(" (+{remaining} queued)")
-            } else {
-                String::new()
-            };
             self.scroll_buffer.push(Line::from(vec![
                 Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
-                Span::raw(queued.clone()),
-                Span::styled(suffix, Style::default().fg(Color::DarkGray)),
+                Span::raw(items[0].clone()),
+                if items.len() > 1 {
+                    Span::styled(
+                        format!(" (+{} batched)", items.len() - 1),
+                        Style::default().fg(Color::DarkGray),
+                    )
+                } else {
+                    Span::raw("")
+                },
             ]));
-            return Some(queued);
+            return Some(items.join("\n\n"));
         }
         None
     }

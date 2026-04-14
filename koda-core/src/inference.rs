@@ -652,6 +652,43 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 .await?;
         }
 
+        // Drain any `QueueNext` inputs the client sent during the previous
+        // iteration ("mid-turn steer" lane).  We non-blockingly drain the
+        // whole channel, collect texts, and batch-insert one user message
+        // before re-querying the provider.
+        //
+        // Other command types (ApprovalResponse, AskUserResponse, LoopDecision)
+        // are only ever sent while the engine is actively blocking on cmd_rx
+        // inside their respective select! arms, so they will not be present
+        // here at iteration start.  Any unexpected commands are logged and
+        // discarded — they are benign at this position.
+        {
+            let mut next_texts: Vec<String> = Vec::new();
+            while let Ok(cmd) = cmd_rx.try_recv() {
+                match cmd {
+                    EngineCommand::QueueNext { text } => next_texts.push(text),
+                    other => {
+                        tracing::warn!(
+                            "inference_loop: unexpected command at iteration start (discarded): {:?}",
+                            std::mem::discriminant(&other)
+                        );
+                    }
+                }
+            }
+            if !next_texts.is_empty() {
+                let combined = next_texts.join("\n\n");
+                sink.emit(EngineEvent::Info {
+                    message: format!(
+                        "  \u{1f4e5} Injecting {} steer{} into current turn",
+                        next_texts.len(),
+                        if next_texts.len() == 1 { "" } else { "s" },
+                    ),
+                });
+                db.insert_message(session_id, &Role::User, Some(&combined), None, None, None)
+                    .await?;
+            }
+        }
+
         if iteration >= hard_cap {
             let recent = loop_detector.recent_names();
             sink.emit(EngineEvent::LoopCapReached {
