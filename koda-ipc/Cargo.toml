@@ -1,0 +1,24 @@
+[package]
+name = "koda-ipc"
+version = "0.1.0"
+edition = "2024"
+description = "Supervisor ↔ worker IPC protocol for the Koda AI coding agent"
+license = "MIT"
+repository = "https://github.com/lijunzh/koda"
+
+[dependencies]
+# Serialization — the wire format is newline-delimited JSON
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async I/O — Unix domain sockets
+tokio = { version = "1", features = ["net", "io-util", "sync"] }
+
+# Error handling
+anyhow = "1"
+
+# UUID for request correlation
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

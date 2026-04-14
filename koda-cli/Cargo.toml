@@ -19,6 +19,9 @@ path = "src/main.rs"
 # Core engine
 koda-core = { path = "../koda-core", version = "0.2.12" }
 
+# IPC protocol — supervisor ↔ worker (#884)
+koda-ipc = { path = "../koda-ipc", version = "0.1" }
+
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 
@@ -55,6 +58,9 @@ tracing-appender = "0.2"
 
 # Error handling
 anyhow = "1"
+
+# UUID — IPC supervisor socket naming (#884)
+uuid = { version = "1", features = ["v4"] }
 
 # Date/time — already a transitive dep via ratatui; declared directly so
 # callers aren't silently depending on an undeclared transitive.

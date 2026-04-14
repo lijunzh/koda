@@ -27,6 +27,7 @@ pub(crate) mod headless;
 pub(crate) mod highlight;
 pub(crate) mod history_render;
 pub(crate) mod input;
+pub(crate) mod ipc_supervisor;
 pub(crate) mod md_render;
 pub(crate) mod mouse_select;
 pub(crate) mod onboarding;
