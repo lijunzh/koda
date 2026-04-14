@@ -179,8 +179,16 @@ pub async fn handle_slash_command(
             handle_copy_response(buffer, session, n).await;
             SlashAction::Continue
         }
-        ReplAction::Export(ref dest) => {
-            handle_export(buffer, session, dest.as_deref()).await;
+        ReplAction::Export { ref dest, summary } => {
+            handle_export(
+                buffer,
+                session,
+                dest.as_deref(),
+                summary,
+                config,
+                project_root,
+            )
+            .await;
             SlashAction::Continue
         }
         ReplAction::McpList => {
@@ -571,10 +579,9 @@ async fn handle_copy_response(
     }
 }
 
-/// `/export [<file.md>]` — export the full session transcript.
+/// `/export [--summary] [<file.md>]` — export the session transcript.
 ///
-/// - `dest = None`        → auto-name from first user prompt + timestamp, write to CWD
-/// - `dest = Some(path)`  → write Markdown to that explicit path
+/// Default: verbose (full fidelity). `--summary`: concise, human-readable.
 ///
 /// Uses `transcript::render` to produce a structured Markdown document
 /// from all session messages (system messages excluded).
@@ -582,6 +589,9 @@ async fn handle_export(
     buffer: &mut ScrollBuffer,
     session: &koda_core::session::KodaSession,
     dest: Option<&str>,
+    summary: bool,
+    config: &KodaConfig,
+    project_root: &std::path::Path,
 ) {
     // Fetch all messages — `load_all_messages` includes compacted history.
     let messages = match session.db.load_all_messages(&session.id).await {
@@ -592,24 +602,34 @@ async fn handle_export(
         }
     };
 
-    // Try to get the session title for a nicer header.
+    // Try to get the session title and start time for the header.
     let title_storage;
-    let session_title: Option<&str> = match session
+    let started_storage;
+    let (session_title, started_at): (Option<&str>, Option<&str>) = match session
         .db
         .list_sessions(200, std::path::Path::new("/"))
         .await
     {
         Ok(sessions) => {
-            title_storage = sessions
-                .into_iter()
-                .find(|s| s.id == session.id)
-                .and_then(|s| s.title);
-            title_storage.as_deref()
+            let found = sessions.into_iter().find(|s| s.id == session.id);
+            title_storage = found.as_ref().and_then(|s| s.title.clone());
+            started_storage = found.map(|s| s.created_at);
+            (title_storage.as_deref(), started_storage.as_deref())
         }
-        Err(_) => None,
+        Err(_) => (None, None),
     };
 
-    let md = transcript::render(&messages, session_title);
+    let meta = transcript::SessionMeta {
+        session_id: session.id.clone(),
+        title: session_title.map(|s| s.to_string()),
+        started_at: started_at.map(|s| s.to_string()),
+        model: config.model.clone(),
+        provider: session.provider.provider_name().to_string(),
+        project_root: project_root.display().to_string(),
+    };
+
+    let verbose = !summary;
+    let md = transcript::render(&messages, &meta, verbose);
 
     let path_owned;
     let path: &str = match dest {
