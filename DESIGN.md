@@ -47,6 +47,18 @@ koda -p "fix the bug"     # Headless mode (direct engine, no server)
 koda server --stdio       # ACP server over stdio (for editor integration)
 ```
 
+**The interactive / headless boundary is an architectural constraint, not just a
+UX distinction.** The supervisor/worker split (`koda-ipc`, #884) applies only to
+background and headless tasks — where the user is not watching, buffering LLM
+responses through IPC is acceptable and network isolation on the worker is the
+right tradeoff. In interactive TUI mode the LLM inference loop runs in the main
+process with direct API calls; routing streaming token deltas through a Unix
+socket would push first-token latency from ~1 s to the full response latency
+(15–30 s). All four reference implementations (Claude Code, Codex, Gemini CLI,
+OpenClaw) keep LLM calls in the privileged process — none proxy inference through
+a secondary IPC channel for interactive sessions. See the comparative analysis in
+[#884](https://github.com/lijunzh/koda/issues/884).
+
 ---
 
 ## Principles
@@ -458,8 +470,16 @@ the [trust module docs](https://docs.rs/koda-core/latest/koda_core/trust/).
 
 **Accepted risks**:
 1. Shell command parsing is heuristic — complex pipelines can bypass classification
-2. Network is unrestricted in all modes (required for `cargo fetch`, `npm install`)
-3. If the sandbox backend is unavailable (e.g. no bwrap on Linux), Koda falls
+2. **Interactive TUI**: network is unrestricted (required for `cargo fetch`, `npm install`,
+   `git push`, etc.). The exfiltration risk via prompt injection + WebFetch is real and
+   documented in `sandbox.rs`. Mitigation: `is_safe_url()` blocks private IPs; a full
+   allowlist is deferred until the supervisor/worker split lands for headless mode.
+3. **Headless / background tasks**: the worker process runs under network isolation
+   (seccomp on Linux, Seatbelt on macOS) — no outbound sockets except the Unix socket
+   back to the supervisor. WebFetch and MCP HTTP are proxied through the supervisor,
+   which applies `is_safe_url()` and logs every egress request. This makes the
+   supervisor the single auditable network chokepoint for unattended execution.
+4. If the sandbox backend is unavailable (e.g. no bwrap on Linux), Koda falls
    back to unsandboxed execution with a warning rather than hard-erroring
 
 ### File Lifecycle Tracking (P2)
