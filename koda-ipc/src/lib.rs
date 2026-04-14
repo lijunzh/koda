@@ -22,7 +22,7 @@
 //!
 //! The supervisor passes `KODA_SUPERVISOR_SOCKET=<path>` to the worker
 //! process.  Tools that need network access check for this variable at call
-//! time; if it is set they use [`client::request`] instead of opening their
+//! time; if it is set they use [`client::fetch`] instead of opening their
 //! own sockets.
 //!
 //! ## Example
