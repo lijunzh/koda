@@ -19,6 +19,23 @@ async fn setup() -> (Database, TempDir) {
     (db, tmp)
 }
 
+/// Insert an assistant message and immediately mark it complete.
+/// Most tests need "born-complete" assistant messages; only interruption
+/// tests deliberately omit the `mark_message_complete` call.
+async fn insert_complete_assistant(
+    db: &Database,
+    session: &str,
+    content: Option<&str>,
+    tool_calls: Option<&str>,
+) -> i64 {
+    let mid = db
+        .insert_message(session, &Role::Assistant, content, tool_calls, None, None)
+        .await
+        .unwrap();
+    db.mark_message_complete(mid).await.unwrap();
+    mid
+}
+
 #[tokio::test]
 async fn test_create_session() {
     let (db, _tmp) = setup().await;
@@ -34,16 +51,7 @@ async fn test_insert_and_load_messages() {
     db.insert_message(&session, &Role::User, Some("hello"), None, None, None)
         .await
         .unwrap();
-    db.insert_message(
-        &session,
-        &Role::Assistant,
-        Some("hi there!"),
-        None,
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    insert_complete_assistant(&db, &session, Some("hi there!"), None).await;
 
     let msgs = db.load_context(&session).await.unwrap();
     assert_eq!(msgs.len(), 2);
@@ -178,16 +186,21 @@ async fn test_compact_session() {
     let (db, _tmp) = setup().await;
     let session = db.create_session("default", _tmp.path()).await.unwrap();
 
-    // Insert several messages
+    // Insert several messages; assistant messages are marked complete
+    // (they represent finished turns that load_context must return).
     for i in 0..10 {
         let role = if i % 2 == 0 {
             &Role::User
         } else {
             &Role::Assistant
         };
-        db.insert_message(&session, role, Some(&format!("msg {i}")), None, None, None)
+        let mid = db
+            .insert_message(&session, role, Some(&format!("msg {i}")), None, None, None)
             .await
             .unwrap();
+        if *role == Role::Assistant {
+            db.mark_message_complete(mid).await.unwrap();
+        }
     }
 
     // Compact preserving the last 2 messages
@@ -308,16 +321,18 @@ async fn test_prune_mismatched_tool_calls() {
     db.insert_message(&session, &Role::User, Some("hello"), None, None, None)
         .await
         .unwrap();
-    db.insert_message(
-        &session,
-        &Role::Assistant,
-        Some("Let me read that."),
-        Some(r#"[{"id":"tc1","name":"Read","arguments":"{}"}]"#),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    let mid = db
+        .insert_message(
+            &session,
+            &Role::Assistant,
+            Some("Let me read that."),
+            Some(r#"[{"id":"tc1","name":"Read","arguments":"{}"}]"#),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    db.mark_message_complete(mid).await.unwrap();
     db.insert_message(
         &session,
         &Role::Tool,
@@ -329,7 +344,7 @@ async fn test_prune_mismatched_tool_calls() {
     .await
     .unwrap();
 
-    // Interrupted turn: assistant with tool_calls but NO tool result
+    // Interrupted turn: assistant with tool_calls but NO tool result and NOT marked complete
     db.insert_message(
         &session,
         &Role::Assistant,
@@ -340,6 +355,7 @@ async fn test_prune_mismatched_tool_calls() {
     )
     .await
     .unwrap();
+    // deliberately no mark_message_complete — simulates interrupted turn
 
     let msgs = db.load_context(&session).await.unwrap();
 
@@ -801,6 +817,7 @@ async fn test_insert_message_with_agent() {
         .await
         .unwrap();
     assert!(id > 0);
+    db.mark_message_complete(id).await.unwrap();
 
     let msgs = db.load_context(&session).await.unwrap();
     assert_eq!(msgs.len(), 1);
@@ -1179,6 +1196,7 @@ async fn thinking_content_round_trip() {
         .insert_message(&session, &Role::Assistant, Some("answer"), None, None, None)
         .await
         .unwrap();
+    db.mark_message_complete(id).await.unwrap();
 
     db.update_message_thinking_content(id, "I should think carefully about this…")
         .await
@@ -1244,6 +1262,7 @@ async fn thinking_content_persists_and_is_loaded_in_context() {
         )
         .await
         .unwrap();
+    db.mark_message_complete(assistant_id).await.unwrap();
 
     db.update_message_thinking_content(assistant_id, "2+2=4 trivially")
         .await
@@ -1256,5 +1275,141 @@ async fn thinking_content_persists_and_is_loaded_in_context() {
         assistant.thinking_content.as_deref(),
         Some("2+2=4 trivially"),
         "thinking_content must survive context reload (session resume path)"
+    );
+}
+
+// ── Incomplete assistant messages excluded from load_context (#875, #877) ──
+
+/// Assistant messages without `completed_at` (interrupted/network-error turns)
+/// must be excluded from `load_context()` so the model gets a clean slate —
+/// as if the interrupted turn never happened. They should still be present
+/// in `load_all_messages()` for history/recall purposes.
+#[tokio::test]
+async fn load_context_excludes_incomplete_assistant_messages() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    // User sends a message
+    db.insert_message(
+        &session,
+        &Role::User,
+        Some("research inference"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Assistant starts responding but is interrupted (no mark_message_complete)
+    let _incomplete_id = db
+        .insert_message(
+            &session,
+            &Role::Assistant,
+            Some("I'll start by looking at"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // load_context should exclude the incomplete assistant message
+    let context = db.load_context(&session).await.unwrap();
+    assert_eq!(
+        context.len(),
+        1,
+        "only the user message should be in context"
+    );
+    assert_eq!(context[0].role, Role::User);
+    assert_eq!(context[0].content.as_deref(), Some("research inference"));
+
+    // load_all_messages should still include it (for history/recall)
+    let all = db.load_all_messages(&session).await.unwrap();
+    assert_eq!(all.len(), 2, "both messages should be in full history");
+}
+
+/// Completed assistant messages (with `completed_at` set) must still appear
+/// in `load_context()` — only incomplete ones are excluded.
+#[tokio::test]
+async fn load_context_includes_completed_assistant_messages() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    db.insert_message(&session, &Role::User, Some("hello"), None, None, None)
+        .await
+        .unwrap();
+
+    let msg_id = db
+        .insert_message(
+            &session,
+            &Role::Assistant,
+            Some("hi there!"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    db.mark_message_complete(msg_id).await.unwrap();
+
+    let context = db.load_context(&session).await.unwrap();
+    assert_eq!(
+        context.len(),
+        2,
+        "completed assistant message must be in context"
+    );
+    assert_eq!(context[1].role, Role::Assistant);
+    assert_eq!(context[1].content.as_deref(), Some("hi there!"));
+}
+
+/// After an interrupted turn, detect_interruption should see the user message
+/// as the last relevant message (the incomplete assistant was filtered out).
+#[tokio::test]
+async fn interrupted_turn_detected_after_incomplete_filtered() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    // Complete first exchange
+    db.insert_message(&session, &Role::User, Some("hello"), None, None, None)
+        .await
+        .unwrap();
+    let mid = db
+        .insert_message(&session, &Role::Assistant, Some("hi!"), None, None, None)
+        .await
+        .unwrap();
+    db.mark_message_complete(mid).await.unwrap();
+
+    // Second turn: user sends, assistant interrupted
+    db.insert_message(
+        &session,
+        &Role::User,
+        Some("research inference"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    db.insert_message(
+        &session,
+        &Role::Assistant,
+        Some("partial response"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    // No mark_message_complete — simulates Ctrl+C
+
+    let context = db.load_context(&session).await.unwrap();
+    // Should be: [user "hello", assistant "hi!", user "research inference"]
+    assert_eq!(context.len(), 3, "incomplete assistant should be filtered");
+
+    let interruption = detect_interruption(&context);
+    assert!(
+        matches!(interruption, Some(InterruptionKind::Prompt(_))),
+        "should detect unanswered user prompt; got {interruption:?}"
     );
 }

@@ -232,15 +232,22 @@ pub(crate) async fn execute_sub_agent(
             if is_fork {
                 let parent_history = db.load_context(parent_session_id).await?;
                 for msg in &parent_history {
-                    db.insert_message(
-                        &sid,
-                        &msg.role,
-                        msg.content.as_deref(),
-                        msg.tool_calls.as_deref(),
-                        msg.tool_call_id.as_deref(),
-                        None, // don't duplicate usage stats
-                    )
-                    .await?;
+                    let mid = db
+                        .insert_message(
+                            &sid,
+                            &msg.role,
+                            msg.content.as_deref(),
+                            msg.tool_calls.as_deref(),
+                            msg.tool_call_id.as_deref(),
+                            None, // don't duplicate usage stats
+                        )
+                        .await?;
+                    // Copied assistant messages are already complete in the
+                    // parent — mark them complete in the child session so
+                    // load_context includes them (#875).
+                    if msg.role == Role::Assistant {
+                        db.mark_message_complete(mid).await?;
+                    }
                 }
             }
             sid

@@ -160,7 +160,8 @@ async fn test_compact_session_summarizes_and_reduces_messages() {
             )
             .await
             .unwrap();
-        env.db
+        let mid = env
+            .db
             .insert_message(
                 &env.session_id,
                 &Role::Assistant,
@@ -173,6 +174,7 @@ async fn test_compact_session_summarizes_and_reduces_messages() {
             )
             .await
             .unwrap();
+        env.db.mark_message_complete(mid).await.unwrap();
     }
 
     let before = env.db.load_context(&env.session_id).await.unwrap();
@@ -215,7 +217,8 @@ async fn test_compact_skips_short_conversation() {
 
     let env = Env::new().await;
     env.insert_user_message("hello").await;
-    env.db
+    let mid = env
+        .db
         .insert_message(
             &env.session_id,
             &Role::Assistant,
@@ -226,6 +229,7 @@ async fn test_compact_skips_short_conversation() {
         )
         .await
         .unwrap();
+    env.db.mark_message_complete(mid).await.unwrap();
 
     let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
         Arc::new(RwLock::new(Box::new(MockProvider::new(vec![]))));

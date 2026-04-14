@@ -130,11 +130,19 @@ impl Env {
     }
 
     /// Insert a message with any role into the test session.
+    /// Assistant messages are immediately marked complete — they represent
+    /// finished turns, not in-progress streams. Tests that want to simulate
+    /// an interrupted turn should call `db.insert_message` directly and
+    /// omit `mark_message_complete`.
     pub async fn insert_message(&self, role: &Role, text: &str) {
-        self.db
+        let mid = self
+            .db
             .insert_message(&self.session_id, role, Some(text), None, None, None)
             .await
             .unwrap();
+        if *role == Role::Assistant {
+            self.db.mark_message_complete(mid).await.unwrap();
+        }
     }
 
     /// Run inference with a MockProvider (convenience wrapper, asserts success).
