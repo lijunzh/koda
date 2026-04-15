@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
     branches: [main]
-  workflow_call:        # Called by other workflows
+  workflow_call:        # Called by coverage.yml
 
 permissions:
   contents: read        # Least-privilege for all jobs
@@ -15,15 +15,39 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
+  # Incremental compilation bloats the cache and is slower on cold CI runners.
+  # Disable globally — batch compilation is always faster here.
+  CARGO_INCREMENTAL: 0
 
 jobs:
-  test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+  # ── Path detection ────────────────────────────────────────────────────────
+  #
+  # Runs only on PRs. Detects whether macOS-specific code (sandbox, Seatbelt)
+  # was touched so we can skip the slow macOS runner on unrelated changes.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    outputs:
+      sandbox: ${{ steps.filter.outputs.sandbox }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            sandbox:
+              - 'koda-core/src/sandbox.rs'
+              - 'koda-core/src/sandbox/**'
+              - '.github/workflows/ci.yml'
+
+  # ── Lint ──────────────────────────────────────────────────────────────────
+  #
+  # Runs in parallel with test-linux.  Lint-only failures surface faster
+  # without waiting for the full test suite to compile.
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -31,34 +55,74 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-${{ runner.os }}
-      # Lint steps run only on Linux to avoid duplicate noise.
-      # If macOS-specific code triggers a lint that Linux misses, the
-      # platform-specific clippy/check in release.yml still catches it.
+          shared-key: lint
       - name: Format
-        if: runner.os == 'Linux'
         run: cargo fmt --all --check
       - name: Clippy
-        if: runner.os == 'Linux'
         run: cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings
       - name: Check (no features)
-        if: runner.os == 'Linux'
         # Catches cfg-gated items invisible behind feature flags.
         run: cargo check --workspace --all-targets
+
+  # ── Tests: Linux ─────────────────────────────────────────────────────────
+  test-linux:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-linux
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
       - name: Set up Linux sandbox (bubblewrap)
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y bubblewrap
-          # Enable unprivileged user namespaces so bwrap can sandbox.
-          # GH Actions runners disable this by default.
+          # Enable unprivileged user namespaces — GH Actions disables by default.
           sudo sysctl -w kernel.unprivileged_userns_clone=1
           # Ubuntu 24.04+ additionally gates userns behind AppArmor.
           if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
       - name: Test
-        run: cargo test --workspace --features koda-core/test-support
+        run: cargo nextest run --workspace --features koda-core/test-support
+      - name: Doctests
+        # nextest skips doctests by design; run them separately.
+        run: cargo test --doc --workspace
 
+  # ── Tests: macOS ─────────────────────────────────────────────────────────
+  #
+  # macOS tests the Seatbelt sandbox path.  On PRs we only run this job when
+  # sandbox-related files change — it's the slowest runner and most PRs don't
+  # touch that code.  On workflow_call (coverage) and when changes is skipped
+  # (non-PR triggers) we always run it.
+  test-macos:
+    name: Test (macOS)
+    needs: [changes]
+    if: |
+      always() && (
+        github.event_name == 'workflow_call' ||
+        needs.changes.result == 'skipped' ||
+        needs.changes.outputs.sandbox == 'true'
+      )
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-macos
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Test
+        run: cargo nextest run --workspace --features koda-core/test-support
+
+  # ── Docs ──────────────────────────────────────────────────────────────────
   doc:
     name: Docs
     runs-on: ubuntu-latest
@@ -67,19 +131,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: doc  # stable across branches & workflow edits
+          shared-key: doc
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -Dwarnings
 
+  # ── Security Audit ────────────────────────────────────────────────────────
+  #
+  # Uses a pre-built cargo-audit binary (taiki-e/install-action) — no Rust
+  # toolchain or compiled cache needed.  Cold run: ~10 s vs ~3 min previously.
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - name: Run audit
         run: cargo audit --deny unsound --deny yanked
