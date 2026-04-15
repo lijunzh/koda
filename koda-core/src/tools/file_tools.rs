@@ -23,6 +23,21 @@
 use sha2::{Digest, Sha256};
 
 use super::resolve_read_path;
+
+/// SHA-256 digest of `data` as a lowercase hex string.
+///
+/// `sha2` ≥ 0.11 changed the return type of `Sha256::digest` from
+/// `GenericArray` (which implemented `LowerHex`) to `Array` (which does not).
+/// This helper keeps every call site clean across both versions.
+fn sha256_hex(data: &[u8]) -> String {
+    use std::fmt::Write;
+    Sha256::digest(data)
+        .iter()
+        .fold(String::with_capacity(64), |mut s, b| {
+            write!(s, "{b:02x}").unwrap();
+            s
+        })
+}
 use super::safe_resolve_path;
 use crate::providers::ToolDefinition;
 use anyhow::Result;
@@ -250,7 +265,7 @@ pub async fn read_file(
 
             // Hash the raw (un-truncated) content so edit_file can detect if
             // the file changes between this read and the subsequent write.
-            content_sha256 = format!("{:x}", Sha256::digest(content.as_bytes()));
+            content_sha256 = sha256_hex(content.as_bytes());
 
             if content.len() > 20_000 {
                 // Snap to char boundary to avoid panic on multi-byte chars
@@ -371,7 +386,7 @@ pub async fn edit_file(
         if let Some((_, _, cached_hash)) = guard.get(&full_key)
             && !cached_hash.is_empty()
         {
-            let current_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+            let current_hash = sha256_hex(content.as_bytes());
             if *cached_hash != current_hash {
                 anyhow::bail!(
                     "File '{}' has changed on disk since you last read it \
@@ -892,15 +907,13 @@ mod tests {
     /// file changes on disk, edit_file must reject the write.
     #[tokio::test]
     async fn edit_file_staleness_check_rejects_changed_file() {
-        use sha2::{Digest, Sha256};
-
         let tmp = tempfile::tempdir().unwrap();
         let f = tmp.path().join("staleness.txt");
         let original = "line one\nline two\n";
         std::fs::write(&f, original).unwrap();
 
         // Simulate a prior full read: store the hash of `original` in the cache.
-        let hash = format!("{:x}", Sha256::digest(original.as_bytes()));
+        let hash = super::sha256_hex(original.as_bytes());
         let key = format!("{}:None:None", f.display());
         let c = cache();
         {
