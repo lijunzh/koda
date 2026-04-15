@@ -51,8 +51,8 @@ impl<'a> QueuePreview<'a> {
             return 0;
         }
         let item_rows = total.min(MAX_VISIBLE) as u16;
-        let overflow_row = if total > MAX_VISIBLE { 1 } else { 0 };
-        item_rows + overflow_row
+        let hint_row = 1u16; // always show keybinding hints
+        item_rows + hint_row
     }
 }
 
@@ -66,14 +66,15 @@ impl Widget for QueuePreview<'_> {
                 break;
             }
 
-            // Truncate to terminal width, replacing the last char with '…'
-            // when the text is longer than available space.
-            let preview: String = if item.chars().count() > max_text_w {
-                let mut s: String = item.chars().take(max_text_w.saturating_sub(1)).collect();
+            // Flatten newlines first, then truncate to terminal width
+            // with a trailing ellipsis when the text is too long.
+            let flat = item.replace('\n', " ");
+            let preview: String = if flat.chars().count() > max_text_w {
+                let mut s: String = flat.chars().take(max_text_w.saturating_sub(1)).collect();
                 s.push('…');
                 s
             } else {
-                item.replace('\n', " ") // flatten multi-line to single row
+                flat
             };
 
             let line = Line::from(vec![
@@ -149,19 +150,20 @@ mod tests {
     }
 
     #[test]
-    fn height_one_item_no_overflow() {
-        // 1 item row + 0 overflow row = 1
-        assert_eq!(QueuePreview::height_for(1), 1);
+    fn height_one_item_includes_hint_row() {
+        // 1 item row + 1 hint row = 2
+        assert_eq!(QueuePreview::height_for(1), 2);
     }
 
     #[test]
-    fn height_three_items_no_overflow() {
-        assert_eq!(QueuePreview::height_for(3), 3);
+    fn height_three_items_includes_hint_row() {
+        // 3 item rows + 1 hint row = 4
+        assert_eq!(QueuePreview::height_for(3), 4);
     }
 
     #[test]
-    fn height_four_items_has_overflow_row() {
-        // 3 visible + 1 overflow = 4
+    fn height_four_items_capped_plus_hint() {
+        // 3 visible + 1 hint = 4
         assert_eq!(QueuePreview::height_for(4), 4);
     }
 
