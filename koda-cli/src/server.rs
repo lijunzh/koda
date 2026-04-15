@@ -84,11 +84,18 @@ pub async fn run_stdio_server(project_root: PathBuf, mut config: KodaConfig) -> 
     // Initialize database
     let db = Database::init(&koda_core::db::config_dir()?).await?;
 
-    // Query actual model capabilities before building agent
+    // Query actual model capabilities before building agent.
+    // Best-effort with a 5-second cap: on CI or with no credentials the
+    // HTTP call would otherwise hang until the OS TCP timeout (~120 s),
+    // blocking the entire read loop and stalling integration tests.
+    // query_and_apply_capabilities already absorbs errors silently, so a
+    // timeout is treated identically — the built-in lookup table is used.
     let tmp_provider = koda_core::providers::create_provider(&config);
-    config
-        .query_and_apply_capabilities(tmp_provider.as_ref())
-        .await;
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        config.query_and_apply_capabilities(tmp_provider.as_ref()),
+    )
+    .await;
 
     // Build agent (tools, system prompt)
     let mut agent = KodaAgent::new(&config, project_root.clone(), &[]).await?;

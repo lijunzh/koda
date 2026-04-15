@@ -15,36 +15,12 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
-  # Incremental compilation bloats the cache and is slower on cold CI runners.
-  # Disable globally — batch compilation is always faster here.
-  CARGO_INCREMENTAL: 0
 
 jobs:
-  # ── Path detection ────────────────────────────────────────────────────────
-  #
-  # Runs only on PRs. Detects whether macOS-specific code (sandbox, Seatbelt)
-  # was touched so we can skip the slow macOS runner on unrelated changes.
-  changes:
-    name: Detect changed paths
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    outputs:
-      sandbox: ${{ steps.filter.outputs.sandbox }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            sandbox:
-              - 'koda-core/src/sandbox.rs'
-              - 'koda-core/src/sandbox/**'
-              - '.github/workflows/ci.yml'
-
   # ── Lint ──────────────────────────────────────────────────────────────────
   #
-  # Runs in parallel with test-linux.  Lint-only failures surface faster
-  # without waiting for the full test suite to compile.
+  # Runs on Linux only (no duplicate noise) in parallel with the test matrix.
+  # Lint failures surface without waiting for the full test suite to finish.
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -64,17 +40,22 @@ jobs:
         # Catches cfg-gated items invisible behind feature flags.
         run: cargo check --workspace --all-targets
 
-  # ── Tests: Linux ─────────────────────────────────────────────────────────
-  test-linux:
-    name: Test (Linux)
-    runs-on: ubuntu-latest
+  # ── Tests ─────────────────────────────────────────────────────────────────
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test-linux
+          shared-key: test-${{ runner.os }}
       - name: Set up Linux sandbox (bubblewrap)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y bubblewrap
           # Enable unprivileged user namespaces — GH Actions disables by default.
@@ -83,31 +64,6 @@ jobs:
           if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
-      - name: Test
-        run: cargo test --workspace --features koda-core/test-support
-
-  # ── Tests: macOS ─────────────────────────────────────────────────────────
-  #
-  # macOS tests the Seatbelt sandbox path.  On PRs we only run this job when
-  # sandbox-related files change — it's the slowest runner and most PRs don't
-  # touch that code.  On workflow_call (coverage) and when changes is skipped
-  # (non-PR triggers) we always run it.
-  test-macos:
-    name: Test (macOS)
-    needs: [changes]
-    if: |
-      always() && (
-        github.event_name == 'workflow_call' ||
-        needs.changes.result == 'skipped' ||
-        needs.changes.outputs.sandbox == 'true'
-      )
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: test-macos
       - name: Test
         run: cargo test --workspace --features koda-core/test-support
 
@@ -127,8 +83,8 @@ jobs:
 
   # ── Security Audit ────────────────────────────────────────────────────────
   #
-  # Uses a pre-built cargo-audit binary (taiki-e/install-action) — no Rust
-  # toolchain or compiled cache needed.  Cold run: ~10 s vs ~3 min previously.
+  # Uses a pre-built cargo-audit binary — no Rust toolchain or compiled cache
+  # needed.  Cold run: ~10 s vs ~3 min with cargo install.
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
