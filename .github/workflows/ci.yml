@@ -74,10 +74,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-linux
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
       - name: Set up Linux sandbox (bubblewrap)
         run: |
           sudo apt-get install -y bubblewrap
@@ -88,10 +84,7 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
       - name: Test
-        run: cargo nextest run --workspace --features koda-core/test-support
-      - name: Doctests
-        # nextest skips doctests by design; run them separately.
-        run: cargo test --doc --workspace
+        run: cargo test --workspace --features koda-core/test-support
 
   # ── Tests: macOS ─────────────────────────────────────────────────────────
   #
@@ -115,12 +108,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-macos
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
       - name: Test
-        run: cargo nextest run --workspace --features koda-core/test-support
+        run: cargo test --workspace --features koda-core/test-support
 
   # ── Docs ──────────────────────────────────────────────────────────────────
   doc:
