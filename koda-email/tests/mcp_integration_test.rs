@@ -13,6 +13,9 @@ use serde_json::{Value, json};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::Mutex;
+
+static TEST_MUTEX: Mutex<()> = Mutex::const_new(());
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -33,6 +36,9 @@ fn koda_email_binary() -> String {
 }
 
 /// Send a JSON-RPC message and read the response.
+///
+/// Times out after 10 seconds so a slow or wedged subprocess never hangs CI
+/// indefinitely on macOS runners.
 async fn send_and_receive(
     stdin: &mut tokio::process::ChildStdin,
     stdout: &mut BufReader<tokio::process::ChildStdout>,
@@ -44,7 +50,13 @@ async fn send_and_receive(
 
     if msg.get("id").is_some() {
         let mut response = String::new();
-        stdout.read_line(&mut response).await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            stdout.read_line(&mut response),
+        )
+        .await
+        .expect("timed out waiting for server response (10 s)")
+        .unwrap();
         Some(serde_json::from_str(&response).unwrap())
     } else {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -110,6 +122,7 @@ async fn initialize(
 
 #[tokio::test]
 async fn test_mcp_initialize() {
+    let _guard = TEST_MUTEX.lock().await;
     let (mut child, mut stdin, mut stdout) = start_server().await;
 
     let resp = initialize(&mut stdin, &mut stdout).await;
@@ -124,6 +137,7 @@ async fn test_mcp_initialize() {
 
 #[tokio::test]
 async fn test_mcp_tools_list() {
+    let _guard = TEST_MUTEX.lock().await;
     let (mut child, mut stdin, mut stdout) = start_server().await;
     initialize(&mut stdin, &mut stdout).await;
 
@@ -157,6 +171,7 @@ async fn test_mcp_tools_list() {
 
 #[tokio::test]
 async fn test_tool_schemas_have_descriptions() {
+    let _guard = TEST_MUTEX.lock().await;
     let (mut child, mut stdin, mut stdout) = start_server().await;
     initialize(&mut stdin, &mut stdout).await;
 
@@ -189,6 +204,7 @@ async fn test_tool_schemas_have_descriptions() {
 
 #[tokio::test]
 async fn test_email_read_without_credentials_returns_setup_instructions() {
+    let _guard = TEST_MUTEX.lock().await;
     let (mut child, mut stdin, mut stdout) = start_server().await;
     initialize(&mut stdin, &mut stdout).await;
 
@@ -221,6 +237,7 @@ async fn test_email_read_without_credentials_returns_setup_instructions() {
 
 #[tokio::test]
 async fn test_email_send_without_credentials_returns_setup_instructions() {
+    let _guard = TEST_MUTEX.lock().await;
     let (mut child, mut stdin, mut stdout) = start_server().await;
     initialize(&mut stdin, &mut stdout).await;
 
@@ -256,6 +273,7 @@ async fn test_email_send_without_credentials_returns_setup_instructions() {
 
 #[tokio::test]
 async fn test_email_search_without_credentials_returns_setup_instructions() {
+    let _guard = TEST_MUTEX.lock().await;
     let (mut child, mut stdin, mut stdout) = start_server().await;
     initialize(&mut stdin, &mut stdout).await;
 
@@ -289,6 +307,7 @@ async fn test_email_search_without_credentials_returns_setup_instructions() {
 
 #[tokio::test]
 async fn test_version_flag() {
+    let _guard = TEST_MUTEX.lock().await;
     let binary = koda_email_binary();
     let output = std::process::Command::new(&binary)
         .arg("--version")
@@ -345,6 +364,7 @@ async fn start_server_with_creds() -> Option<(
 #[tokio::test]
 #[ignore]
 async fn test_live_email_read() {
+    let _guard = TEST_MUTEX.lock().await;
     let Some((mut child, mut stdin, mut stdout)) = start_server_with_creds().await else {
         return;
     };
@@ -386,6 +406,7 @@ async fn test_live_email_read() {
 #[tokio::test]
 #[ignore]
 async fn test_live_email_search() {
+    let _guard = TEST_MUTEX.lock().await;
     let Some((mut child, mut stdin, mut stdout)) = start_server_with_creds().await else {
         return;
     };

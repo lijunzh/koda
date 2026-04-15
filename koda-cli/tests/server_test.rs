@@ -3,11 +3,21 @@
 //! Tests that the `koda server --stdio` subprocess handles JSON-RPC
 //! messages correctly over stdin/stdout.
 
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
+use tokio::sync::Mutex;
+
+static TEST_MUTEX: Mutex<()> = Mutex::const_new(());
 
 /// Get the path to the built binary.
 fn koda_bin() -> String {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_koda") {
+        return path;
+    }
+
     let mut path = std::env::current_exe().unwrap();
     path.pop(); // remove test binary name
     path.pop(); // remove deps/
@@ -17,25 +27,33 @@ fn koda_bin() -> String {
 
 /// Send a JSON-RPC message to the server's stdin and read the response line.
 /// Panics with diagnostic info if the server process exits before responding.
-fn send_and_recv(
-    child: &mut std::process::Child,
-    stdin: &mut impl Write,
-    stdout: &mut impl BufRead,
-    msg: &serde_json::Value,
-) -> serde_json::Value {
-    let line = serde_json::to_string(msg).unwrap();
-    writeln!(stdin, "{line}").unwrap();
-    stdin.flush().unwrap();
+///
+/// Times out after 30 seconds so slow macOS subprocess startup never hangs CI
+/// indefinitely, but genuinely wedged servers still fail with a bounded error.
+async fn send_and_recv(
+    child: &mut tokio::process::Child,
+    stdin: &mut tokio::process::ChildStdin,
+    stdout: &mut BufReader<tokio::process::ChildStdout>,
+    msg: &Value,
+) -> Value {
+    let line = serde_json::to_string(msg).unwrap() + "\n";
+    stdin.write_all(line.as_bytes()).await.unwrap();
+    stdin.flush().await.unwrap();
 
     let mut response = String::new();
-    stdout.read_line(&mut response).unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        stdout.read_line(&mut response),
+    )
+    .await
+    .expect("timed out waiting for server response (30 s)")
+    .unwrap();
 
     if response.trim().is_empty() {
-        // Server likely crashed — collect exit status for diagnostics
+        // Server likely crashed — collect exit status for diagnostics.
         let status = child.try_wait().ok().flatten();
         panic!(
-            "Server returned empty response (process exited: {:?}). \
-             Sent: {}",
+            "Server returned empty response (process exited: {:?}). Sent: {}",
             status,
             serde_json::to_string_pretty(msg).unwrap()
         );
@@ -45,13 +63,13 @@ fn send_and_recv(
 }
 
 /// Send a JSON-RPC notification (no response expected).
-fn send_notification(stdin: &mut impl Write, msg: &serde_json::Value) {
-    let line = serde_json::to_string(msg).unwrap();
-    writeln!(stdin, "{line}").unwrap();
-    stdin.flush().unwrap();
+async fn send_notification(stdin: &mut tokio::process::ChildStdin, msg: &Value) {
+    let line = serde_json::to_string(msg).unwrap() + "\n";
+    stdin.write_all(line.as_bytes()).await.unwrap();
+    stdin.flush().await.unwrap();
 }
 
-fn initialize_msg() -> serde_json::Value {
+fn initialize_msg() -> Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -67,8 +85,12 @@ fn initialize_msg() -> serde_json::Value {
 fn spawn_server(
     project_dir: &tempfile::TempDir,
     config_dir: &tempfile::TempDir,
-) -> std::process::Child {
-    Command::new(koda_bin())
+) -> (
+    tokio::process::Child,
+    tokio::process::ChildStdin,
+    BufReader<tokio::process::ChildStdout>,
+) {
+    let mut child = Command::new(koda_bin())
         .arg("--project-root")
         .arg(project_dir.path())
         .args(["server", "--stdio"])
@@ -76,20 +98,24 @@ fn spawn_server(
         .env("XDG_CONFIG_HOME", config_dir.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
         .spawn()
-        .expect("Failed to start koda server")
+        .expect("Failed to start koda server");
+
+    let stdin = child.stdin.take().unwrap();
+    let stdout = BufReader::new(child.stdout.take().unwrap());
+    (child, stdin, stdout)
 }
 
-#[test]
-fn test_server_initialize() {
+#[tokio::test]
+async fn test_server_initialize() {
+    let _guard = TEST_MUTEX.lock().await;
     let project_dir = tempfile::TempDir::new().unwrap();
     let config_dir = tempfile::TempDir::new().unwrap();
-    let mut child = spawn_server(&project_dir, &config_dir);
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let (mut child, mut stdin, mut stdout) = spawn_server(&project_dir, &config_dir);
 
-    let resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &initialize_msg());
+    let resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &initialize_msg()).await;
 
     // Verify response structure
     assert_eq!(resp["jsonrpc"], "2.0");
@@ -105,21 +131,19 @@ fn test_server_initialize() {
         "Should have correct version"
     );
 
-    // Clean up
     drop(stdin);
-    let _ = child.wait();
+    let _ = child.kill().await;
 }
 
-#[test]
-fn test_server_new_session() {
+#[tokio::test]
+async fn test_server_new_session() {
+    let _guard = TEST_MUTEX.lock().await;
     let project_dir = tempfile::TempDir::new().unwrap();
     let config_dir = tempfile::TempDir::new().unwrap();
-    let mut child = spawn_server(&project_dir, &config_dir);
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let (mut child, mut stdin, mut stdout) = spawn_server(&project_dir, &config_dir);
 
     // Initialize first
-    let _init_resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &initialize_msg());
+    let _init_resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &initialize_msg()).await;
 
     // Create new session
     let new_session = serde_json::json!({
@@ -128,10 +152,10 @@ fn test_server_new_session() {
         "method": "session/new",
         "params": {
             "cwd": project_dir.path().to_string_lossy(),
-            "mcpServers": []  // Required by ACP protocol schema
+            "mcpServers": []
         }
     });
-    let resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &new_session);
+    let resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &new_session).await;
 
     assert_eq!(resp["jsonrpc"], "2.0");
     assert_eq!(resp["id"], 2);
@@ -145,21 +169,19 @@ fn test_server_new_session() {
         "sessionId should not be empty"
     );
 
-    // Clean up
     drop(stdin);
-    let _ = child.wait();
+    let _ = child.kill().await;
 }
 
-#[test]
-fn test_server_cancel_notification() {
+#[tokio::test]
+async fn test_server_cancel_notification() {
+    let _guard = TEST_MUTEX.lock().await;
     let project_dir = tempfile::TempDir::new().unwrap();
     let config_dir = tempfile::TempDir::new().unwrap();
-    let mut child = spawn_server(&project_dir, &config_dir);
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let (mut child, mut stdin, mut stdout) = spawn_server(&project_dir, &config_dir);
 
     // Initialize
-    let _init_resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &initialize_msg());
+    let _init_resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &initialize_msg()).await;
 
     // Create session
     let new_session = serde_json::json!({
@@ -168,10 +190,10 @@ fn test_server_cancel_notification() {
         "method": "session/new",
         "params": {
             "cwd": project_dir.path().to_string_lossy(),
-            "mcpServers": []  // Required by ACP protocol schema
+            "mcpServers": []
         }
     });
-    let resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &new_session);
+    let resp = send_and_recv(&mut child, &mut stdin, &mut stdout, &new_session).await;
     let session_id = resp["result"]["sessionId"].as_str().unwrap();
 
     // Send cancel notification (no id = notification, should not crash)
@@ -182,7 +204,7 @@ fn test_server_cancel_notification() {
             "sessionId": session_id
         }
     });
-    send_notification(&mut stdin, &cancel);
+    send_notification(&mut stdin, &cancel).await;
 
     // Server should still be responsive after cancel
     let init2 = serde_json::json!({
@@ -194,11 +216,10 @@ fn test_server_cancel_notification() {
             "clientCapabilities": {}
         }
     });
-    let resp2 = send_and_recv(&mut child, &mut stdin, &mut stdout, &init2);
+    let resp2 = send_and_recv(&mut child, &mut stdin, &mut stdout, &init2).await;
     assert_eq!(resp2["id"], 3);
     assert!(resp2["result"].is_object());
 
-    // Clean up
     drop(stdin);
-    let _ = child.wait();
+    let _ = child.kill().await;
 }

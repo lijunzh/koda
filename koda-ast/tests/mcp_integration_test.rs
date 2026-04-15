@@ -10,6 +10,9 @@ use serde_json::{Value, json};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::Mutex;
+
+static TEST_MUTEX: Mutex<()> = Mutex::const_new(());
 
 /// Find the koda-ast binary.
 fn koda_ast_binary() -> String {
@@ -30,6 +33,9 @@ fn koda_ast_binary() -> String {
 }
 
 /// Send a JSON-RPC message and read the response.
+///
+/// Times out after 10 seconds so a slow or wedged subprocess never hangs CI
+/// indefinitely on macOS runners.
 async fn send_and_receive(
     stdin: &mut tokio::process::ChildStdin,
     stdout: &mut BufReader<tokio::process::ChildStdout>,
@@ -42,7 +48,13 @@ async fn send_and_receive(
     // Read response (only for requests with "id")
     if msg.get("id").is_some() {
         let mut response = String::new();
-        stdout.read_line(&mut response).await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            stdout.read_line(&mut response),
+        )
+        .await
+        .expect("timed out waiting for server response (10 s)")
+        .unwrap();
         Some(serde_json::from_str(&response).unwrap())
     } else {
         // Notification — no response expected, small delay for processing
@@ -75,6 +87,7 @@ async fn start_server() -> (
 
 #[tokio::test]
 async fn test_mcp_initialize() {
+    let _guard = TEST_MUTEX.lock().await;
     let (mut child, mut stdin, mut stdout) = start_server().await;
 
     let resp = send_and_receive(
@@ -106,6 +119,7 @@ async fn test_mcp_initialize() {
 
 #[tokio::test]
 async fn test_mcp_tools_list() {
+    let _guard = TEST_MUTEX.lock().await;
     let (mut child, mut stdin, mut stdout) = start_server().await;
 
     // Initialize
@@ -157,6 +171,7 @@ async fn test_mcp_tools_list() {
 
 #[tokio::test]
 async fn test_mcp_analyze_file() {
+    let _guard = TEST_MUTEX.lock().await;
     // Create a test file
     let tmp = tempfile::NamedTempFile::with_suffix(".rs").unwrap();
     std::fs::write(tmp.path(), "fn main() {}\nfn helper() {}").unwrap();
@@ -218,6 +233,7 @@ async fn test_mcp_analyze_file() {
 
 #[tokio::test]
 async fn test_mcp_file_not_found() {
+    let _guard = TEST_MUTEX.lock().await;
     let (mut child, mut stdin, mut stdout) = start_server().await;
 
     // Initialize + notification
