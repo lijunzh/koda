@@ -54,7 +54,7 @@ uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 
 # SHA-256 content hashing (edit staleness detection — Gemini CLI strategy)
-sha2 = "0.10"
+sha2 = "0.11"
 
 # POSIX shell tokenization (bash safety classification — replaces substring matching, #807)
 shlex = "1"
