@@ -799,7 +799,7 @@ pub(crate) fn resolve_path_unrestricted(project_root: &Path, requested: &str) ->
 /// Normalise a read-only path and enforce the fully-denied list.
 ///
 /// This is the entry-point for **all read-only tools** (Read, List, Grep,
-/// Glob).  It wraps [`resolve_path_unrestricted`] with a check against
+/// Glob).  It wraps `resolve_path_unrestricted` with a check against
 /// `sandbox::is_fully_denied` so that the same paths blocked by the
 /// subprocess sandbox (bwrap / Seatbelt) are also blocked when the model
 /// accesses them through in-process tools.
