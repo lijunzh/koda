@@ -438,7 +438,7 @@ For capabilities that ship in the koda workspace (same release cycle):
 7. Add `--version` flag to `main.rs` (standalone server wrapper)
 8. Write integration tests in `tests/mcp_integration_test.rs`
 9. Update `release.yml`: version verify, build, package, publish, Homebrew
-10. Sync version with workspace (currently 0.2.12)
+10. Sync version with workspace (currently 0.2.13)
 11. Update this file (CLAUDE.md)
 
 ## CI Workflows

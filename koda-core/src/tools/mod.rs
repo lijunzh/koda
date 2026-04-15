@@ -787,7 +787,7 @@ pub fn safe_resolve_path(project_root: &Path, requested: &str) -> Result<PathBuf
 ///
 /// Relative paths are resolved against `project_root`; absolute paths are
 /// cleaned in-place.  The result may point anywhere on the filesystem.
-pub fn resolve_path_unrestricted(project_root: &Path, requested: &str) -> PathBuf {
+pub(crate) fn resolve_path_unrestricted(project_root: &Path, requested: &str) -> PathBuf {
     let path = Path::new(requested);
     if path.is_absolute() {
         path.to_path_buf().clean()

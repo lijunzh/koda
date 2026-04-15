@@ -4,7 +4,40 @@ All notable changes to Koda are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.2.13] - 2026-04-14
+
+### Added
+- **Queue lanes for typing during inference** — users can now type while the
+  model is thinking. `Enter` sends mid-turn input (`QueueNext` — steers the
+  current turn); `Ctrl+J` defers to a `later_queue` that fires as one
+  combined turn after inference completes (#851, #892).
+- **Queue preview widget** — a `📋`-prefixed panel above the status bar shows
+  up to 3 pending later-queue items with index numbers, an overflow count,
+  and keybinding hints (`↑ pop · Ctrl+U clear`). Hidden when the queue is
+  empty (#851, #893).
+- **Up Arrow pops from later queue** — during inference, pressing `↑` pops
+  the last deferred item back into the editor for re-editing (#893).
+- **`/export` defaults to verbose** — transcripts now include full tool-call
+  output, timestamps, and token counts by default. The new `--summary` flag
+  restores the old concise format (#878, #887).
+- **Sandbox credential hardening** — 8 new credential directories protected
+  from subprocess writes: `.claude`, `.android`, `netlify`, `vercel`, `fly`,
+  `doppler`, `stripe`, `heroku`. Linux bwrap integration tests added (#868,
+  #879).
+- **10 missing docs pages added to `koda_docs` skill index** (#871, #873).
+
+### Changed
+- **Context window % shows actual tokens** — the status-bar percentage now
+  uses `prompt_tokens` from the provider response instead of the `chars/3.5`
+  heuristic, giving accurate readings across all models (#874, #881).
+- **Unrestricted file reads** — Read/List/Grep/Glob now work on any path.
+  Write/Edit/Delete remain scoped to the project root. The koda database
+  (`~/.config/koda/db`) is fully denied for both reads and writes (#876,
+  #882).
+- **`/help` card improvements** — removed Approval section, added drag & drop
+  hint (#870).
+- **Reverted supervisor/worker IPC foundation** — the Phase 1 IPC code from
+  #884 was reverted cleanly in #890; no residual code remains.
 
 ### Fixed
 - **Ctrl+C resume broken across all providers** — typing `continue` after an
@@ -13,9 +46,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   synthetic assistant sentinel between any consecutive user-side messages
   at assembly time (never written to DB, disappears after the next real
   reply). Covers both the streaming-interrupted case (`user → user`) and the
-  tool-result-interrupted case (`tool → user`), which Anthropic and Gemini
-  both treat as two consecutive user messages after their internal remapping
-  (#875).
+  tool-result-interrupted case (`tool → user`) (#875, #886).
+- **Incomplete assistant messages poisoning context** — `load_context` now
+  filters out assistant messages without `completed_at`, preventing garbled
+  DB state from corrupting future turns (#855, #885).
+- **Scrolling up during inference snaps back to bottom** — viewport now holds
+  position when new tokens arrive while the user is scrolled up (#872).
+- **Queue preview hint row clipped** — `height_for` now always includes a
+  row for keybinding hints, so `↑ pop · Ctrl+U clear` is visible even with
+  1–3 queued items.
+- **Newlines in long queue previews** — text is now flattened to spaces
+  before truncation, preventing embedded newlines from breaking the widget
+  layout.
+- **`resolve_path_unrestricted` narrowed to `pub(crate)`** — no external
+  callers; reduces public API surface.
+
+### Dependencies
+- `rand` 0.9.2 → 0.9.3 (#891).
 
 ## [0.2.12] - 2026-04-12
 
