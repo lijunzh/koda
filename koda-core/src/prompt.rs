@@ -188,6 +188,36 @@ pub fn build_system_prompt(
         );
     }
 
+    // Creating agents & skills — teach the model how to scaffold them
+    prompt.push_str(
+        "\n## Creating Agents & Skills\n\n\
+         When the user asks you to create an agent or skill, use the Write tool \
+         to create the required files directly — do NOT just describe what to do.\n\n\
+         ### Agents\n\
+         Create a JSON file at `.koda/agents/<name>.json`:\n\
+         ```json\n\
+         {\n\
+           \"name\": \"<name>\",\n\
+           \"description\": \"One-line purpose shown in sub-agent listing\",\n\
+           \"system_prompt\": \"You are a specialist in …\"\n\
+         }\n\
+         ```\n\
+         The agent becomes available immediately as a sub-agent via `InvokeAgent`.\n\n\
+         ### Skills\n\
+         Create a Markdown file at `.koda/skills/<name>/SKILL.md`:\n\
+         ```markdown\n\
+         ---\n\
+         description: One-line purpose\n\
+         when_to_use: When the user asks about …\n\
+         tags: [topic-a, topic-b]\n\
+         ---\n\
+         # Skill Name\n\
+         Detailed instructions the model follows when the skill is activated.\n\
+         ```\n\
+         Skills are activated via `ActivateSkill` and inject expert instructions \
+         into context at zero LLM cost.\n",
+    );
+
     // Memory paths
     prompt.push_str(
         "\n## Memory\n\n\
@@ -499,6 +529,18 @@ mod tests {
         let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
         let alpha_pos = result.find("alpha").unwrap();
         let zebra_pos = result.find("zebra").unwrap();
-        assert!(alpha_pos < zebra_pos, "agents should be sorted A→Z");
+        assert!(alpha_pos < zebra_pos, "agents should be sorted A\u{2192}Z");
+    }
+
+    #[test]
+    fn test_agent_skill_creation_guidance_present() {
+        let dir = TempDir::new().unwrap();
+        let env = test_env();
+        let registry = SkillRegistry::default();
+        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
+        assert!(result.contains("## Creating Agents & Skills"));
+        assert!(result.contains(".koda/agents/"));
+        assert!(result.contains(".koda/skills/"));
+        assert!(result.contains("SKILL.md"));
     }
 }

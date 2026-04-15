@@ -723,3 +723,254 @@ fn handle_inference_ui_inline(
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use koda_core::trust::SharedTrustMode;
+    use std::collections::VecDeque;
+
+    /// Build a `KeyEvent` from code + modifiers.
+    fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: mods,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    /// Minimal harness: sets up the moving parts that `handle_inference_key_inline`
+    /// touches, runs a closure with mutable refs, and returns the queue + history.
+    async fn run_key(
+        k: KeyEvent,
+        initial_text: &str,
+        initial_queue: &[&str],
+    ) -> (VecDeque<String>, Vec<String>, Vec<EngineCommand>) {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(16);
+        let mut scroll_buffer = ScrollBuffer::new(5000);
+        let mut menu = crate::tui_types::MenuContent::None;
+        let mut prompt_mode = PromptMode::Chat;
+        let mut pending_approval_id = None;
+        let mut textarea = ratatui_textarea::TextArea::default();
+        let shared_mode = SharedTrustMode::default();
+        let mut completer = crate::completer::InputCompleter::new(std::path::PathBuf::from("/tmp"));
+        let mut history = Vec::new();
+        let mut history_idx = None;
+        let mut later_queue: VecDeque<String> =
+            initial_queue.iter().map(|s| s.to_string()).collect();
+
+        // Seed the textarea with the initial text.
+        if !initial_text.is_empty() {
+            textarea.insert_str(initial_text);
+        }
+
+        // Open a temp database.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db = koda_core::db::Database::init(tmp.path()).await.unwrap();
+
+        handle_inference_key_inline(
+            k,
+            &cancel,
+            &cmd_tx,
+            &mut scroll_buffer,
+            &mut menu,
+            &mut prompt_mode,
+            &mut pending_approval_id,
+            &mut textarea,
+            &shared_mode,
+            &mut completer,
+            &mut history,
+            &mut history_idx,
+            &mut later_queue,
+            &db,
+        )
+        .await;
+
+        // Drain engine commands.
+        drop(cmd_tx);
+        let mut cmds = Vec::new();
+        while let Some(c) = cmd_rx.recv().await {
+            cmds.push(c);
+        }
+
+        (later_queue, history, cmds)
+    }
+
+    // ── Ctrl+J: push to later queue ───────────────────────────────────
+
+    #[tokio::test]
+    async fn ctrl_j_pushes_to_later_queue() {
+        let (queue, history, _) = run_key(
+            key(KeyCode::Char('j'), KeyModifiers::CONTROL),
+            "deferred message",
+            &[],
+        )
+        .await;
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0], "deferred message");
+        assert_eq!(history, vec!["deferred message"]);
+    }
+
+    #[tokio::test]
+    async fn ctrl_j_fifo_ordering() {
+        // Simulate two Ctrl+J presses by pre-seeding the queue
+        // and adding a third item.
+        let (queue, _, _) = run_key(
+            key(KeyCode::Char('j'), KeyModifiers::CONTROL),
+            "third",
+            &["first", "second"],
+        )
+        .await;
+        assert_eq!(queue.len(), 3);
+        assert_eq!(queue[0], "first");
+        assert_eq!(queue[1], "second");
+        assert_eq!(queue[2], "third");
+    }
+
+    #[tokio::test]
+    async fn ctrl_j_ignores_empty_text() {
+        let (queue, history, _) = run_key(
+            key(KeyCode::Char('j'), KeyModifiers::CONTROL),
+            "   ", // whitespace-only
+            &[],
+        )
+        .await;
+        assert!(queue.is_empty(), "empty text must not enqueue");
+        assert!(history.is_empty(), "empty text must not push history");
+    }
+
+    // ── Up: pop from later queue ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn up_pops_last_from_later_queue() {
+        let (queue, _, _) = run_key(
+            key(KeyCode::Up, KeyModifiers::NONE),
+            "",
+            &["first", "second"],
+        )
+        .await;
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0], "first");
+    }
+
+    #[tokio::test]
+    async fn up_on_empty_queue_is_noop() {
+        let (queue, _, _) = run_key(key(KeyCode::Up, KeyModifiers::NONE), "", &[]).await;
+        assert!(queue.is_empty());
+    }
+
+    // ── Ctrl+U: clear later queue ────────────────────────────────────
+
+    #[tokio::test]
+    async fn ctrl_u_clears_later_queue() {
+        let (queue, _, _) = run_key(
+            key(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            "",
+            &["a", "b", "c"],
+        )
+        .await;
+        assert!(queue.is_empty(), "Ctrl+U must clear the queue");
+    }
+
+    #[tokio::test]
+    async fn ctrl_u_on_empty_queue_is_noop() {
+        let (queue, _, _) = run_key(key(KeyCode::Char('u'), KeyModifiers::CONTROL), "", &[]).await;
+        assert!(queue.is_empty());
+    }
+
+    // ── Enter: "next" lane (QueueNext engine command) ─────────────────
+
+    #[tokio::test]
+    async fn enter_sends_queue_next_command() {
+        let (queue, history, cmds) = run_key(
+            key(KeyCode::Enter, KeyModifiers::NONE),
+            "steer message",
+            &[],
+        )
+        .await;
+        // Later queue must be untouched.
+        assert!(queue.is_empty());
+        // History must record the message.
+        assert_eq!(history, vec!["steer message"]);
+        // Must emit QueueNext.
+        assert_eq!(cmds.len(), 1);
+        match &cmds[0] {
+            EngineCommand::QueueNext { text } => assert_eq!(text, "steer message"),
+            other => panic!("expected QueueNext, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn enter_ignores_empty_text() {
+        let (_, history, cmds) = run_key(key(KeyCode::Enter, KeyModifiers::NONE), "", &[]).await;
+        assert!(history.is_empty());
+        assert!(cmds.is_empty());
+    }
+
+    // ── Esc: cancels inference ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn esc_cancels_token() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (cmd_tx, _cmd_rx) = mpsc::channel::<EngineCommand>(1);
+        let mut scroll_buffer = ScrollBuffer::new(100);
+        let mut menu = crate::tui_types::MenuContent::None;
+        let mut prompt_mode = PromptMode::Chat;
+        let mut pending = None;
+        let mut textarea = ratatui_textarea::TextArea::default();
+        let shared = SharedTrustMode::default();
+        let mut comp = crate::completer::InputCompleter::new(std::path::PathBuf::from("/tmp"));
+        let mut hist = Vec::new();
+        let mut idx = None;
+        let mut queue = VecDeque::new();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db = koda_core::db::Database::init(tmp.path()).await.unwrap();
+
+        handle_inference_key_inline(
+            key(KeyCode::Esc, KeyModifiers::NONE),
+            &cancel,
+            &cmd_tx,
+            &mut scroll_buffer,
+            &mut menu,
+            &mut prompt_mode,
+            &mut pending,
+            &mut textarea,
+            &shared,
+            &mut comp,
+            &mut hist,
+            &mut idx,
+            &mut queue,
+            &db,
+        )
+        .await;
+
+        assert!(cancel.is_cancelled(), "Esc must cancel the token");
+    }
+
+    // ── truncate_preview ─────────────────────────────────────────────
+
+    #[test]
+    fn truncate_preview_short() {
+        assert_eq!(truncate_preview("hello", 80), "hello");
+    }
+
+    #[test]
+    fn truncate_preview_replaces_newlines() {
+        assert_eq!(truncate_preview("a\nb", 80), "a↵b");
+    }
+
+    #[test]
+    fn truncate_preview_truncates_long() {
+        let long = "x".repeat(100);
+        let result = truncate_preview(&long, 10);
+        assert_eq!(result.chars().count(), 10);
+        assert!(result.ends_with('\u{2026}'));
+    }
+}

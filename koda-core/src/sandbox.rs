@@ -193,7 +193,11 @@ const CREDENTIAL_CONFIG_FULL_DENY: &[&str] = &[
 /// which will replace this application-layer check with true OS enforcement.
 pub(crate) fn is_fully_denied(path: &Path) -> bool {
     let Ok(home) = std::env::var("HOME") else {
-        return false;
+        // Conservative: if we can't determine HOME, deny everything.
+        // Without HOME we can't resolve credential paths, so blocking
+        // all reads is the safe default.  The subprocess sandbox
+        // (bwrap / Seatbelt) provides independent enforcement anyway.
+        return true;
     };
     let home = Path::new(&home);
     CREDENTIAL_CONFIG_FULL_DENY
@@ -699,6 +703,22 @@ mod tests {
         )));
         assert!(!is_fully_denied(Path::new("/tmp/scratch.txt")));
         assert!(!is_fully_denied(Path::new("/etc/hosts")));
+    }
+
+    #[test]
+    fn fully_denied_returns_true_when_home_unset() {
+        // Temporarily unset HOME to test the conservative fallback.
+        let original = std::env::var("HOME").ok();
+        unsafe { std::env::remove_var("HOME") };
+        // With HOME unset, is_fully_denied should conservatively deny.
+        assert!(
+            is_fully_denied(Path::new("/tmp/anything")),
+            "must deny when HOME is unset"
+        );
+        // Restore HOME.
+        if let Some(h) = original {
+            unsafe { std::env::set_var("HOME", h) };
+        }
     }
 
     // ── Unit: strict profile contains deny rules ───────────────────────────
