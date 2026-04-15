@@ -173,7 +173,7 @@ jobs:
           cat release_body.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2.6.1
+        uses: softprops/action-gh-release@v3.0.0
         with:
           body_path: release_body.md
           files: artifacts/*.tar.gz
