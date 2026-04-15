@@ -30,6 +30,9 @@ fn koda_ast_binary() -> String {
 }
 
 /// Send a JSON-RPC message and read the response.
+///
+/// Times out after 10 seconds so a silent server crash or a slow macOS
+/// Gatekeeper scan never hangs CI indefinitely.
 async fn send_and_receive(
     stdin: &mut tokio::process::ChildStdin,
     stdout: &mut BufReader<tokio::process::ChildStdout>,
@@ -42,7 +45,13 @@ async fn send_and_receive(
     // Read response (only for requests with "id")
     if msg.get("id").is_some() {
         let mut response = String::new();
-        stdout.read_line(&mut response).await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            stdout.read_line(&mut response),
+        )
+        .await
+        .expect("timed out waiting for server response (10 s)")
+        .unwrap();
         Some(serde_json::from_str(&response).unwrap())
     } else {
         // Notification — no response expected, small delay for processing
