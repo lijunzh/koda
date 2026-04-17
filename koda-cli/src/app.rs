@@ -146,6 +146,11 @@ pub(crate) async fn run() -> Result<()> {
         match cmd {
             Command::Server { port, stdio } => {
                 if *stdio {
+                    // Init stderr tracing early so any startup hang in the
+                    // stdio server is at least observable. Stdout is
+                    // reserved for JSON-RPC; logs go to stderr.
+                    init_server_tracing();
+
                     let project_root = cli.project_root.clone().unwrap_or_else(|| {
                         std::env::current_dir().expect("Failed to get current directory")
                     });
@@ -299,6 +304,25 @@ pub(crate) async fn run() -> Result<()> {
         first_run,
     )
     .await
+}
+
+/// Initialize tracing for the stdio server subcommand.
+///
+/// Logs go to **stderr** so stdout stays reserved for newline-delimited
+/// JSON-RPC. The default filter is `info` so a freshly-spawned subprocess
+/// always announces itself — invaluable when debugging a hung server from
+/// an integration test (set `RUST_LOG=koda_cli=debug,koda_core=debug` for
+/// more detail). `try_init` is used so we silently no-op if the parent
+/// already initialized a subscriber (e.g. from `cargo test`).
+fn init_server_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("koda_core=info,koda_cli=info"));
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(filter)
+        .with_target(true)
+        .try_init();
+    tracing::info!("koda server --stdio: tracing initialized");
 }
 
 /// Resolve the headless prompt from -p flag, positional arg, or stdin pipe.

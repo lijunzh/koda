@@ -81,9 +81,11 @@ struct ServerState {
 /// Reads newline-delimited JSON-RPC from stdin, dispatches to handlers,
 /// and writes JSON-RPC responses/notifications to stdout.
 pub async fn run_stdio_server(project_root: PathBuf, mut config: KodaConfig) -> Result<()> {
+    tracing::info!("stdio server: initializing database");
     // Initialize database
     let db = Database::init(&koda_core::db::config_dir()?).await?;
 
+    tracing::info!("stdio server: probing model capabilities (5s cap)");
     // Query actual model capabilities before building agent.
     // Best-effort with a 5-second cap: on CI or with no credentials the
     // HTTP call can otherwise block until the OS TCP timeout, stalling
@@ -95,6 +97,7 @@ pub async fn run_stdio_server(project_root: PathBuf, mut config: KodaConfig) -> 
     )
     .await;
 
+    tracing::info!("stdio server: building agent");
     // Build agent (tools, system prompt)
     let mut agent = KodaAgent::new(&config, project_root.clone(), &[]).await?;
     crate::builtin_skills::inject_builtin_skills(&mut agent);
@@ -122,13 +125,18 @@ pub async fn run_stdio_server(project_root: PathBuf, mut config: KodaConfig) -> 
         use tokio::io::AsyncWriteExt;
         let mut stdout = tokio::io::stdout();
         while let Some(line) = out_rx.recv().await {
+            let len = line.len() + 1;
+            tracing::debug!("stdio server: about to write {len} bytes");
             if stdout.write_all(line.as_bytes()).await.is_err() {
+                tracing::warn!("stdio server: stdout write failed (broken pipe?)");
                 break;
             }
             if stdout.write_all(b"\n").await.is_err() {
+                tracing::warn!("stdio server: stdout newline write failed");
                 break;
             }
             let _ = stdout.flush().await;
+            tracing::debug!("stdio server: flushed {len} bytes to stdout");
         }
     });
 
@@ -136,14 +144,17 @@ pub async fn run_stdio_server(project_root: PathBuf, mut config: KodaConfig) -> 
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut line = String::new();
+    tracing::info!("stdio server: ready, entering read loop");
 
     loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
         if n == 0 {
             // EOF — client disconnected
+            tracing::info!("stdio server: stdin EOF, shutting down");
             break;
         }
+        tracing::debug!("stdio server: read {n} bytes from stdin");
 
         let trimmed = line.trim();
         if trimmed.is_empty() {
