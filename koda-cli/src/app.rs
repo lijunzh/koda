@@ -385,7 +385,7 @@ fn prune_old_logs(log_dir: &Path, keep: usize) {
                 .map(|t| (t, e.path()))
         })
         .collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    files.sort_by_key(|e| std::cmp::Reverse(e.0)); // newest first
     for (_, path) in files.into_iter().skip(keep) {
         let _ = std::fs::remove_file(path);
     }
