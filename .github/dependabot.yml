@@ -15,6 +15,16 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # sha2 0.11 = digest 0.11 (RustCrypto bumps the whole digest line
+      # together). sqlx 0.8.x — our biggest non-direct sha2 consumer —
+      # still pins sha2 0.10 transitively. Bumping our direct dep would
+      # duplicate sha2 in the lockfile (both 0.10 and 0.11 compiled into
+      # the binary) for zero functional gain. Re-enable this once sqlx 0.9
+      # reaches stable and the workspace can move the digest line atomically.
+      # Tracked alongside the bincode 1.x situation (similarly transitive).
+      - dependency-name: "sha2"
+        versions: [">=0.11.0"]
 
   - package-ecosystem: github-actions
     directory: /
