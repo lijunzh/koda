@@ -17,7 +17,7 @@ fn dump_tool_definitions_for_audit() {
         entries.push((def.name.clone(), desc_chars, param_chars));
     }
 
-    entries.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.1 + e.2));
 
     eprintln!(
         "\n{:<20} {:>10} {:>10} {:>10}",

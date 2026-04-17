@@ -91,7 +91,7 @@ impl ContextAnalysis {
             .iter()
             .map(|(k, v)| (k.as_str(), *v))
             .collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         sorted.truncate(n);
         sorted
     }
@@ -112,11 +112,7 @@ impl ContextAnalysis {
         if !top.is_empty() {
             lines.push("  Top tool results:".to_string());
             for (name, tokens) in &top {
-                let pct = if self.total > 0 {
-                    (*tokens * 100) / self.total
-                } else {
-                    0
-                };
+                let pct = (tokens * 100).checked_div(self.total).unwrap_or(0);
                 lines.push(format!("    {name}: ~{tokens} tokens ({pct}%)"));
             }
         }
