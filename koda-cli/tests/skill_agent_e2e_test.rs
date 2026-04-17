@@ -5,9 +5,9 @@
 //!
 //! ## What's tested
 //!
-//! **koda_docs skill** (injected by koda-cli from compiled docs):
-//! - `koda_docs` appears in `ListSkills` output.
-//! - `ActivateSkill { skill_name: "koda_docs" }` returns manual content.
+//! **koda-docs skill** (injected by koda-cli from compiled docs):
+//! - `koda-docs` appears in `ListSkills` output.
+//! - `ActivateSkill { skill_name: "koda-docs" }` returns manual content.
 //!
 //! **Built-in sub-agents** (explore / plan / verify / task):
 //! - `InvokeAgent { agent_name: X }` is dispatched and the agent runs.
@@ -86,9 +86,9 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-// ── koda_docs skill ──────────────────────────────────────────────────────────
+// ── koda-docs skill ──────────────────────────────────────────────────────────
 
-/// ListSkills must include `koda_docs` — injected by koda-cli at startup.
+/// ListSkills must include `koda-docs` — injected by koda-cli at startup.
 #[test]
 fn koda_docs_skill_appears_in_list_skills() {
     let responses = r#"[
@@ -103,19 +103,19 @@ fn koda_docs_skill_appears_in_list_skills() {
 
     let clean = strip_ansi(&stderr);
     assert!(
-        clean.contains("koda_docs"),
-        "expected 'koda_docs' in ListSkills output.\nstderr: {clean}"
+        clean.contains("koda-docs"),
+        "expected 'koda-docs' in ListSkills output.\nstderr: {clean}"
     );
 }
 
-/// ActivateSkill for `koda_docs` must return the URL index.
+/// ActivateSkill for `koda-docs` must return the URL index.
 ///
 /// The tool result (printed to stderr line-by-line) must contain
 /// the docs URL — the online manual reference.
 #[test]
 fn koda_docs_skill_activates_and_returns_manual_content() {
     let responses = r#"[
-        {"tool": "ActivateSkill", "args": {"skill_name": "koda_docs"}},
+        {"tool": "ActivateSkill", "args": {"skill_name": "koda-docs"}},
         {"text": "Done reading docs."}
     ]"#;
     let (stdout, stderr, success) = run_mock("how do I use koda?", responses);
@@ -128,7 +128,7 @@ fn koda_docs_skill_activates_and_returns_manual_content() {
 
     // The skill activation prefix from activate_skill()
     assert!(
-        clean.contains("koda_docs"),
+        clean.contains("koda-docs"),
         "expected skill name in activation output.\nstderr: {clean}"
     );
     // The URL index pointing to the online manual
@@ -139,7 +139,7 @@ fn koda_docs_skill_activates_and_returns_manual_content() {
 }
 
 /// Requesting an unknown skill must not crash the process — just surface the
-/// "not found" message.  Regression guard: this would fail if koda_docs were
+/// "not found" message.  Regression guard: this would fail if koda-docs were
 /// somehow double-registered and corrupted the registry.
 #[test]
 fn unknown_skill_returns_not_found_gracefully() {
@@ -275,7 +275,7 @@ fn task_sub_agent_is_dispatched_when_invoked() {
 // ── ListAgents ───────────────────────────────────────────────────────────────
 
 /// ListAgents must expose all four built-in sub-agents.
-/// `guide` must NOT appear — it was deleted and replaced by the koda_docs skill.
+/// `guide` must NOT appear — it was deleted and replaced by the koda-docs skill.
 #[test]
 fn list_agents_shows_all_builtin_sub_agents() {
     let responses = r#"[
@@ -298,6 +298,6 @@ fn list_agents_shows_all_builtin_sub_agents() {
     }
     assert!(
         !clean.contains("guide"),
-        "'guide' agent should be gone — replaced by koda_docs skill.\nstderr: {clean}"
+        "'guide' agent should be gone — replaced by koda-docs skill.\nstderr: {clean}"
     );
 }

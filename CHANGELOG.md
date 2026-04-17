@@ -4,6 +4,15 @@ All notable changes to Koda are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+- **Built-in `koda_docs` skill renamed to `koda-docs`** for consistency with
+  the kebab-case naming used by all on-disk skills (`code-review`, `debug`,
+  `simplify`, `remember`, `security-audit`). The skill behavior is unchanged;
+  only the identifier passed to `ActivateSkill` differs. Update any custom
+  scripts or aliases that reference `koda_docs` by name.
+
 ## [0.2.13] - 2026-04-14
 
 ### Added
