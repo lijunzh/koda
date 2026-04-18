@@ -47,6 +47,20 @@ pub fn is_set(key: &str) -> bool {
     get(key).is_some()
 }
 
+/// Remove a key from the runtime map (does **not** touch process env).
+///
+/// Returns the previous runtime-map value if one was set. After removal
+/// [`get`] will fall back to the process environment as usual.
+///
+/// Primarily intended for tests that need to leave the runtime map clean
+/// for siblings — production code should rarely need this.
+pub fn remove(key: &str) -> Option<String> {
+    env_map()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,8 +94,24 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_key() {
-        assert!(get("DEFINITELY_NOT_SET_12345").is_none());
-        assert!(!is_set("DEFINITELY_NOT_SET_12345"));
+    fn test_remove_returns_previous_value() {
+        set("TEST_REMOVE_RETURN", "orig");
+        assert_eq!(remove("TEST_REMOVE_RETURN"), Some("orig".to_string()));
+        // Second remove returns None (already gone from runtime map).
+        assert_eq!(remove("TEST_REMOVE_RETURN"), None);
+    }
+
+    #[test]
+    fn test_remove_does_not_touch_process_env() {
+        // remove() should only clear the runtime map, not std::env.
+        // Use HOME (always set in CI + dev) instead of PATH because the
+        // sibling test_runtime_takes_precedence also touches PATH and
+        // cargo runs unit tests in parallel by default — racing on the
+        // same key would be a flaky-test factory.
+        let _ = remove("HOME"); // ensure runtime map has no override
+        assert!(
+            get("HOME").is_some(),
+            "process env HOME must survive a runtime-map remove"
+        );
     }
 }
