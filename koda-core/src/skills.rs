@@ -141,6 +141,14 @@ impl SkillRegistry {
             ("simplify", include_str!("../skills/simplify/SKILL.md")),
             ("debug", include_str!("../skills/debug/SKILL.md")),
             ("remember", include_str!("../skills/remember/SKILL.md")),
+            (
+                "create-agent",
+                include_str!("../skills/create-agent/SKILL.md"),
+            ),
+            (
+                "create-skill",
+                include_str!("../skills/create-skill/SKILL.md"),
+            ),
         ];
 
         for (name, content) in builtins {
@@ -515,6 +523,94 @@ Do the review.
         assert!(registry.activate("simplify").is_some());
         assert!(registry.activate("debug").is_some());
         assert!(registry.activate("remember").is_some());
+        assert!(registry.activate("create-agent").is_some());
+        assert!(registry.activate("create-skill").is_some());
+    }
+
+    /// Pin the create-agent + create-skill bundled skills so they don't get
+    /// silently broken. Each assertion maps to a specific user-facing failure:
+    /// missing front-matter field => skill won't load; missing key guidance
+    /// in the body => generated agents/skills will have known footguns.
+    #[test]
+    fn test_creation_skills_are_complete() {
+        let mut registry = SkillRegistry::default();
+        registry.load_builtin();
+
+        // ── create-agent ────────────────────────────────────────
+        let agent = registry
+            .get("create-agent")
+            .expect("create-agent skill must load");
+        assert!(
+            agent.meta.when_to_use.is_some(),
+            "create-agent needs when_to_use for auto-activation"
+        );
+        assert!(
+            !agent.meta.allowed_tools.is_empty(),
+            "create-agent should scope its tools (least privilege)"
+        );
+        // The body must include the write_access footgun warning — this is
+        // the #1 thing that breaks generated agents if missing.
+        let agent_body = registry.activate("create-agent").unwrap();
+        assert!(
+            agent_body.contains("write_access"),
+            "create-agent must teach the write_access field"
+        );
+        assert!(
+            agent_body.contains("footgun") || agent_body.contains("silently"),
+            "create-agent must warn about the write_access default-false footgun"
+        );
+        // Both scope paths documented + correct personal path.
+        assert!(
+            agent_body.contains(".koda/agents/"),
+            "create-agent must document project-scope path"
+        );
+        assert!(
+            agent_body.contains("~/.config/koda/agents/"),
+            "create-agent must document personal-scope path (~/.config/koda/, NOT ~/.koda/)"
+        );
+        // Reference to a canonical example so the model can crib.
+        assert!(
+            agent_body.contains("koda-core/agents/explore.json"),
+            "create-agent must point at a reference example"
+        );
+
+        // ── create-skill ────────────────────────────────────────
+        let skill = registry
+            .get("create-skill")
+            .expect("create-skill skill must load");
+        assert!(
+            skill.meta.when_to_use.is_some(),
+            "create-skill needs when_to_use for auto-activation"
+        );
+        assert!(
+            !skill.meta.allowed_tools.is_empty(),
+            "create-skill should scope its tools (least privilege)"
+        );
+        let skill_body = registry.activate("create-skill").unwrap();
+        // Frontmatter fields the model must teach.
+        assert!(
+            skill_body.contains("when_to_use"),
+            "create-skill must teach the when_to_use field"
+        );
+        assert!(
+            skill_body.contains("allowed_tools"),
+            "create-skill must teach allowed_tools scoping"
+        );
+        // Both scope paths documented + correct personal path.
+        assert!(
+            skill_body.contains(".koda/skills/"),
+            "create-skill must document project-scope path"
+        );
+        assert!(
+            skill_body.contains("~/.config/koda/skills/"),
+            "create-skill must document personal-scope path"
+        );
+        // Reference to a canonical example so the model can crib.
+        assert!(
+            skill_body.contains("koda-core/skills/code-review/SKILL.md")
+                || skill_body.contains("koda-core/skills/debug/SKILL.md"),
+            "create-skill must point at a reference example"
+        );
     }
 
     #[test]
@@ -579,13 +675,16 @@ Do the review.
 
         let list = registry.list();
         let names: Vec<&str> = list.iter().map(|s| s.name.as_str()).collect();
-        // Sorted alphabetically: code-review, debug, remember, security-audit, simplify
-        assert!(list.len() >= 5);
+        // Sorted alphabetically: code-review, create-agent, create-skill,
+        // debug, remember, security-audit, simplify
+        assert!(list.len() >= 7);
         assert_eq!(names[0], "code-review");
-        assert_eq!(names[1], "debug");
-        assert_eq!(names[2], "remember");
-        assert_eq!(names[3], "security-audit");
-        assert_eq!(names[4], "simplify");
+        assert_eq!(names[1], "create-agent");
+        assert_eq!(names[2], "create-skill");
+        assert_eq!(names[3], "debug");
+        assert_eq!(names[4], "remember");
+        assert_eq!(names[5], "security-audit");
+        assert_eq!(names[6], "simplify");
     }
 
     #[test]
