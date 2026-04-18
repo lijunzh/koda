@@ -633,35 +633,55 @@ async fn handle_export(
 
     let path_owned;
     let path: &str = match dest {
-        Some(p) => {
-            // Reject paths that escape CWD — absolute paths and ".." traversal.
-            let dest_path = std::path::Path::new(p);
-            if dest_path.is_absolute() || p.contains("..") {
-                tui_output::err_msg(
-                    buffer,
-                    "Export path must be relative to the current directory \
-                     (no absolute paths or \"..\" traversal)."
-                        .into(),
-                );
+        Some(p) => match validate_export_dest(p) {
+            Ok(()) => p,
+            Err(msg) => {
+                tui_output::err_msg(buffer, msg.into());
                 return;
             }
-            p
-        }
+        },
         None => {
             path_owned = export_default_filename(&messages);
             &path_owned
         }
     };
 
-    match std::fs::write(path, &md) {
-        Ok(()) => {
-            let lines = md.lines().count();
+    match write_export_file(std::path::Path::new(path), &md) {
+        Ok(lines) => {
             tui_output::ok_msg(buffer, format!("Saved {lines} lines \u{2192} {path}"));
         }
         Err(e) => {
             tui_output::err_msg(buffer, format!("Could not write {path}: {e}"));
         }
     }
+}
+
+/// Validate a user-supplied `/export <path>` destination.
+///
+/// Policy: relative paths only, no `..` traversal. Paths failing either
+/// rule return an error message suitable for direct display in the TUI.
+///
+/// Note: the `..` check is a substring match (current historical behavior),
+/// so filenames like `"v1..v2.md"` are also rejected. A future change could
+/// switch to `Component::ParentDir` for a precise check; the existing tests
+/// pin the substring behavior so any such change must update them.
+fn validate_export_dest(dest: &str) -> Result<(), &'static str> {
+    let dest_path = std::path::Path::new(dest);
+    if dest_path.is_absolute() || dest.contains("..") {
+        return Err("Export path must be relative to the current directory \
+             (no absolute paths or \"..\" traversal).");
+    }
+    Ok(())
+}
+
+/// Write a transcript export to disk and return the line count.
+///
+/// Thin wrapper around `std::fs::write` that exposes the line-count
+/// computation used by the TUI status message, and provides a single
+/// well-tested seam for the file-creation path of `/export`.
+fn write_export_file(path: &std::path::Path, content: &str) -> std::io::Result<usize> {
+    std::fs::write(path, content)?;
+    Ok(content.lines().count())
 }
 
 /// Generate a default export filename from the first user message + UTC timestamp.
@@ -718,7 +738,7 @@ fn export_default_filename(messages: &[koda_core::persistence::Message]) -> Stri
 
 #[cfg(test)]
 mod tests {
-    use super::export_default_filename;
+    use super::{export_default_filename, validate_export_dest, write_export_file};
     use koda_core::persistence::{Message, Role};
 
     fn user_msg(content: &str) -> Message {
@@ -781,6 +801,214 @@ mod tests {
             slug_no_ext.len() <= 40,
             "slug too long ({} chars): {slug_no_ext}",
             slug_no_ext.len()
+        );
+    }
+
+    // ── validate_export_dest (#895) ───────────────────────────────────────
+
+    #[test]
+    fn validate_export_dest_accepts_simple_filename() {
+        assert!(validate_export_dest("transcript.md").is_ok());
+        assert!(validate_export_dest("koda-export.md").is_ok());
+    }
+
+    #[test]
+    fn validate_export_dest_accepts_relative_subdir_path() {
+        assert!(validate_export_dest("exports/today.md").is_ok());
+        assert!(validate_export_dest("./output.md").is_ok());
+    }
+
+    #[test]
+    fn validate_export_dest_rejects_absolute_path() {
+        let err = validate_export_dest("/tmp/leak.md").unwrap_err();
+        assert!(
+            err.contains("relative"),
+            "error must mention 'relative': {err}"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn validate_export_dest_rejects_windows_drive_path() {
+        // C:\foo\bar.md is absolute on Windows.
+        assert!(validate_export_dest(r"C:\foo\bar.md").is_err());
+    }
+
+    #[test]
+    fn validate_export_dest_rejects_parent_traversal() {
+        for p in ["../escape.md", "foo/../bar.md", "../../../etc/passwd"] {
+            let err = validate_export_dest(p).unwrap_err();
+            assert!(
+                err.contains("\"..\"") || err.contains("traversal"),
+                "error for {p:?} must mention traversal: {err}"
+            );
+        }
+    }
+
+    /// Documents the current (overly broad) substring check: anything
+    /// containing `..` is rejected, even when it's not a path component.
+    /// If we ever switch to `Component::ParentDir` this test must flip.
+    #[test]
+    fn validate_export_dest_rejects_any_double_dot_substring() {
+        // Not a real traversal — just a filename with two dots in a row.
+        assert!(
+            validate_export_dest("v1..v2.md").is_err(),
+            "current behavior: substring check is intentionally strict"
+        );
+    }
+
+    // ── write_export_file (#895) ──────────────────────────────────────────
+
+    #[test]
+    fn write_export_file_creates_file_with_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("out.md");
+        let content = "# Header\n\nbody line\nfinal line\n";
+
+        let lines = write_export_file(&path, content).expect("write");
+
+        assert!(path.exists(), "file must exist on disk");
+        let read_back = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(read_back, content, "file contents must match input");
+        assert_eq!(lines, 4, "line count must match content.lines() count");
+    }
+
+    #[test]
+    fn write_export_file_returns_zero_for_empty_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("empty.md");
+
+        let lines = write_export_file(&path, "").expect("write empty");
+        assert_eq!(lines, 0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn write_export_file_overwrites_existing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("clobber.md");
+        std::fs::write(&path, "OLD CONTENT THAT MUST BE GONE").unwrap();
+
+        let new_content = "new line one\nnew line two\n";
+        let lines = write_export_file(&path, new_content).expect("overwrite");
+
+        assert_eq!(lines, 2);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), new_content);
+    }
+
+    #[test]
+    fn write_export_file_fails_when_parent_dir_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nope/does-not-exist/out.md");
+
+        let err =
+            write_export_file(&path, "x").expect_err("writing to nonexistent parent must fail");
+        // io::Error kind for this is NotFound on all platforms.
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    // ── End-to-end: render → write → verify file (#895) ───────────────────────
+    //
+    // The transcript module already covers verbose-vs-summary content
+    // differences; these tests just close the loop by piping the rendered
+    // markdown through write_export_file and reading it back. Mirrors the
+    // exact data flow of handle_export() minus the DB load.
+
+    use crate::transcript;
+
+    fn meta_for_test() -> transcript::SessionMeta {
+        transcript::SessionMeta {
+            session_id: "sess-895".into(),
+            title: Some("Export Coverage".into()),
+            started_at: Some("2026-04-17T19:00:00Z".into()),
+            model: "claude-sonnet-4".into(),
+            provider: "anthropic".into(),
+            project_root: "/tmp/proj".into(),
+        }
+    }
+
+    fn assistant_with_tool_call(text: &str, tool_call_id: &str, tool_name: &str) -> Message {
+        let mut msg = user_msg(text);
+        msg.role = Role::Assistant;
+        msg.tool_calls = Some(
+            serde_json::json!([{
+                "id": tool_call_id,
+                "function": { "name": tool_name, "arguments": r#"{"file_path":"src/main.rs"}"# }
+            }])
+            .to_string(),
+        );
+        msg
+    }
+
+    fn tool_result(call_id: &str, content: &str) -> Message {
+        let mut m = user_msg(content);
+        m.role = Role::Tool;
+        m.tool_call_id = Some(call_id.into());
+        m
+    }
+
+    #[test]
+    fn end_to_end_verbose_export_includes_tool_output_in_file() {
+        let msgs = vec![
+            user_msg("please read main.rs"),
+            assistant_with_tool_call("", "call_v", "Read"),
+            tool_result("call_v", "fn main() { println!(\"hi\"); }"),
+        ];
+        let md = transcript::render(&msgs, &meta_for_test(), /*verbose=*/ true);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("verbose.md");
+        let lines = write_export_file(&path, &md).expect("write");
+
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            on_disk.contains("fn main()"),
+            "verbose export file must contain Read tool output"
+        );
+        assert!(
+            on_disk.contains("sess-895"),
+            "verbose export must include session metadata header"
+        );
+        assert_eq!(
+            lines,
+            md.lines().count(),
+            "reported line count matches rendered md"
+        );
+    }
+
+    #[test]
+    fn end_to_end_summary_export_omits_bash_output_from_file() {
+        // Bash output is a *mutating* tool result — summary mode shows a
+        // line-count placeholder rather than the raw output.
+        let msgs = vec![
+            user_msg("list files please"),
+            {
+                let mut m = assistant_with_tool_call("", "call_s", "Bash");
+                m.tool_calls = Some(
+                    serde_json::json!([{
+                        "id": "call_s",
+                        "function": { "name": "Bash", "arguments": r#"{"command":"ls"}"# }
+                    }])
+                    .to_string(),
+                );
+                m
+            },
+            tool_result("call_s", "alpha.txt\nbeta.txt\ngamma.txt"),
+        ];
+        let md = transcript::render(&msgs, &meta_for_test(), /*verbose=*/ false);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("summary.md");
+        write_export_file(&path, &md).expect("write");
+
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            !on_disk.contains("alpha.txt"),
+            "summary export must NOT include raw Bash output. got:\n{on_disk}"
+        );
+        assert!(
+            on_disk.contains("line(s) of output"),
+            "summary export must include the placeholder summary. got:\n{on_disk}"
         );
     }
 }
