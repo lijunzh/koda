@@ -10,13 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 - **MCP server instructions are now injected into the system prompt** (#922,
-  #927). Each MCP server can return a free-form `instructions` string in
-  its `initialize` response telling the model how to use it best ("prefer
+  #927, #929). Each MCP server can return a free-form `instructions` string
+  in its `initialize` response telling the model how to use it best ("prefer
   locator-based queries over CSS selectors", "always use parameterized
   queries", etc). Koda was silently dropping this guidance, leading to
-  suboptimal MCP tool usage. The block renders as `# MCP Server
-  Instructions` with one `## <server>` subsection per connected server
-  that provided non-empty guidance. Zero token cost for users without MCP
+  suboptimal MCP tool usage. The block is composed per-turn (so
+  late-connecting servers and `/mcp add` hot-reloads surface in the next
+  turn automatically) and wrapped in explicit provenance markers
+  (`---[start of server instructions from <name>]---` / `---[end ...]---`)
+  so a malicious or compromised server cannot masquerade its output as
+  Koda's own behavioral mandates. Zero token cost for users without MCP
   servers configured. Users with MCP servers will see the model start
   following per-server hints automatically with no config changes.
 - **`clean_snippet` no longer panics on UTF-8 boundary truncation** in
