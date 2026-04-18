@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-04-18
+
+Hotfix release. CI/infra changes only — no runtime, library, or user-facing
+behavior changes since v0.2.14. Safe to skip if you don't care about CI noise
+levels.
+
+### Changed
+- **Coverage workflow distinguishes infra flakes from real regressions**
+  (#930, #931). When `taiki-e/install-action` fails to install
+  `cargo-llvm-cov` (a known intermittent infra issue), the coverage report
+  job no longer treats it as a real coverage drop — it skips opening a
+  regression issue and skips updating the badge. Real coverage drops still
+  fail loudly. Reduces false-positive regression alerts.
+- **Workspace dependency versions synced** so all four crates pin their
+  internal `koda-core` dependency to the matching workspace version (#932).
+  Bookkeeping for crates.io publishing; no behavior change.
+
+### Coming next
+- **v0.3.0 will introduce capability-aware sandboxing** (tracking: #934,
+  design discussion: #933). Per-sub-agent filesystem and network policies,
+  pre-warmed sandbox slot pool for fast parallel dispatch, and stronger
+  isolation than the current `Bash`-only sandbox. Read the design and try
+  the alphas if you'd like to influence the implementation.
+
 ## [0.2.14] - 2026-04-18
 
 ### Fixed
