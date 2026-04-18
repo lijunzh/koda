@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# .githooks/pre-push — mirrors the Lint CI job locally.
+# .githooks/pre-push — fast local sanity check before pushing.
 #
-# Runs before every `git push`. Skip with `git push --no-verify` if you
-# need to push a WIP branch and let CI catch issues instead.
+# Philosophy: catch trivial mistakes (typos, formatting) that would
+# fail CI in 60+ minutes and block a push for nothing. Everything
+# else — full test suite, feature-gated builds, integration tests —
+# runs in CI on both ubuntu-latest and macos-latest. Trust CI.
+#
+# Skip with `git push --no-verify` if you need to push WIP.
 #
 # One-time setup (per clone):
 #   git config core.hooksPath .githooks
+#
+# For comprehensive pre-PR validation (the old behavior), run:
+#   ./scripts/preflight.sh
 
 set -euo pipefail
 
@@ -22,7 +29,9 @@ info "Running pre-push checks (skip with --no-verify)..."
 echo
 
 # --- Format ------------------------------------------------------------------
-info "cargo fmt"
+# Instant, and a fmt failure in CI is the most annoying possible reason
+# to wait an hour for a re-run.
+info "cargo fmt --check"
 if cargo fmt --all --check; then
     ok "fmt clean"
 else
@@ -31,6 +40,9 @@ else
 fi
 
 # --- Clippy ------------------------------------------------------------------
+# --all-targets is essentially free on warm cache (~1.5s) thanks to
+# incremental compile, and it covers the user-facing `koda` CLI binary
+# that --lib --tests would skip. Don't be clever about scoping this down.
 info "cargo clippy"
 if cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings; then
     ok "clippy clean"
@@ -39,48 +51,5 @@ else
     exit 1
 fi
 
-# --- Check (no features) -----------------------------------------------------
-# Compiles every target without optional features to catch cfg-gated items
-# that are invisible when a feature flag is active. Mirrors CI exactly.
-# (This is what caught the missing required-features stanza in #737.)
-info "cargo check (no features)"
-if cargo check --workspace --all-targets; then
-    ok "check clean"
-else
-    fail "check: fix the errors above"
-    exit 1
-fi
-
-# --- Tests -------------------------------------------------------------------
-# Runs unit tests (--lib, fast) plus the integration test suites that are
-# policy-critical and complete in <5s. Slow suites (mcp_http_transport,
-# inference_edge, inference_recovery) are skipped here because they involve
-# real sleep/retry loops and would make the hook unusably slow; CI covers
-# them on every push.
-#
-# Root cause of #882: the hook ran lint only, missing an integration test
-# regression in e2e_safety_test. The unit-test pass (--lib) doesn't run
-# tests in tests/*.rs — you must name them explicitly.
-info "cargo test (unit + fast integration suites)"
-if cargo test --workspace --features koda-core/test-support --lib && \
-   cargo test -p koda-core --features koda-core/test-support \
-       --test bash_safety_test \
-       --test e2e_safety_test \
-       --test e2e_tools_test \
-       --test e2e_test \
-       --test e2e_agent_test \
-       --test e2e_skills_test \
-       --test file_tools_test \
-       --test golden_test \
-       --test guarantee_matrix_test \
-       --test new_tools_test \
-       --test tool_normalize_test \
-       --test tool_wiring_test; then
-    ok "all tests pass"
-else
-    fail "tests: fix failures above before pushing"
-    exit 1
-fi
-
 echo
-ok "All checks passed — pushing."
+ok "Pre-push checks passed. Full test suite runs in CI."
