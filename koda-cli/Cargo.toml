@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core engine
-koda-core = { path = "../koda-core", version = "0.2.13" }
+koda-core = { path = "../koda-core", version = "0.2.14" }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -73,6 +73,6 @@ harness = false
 
 [dev-dependencies]
 tempfile = "3"
-koda-core = { path = "../koda-core", version = "0.2.13", features = ["test-support"] }
+koda-core = { path = "../koda-core", version = "0.2.14", features = ["test-support"] }
 serde_json = "1"
 
