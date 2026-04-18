@@ -501,4 +501,127 @@ mod tests {
         let zebra_pos = result.find("zebra").unwrap();
         assert!(alpha_pos < zebra_pos, "agents should be sorted A→Z");
     }
+
+    /// Measurement-only test for #920. Renders a realistic system prompt with
+    /// all built-in skills + bundled sub-agents loaded, then prints a per-section
+    /// breakdown (chars + estimated tokens at ~4 chars/token).
+    ///
+    /// Run with: `cargo test -p koda-core --lib measure_system_prompt -- --ignored --nocapture`
+    ///
+    /// Re-run after each prompt-trim PR to verify savings.
+    #[test]
+    #[ignore]
+    fn measure_system_prompt() {
+        // Realistic setup: bundled agents from koda-core/agents/ + all built-in skills
+        let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let agents_dir = project_root.join("agents");
+        // SkillRegistry::discover() is the public entry point that loads
+        // built-ins + user/project skills. Pass project_root so it doesn't
+        // pick up koda-core's own .koda/skills directory if any.
+        let registry = SkillRegistry::discover(project_root);
+
+        // Realistic env
+        let env = EnvironmentInfo {
+            project_root,
+            model: "claude-sonnet-4-6",
+            platform: "macos",
+        };
+
+        // Realistic tool defs — pull the full set from a real ToolRegistry
+        // so the measurement reflects production reality (~21 built-in tools).
+        let tool_registry = crate::tools::ToolRegistry::new(project_root.to_path_buf(), 200_000);
+        let tools = tool_registry.get_definitions(&[], &[]);
+
+        // Realistic slash commands
+        let commands = &[
+            ("/help", "Show command help"),
+            ("/skills", "List available skills"),
+            ("/agents", "List available sub-agents"),
+            ("/memory", "Show project + global memory"),
+            ("/compact", "Compact conversation history"),
+        ];
+
+        let prompt = build_system_prompt(
+            "You are koda, a helpful coding agent.",
+            "",
+            &agents_dir,
+            &tools,
+            &env,
+            commands,
+            &registry,
+        );
+
+        // ── Section breakdown by header position ─────────────────────────────
+        // Order matches the actual assembly order in build_system_prompt.
+        let markers: &[&str] = &[
+            "## Doing Tasks", // from instructions.md (CC-aligned behavioral)
+            "## Environment",
+            "### Available Tools", // tools listing
+            "## Skills",
+            "## Memory",
+        ];
+
+        // Find positions; sub-agent / slash-commands sections may or may not
+        // exist depending on inputs.
+        let mut positions: Vec<(&str, usize)> = markers
+            .iter()
+            .filter_map(|m| prompt.find(m).map(|p| (*m, p)))
+            .collect();
+        // Sort by actual position in the prompt — marker-list order doesn't
+        // necessarily match assembly order.
+        positions.sort_by_key(|&(_, pos)| pos);
+
+        // Compute spans between markers; the last span runs to end-of-prompt.
+        // The span BEFORE the first marker is the base prompt.
+        let total_chars = prompt.chars().count();
+        let total_tokens_est = total_chars / 4;
+
+        eprintln!("\n========== SYSTEM PROMPT MEASUREMENT (#920) ==========");
+        eprintln!(
+            "Setup: koda default agent, model=claude-sonnet-4-6, {} bundled agents loaded, {} built-in skills, {} tools, {} commands",
+            std::fs::read_dir(&agents_dir)
+                .map(|d| d.filter_map(|e| e.ok()).count())
+                .unwrap_or(0),
+            registry.len(),
+            tools.len(),
+            commands.len()
+        );
+        eprintln!(
+            "\nTOTAL: {} chars \u{2248} {} tokens (~4 chars/token)\n",
+            total_chars, total_tokens_est
+        );
+        eprintln!(
+            "{:<28} {:>8} {:>10} {:>8}",
+            "Section", "chars", "tokens~", "% total"
+        );
+        eprintln!("{}", "-".repeat(60));
+
+        if let Some(&(_, first_pos)) = positions.first() {
+            // Base prompt (everything before first marker).
+            let base_chars = first_pos;
+            let base_tokens = base_chars / 4;
+            let pct = (base_chars as f64 / total_chars as f64) * 100.0;
+            eprintln!(
+                "{:<28} {:>8} {:>10} {:>7.1}%",
+                "Base prompt", base_chars, base_tokens, pct
+            );
+        }
+
+        for (i, &(name, pos)) in positions.iter().enumerate() {
+            let end = positions
+                .get(i + 1)
+                .map(|&(_, p)| p)
+                .unwrap_or(prompt.len());
+            let span = end - pos;
+            let toks = span / 4;
+            let pct = (span as f64 / total_chars as f64) * 100.0;
+            eprintln!("{:<28} {:>8} {:>10} {:>7.1}%", name, span, toks, pct);
+        }
+
+        eprintln!("\n========== END MEASUREMENT ==========\n");
+
+        // Sanity: prompt should be non-empty + contain expected sections.
+        assert!(total_chars > 1000, "prompt suspiciously short");
+        assert!(prompt.contains("## Skills"));
+    }
 }
