@@ -15,35 +15,32 @@
 //! Built on [`wiremock`] for the matcher DSL — `koda-test-utils` already
 //! ships a `tokio` runtime so the cost is just one extra dev-dep.
 //!
-//! # Quick start
+//! # Quick start (generic API — works for any provider)
 //!
 //! ```rust,ignore
 //! use koda_test_utils::network::FakeLlmServer;
 //! use serde_json::json;
 //!
-//! #[tokio::test]
-//! async fn provider_sends_bearer_token() {
-//!     let server = FakeLlmServer::spawn().await;
-//!     server.mount_chat_ok(json!({
-//!         "choices": [{ "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
-//!         "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
-//!     })).await;
+//! let server = FakeLlmServer::spawn().await;
 //!
-//!     let provider = OpenAIProvider::new(&server.url(), Some("sk-test".into()));
-//!     let _ = provider.chat(&[], &[], &settings).await.unwrap();
+//! // OpenAI-compat:
+//! server.mount_ok("POST", r".*/chat/completions$", json!({...})).await;
 //!
-//!     let reqs = server.received_requests().await;
-//!     assert_eq!(reqs.len(), 1);
-//!     assert_eq!(reqs[0].headers.get("authorization").unwrap(), "Bearer sk-test");
-//! }
+//! // Anthropic:
+//! server.mount_ok("POST", r".*/v1/messages$", json!({...})).await;
+//!
+//! // Gemini:
+//! server.mount_ok("POST", r".*:generateContent.*", json!({...})).await;
 //! ```
+//!
+//! Convenience wrappers like [`FakeLlmServer::mount_chat_ok`] exist for the
+//! OpenAI-compat path; they are 3-line shims around the generic primitives.
 //!
 //! # Design notes
 //!
-//! * **Path matching is permissive by default.** `mount_chat_ok` matches
-//!   any path ending in `/chat/completions` so the same fixture works for
-//!   both OpenAI (`/v1/chat/completions`) and a base URL that already
-//!   includes `/v1`. Tighten with `mount_with_matchers` when needed.
+//! * **Path matching uses regex.** Matchers are *substring-anchored* via
+//!   `path_regex` — i.e. they match anywhere in the path. Anchor with
+//!   `$` for "ends with" or `^` for "starts with" as needed.
 //!
 //! * **One mount per response.** Each `mount_*` call adds a separate Mock
 //!   to the server. Multiple mounts on the same path are matched in
@@ -80,40 +77,51 @@ impl FakeLlmServer {
         self.server.uri()
     }
 
-    /// Mount a 200 OK JSON response for `POST */chat/completions`.
-    pub async fn mount_chat_ok(&self, body: Value) {
-        Mock::given(method("POST"))
-            .and(path_regex(r".*/chat/completions$"))
+    /// All requests received across all mounted endpoints, in order.
+    ///
+    /// Returns an empty vec if request-recording is disabled (it is enabled
+    /// by default in wiremock).
+    pub async fn received_requests(&self) -> Vec<Request> {
+        self.server.received_requests().await.unwrap_or_default()
+    }
+
+    // ── Generic primitives ────────────────────────────────────────────────
+    //
+    // These take an HTTP method + path regex so any provider's endpoint
+    // shape can be mocked. The provider-specific wrappers below are 3-line
+    // shims that call these.
+
+    /// Mount a 200 OK JSON response for `<method> <path matching regex>`.
+    pub async fn mount_ok(&self, http_method: &str, path_re: &str, body: Value) {
+        Mock::given(method(http_method))
+            .and(path_regex(path_re))
             .respond_with(ResponseTemplate::new(200).set_body_json(body))
             .mount(&self.server)
             .await;
     }
 
-    /// Mount a non-2xx response for `POST */chat/completions`.
-    ///
-    /// Use this to drive provider error-handling tests (4xx auth/rate-limit
-    /// errors, 5xx upstream failures).
-    pub async fn mount_chat_status(&self, status: u16, body: &str) {
-        Mock::given(method("POST"))
-            .and(path_regex(r".*/chat/completions$"))
+    /// Mount a non-2xx response. For driving provider error-path tests.
+    pub async fn mount_status(&self, http_method: &str, path_re: &str, status: u16, body: &str) {
+        Mock::given(method(http_method))
+            .and(path_regex(path_re))
             .respond_with(ResponseTemplate::new(status).set_body_string(body))
             .mount(&self.server)
             .await;
     }
 
-    /// Mount a 200 OK SSE-streaming response for `POST */chat/completions`.
+    /// Mount a 200 OK SSE-streaming response.
     ///
     /// `chunks` are framed as `data: <chunk>\n\n` per SSE spec. Pass each
-    /// JSON delta as a separate string; do **not** pre-concatenate.
-    /// A trailing `data: [DONE]\n\n` is **not** added automatically — pass
+    /// JSON delta as a separate string; do **not** pre-concatenate. A
+    /// trailing `data: [DONE]\n\n` is **not** added automatically — pass
     /// `"[DONE]"` as the last chunk if your provider expects it.
-    pub async fn mount_chat_sse(&self, chunks: &[&str]) {
+    pub async fn mount_sse(&self, http_method: &str, path_re: &str, chunks: &[&str]) {
         let body = chunks
             .iter()
             .map(|c| format!("data: {c}\n\n"))
             .collect::<String>();
-        Mock::given(method("POST"))
-            .and(path_regex(r".*/chat/completions$"))
+        Mock::given(method(http_method))
+            .and(path_regex(path_re))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
@@ -123,12 +131,18 @@ impl FakeLlmServer {
             .await;
     }
 
-    /// Mount a 200 OK chat response that takes `delay` to start sending.
+    /// Mount a 200 OK JSON response that takes `delay` to start sending.
     ///
     /// Useful for client-timeout regression tests.
-    pub async fn mount_chat_delayed(&self, delay: Duration, body: Value) {
-        Mock::given(method("POST"))
-            .and(path_regex(r".*/chat/completions$"))
+    pub async fn mount_delayed(
+        &self,
+        http_method: &str,
+        path_re: &str,
+        delay: Duration,
+        body: Value,
+    ) {
+        Mock::given(method(http_method))
+            .and(path_regex(path_re))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(body)
@@ -138,11 +152,32 @@ impl FakeLlmServer {
             .await;
     }
 
-    /// All requests received across all mounted endpoints, in order.
-    ///
-    /// Returns an empty vec if request-recording is disabled (it is enabled
-    /// by default in wiremock).
-    pub async fn received_requests(&self) -> Vec<Request> {
-        self.server.received_requests().await.unwrap_or_default()
+    // ── OpenAI-compat convenience wrappers ────────────────────────────────
+    //
+    // These hard-code `POST .*/chat/completions$`. They predate the generic
+    // primitives above and are kept for the openai_compat_http_test.rs
+    // call sites. New per-provider tests should call the generics directly.
+
+    /// 200 OK JSON response for `POST .*/chat/completions$`.
+    pub async fn mount_chat_ok(&self, body: Value) {
+        self.mount_ok("POST", r".*/chat/completions$", body).await
+    }
+
+    /// Non-2xx response for `POST .*/chat/completions$`.
+    pub async fn mount_chat_status(&self, status: u16, body: &str) {
+        self.mount_status("POST", r".*/chat/completions$", status, body)
+            .await
+    }
+
+    /// 200 OK SSE-streaming response for `POST .*/chat/completions$`.
+    pub async fn mount_chat_sse(&self, chunks: &[&str]) {
+        self.mount_sse("POST", r".*/chat/completions$", chunks)
+            .await
+    }
+
+    /// 200 OK JSON response with delay for `POST .*/chat/completions$`.
+    pub async fn mount_chat_delayed(&self, delay: Duration, body: Value) {
+        self.mount_delayed("POST", r".*/chat/completions$", delay, body)
+            .await
     }
 }
