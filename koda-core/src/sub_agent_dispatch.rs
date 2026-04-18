@@ -316,7 +316,6 @@ pub(crate) async fn execute_sub_agent(
         &sub_config.system_prompt,
         &semantic_memory,
         &sub_config.agents_dir,
-        &tool_defs,
         &env,
         &[], // sub-agents have no REPL commands
         &tools.skill_registry,

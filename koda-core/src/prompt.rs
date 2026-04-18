@@ -43,7 +43,6 @@ pub fn build_system_prompt(
     base_prompt: &str,
     semantic_memory: &str,
     agents_dir: &Path,
-    tool_defs: &[crate::providers::ToolDefinition],
     env: &EnvironmentInfo<'_>,
     commands: &[(&str, &str)],
     skill_registry: &SkillRegistry,
@@ -96,19 +95,11 @@ pub fn build_system_prompt(
          Auto-snapshots working tree before each turn. `/undo` to rollback.\n",
     );
 
-    // Auto-generate tool reference from definitions
-    if !tool_defs.is_empty() {
-        prompt.push_str("\n### Available Tools\n\n");
-        for def in tool_defs {
-            // First sentence of description (concise)
-            let desc = def
-                .description
-                .split('.')
-                .next()
-                .unwrap_or(&def.description);
-            prompt.push_str(&format!("- **{}**: {}\n", def.name, desc));
-        }
-    }
+    // Tool definitions intentionally NOT rendered here — each provider
+    // (Anthropic, OpenAI-compat, Gemini) sends the full schema (name +
+    // description + parameters) in the API request body. Duplicating it
+    // in the prompt was ~1,472 tokens (~37% of the prompt) of pure
+    // redundancy. See #925 for the investigation.
 
     // Sub-agents — dynamic listing with descriptions
     let available_agents = list_available_agents(agents_dir);
@@ -258,15 +249,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt(
-            "You are helpful.",
-            "",
-            dir.path(),
-            &[],
-            &env,
-            &[],
-            &registry,
-        );
+        let result = build_system_prompt("You are helpful.", "", dir.path(), &env, &[], &registry);
         assert!(result.starts_with("You are helpful."));
         assert!(result.contains("Doing Tasks"));
         assert!(result.contains("Koda Quick Reference"));
@@ -282,36 +265,12 @@ mod tests {
             "You are helpful.",
             "This is a Rust project.",
             dir.path(),
-            &[],
             &env,
             &[],
             &registry,
         );
         assert!(result.contains("Project Memory"));
         assert!(result.contains("Rust project"));
-    }
-
-    #[test]
-    fn test_build_system_prompt_with_tools() {
-        let dir = TempDir::new().unwrap();
-        let env = test_env();
-        let registry = SkillRegistry::default();
-        let tools = vec![crate::providers::ToolDefinition {
-            name: "Read".to_string(),
-            description: "Read a file. Returns contents.".to_string(),
-            parameters: serde_json::json!({}),
-        }];
-        let result = build_system_prompt(
-            "You are helpful.",
-            "",
-            dir.path(),
-            &tools,
-            &env,
-            &[],
-            &registry,
-        );
-        assert!(result.contains("**Read**"));
-        assert!(result.contains("Read a file"));
     }
 
     #[test]
@@ -325,7 +284,7 @@ mod tests {
         .unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
         assert!(result.contains("scout"));
         assert!(result.contains("Scouting agent."));
         assert!(result.contains("Sub-Agents"));
@@ -346,7 +305,7 @@ mod tests {
         .unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
         // koda (the main agent) must not appear in the sub-agents listing.
         // Check the full result: the agent formatter produces "- **name**" (with desc)
         // or "- name" (without). Neither should match "koda".
@@ -366,7 +325,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
         assert!(result.contains("## Environment"));
         assert!(result.contains("/test/project"));
         assert!(result.contains("test-model"));
@@ -378,7 +337,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
         // Spot-check key sections from instructions.md
         assert!(result.contains("## Doing Tasks"));
         assert!(result.contains("## Executing Actions"));
@@ -392,7 +351,7 @@ mod tests {
         let env = test_env();
         let registry = SkillRegistry::default();
         let commands = &[("/help", "Show help"), ("/exit", "Quit")];
-        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, commands, &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, commands, &registry);
         assert!(result.contains("`/help`"));
         assert!(result.contains("Show help"));
         assert!(result.contains("`/exit`"));
@@ -404,7 +363,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
         assert!(!result.contains("Commands (user types these in the REPL)"));
     }
 
@@ -413,7 +372,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
         assert!(result.contains("## Skills"));
         assert!(result.contains("No skills are currently available"));
     }
@@ -429,7 +388,7 @@ mod tests {
             Some("Use when asked to review code or a PR."),
             "# Review\nDo it.",
         );
-        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
         assert!(result.contains("code-review"));
         assert!(result.contains("Senior code review"));
         assert!(result.contains("Use when asked to review code or a PR."));
@@ -443,7 +402,7 @@ mod tests {
         let env = test_env();
         let mut registry = SkillRegistry::default();
         registry.add_builtin("plain", "Plain skill", None, "content");
-        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
         assert!(result.contains("**plain**"));
         assert!(result.contains("Plain skill"));
     }
@@ -472,7 +431,7 @@ mod tests {
                 content: "scoped content".to_string(),
             },
         );
-        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
         assert!(result.contains("**scoped**"), "skill name");
         assert!(result.contains("Scoped skill"), "description");
         assert!(result.contains("Use for scoped work"), "when_to_use");
@@ -496,7 +455,7 @@ mod tests {
         .unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &[], &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
         let alpha_pos = result.find("alpha").unwrap();
         let zebra_pos = result.find("zebra").unwrap();
         assert!(alpha_pos < zebra_pos, "agents should be sorted A→Z");
@@ -527,10 +486,12 @@ mod tests {
             platform: "macos",
         };
 
-        // Realistic tool defs — pull the full set from a real ToolRegistry
-        // so the measurement reflects production reality (~21 built-in tools).
-        let tool_registry = crate::tools::ToolRegistry::new(project_root.to_path_buf(), 200_000);
-        let tools = tool_registry.get_definitions(&[], &[]);
+        // Tool count for the setup banner. Tools are sent in the API request
+        // body, NOT rendered in the prompt (#925) — we just want to show how
+        // many tools the model gets so the prompt size is interpretable.
+        let tool_count = crate::tools::ToolRegistry::new(project_root.to_path_buf(), 200_000)
+            .get_definitions(&[], &[])
+            .len();
 
         // Realistic slash commands
         let commands = &[
@@ -545,27 +506,32 @@ mod tests {
             "You are koda, a helpful coding agent.",
             "",
             &agents_dir,
-            &tools,
             &env,
             commands,
             &registry,
         );
 
-        // ── Section breakdown by header position ─────────────────────────────
+        // ── Section breakdown by header position ─────────────────────────
         // Order matches the actual assembly order in build_system_prompt.
         let markers: &[&str] = &[
             "## Doing Tasks", // from instructions.md (CC-aligned behavioral)
             "## Environment",
-            "### Available Tools", // tools listing
+            "## Available Sub-Agents",
             "## Skills",
             "## Memory",
         ];
 
-        // Find positions; sub-agent / slash-commands sections may or may not
-        // exist depending on inputs.
+        // Find positions; require the marker to appear at the start of a
+        // line (preceded by '\n') so headers like '## Skills' don't false-match
+        // inside a subsection like '## Skills and Sub-Agents' in instructions.md.
+        // The earlier version used naive prompt.find() and produced wildly
+        // inaccurate per-section attribution — see #925 PR description.
         let mut positions: Vec<(&str, usize)> = markers
             .iter()
-            .filter_map(|m| prompt.find(m).map(|p| (*m, p)))
+            .filter_map(|m| {
+                let needle = format!("\n{m}\n");
+                prompt.find(&needle).map(|p| (*m, p + 1)) // +1 to skip leading \n
+            })
             .collect();
         // Sort by actual position in the prompt — marker-list order doesn't
         // necessarily match assembly order.
@@ -578,12 +544,12 @@ mod tests {
 
         eprintln!("\n========== SYSTEM PROMPT MEASUREMENT (#920) ==========");
         eprintln!(
-            "Setup: koda default agent, model=claude-sonnet-4-6, {} bundled agents loaded, {} built-in skills, {} tools, {} commands",
+            "Setup: koda default agent, model=claude-sonnet-4-6, {} bundled agents loaded, {} built-in skills, {} tools (sent via API, not in prompt), {} commands",
             std::fs::read_dir(&agents_dir)
                 .map(|d| d.filter_map(|e| e.ok()).count())
                 .unwrap_or(0),
             registry.len(),
-            tools.len(),
+            tool_count,
             commands.len()
         );
         eprintln!(
