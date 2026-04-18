@@ -188,8 +188,33 @@ fn is_localhost_url(url: &str) -> bool {
 /// - Supports proxy auth via URL (http://user:pass@proxy:port)
 /// - Supports separate PROXY_USER / PROXY_PASS env vars
 /// - Bypasses proxy for localhost (LM Studio)
+/// - Applies a connect timeout (default 30s, env: `KODA_CONNECT_TIMEOUT_SECS`)
+///   and a read timeout (default 180s, env: `KODA_READ_TIMEOUT_SECS`).
+///   We deliberately avoid the total-request `.timeout()` because it would
+///   kill long-running SSE streams during slow tool/agent turns.
 pub fn build_http_client(base_url: Option<&str>) -> reqwest::Client {
     let mut builder = reqwest::Client::builder();
+
+    // ── Timeouts ──────────────────────────────────────────────────────────
+    //
+    // connect_timeout: time to establish the TCP+TLS connection. A stuck
+    // SYN or hung TLS handshake aborts after this. Always safe to apply
+    // because it only governs connection setup, not response reading.
+    //
+    // read_timeout: maximum idle time between successive reads from the
+    // socket. An actively-streaming SSE response keeps resetting this on
+    // every chunk, so it doesn't penalize long agent turns; but a server
+    // that goes silent (or a half-open connection a NAT box has dropped)
+    // will fail fast instead of hanging the agent forever.
+    let connect_timeout = crate::runtime_env::get("KODA_CONNECT_TIMEOUT_SECS")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30);
+    let read_timeout = crate::runtime_env::get("KODA_READ_TIMEOUT_SECS")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(180);
+    builder = builder
+        .connect_timeout(std::time::Duration::from_secs(connect_timeout))
+        .read_timeout(std::time::Duration::from_secs(read_timeout));
 
     let proxy_url = crate::runtime_env::get("HTTPS_PROXY")
         .or_else(|| crate::runtime_env::get("HTTP_PROXY"))
