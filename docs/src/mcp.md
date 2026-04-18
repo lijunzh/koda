@@ -116,6 +116,63 @@ MCP server configs are stored in the local SQLite keystore (`~/.local/share/koda
 under the `mcp:` key prefix. They survive session restarts and are loaded
 automatically on each startup.
 
+## Server-supplied instructions
+
+The MCP spec lets each server return a free-form `instructions` string in
+its `initialize` response telling the model how to use it best — for
+example, *"Prefer locator-based queries over CSS selectors"* for a
+Playwright server, or *"Always use parameterized queries"* for a Postgres
+server.
+
+Koda surfaces these into the system prompt of every turn, in a dedicated
+block that comes after Koda's own behavioral mandates:
+
+```
+# MCP Server Instructions
+
+---[start of server instructions from playwright]---
+Prefer locator-based queries over CSS selectors.
+---[end of server instructions from playwright]---
+
+---[start of server instructions from postgres]---
+Always use parameterized queries.
+---[end of server instructions from postgres]---
+```
+
+### What this means for users
+
+- **Zero token cost when no MCP servers are configured.** The block is
+  omitted entirely.
+- **No config required.** If you've added a server with `/mcp add`, its
+  instructions surface automatically the next turn after it connects.
+- **Hot-reload friendly.** Adding or removing a server mid-session via
+  `/mcp add` / `/mcp remove` updates the block in the next turn — there's
+  no stale-prompt window.
+
+### What this means for MCP server authors
+
+- The `instructions` field in your `InitializeResult` reaches the model
+  verbatim. Treat it like a short README aimed at the LLM, not at humans.
+- Be concise — every byte costs tokens for every turn the user runs
+  against your server.
+- Don't try to override Koda's own behavioral mandates. The provenance
+  framing (`---[start of server instructions from <name>]---`) makes it
+  obvious to the model that your block comes from your server, not from
+  Koda itself, so impersonation attempts are visible.
+
+### Security note
+
+Server-supplied `instructions` are untrusted content from the perspective
+of the user's session — they originate from whoever runs the MCP server.
+Koda passes them through verbatim (no sanitization) but wraps them in
+clearly-labelled provenance markers so a malicious or compromised server
+can't masquerade as Koda's own mandates.
+
+If you connect to MCP servers you don't fully trust, prefer the `stdio`
+transport (which still flows through the OS sandbox for tool calls) and
+review the `instructions` block via your model's tracing/debug output
+before granting `Auto` mode.
+
 ## Troubleshooting
 
 | Symptom | Fix |

@@ -115,12 +115,37 @@ impl KodaSession {
             turn_id: turn_id.clone(),
         });
 
+        // Compose the per-turn system prompt: static `agent.system_prompt`
+        // plus a dynamically-rendered MCP server-instructions section. We
+        // do this per-turn (not at agent build time) because MCP servers
+        // attach inside `KodaSession::new`, AFTER the static prompt is
+        // built and the agent is wrapped in `Arc`. Composing here picks up
+        // both the initial-connect case and any mid-session `/mcp add`
+        // hot-reloads automatically (#922).
+        let mcp_section = if let Some(mgr) = self.agent.tools.mcp_manager() {
+            // Bind the Arc to extend its lifetime past the read guard
+            // (try_read() returns a guard that borrows the lock).
+            match mgr.try_read() {
+                Ok(guard) => {
+                    crate::prompt::render_mcp_instructions_section(&guard.server_instructions())
+                }
+                Err(_) => String::new(), // manager momentarily locked; skip this turn
+            }
+        } else {
+            String::new()
+        };
+        let system_prompt = if mcp_section.is_empty() {
+            self.agent.system_prompt.clone()
+        } else {
+            format!("{}{mcp_section}", self.agent.system_prompt)
+        };
+
         let result = crate::inference::inference_loop(InferenceContext {
             project_root: &self.agent.project_root,
             config,
             db: &self.db,
             session_id: &self.id,
-            system_prompt: &self.agent.system_prompt,
+            system_prompt: &system_prompt,
             provider: self.provider.as_ref(),
             tools: &self.agent.tools,
             tool_defs: &self.agent.tool_defs,

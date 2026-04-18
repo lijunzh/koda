@@ -39,3 +39,35 @@ in the `/model` picker and accepted by `--model` and `/model`.
 
 You can also use **any literal model ID** your provider supports — aliases
 are just shortcuts. `koda --model gpt-4o-mini` or `/model o3` both work.
+
+## HTTP timeouts
+
+All providers use a shared HTTP client with the following timeout defaults:
+
+| Setting | Default | Env override | Description |
+|---------|---------|--------------|-------------|
+| Connect timeout | 30 s | `KODA_CONNECT_TIMEOUT_SECS` | Time allowed to establish the TCP/TLS connection |
+| Read timeout | 180 s | `KODA_READ_TIMEOUT_SECS` | Time allowed between bytes from the server (per-byte, not total) |
+
+The read timeout is **per-byte, not total**. A long streaming response is
+fine as long as bytes keep arriving — the timer resets on each chunk.
+This means slow networks or chatty SSE streams won't get murdered mid-turn,
+but a stalled connection (server hung after last byte) will fail fast.
+
+### When to tune these
+
+- **Behind a slow corporate proxy?** Bump `KODA_CONNECT_TIMEOUT_SECS` to
+  60 or 90. Connection-phase timeouts often manifest as "request timed out"
+  with no usage data, which is the giveaway.
+- **Long-running model on a flaky link?** Bump `KODA_READ_TIMEOUT_SECS` to
+  300+. Read-phase timeouts manifest as a partial response cut short
+  partway through generation.
+- **Local provider (Ollama, LM Studio, vLLM) and you want fail-fast?**
+  Drop `KODA_READ_TIMEOUT_SECS` to 30 — local models that hang are usually
+  truly hung, not slow.
+
+### Example
+
+```bash
+KODA_CONNECT_TIMEOUT_SECS=60 KODA_READ_TIMEOUT_SECS=300 koda
+```

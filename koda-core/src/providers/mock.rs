@@ -144,6 +144,14 @@ impl MockProvider {
         self.recorded_calls.lock().unwrap().clone()
     }
 
+    /// Returns a cheaply-cloneable handle to the recorded-calls buffer.
+    /// Useful when callers must move the provider into a `Box<dyn LlmProvider>`
+    /// (which loses access to `recorded_calls()`) but still want to inspect
+    /// the recorded messages from the outside afterward.
+    pub fn recorded_calls_handle(&self) -> Arc<Mutex<Vec<Vec<ChatMessage>>>> {
+        Arc::clone(&self.recorded_calls)
+    }
+
     /// All messages received by any `from_env()` provider since the last
     /// `clear_env_calls()`. Requires the `test-support` feature.
     ///

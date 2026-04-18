@@ -89,9 +89,6 @@ impl KodaAgent {
             &env,
             commands,
             &tools.skill_registry,
-            // MCP manager isn't attached yet at construction time —
-            // rebuild_system_prompt() picks up server instructions later (#922).
-            &[],
         );
 
         Ok(Self {
@@ -106,6 +103,10 @@ impl KodaAgent {
     ///
     /// Call this after injecting additional skills (e.g. `inject_builtin_skills`)
     /// so the rebuilt prompt includes all available skills in the `## Skills` section.
+    ///
+    /// Note: MCP server instructions are NOT included here — they are composed
+    /// per-turn in `KodaSession::run_turn` via `render_mcp_instructions_section`,
+    /// because MCP servers may attach after this static prompt is built (#922).
     pub fn rebuild_system_prompt(&mut self, config: &KodaConfig, commands: &[(&str, &str)]) {
         let semantic_memory = memory::load(&self.project_root).unwrap_or_default();
         let env = crate::prompt::EnvironmentInfo {
@@ -113,14 +114,6 @@ impl KodaAgent {
             model: &config.model,
             platform: std::env::consts::OS,
         };
-        // Pull MCP server instructions if a manager is attached and isn't
-        // currently locked. We use try_read() (non-blocking) so a stuck MCP
-        // server can never wedge prompt rebuilds (#922).
-        let mcp_instructions = self
-            .tools
-            .mcp_manager()
-            .and_then(|mgr| mgr.try_read().ok().map(|g| g.server_instructions()))
-            .unwrap_or_default();
         self.system_prompt = crate::prompt::build_system_prompt(
             &config.system_prompt,
             &semantic_memory,
@@ -128,7 +121,6 @@ impl KodaAgent {
             &env,
             commands,
             &self.tools.skill_registry,
-            &mcp_instructions,
         );
     }
 
