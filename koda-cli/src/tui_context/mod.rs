@@ -477,9 +477,10 @@ impl TuiContext {
         if let Some(cmd) = self.pending_command.take() {
             return Some(cmd);
         }
-        if !self.later_queue.is_empty() {
+        if let Some(first) = self.later_queue.front().cloned() {
             // Drain the whole later_queue and batch into one turn.
-            let items: Vec<String> = self.later_queue.drain(..).collect();
+            let (joined, count) = crate::queue_lanes::drain_later_as_batch(&mut self.later_queue)
+                .expect("front() returned Some, drain must too");
             let mode = trust::read_trust(&self.shared_mode);
             let icon = match mode {
                 TrustMode::Plan => "\u{1f4cb}",
@@ -488,17 +489,17 @@ impl TuiContext {
             };
             self.scroll_buffer.push(Line::from(vec![
                 Span::styled(format!("{icon}> "), Style::default().fg(Color::Cyan)),
-                Span::raw(items[0].clone()),
-                if items.len() > 1 {
+                Span::raw(first),
+                if count > 1 {
                     Span::styled(
-                        format!(" (+{} batched)", items.len() - 1),
+                        format!(" (+{} batched)", count - 1),
                         Style::default().fg(Color::DarkGray),
                     )
                 } else {
                     Span::raw("")
                 },
             ]));
-            return Some(items.join("\n\n"));
+            return Some(joined);
         }
         None
     }

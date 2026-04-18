@@ -570,17 +570,16 @@ async fn handle_inference_key_inline(
                 *history_idx = None;
 
                 let preview = truncate_preview(&text, 80);
-                let later_n = later_queue.len() + 1;
-                scroll_buffer.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        format!("\u{1f4cb} Later ({later_n}): "),
-                        Style::default().fg(Color::Yellow),
-                    ),
-                    Span::styled(preview, Style::default().fg(Color::DarkGray)),
-                ]));
-
-                later_queue.push_back(text);
+                if let Some(later_n) = crate::queue_lanes::enqueue_later(later_queue, text) {
+                    scroll_buffer.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("\u{1f4cb} Later ({later_n}): "),
+                            Style::default().fg(Color::Yellow),
+                        ),
+                        Span::styled(preview, Style::default().fg(Color::DarkGray)),
+                    ]));
+                }
             }
         }
         (KeyCode::Esc, _) => {
@@ -591,9 +590,8 @@ async fn handle_inference_key_inline(
         }
         // Ctrl+U: clear the later_queue (deferred messages) without cancelling inference.
         (KeyCode::Char('u'), m) if m.contains(KeyModifiers::CONTROL) => {
-            if !later_queue.is_empty() {
-                let n = later_queue.len();
-                later_queue.clear();
+            let n = crate::queue_lanes::clear_later(later_queue);
+            if n > 0 {
                 scroll_buffer.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(
@@ -610,7 +608,7 @@ async fn handle_inference_key_inline(
         // editor so the user can edit it before re-submitting.
         // Falls back to normal textarea movement when the queue is empty.
         (KeyCode::Up, KeyModifiers::NONE) => {
-            if let Some(popped) = later_queue.pop_back() {
+            if let Some(popped) = crate::queue_lanes::pop_later(later_queue) {
                 textarea.select_all();
                 textarea.cut();
                 textarea.insert_str(&popped);
