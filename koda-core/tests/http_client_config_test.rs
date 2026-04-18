@@ -250,3 +250,49 @@ async fn invalid_proxy_url_degrades_gracefully_to_no_proxy() {
     drop(env);
     restore_process_env(proc_snap);
 }
+
+#[tokio::test]
+async fn read_timeout_aborts_silent_servers_quickly() {
+    // Regression: previously the reqwest client had no read_timeout, so a
+    // server that accepted the connection but then went silent (or a
+    // half-open socket a NAT box quietly dropped) would hang the agent
+    // forever. Now KODA_READ_TIMEOUT_SECS bounds idle time between reads.
+    let _g = ENV_MUTEX.lock().await;
+    let proc_snap = snapshot_and_clear_process_proxy_env();
+
+    let upstream = FakeLlmServer::spawn().await;
+    // Server takes 3s to start sending; client should give up at ~1s.
+    upstream
+        .mount_chat_delayed(std::time::Duration::from_secs(3), ok_chat_body())
+        .await;
+
+    let mut env = EnvGuard::new();
+    env.set("KODA_READ_TIMEOUT_SECS", "1");
+
+    let provider = OpenAiCompatProvider::new(&upstream.url(), Some("sk-test".into()));
+
+    let started = std::time::Instant::now();
+    let result = provider.chat(&[user_msg()], &[], &settings()).await;
+    let elapsed = started.elapsed();
+
+    assert!(result.is_err(), "stalled server must produce an error");
+    // Generous bound: must abort well before the 3s server delay finishes.
+    // A passing test typically takes ~1.0–1.2s. >2s means the timeout
+    // didn't fire and reqwest waited for the full server delay.
+    assert!(
+        elapsed < std::time::Duration::from_millis(2500),
+        "should error in ~1s, took {elapsed:?} — read_timeout likely not applied"
+    );
+
+    let msg = format!("{:?}", result.unwrap_err()).to_lowercase();
+    // reqwest surfaces this as a timeout-flavored error. Don't pin the
+    // exact wording (varies by reqwest version) — just look for the
+    // expected vocabulary.
+    assert!(
+        msg.contains("timeout") || msg.contains("timed out") || msg.contains("operation"),
+        "error should mention timeout, got: {msg}"
+    );
+
+    drop(env);
+    restore_process_env(proc_snap);
+}
