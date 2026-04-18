@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security
+- **`is_fully_denied` no longer fails open when `HOME` is unset** (#898).
+  The in-process check that mirrors the subprocess sandbox previously
+  returned `false` for every path when the `HOME` environment variable
+  was missing, exposing `~/.config/koda/db` (plaintext API keys) to the
+  in-process `Read` tool inside containers, CI environments, or after a
+  sandboxed Bash command ran `unset HOME`. Now uses a `HOME` →
+  `USERPROFILE` lookup with a path-component fallback that denies any
+  path containing `.config/koda/db` consecutively, so the check fails
+  *closed* even with no home directory at all. Mitigated by the OS-level
+  subprocess sandbox (bwrap / Seatbelt) which independently blocks this,
+  but the in-process guardrail is now correct as well.
+
 ### Changed
 - **Built-in `koda_docs` skill renamed to `koda-docs`** for consistency with
   the kebab-case naming used by all on-disk skills (`code-review`, `debug`,
