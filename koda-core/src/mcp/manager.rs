@@ -123,6 +123,26 @@ impl McpManager {
             .collect()
     }
 
+    /// Server-provided instructions for every connected MCP server that
+    /// returned a non-empty `instructions` field during `initialize` (#922).
+    ///
+    /// Returns `(server_name, instructions)` pairs sorted by server name for
+    /// stable prompt rendering. Empty when no MCP server provided guidance —
+    /// non-MCP users pay zero tokens for the missing block.
+    pub fn server_instructions(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .clients
+            .iter()
+            .filter(|(_, c)| c.status() == McpClientStatus::Connected)
+            .filter_map(|(name, c)| {
+                c.instructions()
+                    .map(|instr| (name.clone(), instr.to_string()))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     /// Classify an MCP tool's effect using cached annotations.
     pub fn classify_tool(&self, qualified_name: &str) -> ToolEffect {
         let annotations = self.annotations.get(qualified_name);
@@ -867,6 +887,63 @@ mod tests {
         assert!(
             mgr.has_tool("db_archive__keep"),
             "add_server collision must not purge sibling-prefix server's tools"
+        );
+    }
+
+    // ── server_instructions() (#922) ────────────────────────────────────
+
+    #[test]
+    fn server_instructions_empty_when_no_clients() {
+        let mgr = McpManager::new();
+        assert!(mgr.server_instructions().is_empty());
+    }
+
+    #[test]
+    fn server_instructions_skips_unconnected_servers() {
+        let mut mgr = McpManager::new();
+        let mut c = McpClient::new("halfdead".into(), dummy_config());
+        c.set_status_for_test(McpClientStatus::Failed);
+        c.set_instructions_for_test(Some("will be ignored".into()));
+        mgr.insert_client_for_test(c);
+        assert!(
+            mgr.server_instructions().is_empty(),
+            "only Connected servers should contribute instructions"
+        );
+    }
+
+    #[test]
+    fn server_instructions_skips_connected_without_instructions() {
+        let mut mgr = McpManager::new();
+        let mut c = McpClient::new("silent".into(), dummy_config());
+        c.set_status_for_test(McpClientStatus::Connected);
+        // No instructions set — server didn't return any.
+        mgr.insert_client_for_test(c);
+        assert!(mgr.server_instructions().is_empty());
+    }
+
+    #[test]
+    fn server_instructions_returns_connected_with_instructions_sorted() {
+        let mut mgr = McpManager::new();
+        // Insert in reverse alpha order to verify sorting.
+        for (name, instr) in [
+            ("zebra", "Z guidance"),
+            ("alpha", "A guidance"),
+            ("middle", "M guidance"),
+        ] {
+            let mut c = McpClient::new(name.into(), dummy_config());
+            c.set_status_for_test(McpClientStatus::Connected);
+            c.set_instructions_for_test(Some(instr.into()));
+            mgr.insert_client_for_test(c);
+        }
+        let result = mgr.server_instructions();
+        assert_eq!(
+            result,
+            vec![
+                ("alpha".to_string(), "A guidance".to_string()),
+                ("middle".to_string(), "M guidance".to_string()),
+                ("zebra".to_string(), "Z guidance".to_string()),
+            ],
+            "results must be sorted by server name for stable prompt rendering"
         );
     }
 }

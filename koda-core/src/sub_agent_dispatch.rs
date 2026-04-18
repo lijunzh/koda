@@ -319,6 +319,9 @@ pub(crate) async fn execute_sub_agent(
         &env,
         &[], // sub-agents have no REPL commands
         &tools.skill_registry,
+        // Sub-agents share parent prompt cache but get a fresh ToolRegistry
+        // without an MCP manager attached — they're isolated by design.
+        &[],
     );
 
     for _ in 0..loop_guard::MAX_SUB_AGENT_ITERATIONS {
