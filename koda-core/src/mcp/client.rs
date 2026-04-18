@@ -58,6 +58,10 @@ pub struct McpClient {
     status: McpClientStatus,
     /// Error message from the last failed connection attempt.
     last_error: Option<String>,
+    /// Optional human-readable instructions returned by the server during
+    /// `initialize`. Injected into the system prompt so the model picks up
+    /// per-server guidance (#922). `None` when the server provides none.
+    instructions: Option<String>,
 }
 
 impl McpClient {
@@ -70,6 +74,7 @@ impl McpClient {
             tools: Vec::new(),
             status: McpClientStatus::Disconnected,
             last_error: None,
+            instructions: None,
         }
     }
 
@@ -91,6 +96,12 @@ impl McpClient {
     /// Discovered tools (empty until connected).
     pub fn tools(&self) -> &[DiscoveredTool] {
         &self.tools
+    }
+
+    /// Server-provided instructions from the `initialize` response, if any.
+    /// Returns `None` if disconnected or the server didn't provide instructions.
+    pub fn instructions(&self) -> Option<&str> {
+        self.instructions.as_deref()
     }
 
     /// Connect to the MCP server, initialize, and discover tools.
@@ -182,8 +193,7 @@ impl McpClient {
         let transport =
             TokioChildProcess::new(cmd).context("failed to spawn MCP server process")?;
         let service = ().serve(transport).await.context("MCP handshake failed")?;
-        self.service = Some(service);
-        self.discover_tools().await
+        self.finish_handshake(service).await
     }
 
     /// Connect via Streamable HTTP transport.
@@ -240,6 +250,22 @@ impl McpClient {
 
         let transport = StreamableHttpClientTransport::from_config(config);
         let service = ().serve(transport).await.context("MCP HTTP handshake failed")?;
+        self.finish_handshake(service).await
+    }
+
+    /// Common post-handshake bookkeeping shared by stdio + HTTP connect paths.
+    /// Captures the server's `instructions` (#922) and discovers tools.
+    async fn finish_handshake(
+        &mut self,
+        service: RunningService<rmcp::service::RoleClient, ()>,
+    ) -> Result<()> {
+        // Capture server-provided instructions before storing the service so
+        // we don't have to re-borrow it. Filter empties to keep prompt clean.
+        self.instructions = service
+            .peer()
+            .peer_info()
+            .and_then(|info| info.instructions.clone())
+            .filter(|s| !s.trim().is_empty());
         self.service = Some(service);
         self.discover_tools().await
     }
@@ -332,6 +358,12 @@ impl McpClient {
     #[cfg(feature = "test-support")]
     pub fn set_status_for_test(&mut self, status: McpClientStatus) {
         self.status = status;
+    }
+
+    /// Force server instructions (test-only). Pass `None` to clear.
+    #[cfg(feature = "test-support")]
+    pub fn set_instructions_for_test(&mut self, instructions: Option<String>) {
+        self.instructions = instructions;
     }
 
     /// Force last error (test-only).

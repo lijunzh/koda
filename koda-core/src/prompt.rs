@@ -39,6 +39,11 @@ pub struct EnvironmentInfo<'a> {
 /// `skill_registry` is used to build the live `## Skills` section so the model
 /// sees every available skill — with its `when_to_use` hint — without needing
 /// to call `ListSkills` first.
+///
+/// `mcp_instructions` carries `(server_name, instructions)` pairs harvested
+/// from each connected MCP server's `initialize` response (#922). The block
+/// is omitted entirely when the slice is empty so non-MCP users pay zero
+/// tokens.
 pub fn build_system_prompt(
     base_prompt: &str,
     semantic_memory: &str,
@@ -46,6 +51,7 @@ pub fn build_system_prompt(
     env: &EnvironmentInfo<'_>,
     commands: &[(&str, &str)],
     skill_registry: &SkillRegistry,
+    mcp_instructions: &[(String, String)],
 ) -> String {
     let mut prompt = base_prompt.to_string();
 
@@ -179,6 +185,18 @@ pub fn build_system_prompt(
         );
     }
 
+    // MCP server instructions (#922). Each connected server can return a
+    // free-form `instructions` string in its `initialize` response telling
+    // the model how to use it best ("prefer tool X over Y", "this codebase
+    // uses Postgres flavor Z", etc). Render only when at least one server
+    // provided non-empty guidance — zero-cost for non-MCP users.
+    if !mcp_instructions.is_empty() {
+        prompt.push_str("\n\n# MCP Server Instructions\n");
+        for (server, instructions) in mcp_instructions {
+            prompt.push_str(&format!("\n## {server}\n{instructions}\n"));
+        }
+    }
+
     // Memory paths
     prompt.push_str(
         "\n## Memory\n\n\
@@ -249,7 +267,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("You are helpful.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt(
+            "You are helpful.",
+            "",
+            dir.path(),
+            &env,
+            &[],
+            &registry,
+            &[],
+        );
         assert!(result.starts_with("You are helpful."));
         assert!(result.contains("Doing Tasks"));
         assert!(result.contains("Koda Quick Reference"));
@@ -268,6 +294,7 @@ mod tests {
             &env,
             &[],
             &registry,
+            &[],
         );
         assert!(result.contains("Project Memory"));
         assert!(result.contains("Rust project"));
@@ -284,7 +311,7 @@ mod tests {
         .unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry, &[]);
         assert!(result.contains("scout"));
         assert!(result.contains("Scouting agent."));
         assert!(result.contains("Sub-Agents"));
@@ -305,7 +332,7 @@ mod tests {
         .unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry, &[]);
         // koda (the main agent) must not appear in the sub-agents listing.
         // Check the full result: the agent formatter produces "- **name**" (with desc)
         // or "- name" (without). Neither should match "koda".
@@ -325,7 +352,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry, &[]);
         assert!(result.contains("## Environment"));
         assert!(result.contains("/test/project"));
         assert!(result.contains("test-model"));
@@ -337,7 +364,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry, &[]);
         // Spot-check key sections from instructions.md
         assert!(result.contains("## Doing Tasks"));
         assert!(result.contains("## Executing Actions"));
@@ -351,7 +378,7 @@ mod tests {
         let env = test_env();
         let registry = SkillRegistry::default();
         let commands = &[("/help", "Show help"), ("/exit", "Quit")];
-        let result = build_system_prompt("Base.", "", dir.path(), &env, commands, &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, commands, &registry, &[]);
         assert!(result.contains("`/help`"));
         assert!(result.contains("Show help"));
         assert!(result.contains("`/exit`"));
@@ -363,7 +390,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry, &[]);
         assert!(!result.contains("Commands (user types these in the REPL)"));
     }
 
@@ -372,7 +399,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry, &[]);
         assert!(result.contains("## Skills"));
         assert!(result.contains("No skills are currently available"));
     }
@@ -388,7 +415,7 @@ mod tests {
             Some("Use when asked to review code or a PR."),
             "# Review\nDo it.",
         );
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry, &[]);
         assert!(result.contains("code-review"));
         assert!(result.contains("Senior code review"));
         assert!(result.contains("Use when asked to review code or a PR."));
@@ -402,7 +429,7 @@ mod tests {
         let env = test_env();
         let mut registry = SkillRegistry::default();
         registry.add_builtin("plain", "Plain skill", None, "content");
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry, &[]);
         assert!(result.contains("**plain**"));
         assert!(result.contains("Plain skill"));
     }
@@ -431,7 +458,7 @@ mod tests {
                 content: "scoped content".to_string(),
             },
         );
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry, &[]);
         assert!(result.contains("**scoped**"), "skill name");
         assert!(result.contains("Scoped skill"), "description");
         assert!(result.contains("Use for scoped work"), "when_to_use");
@@ -455,10 +482,72 @@ mod tests {
         .unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry, &[]);
         let alpha_pos = result.find("alpha").unwrap();
         let zebra_pos = result.find("zebra").unwrap();
         assert!(alpha_pos < zebra_pos, "agents should be sorted A→Z");
+    }
+
+    // ── MCP server instructions block (#922) ─────────────────────────────
+
+    #[test]
+    fn test_no_mcp_instructions_omits_block() {
+        let dir = TempDir::new().unwrap();
+        let env = test_env();
+        let registry = SkillRegistry::default();
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry, &[]);
+        assert!(
+            !result.contains("# MCP Server Instructions"),
+            "empty MCP slice must produce no block (zero-cost for non-MCP users)"
+        );
+    }
+
+    #[test]
+    fn test_mcp_instructions_renders_when_present() {
+        let dir = TempDir::new().unwrap();
+        let env = test_env();
+        let registry = SkillRegistry::default();
+        let mcp = vec![
+            (
+                "playwright".to_string(),
+                "Prefer locator-based queries over CSS selectors.".to_string(),
+            ),
+            (
+                "postgres".to_string(),
+                "Always use parameterized queries.".to_string(),
+            ),
+        ];
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry, &mcp);
+        assert!(result.contains("# MCP Server Instructions"));
+        assert!(result.contains("## playwright"));
+        assert!(result.contains("locator-based queries"));
+        assert!(result.contains("## postgres"));
+        assert!(result.contains("parameterized queries"));
+        // Block must come BEFORE ## Memory in the assembled prompt.
+        let mcp_pos = result.find("# MCP Server Instructions").unwrap();
+        let memory_pos = result.find("## Memory").unwrap();
+        assert!(mcp_pos < memory_pos, "MCP block belongs before Memory");
+    }
+
+    #[test]
+    fn test_mcp_instructions_renders_each_server_distinctly() {
+        // Regression guard: the renderer must produce one ## <name> subheader
+        // per server so model can attribute guidance correctly.
+        let dir = TempDir::new().unwrap();
+        let env = test_env();
+        let registry = SkillRegistry::default();
+        let mcp = vec![
+            ("alpha".to_string(), "first".to_string()),
+            ("beta".to_string(), "second".to_string()),
+        ];
+        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry, &mcp);
+        assert_eq!(
+            result.matches("# MCP Server Instructions").count(),
+            1,
+            "top-level header should appear exactly once"
+        );
+        assert!(result.contains("## alpha\nfirst"));
+        assert!(result.contains("## beta\nsecond"));
     }
 
     /// Measurement-only test for #920. Renders a realistic system prompt with
@@ -509,6 +598,7 @@ mod tests {
             &env,
             commands,
             &registry,
+            &[],
         );
 
         // ── Section breakdown by header position ─────────────────────────
