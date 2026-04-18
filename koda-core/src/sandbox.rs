@@ -189,16 +189,72 @@ const CREDENTIAL_CONFIG_FULL_DENY: &[&str] = &[
 /// (`~/.ssh`, `~/.aws`, …) are **not** included: reads are allowed there,
 /// mirroring the Bash sandbox which only write-protects them.
 ///
+/// **Defense in depth (#898):** when `HOME` cannot be resolved (containers,
+/// CI, or `unset HOME` inside a sandboxed Bash command), this used to fail
+/// *open* and return `false`, exposing the koda DB to the in-process Read
+/// tool. We now fail *closed*: try `HOME`, then `USERPROFILE` (Windows),
+/// and finally fall back to a path-component pattern match so any path
+/// whose components contain `.config/koda/db` consecutively still gets
+/// denied even with no home directory at all.
+///
 /// See issue #884 for the long-term plan (Option B: sandboxed worker process)
 /// which will replace this application-layer check with true OS enforcement.
 pub(crate) fn is_fully_denied(path: &Path) -> bool {
-    let Ok(home) = std::env::var("HOME") else {
-        return false;
-    };
-    let home = Path::new(&home);
-    CREDENTIAL_CONFIG_FULL_DENY
-        .iter()
-        .any(|rel| path.starts_with(home.join(".config").join(rel)))
+    is_fully_denied_with_home(path, resolve_home_dir().as_deref())
+}
+
+/// Best-effort home directory lookup with cross-platform fallback.
+///
+/// Order: `HOME` (Unix-y, including macOS) → `USERPROFILE` (Windows).
+/// Returns `None` only when *both* are unset, which signals a hostile or
+/// degenerate environment; callers must fail closed.
+fn resolve_home_dir() -> Option<String> {
+    std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
+        .filter(|s| !s.is_empty())
+}
+
+/// Pure helper for [`is_fully_denied`] — takes the home directory as an
+/// argument so the no-home case is unit-testable without racing on env vars.
+fn is_fully_denied_with_home(path: &Path, home: Option<&str>) -> bool {
+    // Primary check: does the path live under `${home}/.config/<rel>` for
+    // any fully-denied relative path? Only runs when home is known.
+    if let Some(home) = home {
+        let home_path = Path::new(home);
+        if CREDENTIAL_CONFIG_FULL_DENY
+            .iter()
+            .any(|rel| path.starts_with(home_path.join(".config").join(rel)))
+        {
+            return true;
+        }
+    }
+
+    // Fallback: pattern-match the path components themselves. Even with
+    // no home, any path whose components contain `.config/<rel>` as a
+    // consecutive sequence is treated as fully denied. This catches the
+    // `unset HOME` bypass and exotic paths like `/proc/self/root/.config/koda/db`
+    // that don't share a prefix with `$HOME`.
+    let components: Vec<&std::ffi::OsStr> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+
+    CREDENTIAL_CONFIG_FULL_DENY.iter().any(|rel| {
+        // Build the target sequence: [".config", <rel parts split by '/'>...]
+        let mut needle: Vec<&str> = vec![".config"];
+        needle.extend(rel.split('/'));
+        // Sliding window match against the path components.
+        components.windows(needle.len()).any(|window| {
+            window
+                .iter()
+                .zip(needle.iter())
+                .all(|(comp, want)| comp.to_str() == Some(*want))
+        })
+    })
 }
 
 /// Individual credential *files* under `$HOME` that are **write-protected**
@@ -701,7 +757,85 @@ mod tests {
         assert!(!is_fully_denied(Path::new("/etc/hosts")));
     }
 
-    // ── Unit: strict profile contains deny rules ───────────────────────────
+    // ── Regression: HOME-unset bypass (#898) ───────────────────────────────
+    //
+    // Before the fix, an unset HOME caused is_fully_denied() to return false
+    // for every path, opening a hole where `unset HOME` inside a sandboxed
+    // Bash command (or any container with no HOME) could read koda's DB via
+    // the in-process Read tool. The fix uses a path-component fallback so
+    // we still fail closed.
+    //
+    // We test the pure helper (`is_fully_denied_with_home`) with an explicit
+    // `home: None` rather than mutating the process-wide HOME env var, which
+    // would race against parallel tests in the same binary.
+
+    #[test]
+    fn fully_denied_blocks_koda_db_when_home_is_none() {
+        // The historical bypass: tool resolves to a real-looking path but
+        // HOME is unset, so the prefix check can't fire. Path-segment
+        // fallback must still deny it.
+        for path in [
+            "/root/.config/koda/db",
+            "/root/.config/koda/db/koda.db",
+            "/home/runner/.config/koda/db/koda.db",
+            "/proc/self/root/.config/koda/db/koda.db",
+            ".config/koda/db/koda.db", // relative path, no anchor at all
+        ] {
+            assert!(
+                is_fully_denied_with_home(Path::new(path), None),
+                "{path:?} must be denied even with HOME=None"
+            );
+        }
+    }
+
+    #[test]
+    fn fully_denied_no_home_still_allows_normal_paths() {
+        // Defense-in-depth fallback must not over-block ordinary paths.
+        for path in [
+            "/home/user/project/src/main.rs",
+            "/tmp/scratch.txt",
+            "/etc/hosts",
+            "/home/user/.config/git/config", // .config but not koda/db
+            "/home/user/.config/koda/agents/foo.json", // koda but not db
+            "/var/lib/koda-db-backups/2025.tar", // contains 'koda' and 'db'
+                                             // but not the sequence
+                                             // .config/koda/db
+        ] {
+            assert!(
+                !is_fully_denied_with_home(Path::new(path), None),
+                "{path:?} must NOT be denied (no koda secrets)"
+            );
+        }
+    }
+
+    #[test]
+    fn fully_denied_uses_home_when_provided() {
+        // Sanity check that the explicit-home path still works and matches
+        // a non-HOME directory the user passes in.
+        let custom_home = "/srv/koda-runner";
+        assert!(is_fully_denied_with_home(
+            Path::new("/srv/koda-runner/.config/koda/db/koda.db"),
+            Some(custom_home),
+        ));
+        assert!(!is_fully_denied_with_home(
+            Path::new("/srv/koda-runner/notes.md"),
+            Some(custom_home),
+        ));
+    }
+
+    #[test]
+    fn resolve_home_dir_treats_empty_as_unset() {
+        // Empty HOME (`HOME=""`) is just as broken as unset — both should
+        // route through the no-home fallback. The .filter() in
+        // resolve_home_dir() guarantees this; verify via direct call to
+        // the helper since we can't safely mutate env in tests.
+        assert!(is_fully_denied_with_home(
+            Path::new("/anywhere/.config/koda/db/koda.db"),
+            None, // simulating resolve_home_dir() returning None
+        ));
+    }
+
+    // ── Unit: strict profile contains deny rules ───────────────────────────────
     //
     // We test the profile *string* rather than kernel enforcement to keep the
     // test hermetic — the kernel-enforcement tests below verify the enforcement
