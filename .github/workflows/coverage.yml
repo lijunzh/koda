@@ -29,10 +29,17 @@ jobs:
         with:
           shared-key: coverage-${{ runner.os }}
       - uses: taiki-e/install-action@v2
+        id: install
+        # The action's CDN download already retries 11 times. We tolerate the
+        # remaining 0.x% of cases (GitHub releases CDN returning sustained
+        # 504s for >1 min) by surviving the failure and converting it into
+        # a clearly-labelled "infra flake" downstream so we don't open a
+        # bogus coverage-regression issue against a clean main. See #930.
+        continue-on-error: true
         with:
           tool: cargo-llvm-cov
       - name: Set up Linux sandbox (bubblewrap)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && steps.install.outcome == 'success'
         run: |
           sudo apt-get install -y bubblewrap
           sudo sysctl -w kernel.unprivileged_userns_clone=1
@@ -42,6 +49,7 @@ jobs:
 
       - name: koda-core coverage (≥ 80% lines)
         id: core
+        if: steps.install.outcome == 'success'
         continue-on-error: true
         run: |
           # --test-threads=1: compact::test_circuit_breaker mutates global
@@ -56,6 +64,7 @@ jobs:
 
       - name: koda-ast coverage (≥ 80% lines)
         id: ast
+        if: steps.install.outcome == 'success'
         continue-on-error: true
         run: |
           cargo llvm-cov \
@@ -65,6 +74,7 @@ jobs:
 
       - name: koda-email coverage (≥ 70% lines)
         id: email
+        if: steps.install.outcome == 'success'
         continue-on-error: true
         run: |
           cargo llvm-cov \
@@ -72,21 +82,59 @@ jobs:
             --fail-under-lines 70 \
             --lcov --output-path lcov-email.info
 
+      # Drop a marker so the report job can distinguish "tooling broken,
+      # never measured coverage" from "actually measured, dropped below
+      # threshold". Without this, a CDN flake on either platform would
+      # auto-open / auto-close coverage-regression issues falsely.
+      - name: Mark infra flake (if install failed)
+        if: steps.install.outcome != 'success'
+        run: |
+          mkdir -p flake-markers
+          echo "taiki-e/install-action failed on ${{ runner.os }} " \
+               "— likely GitHub releases CDN flake. See run logs." \
+               > "flake-markers/${{ runner.os }}.flake"
+
+      - name: Upload infra-flake marker
+        if: steps.install.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: infra-flake-${{ runner.os }}
+          path: flake-markers/
+          retention-days: 7
+
       - name: Upload lcov reports
         uses: actions/upload-artifact@v4
-        if: always()
+        if: steps.install.outcome == 'success'
         with:
           name: lcov-reports-${{ runner.os }}
           path: lcov-*.info
           retention-days: 7
 
-      - name: Set outcome outputs
+      # Final guard: fail this matrix leg only on REAL coverage regressions.
+      # Infra flakes (install failed) emit a warning and exit 0 so they
+      # don't poison the regression-reporting job.
+      - name: Verify coverage outcomes
         if: always()
-        id: outcomes
         run: |
-          echo "core=${{ steps.core.outcome }}" >> $GITHUB_OUTPUT
-          echo "ast=${{ steps.ast.outcome }}" >> $GITHUB_OUTPUT
-          echo "email=${{ steps.email.outcome }}" >> $GITHUB_OUTPUT
+          if [ "${{ steps.install.outcome }}" != "success" ]; then
+            echo "::warning::Skipping coverage verification on ${{ runner.os }}: " \
+                 "cargo-llvm-cov install failed (likely transient CDN issue). " \
+                 "Will retry on next push to main."
+            exit 0
+          fi
+          fail=0
+          for crate_outcome in \
+              "core=${{ steps.core.outcome }}" \
+              "ast=${{ steps.ast.outcome }}" \
+              "email=${{ steps.email.outcome }}"; do
+            name="${crate_outcome%%=*}"
+            outcome="${crate_outcome#*=}"
+            if [ "$outcome" != "success" ]; then
+              echo "::error::koda-$name coverage check did not succeed: $outcome"
+              fail=1
+            fi
+          done
+          exit $fail
 
   # ── Merge lcov reports across platforms ────────────────────────────────
   merge:
@@ -148,7 +196,7 @@ jobs:
           path: reports/merged-*.info
           retention-days: 7
 
-  # ── Report regressions ────────────────────────────────────────────────
+  # ── Report regressions ──────────────────────────────────────────
   report:
     name: Report
     needs: coverage
@@ -157,12 +205,42 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Pull infra-flake markers (one per platform that failed to install
+      # cargo-llvm-cov). Their presence means coverage was never measured
+      # there — not a real regression. See #930 for the original false
+      # positive that motivated this guard.
+      - name: Download infra-flake markers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: infra-flake-*
+          merge-multiple: true
+          path: flake-markers
+        continue-on-error: true  # markers absent on healthy runs
+
+      - name: Detect infra flake
+        id: flake
+        run: |
+          if compgen -G "flake-markers/*.flake" > /dev/null; then
+            echo "detected=true" >> "$GITHUB_OUTPUT"
+            # Marker filenames are runner OS names (Linux / macOS) —
+            # plain alphanumerics, so `find -printf` is overkill.
+            platforms=$(find flake-markers -maxdepth 1 -name '*.flake' \
+                          -exec basename {} .flake \; | tr '\n' ' ')
+            echo "::warning::Coverage matrix contained an infra flake " \
+                 "(cargo-llvm-cov install failed on ${platforms}). " \
+                 "Skipping regression-issue bookkeeping; will retry on next push."
+            cat flake-markers/*.flake
+          else
+            echo "detected=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Check if ANY platform reported a failure for any crate.
       # The matrix outputs aren't directly accessible, so we check
       # the overall job result — if any matrix leg failed, the job
-      # result is 'failure'.
+      # result is 'failure'. Suppress when an infra flake was detected:
+      # we can't trust 'failure' to mean "real regression" in that case.
       - name: Report regression
-        if: needs.coverage.result == 'failure'
+        if: needs.coverage.result == 'failure' && steps.flake.outputs.detected != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -197,8 +275,11 @@ jobs:
           fi
 
       # Auto-close the regression issue when coverage is green again.
+      # Only act on REAL green runs — if this run flaked at the install
+      # step we never measured coverage, so we mustn't close a legitimate
+      # open regression issue.
       - name: Close regression issue if green
-        if: needs.coverage.result == 'success'
+        if: needs.coverage.result == 'success' && steps.flake.outputs.detected != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -216,6 +297,8 @@ jobs:
           fi
 
       # Fail the workflow run so the badge goes red and GitHub notifies you.
+      # Suppressed on infra flakes: those should show as a yellow warning,
+      # not a red badge, since coverage was never actually measured.
       - name: Fail if any crate below threshold
-        if: needs.coverage.result == 'failure'
+        if: needs.coverage.result == 'failure' && steps.flake.outputs.detected != 'true'
         run: exit 1
