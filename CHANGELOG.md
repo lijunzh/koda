@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-04-18
+
+### Fixed
+- **MCP server instructions are now injected into the system prompt** (#922,
+  #927). Each MCP server can return a free-form `instructions` string in
+  its `initialize` response telling the model how to use it best ("prefer
+  locator-based queries over CSS selectors", "always use parameterized
+  queries", etc). Koda was silently dropping this guidance, leading to
+  suboptimal MCP tool usage. The block renders as `# MCP Server
+  Instructions` with one `## <server>` subsection per connected server
+  that provided non-empty guidance. Zero token cost for users without MCP
+  servers configured. Users with MCP servers will see the model start
+  following per-server hints automatically with no config changes.
+- **`clean_snippet` no longer panics on UTF-8 boundary truncation** in
+  email rendering (#917). Previously, snippets that needed to be truncated
+  could panic if the cut point fell mid-codepoint (multibyte char).
+
+### Added
+- **HTTP client connect + read timeouts** for `build_http_client` (#918).
+  Prevents indefinite hangs against slow or hung remote endpoints (web
+  fetch, MCP HTTP transport, provider APIs).
+- **Two new bundled skills**: `create-agent` and `create-skill` (#919,
+  Phase 1 of #850). Walks users through scaffolding a new sub-agent or
+  skill with the right metadata, layout, and tone. Try `/skills` to see
+  them.
+
+### Changed
+- **System prompt is leaner and clearer** as a result of an end-to-end
+  audit against Claude Code's prompt structure (#920):
+  - Added 5 high-impact behavioral mandates (CC-aligned MUST/NEVER
+    instructions around safety, scope creep, and tone) (#924, +231
+    tokens). These match the rules already covered prose-style — making
+    them mandates makes them harder for the model to soften under load.
+  - Removed redundant `### Available Tools` listing (#925, #926, -313
+    tokens). All providers (Anthropic, OpenAI-compatible, Gemini)
+    already send the full tool schema in the API request body —
+    duplicating it in the prompt was strictly redundant content the
+    model already had.
+  - **Net effect: prompt is 82 tokens *smaller* than v0.2.13 despite
+    gaining stronger behavioral coverage.**
+- **Built-in `koda_docs` skill renamed to `koda-docs`** for consistency with
+  the kebab-case naming used by all on-disk skills (`code-review`, `debug`,
+  `simplify`, `remember`, `security-audit`). The skill behavior is unchanged;
+  only the identifier passed to `ActivateSkill` differs. Update any custom
+  scripts or aliases that reference `koda_docs` by name.
+
 ### Security
 - **`is_fully_denied` no longer fails open when `HOME` is unset** (#898).
   The in-process check that mirrors the subprocess sandbox previously
@@ -19,12 +65,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   subprocess sandbox (bwrap / Seatbelt) which independently blocks this,
   but the in-process guardrail is now correct as well.
 
-### Changed
-- **Built-in `koda_docs` skill renamed to `koda-docs`** for consistency with
-  the kebab-case naming used by all on-disk skills (`code-review`, `debug`,
-  `simplify`, `remember`, `security-audit`). The skill behavior is unchanged;
-  only the identifier passed to `ActivateSkill` differs. Update any custom
-  scripts or aliases that reference `koda_docs` by name.
+### Internal
+- **`measure_system_prompt` test added** (#921) for prompt-size regression
+  tracking. Run with `cargo test -p koda-core --lib measure_system_prompt
+  -- --ignored --nocapture` to see a per-section breakdown.
+- **Pre-push hook scaled back ~40×** (90s → ~2s) by dropping full
+  workspace test runs in favor of `fmt + clippy` (#923). CI still runs
+  the full matrix on every PR.
+- HTTP-layer test coverage for OpenAI, Anthropic, Gemini providers via a
+  new `FakeLlmServer` test fixture (#911, #912, #915, part of #858).
+- Lifecycle and projection coverage for `McpManager` (#908) and
+  `later_queue` helpers (#910).
+- Integration coverage for `/export` file path + verbose vs summary
+  modes (#909).
+- CI: `lcov` v0-mangling errors bypassed in coverage merge step (#913,
+  #916). macOS subprocess pipe race fixed in CI to clear flake-induced
+  security advisories.
 
 ## [0.2.13] - 2026-04-14
 
