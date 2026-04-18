@@ -613,4 +613,260 @@ mod tests {
             "expected non-text placeholder in: {output}"
         );
     }
+
+    // ── Lifecycle & state-projection coverage (#896) ─────────────────────────
+    //
+    // Earlier tests cover the *purge* side of remove/reconnect/add. These
+    // cover the projection methods (status_summary, all_tool_definitions,
+    // classify_tool, is_empty, connected_count) and the multi-server
+    // isolation guarantees that prevent cross-server bleed.
+
+    use super::super::client::DiscoveredTool;
+
+    /// Build a discovered tool with the given qualified name and read-only hint.
+    fn fake_tool(qualified_name: &str, read_only: Option<bool>) -> DiscoveredTool {
+        let original = qualified_name.split("__").nth(1).unwrap_or(qualified_name);
+        DiscoveredTool {
+            definition: ToolDefinition {
+                name: qualified_name.into(),
+                description: "fake test tool".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+            annotations: McpToolAnnotations {
+                read_only_hint: read_only,
+                destructive_hint: None,
+            },
+            original_name: original.into(),
+        }
+    }
+
+    /// Build a connected client with the given seeded tools.
+    fn connected_client_with_tools(name: &str, tools: Vec<DiscoveredTool>) -> McpClient {
+        let mut c = McpClient::new(name.into(), dummy_config());
+        c.set_status_for_test(McpClientStatus::Connected);
+        c.set_tools_for_test(tools);
+        c
+    }
+
+    // ── shutdown ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn shutdown_clears_all_annotations() {
+        let mut mgr = McpManager::new();
+        // Two clients, each contributing tools/annotations.
+        let c1 = connected_client_with_tools("alpha", vec![fake_tool("alpha__read", Some(true))]);
+        let c2 = connected_client_with_tools("beta", vec![fake_tool("beta__write", Some(false))]);
+        mgr.insert_client_for_test(c1);
+        mgr.insert_client_for_test(c2);
+
+        assert!(mgr.has_tool("alpha__read"));
+        assert!(mgr.has_tool("beta__write"));
+
+        mgr.shutdown().await;
+
+        assert!(
+            !mgr.has_tool("alpha__read") && !mgr.has_tool("beta__write"),
+            "shutdown must purge ALL cached annotations"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_on_empty_manager_is_noop() {
+        let mut mgr = McpManager::new();
+        // Should not panic; should leave manager empty.
+        mgr.shutdown().await;
+        assert!(mgr.is_empty());
+    }
+
+    // ── status_summary ─────────────────────────────────────────────────
+
+    #[test]
+    fn status_summary_reports_per_server_details() {
+        let mut mgr = McpManager::new();
+
+        let c1 = connected_client_with_tools(
+            "good",
+            vec![fake_tool("good__t1", None), fake_tool("good__t2", None)],
+        );
+        mgr.insert_client_for_test(c1);
+
+        let mut c2 = McpClient::new("bad".into(), dummy_config());
+        c2.set_status_for_test(McpClientStatus::Failed);
+        c2.set_last_error_for_test(Some("connect timeout".into()));
+        mgr.insert_client_for_test(c2);
+
+        let mut summary = mgr.status_summary();
+        // Order is HashMap-iteration-defined — normalize for assertion.
+        summary.sort_by(|a, b| a.name.cmp(&b.name));
+
+        assert_eq!(summary.len(), 2);
+
+        assert_eq!(summary[0].name, "bad");
+        assert_eq!(summary[0].status, McpClientStatus::Failed);
+        assert_eq!(summary[0].tool_count, 0);
+        assert_eq!(summary[0].error.as_deref(), Some("connect timeout"));
+
+        assert_eq!(summary[1].name, "good");
+        assert_eq!(summary[1].status, McpClientStatus::Connected);
+        assert_eq!(summary[1].tool_count, 2);
+        assert_eq!(summary[1].error, None);
+    }
+
+    #[test]
+    fn status_summary_empty_returns_empty_vec() {
+        let mgr = McpManager::new();
+        assert!(mgr.status_summary().is_empty());
+    }
+
+    // ── all_tool_definitions ────────────────────────────────────────────
+
+    #[test]
+    fn all_tool_definitions_excludes_disconnected_and_failed_clients() {
+        let mut mgr = McpManager::new();
+
+        // Connected with 2 tools.
+        let connected = connected_client_with_tools(
+            "live",
+            vec![fake_tool("live__a", None), fake_tool("live__b", None)],
+        );
+        mgr.insert_client_for_test(connected);
+
+        // Disconnected (default) — even with tools seeded, must be excluded.
+        let mut zombie = McpClient::new("zombie".into(), dummy_config());
+        zombie.set_tools_for_test(vec![fake_tool("zombie__ghost", None)]);
+        mgr.insert_client_for_test(zombie);
+
+        // Failed.
+        let mut failed = McpClient::new("broken".into(), dummy_config());
+        failed.set_status_for_test(McpClientStatus::Failed);
+        failed.set_tools_for_test(vec![fake_tool("broken__nope", None)]);
+        mgr.insert_client_for_test(failed);
+
+        let defs = mgr.all_tool_definitions();
+        let names: std::collections::HashSet<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+        assert_eq!(
+            defs.len(),
+            2,
+            "only the Connected client's tools may be exposed; got {names:?}"
+        );
+        assert!(names.contains("live__a") && names.contains("live__b"));
+        assert!(!names.contains("zombie__ghost"));
+        assert!(!names.contains("broken__nope"));
+    }
+
+    // ── classify_tool ──────────────────────────────────────────────────
+
+    #[test]
+    fn classify_tool_uses_cached_annotations_when_present() {
+        let mut mgr = McpManager::new();
+        let c = connected_client_with_tools("db", vec![fake_tool("db__select", Some(true))]);
+        mgr.insert_client_for_test(c);
+
+        // Annotation must be cached at insert time.
+        assert!(mgr.has_tool("db__select"));
+
+        // Whatever the classifier returns, it must be the SAME as the pure
+        // tool_bridge classifier would return for the same annotations —
+        // proving the cache is in fact looked up rather than ignored.
+        let expected = super::super::tool_bridge::classify_mcp_tool(Some(&McpToolAnnotations {
+            read_only_hint: Some(true),
+            destructive_hint: None,
+        }));
+        assert_eq!(mgr.classify_tool("db__select"), expected);
+    }
+
+    #[test]
+    fn classify_tool_unknown_falls_back_to_default() {
+        let mgr = McpManager::new();
+        let unknown = mgr.classify_tool("does_not__exist");
+        let expected = super::super::tool_bridge::classify_mcp_tool(None);
+        assert_eq!(
+            unknown, expected,
+            "unknown tool must use the same default classification as a `None` annotation"
+        );
+    }
+
+    // ── is_empty / connected_count ─────────────────────────────────────
+
+    #[test]
+    fn is_empty_and_connected_count_reflect_state() {
+        let mut mgr = McpManager::new();
+        assert!(mgr.is_empty());
+        assert_eq!(mgr.connected_count(), 0);
+
+        // Add a Disconnected client — not empty, but zero connected.
+        let zombie = McpClient::new("zombie".into(), dummy_config());
+        mgr.insert_client_for_test(zombie);
+        assert!(!mgr.is_empty());
+        assert_eq!(mgr.connected_count(), 0);
+
+        // Add a Connected client — connected_count rises to 1.
+        let live = connected_client_with_tools("live", vec![]);
+        mgr.insert_client_for_test(live);
+        assert_eq!(mgr.connected_count(), 1);
+
+        // Add another Connected.
+        let live2 = connected_client_with_tools("live2", vec![]);
+        mgr.insert_client_for_test(live2);
+        assert_eq!(mgr.connected_count(), 2);
+    }
+
+    // ── Multi-server isolation ─────────────────────────────────────────
+
+    /// Removing one server must not touch any *other* server's annotations.
+    /// Regression guard against a buggy `retain` predicate that over-purges
+    /// (e.g., `starts_with(name)` instead of `parse_mcp_tool_name() == name`).
+    #[tokio::test]
+    async fn remove_server_does_not_touch_other_servers_annotations() {
+        let mut mgr = McpManager::new();
+
+        // Two servers whose names share a prefix — catches the
+        // `starts_with` foot-gun: 'db' vs 'db_archive'.
+        let s1 = connected_client_with_tools("db", vec![fake_tool("db__select", None)]);
+        let s2 =
+            connected_client_with_tools("db_archive", vec![fake_tool("db_archive__list", None)]);
+        mgr.insert_client_for_test(s1);
+        mgr.insert_client_for_test(s2);
+
+        assert!(mgr.has_tool("db__select"));
+        assert!(mgr.has_tool("db_archive__list"));
+
+        let removed = mgr.remove_server("db").await;
+        assert!(removed);
+
+        assert!(
+            !mgr.has_tool("db__select"),
+            "removed server's tool must be gone"
+        );
+        assert!(
+            mgr.has_tool("db_archive__list"),
+            "sibling server's tool MUST survive removal of a name-prefix-sharing server"
+        );
+    }
+
+    /// Same prefix-isolation guard, but for `add_server` collisions.
+    #[tokio::test]
+    async fn add_server_collision_does_not_touch_prefix_neighbour() {
+        let mut mgr = McpManager::new();
+
+        let s1 = connected_client_with_tools("db", vec![fake_tool("db__old", None)]);
+        let s2 =
+            connected_client_with_tools("db_archive", vec![fake_tool("db_archive__keep", None)]);
+        mgr.insert_client_for_test(s1);
+        mgr.insert_client_for_test(s2);
+
+        // add_server("db", ...) — connect will fail (dummy `false`), but
+        // the purge of "db" annotations must run, while "db_archive" stays.
+        let _ = mgr.add_server("db".into(), dummy_config()).await;
+
+        assert!(!mgr.has_tool("db__old"));
+        assert!(
+            mgr.has_tool("db_archive__keep"),
+            "add_server collision must not purge sibling-prefix server's tools"
+        );
+    }
 }

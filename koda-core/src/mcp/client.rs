@@ -339,6 +339,16 @@ impl McpClient {
     pub fn set_last_error_for_test(&mut self, err: Option<String>) {
         self.last_error = err;
     }
+
+    /// Inject discovered tools directly (test-only).
+    ///
+    /// Lets manager-level tests exercise success-path code (annotation
+    /// caching, `all_tool_definitions`, status summaries) without
+    /// spawning a real MCP server subprocess.
+    #[cfg(feature = "test-support")]
+    pub fn set_tools_for_test(&mut self, tools: Vec<DiscoveredTool>) {
+        self.tools = tools;
+    }
 }
 
 impl Drop for McpClient {
