@@ -237,6 +237,11 @@ fn extract_header(headers: &str, name: &str) -> String {
 }
 
 /// Clean a body snippet: strip HTML, collapse whitespace, truncate.
+///
+/// Truncation respects UTF-8 character boundaries. Naive byte-slicing
+/// (`&s[..max_len]`) panics if `max_len` falls inside a multi-byte
+/// character — which happens routinely for emails containing emoji,
+/// CJK text, accented letters, or really anything outside ASCII.
 fn clean_snippet(raw: &str, max_len: usize) -> String {
     let mut result = String::new();
     let mut in_tag = false;
@@ -250,7 +255,15 @@ fn clean_snippet(raw: &str, max_len: usize) -> String {
     }
     let collapsed: String = result.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.len() > max_len {
-        format!("{}...", &collapsed[..max_len])
+        // Walk back from `max_len` to the previous char boundary.
+        // `floor_char_boundary` would be ideal but is still nightly-only,
+        // so we do it the manual way — cheap because we step at most 3
+        // bytes back (UTF-8 chars are at most 4 bytes).
+        let mut cut = max_len;
+        while cut > 0 && !collapsed.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}...", &collapsed[..cut])
     } else {
         collapsed
     }
@@ -502,6 +515,59 @@ mod tests {
     fn test_clean_snippet_collapses_whitespace() {
         let raw = "hello    world\n\n  foo";
         assert_eq!(clean_snippet(raw, 100), "hello world foo");
+    }
+
+    #[test]
+    fn test_clean_snippet_truncation_respects_utf8_boundary() {
+        // Regression: naive `&s[..max_len]` byte-slice panics when the cut
+        // falls inside a multi-byte char. "hello \u{1f980}" — the crab emoji
+        // — occupies bytes 6..10. Cutting at byte 7 used to panic; we now
+        // walk back to the previous char boundary (byte 6).
+        let raw = "hello \u{1f980} world that goes on for a while";
+        let snippet = clean_snippet(raw, 7);
+        assert!(
+            snippet.ends_with("..."),
+            "truncated snippet must end with ellipsis: {snippet:?}"
+        );
+        // Cut should land at the boundary BEFORE the emoji, so output is
+        // "hello " + "..." — emoji excluded rather than half-included.
+        assert_eq!(snippet, "hello ...");
+    }
+
+    #[test]
+    fn test_clean_snippet_truncation_keeps_multibyte_when_it_fits() {
+        // Sanity check the boundary logic doesn't over-trim when the
+        // multibyte char fits entirely inside max_len.
+        let raw = "\u{1f980}\u{1f980}\u{1f980}\u{1f980} extra"; // 4×4-byte emojis = 16 bytes
+        let snippet = clean_snippet(raw, 16);
+        assert_eq!(snippet, "\u{1f980}\u{1f980}\u{1f980}\u{1f980}...");
+    }
+
+    #[test]
+    fn test_clean_snippet_no_truncation_when_under_limit() {
+        // Below max_len: no ellipsis, returned as-is.
+        let raw = "short";
+        assert_eq!(clean_snippet(raw, 100), "short");
+    }
+
+    // ── build_search_query (additional edge cases) ─────────────────────────
+
+    #[test]
+    fn test_build_search_query_empty_falls_through_to_or() {
+        // Empty / whitespace-only queries fall through to the OR fallback
+        // rather than matching the from:/subject: prefixes.
+        assert_eq!(build_search_query(""), "OR SUBJECT \"\" BODY \"\"");
+        assert_eq!(build_search_query("   "), "OR SUBJECT \"\" BODY \"\"");
+    }
+
+    #[test]
+    fn test_build_search_query_trims_prefix_whitespace() {
+        // `from: alice@example.com` (with leading space after the colon)
+        // should produce a clean FROM clause without the space.
+        assert_eq!(
+            build_search_query("from:   alice@example.com"),
+            "FROM \"alice@example.com\""
+        );
     }
 
     // ── connect / async wrappers (ECONNREFUSED path) ─────────────────────────
