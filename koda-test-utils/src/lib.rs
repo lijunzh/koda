@@ -22,6 +22,7 @@
 
 mod env;
 pub mod golden;
+pub mod network;
 
 // ── Re-exports from koda-core (test-support gated) ─────────────────────────
 
