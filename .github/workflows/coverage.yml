@@ -119,18 +119,25 @@ jobs:
               for f in lcov-${crate}.info; do
                 lcov_args="$lcov_args --add-tracefile $f"
               done
-              lcov $lcov_args --output-file merged-${crate}.info 2>/dev/null || \
+              lcov $lcov_args --ignore-errors mismatch,corrupt,unused,empty \
+                --output-file merged-${crate}.info 2>/dev/null || \
                 cp lcov-${crate}.info merged-${crate}.info
             fi
           done
 
           # Final unified report across all crates + platforms.
+          # `--ignore-errors mismatch,corrupt,unused,empty` is required because
+          # Ubuntu 22.04 ships lcov 1.15 which doesn't understand Rust's v0
+          # symbol mangling (e.g. closures inside generic functions). See #913
+          # for the full root-cause analysis. Per-line coverage totals are
+          # unaffected; only function-name parsing is bypassed.
           merge_args=""
           for f in merged-*.info; do
             [ -f "$f" ] && merge_args="$merge_args --add-tracefile $f"
           done
           if [ -n "$merge_args" ]; then
-            lcov $merge_args --output-file merged-all.info
+            lcov $merge_args --ignore-errors mismatch,corrupt,unused,empty \
+              --output-file merged-all.info
           fi
 
       - name: Upload merged reports
