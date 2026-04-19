@@ -44,6 +44,7 @@ pub(crate) fn draw_viewport(
     scroll_buffer: &ScrollBuffer,
     selection: Option<&crate::mouse_select::Selection>,
     mcp_info: Option<McpStatusBarInfo>,
+    project_root: &std::path::Path,
 ) -> ratatui::layout::Rect {
     let area = frame.area();
 
@@ -97,7 +98,7 @@ pub(crate) fn draw_viewport(
     .areas(area);
 
     // ── History panel (scrollable) ────────────────────
-    render_history(frame, scroll_buffer, history_area, selection);
+    render_history(frame, scroll_buffer, history_area, selection, project_root);
 
     // ── Top separator: ──────────── 🐻 ─ ─────────────────────
     let sep_width = sep_row.width.saturating_sub(5) as usize;
@@ -202,6 +203,7 @@ fn render_history(
     buffer: &ScrollBuffer,
     area: ratatui::layout::Rect,
     selection: Option<&crate::mouse_select::Selection>,
+    project_root: &std::path::Path,
 ) {
     let height = area.height as usize;
     let width = area.width as usize;
@@ -220,6 +222,11 @@ fn render_history(
         .wrap(Wrap { trim: false })
         .scroll(scroll_pos);
     frame.render_widget(paragraph, area);
+
+    // Post-render: turn cyan+underlined PATH cells into clickable OSC 8
+    // hyperlinks. Pure cell-symbol mutation — zero impact on layout.
+    // See `crate::hyperlink` for the why.
+    crate::hyperlink::link_paths_in_buffer(frame.buffer_mut(), area, project_root);
 
     // Scrollbar — uses visual line counts for accurate thumb position
     let total_visual = buffer.total_visual_lines(width);

@@ -92,6 +92,7 @@ impl TuiContext {
                         &self.scroll_buffer,
                         self.mouse_selection.as_ref(),
                         mcp_info,
+                        &self.project_root,
                     );
                 });
 

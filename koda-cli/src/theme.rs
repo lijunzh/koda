@@ -140,7 +140,17 @@ pub fn content_style_for(tool_name: &str, is_stderr: bool) -> Style {
 // ── File / path accents (used by Grep, List, Glob renderers) ────────
 
 /// File path in tool output — tinted to stand out from line content.
-pub const PATH: Style = Style::new().fg(Color::Cyan);
+///
+/// The `UNDERLINED` modifier makes the path *visually* read as a link
+/// even on terminals that don't render OSC 8 hyperlinks. On supporting
+/// terminals (iTerm2, Kitty, Wezterm, Ghostty, VSCode, Alacritty,
+/// Windows Terminal, …) the [`crate::hyperlink`] post-render pass turns
+/// every cell with this style into a clickable `file://` link. The two
+/// effects compound — we never need to ask whether the terminal supports
+/// hyperlinks because the underline carries the meaning either way.
+pub const PATH: Style = Style::new()
+    .fg(Color::Cyan)
+    .add_modifier(Modifier::UNDERLINED);
 
 /// Line number in tool output — yellow keeps it scan-able next to the
 /// cyan path without competing for the eye.

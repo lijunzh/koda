@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Clickable file paths in the live TUI.** Every file path styled with
+  `theme::PATH` (cyan + underlined) — tool-call headers, `Grep`/`Glob`/
+  `List` output, `WebFetch` URLs, markdown links — is now an OSC 8
+  hyperlink. ⌘/Ctrl-click to open in iTerm2, Kitty, Wezterm, Ghostty,
+  Alacritty, VSCode terminal, Windows Terminal, and any other modern
+  emulator. Non-supporting terminals silently swallow the escape
+  sequence (per the OSC 8 spec) and just see the underlined text — no
+  capability probe needed. New module: `koda-cli/src/hyperlink.rs`.
 - **Clickable file paths & URLs in transcript exports.** `/copy` and
   `/export` now emit `Read`/`Write`/`Edit`/`Delete` paths and `WebFetch`
   URLs as markdown links (`[src/main.rs](file:///abs/src/main.rs)`).
