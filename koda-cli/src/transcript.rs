@@ -52,15 +52,6 @@ pub struct SessionMeta {
     pub project_root: String,
 }
 
-/// Truncate a string to at most `max` characters, appending `…` if truncated.
-/// Safe on multi-byte UTF-8 (never splits a codepoint).
-fn truncate_with_ellipsis(s: &str, max: usize) -> String {
-    match s.char_indices().nth(max) {
-        Some((idx, _)) => format!("{}…", &s[..idx]),
-        None => s.to_string(),
-    }
-}
-
 /// Maximum content lines to include per tool result in summary mode.
 const SUMMARY_RESULT_LINES: usize = 10;
 
@@ -72,6 +63,21 @@ const SUMMARY_BASH_CHARS: usize = 80;
 
 /// Bash command truncation limit in verbose mode (effectively unlimited).
 const VERBOSE_BASH_CHARS: usize = 500;
+
+/// Env-var name for opting out of markdown hyperlinks in transcripts.
+///
+/// Default behavior: emit hyperlinks. Setting this to `"off"`, `"0"`,
+/// or `"false"` disables them so paths render as plain text. Useful for
+/// downstream consumers that munge markdown links into something less
+/// readable than the bare path.
+const HYPERLINK_KILL_SWITCH: &str = "KODA_TRANSCRIPT_HYPERLINKS";
+
+fn hyperlinks_enabled() -> bool {
+    !matches!(
+        std::env::var(HYPERLINK_KILL_SWITCH).ok().as_deref(),
+        Some("off" | "0" | "false" | "no")
+    )
+}
 
 /// Format the current UTC time as `YYYY-MM-DD HH:MM UTC` for the transcript header.
 fn format_utc_now() -> String {
@@ -170,14 +176,30 @@ pub fn render(messages: &[Message], meta: &SessionMeta, verbose: bool) -> String
                     } else {
                         SUMMARY_BASH_CHARS
                     };
+                    let link = hyperlinks_enabled();
                     for call in &calls {
                         let name = call["function"]["name"].as_str().unwrap_or("Tool");
                         let args_json = call["function"]["arguments"].as_str().unwrap_or("{}");
-                        let detail = tool_detail_summary(name, args_json, bash_limit);
+                        let detail = tool_detail_markdown(
+                            name,
+                            args_json,
+                            bash_limit,
+                            &meta.project_root,
+                            link,
+                        );
                         let icon = tool_icon(name);
                         out.push_str(&format!("### {icon} **{name}**"));
                         if !detail.is_empty() {
-                            out.push_str(&format!(" `{detail}`"));
+                            // Detail may already contain markdown link
+                            // syntax (`[disp](uri)`); only the plain-text
+                            // branches are wrapped in backticks. Linked
+                            // detail is left bare so the link renders.
+                            if detail.starts_with('[') {
+                                out.push(' ');
+                                out.push_str(&detail);
+                            } else {
+                                out.push_str(&format!(" `{detail}`"));
+                            }
                         }
                         out.push('\n');
                     }
@@ -307,53 +329,81 @@ fn tool_icon(name: &str) -> &'static str {
     }
 }
 
-/// One-line summary of a tool call's arguments (mirrors `history_render`).
+/// One-line summary of a tool call's arguments, with file paths and URLs
+/// rendered as **markdown links** when hyperlinks are enabled.
+///
+/// Per-tool dispatch is delegated to [`crate::tool_header::detail_text`]
+/// so the same `(name, args)` pair always produces the same human-readable
+/// summary across the live TUI, history replay, and transcript export.
+/// This wrapper only adds the markdown-link layer on top of the shared
+/// plain-text summary.
 ///
 /// `bash_limit` controls Bash command truncation (80 in summary, 500 in verbose).
-fn tool_detail_summary(name: &str, args_json: &str, bash_limit: usize) -> String {
+/// `project_root` is used to resolve relative file paths into absolute
+/// `file:///` URIs; if empty or the path is already absolute, no resolution
+/// is performed.
+fn tool_detail_markdown(
+    name: &str,
+    args_json: &str,
+    bash_limit: usize,
+    project_root: &str,
+    link: bool,
+) -> String {
     let args: serde_json::Value =
         serde_json::from_str(args_json).unwrap_or(serde_json::Value::Null);
+    let raw = crate::tool_header::detail_text(name, &args, bash_limit);
+    if !link || raw.is_empty() {
+        return raw;
+    }
     match name {
         "Read" | "Write" | "Edit" | "Delete" => {
-            args["file_path"].as_str().unwrap_or("").to_string()
+            // `raw` is the file path; wrap as [path](file:///abs).
+            let abs = absolute_path(&raw, project_root);
+            format!("[{raw}]({})", file_uri(&abs))
         }
-        "Bash" => {
-            let cmd = args["command"].as_str().unwrap_or("");
-            if cmd.chars().count() > bash_limit {
-                truncate_with_ellipsis(cmd, bash_limit.saturating_sub(3))
-            } else {
-                cmd.to_string()
-            }
-        }
-        "Grep" => {
-            let pat = args["search_string"]
-                .as_str()
-                .or_else(|| args["pattern"].as_str())
-                .unwrap_or("");
-            let dir = args["directory"].as_str().unwrap_or(".");
-            format!("{pat} in {dir}")
-        }
-        "List" | "Glob" => args["directory"]
-            .as_str()
-            .or_else(|| args["path"].as_str())
-            .unwrap_or(".")
-            .to_string(),
-        "WebFetch" => args["url"].as_str().unwrap_or("").to_string(),
-        _ => {
-            if let Some(obj) = args.as_object() {
-                for (_, v) in obj.iter().take(1) {
-                    if let Some(s) = v.as_str() {
-                        return if s.chars().count() > 80 {
-                            truncate_with_ellipsis(s, 77)
-                        } else {
-                            s.to_string()
-                        };
-                    }
-                }
-            }
-            String::new()
+        "WebFetch" => format!("[{raw}]({raw})"),
+        // Grep / Glob / List / Bash / generic: leave as plain text.
+        // The directory portion of Grep is intentionally NOT linked
+        // because the eye-catching part is the pattern, not the dir.
+        _ => raw,
+    }
+}
+
+/// Resolve `path` against `project_root` if relative; pass through if absolute.
+///
+/// We deliberately don't try to canonicalize (the file may not exist on
+/// the machine viewing the transcript). The resulting string is best-effort.
+fn absolute_path(path: &str, project_root: &str) -> String {
+    if path.starts_with('/') || project_root.is_empty() {
+        return path.to_string();
+    }
+    let root = project_root.trim_end_matches('/');
+    format!("{root}/{path}")
+}
+
+/// Build a `file:///` URI from an absolute path with light percent-encoding.
+///
+/// Encodes the characters most likely to break markdown link parsing:
+/// space, parenthesis, square bracket. Other characters are passed through
+/// — most viewers tolerate them, and full percent-encoding would pull in a
+/// dependency for marginal benefit.
+fn file_uri(abs_path: &str) -> String {
+    let mut out = String::with_capacity(abs_path.len() + 8);
+    out.push_str("file://");
+    if !abs_path.starts_with('/') {
+        out.push('/');
+    }
+    for ch in abs_path.chars() {
+        match ch {
+            ' ' => out.push_str("%20"),
+            '(' => out.push_str("%28"),
+            ')' => out.push_str("%29"),
+            '[' => out.push_str("%5B"),
+            ']' => out.push_str("%5D"),
+            _ => out.push(ch),
         }
     }
+    out
 }
 
 #[cfg(test)]
@@ -569,5 +619,136 @@ mod tests {
         // Verbose mode shows all tool output, including Bash
         assert!(out.contains("line1"));
         assert!(out.contains("line3"));
+    }
+
+    // ── Markdown hyperlink emission ──────────────────────────────────
+
+    /// Build an assistant message with a single tool call.
+    fn assistant_with_call(name: &str, args_json: &str) -> Message {
+        let mut m = make_msg(Role::Assistant, "");
+        m.tool_calls = Some(
+            serde_json::json!([{
+                "id": "c1",
+                "function": { "name": name, "arguments": args_json }
+            }])
+            .to_string(),
+        );
+        m
+    }
+
+    #[test]
+    fn read_path_emits_markdown_link_with_file_uri() {
+        let msg = assistant_with_call("Read", r#"{"file_path":"src/main.rs"}"#);
+        let meta = SessionMeta {
+            project_root: "/home/user/proj".into(),
+            ..default_meta()
+        };
+        let out = render(&[msg], &meta, false);
+        assert!(
+            out.contains("[src/main.rs](file:///home/user/proj/src/main.rs)"),
+            "relative path should resolve under project_root, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn absolute_read_path_skips_root_join() {
+        let msg = assistant_with_call("Read", r#"{"file_path":"/etc/hosts"}"#);
+        let meta = SessionMeta {
+            project_root: "/home/user/proj".into(),
+            ..default_meta()
+        };
+        let out = render(&[msg], &meta, false);
+        assert!(
+            out.contains("[/etc/hosts](file:///etc/hosts)"),
+            "absolute path should pass through, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn webfetch_url_becomes_self_link() {
+        let msg = assistant_with_call("WebFetch", r#"{"url":"https://example.com/x"}"#);
+        let out = render(&[msg], &default_meta(), false);
+        assert!(
+            out.contains("[https://example.com/x](https://example.com/x)"),
+            "URL should be a markdown self-link, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn bash_detail_stays_plain_codespan() {
+        // Bash commands aren't paths or URLs — keep them in backticks
+        // so monospace formatting (and shell tokens) survive.
+        let msg = assistant_with_call("Bash", r#"{"command":"git status"}"#);
+        let out = render(&[msg], &default_meta(), false);
+        assert!(out.contains("`git status`"), "got:\n{out}");
+        assert!(
+            !out.contains("](git status)"),
+            "bash should never be linked"
+        );
+    }
+
+    #[test]
+    fn grep_detail_stays_plain_codespan() {
+        let msg = assistant_with_call("Grep", r#"{"search_string":"TODO","directory":"src"}"#);
+        let out = render(&[msg], &default_meta(), false);
+        assert!(out.contains("`\"TODO\" in src`"), "got:\n{out}");
+    }
+
+    #[test]
+    fn kill_switch_disables_hyperlinks() {
+        // Save & restore so we don't leak env across tests in this thread.
+        let prev = std::env::var(HYPERLINK_KILL_SWITCH).ok();
+        // SAFETY: tests in this binary run in parallel by default; this env
+        // var is only read by transcript code, and the only readers in this
+        // file are `kill_switch_*` tests. Running them with `--test-threads=1`
+        // is the official escape hatch if they ever flake.
+        unsafe { std::env::set_var(HYPERLINK_KILL_SWITCH, "off") };
+        let msg = assistant_with_call("Read", r#"{"file_path":"/x.rs"}"#);
+        let out = render(&[msg], &default_meta(), false);
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var(HYPERLINK_KILL_SWITCH, v),
+                None => std::env::remove_var(HYPERLINK_KILL_SWITCH),
+            }
+        }
+        assert!(out.contains("`/x.rs`"), "plain text expected, got:\n{out}");
+        assert!(!out.contains("file:///"), "link should be suppressed");
+    }
+
+    #[test]
+    fn dry_equivalence_with_tool_header_detail_text() {
+        // Regression guard: transcript detail strings must agree with the
+        // shared `tool_header::detail_text` for every supported tool. If
+        // someone forks the dispatch back into this module, this test fails.
+        use crate::tool_header::detail_text;
+        let cases: Vec<(&str, serde_json::Value, usize)> = vec![
+            ("Read", serde_json::json!({"file_path": "a.rs"}), 80),
+            ("Bash", serde_json::json!({"command": "echo hi"}), 80),
+            (
+                "Grep",
+                serde_json::json!({"search_string": "x", "directory": "."}),
+                80,
+            ),
+            ("Glob", serde_json::json!({"pattern": "**/*.rs"}), 80),
+            ("List", serde_json::json!({"directory": "src"}), 80),
+            ("WebFetch", serde_json::json!({"url": "https://x"}), 80),
+        ];
+        for (name, args, bash) in cases {
+            let from_helper = detail_text(name, &args, bash);
+            // tool_detail_markdown with link=false is a pure pass-through.
+            let from_transcript = tool_detail_markdown(name, &args.to_string(), bash, "", false);
+            assert_eq!(
+                from_helper, from_transcript,
+                "transcript detail must match tool_header::detail_text for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn file_uri_percent_encodes_breaking_chars() {
+        // Spaces and brackets break naive markdown link parsers — percent-
+        // encode the most common offenders so links survive copy/paste.
+        let uri = file_uri("/My Files/[draft].md");
+        assert_eq!(uri, "file:///My%20Files/%5Bdraft%5D.md");
     }
 }

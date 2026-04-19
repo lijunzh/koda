@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **Clickable file paths & URLs in transcript exports.** `/copy` and
+  `/export` now emit `Read`/`Write`/`Edit`/`Delete` paths and `WebFetch`
+  URLs as markdown links (`[src/main.rs](file:///abs/src/main.rs)`).
+  Renders as a clickable link in GitHub, Slack, Notion, VS Code preview,
+  iTerm2/Kitty/Wezterm pasted markdown, and any markdown viewer that
+  understands the standard. Falls back to readable plain text everywhere
+  else. Set `KODA_TRANSCRIPT_HYPERLINKS=off` to disable.
+- `tool_header::detail_text(name, args, bash_chars)` — plain-text mirror
+  of the existing `detail_spans`. Single source of truth for tool-call
+  argument summaries across TUI, history replay, and transcript export.
+
+### Changed
+- `transcript::tool_detail_summary` is gone; transcript now delegates the
+  per-tool dispatch to the shared `tool_header::detail_text` and only
+  layers markdown-link wrapping on top. Closes the third copy of the
+  `(name, args) → string` logic deferred from #952.
+- Transcript Grep detail now matches the live TUI by quoting the pattern
+  (`"TODO" in src` instead of `TODO in src`).
+
 ### Removed
 - **`koda-ast` and `koda-email` crates deleted entirely.** Both were ghost
   crates: zero `use koda_ast` / `use koda_email` consumers anywhere in the
