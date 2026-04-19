@@ -1,12 +1,22 @@
 # koda-ast
 
-MCP server for tree-sitter AST analysis, part of the [Koda](https://github.com/lijunzh/koda) AI coding agent.
+Tree-sitter intelligence for the [Koda](https://github.com/lijunzh/koda) AI
+coding agent. A pure library — no binary, no MCP server, no async runtime.
+Other crates in the workspace embed it directly.
 
-Extracts function signatures, class definitions, and call graphs from source
-code using embedded tree-sitter parsers. Communicates via the
-[Model Context Protocol](https://modelcontextprotocol.io) over stdio.
+## What's inside
 
-## Supported languages
+- **`analysis`** — file structure summaries, call graph extraction,
+  post-edit syntax verification.
+- **`highlight`** — language-agnostic semantic-token syntax highlighting,
+  consumed by `koda-cli` for the TUI. Tree-sitter primary backend
+  (Phase 2), syntect fallback for unsupported languages.
+- **`grammar`** — single-source-of-truth `extension → tree_sitter::Language`
+  registry shared by both subsystems.
+- **`tokens`** — the `SemanticToken` enum that's the lingua franca for
+  renderers.
+
+## Supported languages (tree-sitter)
 
 - **Rust**: `.rs`
 - **Python**: `.py`, `.pyi`, `.pyw`
@@ -16,35 +26,31 @@ code using embedded tree-sitter parsers. Communicates via the
 - **C/C++**: `.c`, `.h`, `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`
 - **Bash**: `.sh`, `.bash`
 
-Additional languages require adding tree-sitter grammars to this crate — see [#298](https://github.com/lijunzh/koda/issues/298).
+For languages without a tree-sitter grammar (toml, yaml, json, markdown,
+css, html, sql, …), the highlight pipeline falls back to **syntect**'s
+~50 bundled syntaxes. Anything else degrades cleanly to plain text.
 
-## Built-in integration
+Additional tree-sitter grammars: see [#298](https://github.com/lijunzh/koda/issues/298).
 
-koda-ast is compiled into Koda as a direct library call — no setup needed.
-Just ask koda to analyze code structure and it works out of the box.
+## Usage
 
-The standalone MCP server binary is also available for use in other editors.
+```rust
+use koda_ast::{analyze_file, highlight_spans, syntax_check, LanguageHint};
+use std::path::Path;
 
-## Manual setup
+// Analysis
+let summary = analyze_file(Path::new("src/main.rs"))?;
+let errors  = syntax_check(Path::new("src/main.rs"));   // None if valid
+
+// Highlighting (returns semantic spans; renderer maps to colors)
+let spans = highlight_spans("fn main() {}", LanguageHint::from_extension("rs"));
+```
+
+## Testing
 
 ```bash
-cargo install koda-ast
+cargo test -p koda-ast
 ```
-
-Add to `.mcp.json`:
-```json
-{
-  "mcpServers": {
-    "ast": {
-      "command": "koda-ast",
-      "args": []
-    }
-  }
-}
-```
-
-Exposes one MCP tool: **AstAnalysis** — extracts functions, classes, and
-call graphs from source files.
 
 ## License
 

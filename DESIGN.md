@@ -191,19 +191,19 @@ removed the then-unused MCP client.
 **v0.2.12 re-introduced an MCP client** ([#855](https://github.com/lijunzh/koda/issues/855))
 for a fundamentally different purpose: connecting to *third-party* external MCP
 servers (Playwright, databases, Slack, user-defined APIs). First-party workspace
-crates (koda-ast, koda-email) still use direct library calls — no IPC, no process
-management for in-repo code. The MCP client is exclusively for extending Koda
-with capabilities outside the workspace.
+crates (koda-ast, koda-email) live in-repo and are consumed differently — koda-ast
+is a pure Rust library embedded directly into koda-cli, while koda-email still
+ships a standalone MCP server binary. The MCP client is exclusively for extending
+Koda with capabilities outside the workspace.
 
 **Dependency graph**:
 ```
 koda-cli → koda-core  (inference engine + first-party tool calls)
-                    → koda-ast   (direct library call from ToolRegistry)
+                    → koda-ast   (direct library: AST analysis + syntax highlighting)
                     → koda-email (direct library call from ToolRegistry)
                     → McpManager (optional; connects to third-party MCP servers)
                           → [playwright, db-tools, slack, …] (external, via stdio or HTTP)
 
-koda-ast/main.rs  → standalone MCP server (for external consumers)
 koda-email/main.rs → standalone MCP server (for external consumers)
 ```
 

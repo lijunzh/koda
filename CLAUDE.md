@@ -15,7 +15,7 @@ performance only when measured.
 Four-crate workspace:
 - `koda-core` (library) — pure engine with zero terminal deps
 - `koda-cli` (binary `koda`) — CLI frontend with ratatui TUI
-- `koda-ast` (binary `koda-ast`) — tree-sitter AST analysis (library + standalone MCP server)
+- `koda-ast` — tree-sitter AST analysis + syntax highlighting library (no binary)
 - `koda-email` (binary `koda-email`) — email via IMAP/SMTP (library + standalone MCP server)
 
 See [DESIGN.md](DESIGN.md) for architectural decisions. See [#70](https://github.com/lijunzh/koda/issues/70) for the TUI design.
@@ -76,7 +76,7 @@ cargo build --release -p koda-cli        # Release build (CLI only)
 cargo test --workspace --features koda-core/test-support  # Run all tests (incl. E2E)
 cargo test -p koda-core --features test-support          # Engine tests only
 cargo test -p koda-cli                                   # CLI tests only
-cargo test -p koda-ast                                   # AST library + server tests
+cargo test -p koda-ast                                   # AST library tests
 cargo test -p koda-email                                 # Email library + server tests
 cargo test -p koda-core --test perf_test                 # Run a specific test file
 cargo fmt --all                          # Format all crates
@@ -218,7 +218,7 @@ koda/
 │   │       ├── slash_menu.rs# Slash command dropdown (see DESIGN.md, Interaction)
 │   │       └── status_bar.rs# Model, mode, context meter, elapsed time
 │   └── tests/              # CLI integration tests
-├── koda-ast/               # Tree-sitter AST analysis (library + standalone MCP server)
+├── koda-ast/               # Tree-sitter AST analysis + syntax highlighting (library)
 │   ├── src/
 │   │   ├── lib.rs          # Library entry point
 │   │   ├── main.rs         # Standalone MCP server (rmcp, stdio transport)
@@ -309,7 +309,7 @@ cargo test --workspace --features koda-core/test-support
 # Individual crate tests
 cargo test -p koda-core --features test-support   # Engine (unit + E2E)
 cargo test -p koda-cli                             # CLI (unit + integration)
-cargo test -p koda-ast                             # AST (unit + protocol)
+cargo test -p koda-ast                             # AST (library only)
 cargo test -p koda-email                           # Email (unit + protocol)
 
 # Live/opt-in tests (require external services)
@@ -415,7 +415,8 @@ cargo test -p koda-email -- --ignored
 
 ### Integration test pattern (MCP servers)
 
-Both `koda-ast` and `koda-email` binaries use the same integration test pattern:
+`koda-email` ships a standalone MCP server binary. Its integration test
+pattern:
 1. Spawn the server binary as a child process
 2. Pipe JSON-RPC messages over stdin/stdout
 3. Send `initialize` + `notifications/initialized` handshake
@@ -423,7 +424,7 @@ Both `koda-ast` and `koda-email` binaries use the same integration test pattern:
 5. Kill the child process
 
 This pattern should be reused for any future standalone servers added to the workspace.
-See `koda-ast/tests/mcp_integration_test.rs` for the reference implementation.
+See `koda-email/tests/` for the reference implementation.
 
 ### Adding a new first-party capability checklist
 

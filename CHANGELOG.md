@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- **`koda-ast` refactored into a pure library, MCP server binary removed**
+  (#945). The `AstAnalysis` MCP tool was removed from the registry in #611
+  and nothing in the workspace consumes the standalone server, so the
+  binary, integration test, and `rmcp`/`schemars`/`tracing-subscriber`/
+  `tokio` dependencies are gone. Crate now contains only the library:
+  - `analysis::*` — file structure summaries, call graphs, post-edit
+    `syntax_check` (unchanged behavior).
+  - `highlight::*` — **new** language-agnostic semantic-token highlighting
+    API (`highlight_spans` returning `Vec<HighlightSpan>` with
+    `SemanticToken` classification). Tree-sitter primary backend is
+    stubbed for Phase 2; syntect fallback wired now so the public
+    surface is stable.
+  - `grammar::*` — **new** single-source-of-truth language registry
+    (`get_language`, `language_for_extension`, `language_name`)
+    extracted from the old `ast.rs`.
+  - `tokens::*` — **new** `SemanticToken` enum (Keyword, FunctionCall,
+    FunctionDef, Type, String, Comment, …) shared by all renderers.
+
+  This is the foundation for koda-cli consuming AST-grounded syntax
+  highlighting (also #945, follow-up PRs). Standalone MCP usage of the
+  AST tool was never documented as stable and had no known consumers;
+  removing it dropped the workspace dep tree by 4 crates and removed a
+  flaky macOS integration test that needed retry logic to stay green.
+
 ## [0.2.15] - 2026-04-18
 
 Hotfix release. CI/infra changes only — no runtime, library, or user-facing
