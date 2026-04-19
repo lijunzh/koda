@@ -86,13 +86,19 @@ jobs:
       # never measured coverage" from "actually measured, dropped below
       # threshold". Without this, a CDN flake on either platform would
       # auto-open / auto-close coverage-regression issues falsely.
+      #
+      # Filename is sanitized to alphanumerics+`_-` so a future runner OS
+      # name with whitespace or punctuation (e.g. "Windows Server 2022")
+      # cannot mangle the report job's `basename {} .flake` filter. See #937.
       - name: Mark infra flake (if install failed)
         if: steps.install.outcome != 'success'
         run: |
+          set -euo pipefail
+          safe_os=$(printf '%s' "${{ runner.os }}" | tr -cd '[:alnum:]_-')
           mkdir -p flake-markers
           echo "taiki-e/install-action failed on ${{ runner.os }} " \
                "— likely GitHub releases CDN flake. See run logs." \
-               > "flake-markers/${{ runner.os }}.flake"
+               > "flake-markers/${safe_os}.flake"
 
       - name: Upload infra-flake marker
         if: steps.install.outcome != 'success'
@@ -220,10 +226,12 @@ jobs:
       - name: Detect infra flake
         id: flake
         run: |
+          set -euo pipefail
           if compgen -G "flake-markers/*.flake" > /dev/null; then
             echo "detected=true" >> "$GITHUB_OUTPUT"
-            # Marker filenames are runner OS names (Linux / macOS) —
-            # plain alphanumerics, so `find -printf` is overkill.
+            # Marker filenames are sanitized to alphanumerics+`_-` (see
+            # the upload step in the coverage job), so basename is safe
+            # against weird OS names if a third platform ever joins.
             platforms=$(find flake-markers -maxdepth 1 -name '*.flake' \
                           -exec basename {} .flake \; | tr '\n' ' ')
             echo "::warning::Coverage matrix contained an infra flake " \
