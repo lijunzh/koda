@@ -84,6 +84,28 @@ pub fn detail_spans(name: &str, args: &Value) -> Vec<Span<'static>> {
     }
 }
 
+/// Plain-text rendering of a tool call detail (no styling).
+///
+/// Mirrors [`detail_spans`] but returns a `String` for non-TUI
+/// consumers (clipboard / file export via `transcript.rs`). Per-tool
+/// dispatch is kept identical so the same `(name, args)` pair always
+/// produces the same human-readable summary regardless of output medium.
+///
+/// `bash_chars` controls Bash command truncation (typically 80 in
+/// summary mode, 500 in verbose). All other tools use
+/// [`MAX_DETAIL_CHARS`] for consistency with TUI rendering.
+pub fn detail_text(name: &str, args: &Value, bash_chars: usize) -> String {
+    match name {
+        "Bash" => bash_text(args, bash_chars),
+        "Read" | "Write" | "Edit" | "Delete" => path_text(args),
+        "Grep" => grep_text(args),
+        "Glob" => glob_text(args),
+        "List" => list_text(args),
+        "WebFetch" => webfetch_text(args),
+        _ => generic_text(args),
+    }
+}
+
 // ── Per-tool detail builders ──────────────────────────────────────────
 
 fn bash_detail(args: &Value) -> Vec<Span<'static>> {
@@ -155,6 +177,61 @@ fn generic_detail(args: &Value) -> Vec<Span<'static>> {
     Vec::new()
 }
 
+// ── Per-tool plain-text builders (no styling, for transcripts) ──────────────
+
+fn bash_text(args: &Value, bash_chars: usize) -> String {
+    let cmd = first_string(args, &["command", "cmd"]).unwrap_or_default();
+    if cmd.chars().count() > bash_chars {
+        truncate_chars(&cmd, bash_chars)
+    } else {
+        cmd
+    }
+}
+
+fn path_text(args: &Value) -> String {
+    first_string(args, &["file_path", "path"]).unwrap_or_default()
+}
+
+fn grep_text(args: &Value) -> String {
+    let pattern = first_string(args, &["search_string", "pattern"]).unwrap_or_default();
+    if pattern.is_empty() {
+        return String::new();
+    }
+    let dir = first_string(args, &["directory", "path"]).unwrap_or_else(|| ".".to_string());
+    // Quotes match the TUI rendering (see `grep_detail`) so transcript and
+    // live view show the same string for the same args.
+    format!("\"{pattern}\" in {dir}")
+}
+
+fn glob_text(args: &Value) -> String {
+    first_string(args, &["pattern"]).unwrap_or_default()
+}
+
+fn list_text(args: &Value) -> String {
+    first_string(args, &["directory", "path"]).unwrap_or_else(|| ".".to_string())
+}
+
+fn webfetch_text(args: &Value) -> String {
+    first_string(args, &["url"]).unwrap_or_default()
+}
+
+fn generic_text(args: &Value) -> String {
+    let obj = match args.as_object() {
+        Some(o) => o,
+        None => return String::new(),
+    };
+    for (_, v) in obj.iter().take(1) {
+        if let Some(s) = v.as_str() {
+            return if s.chars().count() > MAX_DETAIL_CHARS {
+                truncate_chars(s, MAX_DETAIL_CHARS)
+            } else {
+                s.to_string()
+            };
+        }
+    }
+    String::new()
+}
+
 // ── Internals ─────────────────────────────────────────────────────────
 
 /// Return the first present string value among the candidate keys.
@@ -180,6 +257,18 @@ fn truncate_for_header(s: &str) -> String {
         .map(|(i, c)| i + c.len_utf8())
         .unwrap_or(0);
     format!("{}\u{2026}", &s[..cut])
+}
+
+/// Truncate `s` to at most `max` **chars** (not bytes), appending `…`.
+///
+/// Char-based (not byte-based) so callers can express limits in terms of
+/// what the user actually sees in a transcript / clipboard preview.
+/// Multi-byte safe: never splits a codepoint.
+fn truncate_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((idx, _)) => format!("{}\u{2026}", &s[..idx]),
+        None => s.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -366,5 +455,68 @@ mod tests {
         let line = build_header_line("", "Read", &json!({"file_path": "x.rs"}));
         // First span must not be an empty raw indent.
         assert_ne!(line.spans[0].content.as_ref(), "");
+    }
+
+    // ── detail_text (plain-text mirror of detail_spans) ───────────────────
+
+    #[test]
+    fn detail_text_matches_detail_spans_concat() {
+        // For every supported tool, the plain text must equal the
+        // concatenation of the styled spans — the two functions are
+        // documented as mirrors of one another. Drift between them is
+        // the bug this test exists to catch.
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            ("Read", json!({"file_path": "a.rs"})),
+            ("Write", json!({"file_path": "b.rs"})),
+            ("Edit", json!({"file_path": "c.rs"})),
+            ("Delete", json!({"file_path": "d.rs"})),
+            ("Grep", json!({"search_string": "TODO", "directory": "src"})),
+            ("Glob", json!({"pattern": "**/*.rs"})),
+            ("List", json!({"directory": "src"})),
+            ("WebFetch", json!({"url": "https://example.com"})),
+        ];
+        for (name, args) in cases {
+            let text = detail_text(name, &args, 500);
+            let spans = detail_spans(name, &args);
+            let concat: String = spans.iter().map(|s| s.content.as_ref()).collect();
+            assert_eq!(
+                text, concat,
+                "detail_text and detail_spans disagree for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn detail_text_bash_truncates_at_limit() {
+        let cmd = "a".repeat(200);
+        let args = json!({ "command": cmd });
+        let out = detail_text("Bash", &args, 80);
+        // Truncated text holds 80 chars + the ellipsis.
+        assert_eq!(out.chars().count(), 81, "got {out:?}");
+        assert!(out.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn detail_text_bash_passes_through_under_limit() {
+        let out = detail_text("Bash", &json!({"command": "ls -la"}), 80);
+        assert_eq!(out, "ls -la");
+    }
+
+    #[test]
+    fn detail_text_grep_uses_dot_when_no_directory() {
+        let out = detail_text("Grep", &json!({"search_string": "x"}), 80);
+        assert_eq!(out, "\"x\" in .");
+    }
+
+    #[test]
+    fn detail_text_unknown_tool_returns_first_string_arg() {
+        let out = detail_text("MysteryTool", &json!({"thing": "hello"}), 80);
+        assert_eq!(out, "hello");
+    }
+
+    #[test]
+    fn detail_text_unknown_tool_with_no_strings_is_empty() {
+        let out = detail_text("MysteryTool", &json!({"count": 42}), 80);
+        assert_eq!(out, "");
     }
 }
