@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  push:
+    branches: [main]    # Catch post-merge config drift on protected branch
   pull_request:
     branches: [main]
   workflow_call:        # Called by other workflows

@@ -13,7 +13,7 @@
 //! - JSON and plain text are returned as-is
 //! - Output is truncated to context-scaled caps
 //! - Follows redirects (up to 10 hops)
-//! - Timeout: 30 seconds
+//! - Timeout: 15 seconds (see `DEFAULT_TIMEOUT_SECS`)
 
 use crate::providers::ToolDefinition;
 use anyhow::Result;
