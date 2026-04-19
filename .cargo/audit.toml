@@ -3,6 +3,41 @@
 
 [advisories]
 ignore = [
+    # RUSTSEC-2025-0141 — bincode 1.x: unmaintained
+    #
+    # Pulled in transitively as:
+    #   bincode 1.3.3  ←  syntect 5.3.0  ←  koda-cli (syntax highlighting)
+    #
+    # This is an "unmaintained" advisory, NOT a vulnerability — there is no
+    # CVE attached. The crate works correctly; the maintainers just stopped
+    # publishing 1.x updates after the bincode 2.x rewrite.
+    #
+    # Why we cannot trivially fix:
+    # - syntect 5.3.0 (latest, released 2025-09-27) still depends on
+    #   bincode 1.3 on master. There is no migration in flight: see
+    #   trishume/syntect#623 and trishume/syntect#606 (both still open
+    #   as of v0.2.15, no PRs).
+    # - We use syntect via SyntaxSet::load_defaults_newlines and
+    #   ThemeSet::load_defaults (koda-cli/src/highlight.rs), both of
+    #   which deserialize bincode-encoded payloads compiled into the
+    #   syntect binary at *its* build time. Disabling syntect's
+    #   `default-syntaxes` / `default-themes` features would force us
+    #   to ship and parse raw .sublime-syntax / .tmTheme files at
+    #   startup — a meaningful regression in cold-start latency.
+    #
+    # Why we are not exposed:
+    # - All bincode deserialization happens at koda-cli startup against
+    #   syntect's static, build-time-embedded payloads. We never feed
+    #   user-controlled bytes through bincode. The unmaintained-status
+    #   advisory does not describe a known exploit, and even if one
+    #   surfaced in the deserializer, it would require attacker control
+    #   over the bytes being deserialized — which we do not provide.
+    #
+    # Track resolution: remove this ignore once syntect ships a release
+    # with bincode 2.x or migrates off bincode entirely. Watch
+    # trishume/syntect#623 for upstream movement.
+    "RUSTSEC-2025-0141",
+
     # RUSTSEC-2026-0097 — rand 0.8.x / 0.9.x: unsound with custom log handler
     #
     # The advisory is triggered by two transitive dependency chains we don't
