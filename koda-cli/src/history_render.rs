@@ -276,15 +276,14 @@ fn tool_detail_summary(name: &str, args_json: &str) -> String {
 }
 
 /// Color for the tool call dot indicator.
+///
+/// Delegates to [`crate::theme::tool_dot_color`] so live render and
+/// history replay paint the same tool with the same color. This used
+/// to be a separate table that disagreed with `tui_render`'s table
+/// (Bash was green here but orange there); the disagreement is now
+/// impossible because the table lives in one place.
 fn tool_dot_color(name: &str) -> Color {
-    match name {
-        "Read" | "Grep" | "List" | "Glob" => Color::Cyan,
-        "Write" | "Edit" => Color::Yellow,
-        "Delete" => Color::Red,
-        "Bash" => Color::Green,
-        "WebFetch" => Color::Blue,
-        _ => Color::Magenta,
-    }
+    crate::theme::tool_dot_color(name)
 }
 
 #[cfg(test)]

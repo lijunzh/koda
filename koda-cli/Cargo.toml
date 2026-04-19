@@ -48,6 +48,10 @@ arboard = "3"
 # ANSI escape code parsing for tool output
 ansi-to-tui = "8"
 
+# Regex — used to highlight Grep match substrings (mirrors koda-core's
+# Grep tool, so the same pattern compiles in both places).
+regex = "1"
+
 # Logging (subscriber for CLI configuration)
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
