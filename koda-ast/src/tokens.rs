@@ -6,7 +6,7 @@
 //! color concerns — the SOLID single-responsibility line.
 //!
 //! The enum is intentionally narrow. We borrow names from the
-//! [`tree-sitter-highlight`] standard capture-name set and from the
+//! `tree-sitter-highlight` standard capture-name set and from the
 //! LSP semantic-token spec, choosing the *intersection* — anything
 //! both worlds agree on. Backends that emit richer information (e.g.
 //! `function.builtin` vs `function.method`) collapse them into the
@@ -29,8 +29,9 @@ pub enum SemanticToken {
     /// Keywords: `fn`, `if`, `return`, `def`, `class`, …
     Keyword,
     /// Function or method *call site* — e.g. the `bar` in `foo.bar()`.
-    /// Distinguished from [`FunctionDef`] so themes can highlight them
-    /// differently (one of the wins tree-sitter offers over syntect).
+    /// Distinguished from [`SemanticToken::FunctionDef`] so themes can
+    /// highlight them differently (one of the wins tree-sitter offers
+    /// over syntect).
     FunctionCall,
     /// Function or method *definition* — e.g. the `bar` in `fn bar()`.
     FunctionDef,
@@ -56,8 +57,9 @@ pub enum SemanticToken {
     Attribute,
     /// Macro names: `println!`, `vec!`.
     Macro,
-    /// Parameters in function signatures (subset of [`Variable`] when
-    /// the backend can distinguish them).
+    /// Parameters in function signatures (subset of
+    /// [`SemanticToken::Variable`] when the backend can distinguish
+    /// them).
     Parameter,
     /// Property / field access: the `bar` in `foo.bar`.
     Property,
@@ -69,7 +71,7 @@ pub enum SemanticToken {
 }
 
 impl SemanticToken {
-    /// Map a [`tree-sitter-highlight`] capture name to a `SemanticToken`.
+    /// Map a `tree-sitter-highlight` capture name to a `SemanticToken`.
     ///
     /// The standard capture names are defined by the tree-sitter project
     /// (e.g. `keyword`, `function`, `string.special`). We do prefix

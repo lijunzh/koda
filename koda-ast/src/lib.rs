@@ -10,8 +10,8 @@
 //!   fallback for unsupported languages.
 //! - [`grammar`] — single-source-of-truth language registry shared by
 //!   both subsystems.
-//! - [`tokens`] — the [`SemanticToken`](tokens::SemanticToken) enum
-//!   that's the lingua franca for renderers.
+//! - [`tokens`] — the [`SemanticToken`] enum that's the lingua
+//!   franca for renderers.
 //!
 //! Pure library — no binary, no MCP server, no async runtime. Library
 //! consumers (`koda-cli`, future LSP backend, web playground) embed
