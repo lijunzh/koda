@@ -155,6 +155,82 @@ impl CodeHighlighter {
 /// assert_eq!(plain.len(), 2);
 /// assert_eq!(plain[0][0].content.as_ref(), "hello");
 /// ```
+/// Highlight a short snippet inline (no newlines) and return spans.
+///
+/// Designed for one-row UI surfaces (tool-call headers, status banners)
+/// where a multi-line command must be flattened to a single visual line.
+/// Newlines and tabs collapse to a single space; line continuations
+/// (`\\\n`) collapse the same way so `git commit -m "x" \\\n  && cargo test`
+/// reads as `git commit -m "x"   && cargo test` in the header.
+///
+/// Honors `KODA_SYNTAX_HIGHLIGHT=off` (returns a single plain span).
+/// Unknown languages also pass through as a single plain span.
+pub fn highlight_inline(snippet: &str, lang: &str) -> Vec<ratatui::text::Span<'static>> {
+    let flat = flatten_for_inline(snippet);
+    let mut hl = CodeHighlighter::new(lang);
+    hl.highlight_spans(&flat)
+}
+
+/// Replace newlines / tabs with single spaces. Pure helper, easy to test.
+fn flatten_for_inline(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\n' | '\r' | '\t' => ' ',
+            other => other,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod inline_tests {
+    use super::*;
+
+    #[test]
+    fn flatten_collapses_newlines_and_tabs() {
+        assert_eq!(flatten_for_inline("a\nb\tc\rd"), "a b c d");
+    }
+
+    #[test]
+    fn flatten_passthrough_when_no_specials() {
+        assert_eq!(flatten_for_inline("hello world"), "hello world");
+    }
+
+    #[test]
+    fn highlight_inline_bash_produces_colored_spans() {
+        // Skip if syntax highlighting is disabled in this env.
+        if !crate::theme::syntax_highlight_enabled() {
+            return;
+        }
+        let spans = highlight_inline("ls -la /tmp", "bash");
+        // Bash grammar should emit at least 2 spans (command + arg / path).
+        assert!(
+            spans.len() >= 2,
+            "expected multiple spans for bash, got {}",
+            spans.len()
+        );
+        // Combined text round-trips cleanly.
+        let combined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(combined, "ls -la /tmp");
+    }
+
+    #[test]
+    fn highlight_inline_unknown_lang_falls_back_to_plain() {
+        let spans = highlight_inline("anything goes", "notalang");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), "anything goes");
+    }
+
+    #[test]
+    fn highlight_inline_flattens_multiline_input() {
+        let spans = highlight_inline("echo hi\necho bye", "bash");
+        let combined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            !combined.contains('\n'),
+            "newline leaked into header: {combined:?}"
+        );
+    }
+}
+
 pub fn pre_highlight(content: &str, ext: &str) -> Vec<Vec<ratatui::text::Span<'static>>> {
     // Guardrail: massive files (e.g. minified JS bundles) burn syntect
     // wall-clock without giving the user useful color information — fall

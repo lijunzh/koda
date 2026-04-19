@@ -153,7 +153,12 @@ fn render_assistant_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
     }
 }
 
-/// Parse tool_calls JSON and render `● ToolName detail` headers.
+/// Parse tool_calls JSON and render `● ToolName <styled detail>` headers.
+///
+/// Detail formatting and colors are delegated to
+/// [`crate::tool_header::build_header_line_from_str`] so live render
+/// and history replay produce identical span sequences for the same
+/// `(name, args)` input.
 fn render_tool_call_headers(lines: &mut Vec<Line<'static>>, tc_json: &str) {
     // Tool calls are stored as JSON arrays (OpenAI format)
     let calls: Vec<serde_json::Value> = match serde_json::from_str(tc_json) {
@@ -164,16 +169,9 @@ fn render_tool_call_headers(lines: &mut Vec<Line<'static>>, tc_json: &str) {
     for call in &calls {
         let name = call["function"]["name"].as_str().unwrap_or("unknown");
         let args = call["function"]["arguments"].as_str().unwrap_or("{}");
-
-        let detail = tool_detail_summary(name, args);
-        let dot_color = tool_dot_color(name);
-
-        lines.push(Line::from(vec![
-            Span::styled("\u{25cf} ", Style::default().fg(dot_color)),
-            Span::styled(name.to_string(), BOLD),
-            Span::raw(" "),
-            Span::styled(detail, DIM),
-        ]));
+        lines.push(crate::tool_header::build_header_line_from_str(
+            "", name, args,
+        ));
     }
 }
 
@@ -221,69 +219,6 @@ fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message, tool_name: 
             Span::styled(format!("... {hidden} more line(s)"), DIM),
         ]));
     }
-}
-
-/// Extract a human-readable detail string from tool args.
-///
-/// E.g., Read({"file_path": "src/main.rs"}) → "src/main.rs"
-fn tool_detail_summary(name: &str, args_json: &str) -> String {
-    let args: serde_json::Value =
-        serde_json::from_str(args_json).unwrap_or(serde_json::Value::Null);
-
-    match name {
-        "Read" | "Write" | "Edit" | "Delete" => {
-            args["file_path"].as_str().unwrap_or("").to_string()
-        }
-        "Bash" => {
-            let cmd = args["command"].as_str().unwrap_or("");
-            if cmd.len() > 60 {
-                format!("{}...", &cmd[..57])
-            } else {
-                cmd.to_string()
-            }
-        }
-        "Grep" => {
-            let pattern = args["search_string"]
-                .as_str()
-                .or_else(|| args["pattern"].as_str())
-                .unwrap_or("");
-            let dir = args["directory"].as_str().unwrap_or(".");
-            format!("{pattern} in {dir}")
-        }
-        "List" => args["directory"]
-            .as_str()
-            .or_else(|| args["path"].as_str())
-            .unwrap_or(".")
-            .to_string(),
-        "WebFetch" => args["url"].as_str().unwrap_or("").to_string(),
-        _ => {
-            // Generic: show first string value found
-            if let Some(obj) = args.as_object() {
-                for (_, v) in obj.iter().take(1) {
-                    if let Some(s) = v.as_str() {
-                        let truncated = if s.len() > 60 {
-                            format!("{}...", &s[..57])
-                        } else {
-                            s.to_string()
-                        };
-                        return truncated;
-                    }
-                }
-            }
-            String::new()
-        }
-    }
-}
-
-/// Color for the tool call dot indicator.
-///
-/// Delegates to [`crate::theme::tool_dot_color`] so live render and
-/// history replay paint the same tool with the same color. This used
-/// to be a separate table that disagreed with `tui_render`'s table
-/// (Bash was green here but orange there); the disagreement is now
-/// impossible because the table lives in one place.
-fn tool_dot_color(name: &str) -> Color {
-    crate::theme::tool_dot_color(name)
 }
 
 #[cfg(test)]
@@ -394,18 +329,24 @@ mod tests {
 
     #[test]
     fn test_tool_detail_summary() {
-        assert_eq!(
-            tool_detail_summary("Read", r#"{"file_path": "src/main.rs"}"#),
-            "src/main.rs"
+        // The detail logic now lives in `tool_header` and is exhaustively
+        // covered there; this test just pins the *integration* — history
+        // replay must produce the same colored spans as live render does.
+        let typed = crate::tool_header::build_header_line(
+            "",
+            "Grep",
+            &serde_json::json!({"search_string": "foo", "directory": "src"}),
         );
-        assert_eq!(
-            tool_detail_summary("Bash", r#"{"command": "ls -la"}"#),
-            "ls -la"
+        let history = crate::tool_header::build_header_line_from_str(
+            "",
+            "Grep",
+            r#"{"search_string": "foo", "directory": "src"}"#,
         );
-        assert_eq!(
-            tool_detail_summary("Grep", r#"{"search_string": "foo", "directory": "src"}"#),
-            "foo in src"
-        );
+        let typed_text: String = typed.spans.iter().map(|s| s.content.as_ref()).collect();
+        let history_text: String = history.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(typed_text, history_text);
+        assert!(history_text.contains("\"foo\""));
+        assert!(history_text.contains("src"));
     }
 
     #[test]

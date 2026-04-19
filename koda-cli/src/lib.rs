@@ -37,6 +37,7 @@ pub(crate) mod server;
 pub(crate) mod sink;
 pub(crate) mod startup;
 pub(crate) mod theme;
+pub(crate) mod tool_header;
 pub(crate) mod tool_history;
 pub(crate) mod tool_output_lines;
 pub(crate) mod transcript;
