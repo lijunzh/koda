@@ -36,6 +36,22 @@ use syntect::util::as_24_bit_terminal_escaped;
 static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
 static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
 
+// Guardrails so a Read of a 50 MB minified bundle doesn't peg syntect.
+// Borrowed from codex's `exceeds_highlight_limits` — same numbers, same
+// reason: above these sizes the wall-clock cost of highlighting starts
+// to dominate the render frame.
+//
+/// Skip syntax highlighting for files larger than this many bytes.
+pub const MAX_HIGHLIGHT_BYTES: usize = 512 * 1024;
+/// Skip syntax highlighting for files with more than this many lines.
+pub const MAX_HIGHLIGHT_LINES: usize = 10_000;
+
+/// Returns true when input is too large to syntax-highlight without
+/// noticeable lag. Callers fall back to plain rendering.
+pub fn exceeds_highlight_limits(total_bytes: usize, total_lines: usize) -> bool {
+    total_bytes > MAX_HIGHLIGHT_BYTES || total_lines > MAX_HIGHLIGHT_LINES
+}
+
 /// A syntax highlighter for a specific language.
 ///
 /// Stores a reference to the static `SyntaxReference` and creates a fresh
@@ -51,7 +67,13 @@ impl CodeHighlighter {
     /// Maintains parse state across calls to `highlight_spans_stateful()`
     /// so multiline strings, comments, and heredocs highlight correctly.
     /// Use `highlight_spans()` for one-off single-line highlighting.
+    ///
+    /// Honors `KODA_SYNTAX_HIGHLIGHT=off` — when disabled the returned
+    /// highlighter is a no-op (every line passes through as plain text).
     pub fn new(lang: &str) -> Self {
+        if !crate::theme::syntax_highlight_enabled() {
+            return Self { state: None };
+        }
         let syntax = SYNTAX_SET
             .find_syntax_by_token(lang)
             .or_else(|| SYNTAX_SET.find_syntax_by_extension(lang));
@@ -134,6 +156,16 @@ impl CodeHighlighter {
 /// assert_eq!(plain[0][0].content.as_ref(), "hello");
 /// ```
 pub fn pre_highlight(content: &str, ext: &str) -> Vec<Vec<ratatui::text::Span<'static>>> {
+    // Guardrail: massive files (e.g. minified JS bundles) burn syntect
+    // wall-clock without giving the user useful color information — fall
+    // back to plain spans per line. Same thresholds as codex.
+    let line_count = content.lines().count();
+    if exceeds_highlight_limits(content.len(), line_count) {
+        return content
+            .lines()
+            .map(|line| vec![ratatui::text::Span::raw(line.to_string())])
+            .collect();
+    }
     let mut hl = CodeHighlighter::new(ext);
     content
         .lines()
@@ -219,5 +251,34 @@ mod tests {
         let line2 = h.highlight_spans("hello\"");
         // line2 should still produce spans (stateful parsing)
         assert!(!line2.is_empty());
+    }
+
+    #[test]
+    fn test_size_guardrail_below_threshold() {
+        // 1KB / 5 lines is well under the cap — no degradation.
+        assert!(!exceeds_highlight_limits(1024, 5));
+    }
+
+    #[test]
+    fn test_size_guardrail_byte_cap() {
+        assert!(exceeds_highlight_limits(MAX_HIGHLIGHT_BYTES + 1, 1));
+    }
+
+    #[test]
+    fn test_size_guardrail_line_cap() {
+        assert!(exceeds_highlight_limits(1, MAX_HIGHLIGHT_LINES + 1));
+    }
+
+    #[test]
+    fn test_pre_highlight_falls_back_for_huge_input() {
+        // Generate input that trips the line-count cap — must produce
+        // exactly one Span per line and skip syntect entirely.
+        let big = "x\n".repeat(MAX_HIGHLIGHT_LINES + 5);
+        let lines = pre_highlight(&big, "rs");
+        assert_eq!(lines.len(), MAX_HIGHLIGHT_LINES + 5);
+        // Each line should be a single plain span (no syntect coloring).
+        for spans in &lines {
+            assert_eq!(spans.len(), 1, "expected plain fallback, got highlighted");
+        }
     }
 }

@@ -37,13 +37,10 @@
 
 use crate::ansi_parse::parse_ansi_spans;
 use crate::scroll_buffer::ScrollBuffer;
-use crate::tui_output::{
-    self, AMBER, BOLD, CYAN, DIM, MAGENTA, ORANGE, READ_CONTENT, RED, TOOL_PREFIX, WRITE_CONTENT,
-    YELLOW,
-};
+use crate::theme;
+use crate::tui_output::{self, BOLD, CYAN, DIM, MAGENTA, RED, TOOL_PREFIX, YELLOW};
 use crate::widgets::status_bar::TurnStats;
 use koda_core::engine::EngineEvent;
-use koda_core::tools::{ToolEffect, classify_tool};
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -201,21 +198,20 @@ impl TuiRenderer {
                 is_stderr,
             } => {
                 self.streaming_tool_ids.insert(id.clone());
-                // Determine content style from the tool type: read-only tools
-                // (Read, Grep, List…) get a legible off-white; mutating tools
-                // (Bash, Write, Edit…) stay dim — fixing #804 issue #3.
+                // Pull the body color from the central theme module so
+                // read-only output stays legible (#804) and stderr is
+                // always red regardless of which tool produced it.
                 let tool_name = self
                     .pending_tool_args
                     .get(&id)
                     .map(|(n, _)| n.as_str())
                     .unwrap_or("");
-                let (prefix, content_style) = if is_stderr {
-                    ("  \u{2502}e ", RED)
-                } else if matches!(classify_tool(tool_name), ToolEffect::ReadOnly) {
-                    ("  \u{2502} ", READ_CONTENT)
+                let prefix = if is_stderr {
+                    "  \u{2502}e "
                 } else {
-                    ("  \u{2502} ", WRITE_CONTENT)
+                    "  \u{2502} "
                 };
+                let content_style = theme::content_style_for(tool_name, is_stderr);
                 tui_output::emit_line(
                     buffer,
                     Line::from(vec![
@@ -228,10 +224,21 @@ impl TuiRenderer {
                 // If we streamed output lines, skip rendering the full result
                 // (the user already saw it in real-time). Just show exit code.
                 let streamed = self.streaming_tool_ids.remove(&id);
-                let file_ext = self
-                    .pending_tool_args
-                    .remove(&id)
-                    .and_then(|(_, args)| extract_file_extension(&args));
+                let pending = self.pending_tool_args.remove(&id);
+                let file_ext = pending
+                    .as_ref()
+                    .and_then(|(_, args)| extract_file_extension(args));
+                // Grep needs the search pattern at render time so we can
+                // bold the matched substring inside each result line.
+                let grep_pattern = if name == "Grep" {
+                    pending.as_ref().and_then(|(_, args)| {
+                        serde_json::from_str::<serde_json::Value>(args)
+                            .ok()
+                            .and_then(|v| v["pattern"].as_str().map(str::to_string))
+                    })
+                } else {
+                    None
+                };
 
                 self.tool_history.push(&name, &output);
                 if streamed {
@@ -264,6 +271,7 @@ impl TuiRenderer {
                             &output,
                             self.verbose,
                             file_ext.as_deref(),
+                            grep_pattern.as_deref(),
                         );
                     }
                 }
@@ -364,18 +372,14 @@ impl TuiRenderer {
     pub fn stop_spinner(&mut self) {}
 }
 
-// ── Helper renderers ─────────────────────────────────────────
+// ── Helper renderers ──────────────────────────────────
 
 /// Get the dot color and detail string for a tool call banner.
+///
+/// Dot color comes from [`theme::tool_dot`] — single source of truth
+/// shared with `history_render`. Detail formatting is per-tool.
 fn tool_call_styles(name: &str, args: &serde_json::Value) -> (Style, String) {
-    let dot_style = match name {
-        "Bash" => ORANGE,
-        "Read" | "Grep" | "Glob" | "List" => CYAN,
-        "Write" | "Edit" => AMBER,
-        "Delete" => RED,
-        "WebFetch" => Style::new().fg(Color::Blue),
-        _ => DIM,
-    };
+    let dot_style = theme::tool_dot(name);
 
     let detail = match name {
         "Bash" => args
@@ -408,10 +412,18 @@ fn tool_call_styles(name: &str, args: &serde_json::Value) -> (Style, String) {
 
 /// Render tool output with collapsing for long outputs.
 /// Extract file extension from tool call args JSON.
-/// Works for Read ("path") and Grep ("path") tool args.
+///
+/// Walks the keys koda's tools actually use (`file_path` first, then
+/// legacy `path`). Returning [`None`] disables Read syntax highlighting
+/// for that call — fixed in this PR after we discovered the previous
+/// implementation only checked `path`, silently disabling highlighting
+/// for every Read call (since koda's Read tool advertises `file_path`).
 fn extract_file_extension(args_json: &str) -> Option<String> {
     let args: serde_json::Value = serde_json::from_str(args_json).ok()?;
-    let path = args["path"].as_str()?;
+    let path = args
+        .get("file_path")
+        .or_else(|| args.get("path"))
+        .and_then(|v| v.as_str())?;
     let ext = std::path::Path::new(path).extension()?.to_str()?;
     Some(ext.to_string())
 }
@@ -422,6 +434,7 @@ fn render_tool_output(
     output: &str,
     verbose: bool,
     file_ext: Option<&str>,
+    grep_pattern: Option<&str>,
 ) {
     use koda_core::truncate::{Truncated, truncate_for_display};
 
@@ -434,8 +447,9 @@ fn render_tool_output(
     let collapsed = collapse_blank_lines(output);
     let output = &collapsed;
 
-    // Syntax highlighting for Read tool output
-    let use_highlight = name == "Read" && file_ext.is_some();
+    // Syntax highlighting for Read tool output. Honors the global
+    // KODA_SYNTAX_HIGHLIGHT=off kill switch (see [`theme`]).
+    let use_highlight = name == "Read" && file_ext.is_some() && theme::syntax_highlight_enabled();
     let is_diff_tool = matches!(name, "Edit" | "Write" | "Delete");
     let mut highlighter = if use_highlight {
         Some(crate::highlight::CodeHighlighter::new(file_ext.unwrap()))
@@ -447,9 +461,11 @@ fn render_tool_output(
                        line: &str,
                        hl: &mut Option<crate::highlight::CodeHighlighter>| {
         if name == "Grep" {
-            render_grep_line(buffer, line);
+            crate::tool_output_lines::render_grep_line(buffer, line, grep_pattern);
         } else if name == "List" {
-            render_list_line(buffer, line);
+            crate::tool_output_lines::render_list_line(buffer, line);
+        } else if name == "Glob" {
+            crate::tool_output_lines::render_glob_line(buffer, line);
         } else if let Some(h) = hl.as_mut() {
             let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
             spans.extend(h.highlight_spans(line));
@@ -551,80 +567,6 @@ fn collapse_blank_lines(text: &str) -> String {
     result
 }
 
-/// Render a single list entry with directory/file coloring.
-///
-/// List output format: `d path/to/dir` (directory) or `  path/to/file` (file).
-/// Directories are shown in bold, files colored by extension.
-fn render_list_line(buffer: &mut ScrollBuffer, line: &str) {
-    let is_dir = line.starts_with("d ");
-    let path_str = if is_dir {
-        &line[2..]
-    } else {
-        line.trim_start()
-    };
-
-    let style = if is_dir {
-        Style::default().add_modifier(ratatui::style::Modifier::BOLD)
-    } else {
-        // Color files by extension category
-        let ext = std::path::Path::new(path_str)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        match ext {
-            "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "rb" | "java" | "c" | "cpp"
-            | "h" | "cs" | "swift" | "kt" => Style::default().fg(Color::Green),
-            "toml" | "yaml" | "yml" | "json" | "xml" | "ini" | "cfg" | "conf" => {
-                Style::default().fg(Color::Yellow)
-            }
-            "md" | "txt" | "rst" | "adoc" => Style::default().fg(Color::White),
-            "lock" | "sum" => Style::default().fg(Color::DarkGray),
-            _ => Style::default().fg(Color::Reset),
-        }
-    };
-
-    let prefix = if is_dir { "\u{1f4c1} " } else { "   " };
-    tui_output::emit_line(
-        buffer,
-        Line::from(vec![
-            Span::styled("  \u{2502} ", DIM),
-            Span::raw(prefix),
-            Span::styled(path_str.to_string(), style),
-        ]),
-    );
-}
-
-/// Render a single grep result line with the file path highlighted.
-///
-/// Grep output format: `file_path:line_number:content`
-/// We highlight the file path in cyan and the line number in yellow.
-fn render_grep_line(buffer: &mut ScrollBuffer, line: &str) {
-    // Parse file:line:content format
-    if let Some((file_and_line, content)) = line.split_once(':').and_then(|(file, rest)| {
-        rest.split_once(':')
-            .map(|(lineno, content)| (format!("{file}:{lineno}"), content))
-    }) {
-        tui_output::emit_line(
-            buffer,
-            Line::from(vec![
-                Span::styled("  \u{2502} ", DIM),
-                Span::styled(file_and_line, Style::default().fg(Color::Cyan)),
-                Span::styled(":", DIM),
-                Span::raw(content.to_string()),
-            ]),
-        );
-    } else {
-        // Fallback: render as-is
-        tui_output::emit_line(
-            buffer,
-            Line::from(vec![
-                Span::styled("  \u{2502} ", DIM),
-                Span::raw(line.to_string()),
-            ]),
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -647,5 +589,34 @@ mod tests {
     #[test]
     fn test_collapse_all_blank() {
         assert_eq!(collapse_blank_lines("\n\n\n\n"), "\n");
+    }
+
+    // ── extract_file_extension ──────────────────────────────────────
+
+    #[test]
+    fn extract_file_extension_handles_file_path_key() {
+        // The bug fix: koda's tools advertise `file_path`, not `path`.
+        // Pre-fix, this returned None and silently disabled Read
+        // syntax highlighting on every Read call.
+        let args = r#"{"file_path": "src/main.rs"}"#;
+        assert_eq!(extract_file_extension(args).as_deref(), Some("rs"));
+    }
+
+    #[test]
+    fn extract_file_extension_falls_back_to_path() {
+        let args = r#"{"path": "src/lib.py"}"#;
+        assert_eq!(extract_file_extension(args).as_deref(), Some("py"));
+    }
+
+    #[test]
+    fn extract_file_extension_prefers_file_path_when_both_present() {
+        let args = r#"{"file_path": "a.rs", "path": "b.py"}"#;
+        assert_eq!(extract_file_extension(args).as_deref(), Some("rs"));
+    }
+
+    #[test]
+    fn extract_file_extension_returns_none_for_extensionless() {
+        let args = r#"{"file_path": "Makefile"}"#;
+        assert_eq!(extract_file_extension(args), None);
     }
 }

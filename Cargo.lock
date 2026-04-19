@@ -1778,6 +1778,7 @@ dependencies = [
  "once_cell",
  "ratatui",
  "ratatui-textarea",
+ "regex",
  "rpassword",
  "serde",
  "serde_json",

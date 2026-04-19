@@ -3,54 +3,29 @@
 //! All output flows through the `ScrollBuffer` render cache.
 //! No more `insert_before()` or direct crossterm writes.
 //!
+//! Color tokens live in [`crate::theme`] — this module re-exports the
+//! ones used by legacy call sites under their previous names so the
+//! refactor stays diff-light.
+//!
 //! See #472 for the fullscreen migration.
 
 use crate::scroll_buffer::ScrollBuffer;
-use ratatui::{
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
+use ratatui::text::{Line, Span};
+
+// Re-export semantic styles so existing imports keep working. New call
+// sites should reach for `crate::theme::*` directly.
+pub use crate::theme::{
+    BOLD, CONTENT_READ as READ_CONTENT, CONTENT_WRITE as WRITE_CONTENT, DIM, STATUS_ERROR as RED,
+    STATUS_INFO as CYAN, STATUS_SUCCESS as GREEN, STATUS_WARNING as YELLOW, TOOL_PREFIX,
+    WARM_ACCENT, WARM_INFO, WARM_MUTED, WARM_TITLE,
 };
+// Aliases for legacy ad-hoc names — prefer the semantic ones above.
+pub use crate::theme::{ACCENT_AMBER as AMBER, ACCENT_MAGENTA as MAGENTA};
 
 /// Append a single `Line` to the scroll buffer.
 pub fn emit_line(buffer: &mut ScrollBuffer, line: Line<'static>) {
     buffer.push(line);
 }
-
-// ── Style constants ─────────────────────────────────────────
-// Centralized color palette for the TUI renderer.
-
-pub const DIM: Style = Style::new().fg(Color::DarkGray);
-pub const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
-pub const CYAN: Style = Style::new().fg(Color::Cyan);
-pub const YELLOW: Style = Style::new().fg(Color::Yellow);
-pub const RED: Style = Style::new().fg(Color::Red);
-pub const GREEN: Style = Style::new().fg(Color::Green);
-pub const MAGENTA: Style = Style::new().fg(Color::Magenta);
-pub const ORANGE: Style = Style::new().fg(Color::Rgb(255, 165, 0));
-pub const AMBER: Style = Style::new().fg(Color::Rgb(255, 191, 0));
-
-/// Structural glyphs (│ └ ●) — always dim regardless of tool type.
-pub const TOOL_PREFIX: Style = Style::new().fg(Color::DarkGray);
-
-/// Content from read-only tools (Read, Grep, List, Glob …).
-///
-/// Slightly off-white — readable without comassistant prose.
-/// This is the main fix for #804 issue #3: read output was previously
-/// indistinguishable from muted/dim decorative text.
-pub const READ_CONTENT: Style = Style::new().fg(Color::Rgb(198, 200, 209)); // cool light gray
-
-/// Content from mutating tools (Bash stdout, Write/Edit diffs, etc.).
-///
-/// Kept dim — users rarely need to follow this verbatim.
-pub const WRITE_CONTENT: Style = Style::new().fg(Color::DarkGray);
-
-// Warm palette — earthy tones for koda's bear identity.
-pub const WARM_TITLE: Style = Style::new()
-    .fg(Color::Rgb(229, 192, 123)) // soft gold #e5c07b
-    .add_modifier(Modifier::BOLD);
-pub const WARM_ACCENT: Style = Style::new().fg(Color::Rgb(209, 154, 102)); // amber #d19a66
-pub const WARM_MUTED: Style = Style::new().fg(Color::Rgb(124, 111, 100)); // brown #7c6f64
-pub const WARM_INFO: Style = Style::new().fg(Color::Rgb(198, 165, 106)); // soft gold #c6a56a
 
 // ── Message helpers ─────────────────────────────────────────
 // Push styled status messages into the scroll buffer.
