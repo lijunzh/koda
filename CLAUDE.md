@@ -12,11 +12,9 @@ P2: Simple enough to own alone, P3: Build for the world six months from now).
 order. Ship working code first, refactor to clean design second, optimize for
 performance only when measured.
 
-Four-crate workspace:
+Two-crate workspace:
 - `koda-core` (library) — pure engine with zero terminal deps
 - `koda-cli` (binary `koda`) — CLI frontend with ratatui TUI
-- `koda-ast` — tree-sitter AST analysis + syntax highlighting library (no binary)
-- `koda-email` (binary `koda-email`) — email via IMAP/SMTP (library + standalone MCP server)
 
 See [DESIGN.md](DESIGN.md) for architectural decisions. See [#70](https://github.com/lijunzh/koda/issues/70) for the TUI design.
 
@@ -56,15 +54,13 @@ how mutations are gated:
 
 **When to update docs with a PR:**
 - User-facing feature added/changed → update root README + relevant crate README
-- Tool added/changed in koda-ast/koda-email → update the crate README's tool/protocol section
 - Architecture or design decision → add to the appropriate section in `DESIGN.md` with rationale
 - New crate → must ship with a README.md (required for crates.io)
-- Keep feature coverage symmetric — if AST and email have equivalent capabilities, they get equivalent documentation
 - Internal refactors don't require doc updates unless they change crate boundaries or public APIs
 
 **On release:**
 - Move CHANGELOG.md `[Unreleased]` to versioned section
-- Bump version in all 4 crate Cargo.toml files (koda-core, koda-cli, koda-ast, koda-email)
+- Bump version in both crate Cargo.toml files (koda-core, koda-cli)
 - Verify README quick-start examples still work
 - Check that CHANGELOG entries match what's documented in README/DESIGN.md
 
@@ -76,8 +72,6 @@ cargo build --release -p koda-cli        # Release build (CLI only)
 cargo test --workspace --features koda-core/test-support  # Run all tests (incl. E2E)
 cargo test -p koda-core --features test-support          # Engine tests only
 cargo test -p koda-cli                                   # CLI tests only
-cargo test -p koda-ast                                   # AST library tests
-cargo test -p koda-email                                 # Email library + server tests
 cargo test -p koda-core --test perf_test                 # Run a specific test file
 cargo fmt --all                          # Format all crates
 cargo fmt --all --check                                                    # Check formatting (CI enforced)
@@ -218,20 +212,6 @@ koda/
 │   │       ├── slash_menu.rs# Slash command dropdown (see DESIGN.md, Interaction)
 │   │       └── status_bar.rs# Model, mode, context meter, elapsed time
 │   └── tests/              # CLI integration tests
-├── koda-ast/               # Tree-sitter AST analysis + syntax highlighting (library)
-│   ├── src/
-│   │   ├── lib.rs          # Library entry point
-│   │   ├── main.rs         # Standalone MCP server (rmcp, stdio transport)
-│   │   └── ast.rs          # Tree-sitter analysis (Rust, Python, JS, TS)
-│   └── tests/              # Integration tests
-├── koda-email/             # Email via IMAP/SMTP (library + standalone MCP server)
-│   ├── src/
-│   │   ├── lib.rs          # Library entry point
-│   │   ├── main.rs         # Standalone MCP server (rmcp, stdio transport)
-│   │   ├── config.rs       # Credential loading from KODA_EMAIL_* env vars
-│   │   ├── imap_client.rs  # IMAP read/search (sync imap crate + spawn_blocking)
-│   │   └── smtp_client.rs  # SMTP sending via lettre
-│   └── tests/              # Integration tests (two-layer)
 ├── DESIGN.md               # Architecture decisions
 ```
 
@@ -309,8 +289,6 @@ cargo test --workspace --features koda-core/test-support
 # Individual crate tests
 cargo test -p koda-core --features test-support   # Engine (unit + E2E)
 cargo test -p koda-cli                             # CLI (unit + integration)
-cargo test -p koda-ast                             # AST (library only)
-cargo test -p koda-email                           # Email (unit + protocol)
 
 # Live/opt-in tests (require external services)
 KODA_TEST_LMSTUDIO=1 cargo test -p koda-cli --test smoke_test -- --ignored
@@ -366,65 +344,6 @@ from production builds to keep `koda-core`'s public API clean.
 **Smoke tests** (MockProvider, CI-safe):
 - `tests/smoke_test.rs` — headless mode: text responses, tool use, session resume, `--resume` flag
 - Gated by `KODA_TEST_LMSTUDIO=1` env var; never runs in CI
-
-#### koda-ast
-
-**Unit tests** — co-located in `src/`:
-- AST parsing, call graph extraction, language detection
-
-**Integration tests** — spawn binary, send JSON-RPC over stdio:
-- `tests/mcp_integration_test.rs`:
-  - `test_mcp_initialize` — server starts, reports capabilities
-  - `test_mcp_tools_list` — AstAnalysis tool present
-  - `test_mcp_analyze_file` — analyzes a real Rust file
-  - `test_mcp_file_not_found` — graceful error for missing file
-
-#### koda-email
-
-Two-layer test strategy:
-
-**Layer 1 — Always run (no external deps):**
-
-Unit tests + protocol tests. These verify the server starts,
-tools are registered, schemas are well-formed, and missing credentials
-produce helpful setup instructions instead of crashes.
-
-- `tests/mcp_integration_test.rs`:
-  - `test_mcp_initialize` — server starts, reports name + capabilities
-  - `test_mcp_tools_list` — all 3 tools present (EmailRead/Send/Search)
-  - `test_tool_schemas_have_descriptions` — schemas well-formed
-  - `test_email_read_without_credentials` — returns setup instructions
-  - `test_email_send_without_credentials` — returns setup instructions
-  - `test_email_search_without_credentials` — returns setup instructions
-  - `test_version_flag` — `--version` prints correctly
-
-**Layer 2 — Opt-in (`#[ignore]`, needs real IMAP/SMTP credentials):**
-
-```bash
-# Set credentials first:
-export KODA_EMAIL_IMAP_HOST=imap.gmail.com
-export KODA_EMAIL_USERNAME=you@gmail.com
-export KODA_EMAIL_PASSWORD=your-app-password
-
-# Run live tests:
-cargo test -p koda-email -- --ignored
-```
-
-- `test_live_email_read` — fetches real emails via IMAP
-- `test_live_email_search` — searches real mailbox
-
-### Integration test pattern (MCP servers)
-
-`koda-email` ships a standalone MCP server binary. Its integration test
-pattern:
-1. Spawn the server binary as a child process
-2. Pipe JSON-RPC messages over stdin/stdout
-3. Send `initialize` + `notifications/initialized` handshake
-4. Call `tools/list` or `tools/call` and assert on responses
-5. Kill the child process
-
-This pattern should be reused for any future standalone servers added to the workspace.
-See `koda-email/tests/` for the reference implementation.
 
 ### Adding a new first-party capability checklist
 
@@ -490,8 +409,6 @@ Coverage is **not** a PR gate — it runs post-merge on `main` and is informatio
 | Crate | Threshold |
 |---|---|
 | `koda-core` | ≥ 80% line coverage |
-| `koda-ast` | ≥ 80% line coverage |
-| `koda-email` | ≥ 70% line coverage |
 
 **Regression handling** — when any crate drops below threshold:
 1. Workflow run turns red → GitHub notifies via email.

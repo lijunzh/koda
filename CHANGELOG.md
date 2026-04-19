@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Removed
+- **`koda-ast` and `koda-email` crates deleted entirely.** Both were ghost
+  crates: zero `use koda_ast` / `use koda_email` consumers anywhere in the
+  workspace, both marked `publish = false` (so the documented
+  `cargo install koda-{ast,email}` paths in their READMEs never actually
+  worked), neither bundled into any Homebrew bottle or release artifact.
+  The original tools that wired them in were removed long ago — `AstAnalysis`
+  in #611 and the `EmailRead`/`Send`/`Search` direct-library calls per
+  CHANGELOG L466. The standalone MCP binaries had no documented external
+  consumers and no real `~/.config/koda/mcp.json` configurations on record.
+
+  Survey of three peer agents (Codex, Claude Code, Gemini CLI) found that
+  *none* of them use tree-sitter for syntax highlighting in their TUIs;
+  all three buffer-then-highlight code blocks via syntect or highlight.js.
+  This invalidated the architectural bet behind the Phase 1 koda-ast
+  refactor (#945 / #948) — the eventual tree-sitter Phase 2 was the only
+  thing that would have made keeping the crate worthwhile, and the prior
+  art said don't build it.
+
+  Net effect: workspace shrinks from 5 → 3 crates (~2500 LoC removed,
+  9 tree-sitter grammars + IMAP/SMTP deps gone, two flaky MCP integration
+  tests deleted). Per DESIGN.md L71 ("Features built but not used should
+  be deleted — git preserves..."). Highlighting work returns to
+  `koda-cli/src/highlight.rs` where the existing stateful syntect setup
+  already handles streaming correctly. See discussion in #949.
+
 ### Changed
 - **`koda-ast` refactored into a pure library, MCP server binary removed**
   (#945). The `AstAnalysis` MCP tool was removed from the registry in #611

@@ -117,8 +117,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      # Publish order follows dependency graph: koda-core → koda-cli
-      # koda-ast, koda-email are publish=false — skipped automatically.
+      # Publish order follows dependency graph: koda-core → koda-cli.
       - name: Publish koda-core
         run: cargo publish -p koda-core
         env:
