@@ -1871,15 +1871,13 @@ name = "koda-ast"
 version = "0.2.15"
 dependencies = [
  "anyhow",
+ "once_cell",
  "petgraph",
- "rmcp",
- "schemars",
  "serde",
  "serde_json",
+ "syntect",
  "tempfile",
- "tokio",
  "tracing",
- "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-c",

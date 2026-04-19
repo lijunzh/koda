@@ -59,7 +59,7 @@ Inside the TUI, type `/help` to see all commands and keyboard shortcuts.
 |---|---|
 | [**koda-cli**](koda-cli/) | Terminal frontend (TUI + headless + ACP server) |
 | [**koda-core**](koda-core/) | Engine library — providers, tools, inference loop |
-| [**koda-ast**](koda-ast/) | MCP server for tree-sitter AST analysis |
+| [**koda-ast**](koda-ast/) | Tree-sitter AST analysis + syntax highlighting library |
 | [**koda-email**](koda-email/) | MCP server for IMAP/SMTP email integration |
 
 ## Documentation
