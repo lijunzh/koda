@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.16] - 2026-04-19
+
+UX-focused release. The TUI now renders syntax highlighting for ~250
+languages (TOML, TypeScript, Kotlin, Swift, Lua, …) instead of falling
+back to flat white, file paths in tool-call output and transcript
+exports are clickable hyperlinks, and the rendering layer is split into
+a dedicated `theme` module so future appearance changes ripple through
+in one place. No `koda-core` API changes — patch-compatible with v0.2.15.
+
 ### Added
 - **Clickable file paths in the live TUI.** Every file path styled with
   `theme::PATH` (cyan + underlined) — tool-call headers, `Grep`/`Glob`/

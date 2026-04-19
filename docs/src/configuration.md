@@ -51,3 +51,26 @@ priority over global config:
 | `.koda/agents/` | Project-specific agent definitions |
 | `.koda/skills/` | Project-specific skills |
 | `MEMORY.md` | Project memory (also checks `CLAUDE.md`, `AGENTS.md`) |
+
+## Display
+
+Koda's TUI ships ANSI-colored syntax highlighting and OSC 8 hyperlinks by
+default — both have one-flag escape hatches for environments where the
+output looks awful (monochrome themes, non-OSC-8-aware terminals that
+leak escape bytes, etc.).
+
+| Env var | Default | Disable with |
+|---------|---------|--------------|
+| `KODA_SYNTAX_HIGHLIGHT` | on | `off`, `0`, `false`, or `no` |
+| `KODA_TRANSCRIPT_HYPERLINKS` | on | `off`, `0`, `false`, or `no` |
+
+- **`KODA_SYNTAX_HIGHLIGHT`** controls TUI syntax highlighting for
+  `Read`, `Bash` headers, and inline code. Disable for monochrome
+  terminals or terminals where ANSI-RGB output looks washed out.
+  Memoized on first call — restart koda after changing.
+- **`KODA_TRANSCRIPT_HYPERLINKS`** controls markdown-style hyperlinks
+  in `/copy` and `/export` output. Disable if you paste transcripts
+  into a viewer that mangles `[text](file:///abs/path)` syntax.
+
+Both flags accept the same negative values; everything else (including
+empty string and `on`) keeps the feature enabled.
