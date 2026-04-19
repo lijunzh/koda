@@ -62,26 +62,6 @@ jobs:
             --lcov --output-path lcov-core.info \
             -- --test-threads=1
 
-      - name: koda-ast coverage (≥ 80% lines)
-        id: ast
-        if: steps.install.outcome == 'success'
-        continue-on-error: true
-        run: |
-          cargo llvm-cov \
-            --lib -p koda-ast \
-            --fail-under-lines 80 \
-            --lcov --output-path lcov-ast.info
-
-      - name: koda-email coverage (≥ 70% lines)
-        id: email
-        if: steps.install.outcome == 'success'
-        continue-on-error: true
-        run: |
-          cargo llvm-cov \
-            --lib -p koda-email \
-            --fail-under-lines 70 \
-            --lcov --output-path lcov-email.info
-
       # Drop a marker so the report job can distinguish "tooling broken,
       # never measured coverage" from "actually measured, dropped below
       # threshold". Without this, a CDN flake on either platform would
@@ -130,9 +110,7 @@ jobs:
           fi
           fail=0
           for crate_outcome in \
-              "core=${{ steps.core.outcome }}" \
-              "ast=${{ steps.ast.outcome }}" \
-              "email=${{ steps.email.outcome }}"; do
+              "core=${{ steps.core.outcome }}"; do
             name="${crate_outcome%%=*}"
             outcome="${crate_outcome#*=}"
             if [ "$outcome" != "success" ]; then
@@ -162,7 +140,7 @@ jobs:
         run: |
           cd reports
           # Merge each crate's reports across platforms.
-          for crate in core ast email; do
+          for crate in core; do
             files=$(ls lcov-${crate}.info 2>/dev/null || true)
             if [ -n "$files" ]; then
               # If multiple files exist (from matrix), merge them.

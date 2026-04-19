@@ -190,27 +190,31 @@ removed the then-unused MCP client.
 
 **v0.2.12 re-introduced an MCP client** ([#855](https://github.com/lijunzh/koda/issues/855))
 for a fundamentally different purpose: connecting to *third-party* external MCP
-servers (Playwright, databases, Slack, user-defined APIs). First-party workspace
-crates (koda-ast, koda-email) live in-repo and are consumed differently — koda-ast
-is a pure Rust library embedded directly into koda-cli, while koda-email still
-ships a standalone MCP server binary. The MCP client is exclusively for extending
-Koda with capabilities outside the workspace.
+servers (Playwright, databases, Slack, user-defined APIs). The MCP client is
+exclusively for extending Koda with capabilities outside the workspace.
 
 **Dependency graph**:
 ```
 koda-cli → koda-core  (inference engine + first-party tool calls)
-                    → koda-ast   (direct library: AST analysis + syntax highlighting)
-                    → koda-email (direct library call from ToolRegistry)
                     → McpManager (optional; connects to third-party MCP servers)
                           → [playwright, db-tools, slack, …] (external, via stdio or HTTP)
-
-koda-email/main.rs → standalone MCP server (for external consumers)
 ```
 
-For in-repo capabilities that share the same workspace and release cycle,
-direct library calls are simpler, faster, and more reliable than IPC. The
-standalone MCP binaries keep each domain independently testable and usable
-by external consumers.
+Koda used to ship two first-party in-repo capability crates (`koda-ast` for
+tree-sitter analysis, `koda-email` for IMAP/SMTP). Both were deleted: the
+in-tree consumers were removed in earlier refactors (#611 for AstAnalysis,
+[CHANGELOG L466] for email tools) and no external consumers ever materialized
+for either standalone MCP binary. The graveyard — marked `publish = false`,
+not bundled into any release artifact, with no `~/.config/koda/mcp.json` users
+on record — was a textbook violation of "features built but not used should be
+deleted" (this very document, line 71). Git preserves the work if any of those
+capabilities are revived.
+
+**Future first-party capabilities**: should new in-repo capability crates be
+added that share the workspace and release cycle, prefer direct library calls
+over IPC — simpler, faster, more reliable than stdio JSON-RPC for code that
+ships in the same binary anyway. Reserve standalone MCP server binaries for
+capabilities that have demonstrated demand from external consumers.
 
 **Server language**: Default to Rust (`cargo binstall`) for koda-maintained
 servers. Use Node/Python when critical libraries only exist in those ecosystems.
