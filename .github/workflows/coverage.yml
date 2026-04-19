@@ -209,13 +209,33 @@ jobs:
       # cargo-llvm-cov). Their presence means coverage was never measured
       # there — not a real regression. See #930 for the original false
       # positive that motivated this guard.
+      #
+      # We CANNOT use `continue-on-error: true` on the download itself:
+      # that would swallow genuine artifact-service outages and let us
+      # auto-close real regression issues during a GitHub incident
+      # (false negative, the dangerous direction). Instead we probe the
+      # API first — a 200 with zero matching artifacts is the legitimate
+      # "healthy run, no flake" case; any other API result fails loudly.
+      # See #938.
+      - name: Probe for infra-flake markers
+        id: probe
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          count=$(gh api \
+            "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+            --jq '[.artifacts[] | select(.name | startswith("infra-flake-"))] | length')
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+          echo "Found ${count} infra-flake marker artifact(s) on this run."
+
       - name: Download infra-flake markers
+        if: steps.probe.outputs.count != '0'
         uses: actions/download-artifact@v4
         with:
           pattern: infra-flake-*
           merge-multiple: true
           path: flake-markers
-        continue-on-error: true  # markers absent on healthy runs
 
       - name: Detect infra flake
         id: flake
@@ -244,6 +264,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           COMMIT="${{ github.sha }}"
           SHORT="${COMMIT:0:7}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -283,6 +304,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           EXISTING=$(gh issue list \
             --label "coverage-regression" \
             --state open \
