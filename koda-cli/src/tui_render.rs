@@ -38,7 +38,7 @@
 use crate::ansi_parse::parse_ansi_spans;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::theme;
-use crate::tui_output::{self, BOLD, CYAN, DIM, MAGENTA, RED, TOOL_PREFIX, YELLOW};
+use crate::tui_output::{self, CYAN, DIM, MAGENTA, RED, TOOL_PREFIX, YELLOW};
 use crate::widgets::status_bar::TurnStats;
 use koda_core::engine::EngineEvent;
 use ratatui::{
@@ -180,17 +180,8 @@ impl TuiRenderer {
                 self.pending_tool_args
                     .insert(id.clone(), (name.clone(), args.to_string()));
                 let indent = if is_sub_agent { "  " } else { "" };
-                let (dot_style, detail) = tool_call_styles(&name, &args);
-                tui_output::emit_line(
-                    buffer,
-                    Line::from(vec![
-                        Span::raw(indent),
-                        Span::styled("\u{25cf} ", dot_style),
-                        Span::styled(name, BOLD),
-                        Span::raw(" "),
-                        Span::styled(detail, DIM),
-                    ]),
-                );
+                let line = crate::tool_header::build_header_line(indent, &name, &args);
+                tui_output::emit_line(buffer, line);
             }
             EngineEvent::ToolOutputLine {
                 id,
@@ -374,43 +365,6 @@ impl TuiRenderer {
 
 // ── Helper renderers ──────────────────────────────────
 
-/// Get the dot color and detail string for a tool call banner.
-///
-/// Dot color comes from [`theme::tool_dot`] — single source of truth
-/// shared with `history_render`. Detail formatting is per-tool.
-fn tool_call_styles(name: &str, args: &serde_json::Value) -> (Style, String) {
-    let dot_style = theme::tool_dot(name);
-
-    let detail = match name {
-        "Bash" => args
-            .get("command")
-            .or(args.get("cmd"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        "Read" | "Write" | "Edit" | "Delete" => args
-            .get("file_path")
-            .or(args.get("path"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        "Grep" | "Glob" => args
-            .get("pattern")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        "WebFetch" => args
-            .get("url")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        _ => String::new(),
-    };
-
-    (dot_style, detail)
-}
-
-/// Render tool output with collapsing for long outputs.
 /// Extract file extension from tool call args JSON.
 ///
 /// Walks the keys koda's tools actually use (`file_path` first, then
