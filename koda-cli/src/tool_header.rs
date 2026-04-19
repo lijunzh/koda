@@ -30,14 +30,25 @@
 
 use crate::highlight;
 use crate::theme::{self, BOLD, DIM};
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-/// Maximum visible chars for inline command/detail text in headers.
+/// Maximum visible bytes for inline command/detail text in TUI headers.
 ///
-/// Keeps `git commit -m "huge multiline message…"` from blowing past
-/// the viewport. Matches `history_render`'s prior behavior.
+/// Used by [`truncate_for_header`] which slices on byte boundaries
+/// (cheap, ASCII-correct). Matched in value (not unit) by
+/// [`MAX_DETAIL_CHARS`] which serves the char-based path used by
+/// transcript export. The two constants share a number deliberately
+/// — same visible cap from both rendering paths — but each name
+/// matches the unit its caller actually uses.
+const MAX_DETAIL_BYTES: usize = 120;
+
+/// Maximum visible chars for transcript-export detail text.
+///
+/// Used by [`generic_text`] which truncates via [`truncate_chars`]
+/// (Unicode-correct, slower). Co-equal to [`MAX_DETAIL_BYTES`] in
+/// value so a single tool-arg renders identically in TUI and
+/// transcript exports for the common ASCII case.
 const MAX_DETAIL_CHARS: usize = 120;
 
 /// Build a complete tool-call header line: dot + name + detail spans.
@@ -156,12 +167,7 @@ fn webfetch_detail(args: &Value) -> Vec<Span<'static>> {
     if url.is_empty() {
         return Vec::new();
     }
-    vec![Span::styled(
-        truncate_for_header(&url),
-        Style::new()
-            .fg(ratatui::style::Color::Cyan)
-            .add_modifier(ratatui::style::Modifier::UNDERLINED),
-    )]
+    vec![Span::styled(truncate_for_header(&url), theme::PATH)]
 }
 
 fn generic_detail(args: &Value) -> Vec<Span<'static>> {
@@ -240,19 +246,19 @@ fn first_string(args: &Value, keys: &[&str]) -> Option<String> {
         .find_map(|k| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string()))
 }
 
-/// Truncate a header detail to `MAX_DETAIL_CHARS` with an ellipsis.
+/// Truncate a header detail to `MAX_DETAIL_BYTES` with an ellipsis.
 ///
 /// Operates on **bytes** rather than chars deliberately — koda's tool
 /// args are overwhelmingly ASCII (paths, commands, regexes), and a
 /// byte-safe slice via `.char_indices()` keeps us correct for the rare
 /// multi-byte path without overcomplicating the hot path.
 fn truncate_for_header(s: &str) -> String {
-    if s.len() <= MAX_DETAIL_CHARS {
+    if s.len() <= MAX_DETAIL_BYTES {
         return s.to_string();
     }
     let cut = s
         .char_indices()
-        .take_while(|(i, _)| *i < MAX_DETAIL_CHARS - 1)
+        .take_while(|(i, _)| *i < MAX_DETAIL_BYTES - 1)
         .last()
         .map(|(i, c)| i + c.len_utf8())
         .unwrap_or(0);
@@ -274,6 +280,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Style;
     use serde_json::json;
 
     fn span_texts(spans: &[Span<'static>]) -> Vec<String> {
@@ -418,11 +425,12 @@ mod tests {
 
     #[test]
     fn truncate_caps_long_input_with_ellipsis() {
-        let long = "x".repeat(MAX_DETAIL_CHARS + 50);
+        let long = "x".repeat(MAX_DETAIL_BYTES + 50);
         let out = truncate_for_header(&long);
         assert!(out.ends_with('\u{2026}'));
-        // Stays under cap (chars, not bytes — ellipsis is multi-byte).
-        assert!(out.chars().count() <= MAX_DETAIL_CHARS);
+        // Stays under cap (chars ≤ bytes for ASCII; ellipsis is multi-byte
+        // but the byte-slice cuts strictly below MAX_DETAIL_BYTES first).
+        assert!(out.chars().count() <= MAX_DETAIL_BYTES);
     }
 
     // ── live ↔ history equivalence ───────────────────────────────────

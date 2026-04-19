@@ -206,7 +206,9 @@ pub const WARM_INFO: Style = Style::new().fg(Color::Rgb(198, 165, 106));
 /// (e.g. monochrome themes) — users get a one-flag escape hatch instead
 /// of having to file a bug.
 ///
-/// Checked once at process start (env-var reads aren't free in hot paths).
+/// Memoized after the first call — the env var is read once via a
+/// `OnceLock` so subsequent invocations are a load+branch with zero
+/// allocation. Process restarts pick up env-var changes.
 pub fn syntax_highlight_enabled() -> bool {
     use std::sync::OnceLock;
     static ENABLED: OnceLock<bool> = OnceLock::new();

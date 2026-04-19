@@ -35,6 +35,7 @@
 //! or remove the modifier from [`crate::theme::PATH`], not to ship a
 //! knob.
 
+use crate::theme;
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
@@ -81,13 +82,16 @@ fn link_paths_in_row(buf: &mut Buffer, area: Rect, y: u16, project_root: &Path) 
     }
 }
 
-/// Cell predicate: matches `theme::PATH` exactly (cyan fg + underlined).
+/// Cell predicate: matches the `theme::PATH` style.
 ///
-/// We deliberately match the *style* not the modifier alone so unrelated
-/// underlined text (e.g. markdown emphasis if it ever lands underlined)
-/// doesn't get linkified.
+/// We follow `theme::PATH.fg` (rather than hard-coding `Color::Cyan`) so
+/// future theme changes — dark/light variants, user themes — remain in
+/// sync without anyone having to remember to update this predicate.
+/// The `UNDERLINED` modifier is matched via `contains` so cells that pick
+/// up extra modifiers downstream (e.g. cursor highlight) still linkify.
 fn is_path_cell(cell: &Cell) -> bool {
-    cell.fg == Color::Cyan && cell.modifier.contains(Modifier::UNDERLINED)
+    cell.fg == theme::PATH.fg.unwrap_or(Color::Reset)
+        && cell.modifier.contains(Modifier::UNDERLINED)
 }
 
 /// Resolve the visible text of a path run to a URI suitable for OSC 8.
@@ -134,10 +138,22 @@ fn resolve_uri(text: &str, project_root: &Path) -> Option<String> {
 /// A malicious / malformed upstream value containing `\x1B` or `\x07`
 /// could otherwise break out of the OSC 8 payload and inject arbitrary
 /// terminal control sequences. Same defense codex applies.
+///
+/// Logs at `debug` when stripping happens — these bytes are exotic
+/// (most filesystems disallow them) so any hit is worth seeing in
+/// support traces, even though the runtime defense is silent.
 fn escape_url(raw: &str) -> String {
-    raw.chars()
+    let cleaned: String = raw
+        .chars()
         .filter(|&c| c != '\x1B' && c != '\x07')
-        .collect()
+        .collect();
+    if cleaned.len() != raw.len() {
+        tracing::debug!(
+            stripped = raw.len() - cleaned.len(),
+            "escape_url: stripped ESC/BEL bytes from URI"
+        );
+    }
+    cleaned
 }
 
 /// Replace the symbol of every cell in `[start, end)` of row `y` with
