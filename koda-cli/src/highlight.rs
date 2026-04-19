@@ -176,33 +176,6 @@ impl CodeHighlighter {
     }
 }
 
-/// Pre-highlight an entire file, returning styled spans per line.
-///
-/// Maintains syntect parse state across lines for correct multiline
-/// string / comment / heredoc highlighting. Used by the diff renderer
-/// to look up pre-computed highlights by line number.
-///
-/// Returns one `Vec<Span>` per **source line** (trailing newlines stripped).
-/// Empty input returns an empty vec.
-///
-/// # Example
-///
-/// ```ignore
-/// use koda_cli::highlight::pre_highlight;
-///
-/// // Two Rust lines → two span vecs
-/// let lines = pre_highlight("fn main() {}\nlet x = 42;", "rs");
-/// assert_eq!(lines.len(), 2);
-/// // Each vec contains at least one span
-/// for span_vec in &lines {
-///     assert!(!span_vec.is_empty());
-/// }
-///
-/// // Unknown extension falls back to a single unstyled span per line
-/// let plain = pre_highlight("hello\nworld", "xyz_unknown");
-/// assert_eq!(plain.len(), 2);
-/// assert_eq!(plain[0][0].content.as_ref(), "hello");
-/// ```
 /// Highlight a short snippet inline (no newlines) and return spans.
 ///
 /// Designed for one-row UI surfaces (tool-call headers, status banners)
@@ -279,6 +252,33 @@ mod inline_tests {
     }
 }
 
+/// Pre-highlight an entire file, returning styled spans per line.
+///
+/// Maintains syntect parse state across lines for correct multiline
+/// string / comment / heredoc highlighting. Used by the diff renderer
+/// to look up pre-computed highlights by line number.
+///
+/// Returns one `Vec<Span>` per **source line** (trailing newlines stripped).
+/// Empty input returns an empty vec.
+///
+/// # Example
+///
+/// ```ignore
+/// use koda_cli::highlight::pre_highlight;
+///
+/// // Two Rust lines → two span vecs
+/// let lines = pre_highlight("fn main() {}\nlet x = 42;", "rs");
+/// assert_eq!(lines.len(), 2);
+/// // Each vec contains at least one span
+/// for span_vec in &lines {
+///     assert!(!span_vec.is_empty());
+/// }
+///
+/// // Unknown extension falls back to a single unstyled span per line
+/// let plain = pre_highlight("hello\nworld", "xyz_unknown");
+/// assert_eq!(plain.len(), 2);
+/// assert_eq!(plain[0][0].content.as_ref(), "hello");
+/// ```
 pub fn pre_highlight(content: &str, ext: &str) -> Vec<Vec<ratatui::text::Span<'static>>> {
     // Guardrail: massive files (e.g. minified JS bundles) burn syntect
     // wall-clock without giving the user useful color information — fall
