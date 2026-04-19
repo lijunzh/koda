@@ -524,32 +524,87 @@ fn collapse_blank_lines(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use koda_core::engine::event::EngineEvent;
+    use serde_json::json;
 
-    #[test]
-    fn test_collapse_preserves_single_blank() {
-        assert_eq!(collapse_blank_lines("a\n\nb"), "a\n\nb");
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    /// Drive `TuiRenderer` with a complete Read tool call and return all
+    /// buffer lines for inspection.
+    fn render_read(file_path: &str, content: &str) -> Vec<ratatui::text::Line<'static>> {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        renderer.render_to_buffer(
+            EngineEvent::ToolCallStart {
+                id: "t1".into(),
+                name: "Read".into(),
+                args: json!({ "file_path": file_path }),
+                is_sub_agent: false,
+            },
+            &mut buffer,
+        );
+        renderer.render_to_buffer(
+            EngineEvent::ToolCallResult {
+                id: "t1".into(),
+                name: "Read".into(),
+                output: content.to_string(),
+            },
+            &mut buffer,
+        );
+        buffer.all_lines().cloned().collect()
     }
 
-    #[test]
-    fn test_collapse_many_blanks() {
-        assert_eq!(collapse_blank_lines("a\n\n\n\n\nb"), "a\n\nb");
+    /// Drive `TuiRenderer` with any tool call (List/Glob/Grep/etc) and return
+    /// the full buffer. The `args` value is whatever JSON the tool expects;
+    /// the renderer just forwards it through `extract_file_extension` and the
+    /// per-tool dispatch in `render_tool_output`.
+    fn render_tool(
+        tool_name: &str,
+        args: serde_json::Value,
+        output: &str,
+    ) -> Vec<ratatui::text::Line<'static>> {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        renderer.render_to_buffer(
+            EngineEvent::ToolCallStart {
+                id: "t1".into(),
+                name: tool_name.into(),
+                args,
+                is_sub_agent: false,
+            },
+            &mut buffer,
+        );
+        renderer.render_to_buffer(
+            EngineEvent::ToolCallResult {
+                id: "t1".into(),
+                name: tool_name.into(),
+                output: output.to_string(),
+            },
+            &mut buffer,
+        );
+        buffer.all_lines().cloned().collect()
     }
 
-    #[test]
-    fn test_collapse_no_blanks() {
-        assert_eq!(collapse_blank_lines("a\nb\nc"), "a\nb\nc");
+    /// Return all spans from lines whose *joined text* contains `needle`.
+    fn spans_on_lines_containing(
+        lines: &[ratatui::text::Line<'static>],
+        needle: &str,
+    ) -> Vec<ratatui::text::Span<'static>> {
+        lines
+            .iter()
+            .filter(|line| {
+                let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                joined.contains(needle)
+            })
+            .flat_map(|line| line.spans.iter().cloned())
+            .collect()
     }
 
-    #[test]
-    fn test_collapse_all_blank() {
-        assert_eq!(collapse_blank_lines("\n\n\n\n"), "\n");
-    }
-
-    // ── extract_file_extension ──────────────────────────────────────
+    // ── extract_file_extension ────────────────────────────────────────────────
 
     #[test]
     fn extract_file_extension_handles_file_path_key() {
-        // The bug fix: koda's tools advertise `file_path`, not `path`.
+        // The bug fix: koda’s tools advertise `file_path`, not `path`.
         // Pre-fix, this returned None and silently disabled Read
         // syntax highlighting on every Read call.
         let args = r#"{"file_path": "src/main.rs"}"#;
@@ -572,5 +627,251 @@ mod tests {
     fn extract_file_extension_returns_none_for_extensionless() {
         let args = r#"{"file_path": "Makefile"}"#;
         assert_eq!(extract_file_extension(args), None);
+    }
+
+    // ── Read tool coloring regression tests ───────────────────────────────────
+    // These drive the full TuiRenderer → ScrollBuffer pipeline to confirm that
+    // Read output is actually syntax-highlighted, not rendered flat-white.
+    // Each test seeds a specific extension so a future SyntaxSet regression
+    // fails loudly here rather than silently in the user’s terminal.
+
+    /// Headline regression: Cargo.toml was showing flat white because syntect’s
+    /// default set had no TOML grammar. End-to-end proof it’s now colored.
+    #[test]
+    fn read_toml_produces_multiple_colored_spans() {
+        if !crate::theme::syntax_highlight_enabled() {
+            return;
+        }
+        let lines = render_read(
+            "Cargo.toml",
+            "[package]\nname = \"koda\"\nversion = \"0.2.16\"",
+        );
+        let spans = spans_on_lines_containing(&lines, "[package]");
+        assert!(
+            spans.len() > 2,
+            "[package] line should have multiple colored spans (got {}); \
+             TOML syntax highlighting broken — check two-face dep",
+            spans.len()
+        );
+        // At least one content span must carry a non-default foreground.
+        let colored = spans.iter().any(|s| {
+            s.style
+                .fg
+                .is_some_and(|c| c != ratatui::style::Color::Reset)
+        });
+        assert!(
+            colored,
+            "no colored spans on [package] line — highlighter is a no-op"
+        );
+    }
+
+    /// Rust was working before two-face; ensure the switch didn’t regress it.
+    #[test]
+    fn read_rust_still_produces_colored_spans() {
+        if !crate::theme::syntax_highlight_enabled() {
+            return;
+        }
+        let lines = render_read("src/main.rs", "fn main() {}\nprintln!(\"hello\");");
+        let spans = spans_on_lines_containing(&lines, "fn main");
+        assert!(
+            spans.len() > 2,
+            "`fn main` line should have multiple spans; Rust highlighting broken"
+        );
+    }
+
+    /// TypeScript was silently broken (no grammar in syntect defaults).
+    #[test]
+    fn read_typescript_produces_colored_spans() {
+        if !crate::theme::syntax_highlight_enabled() {
+            return;
+        }
+        let lines = render_read(
+            "index.ts",
+            "interface Foo { bar: string }\nconst x: number = 42;",
+        );
+        let spans = spans_on_lines_containing(&lines, "interface");
+        assert!(
+            spans.len() > 2,
+            "`interface` line should have multiple spans; TypeScript highlighting broken"
+        );
+    }
+
+    /// Unknown extensions must not panic and must render as plain text
+    /// (single content span, not zero spans).
+    #[test]
+    fn read_unknown_extension_falls_back_safely() {
+        let lines = render_read("data.xyz123", "some content here");
+        let spans = spans_on_lines_containing(&lines, "some content");
+        assert!(
+            !spans.is_empty(),
+            "unknown-extension Read must still emit spans (got none)"
+        );
+    }
+
+    /// Extensionless files (Makefile, Dockerfile) must render without panicking.
+    #[test]
+    fn read_extensionless_file_renders_safely() {
+        let lines = render_read("Makefile", ".PHONY: all\nall:\n\techo done");
+        // Just assert we get output lines containing the content.
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            all_text.contains(".PHONY"),
+            "Makefile content missing from output"
+        );
+    }
+
+    // ── Other read-only tools — E2E pipeline coverage ─────────────────────────
+    // List / Glob / Grep have unit tests in tool_output_lines, but those
+    // bypass the dispatch in render_tool_output. These tests catch the
+    // class of bugs where a tool name typo or extension extraction quirk
+    // silently flattens output — same shape as the Read tests above.
+
+    /// List output: directory entries should render with non-default styling
+    /// (bold), proving the dispatch → render_list_line path works end-to-end.
+    #[test]
+    fn list_directory_entries_render_styled() {
+        let lines = render_tool(
+            "List",
+            json!({ "path": "." }),
+            "d src\nd tests\n  Cargo.toml\n  README.md",
+        );
+        // Find the line containing "src" — directory entry.
+        let src_line = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.as_ref() == "src"));
+        let src_line = src_line.expect("src directory entry not in output");
+        let dir_span = src_line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "src")
+            .unwrap();
+        assert!(
+            dir_span
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD),
+            "directory entry should be bold; render_list_line dispatch broken"
+        );
+    }
+
+    /// List output: file entries get extension-bucket coloring (e.g. .toml → yellow).
+    #[test]
+    fn list_file_entries_colored_by_extension() {
+        let lines = render_tool("List", json!({ "path": "." }), "  Cargo.toml\n  src.rs");
+        let toml_line = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.as_ref() == "Cargo.toml"))
+            .expect("Cargo.toml entry not in output");
+        let toml_span = toml_line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "Cargo.toml")
+            .unwrap();
+        assert_eq!(
+            toml_span.style.fg,
+            Some(ratatui::style::Color::Yellow),
+            ".toml file should be yellow (config bucket); style_for_extension dispatch broken"
+        );
+    }
+
+    /// Glob output: file paths get extension-bucket coloring; meta lines dim.
+    #[test]
+    fn glob_paths_colored_by_extension() {
+        let lines = render_tool(
+            "Glob",
+            json!({ "pattern": "**/*.rs" }),
+            "3 files matched:\nsrc/main.rs\nsrc/lib.rs\ntests/it.rs",
+        );
+        let rs_line = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.as_ref() == "src/main.rs"))
+            .expect("src/main.rs not in Glob output");
+        let rs_span = rs_line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "src/main.rs")
+            .unwrap();
+        assert_eq!(
+            rs_span.style.fg,
+            Some(ratatui::style::Color::Green),
+            ".rs file should be green (source bucket); render_glob_line dispatch broken"
+        );
+    }
+
+    /// Grep output: matched substrings inside content render with MATCH_HIT style.
+    #[test]
+    fn grep_pattern_hits_styled_with_match_hit() {
+        let lines = render_tool(
+            "Grep",
+            json!({ "pattern": "TODO", "path": "." }),
+            "src/main.rs:42:    // TODO: refactor this",
+        );
+        // The hit span should carry the MATCH_HIT style (amber + bold).
+        let hit_span = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.as_ref() == "TODO");
+        let hit_span = hit_span.expect("TODO match span missing; Grep dispatch broken");
+        assert!(
+            hit_span
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD),
+            "Grep match should be bold (MATCH_HIT); pattern propagation broken"
+        );
+        assert_eq!(
+            hit_span.style.fg,
+            Some(ratatui::style::Color::Rgb(255, 191, 0)),
+            "Grep match should be amber (MATCH_HIT)"
+        );
+    }
+
+    /// Grep without a pattern (e.g. structured query) still renders path/lineno coloring.
+    #[test]
+    fn grep_path_and_lineno_styled_without_pattern() {
+        let lines = render_tool(
+            "Grep",
+            json!({ "path": "." }),
+            "src/main.rs:42:fn main() {}",
+        );
+        // File path span should be present and styled (cyan).
+        let path_span = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.as_ref() == "src/main.rs");
+        assert!(
+            path_span.is_some(),
+            "Grep file path span missing — render_grep_line dispatch broken"
+        );
+        assert!(
+            path_span.unwrap().style.fg.is_some(),
+            "Grep file path should have a foreground color"
+        );
+    }
+
+    // ── collapse_blank_lines ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_collapse_preserves_single_blank() {
+        assert_eq!(collapse_blank_lines("a\n\nb"), "a\n\nb");
+    }
+
+    #[test]
+    fn test_collapse_many_blanks() {
+        assert_eq!(collapse_blank_lines("a\n\n\n\n\nb"), "a\n\nb");
+    }
+
+    #[test]
+    fn test_collapse_no_blanks() {
+        assert_eq!(collapse_blank_lines("a\nb\nc"), "a\nb\nc");
+    }
+
+    #[test]
+    fn test_collapse_all_blank() {
+        assert_eq!(collapse_blank_lines("\n\n\n\n"), "\n");
     }
 }

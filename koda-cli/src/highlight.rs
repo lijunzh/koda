@@ -1,7 +1,8 @@
-//! Syntax highlighting for code blocks using syntect.
+//! Syntax highlighting for code blocks using syntect + two-face.
 //!
 //! Provides terminal-colored syntax highlighting for code in
-//! fenced markdown code blocks. Uses the same engine as `bat`.
+//! fenced markdown code blocks and Read tool output. Uses the same
+//! engine as `bat` and `codex`.
 //!
 //! ## Architecture
 //!
@@ -18,9 +19,14 @@
 //!
 //! ## Language lookup
 //!
-//! Languages are found by name token (`"rust"`, `"python"`) or by file
-//! extension (`"rs"`, `"py"`). Unknown languages fall back to unstyled
-//! passthrough — no panic.
+//! Languages are found by [`find_syntax`] which tries token, exact name,
+//! case-insensitive name, and file extension lookups. Unknown languages
+//! fall back to unstyled passthrough — no panic.
+//!
+//! `SYNTAX_SET` uses [`two_face::syntax::extra_newlines`] (~250 languages,
+//! same as `bat`/`codex`) instead of syntect's slim default bundle.
+//! Fixes silent no-ops for TOML, TypeScript, Kotlin, Swift, Zig, Lua,
+//! Dockerfile, and ~180 other languages that syntect's defaults omit.
 //!
 //! Syntaxes and themes are loaded once at first use via [`once_cell::sync::Lazy`].
 //! Theme: `base16-ocean.dark` (matches popular terminal palettes).
@@ -28,13 +34,60 @@
 use once_cell::sync::Lazy;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
-use syntect::parsing::SyntaxSet;
+use syntect::parsing::{SyntaxReference, SyntaxSet};
 #[cfg(test)]
 use syntect::util::as_24_bit_terminal_escaped;
 
 /// Lazily loaded syntax definitions and theme.
-static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
+///
+/// `two_face::syntax::extra_newlines()` bundles ~250 languages including TOML,
+/// TypeScript, Kotlin, Swift, Zig, Lua, Dockerfile, Protocol Buffers, and
+/// everything else syntect's slim default set omits. Same grammar pack used
+/// by `bat` and `codex`. Loaded once; cloning the SyntaxSet is not needed.
+static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(two_face::syntax::extra_newlines);
 static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
+
+/// Resolve a language hint to a syntect `SyntaxReference`.
+///
+/// Tries lookups in priority order:
+/// 1. By token (matches `file_extensions` case-insensitively) — fastest path.
+/// 2. By exact syntax name (e.g. `"Rust"`, `"Python"`).
+/// 3. Case-insensitive syntax name (handles `"rust"` → `"Rust"`).
+/// 4. By file extension (raw input treated as extension).
+///
+/// Common LLM-emitted aliases that two-face doesn’t handle automatically
+/// are patched before the lookup chain:
+/// - `csharp` / `c-sharp` → `c#`
+/// - `golang` → `go`
+/// - `python3` → `python`
+/// - `shell` → `bash`
+///
+/// Returns `None` for unknown languages — callers fall back to plain text.
+fn find_syntax(lang: &str) -> Option<&'static SyntaxReference> {
+    let ss = &*SYNTAX_SET;
+    let patched = match lang {
+        "csharp" | "c-sharp" => "c#",
+        "golang" => "go",
+        "python3" => "python",
+        "shell" => "bash",
+        other => other,
+    };
+    if let Some(s) = ss.find_syntax_by_token(patched) {
+        return Some(s);
+    }
+    if let Some(s) = ss.find_syntax_by_name(patched) {
+        return Some(s);
+    }
+    let lower = patched.to_ascii_lowercase();
+    if let Some(s) = ss
+        .syntaxes()
+        .iter()
+        .find(|s| s.name.to_ascii_lowercase() == lower)
+    {
+        return Some(s);
+    }
+    ss.find_syntax_by_extension(lang)
+}
 
 // Guardrails so a Read of a 50 MB minified bundle doesn't peg syntect.
 // Borrowed from codex's `exceeds_highlight_limits` — same numbers, same
@@ -74,15 +127,10 @@ impl CodeHighlighter {
         if !crate::theme::syntax_highlight_enabled() {
             return Self { state: None };
         }
-        let syntax = SYNTAX_SET
-            .find_syntax_by_token(lang)
-            .or_else(|| SYNTAX_SET.find_syntax_by_extension(lang));
-
-        let state = syntax.map(|syn| {
+        let state = find_syntax(lang).map(|syn| {
             let theme = &THEME_SET.themes["base16-ocean.dark"];
             HighlightLines::new(syn, theme)
         });
-
         Self { state }
     }
 
@@ -356,5 +404,82 @@ mod tests {
         for spans in &lines {
             assert_eq!(spans.len(), 1, "expected plain fallback, got highlighted");
         }
+    }
+
+    // ── two-face regression tests ─────────────────────────────────────────
+    // These assert that languages syntect’s default set silently dropped
+    // now resolve correctly after switching to two_face::syntax::extra_newlines.
+    // If any of these fail, the SYNTAX_SET initialiser was rolled back.
+
+    /// The headline regression: `Cargo.toml` was showing flat white because
+    /// syntect defaults have no TOML grammar. This must never regress.
+    #[test]
+    fn toml_resolves_with_two_face() {
+        assert!(
+            find_syntax("toml").is_some(),
+            "TOML syntax missing — two-face dep may have been removed or downgraded"
+        );
+    }
+
+    #[test]
+    fn typescript_resolves_with_two_face() {
+        assert!(find_syntax("ts").is_some(), "TypeScript (.ts) not found");
+        assert!(find_syntax("tsx").is_some(), "TypeScript (.tsx) not found");
+    }
+
+    #[test]
+    fn common_languages_all_resolve() {
+        // Spot-check a cross-section of commonly-read extensions.
+        // Failure here means two-face was swapped out for a slimmer set.
+        let must_resolve = [
+            ("rs", "Rust"),
+            ("py", "Python"),
+            ("js", "JavaScript"),
+            ("ts", "TypeScript"),
+            ("toml", "TOML"),
+            ("json", "JSON"),
+            ("yaml", "YAML"),
+            ("md", "Markdown"),
+            ("sh", "Bash"),
+            ("go", "Go"),
+            ("html", "HTML"),
+            ("css", "CSS"),
+            ("kt", "Kotlin"),
+            ("swift", "Swift"),
+            ("lua", "Lua"),
+            ("proto", "Protobuf"),
+        ];
+        for (ext, name) in must_resolve {
+            assert!(
+                find_syntax(ext).is_some(),
+                "{name} (.{ext}) not found in SYNTAX_SET — two-face may be misconfigured"
+            );
+        }
+    }
+
+    #[test]
+    fn llm_aliases_resolve_via_patching() {
+        // LLMs commonly emit these non-standard language names in code fences.
+        // The patching in find_syntax() must map them to real syntaxes.
+        assert!(find_syntax("golang").is_some(), "golang alias broken");
+        assert!(find_syntax("python3").is_some(), "python3 alias broken");
+        assert!(find_syntax("shell").is_some(), "shell alias broken");
+        assert!(find_syntax("csharp").is_some(), "csharp alias broken");
+        assert!(find_syntax("c-sharp").is_some(), "c-sharp alias broken");
+    }
+
+    #[test]
+    fn toml_produces_colored_spans() {
+        // End-to-end: TOML input through the full highlighter must emit
+        // multiple styled spans (not a single plain Span::raw).
+        if !crate::theme::syntax_highlight_enabled() {
+            return;
+        }
+        let mut h = CodeHighlighter::new("toml");
+        let spans = h.highlight_spans("[package]\nname = \"koda\"");
+        assert!(
+            spans.len() > 1,
+            "TOML should produce multiple colored spans, got: {spans:?}"
+        );
     }
 }
