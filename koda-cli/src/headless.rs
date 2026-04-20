@@ -17,7 +17,6 @@ use koda_core::db::{Database, Role};
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent, EngineSink};
 use koda_core::persistence::Persistence;
 use koda_core::session::KodaSession;
-use koda_core::trust::TrustMode;
 
 use anyhow::Result;
 use std::io::Write;
@@ -44,7 +43,7 @@ pub async fn run_headless(
     agent.rebuild_system_prompt(&config, &[]);
     let agent = Arc::new(agent);
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<koda_core::engine::EngineCommand>(32);
-    let mut session = KodaSession::new(session_id, agent, db, &config, TrustMode::Auto).await;
+    let mut session = KodaSession::new(session_id, agent, db, &config, config.trust).await;
 
     // Process @file references and images
     let processed = input::process_input(&prompt, &project_root);

@@ -276,3 +276,62 @@ mod provider_key_flow {
         assert!(!should_prompt);
     }
 }
+
+/// Regression test for #982: `--mode safe` was silently overridden by a
+/// hardcoded `TrustMode::Auto` at every `KodaSession::new` call site.
+///
+/// We can't cheaply unit-test the headless / server / TUI bootstrap paths
+/// without a real provider, terminal, and database. Instead, this is a
+/// structural test: scan the source files that previously held the hardcoded
+/// `TrustMode::Auto` literal as the 5th argument to `KodaSession::new` and
+/// assert it's gone. The fix should pass `config.trust` (or `state.config.trust`)
+/// instead.
+///
+/// If a future refactor reintroduces the hardcode, this test fails with a
+/// clear diagnostic pointing at the file.
+mod hardcoded_trust_mode_at_session_creation {
+    use std::fs;
+    use std::path::Path;
+
+    fn assert_no_hardcoded_auto_in_session_new(path: &str) {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        // Tests run with CWD = workspace member dir; resolve from there.
+        let full_path = manifest_dir.join("..").join(path);
+        let src = fs::read_to_string(&full_path)
+            .unwrap_or_else(|e| panic!("read {}: {}", full_path.display(), e));
+
+        // Look for `KodaSession::new(...)` blocks containing `TrustMode::Auto`
+        // as one of the args. Multi-line, so scan window-by-window between
+        // the call's `(` and its matching `)` (heuristic: until next bare `)`).
+        let mut idx = 0;
+        while let Some(start) = src[idx..].find("KodaSession::new(") {
+            let abs_start = idx + start;
+            // crude end: first ").await" or ")\n .await" within next 600 chars
+            let window_end = (abs_start + 600).min(src.len());
+            let window = &src[abs_start..window_end];
+            assert!(
+                !window.contains("TrustMode::Auto"),
+                "{}: KodaSession::new(...) call still passes hardcoded TrustMode::Auto. \
+                 Pass `config.trust` (or equivalent) instead. See #982.\n\nWindow:\n{}",
+                path,
+                window
+            );
+            idx = abs_start + "KodaSession::new(".len();
+        }
+    }
+
+    #[test]
+    fn headless_path_does_not_hardcode_auto() {
+        assert_no_hardcoded_auto_in_session_new("koda-cli/src/headless.rs");
+    }
+
+    #[test]
+    fn acp_server_path_does_not_hardcode_auto() {
+        assert_no_hardcoded_auto_in_session_new("koda-cli/src/server.rs");
+    }
+
+    #[test]
+    fn tui_context_path_does_not_hardcode_auto() {
+        assert_no_hardcoded_auto_in_session_new("koda-cli/src/tui_context/mod.rs");
+    }
+}
