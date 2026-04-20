@@ -59,7 +59,11 @@ const READ_ONLY_PREFIXES: &[&str] = &[
     "which ",
     "type ",
     "command -v ",
-    "env",
+    // NOTE: `env` deliberately excluded — it's a command-runner, not
+    // read-only. `env cargo build` and `env FOO=bar rm file` would auto-approve
+    // in Safe mode if listed here. See #970 for the full analysis. Bare `env`
+    // (printing environment variables) now requires approval; `printenv` is
+    // the cleaner read-only alternative and remains in the allowlist.
     "printenv",
     // Version checks
     "rustc --version",
@@ -213,6 +217,23 @@ const DANGER_CHECKS: &[DangerCheck] = &[
     // ── In-place file edits ──────────────────────────────────────────────────
     DangerCheck::CmdFlag("sed", "-i"),
     DangerCheck::CmdFlag("sed", "--in-place"),
+    // ── Find with destructive flags (#970 sweep) ─────────────────────────────
+    // `find` itself is in READ_ONLY_PREFIXES (read-only by default), but
+    // these flags turn it into a deletion / arbitrary command-runner / file
+    // writer. They must force approval.
+    //   -delete           → deletes matched files
+    //   -exec, -execdir   → runs arbitrary command on matched files
+    //   -ok, -okdir       → like -exec but interactive (still risky to auto-approve)
+    //   -fprint, -fprintf → writes list of matches to a file (bypasses Phase 2)
+    //   -fls              → writes ls-style listing to a file
+    DangerCheck::CmdFlag("find", "-delete"),
+    DangerCheck::CmdFlag("find", "-exec"),
+    DangerCheck::CmdFlag("find", "-execdir"),
+    DangerCheck::CmdFlag("find", "-ok"),
+    DangerCheck::CmdFlag("find", "-okdir"),
+    DangerCheck::CmdFlag("find", "-fprint"),
+    DangerCheck::CmdFlag("find", "-fprintf"),
+    DangerCheck::CmdFlag("find", "-fls"),
     // ── Interpreter inline execution (prompt-injection vector) ───────────────
     DangerCheck::CmdFlag("python", "-c"),
     DangerCheck::CmdFlag("python3", "-c"),
@@ -857,6 +878,136 @@ mod tests {
             "cat file | sort | uniq",
             "find . | head -20",
             "git log | grep WIP",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::ReadOnly,
+                "`{cmd}` should still be ReadOnly",
+            );
+        }
+    }
+
+    // env classification (#970)
+
+    /// `env <cmd>` runs `<cmd>` as a subprocess. It must NOT auto-approve in
+    /// Safe mode, regardless of the inner command. Same bug class as #968.
+    #[test]
+    fn test_classify_env_with_inner_command_not_read_only() {
+        for cmd in [
+            "env cargo build",
+            "env make install",
+            "env FOO=bar rm file",
+            "env PATH=/tmp ls /",
+            "env -i bash",
+        ] {
+            assert_ne!(
+                classify_bash_command(cmd),
+                ToolEffect::ReadOnly,
+                "`{cmd}` must NOT be ReadOnly — env runs the inner command",
+            );
+        }
+    }
+
+    /// Bare `env` (which prints environment variables) now requires approval.
+    /// `printenv` is the cleaner read-only alternative.
+    #[test]
+    fn test_classify_bare_env_requires_approval_printenv_does_not() {
+        assert_ne!(
+            classify_bash_command("env"),
+            ToolEffect::ReadOnly,
+            "bare `env` now requires approval (use `printenv` instead)",
+        );
+        assert_eq!(
+            classify_bash_command("printenv"),
+            ToolEffect::ReadOnly,
+            "`printenv` is the read-only alternative",
+        );
+        assert_eq!(
+            classify_bash_command("printenv PATH"),
+            ToolEffect::ReadOnly,
+            "`printenv VAR` reads a single var",
+        );
+    }
+
+    // find with destructive flags (#970 sweep finding)
+
+    /// `find -delete` deletes files. Must force approval even though `find`
+    /// itself is in READ_ONLY_PREFIXES.
+    #[test]
+    fn test_classify_find_delete_is_destructive() {
+        for cmd in [
+            "find . -name '*.tmp' -delete",
+            "find /tmp -delete",
+            "find . -type f -delete",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "`{cmd}` must be Destructive (deletes files)",
+            );
+        }
+    }
+
+    /// `find -exec <cmd>` runs arbitrary commands. Must force approval.
+    #[test]
+    fn test_classify_find_exec_is_destructive() {
+        for cmd in [
+            "find . -name '*.tmp' -exec rm {} ;",
+            "find . -exec touch {} ;",
+            "find . -execdir rm {} +",
+            "find /var/log -exec gzip {} ;",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "`{cmd}` must be Destructive (runs inner command)",
+            );
+        }
+    }
+
+    /// `find -fprint`, `-fprintf`, `-fls` write match results to a file. Must
+    /// force approval since they bypass Phase 2 (no `>` redirect).
+    #[test]
+    fn test_classify_find_file_writing_flags_destructive() {
+        for cmd in [
+            "find . -fprint /tmp/out",
+            "find / -fprintf /tmp/out '%p\\n'",
+            "find . -fls /tmp/out",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "`{cmd}` must be Destructive (writes to file via flag)",
+            );
+        }
+    }
+
+    /// `find -ok` / `-okdir` are the interactive variants of -exec/-execdir.
+    /// Must force approval to avoid the model running them in non-interactive
+    /// contexts where they'd hang.
+    #[test]
+    fn test_classify_find_interactive_exec_flags_destructive() {
+        for cmd in [
+            "find . -name '*.tmp' -ok rm {} ;",
+            "find . -okdir mv {} /tmp ;",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "`{cmd}` must be Destructive",
+            );
+        }
+    }
+
+    /// Read-only `find` invocations stay ReadOnly — no regression.
+    #[test]
+    fn test_classify_find_read_only_still_read_only() {
+        for cmd in [
+            "find .",
+            "find . -name '*.rs'",
+            "find . -type f -size +1M",
+            "find . -newer reference.txt",
+            "find . -mtime -7",
         ] {
             assert_eq!(
                 classify_bash_command(cmd),
