@@ -96,7 +96,10 @@ const READ_ONLY_PREFIXES: &[&str] = &[
     "diff ",
     "jq ",
     "yq ",
-    "xargs ",
+    // NOTE: `xargs` deliberately excluded — it's a command-runner, not a
+    // read-only filter. `xargs rm` would auto-approve in Safe mode if listed
+    // here. See #968 for the discovery and #969 for the broader sweep of
+    // bare-command misclassification fixes.
     "dirname ",
     "basename ",
     "realpath ",
@@ -743,7 +746,8 @@ mod tests {
             "echo hi | awk",
             "echo hi | tr",
             "echo hi | jq",
-            "echo hi | xargs",
+            // NOTE: `echo hi | xargs` removed — fixed in #968 to correctly
+            // classify as LocalMutation (xargs runs the inner command).
             "ls | wc",
             "find . | sort | uniq",
         ];
@@ -803,6 +807,61 @@ mod tests {
                 classify_bash_command(cmd),
                 ToolEffect::ReadOnly,
                 "bare `{cmd}` must not be misclassified as ReadOnly",
+            );
+        }
+    }
+
+    // xargs classification (#968)
+
+    /// `xargs <cmd>` runs `<cmd>` as a subprocess. It must NOT auto-approve in
+    /// Safe mode, regardless of which inner command is invoked. Removing
+    /// `xargs` from READ_ONLY_PREFIXES makes any pipeline with an `xargs`
+    /// segment fall through to LocalMutation.
+    #[test]
+    fn test_classify_xargs_with_destructive_inner_not_read_only() {
+        for cmd in [
+            "ls | xargs rm",
+            "find . -name '*.tmp' | xargs rm",
+            "echo file | xargs rm -rf",
+            "ls | xargs mv -t /tmp",
+            "echo a b c | xargs cp -t /backup",
+        ] {
+            assert_ne!(
+                classify_bash_command(cmd),
+                ToolEffect::ReadOnly,
+                "`{cmd}` must NOT be ReadOnly — xargs runs the inner command",
+            );
+        }
+    }
+
+    /// Even `xargs <read-only-cmd>` should not auto-approve. We can't safely
+    /// inspect the inner command without a real parser, so the conservative
+    /// stance is to require approval for *all* xargs invocations.
+    #[test]
+    fn test_classify_xargs_with_read_only_inner_still_not_auto_approved() {
+        for cmd in ["ls | xargs grep foo", "ls | xargs cat", "ls | xargs wc"] {
+            assert_ne!(
+                classify_bash_command(cmd),
+                ToolEffect::ReadOnly,
+                "`{cmd}` should require approval — xargs is opaque to the classifier",
+            );
+        }
+    }
+
+    /// Removing `xargs` from the prefix list must not regress unrelated
+    /// read-only pipelines.
+    #[test]
+    fn test_classify_non_xargs_pipelines_still_read_only() {
+        for cmd in [
+            "ls | grep foo",
+            "cat file | sort | uniq",
+            "find . | head -20",
+            "git log | grep WIP",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::ReadOnly,
+                "`{cmd}` should still be ReadOnly",
             );
         }
     }
