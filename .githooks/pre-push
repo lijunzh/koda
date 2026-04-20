@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
-# .githooks/pre-push — fast local sanity check before pushing.
+# .githooks/pre-push — minimal local sanity check before pushing.
 #
-# Philosophy: catch trivial mistakes (typos, formatting) that would
-# fail CI in 60+ minutes and block a push for nothing. Everything
-# else — full test suite, feature-gated builds, integration tests —
-# runs in CI on both ubuntu-latest and macos-latest. Trust CI.
+# Philosophy: catch the ONE failure mode that's both (a) cheap to verify
+# locally and (b) maximally embarrassing to ship to CI — formatting.
+# Everything else (clippy, check, semver, tests, audit, docs) runs as
+# parallel jobs in CI with sub-2-minute granular feedback. Trust CI.
+#
+# History: this hook used to also run `cargo clippy --workspace`, costing
+# ~50-90s per push. Across a representative sample of pushes, clippy
+# locally caught 0 issues vs ~5 minutes of cumulative wait. Net negative
+# on dev time once CI was split into per-tool jobs (see PR #979) where
+# each lint failure surfaces as its own red label in <2 min — without
+# spinning up your laptop fans.
 #
 # Skip with `git push --no-verify` if you need to push WIP.
 #
 # One-time setup (per clone):
 #   git config core.hooksPath .githooks
 #
-# For comprehensive pre-PR validation (the old behavior), run:
+# For comprehensive pre-PR validation (full clippy + tests + audit), run:
 #   ./scripts/preflight.sh
 
 set -euo pipefail
@@ -25,31 +32,15 @@ ok()   { echo -e "${GREEN}✓${NC} $*"; }
 fail() { echo -e "${RED}✗${NC} $*"; }
 info() { echo -e "${YELLOW}→${NC} $*"; }
 
-info "Running pre-push checks (skip with --no-verify)..."
-echo
+info "Running pre-push fmt check (skip with --no-verify)..."
 
 # --- Format ------------------------------------------------------------------
-# Instant, and a fmt failure in CI is the most annoying possible reason
-# to wait an hour for a re-run.
-info "cargo fmt --check"
+# Instant (~1s), and a fmt failure in CI is the most annoying possible reason
+# to wait for a re-run. This is the entire hook now — clippy/check/test all
+# run in parallel CI jobs with their own granular pass/fail labels.
 if cargo fmt --all --check; then
-    ok "fmt clean"
+    ok "fmt clean — pushing. (clippy + tests + semver run in CI)"
 else
     fail "fmt: run 'cargo fmt --all' to fix"
     exit 1
 fi
-
-# --- Clippy ------------------------------------------------------------------
-# --all-targets is essentially free on warm cache (~1.5s) thanks to
-# incremental compile, and it covers the user-facing `koda` CLI binary
-# that --lib --tests would skip. Don't be clever about scoping this down.
-info "cargo clippy"
-if cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings; then
-    ok "clippy clean"
-else
-    fail "clippy: fix the warnings above"
-    exit 1
-fi
-
-echo
-ok "Pre-push checks passed. Full test suite runs in CI."
