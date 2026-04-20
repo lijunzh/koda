@@ -6,6 +6,85 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.17] - 2026-04-19
+
+Safety release. Closes five active classifier-bypass bugs in the bash command
+classifier — four of which were silently auto-approving destructive operations
+in Safe mode. The classifier now correctly handles bare pipeline tails,
+command-runners (xargs, env), find with destructive flags, subshells, and
+process substitution. No `koda-core` API changes — patch-compatible with
+v0.2.16.
+
+### Fixed
+
+- **Bare pipeline tails now auto-approve** (#944). Pipelines ending in a bare
+  read-only command like `grep foo *.rs | sort`, `find . | wc`,
+  `cat file | uniq` were misclassified as `LocalMutation` and prompted for
+  approval in Safe mode, even though every segment is in the read-only
+  allowlist. Root cause was the `READ_ONLY_PREFIXES` matcher's two-branch
+  design where the trailing-space convention (e.g. `"sort "`) only matched
+  commands followed by space — not bare commands at end of pipeline.
+  Unified into single-branch matcher; substring false-positives still rejected.
+
+- **`xargs <cmd>` no longer auto-approves in Safe mode** (#968). `xargs` was
+  in `READ_ONLY_PREFIXES`, so `ls | xargs rm`, `find . | xargs mv`, etc.
+  would auto-approve without confirmation. `xargs` is fundamentally a
+  command-runner, not a read-only filter. Removed from allowlist; any
+  `xargs <cmd>` now requires approval. **Real Safe-mode escape hatch
+  closed** — `rm -rf` in raw text was caught by Phase 1 patterns, but
+  `xargs rm` evaded it because `rm` wasn't directly in the command line.
+
+- **`env <cmd>` no longer auto-approves in Safe mode** (#970). Same bug
+  class as xargs. `env cargo build`, `env FOO=bar rm file`,
+  `env make install` all auto-approved because `env` was in
+  `READ_ONLY_PREFIXES`. Removed from allowlist; bare `env` now requires
+  approval too — use `printenv` for read-only environment variable inspection.
+
+- **`find` with destructive flags now classified as Destructive** (#970
+  sweep). Eight flags that turn `find` into a deletion / command-runner /
+  file-writer: `-delete`, `-exec`, `-execdir`, `-ok`, `-okdir`, `-fprint`,
+  `-fprintf`, `-fls`. Previously all auto-approved because `find ` is in
+  the read-only prefix list. Now each flag forces approval via dedicated
+  `DangerCheck::CmdFlag` entries. Plain `find . -name '*.rs'` etc. stays
+  read-only.
+
+- **Subshells `(rm -rf /)` and command groups `{ rm; }` correctly classified
+  as Destructive** (#972). Previously `(rm -rf /tmp/x)` was `LocalMutation`
+  (still asks in Safe mode but auto-approves in Auto/YOLO mode) because the
+  leading `(` made the `rm` not appear at token index 0. Now strips
+  outermost subshell/group brackets in `classify_segment` so the inner
+  command is classified correctly. Read-only inner commands like `(ls -la)`
+  stay read-only.
+
+- **Process substitution `<(cmd)` / `>(cmd)` no longer hides destructive
+  commands** (#973 — **CRITICAL**). `cat <(rm /tmp/x)` was classified as
+  `ReadOnly` because shlex tokenises `<(rm` as a single literal token,
+  hiding the `rm` from danger checks. **Real Safe-mode escape hatch
+  closed** — a model could compose `cat <(rm tracked-file)` and koda would
+  auto-approve it. Added `<(` and `>(` to `RAW_DANGER_PATTERNS` to match
+  existing handling of `$(`. Quoted occurrences (`echo '<(...)'`) stay safe
+  via existing quote-stripping.
+
+### Internal
+
+- **Bash classifier hardened against entire bug class.** Added 20+ new test
+  cases across the `bash_safety` module covering: bare pipeline tails,
+  command-runner allowlist gaps, find destructive flags, subshells, brace
+  groups, process substitution, mixed pipelines containing destructive
+  segments, and quoting boundaries. Total `bash_safety` tests went from
+  11 → 35.
+
+- **Five-PR investigation cascade.** Started from one user bug report
+  (#944), each PR's tests surfaced the next bug:
+  - #944 → PR #969 → surfaced #968 (xargs)
+  - #968 → PR #971 → surfaced #970 (env)
+  - #970 → PR #974 (env + find sweep) → surfaced #972 + #973
+  - #972 + #973 → PR #975 (this release's cap)
+
+  The cascade ended naturally — PR #975's broader test coverage didn't
+  surface new gaps. Each linked GitHub issue documents the discovery,
+  severity, repro, suggested fix, and test plan.
+
 ## [0.2.16] - 2026-04-19
 
 UX-focused release. The TUI now renders syntax highlighting for ~250

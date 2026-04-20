@@ -1,6 +1,6 @@
 [package]
 name = "koda-cli"
-version = "0.2.16"
+version = "0.2.17"
 edition = "2024"
 description = "A high-performance AI coding agent for macOS and Linux"
 license = "MIT"
