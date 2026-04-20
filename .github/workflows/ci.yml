@@ -18,7 +18,94 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
 
+# ── Job topology ─────────────────────────────────────────────────────────────
+#
+# Each job has ONE responsibility (Zen of Python: "There should be one — and
+# preferably only one — obvious way to do it.") so PR check labels surface
+# exactly what broke without grepping the log:
+#
+#   fmt     → formatting
+#   clippy  → lints + compile WITH test-support features (full lint surface)
+#   check   → compile sanity WITHOUT features (what crates.io users see)
+#   semver  → public API stability for koda-core (the only published lib crate)
+#   test    → behaviour, matrix on (ubuntu, macos)
+#   doc     → doc compile + intra-doc links + -Dwarnings
+#   audit   → dependency vulnerabilities
+#
+# All jobs run in parallel; wall-clock is gated by the slowest (test ≈ 3min).
+#
+# Why both `clippy` and `check`? They run with different feature sets:
+#   - clippy enables `koda-core/test-support` (covers the full code surface)
+#   - check uses no features (validates the crates.io shape)
+# This works only because koda-core has zero `#[cfg(not(feature = "..."))]`
+# code today. If that changes, clippy will stop covering the no-features
+# path and you'll want a second clippy run with --no-default-features.
+
 jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: rustfmt
+      # No rust-cache — fmt doesn't compile anything. Skipping cache saves
+      # the ~10s setup overhead and keeps the job at ~30s end-to-end.
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+        with:
+          shared-key: clippy-Linux
+      - run: cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings
+
+  check:
+    name: Check (no features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+        with:
+          shared-key: check-Linux
+      # Catches cfg-gated items invisible behind feature flags. This is the
+      # crates.io consumer build — koda-core ships without test-support.
+      - run: cargo check --workspace --all-targets
+
+  semver:
+    name: SemVer (koda-core)
+    runs-on: ubuntu-latest
+    # ADVISORY at first: continue-on-error keeps this from blocking PRs
+    # while we observe its output across a few real changes. Once we've
+    # confirmed it's not flagging false positives on koda-core's API
+    # surface, flip continue-on-error to false and add it to the branch
+    # protection required-checks list.
+    #
+    # Only the published library crate is checked. koda-cli is a binary
+    # (no API contract) and koda-test-utils is unpublished. Adding more
+    # crates later is a one-line change in `package`.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+        with:
+          shared-key: semver-Linux
+      # The official action handles tool install, baseline fetch, and the
+      # current==latest edge case (it'll skip the check and report a hint
+      # rather than fail noisily).
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: koda-core
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -29,24 +116,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
         with:
           shared-key: ci-${{ runner.os }}
-      # Lint steps run only on Linux to avoid duplicate noise.
-      # If macOS-specific code triggers a lint that Linux misses, the
-      # platform-specific clippy/check in release.yml still catches it.
-      - name: Format
-        if: runner.os == 'Linux'
-        run: cargo fmt --all --check
-      - name: Clippy
-        if: runner.os == 'Linux'
-        run: cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings
-      - name: Check (no features)
-        if: runner.os == 'Linux'
-        # Catches cfg-gated items invisible behind feature flags.
-        run: cargo check --workspace --all-targets
       - name: Set up Linux sandbox (bubblewrap)
         if: runner.os == 'Linux'
         run: |
