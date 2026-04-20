@@ -212,6 +212,54 @@ async fn dangerous_rm_rf_is_flagged() {
 }
 
 #[tokio::test]
+async fn write_to_tmp_succeeds() {
+    // Regression test for #947: the in-process file-tool gate was rejecting
+    // any path outside `project_root` — including /tmp — even though the
+    // kernel sandbox explicitly permits writes there.  This test exercises
+    // the full engine path (Write tool → validate → safe_resolve_path) to
+    // confirm tempdir writes now succeed without ad-hoc shell workarounds.
+    let env = Env::new().await;
+    env.insert_user_message("stage a scratch file").await;
+
+    // Unique filename so parallel test runs don't collide on /tmp.
+    let scratch = format!(
+        "/tmp/koda-test-{}-{}.txt",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "Write",
+            serde_json::json!({
+                "file_path": scratch,
+                "content": "scratch content"
+            }),
+        ),
+        MockResponse::Text("Wrote it.".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    let output = find_tool_output(&events, "Write").expect("Write tool must produce output");
+    assert!(
+        !output.contains("outside the project root")
+            && !output.contains("denied")
+            && !output.contains("Invalid path"),
+        "writing to /tmp must succeed (#947); got: {output}"
+    );
+
+    // Belt-and-suspenders: the file should actually exist on disk.
+    assert!(
+        std::path::Path::new(&scratch).exists(),
+        "scratch file at {scratch} should have been created"
+    );
+    let _ = std::fs::remove_file(&scratch);
+}
+
+#[tokio::test]
 async fn path_traversal_in_write_is_blocked() {
     let env = Env::new().await;
     env.insert_user_message("write outside sandbox").await;
@@ -220,7 +268,11 @@ async fn path_traversal_in_write_is_blocked() {
         MockResponse::tool_call(
             "Write",
             serde_json::json!({
-                "file_path": "../../../tmp/evil.txt",
+                // Traverse to /etc — a still-denied system path. (Pre-#947 this
+                // test used `/tmp/evil.txt`, but tempdirs are now intentionally
+                // writable, so the traversal must land somewhere truly off-limits
+                // to actually exercise the path-escape gate.)
+                "file_path": "../../../etc/evil.txt",
                 "content": "malicious"
             }),
         ),

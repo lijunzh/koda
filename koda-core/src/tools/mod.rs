@@ -735,7 +735,7 @@ impl ToolRegistry {
 /// Works for both existing and non-existing files (no `canonicalize!`).
 /// Relative paths are joined to `project_root`; absolute paths must
 /// still be within `project_root` **or** under an allowed tempdir
-/// (see [`is_allowed_write_root`]).
+/// (`/tmp`, `/private/tmp`, `/var/tmp`, or `$TMPDIR`).
 ///
 /// # Examples
 ///
