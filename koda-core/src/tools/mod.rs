@@ -734,7 +734,8 @@ impl ToolRegistry {
 ///
 /// Works for both existing and non-existing files (no `canonicalize!`).
 /// Relative paths are joined to `project_root`; absolute paths must
-/// still be within `project_root`.
+/// still be within `project_root` **or** under an allowed tempdir
+/// (see [`is_allowed_write_root`]).
 ///
 /// # Examples
 ///
@@ -750,6 +751,9 @@ impl ToolRegistry {
 ///
 /// // Traversal is blocked
 /// assert!(safe_resolve_path(root, "../../etc/passwd").is_err());
+///
+/// // Tempdirs are allowed (matches the kernel sandbox policy)
+/// assert!(safe_resolve_path(root, "/tmp/scratch.txt").is_ok());
 /// ```
 pub fn safe_resolve_path(project_root: &Path, requested: &str) -> Result<PathBuf> {
     // NOTE: used only for Write / Edit / Delete.  Read-only tools call
@@ -763,20 +767,65 @@ pub fn safe_resolve_path(project_root: &Path, requested: &str) -> Result<PathBuf
         project_root.join(requested_path).clean()
     };
 
-    // Security check: must be within project root.
+    // Security check: must be within project root OR an allowed tempdir.
     // Only Write / Edit / Delete are gated here — reads are unrestricted
     // (see resolve_path_unrestricted and docs/src/sandbox.md).
-    if !resolved.starts_with(project_root) {
+    //
+    // The tempdir allow-list keeps in-process policy in sync with the
+    // kernel sandbox (Seatbelt on macOS, bwrap on Linux), which already
+    // permits writes to /tmp + cache dirs. Pre-fix this layer was the
+    // outlier (#947): `bash -c 'cat > /tmp/x'` succeeded but `Write /tmp/x`
+    // was rejected, blocking common scratch-file workflows.
+    if !resolved.starts_with(project_root) && !is_allowed_write_root(&resolved) {
         anyhow::bail!(
-            "Path {requested:?} is outside the project root ({project_root:?}). \
-             Write, Edit, and Delete are restricted to the project directory to \
-             prevent accidental modification of files outside the project. \
-             Tell the user: to write outside the project, restart koda from a \
-             parent directory that contains both paths."
+            "Path {requested:?} is outside the project root ({project_root:?}) \
+             and not under a writable tempdir (/tmp, /var/tmp, $TMPDIR). \
+             Write, Edit, and Delete are restricted to the project directory \
+             and tempdirs to prevent accidental modification of files \
+             elsewhere. Tell the user: to write outside these locations, \
+             restart koda from a parent directory that contains both paths."
+        );
+    }
+
+    // Defense in depth: even within an allowed tempdir, never let writes
+    // touch koda's own credential store. (`is_fully_denied` matches the
+    // path against the credential-config denylist used by the read-only
+    // tools, keeping all three perimeters — read, write, sandbox — in sync.)
+    if crate::sandbox::is_fully_denied(&resolved) {
+        anyhow::bail!(
+            "Path {requested:?} is denied: this path contains koda's \
+             internal secrets and cannot be modified by tool calls."
         );
     }
 
     Ok(resolved)
+}
+
+/// Returns true if `path` lives under a system tempdir that the kernel
+/// sandbox (Seatbelt / bwrap) already permits writes to.
+///
+/// This intentionally mirrors the `(subpath "/tmp")` and
+/// `(subpath "/private/tmp")` allow rules in `sandbox.rs` so the in-process
+/// file tools accept the same set of paths as `bash -c 'cat > ...'`.
+///
+/// The check is logical (no `canonicalize`) to match `safe_resolve_path`'s
+/// behaviour for non-existing files. The kernel sandbox is the real enforcer
+/// at runtime; this helper is the policy-symmetry layer.
+fn is_allowed_write_root(path: &Path) -> bool {
+    // Hard-coded tempdir paths that the kernel sandbox always allows.
+    // `/private/tmp` is macOS's realpath of `/tmp` (which is a symlink).
+    const TEMPDIR_PREFIXES: &[&str] = &["/tmp", "/private/tmp", "/var/tmp"];
+    if TEMPDIR_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+    {
+        return true;
+    }
+
+    // Per-user $TMPDIR (macOS: /var/folders/.../T/, Linux: usually /tmp).
+    // Resolved at call time so test environments overriding TMPDIR
+    // are honoured. `temp_dir()` is infallible — falls back to /tmp on Unix.
+    path.starts_with(std::env::temp_dir())
 }
 
 /// Normalise a path without enforcing any scope restriction.
@@ -923,6 +972,92 @@ mod tests {
             err.to_string().contains("denied"),
             "expected 'denied' in error, got: {err}"
         );
+    }
+
+    // ── #947: writes to tempdirs ASCII─ART─ ─────────────────────────
+    //
+    // The kernel sandbox (Seatbelt / bwrap) explicitly permits writes to
+    // /tmp + cache dirs.  Pre-fix, `safe_resolve_path` rejected absolute
+    // paths outside `project_root`, so `bash -c 'cat > /tmp/x'` succeeded
+    // but `Write /tmp/x` failed — forcing models into shell heredoc
+    // workarounds that often quote-escape badly.  These tests lock in the
+    // symmetry between the two perimeters.
+
+    #[test]
+    fn write_path_allows_tmp() {
+        let p = safe_resolve_path(&root(), "/tmp/koda-scratch.txt").unwrap();
+        assert_eq!(p, PathBuf::from("/tmp/koda-scratch.txt"));
+    }
+
+    #[test]
+    fn write_path_allows_private_tmp_macos_realpath() {
+        // macOS resolves /tmp → /private/tmp via a symlink. Some tools (`find`,
+        // `realpath`) emit the realpath form, so absolute paths beginning
+        // with /private/tmp must also be accepted.
+        let p = safe_resolve_path(&root(), "/private/tmp/koda-scratch.txt").unwrap();
+        assert_eq!(p, PathBuf::from("/private/tmp/koda-scratch.txt"));
+    }
+
+    #[test]
+    fn write_path_allows_var_tmp() {
+        let p = safe_resolve_path(&root(), "/var/tmp/koda-scratch.txt").unwrap();
+        assert_eq!(p, PathBuf::from("/var/tmp/koda-scratch.txt"));
+    }
+
+    #[test]
+    fn write_path_allows_per_user_tmpdir() {
+        // Whatever `std::env::temp_dir()` returns on this host — macOS gives
+        // /var/folders/.../T/, Linux usually /tmp.  Either way it's writable.
+        let tmpdir = std::env::temp_dir();
+        let target = tmpdir.join("koda-scratch.txt");
+        let p = safe_resolve_path(&root(), target.to_str().unwrap()).unwrap();
+        assert_eq!(p, target.clean());
+    }
+
+    #[test]
+    fn write_path_blocks_etc_hosts() {
+        // System config dirs stay denied — only tempdirs are added.
+        let err = safe_resolve_path(&root(), "/etc/hosts").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("outside the project root"),
+            "system paths must still be rejected; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn write_path_blocks_ssh_authorized_keys() {
+        // Credential dirs in $HOME stay denied — they're outside both
+        // project_root and any tempdir, so the existing perimeter holds.
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".into());
+        let target = format!("{home}/.ssh/authorized_keys");
+        assert!(
+            safe_resolve_path(&root(), &target).is_err(),
+            "~/.ssh writes must remain blocked"
+        );
+    }
+
+    #[test]
+    fn write_path_blocks_koda_db_even_via_tmp_traversal() {
+        // Defense in depth: even if a model crafts a path that lands in a
+        // tempdir but cleans into koda's own credential store, `is_fully_denied`
+        // catches it. Constructed path: `/tmp/../<home>/.config/koda/db/x`
+        // cleans to `<home>/.config/koda/db/x` — NOT a tempdir, NOT project,
+        // hits the standard "outside the project root" path. So this is
+        // already covered by the primary check; this test pins it down.
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".into());
+        let target = format!("/tmp/../{home}/.config/koda/db/koda.db");
+        assert!(
+            safe_resolve_path(&root(), &target).is_err(),
+            "traversal out of /tmp must not bypass the gate"
+        );
+    }
+
+    #[test]
+    fn write_path_traversal_inside_tmp_stays_in_tmp() {
+        // /tmp/foo/../bar cleans to /tmp/bar — still in /tmp, still allowed.
+        let p = safe_resolve_path(&root(), "/tmp/foo/../bar").unwrap();
+        assert_eq!(p, PathBuf::from("/tmp/bar"));
     }
 }
 
