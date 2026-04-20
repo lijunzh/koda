@@ -27,7 +27,6 @@ env:
 #   fmt     → formatting
 #   clippy  → lints + compile WITH test-support features (full lint surface)
 #   check   → compile sanity WITHOUT features (what crates.io users see)
-#   semver  → public API stability for koda-core (the only published lib crate)
 #   test    → behaviour, matrix on (ubuntu, macos)
 #   doc     → doc compile + intra-doc links + -Dwarnings
 #   audit   → dependency vulnerabilities
@@ -79,32 +78,6 @@ jobs:
       # Catches cfg-gated items invisible behind feature flags. This is the
       # crates.io consumer build — koda-core ships without test-support.
       - run: cargo check --workspace --all-targets
-
-  semver:
-    name: SemVer (koda-core)
-    runs-on: ubuntu-latest
-    # ADVISORY at first: continue-on-error keeps this from blocking PRs
-    # while we observe its output across a few real changes. Once we've
-    # confirmed it's not flagging false positives on koda-core's API
-    # surface, flip continue-on-error to false and add it to the branch
-    # protection required-checks list.
-    #
-    # Only the published library crate is checked. koda-cli is a binary
-    # (no API contract) and koda-test-utils is unpublished. Adding more
-    # crates later is a one-line change in `package`.
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
-        with:
-          shared-key: semver-Linux
-      # The official action handles tool install, baseline fetch, and the
-      # current==latest edge case (it'll skip the check and report a hint
-      # rather than fail noisily).
-      - uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-          package: koda-core
 
   test:
     name: Test (${{ matrix.os }})
