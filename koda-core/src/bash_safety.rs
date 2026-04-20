@@ -401,15 +401,23 @@ fn has_write_side_effect(command: &str) -> bool {
 // ── Public helpers (also used by bash_path_lint) ──────────────────────────────
 
 /// Check if a segment matches any entry in a prefix list.
+///
+/// Each prefix is treated as a bare command (or command head). A trailing space
+/// in the prefix is **decorative only** — historically used to flag entries that
+/// 'normally take an argument' — but the matcher always accepts:
+///
+/// 1. exact match (e.g. bare `sort` at end of `grep ... | sort`)
+/// 2. match followed by a space (e.g. `sort -u`)
+/// 3. match followed by a tab
+///
+/// This avoids substring false-positives like `sortfoo` matching `sort`, while
+/// correctly classifying bare invocations of stdin-consuming filters (#944).
 fn matches_prefix_list(seg: &str, prefixes: &[&str]) -> bool {
     for prefix in prefixes {
-        if prefix.ends_with(' ') {
-            if seg.starts_with(prefix) {
-                return true;
-            }
-        } else if seg == *prefix
-            || seg.starts_with(&format!("{prefix} "))
-            || seg.starts_with(&format!("{prefix}\t"))
+        let bare = prefix.trim_end();
+        if seg == bare
+            || seg.starts_with(&format!("{bare} "))
+            || seg.starts_with(&format!("{bare}\t"))
         {
             return true;
         }
@@ -667,5 +675,135 @@ mod tests {
     fn test_strip_env_vars_basic() {
         assert_eq!(strip_env_vars("FOO=bar cargo build"), "cargo build");
         assert_eq!(strip_env_vars("ls -la"), "ls -la");
+    }
+
+    // matches_prefix_list
+
+    /// Bare commands at the end of a pipeline must match prefixes that
+    /// historically used a trailing-space convention (#944 regression test).
+    #[test]
+    fn test_matches_prefix_list_bare_command() {
+        let prefixes = &["sort ", "wc ", "uniq ", "cat ", "grep "];
+        for cmd in ["sort", "wc", "uniq", "cat", "grep"] {
+            assert!(
+                matches_prefix_list(cmd, prefixes),
+                "bare `{cmd}` should match the prefix list"
+            );
+        }
+    }
+
+    /// With-argument forms must still match (no regression).
+    #[test]
+    fn test_matches_prefix_list_with_args() {
+        let prefixes = &["sort ", "wc ", "grep "];
+        for cmd in ["sort -u", "wc -l", "grep -i foo"] {
+            assert!(matches_prefix_list(cmd, prefixes), "`{cmd}` should match");
+        }
+    }
+
+    /// Tab separator (rare but legal) still matches.
+    #[test]
+    fn test_matches_prefix_list_tab_separator() {
+        let prefixes = &["sort "];
+        assert!(matches_prefix_list("sort\t-u", prefixes));
+    }
+
+    /// Substring false-positives are still rejected (the original purpose of
+    /// the trailing-space convention).
+    #[test]
+    fn test_matches_prefix_list_no_substring_false_positive() {
+        let prefixes = &["sort ", "cat ", "ls"];
+        for cmd in ["sortfoo", "catalogue", "lsof", "sortir"] {
+            assert!(
+                !matches_prefix_list(cmd, prefixes),
+                "`{cmd}` must not match (substring false-positive)"
+            );
+        }
+    }
+
+    // classify_bash_command (#944)
+
+    /// Bare read-only commands at the end of a pipeline must auto-approve.
+    /// Repro table from #944 plus a sweep of common stdin-consuming filters.
+    #[test]
+    fn test_classify_bare_pipeline_tail_is_read_only() {
+        let cases = [
+            // From #944 repro table:
+            "sort",
+            "ls | sort",
+            "echo hi | wc",
+            "cat file | uniq",
+            // Real-world example from the bug report:
+            "grep -c \"^pub fn find_matches\" src/properties/*.rs | sort",
+            // Other common bare stdin filters:
+            "echo hi | cat",
+            "echo hi | head",
+            "echo hi | tail",
+            "echo hi | sed",
+            "echo hi | awk",
+            "echo hi | tr",
+            "echo hi | jq",
+            "echo hi | xargs",
+            "ls | wc",
+            "find . | sort | uniq",
+        ];
+        for cmd in cases {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::ReadOnly,
+                "`{cmd}` should classify as ReadOnly",
+            );
+        }
+    }
+
+    /// With-argument variants must still classify as ReadOnly (no regression).
+    #[test]
+    fn test_classify_pipeline_tail_with_args_still_read_only() {
+        let cases = [
+            "ls | sort -u",
+            "echo hi | wc -l",
+            "cat file | uniq -c",
+            "find . | head -20",
+            "git log | grep WIP",
+        ];
+        for cmd in cases {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::ReadOnly,
+                "`{cmd}` should classify as ReadOnly",
+            );
+        }
+    }
+
+    /// Mutating commands at the pipeline tail must NOT be misclassified as
+    /// ReadOnly by the broader matcher.
+    #[test]
+    fn test_classify_mutating_pipeline_tail_not_read_only() {
+        // `tee` writes — caught by has_write_side_effect (Phase 2),
+        // not segment classification, but verify the end-to-end result.
+        for cmd in [
+            "echo content | tee output.txt",
+            "echo content | tee",
+            "ls > files.txt",
+        ] {
+            assert_ne!(
+                classify_bash_command(cmd),
+                ToolEffect::ReadOnly,
+                "`{cmd}` must not be ReadOnly (has write side effect)",
+            );
+        }
+    }
+
+    /// Bare commands NOT in the read-only list still classify as
+    /// LocalMutation — the matcher widening doesn't leak unrelated commands.
+    #[test]
+    fn test_classify_bare_unknown_command_not_read_only() {
+        for cmd in ["cargo", "npm", "make", "docker"] {
+            assert_ne!(
+                classify_bash_command(cmd),
+                ToolEffect::ReadOnly,
+                "bare `{cmd}` must not be misclassified as ReadOnly",
+            );
+        }
     }
 }
