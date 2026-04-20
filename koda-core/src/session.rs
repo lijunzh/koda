@@ -72,9 +72,15 @@ impl KodaSession {
         // Wire db+session into ToolRegistry for RecallContext
         agent.tools.set_session(Arc::new(db.clone()), id.clone());
 
-        // Start MCP servers from DB config (#662)
-        // TODO(#662 Phase 2): Move MCP manager to app-level ownership so
-        // servers are shared across sessions and not duplicated on resume.
+        // Start MCP servers from DB config (#662).
+        //
+        // Per-session ownership is intentional, not pending refactor (see #959).
+        // Codex (closest peer agent) chose the same shape: per-session
+        // `McpConnectionManager` in `SessionServices`, not app-level. App-level
+        // ownership would complicate config-change semantics and lifecycle
+        // management for an unmeasured startup-cost optimization. Reopen #959
+        // if a real bug surfaces (e.g. multi-session resume becomes slow with
+        // many configured servers).
         match crate::mcp::McpManager::start_from_db(&db).await {
             Ok(manager) => {
                 if !manager.is_empty() {
