@@ -960,6 +960,11 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                     ),
                 });
             }
+            // `last_prompt_tokens` (this iteration's prompt size) drives the
+            // context-window % meter: it reflects current context occupancy.
+            // `total_prompt_tokens` (cumulative across iterations) drives the
+            // Footer billing line. Conflating them caused #946 — see below.
+            let last_prompt_tokens = usage.prompt_tokens;
             total_prompt_tokens += usage.prompt_tokens;
             total_completion_tokens += usage.completion_tokens;
             total_cache_read_tokens += usage.cache_read_tokens;
@@ -988,9 +993,15 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             // underreports for code, tool results, and JSON payloads.
             // This corrective event fires once per completed turn, after all
             // tool calls resolve, so the status bar reflects real usage.
-            crate::context::update(total_prompt_tokens as usize, config.max_context_tokens);
+            //
+            // We use `last_prompt_tokens` (most recent iteration) rather than
+            // `total_prompt_tokens` (cumulative across iterations) because the
+            // meter measures *current context-window occupancy*, not cumulative
+            // billing. Summing iterations would double-count the shared history
+            // and let the meter exceed 100% on multi-tool-call turns (#946).
+            crate::context::update(last_prompt_tokens as usize, config.max_context_tokens);
             sink.emit(EngineEvent::ContextUsage {
-                used: total_prompt_tokens as usize,
+                used: last_prompt_tokens as usize,
                 max: config.max_context_tokens,
             });
 
@@ -1008,7 +1019,11 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             return Ok(());
         }
 
-        // Accumulate token usage across iterations
+        // Accumulate token usage across iterations.
+        // (`last_prompt_tokens` is scoped to the no-tool-calls terminating
+        // branch above — the only reader of it. Each loop iteration creates
+        // its own binding when that branch runs, so there's nothing to update
+        // here for the meter.)
         total_prompt_tokens += usage.prompt_tokens;
         total_completion_tokens += usage.completion_tokens;
         total_cache_read_tokens += usage.cache_read_tokens;
