@@ -19,22 +19,28 @@ fn koda_bin() -> String {
 }
 
 fn run_mock(prompt: &str, responses: &str) -> (String, String, bool) {
+    run_mock_with_mode(prompt, responses, None)
+}
+
+fn run_mock_with_mode(prompt: &str, responses: &str, mode: Option<&str>) -> (String, String, bool) {
     let tmp = tempfile::tempdir().unwrap();
-    let output = Command::new(koda_bin())
-        .args([
-            "-p",
-            prompt,
-            "--provider",
-            "mock",
-            "--output-format",
-            "json",
-            "--project-root",
-        ])
-        .arg(tmp.path())
-        .env("XDG_CONFIG_HOME", tmp.path())
-        .env("KODA_MOCK_RESPONSES", responses)
-        .output()
-        .expect("Failed to run koda");
+    let mut cmd = Command::new(koda_bin());
+    cmd.args([
+        "-p",
+        prompt,
+        "--provider",
+        "mock",
+        "--output-format",
+        "json",
+        "--project-root",
+    ])
+    .arg(tmp.path())
+    .env("XDG_CONFIG_HOME", tmp.path())
+    .env("KODA_MOCK_RESPONSES", responses);
+    if let Some(m) = mode {
+        cmd.args(["--mode", m]);
+    }
+    let output = cmd.output().expect("Failed to run koda");
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -69,15 +75,20 @@ fn mock_text_response_returns_json() {
 
 #[test]
 fn mock_destructive_bash_auto_approved_in_headless() {
-    // Model tries to run `rm -rf /tmp/nonexistent_test_dir` — headless (Auto mode)
-    // now auto-approves all actions within the project sandbox (#855).
+    // Model tries to run `rm -rf /tmp/nonexistent_test_dir` — with `--mode auto`,
+    // headless auto-approves all actions within the project sandbox (#855).
     // The sandbox kernel enforcement is the safety boundary, not the approval prompt.
+    //
+    // Note: pre-#982 this test passed without `--mode auto` because headless
+    // hardcoded `TrustMode::Auto` regardless of the flag. Post-fix, the flag
+    // must be passed explicitly — which is the entire point of having a flag.
     let responses = r#"[
         {"tool":"Bash","args":{"command":"rm -rf /tmp/nonexistent_test_dir"}},
         {"text":"Done."}
     ]"#;
 
-    let (_stdout, stderr, success) = run_mock("delete everything", responses);
+    let (_stdout, stderr, success) =
+        run_mock_with_mode("delete everything", responses, Some("auto"));
     assert!(
         success,
         "Process should succeed (Auto mode approves within sandbox).\nstderr: {stderr}"
@@ -87,6 +98,31 @@ fn mock_destructive_bash_auto_approved_in_headless() {
         !stderr.contains("Rejected destructive action"),
         "Should not reject destructive action in Auto mode.\nstderr: {stderr}"
     );
+}
+
+#[test]
+fn mock_destructive_bash_rejected_in_safe_mode_in_headless() {
+    // End-to-end regression test for #982. Pre-fix, headless hardcoded
+    // `TrustMode::Auto`, so `--mode safe` was silently ignored and destructive
+    // actions ran without confirmation. Post-fix, `--mode safe` is honored
+    // and the same destructive Bash invocation is rejected by the trust layer.
+    //
+    // We test BOTH: explicit `--mode safe` AND default (no flag, since CLI
+    // default_value = "safe"). Both must reject.
+    let responses = r#"[
+        {"tool":"Bash","args":{"command":"rm -rf /tmp/nonexistent_test_dir"}},
+        {"text":"Done."}
+    ]"#;
+
+    for mode in [Some("safe"), None] {
+        let label = mode.unwrap_or("<default>");
+        let (_stdout, stderr, _success) = run_mock_with_mode("delete everything", responses, mode);
+        assert!(
+            stderr.contains("Rejected destructive action"),
+            "[mode={label}] Safe mode (or default) MUST reject destructive Bash. \
+             If this fails, #982 has regressed.\nstderr: {stderr}"
+        );
+    }
 }
 
 #[test]

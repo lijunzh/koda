@@ -113,6 +113,24 @@ pub(crate) enum CommandOutcome {
     Quit,
 }
 
+/// Resolve the initial trust mode for a session, given any persisted mode
+/// string and a fallback to use when nothing valid is persisted.
+///
+/// Resume semantics (#590): a previously-stored mode wins over the CLI/config
+/// value, so users don't lose their per-session preference on `/resume`.
+///
+/// Fallback semantics (#982): when there's no persisted mode (fresh session)
+/// OR the persisted string is unparseable (corruption / older format), fall
+/// back to the user's current `config.trust` — **never** to a hardcoded
+/// constant. Hardcoding `Auto` here was the original bug: it silently
+/// overrode `--mode safe`, defeating the whole point of the flag.
+pub(crate) fn resolve_initial_trust_mode(
+    persisted: Option<&str>,
+    fallback: TrustMode,
+) -> TrustMode {
+    persisted.and_then(TrustMode::parse).unwrap_or(fallback)
+}
+
 impl TuiContext {
     /// Initialize all TUI state. Call before entering the event loop.
     ///
@@ -189,24 +207,24 @@ impl TuiContext {
         agent.rebuild_system_prompt(&config, &commands);
         let agent = Arc::new(agent);
 
-        let mut session = KodaSession::new(
-            session_id,
-            agent.clone(),
-            db.clone(),
-            &config,
-            TrustMode::Auto,
-        )
-        .await;
+        let mut session =
+            KodaSession::new(session_id, agent.clone(), db.clone(), &config, config.trust).await;
 
         crate::startup::purge_nudge(&db, &mut startup_lines).await;
 
-        // Restore persisted approval mode on resume (#590)
+        // Restore persisted approval mode on resume (#590).
+        // Fallback to the user's current CLI/config trust mode (not a hardcoded
+        // constant) so `--mode safe` is honored on first run when there's no
+        // persisted mode yet. Fixes #982.
         let initial_mode = {
             use koda_core::persistence::Persistence;
-            match session.db.get_session_mode(&session.id).await {
-                Ok(Some(mode_str)) => TrustMode::parse(&mode_str).unwrap_or(TrustMode::Auto),
-                _ => TrustMode::Auto,
-            }
+            let persisted = session
+                .db
+                .get_session_mode(&session.id)
+                .await
+                .ok()
+                .flatten();
+            resolve_initial_trust_mode(persisted.as_deref(), config.trust)
         };
         let shared_mode = trust::new_shared_trust(initial_mode);
 
@@ -659,4 +677,84 @@ impl TuiContext {
     // ═══════════════════════════════════════════════════════════
     // Idle-mode event handling (keyboard, paste, menu, wizard, history)
     // ═══════════════════════════════════════════════════════════
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression tests for #982: `--mode safe` was silently overridden by a
+    //! hardcoded `TrustMode::Auto` at session-creation time. The fix routes
+    //! `config.trust` through both fresh-session and resume-fallback paths.
+    //!
+    //! These tests pin the resolution semantics so a future refactor can't
+    //! reintroduce a hardcoded constant without turning the build red.
+
+    use super::resolve_initial_trust_mode;
+    use koda_core::trust::TrustMode;
+
+    #[test]
+    fn fresh_session_no_persisted_mode_uses_config_trust() {
+        // The exact bug: fresh session, no persisted mode, user passed `--mode safe`.
+        // Pre-fix this returned hardcoded `Auto`, ignoring the user's choice.
+        assert_eq!(
+            resolve_initial_trust_mode(None, TrustMode::Safe),
+            TrustMode::Safe,
+        );
+        assert_eq!(
+            resolve_initial_trust_mode(None, TrustMode::Plan),
+            TrustMode::Plan,
+        );
+        assert_eq!(
+            resolve_initial_trust_mode(None, TrustMode::Auto),
+            TrustMode::Auto,
+        );
+    }
+
+    #[test]
+    fn persisted_mode_wins_over_config_trust_on_resume() {
+        // Resume semantics from #590: a stored mode beats the CLI fallback.
+        assert_eq!(
+            resolve_initial_trust_mode(Some("plan"), TrustMode::Auto),
+            TrustMode::Plan,
+        );
+        assert_eq!(
+            resolve_initial_trust_mode(Some("safe"), TrustMode::Auto),
+            TrustMode::Safe,
+        );
+        assert_eq!(
+            resolve_initial_trust_mode(Some("auto"), TrustMode::Safe),
+            TrustMode::Auto,
+        );
+    }
+
+    #[test]
+    fn unparseable_persisted_mode_falls_back_to_config_trust_not_auto() {
+        // The other half of the bug: corrupt/unknown persisted strings used
+        // to fall through to a hardcoded `Auto`. Now they honor config.trust.
+        assert_eq!(
+            resolve_initial_trust_mode(Some("bogus"), TrustMode::Safe),
+            TrustMode::Safe,
+        );
+        assert_eq!(
+            resolve_initial_trust_mode(Some(""), TrustMode::Plan),
+            TrustMode::Plan,
+        );
+    }
+
+    #[test]
+    fn parse_accepts_legacy_aliases_for_persisted_strings() {
+        // `TrustMode::parse` accepts aliases like "yolo", "strict", etc.
+        // Make sure resume of older sessions stored under those names still works.
+        assert_eq!(
+            resolve_initial_trust_mode(Some("yolo"), TrustMode::Safe),
+            TrustMode::Auto,
+        );
+        assert_eq!(
+            resolve_initial_trust_mode(Some("strict"), TrustMode::Auto),
+            TrustMode::Safe,
+        );
+        assert_eq!(
+            resolve_initial_trust_mode(Some("readonly"), TrustMode::Auto),
+            TrustMode::Plan,
+        );
+    }
 }

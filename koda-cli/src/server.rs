@@ -47,7 +47,6 @@ use koda_core::db::{Database, Role};
 use koda_core::engine::EngineCommand;
 use koda_core::persistence::Persistence;
 use koda_core::session::KodaSession;
-use koda_core::trust::TrustMode;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI64;
@@ -327,7 +326,7 @@ async fn handle_new_session(
         state.agent.clone(),
         state.db.clone(),
         &state.config,
-        TrustMode::Auto,
+        state.config.trust,
     )
     .await;
 
