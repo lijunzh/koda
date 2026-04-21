@@ -172,6 +172,14 @@ pub async fn run_shell_command(
                 .map_err(|e| anyhow::anyhow!("wait: {e}"))?;
             let exit_code = status.code().unwrap_or(-1);
 
+            // Phase 1 of #934: surface kernel-sandbox denials to the model.
+            // The kernel makes the syscall fail with EACCES/EPERM and the
+            // child shell prints a libc error to stderr; parse those lines
+            // into structured violations and append a CC-style block.
+            // Always-on (informational only — doesn't change exit codes or
+            // change which lines we already collected).
+            annotate_violations(exit_code, command, &mut stderr_lines);
+
             let summary = format_summary(exit_code, &stdout_lines, &stderr_lines);
             let full = format_full_output(exit_code, &stdout_lines, &stderr_lines);
 
@@ -396,6 +404,40 @@ fn format_full_output(exit_code: i32, stdout_lines: &[String], stderr_lines: &[S
     }
 
     out
+}
+
+/// Phase 1 of #934: parse stderr for kernel-sandbox denials and append a
+/// `<sandbox_violations>` block (CC pattern) so the model can react.
+///
+/// We only annotate when the command exited non-zero — a successful
+/// command with `Permission denied` in its stderr is almost always a
+/// false positive (e.g. `find / 2>/dev/null` swallows pre-sandbox
+/// errors that aren't sandbox denials at all).
+///
+/// The block is appended *to* `stderr_lines` (not stdout) so existing
+/// formatters carry it through unchanged. Violations are also recorded
+/// in the process-wide [`koda_sandbox::global_store`] for `/sandbox
+/// status` to surface later.
+fn annotate_violations(exit_code: i32, command: &str, stderr_lines: &mut Vec<String>) {
+    if exit_code == 0 {
+        return;
+    }
+    let joined = stderr_lines.join("\n");
+    let violations = koda_sandbox::monitor::parse_stderr(&joined, Some(command));
+    if violations.is_empty() {
+        return;
+    }
+    let store = koda_sandbox::global_store();
+    for v in &violations {
+        store.record(v.clone());
+    }
+    if let Some(block) = koda_sandbox::render_block(&violations) {
+        // Push each line of the block as its own entry so the line-count
+        // accounting in format_summary stays accurate.
+        for line in block.lines() {
+            stderr_lines.push(line.to_string());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -680,8 +722,103 @@ mod tests {
             "Expected at least 3 streamed lines, got {}: {lines:?}",
             lines.len()
         );
+
         // At least one stdout and one stderr line
         assert!(lines.iter().any(|(_, is_stderr)| !is_stderr));
         assert!(lines.iter().any(|(_, is_stderr)| *is_stderr));
+    }
+
+    // ── Phase 1 of #934: violation annotation ────────────────────────────
+
+    #[test]
+    fn annotate_violations_skips_when_exit_code_zero() {
+        // Successful command with denial-looking stderr → no annotation.
+        // Otherwise `find / 2>/dev/null` would be falsely annotated every
+        // time it hits an unreadable subdir.
+        let mut stderr = vec!["touch: /etc/x: Permission denied".into()];
+        annotate_violations(0, "find /", &mut stderr);
+        assert_eq!(stderr.len(), 1, "no extra lines should be appended");
+        assert!(!stderr.iter().any(|l| l.contains("<sandbox_violations>")));
+    }
+
+    #[test]
+    fn annotate_violations_appends_block_on_real_denial() {
+        let mut stderr = vec!["touch: /etc/passwd: Operation not permitted".into()];
+        annotate_violations(1, "touch /etc/passwd", &mut stderr);
+        assert!(
+            stderr.iter().any(|l| l == "<sandbox_violations>"),
+            "open tag must be appended: {stderr:?}"
+        );
+        assert!(
+            stderr
+                .iter()
+                .any(|l| l.contains("deny file-write* /etc/passwd")),
+            "violation line must be appended: {stderr:?}"
+        );
+        assert!(
+            stderr.iter().any(|l| l == "</sandbox_violations>"),
+            "close tag must be appended: {stderr:?}"
+        );
+    }
+
+    #[test]
+    fn annotate_violations_noop_when_no_denial_markers() {
+        // Failed command (exit_code != 0) but stderr doesn't look like
+        // a sandbox denial → no annotation. E.g. `cargo build` failure.
+        let mut stderr = vec!["error[E0277]: trait bound not satisfied".into()];
+        annotate_violations(101, "cargo build", &mut stderr);
+        assert_eq!(stderr.len(), 1, "no annotation expected: {stderr:?}");
+    }
+
+    /// Phase 1 acceptance criterion of #934: a real sandboxed bash command
+    /// that touches ~/.ssh returns annotated stderr.
+    ///
+    /// Goes through the full `run_shell_command` pipeline — sandbox build,
+    /// process spawn, stream capture, kernel denial, stderr parse,
+    /// `<sandbox_violations>` annotation. This is the proof-of-life test
+    /// for the whole Phase 1 stack.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn run_shell_command_annotates_ssh_write_denial() {
+        use serde_json::json;
+
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
+        let ssh_dir = format!("{home}/.ssh");
+        if !std::path::Path::new(&ssh_dir).exists() {
+            eprintln!("skip: {ssh_dir} does not exist");
+            return;
+        }
+        let project = tempfile::tempdir().unwrap();
+        let canary = format!("{ssh_dir}/koda_phase1_annotation_canary");
+
+        let result = run_shell_command(
+            project.path(),
+            &json!({"command": format!("touch {canary}")}),
+            500,
+            &bg(),
+            None,
+            &crate::trust::TrustMode::Safe,
+        )
+        .await
+        .expect("run_shell_command should succeed even when child fails");
+
+        let full = result.full_output.expect("full output expected");
+        assert!(
+            full.contains("<sandbox_violations>"),
+            "missing open tag in full output:\n{full}"
+        );
+        assert!(
+            full.contains("deny file-write*"),
+            "missing violation kind in full output:\n{full}"
+        );
+        assert!(
+            full.contains("</sandbox_violations>"),
+            "missing close tag in full output:\n{full}"
+        );
+        // Acceptance: file was not created (sandbox actually enforced).
+        assert!(
+            !std::path::Path::new(&canary).exists(),
+            "canary file should NOT have been created: {canary}"
+        );
     }
 }
