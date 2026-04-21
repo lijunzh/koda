@@ -1,29 +1,34 @@
-//! Polymorphic lifecycle wrapper for any spawned proxy (Phase 3a of #934).
+//! Polymorphic lifecycle wrapper for any spawned proxy (Phase 3a/3b of #934).
 //!
-//! Today there's exactly one variant — a child process started by
-//! [`crate::proxy::ExternalProxy`]. Phase 3b will add a built-in variant
-//! whose lifecycle is a tokio task instead of a child process. Both share
-//! the same public surface so callers (most importantly
+//! Two variants today:
+//!
+//! - **External** — a child process started by
+//!   [`crate::proxy::ExternalProxy`] (Phase 3a). Lifecycle = `Child`.
+//! - **BuiltIn** — an in-process tokio task spawned by
+//!   [`crate::proxy::BuiltInProxy`] (Phase 3b). Lifecycle = `JoinHandle`.
+//!
+//! Both share the same public surface so callers (most importantly
 //! [`crate::worker_client::WorkerClient::spawn_with_policy_and_proxy`]) can
-//! store either kind in the same field without trait objects.
+//! store either kind in the same field without trait objects or visible
+//! enums on the hot path.
 //!
 //! See [parent module docs](super) for the broader why.
 
 use std::path::Path;
 use tokio::process::Child;
+use tokio::task::JoinHandle;
 use tracing::warn;
 
-/// Live proxy. `Drop` cleans up the underlying resource (SIGTERM for child
-/// processes; abort for tokio tasks once 3b lands).
+/// Live proxy. `Drop` cleans up the underlying resource (SIGTERM for
+/// child processes; `abort()` for tokio tasks).
 ///
-/// Cloning is intentionally not supported — only one owner shuts down the
-/// underlying resource.
+/// Cloning is intentionally not supported — only one owner shuts down
+/// the underlying resource.
 #[derive(Debug)]
 pub struct ProxyHandle {
     /// Port the proxy is listening on (`127.0.0.1:port`).
     pub port: u16,
-    /// Backing resource. Boxed-enum once 3b adds the built-in variant; for
-    /// now the single child-process variant lives inline.
+    /// Backing resource. Boxed-enum so callers don't need to match.
     inner: Inner,
 }
 
@@ -32,6 +37,9 @@ enum Inner {
     /// Child process spawned by [`crate::proxy::ExternalProxy`].
     /// `None` after [`ProxyHandle::shutdown`] has been called.
     External(Option<Child>),
+    /// Tokio task spawned by [`crate::proxy::BuiltInProxy`].
+    /// `None` after [`ProxyHandle::shutdown`] has been called.
+    BuiltIn(Option<JoinHandle<()>>),
 }
 
 impl ProxyHandle {
@@ -44,14 +52,24 @@ impl ProxyHandle {
         }
     }
 
+    /// Construct from a tokio task. Crate-private constructor; callers
+    /// reach this through [`crate::proxy::BuiltInProxy::spawn`].
+    pub(crate) fn from_task(port: u16, task: JoinHandle<()>) -> Self {
+        Self {
+            port,
+            inner: Inner::BuiltIn(Some(task)),
+        }
+    }
+
     /// Path to a CA bundle the proxy expects clients to trust, if any.
     ///
     /// External proxies always return `None` — the bundle path comes from
-    /// [`crate::policy::MitmConfig::ca_bundle`] on the policy side. The 3b
-    /// built-in proxy variant will return `Some(generated_ca_path)`.
+    /// [`crate::policy::MitmConfig::ca_bundle`] on the policy side.
+    /// Built-in proxies also return `None` in 3b (no MITM); Phase 3d will
+    /// swap this to `Some(generated_ca_path)` for the built-in MITM mode.
     pub fn ca_bundle(&self) -> Option<&Path> {
         match &self.inner {
-            Inner::External(_) => None,
+            Inner::External(_) | Inner::BuiltIn(_) => None,
         }
     }
 
@@ -68,6 +86,15 @@ impl ProxyHandle {
                     if let Err(e) = child.start_kill() {
                         warn!("external proxy SIGKILL failed: {e}");
                     }
+                }
+            }
+            Inner::BuiltIn(slot) => {
+                if let Some(task) = slot.take() {
+                    // abort() is fire-and-forget; the runtime will run the
+                    // task's destructors at the next await point. There's
+                    // no failure mode here — even an already-finished task
+                    // accepts abort() as a no-op.
+                    task.abort();
                 }
             }
         }

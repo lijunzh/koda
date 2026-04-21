@@ -17,10 +17,12 @@
 //!    every spawn path returns, so callers can store any proxy variant
 //!    behind one type without trait objects or enums on the hot path.
 //!
-//! Phase 3b will add the built-in proxy (TODO: `builtin` module) that
-//! implements the *policy layer* (domain allowlist filtering). All variants
-//! plug into the same env-var bouquet — applications can't tell whether
-//! they're talking to our proxy or the user's.
+//! Phase 3b adds the built-in proxy ([`builtin`]) that implements
+//! the *policy layer* (domain allowlist filtering). All variants plug
+//! into the same env-var bouquet and the same [`ProxyHandle`] type —
+//! applications can't tell whether they're talking to our proxy or
+//! the user's, and the slot manager doesn't care which spawn path was
+//! used to create the handle.
 //!
 //! ## Why support an external proxy at all?
 //!
@@ -46,25 +48,28 @@
 //!
 //! ## Module layout
 //!
-//! Split per concern in commit-1 of Phase 3b so future additions
-//! (built-in HTTP CONNECT proxy, hostname filter) don't push any single
-//! file past 600 lines:
+//! Split per concern in commit-1 of Phase 3b so future additions don't push
+//! any single file past 600 lines:
 //!
 //! ```text
 //! proxy/
 //! ├── mod.rs       — this docstring + shared internal helpers
 //! ├── env.rs       — env-var bouquet + DEFAULT_NO_PROXY (3a)
 //! ├── external.rs  — ExternalProxy::spawn (3a)
-//! ├── handle.rs    — ProxyHandle (3a, will absorb BuiltInProxy in 3b)
-//! └── (filter.rs, server.rs, builtin.rs added later in 3b)
+//! ├── handle.rs    — ProxyHandle (External + BuiltIn variants)
+//! ├── filter.rs    — hostname allowlist (3b)
+//! ├── server.rs    — HTTP CONNECT proxy (3b)
+//! └── builtin.rs   — BuiltInProxy::spawn (3b)
 //! ```
 
+pub mod builtin;
 pub mod env;
 pub mod external;
 pub mod filter;
 pub mod handle;
 pub mod server;
 
+pub use builtin::BuiltInProxy;
 pub use env::{DEFAULT_NO_PROXY, PROXY_PORT_ENV_KEY, ca_bundle_for_policy, proxy_env_vars};
 pub use external::ExternalProxy;
 pub use filter::{DEFAULT_DEV_ALLOWLIST, Filter};

@@ -12,8 +12,8 @@
 //! the proxy) requires parsing HTTP/1.1 requests and rewriting them.
 //! That's brittle and security-sensitive. Modern dev tools all use
 //! HTTPS, which means CONNECT only. Plaintext forward proxying is
-//! intentionally unsupported — see [`Server::handle_one`] for the
-//! `405 Method Not Allowed` response we send for non-CONNECT verbs.
+//! intentionally unsupported — we send `405 Method Not Allowed` for
+//! any non-CONNECT verb.
 //!
 //! ## Filter contract
 //!
