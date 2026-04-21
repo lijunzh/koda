@@ -1,34 +1,29 @@
 //! `koda-fs-worker` — long-lived FS worker process spawned by the
-//! sandbox shim (Phase 2a of #934).
+//! sandbox shim (Phase 2c of #934).
 //!
-//! Runs the [`koda_sandbox::worker::run_stdio`] dispatch loop against
-//! process stdin/stdout. Phase 2c will add a Unix-socket variant for
-//! the production per-slot wiring; stdio is what the integration tests
-//! use today.
+//! ## Transport selection
+//!
+//! - **`--socket <path>`** (production): bind a Unix domain socket at
+//!   `<path>`, write "ready\n" to stdout, accept one connection,
+//!   serve it. Used by [`koda_sandbox::worker_client::WorkerClient`].
+//! - **No arguments** (legacy / tests): run against stdin/stdout.
+//!   The `worker_binary` integration tests still use this path.
 //!
 //! ## Lifecycle
 //!
-//! Spawned by `koda_sandbox::worker_client` (Phase 2c) for each
-//! sandbox slot. Exits when:
-//! - The host closes stdin (EOF) — normal "slot retired" path.
-//! - The host sends [`koda_sandbox::ipc::Request::Shutdown`] — graceful
-//!   shutdown with ack.
-//! - A transport-level IO error occurs — exit 1, host respawns.
+//! Spawned by `WorkerClient::spawn()` for each sandbox slot. Exits
+//! when the host closes the connection (clean EOF) or sends
+//! [`koda_sandbox::ipc::Request::Shutdown`].
 //!
 //! ## Why a binary not a library function?
 //!
 //! Crash isolation. A panicking FS handler kills the worker, not the
-//! host process driving the LLM session. The host wraps respawn logic
-//! in Phase 2c.
+//! host process driving the LLM session.
 
 use anyhow::Result;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    // Single-threaded runtime: this binary is one process per sandbox
-    // slot serving one host. No need for the multi-threaded scheduler's
-    // overhead — every request is handled sequentially anyway (the
-    // host serializes them by waiting for each response).
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("KODA_FS_WORKER_LOG")
@@ -37,5 +32,27 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    koda_sandbox::worker::run_stdio().await
+    // Parse --socket <path> from argv. We roll our own to avoid adding
+    // a CLI-parsing dep to this binary — two-argument argv parsing is
+    // not worth the dep weight.
+    let args: Vec<String> = std::env::args().collect();
+    let socket_path = match args.as_slice() {
+        [_, flag, path] if flag == "--socket" => Some(std::path::PathBuf::from(path)),
+        [_] => None,
+        _ => anyhow::bail!("usage: koda-fs-worker [--socket <path>]"),
+    };
+
+    match socket_path {
+        Some(path) => {
+            #[cfg(unix)]
+            {
+                koda_sandbox::worker::run_unix_socket(&path).await
+            }
+            #[cfg(not(unix))]
+            {
+                anyhow::bail!("--socket is only supported on Unix")
+            }
+        }
+        None => koda_sandbox::worker::run_stdio().await,
+    }
 }

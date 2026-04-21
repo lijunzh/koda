@@ -1,15 +1,11 @@
-//! End-to-end integration test for the `koda-fs-worker` binary
-//! (Phase 2a of #934).
+//! End-to-end integration tests for the `koda-fs-worker` binary
+//! (updated Phase 2c of #934).
 //!
-//! Spawns the real binary as a subprocess, talks to it over stdin/stdout
-//! using the [`koda_sandbox::ipc`] framing, and asserts the contract
-//! holds across the OS process boundary. The unit tests in
-//! `koda-sandbox::worker::tests` exercise the same code path through
-//! an in-memory `tokio::io::duplex`; this test is what catches issues
-//! the in-memory transport hides (binary discoverability, child stderr,
-//! tokio runtime setup, env-var tracing init).
+//! Spawns the real binary over stdio (no Unix socket — that transport
+//! is exercised by `sandboxed_fs.rs`). Validates the IPC framing and
+//! handler dispatch across a real OS process boundary.
 
-use koda_sandbox::ipc::{ErrorCode, Request, Response, read_message, write_message};
+use koda_sandbox::ipc::{Request, Response, read_message, write_message};
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -65,7 +61,13 @@ async fn worker_binary_responds_to_ping() {
 }
 
 #[tokio::test]
-async fn worker_binary_returns_unimplemented_for_phase2c_variants() {
+async fn worker_binary_handles_read_over_stdio() {
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("hello.txt");
+    std::fs::write(&path, b"binary test").unwrap();
+
     let mut child = Command::new(worker_binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -79,7 +81,7 @@ async fn worker_binary_returns_unimplemented_for_phase2c_variants() {
     write_message(
         &mut stdin,
         &Request::Read {
-            path: PathBuf::from("/etc/passwd"),
+            path,
             max_bytes: None,
         },
     )
@@ -89,23 +91,16 @@ async fn worker_binary_returns_unimplemented_for_phase2c_variants() {
         .await
         .expect("read response")
         .expect("response not None");
-    match resp {
-        Response::Error {
-            code: ErrorCode::Unimplemented,
-            ..
-        } => {}
-        other => panic!("expected Unimplemented, got {other:?}"),
-    }
-
-    // Drop stdin to trigger clean EOF shutdown — exercises the
-    // "peer hung up" exit path of the dispatch loop in the real binary.
-    drop(stdin);
-    let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
-        .await
-        .expect("worker must exit within 5s of EOF")
-        .expect("wait failed");
-    assert!(
-        status.success(),
-        "worker should exit cleanly on EOF, got {status:?}"
+    assert_eq!(
+        resp,
+        Response::Read {
+            content: b"binary test".to_vec()
+        }
     );
+
+    drop(stdin);
+    tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+        .await
+        .expect("worker must exit within 5s")
+        .expect("wait");
 }
