@@ -25,8 +25,11 @@
 
 use crate::fs::{FileSystem, FsError, LocalFileSystem};
 use crate::ipc::{ErrorCode, Request, Response, read_message, write_message};
+use crate::path_defense::{is_dangerous_system_path, is_path_inside, paths_for_write_check};
+use crate::policy::SandboxPolicy;
+use crate::policy_check::is_fully_denied;
 use anyhow::Result;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, warn};
 
@@ -34,17 +37,32 @@ use tracing::{debug, warn};
 
 /// Per-connection state threaded through every handler.
 ///
-/// Today this is just a [`LocalFileSystem`] — a zero-cost newtype.
-/// Phase 2f adds a `policy: SandboxPolicy` field so the handlers can
-/// enforce rules on each path before touching the filesystem.
+/// Phase 2f adds `writable_root` and `policy` so the handlers can
+/// enforce write policy on each path before touching the filesystem.
 struct Context {
     fs: LocalFileSystem,
+    /// Canonical path the slot is allowed to write to.
+    /// `None` means no write-root enforcement (legacy / test callers).
+    writable_root: Option<PathBuf>,
+    policy: SandboxPolicy,
 }
 
 impl Default for Context {
     fn default() -> Self {
         Self {
             fs: LocalFileSystem::new(),
+            writable_root: None,
+            policy: SandboxPolicy::default(),
+        }
+    }
+}
+
+impl Context {
+    fn with_policy(writable_root: PathBuf, policy: SandboxPolicy) -> Self {
+        Self {
+            fs: LocalFileSystem::new(),
+            writable_root: Some(writable_root),
+            policy,
         }
     }
 }
@@ -64,6 +82,25 @@ where
     W: AsyncWrite + Unpin,
 {
     let ctx = Context::default();
+    run_with_ctx(&ctx, reader, writer).await
+}
+
+/// Run the worker with a sandbox policy and writable root.
+///
+/// This is the entry point used by the production worker binary when
+/// spawned by [`crate::worker_client::WorkerClient`]. The policy is
+/// applied to every `Write` and `Edit` request.
+pub async fn run_with_policy<R, W>(
+    writable_root: PathBuf,
+    policy: SandboxPolicy,
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let ctx = Context::with_policy(writable_root, policy);
     run_with_ctx(&ctx, reader, writer).await
 }
 
@@ -107,6 +144,143 @@ where
 
 // ── Request handlers ──────────────────────────────────────────────────────
 
+/// Canonicalize `path` for a policy containment check.
+///
+/// `std::fs::canonicalize` fails with `ENOENT` for paths that don't
+/// exist yet (e.g. the target of a Write request). We resolve the
+/// deepest existing prefix instead, then rejoin the non-existing tail.
+/// This correctly resolves platform symlinks like macOS `/var` →
+/// `/private/var` even when the leaf file hasn't been created yet.
+fn canonicalize_for_check(path: &Path) -> PathBuf {
+    // Fast path: the path already exists and canonicalize succeeds.
+    if let Ok(c) = std::fs::canonicalize(path) {
+        return c;
+    }
+    // Slow path: walk up to the first existing ancestor, canonicalize it,
+    // then rejoin the non-existing tail segments.
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut dir = path.to_path_buf();
+    loop {
+        match std::fs::canonicalize(&dir) {
+            Ok(c) => {
+                return tail.iter().rev().fold(c, |acc, seg| acc.join(seg));
+            }
+            Err(_) => {
+                if let Some(name) = dir.file_name() {
+                    tail.push(name.to_os_string());
+                }
+                match dir.parent() {
+                    Some(p) => dir = p.to_path_buf(),
+                    None => return path.to_path_buf(), // gave up
+                }
+            }
+        }
+    }
+}
+
+/// Validate `path` against the slot's write policy.
+///
+/// Runs three layers in order:
+/// 1. **Fully-denied** — koda's own credential DB (`~/.config/koda/db`).
+/// 2. **Dangerous system path** — `/`, `/usr`, `/etc`, etc.
+/// 3. **Writable-root containment** — the path (and every hop in its
+///    symlink chain) must resolve to inside the slot's writable root.
+///
+/// Returns `Ok(())` when all checks pass, `Err(PolicyDenied { … })` otherwise.
+fn check_write_path(ctx: &Context, path: &Path) -> Result<(), FsError> {
+    // 1. Absolute fully-denied paths — e.g. koda's own API-key database.
+    if is_fully_denied(path) {
+        return Err(FsError::PolicyDenied {
+            message: format!(
+                "write denied: '{}' is a fully-protected path",
+                path.display()
+            ),
+        });
+    }
+
+    // 2. Catastrophic system-path guard — regardless of allow rules.
+    if is_dangerous_system_path(path) {
+        return Err(FsError::PolicyDenied {
+            message: format!(
+                "write denied: '{}' is a critical system path",
+                path.display()
+            ),
+        });
+    }
+
+    // 3. Writable-root containment — only enforced when a root is configured.
+    let Some(ref root) = ctx.writable_root else {
+        return Ok(()); // legacy/test mode: no root enforcement
+    };
+
+    // Expand the full symlink chain so a symlink pointing outside the root
+    // is caught even when the link itself lives inside it.
+    let chain = paths_for_write_check(path);
+
+    for candidate in &chain {
+        // Absolute-deny overrides a broad allow-write rule.
+        if is_fully_denied(candidate) || is_dangerous_system_path(candidate) {
+            return Err(FsError::PolicyDenied {
+                message: format!(
+                    "write denied: symlink chain reaches protected path '{}'",
+                    candidate.display()
+                ),
+            });
+        }
+
+        // Canonical containment check.
+        // For new files, `canonicalize(candidate)` returns ENOENT. Instead
+        // canonicalize the parent (which exists) and rejoin the filename.
+        // This handles the macOS `/var` → `/private/var` symlink, etc.
+        let canonical_candidate = canonicalize_for_check(candidate);
+        let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+
+        if !is_path_inside(&canonical_candidate, &canonical_root) {
+            let explicitly_allowed = ctx
+                .policy
+                .fs
+                .allow_write
+                .iter()
+                .any(|pat| is_path_inside(&canonical_candidate, pat.as_path()));
+
+            let explicitly_denied = ctx
+                .policy
+                .fs
+                .deny_write_within_allow
+                .iter()
+                .any(|pat| is_path_inside(&canonical_candidate, pat.as_path()));
+
+            if !explicitly_allowed || explicitly_denied {
+                return Err(FsError::PolicyDenied {
+                    message: format!(
+                        "write denied: '{}' is outside writable root '{}'",
+                        path.display(),
+                        root.display()
+                    ),
+                });
+            }
+        } else {
+            // Inside the root — check deny_write_within_allow carve-outs.
+            let carved_out = ctx
+                .policy
+                .fs
+                .deny_write_within_allow
+                .iter()
+                .any(|pat| is_path_inside(&canonical_candidate, pat.as_path()));
+            if carved_out {
+                return Err(FsError::PolicyDenied {
+                    message: format!(
+                        "write denied: '{}' is in a write-protected sub-path",
+                        path.display()
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn handle(ctx: &Context, req: Request) -> Response {
     match req {
         Request::Ping | Request::Shutdown => Response::Pong,
@@ -114,15 +288,23 @@ async fn handle(ctx: &Context, req: Request) -> Response {
             Ok(content) => Response::Read { content },
             Err(e) => fs_err_to_resp(e),
         },
-        Request::Write { path, content } => match ctx.fs.write(&path, &content).await {
-            Ok(bytes_written) => Response::Write { bytes_written },
-            Err(e) => fs_err_to_resp(e),
-        },
+        Request::Write { path, content } => {
+            if let Err(e) = check_write_path(ctx, &path) {
+                return fs_err_to_resp(e);
+            }
+            match ctx.fs.write(&path, &content).await {
+                Ok(bytes_written) => Response::Write { bytes_written },
+                Err(e) => fs_err_to_resp(e),
+            }
+        }
         Request::Edit {
             path,
             old_string,
             new_string,
         } => {
+            if let Err(e) = check_write_path(ctx, &path) {
+                return fs_err_to_resp(e);
+            }
             // Workers always do single-occurrence edits — the
             // `all` flag is a tool-layer choice, not an IPC primitive.
             match ctx.fs.edit(&path, &old_string, &new_string, false).await {
@@ -373,5 +555,96 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ── Phase 2f: policy-gate tests ──────────────────────────────
+
+    fn spawn_worker_with_root(
+        root: PathBuf,
+    ) -> (tokio::io::DuplexStream, tokio::task::JoinHandle<Result<()>>) {
+        let (host, worker) = duplex(65536);
+        let (mut wr, mut ww) = tokio::io::split(worker);
+        let policy = crate::policy::SandboxPolicy::default();
+        let join = tokio::spawn(async move {
+            run_with_policy(root, policy, &mut wr, &mut ww).await
+        });
+        (host, join)
+    }
+
+    #[tokio::test]
+    async fn write_inside_root_is_allowed() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("allowed.txt");
+        let (mut host, _join) = spawn_worker_with_root(dir.path().to_path_buf());
+        write_message(&mut host, &Request::Write {
+            path: path.clone(),
+            content: b"ok".to_vec(),
+        })
+        .await
+        .unwrap();
+        let resp: Response = read_message(&mut host).await.unwrap().unwrap();
+        assert!(matches!(resp, Response::Write { .. }), "expected Write ok, got {resp:?}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"ok");
+    }
+
+    #[tokio::test]
+    async fn write_outside_root_is_denied() {
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let path = outside.path().join("escape.txt");
+        let (mut host, _join) = spawn_worker_with_root(root.path().to_path_buf());
+        write_message(&mut host, &Request::Write {
+            path,
+            content: b"evil".to_vec(),
+        })
+        .await
+        .unwrap();
+        let resp: Response = read_message(&mut host).await.unwrap().unwrap();
+        assert!(
+            matches!(resp, Response::Error { code: ErrorCode::PolicyDenied, .. }),
+            "expected PolicyDenied, got {resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dangerous_system_path_always_denied() {
+        let dir = TempDir::new().unwrap();
+        // Even though root is set, /etc directly is always blocked.
+        let (mut host, _join) = spawn_worker_with_root(dir.path().to_path_buf());
+        write_message(&mut host, &Request::Write {
+            path: PathBuf::from("/etc"),
+            content: b"evil".to_vec(),
+        })
+        .await
+        .unwrap();
+        let resp: Response = read_message(&mut host).await.unwrap().unwrap();
+        assert!(
+            matches!(resp, Response::Error { code: ErrorCode::PolicyDenied, .. }),
+            "expected PolicyDenied, got {resp:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_escape_is_denied() {
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        // Create a symlink inside root that points to outside.
+        let link = root.path().join("escape_link");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        let through_link = link.join("secret.txt");
+        let (mut host, _join) = spawn_worker_with_root(root.path().to_path_buf());
+        write_message(&mut host, &Request::Write {
+            path: through_link,
+            content: b"evil".to_vec(),
+        })
+        .await
+        .unwrap();
+        let resp: Response = read_message(&mut host).await.unwrap().unwrap();
+        assert!(
+            matches!(resp, Response::Error { code: ErrorCode::PolicyDenied, .. }),
+            "symlink escape should be denied, got {resp:?}"
+        );
     }
 }
