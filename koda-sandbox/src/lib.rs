@@ -32,12 +32,14 @@
 #[cfg(target_os = "linux")]
 pub mod bwrap;
 pub mod defaults;
+pub mod ipc;
 pub mod monitor;
 pub mod policy;
 pub mod policy_check;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
 pub mod violations;
+pub mod worker;
 pub mod workspace;
 
 pub use policy::{
