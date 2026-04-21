@@ -32,6 +32,7 @@ use crate::providers::{self, ImageData, LlmProvider};
 use crate::trust::TrustMode;
 
 use anyhow::Result;
+use koda_sandbox::{BuiltInProxy, DEFAULT_DEV_ALLOWLIST, Filter, ProxyHandle};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -57,6 +58,26 @@ pub struct KodaSession {
     pub file_tracker: FileTracker,
     /// Whether the session title has already been set (first-message guard).
     pub title_set: bool,
+    /// Per-session HTTP CONNECT proxy (Phase 3b of #934).
+    ///
+    /// Spawned unconditionally in [`Self::new`] with the hardcoded
+    /// [`koda_sandbox::DEFAULT_DEV_ALLOWLIST`] — koda is config-free,
+    /// so there's no "opt in" toggle and no user-tunable allowlist
+    /// (yet; future work: DB-backed slash command for per-project
+    /// extensions). Always-on means every Bash invocation routes
+    /// through this proxy and unknown hostnames get a 403 at the CONNECT
+    /// layer.
+    ///
+    /// `Option` rather than bare [`ProxyHandle`] because spawn can fail
+    /// (ephemeral-port exhaustion, broken loopback, runtime shutdown).
+    /// Fail-open: on spawn failure we log + continue with `None`,
+    /// matching the contract of [`koda_sandbox::ExternalProxy::spawn`].
+    /// A broken proxy must never break a session — the kernel sandbox
+    /// remains the authoritative network boundary anyway.
+    ///
+    /// Held for the session's lifetime; `Drop` aborts the proxy task
+    /// and closes the listener — no manual teardown needed.
+    pub proxy: Option<ProxyHandle>,
 }
 
 impl KodaSession {
@@ -93,6 +114,30 @@ impl KodaSession {
             }
         }
         let file_tracker = FileTracker::new(&id, db.clone()).await;
+
+        // Spawn the per-session HTTP CONNECT proxy with the default dev
+        // allowlist. Fail-open: on spawn failure, log + run unfiltered.
+        // Always-on — koda is config-free, there's no "disable" knob.
+        // `expect` on `Filter::new` is sound because
+        // `DEFAULT_DEV_ALLOWLIST` is a static known-good list and
+        // `koda_sandbox::filter::tests::default_allowlist_parses`
+        // guards against regression.
+        let filter = Filter::new(DEFAULT_DEV_ALLOWLIST).expect("default allowlist must parse");
+        let proxy = match BuiltInProxy::new(filter).spawn().await {
+            Ok(handle) => {
+                agent.tools.set_proxy_port(Some(handle.port));
+                tracing::debug!(
+                    "session {id} egress proxy listening on 127.0.0.1:{}",
+                    handle.port
+                );
+                Some(handle)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "egress proxy spawn failed; running unfiltered");
+                None
+            }
+        };
+
         Self {
             id,
             agent,
@@ -102,6 +147,7 @@ impl KodaSession {
             cancel: CancellationToken::new(),
             file_tracker,
             title_set: false,
+            proxy,
         }
     }
 

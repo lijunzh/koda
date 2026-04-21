@@ -6,6 +6,8 @@
 .koda.db-wal
 .koda.db-shm
 .koda-todo.md
+# Koda session exports (auto-saved transcripts) — never commit
+koda-[0-9]*.md
 
 # Build artifacts
 target/

@@ -100,6 +100,7 @@ async fn make_session_with_mcp(
         cancel: cancel.clone(),
         file_tracker,
         title_set: false,
+        proxy: None,
     };
     (session, cancel, recorded)
 }
