@@ -46,7 +46,10 @@ pub mod worker;
 pub mod worker_client;
 pub mod workspace;
 
-pub use path_defense::{find_symlink_in_path, is_dangerous_system_path, is_path_inside, paths_for_write_check, resolve_deepest_existing_ancestor};
+pub use path_defense::{
+    find_symlink_in_path, is_dangerous_system_path, is_path_inside, paths_for_write_check,
+    resolve_deepest_existing_ancestor,
+};
 pub use policy::{
     DomainPattern, FsPolicy, MitmConfig, NetPolicy, PathPattern, ResourceLimits, SandboxPolicy,
     TrustPreference,

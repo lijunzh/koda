@@ -141,11 +141,8 @@ pub fn resolve_deepest_existing_ancestor(path: &Path) -> std::io::Result<Option<
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     let mut dir = path.to_path_buf();
 
-    loop {
-        let parent = match dir.parent() {
-            Some(p) => p.to_path_buf(),
-            None => break, // reached filesystem root with no symlink found
-        };
+    while let Some(parent_ref) = dir.parent() {
+        let parent = parent_ref.to_path_buf();
 
         match std::fs::symlink_metadata(&dir) {
             Ok(meta) if meta.file_type().is_symlink() => {
@@ -160,9 +157,7 @@ pub fn resolve_deepest_existing_ancestor(path: &Path) -> std::io::Result<Option<
                         if target.is_absolute() {
                             target
                         } else {
-                            dir.parent()
-                                .map(|p| p.join(&target))
-                                .unwrap_or(target)
+                            dir.parent().map(|p| p.join(&target)).unwrap_or(target)
                         }
                     }
                 };
@@ -176,11 +171,10 @@ pub fn resolve_deepest_existing_ancestor(path: &Path) -> std::io::Result<Option<
                 // different path, a symlink existed somewhere above.
                 match std::fs::canonicalize(&dir) {
                     Ok(canon) if canon != dir => {
-                        let final_path =
-                            tail.iter().rev().fold(canon, |acc, seg| acc.join(seg));
+                        let final_path = tail.iter().rev().fold(canon, |acc, seg| acc.join(seg));
                         return Ok(Some(final_path));
                     }
-                    Ok(_) => return Ok(None), // no symlink anywhere above
+                    Ok(_) => return Ok(None),  // no symlink anywhere above
                     Err(_) => return Ok(None), // EACCES etc — fail open
                 }
             }
@@ -217,7 +211,7 @@ pub fn resolve_deepest_existing_ancestor(path: &Path) -> std::io::Result<Option<
 ///    redirects and add the resolved destination.
 /// 3. Otherwise follow the symlink chain: at each hop, add the current
 ///    target; break on non-symlink, FIFO/socket/device, or cycle.
-/// 4. Cap at [`MAX_SYMLINK_DEPTH`] hops (matches `SYMLOOP_MAX`).
+/// 4. Cap at `MAX_SYMLINK_DEPTH` hops (matches `SYMLOOP_MAX`).
 /// 5. Add the final `canonicalize()` result for completeness (resolves any
 ///    remaining directory-component symlinks).
 ///
@@ -362,10 +356,10 @@ pub fn is_dangerous_system_path(path: &Path) -> bool {
     }
 
     // Home directory exactly (not subdirectories — those are user data).
-    if let Ok(home) = std::env::var("HOME") {
-        if path == Path::new(&home) {
-            return true;
-        }
+    if let Ok(home) = std::env::var("HOME")
+        && path == Path::new(&home)
+    {
+        return true;
     }
 
     // Windows system paths.
@@ -387,12 +381,10 @@ pub fn is_dangerous_system_path(path: &Path) -> bool {
     }
 
     // POSIX: direct children of root (parent == "/").
-    // Examples: /usr ✓, /etc ✓, /var ✓, /tmp ✓
-    // Counter-examples: /usr/local ✗, /var/tmp ✗, /home/user ✗
-    if let Some(parent) = path.parent() {
-        if parent == Path::new("/") {
-            return true;
-        }
+    if let Some(parent) = path.parent()
+        && parent == Path::new("/")
+    {
+        return true;
     }
 
     false
@@ -446,26 +438,54 @@ mod tests {
     #[test]
     fn direct_children_of_root_are_dangerous() {
         // Matches CC's `dirname(normalizedPath) === '/'` rule.
-        for p in ["/usr", "/etc", "/bin", "/sbin", "/dev", "/proc", "/sys",
-                  "/var", "/tmp", "/boot", "/lib", "/lib64",
-                  "/System", "/Library", "/Applications"] {
-            assert!(is_dangerous_system_path(Path::new(p)), "{p} should be dangerous");
+        for p in [
+            "/usr",
+            "/etc",
+            "/bin",
+            "/sbin",
+            "/dev",
+            "/proc",
+            "/sys",
+            "/var",
+            "/tmp",
+            "/boot",
+            "/lib",
+            "/lib64",
+            "/System",
+            "/Library",
+            "/Applications",
+        ] {
+            assert!(
+                is_dangerous_system_path(Path::new(p)),
+                "{p} should be dangerous"
+            );
         }
     }
 
     #[test]
     fn subdirs_of_system_dirs_are_safe() {
         // CC allows subdirs: /usr/local, /var/tmp/work, /tmp/myapp, etc.
-        for p in ["/usr/local", "/usr/local/share", "/var/tmp/build",
-                  "/tmp/sandbox", "/etc/apache2"] {
-            assert!(!is_dangerous_system_path(Path::new(p)), "{p} should be safe");
+        for p in [
+            "/usr/local",
+            "/usr/local/share",
+            "/var/tmp/build",
+            "/tmp/sandbox",
+            "/etc/apache2",
+        ] {
+            assert!(
+                !is_dangerous_system_path(Path::new(p)),
+                "{p} should be safe"
+            );
         }
     }
 
     #[test]
     fn user_project_dirs_are_safe() {
         for p in ["/home/user/project", "/Users/alice/work"] {
-            assert!(!is_dangerous_system_path(Path::new(p)), "{p} should be safe");
+            assert!(
+                !is_dangerous_system_path(Path::new(p)),
+                "{p} should be safe"
+            );
         }
     }
 
@@ -586,9 +606,6 @@ mod tests {
         let path = link_dir.join("new_file.txt");
         let resolved = resolve_deepest_existing_ancestor(&path).unwrap();
         let resolved = resolved.expect("should find a symlink");
-        assert!(
-            resolved.ends_with("real/new_file.txt"),
-            "got: {resolved:?}"
-        );
+        assert!(resolved.ends_with("real/new_file.txt"), "got: {resolved:?}");
     }
 }

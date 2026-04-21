@@ -145,4 +145,109 @@ mod unix {
             .expect_err("must fail");
         assert!(matches!(err, FsError::Io(_)));
     }
+
+    // ── Phase 2f: spawn_with_policy integration ──────────────────────
+
+    #[tokio::test]
+    async fn spawn_with_policy_write_inside_root_succeeds() {
+        use koda_sandbox::ipc::{Request, Response};
+        use koda_sandbox::policy::SandboxPolicy;
+
+        let root = TempDir::new().unwrap();
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+        let path = canonical_root.join("allowed.txt");
+
+        let mut client =
+            WorkerClient::spawn_with_policy(canonical_root.clone(), &SandboxPolicy::default())
+                .await
+                .expect("spawn_with_policy");
+
+        let resp = client
+            .request(&Request::Write {
+                path: path.clone(),
+                content: b"policy ok".to_vec(),
+            })
+            .await
+            .expect("request");
+
+        assert!(
+            matches!(resp, Response::Write { .. }),
+            "expected Write ok, got {resp:?}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"policy ok");
+    }
+
+    #[tokio::test]
+    async fn spawn_with_policy_write_outside_root_is_denied() {
+        use koda_sandbox::ipc::{ErrorCode, Request, Response};
+        use koda_sandbox::policy::SandboxPolicy;
+
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+        let path = std::fs::canonicalize(outside.path())
+            .unwrap()
+            .join("escape.txt");
+
+        let mut client = WorkerClient::spawn_with_policy(canonical_root, &SandboxPolicy::default())
+            .await
+            .expect("spawn_with_policy");
+
+        let resp = client
+            .request(&Request::Write {
+                path,
+                content: b"evil".to_vec(),
+            })
+            .await
+            .expect("request");
+
+        assert!(
+            matches!(
+                resp,
+                Response::Error {
+                    code: ErrorCode::PolicyDenied,
+                    ..
+                }
+            ),
+            "expected PolicyDenied, got {resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_with_policy_symlink_escape_is_denied() {
+        use koda_sandbox::ipc::{ErrorCode, Request, Response};
+        use koda_sandbox::policy::SandboxPolicy;
+
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+        let canonical_outside = std::fs::canonicalize(outside.path()).unwrap();
+
+        // Symlink inside root pointing outside.
+        let link = canonical_root.join("escape_link");
+        std::os::unix::fs::symlink(&canonical_outside, &link).unwrap();
+
+        let mut client = WorkerClient::spawn_with_policy(canonical_root, &SandboxPolicy::default())
+            .await
+            .expect("spawn_with_policy");
+
+        let resp = client
+            .request(&Request::Write {
+                path: link.join("secret.txt"),
+                content: b"evil".to_vec(),
+            })
+            .await
+            .expect("request");
+
+        assert!(
+            matches!(
+                resp,
+                Response::Error {
+                    code: ErrorCode::PolicyDenied,
+                    ..
+                }
+            ),
+            "symlink escape should be denied, got {resp:?}"
+        );
+    }
 }

@@ -365,10 +365,41 @@ pub async fn run_stdio() -> Result<()> {
 /// by writing "ready\n" to stdout, accept exactly one connection, and
 /// run the dispatch loop over it.
 ///
-/// This is the production transport used by [`crate::worker_client`].
-/// One connection, one slot, one worker — per-slot policy comes in 2f.
+/// No policy enforcement — use [`run_unix_socket_with_policy`] for
+/// production slots. This entry point exists for tests and legacy callers.
 #[cfg(unix)]
 pub async fn run_unix_socket(path: &Path) -> Result<()> {
+    unix_socket_serve(path, Context::default()).await
+}
+
+/// Bind a Unix domain socket at `path` and serve one connection with
+/// write-policy enforcement.
+///
+/// This is the production entry point: the `koda-fs-worker` binary
+/// calls this when `--root <path>` is supplied. Every `Write` and `Edit`
+/// request is validated against `writable_root` and `policy` via
+/// `check_write_path` before touching the filesystem.
+///
+/// The policy JSON is passed to the binary via the
+/// `KODA_FS_WORKER_POLICY` environment variable; the writable root
+/// is passed via `--root <path>`. [`crate::worker_client::WorkerClient`]
+/// handles both when spawning with [`crate::worker_client::WorkerClient::spawn_with_policy`].
+#[cfg(unix)]
+pub async fn run_unix_socket_with_policy(
+    path: &Path,
+    writable_root: PathBuf,
+    policy: SandboxPolicy,
+) -> Result<()> {
+    unix_socket_serve(path, Context::with_policy(writable_root, policy)).await
+}
+
+/// Shared Unix-socket bind/accept/serve logic.
+///
+/// Binds `path`, prints `"ready\n"` to stdout, accepts one connection,
+/// runs the dispatch loop with `ctx`. Kept private — callers pick the
+/// right context via the public wrappers above.
+#[cfg(unix)]
+async fn unix_socket_serve(path: &Path, ctx: Context) -> Result<()> {
     use std::io::Write as _;
     use tokio::net::UnixListener;
 
@@ -380,7 +411,7 @@ pub async fn run_unix_socket(path: &Path) -> Result<()> {
 
     let (stream, _addr) = listener.accept().await?;
     let (mut reader, mut writer) = tokio::io::split(stream);
-    run(&mut reader, &mut writer).await
+    run_with_ctx(&ctx, &mut reader, &mut writer).await
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -565,9 +596,8 @@ mod tests {
         let (host, worker) = duplex(65536);
         let (mut wr, mut ww) = tokio::io::split(worker);
         let policy = crate::policy::SandboxPolicy::default();
-        let join = tokio::spawn(async move {
-            run_with_policy(root, policy, &mut wr, &mut ww).await
-        });
+        let join =
+            tokio::spawn(async move { run_with_policy(root, policy, &mut wr, &mut ww).await });
         (host, join)
     }
 
@@ -576,14 +606,20 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("allowed.txt");
         let (mut host, _join) = spawn_worker_with_root(dir.path().to_path_buf());
-        write_message(&mut host, &Request::Write {
-            path: path.clone(),
-            content: b"ok".to_vec(),
-        })
+        write_message(
+            &mut host,
+            &Request::Write {
+                path: path.clone(),
+                content: b"ok".to_vec(),
+            },
+        )
         .await
         .unwrap();
         let resp: Response = read_message(&mut host).await.unwrap().unwrap();
-        assert!(matches!(resp, Response::Write { .. }), "expected Write ok, got {resp:?}");
+        assert!(
+            matches!(resp, Response::Write { .. }),
+            "expected Write ok, got {resp:?}"
+        );
         assert_eq!(std::fs::read(&path).unwrap(), b"ok");
     }
 
@@ -593,15 +629,24 @@ mod tests {
         let outside = TempDir::new().unwrap();
         let path = outside.path().join("escape.txt");
         let (mut host, _join) = spawn_worker_with_root(root.path().to_path_buf());
-        write_message(&mut host, &Request::Write {
-            path,
-            content: b"evil".to_vec(),
-        })
+        write_message(
+            &mut host,
+            &Request::Write {
+                path,
+                content: b"evil".to_vec(),
+            },
+        )
         .await
         .unwrap();
         let resp: Response = read_message(&mut host).await.unwrap().unwrap();
         assert!(
-            matches!(resp, Response::Error { code: ErrorCode::PolicyDenied, .. }),
+            matches!(
+                resp,
+                Response::Error {
+                    code: ErrorCode::PolicyDenied,
+                    ..
+                }
+            ),
             "expected PolicyDenied, got {resp:?}"
         );
     }
@@ -611,15 +656,24 @@ mod tests {
         let dir = TempDir::new().unwrap();
         // Even though root is set, /etc directly is always blocked.
         let (mut host, _join) = spawn_worker_with_root(dir.path().to_path_buf());
-        write_message(&mut host, &Request::Write {
-            path: PathBuf::from("/etc"),
-            content: b"evil".to_vec(),
-        })
+        write_message(
+            &mut host,
+            &Request::Write {
+                path: PathBuf::from("/etc"),
+                content: b"evil".to_vec(),
+            },
+        )
         .await
         .unwrap();
         let resp: Response = read_message(&mut host).await.unwrap().unwrap();
         assert!(
-            matches!(resp, Response::Error { code: ErrorCode::PolicyDenied, .. }),
+            matches!(
+                resp,
+                Response::Error {
+                    code: ErrorCode::PolicyDenied,
+                    ..
+                }
+            ),
             "expected PolicyDenied, got {resp:?}"
         );
     }
@@ -635,15 +689,24 @@ mod tests {
 
         let through_link = link.join("secret.txt");
         let (mut host, _join) = spawn_worker_with_root(root.path().to_path_buf());
-        write_message(&mut host, &Request::Write {
-            path: through_link,
-            content: b"evil".to_vec(),
-        })
+        write_message(
+            &mut host,
+            &Request::Write {
+                path: through_link,
+                content: b"evil".to_vec(),
+            },
+        )
         .await
         .unwrap();
         let resp: Response = read_message(&mut host).await.unwrap().unwrap();
         assert!(
-            matches!(resp, Response::Error { code: ErrorCode::PolicyDenied, .. }),
+            matches!(
+                resp,
+                Response::Error {
+                    code: ErrorCode::PolicyDenied,
+                    ..
+                }
+            ),
             "symlink escape should be denied, got {resp:?}"
         );
     }
