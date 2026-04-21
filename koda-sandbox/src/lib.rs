@@ -32,10 +32,12 @@
 #[cfg(target_os = "linux")]
 pub mod bwrap;
 pub mod defaults;
+pub mod monitor;
 pub mod policy;
 pub mod policy_check;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
+pub mod violations;
 pub mod workspace;
 
 pub use policy::{
@@ -43,6 +45,10 @@ pub use policy::{
     TrustPreference,
 };
 pub use policy_check::is_fully_denied;
+pub use violations::{
+    DEFAULT_RING_CAPACITY, SandboxViolationStore, Violation, ViolationKind, global_store,
+    render_block,
+};
 pub use workspace::{CwdProvider, WorkspaceProvider};
 
 use anyhow::Result;
@@ -97,9 +103,13 @@ pub struct DependencyReport {
 
 /// Backend-agnostic sandbox runtime.
 ///
-/// Phase 0 only has [`Self::transform`] and [`Self::check_dependencies`].
-/// Phase 2 will add `acquire(&self, policy) -> SandboxSlot` for the
-/// long-lived per-agent slot model.
+/// Phase 0 has [`Self::transform`] + [`Self::check_dependencies`]; Phase 2
+/// will add `acquire(&self, policy) -> SandboxSlot` for the long-lived
+/// per-agent slot model.
+///
+/// Violation tracking lives outside the trait: see [`violations::global_store`]
+/// for the process-wide ring buffer and [`monitor::parse_stderr`] for
+/// the heuristic stderr parser used by the bash tool.
 pub trait SandboxRuntime: Send + Sync {
     /// Compile a high-level command + policy into a concrete spawnable
     /// `Command`. Pure-ish (consults `$HOME`, canonicalizes paths) but

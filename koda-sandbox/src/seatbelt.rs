@@ -36,13 +36,17 @@ use tokio::process::Command;
 
 /// Build a `sandbox-exec` Command for the given command + project root.
 ///
-/// Phase 0: `_policy` is accepted but ignored — the profile is the
-/// hardcoded "strict" baseline that matches pre-#934 behavior. Phase 1
-/// switches to consuming `policy.fs.*` fields.
+/// The profile is composed in three layers, last-match-wins:
+///   1. Baseline (`build_profile_string`)         — broad reads + project writes
+///   2. Hardcoded denies (subdirs, credential dirs) — protect known sensitive
+///   3. Policy overlay (`policy_overlay_rules`)   — caller-supplied rules
+///
+/// An empty `policy` (e.g. [`SandboxPolicy::strict_default`]) produces a
+/// profile byte-identical to pre-#934 behavior.
 pub fn build_command(
     command: &str,
     project_root: &Path,
-    _policy: &SandboxPolicy,
+    policy: &SandboxPolicy,
 ) -> Result<Command> {
     let canonical = project_root
         .canonicalize()
@@ -59,6 +63,7 @@ pub fn build_command(
     let mut profile = build_profile_string(&root, &home);
     profile.push_str(&protected_subdir_deny_rules(&root));
     profile.push_str(&credential_deny_rules(&home));
+    profile.push_str(&policy_overlay_rules(policy)?);
 
     let mut cmd = Command::new("sandbox-exec");
     cmd.arg("-p")
@@ -192,6 +197,59 @@ pub(crate) fn credential_deny_rules(home: &str) -> String {
     }
 
     rules
+}
+
+/// Phase 1b of #934: render `policy.fs.*` into seatbelt rules.
+///
+/// Layered to match the issue's two-rule semantics. Order matters in
+/// seatbelt (last match wins), so within each layer we emit denies
+/// *before* their carve-out allows:
+///
+///   1. `deny_read`                 — carve denies into broad allow.
+///   2. `allow_read_within_deny`    — carve allows back into the denies.
+///   3. `allow_write`               — widen the writable set.
+///   4. `deny_write_within_allow`   — protect spots inside the writes.
+///
+/// Each path is validated through [`validate_seatbelt_path`] to prevent
+/// S-expression injection — `deny_read: vec!["foo\")(allow file-write*"]`
+/// would otherwise let a caller punch through their own sandbox.
+///
+/// Returns the empty string for an all-default policy, which keeps the
+/// pre-#934 byte-identical behavior promised by [`build_command`].
+pub(crate) fn policy_overlay_rules(policy: &SandboxPolicy) -> Result<String> {
+    let fs = &policy.fs;
+    if fs.deny_read.is_empty()
+        && fs.allow_read_within_deny.is_empty()
+        && fs.allow_write.is_empty()
+        && fs.deny_write_within_allow.is_empty()
+    {
+        return Ok(String::new());
+    }
+
+    let mut rules =
+        String::from("; \u{2500}\u{2500} policy overlay (Phase 1b of #934) \u{2500}\u{2500}\n");
+
+    for p in &fs.deny_read {
+        let s = p.as_path().to_string_lossy();
+        validate_seatbelt_path(&s)?;
+        rules.push_str(&format!("(deny file-read* (subpath \"{s}\"))\n"));
+    }
+    for p in &fs.allow_read_within_deny {
+        let s = p.as_path().to_string_lossy();
+        validate_seatbelt_path(&s)?;
+        rules.push_str(&format!("(allow file-read* (subpath \"{s}\"))\n"));
+    }
+    for p in &fs.allow_write {
+        let s = p.as_path().to_string_lossy();
+        validate_seatbelt_path(&s)?;
+        rules.push_str(&format!("(allow file-write* (subpath \"{s}\"))\n"));
+    }
+    for p in &fs.deny_write_within_allow {
+        let s = p.as_path().to_string_lossy();
+        validate_seatbelt_path(&s)?;
+        rules.push_str(&format!("(deny file-write* (subpath \"{s}\"))\n"));
+    }
+    Ok(rules)
 }
 
 #[cfg(test)]
@@ -363,5 +421,94 @@ mod tests {
     #[test]
     fn validate_seatbelt_path_accepts_normal() {
         assert!(validate_seatbelt_path("/Users/me/Projects/koda").is_ok());
+    }
+
+    // ── Phase 1b of #934: policy overlay rendering ───────────────────────
+
+    #[test]
+    fn policy_overlay_rules_empty_for_default_policy() {
+        // Phase 0/1a invariant: empty policy must produce empty overlay so
+        // the existing baseline behavior stays byte-identical.
+        let overlay = policy_overlay_rules(&SandboxPolicy::strict_default()).unwrap();
+        assert_eq!(overlay, "", "default policy must add zero rules");
+    }
+
+    #[test]
+    fn policy_overlay_rules_emit_deny_read_first_then_allow_within() {
+        // Two-layer semantics: deny rules must precede their carve-out
+        // allows so seatbelt's last-match-wins makes the allows win.
+        let mut policy = SandboxPolicy::strict_default();
+        policy.fs.deny_read = vec!["/secrets".into()];
+        policy.fs.allow_read_within_deny = vec!["/secrets/public".into()];
+        let overlay = policy_overlay_rules(&policy).unwrap();
+
+        let deny_pos = overlay
+            .find(r#"(deny file-read* (subpath "/secrets"))"#)
+            .expect("deny rule expected");
+        let allow_pos = overlay
+            .find(r#"(allow file-read* (subpath "/secrets/public"))"#)
+            .expect("allow rule expected");
+        assert!(
+            deny_pos < allow_pos,
+            "deny must come before allow-within: {overlay}"
+        );
+    }
+
+    #[test]
+    fn policy_overlay_rules_emit_allow_write_then_deny_within() {
+        let mut policy = SandboxPolicy::strict_default();
+        policy.fs.allow_write = vec!["/work".into()];
+        policy.fs.deny_write_within_allow = vec!["/work/.git/config".into()];
+        let overlay = policy_overlay_rules(&policy).unwrap();
+
+        let allow_pos = overlay
+            .find(r#"(allow file-write* (subpath "/work"))"#)
+            .expect("allow rule expected");
+        let deny_pos = overlay
+            .find(r#"(deny file-write* (subpath "/work/.git/config"))"#)
+            .expect("deny rule expected");
+        assert!(
+            allow_pos < deny_pos,
+            "allow must come before deny-within: {overlay}"
+        );
+    }
+
+    #[test]
+    fn policy_overlay_rules_validates_paths_to_prevent_injection() {
+        // Hostile policy with S-expression-injection attempt must error
+        // before producing a profile string. Otherwise a caller could
+        // punch through their own sandbox via crafted paths.
+        let mut policy = SandboxPolicy::strict_default();
+        policy.fs.deny_read = vec![r#"/foo")(allow file-write*"#.into()];
+        let result = policy_overlay_rules(&policy);
+        assert!(result.is_err(), "injection-y path must be rejected");
+    }
+
+    #[test]
+    fn policy_overlay_rules_is_appended_after_baseline_in_build_command() {
+        // Behavioral check: the overlay rules must come *after* the
+        // hardcoded credential denies so the user's policy can override
+        // (e.g. user explicitly allow_read_within_deny on ~/.ssh would
+        // override the credential read-deny if we ever had one).
+        let mut policy = SandboxPolicy::strict_default();
+        policy.fs.allow_read_within_deny = vec!["/etc/koda-marker".into()];
+
+        let cmd = build_command("true", Path::new("/tmp"), &policy).unwrap();
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let profile = &args[1];
+        let overlay_pos = profile
+            .find("policy overlay (Phase 1b of #934)")
+            .expect("overlay header missing");
+        let credential_pos = profile
+            .find("strict: write-protect credential dirs")
+            .expect("credential header missing");
+        assert!(
+            credential_pos < overlay_pos,
+            "policy overlay must come after credential rules"
+        );
     }
 }
