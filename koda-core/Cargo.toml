@@ -81,6 +81,9 @@ http = "1"
 
 # First-party workspace libraries (direct calls)
 
+# Sandbox runtime — kernel-level FS/net/exec policies (#934)
+koda-sandbox = { path = "../koda-sandbox" }
+
 # Async trait support
 async-trait = { workspace = true }
 

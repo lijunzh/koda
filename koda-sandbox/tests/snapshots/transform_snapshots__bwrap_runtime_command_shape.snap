@@ -1,0 +1,9 @@
+---
+source: koda-sandbox/tests/transform_snapshots.rs
+expression: "(program, tail)"
+---
+- bwrap
+- - "--"
+  - sh
+  - "-c"
+  - "true"
