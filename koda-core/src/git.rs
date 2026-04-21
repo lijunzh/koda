@@ -12,7 +12,7 @@
 //!
 //! - **File-level undo** — handled by [`crate::undo`] (in-memory snapshots)
 //! - **Git operations** — commits, pushes, etc. are done via the Bash tool
-//! - **Worktree management** — handled by [`crate::worktree`]
+//! - **Worktree management** — handled by [`koda_sandbox::GitWorktreeProvider`]
 //!
 //! ## Output format
 //!

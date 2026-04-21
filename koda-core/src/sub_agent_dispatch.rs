@@ -20,6 +20,7 @@ use crate::tools::{self, ToolRegistry};
 use crate::trust::{self, ToolApproval, TrustMode};
 
 use anyhow::{Context, Result};
+use koda_sandbox::{CwdProvider, GitWorktreeProvider, WorkspaceProvider};
 use std::path::Path;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -258,28 +259,30 @@ pub(crate) async fn execute_sub_agent(
         .await?;
 
     let provider = crate::providers::create_provider(&sub_config);
-    // Provision a git worktree for agents that can write files.
-    // Read-only agents (explore, plan, verify) skip this.
+    // Select workspace provider. Write-capable agents get a git worktree for
+    // isolation when available; read-only agents share the parent root.
     let has_write_tools = !sub_config
         .disallowed_tools
         .iter()
         .any(|t| t == "Write" || t == "Edit");
-    let (effective_root, worktree_path) = if has_write_tools {
-        match crate::worktree::provision(project_root, &sub_session).await {
-            Ok(crate::worktree::WorktreeResult::Created(wt)) => {
+    let workspace: Box<dyn WorkspaceProvider> = if has_write_tools {
+        Box::new(GitWorktreeProvider::new(project_root, agent_name))
+    } else {
+        Box::new(CwdProvider::new(project_root))
+    };
+    let effective_root = match workspace.provision(&sub_session).await {
+        Ok(path) => {
+            if path != project_root {
                 sink.emit(EngineEvent::Info {
                     message: format!("  \u{1f333} {agent_name}: isolated in worktree"),
                 });
-                (wt.clone(), Some(wt))
             }
-            Ok(_) => (project_root.to_path_buf(), None), // not a git repo / no git
-            Err(e) => {
-                tracing::warn!("Worktree provision failed: {e}");
-                (project_root.to_path_buf(), None)
-            }
+            path
         }
-    } else {
-        (project_root.to_path_buf(), None)
+        Err(e) => {
+            tracing::warn!("Workspace provision failed: {e}");
+            project_root.to_path_buf()
+        }
     };
     let effective_root_ref = effective_root.as_path();
 
@@ -324,10 +327,8 @@ pub(crate) async fn execute_sub_agent(
     for _ in 0..loop_guard::MAX_SUB_AGENT_ITERATIONS {
         // Respect parent cancellation (#286)
         if cancel.is_cancelled() {
-            // Clean up worktree on cancellation
-            if let Some(ref wt) = worktree_path {
-                let _ = crate::worktree::cleanup(project_root, wt).await;
-            }
+            // Release workspace on cancellation (best-effort, no user hint).
+            let _ = workspace.release(&sub_session, &effective_root).await;
             return Ok("[cancelled by parent]".to_string());
         }
         let history = db.load_context(&sub_session).await?;
@@ -376,12 +377,10 @@ pub(crate) async fn execute_sub_agent(
                 .unwrap_or_else(|| "(no output)".to_string());
             // Cache the result for future identical calls
             sub_agent_cache.put(agent_name, prompt, &result);
-            // Clean up worktree
-            if let Some(ref wt) = worktree_path
-                && let Ok(Some(changes)) = crate::worktree::cleanup(project_root, wt).await
-            {
+            // Release workspace; surface branch hint if agent left changes.
+            if let Ok(Some(hint)) = workspace.release(&sub_session, &effective_root).await {
                 sink.emit(EngineEvent::Info {
-                    message: format!("  \u{1f333} {agent_name}: {changes}"),
+                    message: format!("  \u{1f335} {agent_name}: {hint}"),
                 });
             }
             return Ok(result);
@@ -476,12 +475,10 @@ pub(crate) async fn execute_sub_agent(
             loop_guard::MAX_SUB_AGENT_ITERATIONS
         ),
     });
-    // Clean up worktree on exit
-    if let Some(ref wt) = worktree_path
-        && let Ok(Some(changes)) = crate::worktree::cleanup(project_root, wt).await
-    {
+    // Release workspace on iteration limit exit.
+    if let Ok(Some(hint)) = workspace.release(&sub_session, &effective_root).await {
         sink.emit(EngineEvent::Info {
-            message: format!("  \u{1f333} {agent_name}: {changes}"),
+            message: format!("  \u{1f335} {agent_name}: {hint}"),
         });
     }
     Ok("(sub-agent reached maximum iterations)".to_string())
