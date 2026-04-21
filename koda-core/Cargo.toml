@@ -17,17 +17,17 @@ path = "src/lib.rs"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true, features = ["full"] }
 
 # Database
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Logging
-tracing = "0.1"
+tracing = { workspace = true }
 
 # File system (respects .gitignore)
 ignore = "0.4"
@@ -66,7 +66,7 @@ reqwest = { version = "0.13", features = ["json", "stream"] }
 futures-util = "0.3"
 
 # Error handling
-anyhow = "1"
+anyhow = { workspace = true }
 
 # MCP client — connect to external MCP servers (#662)
 rmcp = { version = "1.4", default-features = false, features = [
@@ -82,16 +82,16 @@ http = "1"
 # First-party workspace libraries (direct calls)
 
 # Async trait support
-async-trait = "0.1"
+async-trait = { workspace = true }
 
 # Cancellation tokens
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { workspace = true }
 
 [features]
 test-support = []
 
 [dev-dependencies]
-insta = { version = "1", features = ["yaml", "redactions"] }
+insta = { workspace = true }
 # MCP HTTP integration test: rmcp server-side HTTP transport + axum
 rmcp = { version = "1.4", features = [
     "server",
@@ -103,12 +103,12 @@ rmcp = { version = "1.4", features = [
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "tower-log"] }
 tower = "0.5"
 koda-test-utils = { path = "../koda-test-utils" }
-tempfile = "3"
-tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }
 regex = "1"
 ignore = "0.4"
-anyhow = "1"
-async-trait = "0.1"
+anyhow = { workspace = true }
+async-trait = { workspace = true }
 
 # Integration tests that need mock infrastructure.
 # Run with: cargo test -p koda-core --features test-support
