@@ -26,6 +26,7 @@ use super::resolve_read_path;
 use super::safe_resolve_path;
 use crate::providers::ToolDefinition;
 use anyhow::Result;
+use koda_sandbox::fs::FileSystem;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::time::SystemTime;
@@ -178,6 +179,7 @@ pub async fn read_file(
     project_root: &Path,
     args: &Value,
     cache: &super::FileReadCache,
+    fs: &dyn FileSystem,
 ) -> Result<String> {
     let path_str = args["file_path"]
         .as_str()
@@ -190,7 +192,9 @@ pub async fn read_file(
     let start_line = args["start_line"].as_u64();
     let num_lines = args["num_lines"].as_u64();
 
-    // Check if the file exists and get its metadata
+    // Use tokio::fs::metadata for the mtime/size cache check — this is a
+    // host-side performance optimization only; actual content reads go through
+    // the FileSystem abstraction so the sandbox can intercept them (Phase 2d).
     let metadata = tokio::fs::metadata(&resolved)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", resolved.display(), e))?;
@@ -221,50 +225,44 @@ pub async fn read_file(
     // staleness detection in edit_file (Gemini CLI strategy).
     let mut content_sha256 = String::new();
 
+    // Read the full file through the FileSystem abstraction (no cap — we truncate
+    // for display below, but hash the raw content for staleness detection).
+    let raw_bytes = fs
+        .read(&resolved, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", resolved.display(), e))?;
+    let raw_content = String::from_utf8_lossy(&raw_bytes).into_owned();
+
     let output = match (start_line, num_lines) {
         (Some(start), Some(count)) => {
-            // Line-range read: use BufReader to avoid loading the entire file
-            use tokio::io::{AsyncBufReadExt, BufReader};
-            let file = tokio::fs::File::open(&resolved).await?;
-            let reader = BufReader::new(file);
-            let mut lines = reader.lines();
-
+            // Line-range slice — the file is already in memory from the trait call above.
             let start_idx = (start as usize).saturating_sub(1); // 1-based to 0-based
-            let mut collected = Vec::with_capacity(count as usize);
-            let mut current = 0usize;
-
-            while let Some(line) = lines.next_line().await? {
-                if current >= start_idx {
-                    collected.push(line);
-                    if collected.len() >= count as usize {
-                        break;
-                    }
-                }
-                current += 1;
-            }
-            collected.join("\n")
+            raw_content
+                .lines()
+                .skip(start_idx)
+                .take(count as usize)
+                .collect::<Vec<_>>()
+                .join("\n")
         }
         _ => {
-            // Full read with token safety cap
-            let content = tokio::fs::read_to_string(&resolved).await?;
-
+            // Full read with token safety cap.
             // Hash the raw (un-truncated) content so edit_file can detect if
             // the file changes between this read and the subsequent write.
-            content_sha256 = format!("{:x}", Sha256::digest(content.as_bytes()));
+            content_sha256 = format!("{:x}", Sha256::digest(raw_content.as_bytes()));
 
-            if content.len() > 20_000 {
+            if raw_content.len() > 20_000 {
                 // Snap to char boundary to avoid panic on multi-byte chars
                 let mut end = 20_000;
-                while !content.is_char_boundary(end) {
+                while !raw_content.is_char_boundary(end) {
                     end -= 1;
                 }
                 format!(
                     "{}\n\n... [TRUNCATED: file is {} bytes. Use start_line/num_lines for large files]",
-                    &content[..end],
-                    content.len()
+                    &raw_content[..end],
+                    raw_content.len()
                 )
             } else {
-                content
+                raw_content
             }
         }
     };
@@ -280,7 +278,7 @@ pub async fn read_file(
 
 /// Write content to a file, creating parent directories as needed.
 /// Refuses to overwrite existing files unless `overwrite=true`.
-pub async fn write_file(project_root: &Path, args: &Value) -> Result<String> {
+pub async fn write_file(project_root: &Path, args: &Value, fs: &dyn FileSystem) -> Result<String> {
     let path_str = args["file_path"]
         .as_str()
         .or_else(|| args["path"].as_str())
@@ -292,8 +290,10 @@ pub async fn write_file(project_root: &Path, args: &Value) -> Result<String> {
 
     let resolved = safe_resolve_path(project_root, path_str)?;
 
-    // Overwrite protection: refuse to clobber existing files without explicit opt-in
-    if resolved.exists() && !overwrite {
+    // Overwrite protection: refuse to clobber existing files without explicit opt-in.
+    // Use fs.stat() so the check respects the sandbox boundary.
+    let already_exists = fs.stat(&resolved).await.is_ok();
+    if already_exists && !overwrite {
         anyhow::bail!(
             "File '{}' already exists. Set overwrite=true to replace it, \
              or use Edit for targeted changes.",
@@ -301,12 +301,11 @@ pub async fn write_file(project_root: &Path, args: &Value) -> Result<String> {
         );
     }
 
-    // Ensure parent directory exists
-    if let Some(parent) = resolved.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
+    // Delegate write (+ parent-dir creation) to the FileSystem impl.
+    fs.write(&resolved, content.as_bytes())
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", resolved.display(), e))?;
 
-    tokio::fs::write(&resolved, content).await?;
     Ok(format!(
         "Written {} bytes to {}",
         content.len(),
@@ -346,6 +345,7 @@ pub async fn edit_file(
     project_root: &Path,
     args: &Value,
     cache: &super::FileReadCache,
+    fs: &dyn FileSystem,
 ) -> Result<String> {
     let path_str = args["file_path"]
         .as_str()
@@ -356,7 +356,14 @@ pub async fn edit_file(
         .ok_or_else(|| anyhow::anyhow!("Missing 'replacements' argument"))?;
 
     let resolved = safe_resolve_path(project_root, path_str)?;
-    let mut content = tokio::fs::read_to_string(&resolved).await?;
+
+    // Read through the FileSystem abstraction so the sandbox can gate it.
+    let raw_bytes = fs
+        .read(&resolved, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", resolved.display(), e))?;
+    let mut content = String::from_utf8(raw_bytes)
+        .map_err(|e| anyhow::anyhow!("File '{}' is not valid UTF-8: {}", path_str, e))?;
 
     // ── Staleness check (SHA-256, Gemini CLI strategy) ────────────────────
     //
@@ -478,7 +485,9 @@ pub async fn edit_file(
         }
     }
 
-    tokio::fs::write(&resolved, &content).await?;
+    fs.write(&resolved, content.as_bytes())
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", resolved.display(), e))?;
 
     Ok(format!(
         "Applied {} edit(s) to {}\n{}",
@@ -632,11 +641,16 @@ pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use koda_sandbox::fs::LocalFileSystem;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
     fn cache() -> super::super::FileReadCache {
         std::sync::Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    fn fs() -> LocalFileSystem {
+        LocalFileSystem::new()
     }
 
     // ── Read ─────────────────────────────────────────────────────
@@ -648,7 +662,7 @@ mod tests {
         std::fs::write(&f, "line1\nline2\nline3").unwrap();
 
         let args = json!({"file_path": f.to_string_lossy()});
-        let result = read_file(tmp.path(), &args, &cache()).await.unwrap();
+        let result = read_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
         assert!(result.contains("line1"));
         assert!(result.contains("line3"));
     }
@@ -661,7 +675,7 @@ mod tests {
         std::fs::write(&f, &content).unwrap();
 
         let args = json!({"file_path": f.to_string_lossy(), "start_line": 50, "num_lines": 3});
-        let result = read_file(tmp.path(), &args, &cache()).await.unwrap();
+        let result = read_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
         assert!(result.contains("line 50"));
         assert!(result.contains("line 52"));
         assert!(!result.contains("line 53"));
@@ -671,7 +685,7 @@ mod tests {
     async fn read_file_nonexistent_returns_error() {
         let tmp = tempfile::tempdir().unwrap();
         let args = json!({"file_path": "does_not_exist.txt"});
-        let result = read_file(tmp.path(), &args, &cache()).await;
+        let result = read_file(tmp.path(), &args, &cache(), &fs()).await;
         assert!(result.is_err());
     }
 
@@ -685,11 +699,11 @@ mod tests {
         let args = json!({"file_path": f.to_string_lossy()});
 
         // First read — populates cache.
-        let r1 = read_file(tmp.path(), &args, &c).await.unwrap();
+        let r1 = read_file(tmp.path(), &args, &c, &fs()).await.unwrap();
         assert!(r1.contains("original content"));
 
         // Second read — same file, same mtime → stale-read.
-        let r2 = read_file(tmp.path(), &args, &c).await.unwrap();
+        let r2 = read_file(tmp.path(), &args, &c, &fs()).await.unwrap();
         assert!(r2.contains("unchanged"), "expected stale-read: {r2}");
     }
 
@@ -697,7 +711,7 @@ mod tests {
     async fn read_file_missing_path_arg_errors() {
         let tmp = tempfile::tempdir().unwrap();
         let args = json!({});
-        let result = read_file(tmp.path(), &args, &cache()).await;
+        let result = read_file(tmp.path(), &args, &cache(), &fs()).await;
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("file_path"),
@@ -713,7 +727,7 @@ mod tests {
         std::fs::write(&f, &content).unwrap();
 
         let args = json!({"file_path": f.to_string_lossy()});
-        let result = read_file(tmp.path(), &args, &cache()).await.unwrap();
+        let result = read_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
         assert!(result.contains("TRUNCATED"));
         assert!(result.len() < 25_000);
     }
@@ -730,7 +744,7 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
 
         let args = json!({"file_path": "../secret.txt"});
-        let result = read_file(&project, &args, &cache()).await;
+        let result = read_file(&project, &args, &cache(), &fs()).await;
         assert!(
             result.is_ok(),
             "read outside project root should succeed; got: {:?}",
@@ -745,7 +759,7 @@ mod tests {
     async fn write_file_creates_new() {
         let tmp = tempfile::tempdir().unwrap();
         let args = json!({"file_path": "new_file.txt", "content": "hello world"});
-        let result = write_file(tmp.path(), &args).await.unwrap();
+        let result = write_file(tmp.path(), &args, &fs()).await.unwrap();
         assert!(result.contains("Written"));
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("new_file.txt")).unwrap(),
@@ -757,7 +771,7 @@ mod tests {
     async fn write_file_creates_parent_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let args = json!({"file_path": "a/b/c/deep.txt", "content": "nested"});
-        write_file(tmp.path(), &args).await.unwrap();
+        write_file(tmp.path(), &args, &fs()).await.unwrap();
         assert!(tmp.path().join("a/b/c/deep.txt").exists());
     }
 
@@ -768,7 +782,7 @@ mod tests {
         std::fs::write(&f, "original").unwrap();
 
         let args = json!({"file_path": "existing.txt", "content": "replaced"});
-        let result = write_file(tmp.path(), &args).await;
+        let result = write_file(tmp.path(), &args, &fs()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));
         // File should be unchanged.
@@ -782,7 +796,7 @@ mod tests {
         std::fs::write(&f, "old").unwrap();
 
         let args = json!({"file_path": "overwrite_me.txt", "content": "new", "overwrite": true});
-        write_file(tmp.path(), &args).await.unwrap();
+        write_file(tmp.path(), &args, &fs()).await.unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "new");
     }
 
@@ -798,7 +812,7 @@ mod tests {
             "file_path": "edit_me.txt",
             "replacements": [{"old_str": "foo", "new_str": "baz"}]
         });
-        let result = edit_file(tmp.path(), &args, &cache()).await.unwrap();
+        let result = edit_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
         assert!(result.contains("Applied 1 edit"));
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "hello world\nbaz bar");
     }
@@ -813,7 +827,7 @@ mod tests {
             "file_path": "multi.txt",
             "replacements": [{"old_str": "aaa", "new_str": "zzz", "replace_all": true}]
         });
-        let result = edit_file(tmp.path(), &args, &cache()).await.unwrap();
+        let result = edit_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
         assert!(result.contains("3 occurrences"));
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "zzz bbb zzz ccc zzz");
     }
@@ -830,7 +844,9 @@ mod tests {
             "file_path": "multi_match.txt",
             "replacements": [{"old_str": "aaa", "new_str": "zzz"}]
         });
-        let err = edit_file(tmp.path(), &args, &cache()).await.unwrap_err();
+        let err = edit_file(tmp.path(), &args, &cache(), &fs())
+            .await
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("matches 2 times"), "expected count: {msg}");
         assert!(
@@ -851,7 +867,7 @@ mod tests {
             "file_path": "edit_me.txt",
             "replacements": [{"old_str": "not here", "new_str": "x"}]
         });
-        let result = edit_file(tmp.path(), &args, &cache()).await;
+        let result = edit_file(tmp.path(), &args, &cache(), &fs()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -866,7 +882,7 @@ mod tests {
             "file_path": "edit.txt",
             "replacements": [{"old_str": "", "new_str": "x"}]
         });
-        let result = edit_file(tmp.path(), &args, &cache()).await;
+        let result = edit_file(tmp.path(), &args, &cache(), &fs()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty"));
     }
@@ -884,7 +900,7 @@ mod tests {
                 {"old_str": "gamma", "new_str": "GAMMA"}
             ]
         });
-        edit_file(tmp.path(), &args, &cache()).await.unwrap();
+        edit_file(tmp.path(), &args, &cache(), &fs()).await.unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "ALPHA beta GAMMA");
     }
 
@@ -919,7 +935,7 @@ mod tests {
             "file_path": "staleness.txt",
             "replacements": [{"old_str": "line one", "new_str": "LINE ONE"}]
         });
-        let err = edit_file(tmp.path(), &args, &c).await.unwrap_err();
+        let err = edit_file(tmp.path(), &args, &c, &fs()).await.unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("changed on disk") || msg.contains("SHA-256"),
