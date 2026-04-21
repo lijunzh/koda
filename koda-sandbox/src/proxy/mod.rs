@@ -61,10 +61,12 @@
 
 pub mod env;
 pub mod external;
+pub mod filter;
 pub mod handle;
 
 pub use env::{DEFAULT_NO_PROXY, PROXY_PORT_ENV_KEY, ca_bundle_for_policy, proxy_env_vars};
 pub use external::ExternalProxy;
+pub use filter::{DEFAULT_DEV_ALLOWLIST, Filter};
 pub use handle::ProxyHandle;
 
 // ── Shared internal helpers ──────────────────────────────────────────────────
