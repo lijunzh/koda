@@ -32,6 +32,7 @@
 #[cfg(target_os = "linux")]
 pub mod bwrap;
 pub mod defaults;
+pub mod fs;
 pub mod ipc;
 pub mod monitor;
 pub mod policy;
