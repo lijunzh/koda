@@ -1835,7 +1835,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "glob",
+ "ignore",
  "insta",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
