@@ -1,0 +1,21 @@
+[package]
+name = "koda-sandbox"
+version = "0.1.0"
+edition = "2024"
+description = "Capability-aware sandbox layer for Koda — kernel-enforced FS/net/exec policies (refs #934)"
+license = "MIT"
+repository = "https://github.com/lijunzh/koda"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["process", "rt"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }

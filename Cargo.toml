@@ -1,7 +1,24 @@
 [workspace]
-members = ["koda-core", "koda-cli", "koda-test-utils"]
+members = ["koda-core", "koda-cli", "koda-test-utils", "koda-sandbox"]
 resolver = "3"
 default-members = ["koda-cli"]
+
+# Shared dependency versions — single source of truth (DRY).
+# Per-crate feature sets are layered via `features = [...]` at the
+# consumer site. Add a dep here once it's used by 3+ crates; before
+# that it's premature DRY (YAGNI).
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1" }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+
+# Dev-only deps shared across crates.
+insta = { version = "1", features = ["yaml", "redactions"] }
+tempfile = "3"
 
 [profile.release]
 strip = true

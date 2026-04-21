@@ -1,1008 +1,120 @@
-//! Process sandboxing for the Bash tool.
+//! Process sandboxing for the Bash tool — thin shim over [`koda_sandbox`].
 //!
-//! Sandboxing is always active and determined by [`crate::trust::TrustMode`].
-//! The `SandboxMode` enum is an internal implementation detail.
+//! Phase 0 of #934 lifted the actual sandbox logic into the standalone
+//! `koda-sandbox` crate. This module preserves the in-tree API so the
+//! existing call sites (`tools/shell.rs`, `tools/mod.rs`, `trust.rs`)
+//! don't have to change.
 //!
-//! ## Platform backends
+//! ## Public API
 //!
-//! | Platform | Backend              | If unavailable              |
-//! |----------|----------------------|-----------------------------|
-//! | macOS    | `sandbox-exec -p`    | falls back to unsandboxed   |
-//! | Linux    | `bwrap` (bubblewrap) | falls back to unsandboxed   |
+//! - [`build`](crate::sandbox::build) — main entry point used by `tools/shell.rs`
+//! - [`is_available`](crate::sandbox::is_available) — used by `trust.rs` to gate Auto → Safe downgrade
+//! - [`is_fully_denied`](crate::sandbox::is_fully_denied) — used by `tools/mod.rs` for in-process Read/Edit
+//!   parity with the kernel sandbox (#882, #898)
 //!
-//! ## Trust → Sandbox mapping
+//! ## Behavior
 //!
-//! - **Plan** → Project sandbox + credential denies + read-only FS
-//! - **Safe** → Project sandbox + credential denies + read-write FS
-//! - **Auto** → Project sandbox + credential denies + read-write FS
+//! All trust modes get the same kernel-enforced "strict" baseline today
+//! (project sandbox + credential write-protection + full deny on
+//! `~/.config/koda/db`). When the platform sandbox backend is missing
+//! (e.g. `bwrap` not installed on Linux, unsupported OS), commands run
+//! unsandboxed with a one-time warning — the sandbox is best-effort and
+//! never blocks the user.
 //!
-//! All modes deny credential paths. The old `SandboxMode::None` is gone.
-//!
-//! ## Usage
-//!
-//! ```rust,ignore
-//! let cmd = sandbox::build("cargo test", project_root, &TrustMode::Safe)?;
-//! let child = cmd.stdout(Stdio::piped()).spawn()?;
-//! ```
+//! Phase 1+ will let trust modes diverge by passing a richer
+//! [`koda_sandbox::SandboxPolicy`] through the shim.
+
+// `is_fully_denied` is intentionally pub(crate) but worth linking from
+// these module docs for any koda-core developer reading them.
+#![allow(rustdoc::private_intra_doc_links)]
 
 use anyhow::Result;
+use koda_sandbox::{
+    SandboxPolicy, SandboxRuntime, SandboxTransformRequest, current_runtime,
+    is_available as ks_is_available,
+};
 use std::path::Path;
+use std::sync::OnceLock;
 use tokio::process::Command;
-
-// ── Mode ─────────────────────────────────────────────────────────────────────
-
-/// Internal sandbox level — derived from [`crate::trust::TrustMode`].
-/// Not exposed publicly; users interact via `TrustMode`.
-#[allow(dead_code)] // Variants used internally for sandbox level dispatch
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) enum SandboxMode {
-    /// No sandbox — commands run with full host access. (default)
-    #[default]
-    None,
-    /// Restrict writes to the project dir + /tmp + cache dirs.
-    /// Reads and network are unrestricted.
-    Project,
-    /// Everything from `Project`, plus read+write denies for sensitive
-    /// credential directories (`~/.ssh`, `~/.aws`, `~/.gnupg`, …).
-    ///
-    /// Inspired by Claude Code's `denyRead[]` and Gemini CLI's
-    /// `forbiddenPaths` — both place explicit deny rules after broad allows so
-    /// that the last-match-wins semantics of the underlying sandbox engine
-    /// (seatbelt on macOS, bwrap `--tmpfs` shadow on Linux) take precedence.
-    Strict,
-}
-
-#[allow(dead_code)] // Methods used by internal sandbox tests
-impl SandboxMode {
-    /// Return a numeric strictness level for comparison.
-    ///
-    /// Higher = stricter.  Used by `stricter()` to enforce the
-    /// "never weaken" invariant when inheriting from a parent.
-    fn level(&self) -> u8 {
-        match self {
-            Self::None => 0,
-            Self::Project => 1,
-            Self::Strict => 2,
-        }
-    }
-
-    /// Return whichever of `self` and `other` is stricter.
-    ///
-    /// Used by sub-agent dispatch to enforce the invariant that a child
-    /// agent can never run with a weaker sandbox than its parent — the same
-    /// pattern as Codex's `apply_spawn_agent_runtime_overrides()` which
-    /// copies the parent's runtime `sandbox_policy` onto the child config.
-    pub fn stricter(&self, other: &Self) -> Self {
-        if self.level() >= other.level() {
-            self.clone()
-        } else {
-            other.clone()
-        }
-    }
-
-    /// Parse from a CLI / env string (case-insensitive).
-    ///
-    /// Unknown values produce a warning and fall back to `None`.
-    pub fn parse(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "project" => Self::Project,
-            "strict" => Self::Strict,
-            "none" | "" => Self::None,
-            other => {
-                tracing::warn!(
-                    "Unknown --sandbox value {:?} — defaulting to none. \
-                     Valid values: none, project, strict",
-                    other
-                );
-                Self::None
-            }
-        }
-    }
-
-    /// `true` when sandboxing is active (i.e. not `None`).
-    pub fn is_active(&self) -> bool {
-        self != &Self::None
-    }
-}
-
-impl std::fmt::Display for SandboxMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::None => f.write_str("none"),
-            Self::Project => f.write_str("project"),
-            Self::Strict => f.write_str("strict"),
-        }
-    }
-}
-
-// ── Sensitive credential paths (Strict mode) ─────────────────────────────────
-//
-// Two tiers of credential protection:
-//
-// 1. **Write-only deny** (most paths) — CLI tools can *read* their own
-//    credentials (e.g. `gh`, `aws`, `kubectl`, `ssh`) but sandboxed
-//    commands cannot modify them.  This matches Codex's model where the
-//    entire host filesystem is mounted read-only via `--ro-bind / /` and
-//    credential directories receive no special treatment beyond that.
-//
-//    Risk accepted: a sandboxed command *can* read credential material
-//    and could exfiltrate it over the network.  Network-level egress
-//    restriction (Gap 4 in #844) is the proper mitigation — blocking
-//    reads without blocking network is security theater (#855).
-//
-// 2. **Full read+write deny** (`koda/db` only) — koda's own API keys
-//    live in a SQLite DB at `~/.config/koda/db/koda.db`.  The koda
-//    process runs *outside* the sandbox and doesn't need sandboxed-
-//    command access.  Blocking reads here prevents a `sqlite3` one-liner
-//    from dumping every stored API key (#847).
-//
-// Deny rules are placed *after* the broad allow so last-match-wins
-// semantics take effect (seatbelt on macOS, bwrap overlay on Linux).
-
-/// Credential *directories* under `$HOME` that are **write-protected** in
-/// Strict mode.  Reads are allowed so CLI tools can authenticate.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const CREDENTIAL_SUBDIRS: &[&str] = &[
-    ".ssh",            // SSH private keys, authorized_keys, known_hosts
-    ".aws",            // AWS access key ID, secret key, session tokens
-    ".gnupg",          // GPG private keys and trust database
-    ".kube",           // kubeconfig with cluster tokens and client certs
-    ".azure",          // Azure CLI token cache (msal_token_cache.bin, etc.)
-    ".password-store", // pass(1) GPG-encrypted password store
-    ".terraform.d",    // Terraform cloud tokens and plugin cache
-    ".claude",         // Claude Code settings and session tokens
-    ".android",        // Android SDK debug keystores and signing keys
-];
-
-/// Credential directories under `$HOME/.config/` that are **write-protected**
-/// in Strict mode.  Reads are allowed so CLI tools can authenticate.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const CREDENTIAL_CONFIG_SUBDIRS: &[&str] = &[
-    "gcloud",  // gcloud CLI credentials and service-account key files
-    "gh",      // GitHub CLI personal access tokens (hosts.yml)
-    "op",      // 1Password CLI session tokens
-    "helm",    // Helm registry auth
-    "netlify", // Netlify CLI access tokens
-    "vercel",  // Vercel CLI credentials
-    "fly",     // Fly.io CLI auth tokens
-    "doppler", // Doppler secrets manager tokens
-    "stripe",  // Stripe CLI API keys
-    "heroku",  // Heroku CLI OAuth tokens
-];
-
-/// Credential directories under `$HOME/.config/` where **both reads and
-/// writes** are denied.  These contain koda's own secrets that sandboxed
-/// commands have no legitimate reason to access.
-const CREDENTIAL_CONFIG_FULL_DENY: &[&str] = &[
-    "koda/db", // SQLite DB with plaintext API keys in kv_store table (#847)
-];
-
-/// Returns `true` when `path` falls inside a fully-denied location.
-///
-/// "Fully denied" means both reads **and** writes are blocked in the
-/// subprocess sandbox (bwrap / Seatbelt).  This function lets in-process
-/// file tools enforce the same policy so the restriction is uniform
-/// regardless of how the model accesses the path (Option A parity, #882).
-///
-/// Currently only `~/.config/koda/db` is fully denied — koda's own SQLite
-/// database containing plaintext API keys.  Ordinary credential directories
-/// (`~/.ssh`, `~/.aws`, …) are **not** included: reads are allowed there,
-/// mirroring the Bash sandbox which only write-protects them.
-///
-/// **Defense in depth (#898):** when `HOME` cannot be resolved (containers,
-/// CI, or `unset HOME` inside a sandboxed Bash command), this used to fail
-/// *open* and return `false`, exposing the koda DB to the in-process Read
-/// tool. We now fail *closed*: try `HOME`, then `USERPROFILE` (Windows),
-/// and finally fall back to a path-component pattern match so any path
-/// whose components contain `.config/koda/db` consecutively still gets
-/// denied even with no home directory at all.
-///
-/// See issue #884 for the long-term plan (Option B: sandboxed worker process)
-/// which will replace this application-layer check with true OS enforcement.
-pub(crate) fn is_fully_denied(path: &Path) -> bool {
-    is_fully_denied_with_home(path, resolve_home_dir().as_deref())
-}
-
-/// Best-effort home directory lookup with cross-platform fallback.
-///
-/// Order: `HOME` (Unix-y, including macOS) → `USERPROFILE` (Windows).
-/// Returns `None` only when *both* are unset, which signals a hostile or
-/// degenerate environment; callers must fail closed.
-fn resolve_home_dir() -> Option<String> {
-    std::env::var("HOME")
-        .ok()
-        .or_else(|| std::env::var("USERPROFILE").ok())
-        .filter(|s| !s.is_empty())
-}
-
-/// Pure helper for [`is_fully_denied`] — takes the home directory as an
-/// argument so the no-home case is unit-testable without racing on env vars.
-fn is_fully_denied_with_home(path: &Path, home: Option<&str>) -> bool {
-    // Primary check: does the path live under `${home}/.config/<rel>` for
-    // any fully-denied relative path? Only runs when home is known.
-    if let Some(home) = home {
-        let home_path = Path::new(home);
-        if CREDENTIAL_CONFIG_FULL_DENY
-            .iter()
-            .any(|rel| path.starts_with(home_path.join(".config").join(rel)))
-        {
-            return true;
-        }
-    }
-
-    // Fallback: pattern-match the path components themselves. Even with
-    // no home, any path whose components contain `.config/<rel>` as a
-    // consecutive sequence is treated as fully denied. This catches the
-    // `unset HOME` bypass and exotic paths like `/proc/self/root/.config/koda/db`
-    // that don't share a prefix with `$HOME`.
-    let components: Vec<&std::ffi::OsStr> = path
-        .components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(s) => Some(s),
-            _ => None,
-        })
-        .collect();
-
-    CREDENTIAL_CONFIG_FULL_DENY.iter().any(|rel| {
-        // Build the target sequence: [".config", <rel parts split by '/'>...]
-        let mut needle: Vec<&str> = vec![".config"];
-        needle.extend(rel.split('/'));
-        // Sliding window match against the path components.
-        components.windows(needle.len()).any(|window| {
-            window
-                .iter()
-                .zip(needle.iter())
-                .all(|(comp, want)| comp.to_str() == Some(*want))
-        })
-    })
-}
-
-/// Individual credential *files* under `$HOME` that are **write-protected**
-/// in Strict mode.  Reads are allowed so tools like `curl`, `git`, `npm`,
-/// and `docker` can authenticate.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const CREDENTIAL_FILES: &[&str] = &[
-    ".netrc",              // FTP/HTTP credentials (curl, wget, Netrc crate)
-    ".git-credentials",    // git-credential-store plaintext token file
-    ".npmrc",              // npm registry auth token
-    ".pypirc",             // PyPI upload API token
-    ".docker/config.json", // Docker Hub credentials (auths, credsStore)
-    ".vault-token",        // HashiCorp Vault session token
-    ".env",                // dotenv secrets (common project-level pattern)
-];
-
-// ── Agent-file write protection ──────────────────────────────────────────────
-//
-// Prevent sandboxed commands from modifying koda agent definitions or the
-// project-level system prompt.  Same pattern as Claude Code blocking writes
-// to `.claude/settings.json` and `.claude/agents/` — modifying these files
-// could alter system prompts, tool access, or sandbox policy on next session.
-//
-// These are subdirectories of the project root, denied in *all* sandbox modes
-// (project + strict).  The deny rule is placed *after* the project-root allow
-// so last-match-wins semantics apply.
-
-/// Directories under the project root that are write-protected in all sandbox
-/// modes.  Agent JSON files control system prompts and tool access — a
-/// sandboxed command must not be able to modify them.
-const PROTECTED_PROJECT_SUBDIRS: &[&str] = &[
-    ".koda/agents", // Agent definitions (system prompt, tools, sub-agents)
-    ".koda/skills", // Skill definitions (auto-discovered, full capabilities)
-];
-
-// ── Public entry point ────────────────────────────────────────────────────────────────────────
 
 /// Returns `true` if the platform sandbox backend is available.
 ///
 /// Used by the trust layer to downgrade Auto → Safe when the sandbox
 /// is unavailable, ensuring destructive ops still get a confirmation
-/// prompt (#860).  Cached after first probe.
+/// prompt (#860). Cached after first probe.
 pub fn is_available() -> bool {
-    use std::sync::OnceLock;
-    static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        build_inner("true", std::path::Path::new("/tmp"), &SandboxMode::Strict).is_ok()
-    })
+    ks_is_available()
+}
+
+/// Re-export of [`koda_sandbox::is_fully_denied`] for in-process file tools.
+///
+/// "Fully denied" means both reads **and** writes are blocked. Currently
+/// only `~/.config/koda/db` is fully denied — see the koda-sandbox docs
+/// for the rationale and the `HOME=unset` defense-in-depth path (#898).
+pub(crate) fn is_fully_denied(path: &Path) -> bool {
+    koda_sandbox::is_fully_denied(path)
 }
 
 /// Build a `tokio::process::Command` that runs `sh -c "{command}"` inside
-/// the appropriate sandbox for the given [`crate::trust::TrustMode`].
+/// the appropriate sandbox.
 ///
-/// All trust modes apply project-scoped sandboxing with credential denies.
-/// The mapping is:
-/// - **Plan** → Strict sandbox (credential denies + project writes)
-/// - **Safe** → Strict sandbox (credential denies + project writes)
-/// - **Auto** → Strict sandbox (credential denies + project writes)
+/// The `_trust` argument is currently unused — all trust modes use the
+/// same strict kernel-enforced baseline. Phase 1 of #934 will diverge
+/// per-mode policies through this entry point.
 ///
-/// Falls back to unsandboxed execution with a warning when the platform
-/// sandbox backend is unavailable (e.g. `bwrap` not installed on Linux,
-/// unsupported OS).  The sandbox is best-effort — we never block the user
-/// just because the kernel enforcement layer is missing.
+/// Falls back to unsandboxed execution with a one-time warning when the
+/// platform sandbox backend is unavailable. The sandbox is best-effort:
+/// we never block the user just because the kernel enforcement layer is
+/// missing.
 pub fn build(
     command: &str,
     project_root: &Path,
     _trust: &crate::trust::TrustMode,
 ) -> Result<Command> {
-    // All modes use strict sandboxing (project + credential denies).
-    // The sandbox is the safety boundary — always on when available.
-    match build_inner(command, project_root, &SandboxMode::Strict) {
-        Ok(cmd) => Ok(cmd),
+    let runtime = current_runtime();
+    warn_if_unavailable_once(runtime.as_ref());
+
+    let policy = SandboxPolicy::strict_default();
+    let req = SandboxTransformRequest {
+        command,
+        project_root,
+        policy: &policy,
+    };
+
+    match runtime.transform(req) {
+        Ok(exec) => Ok(exec.command),
         Err(e) => {
-            tracing::warn!("Sandbox unavailable, running unsandboxed: {e}");
-            Ok(plain_sh(command, project_root))
+            tracing::warn!("Sandbox transform failed, running unsandboxed: {e}");
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(command).current_dir(project_root);
+            Ok(cmd)
         }
     }
 }
 
-/// Internal build dispatcher.
-fn build_inner(command: &str, project_root: &Path, mode: &SandboxMode) -> Result<Command> {
-    match mode {
-        SandboxMode::None => Ok(plain_sh(command, project_root)),
-        SandboxMode::Project => build_project(command, project_root),
-        SandboxMode::Strict => build_strict(command, project_root),
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn plain_sh(command: &str, project_root: &Path) -> Command {
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg(command).current_dir(project_root);
-    cmd
-}
-
-/// Dispatch to the platform-specific "project" sandbox builder.
-fn build_project(command: &str, project_root: &Path) -> Result<Command> {
-    #[cfg(target_os = "macos")]
-    return macos_project(command, project_root);
-
-    #[cfg(target_os = "linux")]
-    return linux_project(command, project_root);
-
-    #[allow(unreachable_code)]
-    Err(anyhow::anyhow!(
-        "Sandbox mode 'project' requested but no sandbox backend available \
-         on this platform. Supported: macOS (sandbox-exec), Linux (bwrap)."
-    ))
-}
-
-/// Dispatch to the platform-specific "strict" sandbox builder.
-fn build_strict(command: &str, project_root: &Path) -> Result<Command> {
-    #[cfg(target_os = "macos")]
-    return macos_strict(command, project_root);
-
-    #[cfg(target_os = "linux")]
-    return linux_strict(command, project_root);
-
-    #[allow(unreachable_code)]
-    Err(anyhow::anyhow!(
-        "Sandbox mode 'strict' requested but no sandbox backend available \
-         on this platform. Supported: macOS (sandbox-exec), Linux (bwrap)."
-    ))
-}
-
-/// Reject paths containing characters that could break seatbelt S-expression
-/// syntax.  A crafted `project_root` with `"` or `(` could inject arbitrary
-/// seatbelt rules into the profile string, completely defeating the sandbox.
-///
-/// We reject rather than escape because legitimate filesystem paths should
-/// never contain these characters, and escaping adds subtle semantic risk.
-#[cfg(target_os = "macos")]
-fn validate_seatbelt_path(s: &str) -> Result<()> {
-    const FORBIDDEN: &[char] = &['"', '\\', '(', ')', '\0'];
-    if let Some(c) = s.chars().find(|c| FORBIDDEN.contains(c)) {
-        anyhow::bail!("Path contains character {c:?} unsafe for seatbelt profile: {s:?}");
-    }
-    Ok(())
-}
-
-/// Canonicalize `{home}/{rel}` if the path exists; otherwise return raw path.
-/// This ensures seatbelt subpath/literal rules match the kernel's view of the
-/// path (e.g. `/var` → `/private/var` on macOS).
-#[cfg(target_os = "macos")]
-fn home_path(home: &str, rel: &str) -> String {
-    let p = Path::new(home).join(rel);
-    p.canonicalize().unwrap_or(p).to_string_lossy().into_owned()
-}
-
-// ── macOS: sandbox-exec -p <profile string> ───────────────────────────────────
-
-/// Build the seatbelt profile for `project` mode.
-///
-/// Strategy: deny-by-default (allowlist), then open reads everywhere and
-/// restrict writes to project + temp + cache dirs.  Network left unrestricted
-/// so `curl` / `cargo fetch` / `npm install` work without modification.
-///
-/// Passing the profile via `-p` (inline) avoids a tempfile and its associated
-/// race window — a lesson from Gemini CLI's earlier implementation which used
-/// `-f <tempfile>` and had to clean up on every command.
-#[cfg(target_os = "macos")]
-fn macos_project_profile(root: &str, home: &str) -> String {
-    format!(
-        "(version 1)\n\
-         (deny default)\n\
-         (allow file-read*)\n\
-         (allow file-write*\n\
-           (subpath \"{root}\")\n\
-           (subpath \"/private/tmp\")\n\
-           (subpath \"/tmp\")\n\
-           (subpath \"{home}/.cargo\")\n\
-           (subpath \"{home}/.npm\")\n\
-           (subpath \"{home}/.cache\")\n\
-           (literal \"/dev/null\")\n\
-           (literal \"/dev/stderr\")\n\
-           (literal \"/dev/stdout\")\n\
-           (literal \"/dev/urandom\"))\n\
-         (allow network*)\n\
-         (allow process-exec*)\n\
-         (allow process-fork)\n\
-         (allow sysctl-read)\n\
-         (allow ipc-posix*)\n\
-         (allow mach*)\n"
-    )
-}
-
-/// Generate seatbelt deny-write rules for protected project subdirectories.
-///
-/// Prevents sandboxed commands from modifying agent definitions or skills
-/// that could alter system prompts or tool access on next session.  Same
-/// pattern as Claude Code blocking writes to `.claude/settings.json` and
-/// `.claude/agents/`.
-#[cfg(target_os = "macos")]
-fn protected_subdir_deny_rules_macos(root: &str) -> String {
-    let mut rules = String::from(
-        "; ── deny writes to protected project subdirs (.koda/agents, .koda/skills) ──\n",
-    );
-    for rel in PROTECTED_PROJECT_SUBDIRS {
-        let p = Path::new(root).join(rel);
-        let canonical = p.canonicalize().unwrap_or(p).to_string_lossy().into_owned();
-        rules.push_str(&format!("(deny file-write* (subpath \"{canonical}\"))\n"));
-    }
-    rules
-}
-
-/// Generate seatbelt deny rules for credential paths (Strict mode).
-///
-/// Two tiers:
-/// - **Write-only deny** for most paths — lets CLI tools read their own
-///   credentials while preventing sandboxed commands from modifying them.
-/// - **Full read+write deny** for `koda/db` only — koda’s own API keys
-///   should never be accessible from inside the sandbox (#847).
-///
-/// Rules are placed *after* the broad `(allow file-read*)` so that
-/// seatbelt’s last-match-wins semantics make them take precedence.
-#[cfg(target_os = "macos")]
-fn credential_deny_rules_macos(home: &str) -> String {
-    let mut rules = String::from("; ── strict: write-protect credential dirs (reads allowed) ──\n");
-
-    // Tier 1 — write-only deny (CLI tools can still read).
-    for rel in CREDENTIAL_SUBDIRS {
-        let p = home_path(home, rel);
-        rules.push_str(&format!("(deny file-write* (subpath \"{p}\"))\n"));
-    }
-    for rel in CREDENTIAL_CONFIG_SUBDIRS {
-        let p = home_path(home, &format!(".config/{rel}"));
-        rules.push_str(&format!("(deny file-write* (subpath \"{p}\"))\n"));
-    }
-    for rel in CREDENTIAL_FILES {
-        let p = home_path(home, rel);
-        rules.push_str(&format!("(deny file-write* (literal \"{p}\"))\n"));
-    }
-
-    // Tier 2 — full read+write deny (koda’s own secrets).
-    rules.push_str("; ── strict: full deny for koda-internal secrets ─────────────\n");
-    for rel in CREDENTIAL_CONFIG_FULL_DENY {
-        let p = home_path(home, &format!(".config/{rel}"));
-        rules.push_str(&format!(
-            "(deny file-read* file-write* (subpath \"{p}\"))\n"
-        ));
-    }
-    rules
-}
-
-#[cfg(target_os = "macos")]
-fn macos_project(command: &str, project_root: &Path) -> Result<Command> {
-    let canonical = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
-    let root = canonical.to_string_lossy();
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
-    validate_seatbelt_path(&root)?;
-    validate_seatbelt_path(&home)?;
-
-    let mut profile = macos_project_profile(&root, &home);
-    // Deny writes to agent/skill files within the project (CC parity #844).
-    profile.push_str(&protected_subdir_deny_rules_macos(&root));
-
-    let mut cmd = Command::new("sandbox-exec");
-    cmd.arg("-p")
-        .arg(profile)
-        .arg("sh")
-        .arg("-c")
-        .arg(command)
-        .current_dir(project_root);
-    Ok(cmd)
-}
-
-#[cfg(target_os = "macos")]
-fn macos_strict(command: &str, project_root: &Path) -> Result<Command> {
-    let canonical = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
-    let root = canonical.to_string_lossy();
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".into());
-    validate_seatbelt_path(&root)?;
-    validate_seatbelt_path(&home)?;
-
-    // Start from the project profile then append credential deny rules.
-    // Seatbelt evaluates rules in order; later rules win for the same path,
-    // so the denies override the earlier broad `(allow file-read*)`.
-    // Same last-match-wins approach as Gemini CLI's seatbeltArgsBuilder.ts.
-    let mut profile = macos_project_profile(&root, &home);
-    profile.push_str(&protected_subdir_deny_rules_macos(&root));
-    profile.push_str(&credential_deny_rules_macos(&home));
-
-    let mut cmd = Command::new("sandbox-exec");
-    cmd.arg("-p")
-        .arg(profile)
-        .arg("sh")
-        .arg("-c")
-        .arg(command)
-        .current_dir(project_root);
-    Ok(cmd)
-}
-
-// ── Linux: bwrap (bubblewrap) ─────────────────────────────────────────────────
-
-#[cfg(target_os = "linux")]
-fn bwrap_available() -> bool {
-    use std::sync::OnceLock;
-    static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        // Just checking `bwrap --version` is insufficient: bwrap may be
-        // installed but unable to create sandboxes (e.g. GitHub Actions
-        // runners lack unprivileged user namespaces → "setting up uid map:
-        // Permission denied"). Run a real sandboxed command to verify.
-        std::process::Command::new("bwrap")
-            .args(["--ro-bind", "/", "/", "--", "true"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    })
-}
-
-/// Build a bwrap `Command` with the base project-mode filesystem view.
-///
-/// Returns `(cmd, home)` with everything set up *except* the final
-/// `-- sh -c command` terminator — callers add that (plus any extra mounts for
-/// strict mode) before spawning.
-#[cfg(target_os = "linux")]
-fn linux_base_cmd(project_root: &Path) -> (Command, String) {
-    let root = project_root.to_string_lossy().into_owned();
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
-
-    // Strategy: bind the whole root filesystem read-only, then selectively
-    // add read-write binds for project + temp + common caches.
-    let mut cmd = Command::new("bwrap");
-    cmd.args(["--ro-bind", "/", "/"]);
-    cmd.args(["--bind", &root, &root]);
-    cmd.args(["--bind", "/tmp", "/tmp"]);
-    if Path::new("/var/tmp").exists() {
-        cmd.args(["--bind", "/var/tmp", "/var/tmp"]);
-    }
-    // Common package caches — avoids re-downloading on every invocation.
-    for subdir in &[".cargo", ".npm", ".cache"] {
-        let p = format!("{home}/{subdir}");
-        if Path::new(&p).exists() {
-            cmd.args(["--bind", p.as_str(), p.as_str()]);
+/// Emit a single warning per process if the active runtime can't enforce
+/// kernel-level isolation. Without this users get silent unsandboxed
+/// execution on, e.g., Linux without `bwrap` installed — surprising
+/// behavior that the previous `build_inner()` path warned about explicitly.
+fn warn_if_unavailable_once(runtime: &dyn SandboxRuntime) {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        let report = runtime.check_dependencies();
+        if !report.available {
+            tracing::warn!(
+                "Sandbox backend {:?} unavailable — commands run unsandboxed. {}",
+                report.backend,
+                report.reason.as_deref().unwrap_or("")
+            );
         }
-    }
-    cmd.args(["--dev", "/dev"]).args(["--proc", "/proc"]);
-
-    // Deny writes to protected project subdirs (.koda/agents, .koda/skills).
-    // Re-bind as read-only after the project-root writable bind (CC parity #844).
-    // Pre-create if absent so bwrap has a mountpoint — otherwise a sandboxed
-    // command could `mkdir -p` and write agent definitions.
-    for rel in PROTECTED_PROJECT_SUBDIRS {
-        let p = format!("{root}/{rel}");
-        let _ = std::fs::create_dir_all(&p);
-        cmd.args(["--ro-bind", &p, &p]);
-    }
-
-    (cmd, home)
+    });
 }
 
-#[cfg(target_os = "linux")]
-fn linux_project(command: &str, project_root: &Path) -> Result<Command> {
-    if !bwrap_available() {
-        anyhow::bail!(
-            "Sandbox mode 'project' requested but bwrap is not installed. \
-             Install with: apt install bubblewrap  /  dnf install bubblewrap"
-        );
-    }
-
-    let (mut cmd, _home) = linux_base_cmd(project_root);
-    cmd.args(["--", "sh", "-c", command])
-        .current_dir(project_root);
-    Ok(cmd)
-}
-
-/// Strict mode on Linux: project-mode base + credential write-protection
-/// and full deny for koda-internal secrets.
-///
-/// The base command (`linux_base_cmd`) already mounts the entire root
-/// filesystem read-only via `--ro-bind / /`, so credential directories
-/// are inherently write-protected.  No additional rules are needed for
-/// write-deny — CLI tools like `gh`, `aws`, `kubectl` can read their
-/// own config files through the base read-only bind.
-///
-/// The only addition is a `--tmpfs` shadow for `koda/db` to block reads
-/// of koda's own API keys (#847).  All other credential paths remain
-/// readable (Codex-style model — see #855).
-#[cfg(target_os = "linux")]
-fn linux_strict(command: &str, project_root: &Path) -> Result<Command> {
-    if !bwrap_available() {
-        anyhow::bail!(
-            "Sandbox mode 'strict' requested but bwrap is not installed. \
-             Install with: apt install bubblewrap  /  dnf install bubblewrap"
-        );
-    }
-
-    let (mut cmd, home) = linux_base_cmd(project_root);
-
-    // Full deny (read+write) for koda-internal secrets only.
-    // The base `--ro-bind / /` already write-protects everything else.
-    for rel in CREDENTIAL_CONFIG_FULL_DENY {
-        let p = format!("{home}/.config/{rel}");
-        if Path::new(&p).exists() {
-            cmd.args(["--tmpfs", &p]);
-        }
-    }
-
-    cmd.args(["--", "sh", "-c", command])
-        .current_dir(project_root);
-    Ok(cmd)
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── Unit: enum behaviour ───────────────────────────────────────────────
-
-    #[test]
-    fn stricter_returns_higher_level() {
-        use SandboxMode::*;
-        // Same mode → returns self
-        assert_eq!(None.stricter(&None), None);
-        assert_eq!(Project.stricter(&Project), Project);
-        assert_eq!(Strict.stricter(&Strict), Strict);
-        // Different modes → returns the stricter one
-        assert_eq!(None.stricter(&Project), Project);
-        assert_eq!(Project.stricter(&None), Project);
-        assert_eq!(None.stricter(&Strict), Strict);
-        assert_eq!(Strict.stricter(&None), Strict);
-        assert_eq!(Project.stricter(&Strict), Strict);
-        assert_eq!(Strict.stricter(&Project), Strict);
-    }
-
-    #[test]
-    fn parse_roundtrip() {
-        assert_eq!(SandboxMode::parse("none"), SandboxMode::None);
-        assert_eq!(SandboxMode::parse("project"), SandboxMode::Project);
-        assert_eq!(SandboxMode::parse("PROJECT"), SandboxMode::Project);
-        assert_eq!(SandboxMode::parse("strict"), SandboxMode::Strict);
-        assert_eq!(SandboxMode::parse("STRICT"), SandboxMode::Strict);
-        assert_eq!(SandboxMode::parse(""), SandboxMode::None);
-        // Unknown value → None (warning is logged, not an error)
-        assert_eq!(SandboxMode::parse("banana"), SandboxMode::None);
-    }
-
-    #[test]
-    fn display_roundtrip() {
-        assert_eq!(SandboxMode::None.to_string(), "none");
-        assert_eq!(SandboxMode::Project.to_string(), "project");
-        assert_eq!(SandboxMode::Strict.to_string(), "strict");
-    }
-
-    #[test]
-    fn default_is_none() {
-        assert_eq!(SandboxMode::default(), SandboxMode::None);
-    }
-
-    #[test]
-    fn is_active() {
-        assert!(!SandboxMode::None.is_active());
-        assert!(SandboxMode::Project.is_active());
-        assert!(SandboxMode::Strict.is_active());
-    }
-
-    // ── Unit: is_fully_denied ──────────────────────────────────────────────
-
-    #[test]
-    fn fully_denied_blocks_koda_db() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".into());
-        let koda_db = Path::new(&home).join(".config/koda/db");
-        assert!(
-            is_fully_denied(&koda_db),
-            "~/.config/koda/db must be fully denied"
-        );
-        // Sub-paths inside it are also denied.
-        assert!(is_fully_denied(&koda_db.join("koda.db")));
-    }
-
-    #[test]
-    fn fully_denied_allows_credential_dirs() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".into());
-        let home = Path::new(&home);
-        // Credential dirs are write-protected but reads are allowed — they
-        // must NOT appear in the fully-denied list.
-        for rel in &[".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud"] {
-            assert!(
-                !is_fully_denied(&home.join(rel)),
-                "{rel} must NOT be fully denied (reads allowed)"
-            );
-        }
-    }
-
-    #[test]
-    fn fully_denied_allows_project_and_system_paths() {
-        assert!(!is_fully_denied(Path::new(
-            "/home/user/project/src/main.rs"
-        )));
-        assert!(!is_fully_denied(Path::new("/tmp/scratch.txt")));
-        assert!(!is_fully_denied(Path::new("/etc/hosts")));
-    }
-
-    // ── Regression: HOME-unset bypass (#898) ───────────────────────────────
-    //
-    // Before the fix, an unset HOME caused is_fully_denied() to return false
-    // for every path, opening a hole where `unset HOME` inside a sandboxed
-    // Bash command (or any container with no HOME) could read koda's DB via
-    // the in-process Read tool. The fix uses a path-component fallback so
-    // we still fail closed.
-    //
-    // We test the pure helper (`is_fully_denied_with_home`) with an explicit
-    // `home: None` rather than mutating the process-wide HOME env var, which
-    // would race against parallel tests in the same binary.
-
-    #[test]
-    fn fully_denied_blocks_koda_db_when_home_is_none() {
-        // The historical bypass: tool resolves to a real-looking path but
-        // HOME is unset, so the prefix check can't fire. Path-segment
-        // fallback must still deny it.
-        for path in [
-            "/root/.config/koda/db",
-            "/root/.config/koda/db/koda.db",
-            "/home/runner/.config/koda/db/koda.db",
-            "/proc/self/root/.config/koda/db/koda.db",
-            ".config/koda/db/koda.db", // relative path, no anchor at all
-        ] {
-            assert!(
-                is_fully_denied_with_home(Path::new(path), None),
-                "{path:?} must be denied even with HOME=None"
-            );
-        }
-    }
-
-    #[test]
-    fn fully_denied_no_home_still_allows_normal_paths() {
-        // Defense-in-depth fallback must not over-block ordinary paths.
-        for path in [
-            "/home/user/project/src/main.rs",
-            "/tmp/scratch.txt",
-            "/etc/hosts",
-            "/home/user/.config/git/config", // .config but not koda/db
-            "/home/user/.config/koda/agents/foo.json", // koda but not db
-            "/var/lib/koda-db-backups/2025.tar", // contains 'koda' and 'db'
-                                             // but not the sequence
-                                             // .config/koda/db
-        ] {
-            assert!(
-                !is_fully_denied_with_home(Path::new(path), None),
-                "{path:?} must NOT be denied (no koda secrets)"
-            );
-        }
-    }
-
-    #[test]
-    fn fully_denied_uses_home_when_provided() {
-        // Sanity check that the explicit-home path still works and matches
-        // a non-HOME directory the user passes in.
-        let custom_home = "/srv/koda-runner";
-        assert!(is_fully_denied_with_home(
-            Path::new("/srv/koda-runner/.config/koda/db/koda.db"),
-            Some(custom_home),
-        ));
-        assert!(!is_fully_denied_with_home(
-            Path::new("/srv/koda-runner/notes.md"),
-            Some(custom_home),
-        ));
-    }
-
-    #[test]
-    fn resolve_home_dir_treats_empty_as_unset() {
-        // Empty HOME (`HOME=""`) is just as broken as unset — both should
-        // route through the no-home fallback. The .filter() in
-        // resolve_home_dir() guarantees this; verify via direct call to
-        // the helper since we can't safely mutate env in tests.
-        assert!(is_fully_denied_with_home(
-            Path::new("/anywhere/.config/koda/db/koda.db"),
-            None, // simulating resolve_home_dir() returning None
-        ));
-    }
-
-    // ── Unit: strict profile contains deny rules ───────────────────────────────
-    //
-    // We test the profile *string* rather than kernel enforcement to keep the
-    // test hermetic — the kernel-enforcement tests below verify the enforcement
-    // end-to-end for project mode (same underlying mechanism).
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn strict_profile_write_protects_ssh_dir() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
-        let rules = credential_deny_rules_macos(&home);
-        let ssh = home_path(&home, ".ssh");
-        assert!(
-            rules.contains(&format!("(deny file-write* (subpath \"{ssh}\"))")),
-            "strict profile must write-protect ~/.ssh"
-        );
-        // Reads should NOT be denied — CLI tools need credential access (#855).
-        assert!(
-            !rules.contains(&format!(
-                "(deny file-read* file-write* (subpath \"{ssh}\"))"
-            )),
-            "strict profile must NOT read-deny ~/.ssh (breaks ssh/git)"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn strict_profile_write_protects_aws_dir() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
-        let rules = credential_deny_rules_macos(&home);
-        let aws = home_path(&home, ".aws");
-        assert!(
-            rules.contains(&format!("(deny file-write* (subpath \"{aws}\"))")),
-            "strict profile must write-protect ~/.aws"
-        );
-        assert!(
-            !rules.contains(&format!(
-                "(deny file-read* file-write* (subpath \"{aws}\"))"
-            )),
-            "strict profile must NOT read-deny ~/.aws (breaks aws CLI)"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn strict_profile_write_protects_gh_dir() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
-        let rules = credential_deny_rules_macos(&home);
-        let gh = home_path(&home, ".config/gh");
-        assert!(
-            rules.contains(&format!("(deny file-write* (subpath \"{gh}\"))")),
-            "strict profile must write-protect ~/.config/gh"
-        );
-        assert!(
-            !rules.contains(&format!("(deny file-read* file-write* (subpath \"{gh}\"))")),
-            "strict profile must NOT read-deny ~/.config/gh (breaks gh CLI, #855)"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn strict_profile_write_protects_claude_dir() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
-        let rules = credential_deny_rules_macos(&home);
-        let claude = home_path(&home, ".claude");
-        assert!(
-            rules.contains(&format!("(deny file-write* (subpath \"{claude}\"))")),
-            "strict profile must write-protect ~/.claude"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn strict_profile_write_protects_android_dir() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
-        let rules = credential_deny_rules_macos(&home);
-        let android = home_path(&home, ".android");
-        assert!(
-            rules.contains(&format!("(deny file-write* (subpath \"{android}\"))")),
-            "strict profile must write-protect ~/.android"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn strict_profile_write_protects_netlify_dir() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
-        let rules = credential_deny_rules_macos(&home);
-        let netlify = home_path(&home, ".config/netlify");
-        assert!(
-            rules.contains(&format!("(deny file-write* (subpath \"{netlify}\"))")),
-            "strict profile must write-protect ~/.config/netlify"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn strict_profile_write_protects_vercel_dir() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
-        let rules = credential_deny_rules_macos(&home);
-        let vercel = home_path(&home, ".config/vercel");
-        assert!(
-            rules.contains(&format!("(deny file-write* (subpath \"{vercel}\"))")),
-            "strict profile must write-protect ~/.config/vercel"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn strict_profile_fully_denies_koda_db() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
-        let rules = credential_deny_rules_macos(&home);
-        let koda_db = home_path(&home, ".config/koda/db");
-        assert!(
-            rules.contains(&format!(
-                "(deny file-read* file-write* (subpath \"{koda_db}\"))"
-            )),
-            "strict profile must fully deny ~/.config/koda/db (plaintext API keys, #847)"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn strict_profile_write_protects_credential_files() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
-        let rules = credential_deny_rules_macos(&home);
-        let netrc = home_path(&home, ".netrc");
-        assert!(
-            rules.contains(&format!("(deny file-write* (literal \"{netrc}\"))")),
-            "strict profile must write-protect ~/.netrc"
-        );
-        assert!(
-            !rules.contains(&format!(
-                "(deny file-read* file-write* (literal \"{netrc}\"))"
-            )),
-            "strict profile must NOT read-deny ~/.netrc (breaks curl/wget)"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn strict_deny_rules_come_after_broad_allow() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
-        let project = Path::new("/tmp/test-project");
-        let root = project.to_string_lossy().into_owned();
-        let profile = macos_project_profile(&root, &home);
-        let deny_rules = credential_deny_rules_macos(&home);
-        // Simulate what macos_strict does: project profile then deny rules.
-        let full = format!("{profile}{deny_rules}");
-        let allow_pos = full.find("(allow file-read*)").unwrap();
-        // Full deny (koda/db) must come after broad allow.
-        let deny_pos = full.find("(deny file-read* file-write*").unwrap();
-        assert!(
-            deny_pos > allow_pos,
-            "deny rules must appear after the broad allow (last-match-wins)"
-        );
-        // Write-only deny must also come after broad allow.
-        let write_deny_pos = full.find("(deny file-write*").unwrap();
-        assert!(
-            write_deny_pos > allow_pos,
-            "write-deny rules must appear after the broad allow"
-        );
-    }
-
-    // ── Integration: kernel-level enforcement ──────────────────────────────
-    //
-    // Spawn real child processes through the sandbox and verify that the
-    // kernel actually enforces the policy.
 
     /// Sandbox build must always succeed (falls back to unsandboxed if
     /// the platform backend is unavailable, e.g. no `bwrap` on CI Linux).
@@ -1114,11 +226,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(
-            !status.success(),
-            "strict: write outside project must be blocked"
-        );
-        assert!(!target.exists());
+        assert!(!status.success(), "write outside project must be blocked");
+        assert!(!target.exists(), "file must not have been created");
     }
 
     /// Strict mode: reads to non-sensitive paths must still work.
@@ -1142,16 +251,12 @@ mod tests {
     }
 
     /// Strict mode: reading `~/.config/koda/db/` must be blocked (#847).
-    ///
-    /// The koda SQLite DB contains plaintext API keys in the `kv_store` table.
-    /// A sandboxed bash command must not be able to `sqlite3` it.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn macos_strict_blocks_koda_db_read() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
         let db_dir = format!("{home}/.config/koda/db");
         if !Path::new(&db_dir).exists() {
-            // DB dir doesn't exist on this machine — skip but don't fail.
             eprintln!("skip: {db_dir} does not exist");
             return;
         }
@@ -1172,9 +277,6 @@ mod tests {
     }
 
     /// Strict mode: reading `~/.ssh/` must now be allowed (#855).
-    ///
-    /// CLI tools like `ssh` and `git` need read access to their own credentials.
-    /// Only koda-internal secrets (`koda/db`) remain fully denied.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn macos_strict_allows_ssh_read() {
@@ -1236,7 +338,6 @@ mod tests {
     #[tokio::test]
     async fn macos_project_blocks_write_to_koda_agents() {
         let dir = tempfile::tempdir().unwrap();
-        // Create the .koda/agents/ directory so the deny rule kicks in.
         std::fs::create_dir_all(dir.path().join(".koda/agents")).unwrap();
         let target = dir.path().join(".koda/agents/evil.json");
 
@@ -1282,8 +383,7 @@ mod tests {
         assert!(!target.exists());
     }
 
-    /// Project mode: writing to normal project files must still work
-    /// (regression check — don't over-deny).
+    /// Project mode: writing to normal project files must still work.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn macos_project_allows_normal_writes_with_agents_dir() {
@@ -1308,7 +408,7 @@ mod tests {
     }
 
     /// Project mode: writing to `.koda/skills/` inside the project must be
-    /// blocked (same protection as `.koda/agents/`).
+    /// blocked.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn macos_project_blocks_write_to_koda_skills() {
@@ -1334,14 +434,8 @@ mod tests {
     }
 
     // ── Integration: Linux bwrap credential enforcement ────────────────────
-    //
-    // Mirror the macOS seatbelt tests for bwrap on Linux.  The base bwrap
-    // command mounts `/ ` read-only, so credential dirs are write-protected
-    // by default.  Reads must still succeed (Codex-style model, #855).
 
-    /// Strict mode on Linux: `cat ~/.ssh/known_hosts` (or any file in ~/.ssh)
-    /// must succeed — bwrap inherits the root filesystem read-only, and the
-    /// SSH directory is included in that read-only view.
+    /// Strict mode on Linux: `cat ~/.ssh/known_hosts` must succeed.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn linux_strict_allows_ssh_read() {
@@ -1367,9 +461,7 @@ mod tests {
         );
     }
 
-    /// Strict mode on Linux: `touch ~/.ssh/canary` must fail — the base
-    /// bwrap `--ro-bind / /` makes the entire root filesystem read-only,
-    /// so writes to credential dirs are blocked without extra rules.
+    /// Strict mode on Linux: `touch ~/.ssh/canary` must fail.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn linux_strict_blocks_ssh_write() {
@@ -1397,8 +489,7 @@ mod tests {
         assert!(!Path::new(&canary).exists());
     }
 
-    /// Strict mode on Linux: `cat ~/.aws/credentials` must succeed —
-    /// the AWS CLI needs to read credentials to authenticate.
+    /// Strict mode on Linux: `cat ~/.aws/credentials` must succeed.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn linux_strict_allows_aws_read() {
@@ -1422,21 +513,5 @@ mod tests {
             status.success(),
             "linux strict: reading ~/.aws/ must be allowed (aws CLI needs credentials)"
         );
-    }
-
-    /// Seatbelt path validation: reject paths with characters that could
-    /// inject rules into the profile string.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn seatbelt_rejects_path_with_quote() {
-        let result = validate_seatbelt_path("/tmp/evil\")(allow file-write*");
-        assert!(result.is_err(), "path with quote must be rejected");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn seatbelt_accepts_normal_path() {
-        assert!(validate_seatbelt_path("/Users/test/project").is_ok());
-        assert!(validate_seatbelt_path("/tmp/koda-test-12345").is_ok());
     }
 }

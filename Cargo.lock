@@ -1808,6 +1808,7 @@ dependencies = [
  "http",
  "ignore",
  "insta",
+ "koda-sandbox",
  "koda-test-utils",
  "path-clean",
  "regex",
@@ -1826,6 +1827,20 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "koda-sandbox"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "insta",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
