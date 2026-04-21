@@ -43,6 +43,7 @@
 use crate::fs::FsError;
 use crate::ipc::{Request, Response, read_message, write_message};
 use crate::policy::SandboxPolicy;
+use crate::proxy::{ProxyHandle, ca_bundle_for_policy, proxy_env_vars};
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -109,7 +110,7 @@ impl WorkerClient {
     /// Blocks the current async task for up to 5 seconds waiting for
     /// the worker to bind its socket and write "ready\n" to stdout.
     pub async fn spawn() -> Result<Self> {
-        Self::spawn_inner(None).await
+        Self::spawn_inner(None, None).await
     }
 
     /// Spawn a worker with write-policy enforcement.
@@ -122,11 +123,47 @@ impl WorkerClient {
     /// Use this for production slots; use [`spawn`](Self::spawn) only
     /// for tests and the `--no-sandbox` escape hatch.
     pub async fn spawn_with_policy(writable_root: PathBuf, policy: &SandboxPolicy) -> Result<Self> {
-        Self::spawn_inner(Some((writable_root, policy))).await
+        Self::spawn_inner(Some((writable_root, policy)), None).await
+    }
+
+    /// Spawn a worker with write-policy enforcement *and* proxy env injection.
+    ///
+    /// Same as [`spawn_with_policy`](Self::spawn_with_policy), plus pipes the
+    /// proxy env-var bouquet (see [`crate::proxy::proxy_env_vars`]) into the
+    /// worker subprocess so anything *it* execs (e.g. via `Bash` tool) inherits
+    /// `HTTPS_PROXY` and friends.
+    ///
+    /// `proxy` may be `None` — then this is exactly equivalent to
+    /// [`spawn_with_policy`](Self::spawn_with_policy). The CA-bundle path is sourced from
+    /// `policy.net.mitm.ca_bundle` (if any).
+    ///
+    /// ## Fail-open caller pattern
+    ///
+    /// If `proxy` is `None` because the user's external proxy failed to
+    /// start, callers should `warn!` and proceed — the worker still works,
+    /// just without egress restrictions. See [`crate::proxy::ExternalProxy::spawn`]
+    /// docs for the full contract.
+    pub async fn spawn_with_policy_and_proxy(
+        writable_root: PathBuf,
+        policy: &SandboxPolicy,
+        proxy: Option<&ProxyHandle>,
+    ) -> Result<Self> {
+        let env = proxy.map(|p| {
+            // CA bundle preference: explicit `ProxyHandle::ca_bundle()` (3b
+            // built-in proxy will set this) wins over the policy.
+            let ca = p.ca_bundle().or_else(|| ca_bundle_for_policy(&policy.net));
+            proxy_env_vars(p.port, ca)
+        });
+        Self::spawn_inner(Some((writable_root, policy)), env).await
     }
 
     /// Shared spawn logic. `policy_args` being `None` → no `--root`/policy env.
-    async fn spawn_inner(policy_args: Option<(PathBuf, &SandboxPolicy)>) -> Result<Self> {
+    /// `extra_env`, when `Some`, is appended to the worker's process env
+    /// (used by Phase 3a to inject the proxy bouquet).
+    async fn spawn_inner(
+        policy_args: Option<(PathBuf, &SandboxPolicy)>,
+        extra_env: Option<Vec<(String, String)>>,
+    ) -> Result<Self> {
         let socket_path = unique_socket_path();
         let bin = worker_binary()?;
 
@@ -141,6 +178,10 @@ impl WorkerClient {
             let policy_json =
                 serde_json::to_string(policy).context("serialize SandboxPolicy for worker env")?;
             cmd.env("KODA_FS_WORKER_POLICY", policy_json);
+        }
+
+        if let Some(env) = extra_env {
+            cmd.envs(env);
         }
 
         let mut child = cmd

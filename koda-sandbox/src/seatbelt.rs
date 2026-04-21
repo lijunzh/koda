@@ -48,6 +48,41 @@ pub fn build_command(
     project_root: &Path,
     policy: &SandboxPolicy,
 ) -> Result<Command> {
+    build_command_inner(command, project_root, policy, None)
+}
+
+/// Build a sandboxed `sandbox-exec` command with proxied egress.
+///
+/// Same as [`build_command`] but uses [`build_proxied_profile_string`]
+/// instead of the open-network baseline: every TCP outbound is denied
+/// except connections to `127.0.0.1:proxy_port` (the egress proxy).
+/// Pair with [`crate::worker_client::WorkerClient::spawn_with_policy_and_proxy`] for
+/// matching env-var injection.
+///
+/// `allow_local_binding` corresponds to `policy.net.allow_local_binding`
+/// (when that field exists — today it's a hardcoded `false` until the
+/// `NetPolicy` schema gains the field). Pass `false` for the strict default.
+pub fn build_command_with_proxy(
+    command: &str,
+    project_root: &Path,
+    policy: &SandboxPolicy,
+    proxy_port: u16,
+    allow_local_binding: bool,
+) -> Result<Command> {
+    build_command_inner(
+        command,
+        project_root,
+        policy,
+        Some((proxy_port, allow_local_binding)),
+    )
+}
+
+fn build_command_inner(
+    command: &str,
+    project_root: &Path,
+    policy: &SandboxPolicy,
+    proxy: Option<(u16, bool)>,
+) -> Result<Command> {
     let canonical = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
@@ -60,7 +95,12 @@ pub fn build_command(
     // Seatbelt evaluates rules in order; later rules win for the same path,
     // so the denies override the earlier broad `(allow file-read*)`.
     // Same last-match-wins approach as Gemini CLI's seatbeltArgsBuilder.ts.
-    let mut profile = build_profile_string(&root, &home);
+    let mut profile = match proxy {
+        Some((port, allow_local_binding)) => {
+            build_proxied_profile_string(&root, &home, port, allow_local_binding)
+        }
+        None => build_profile_string(&root, &home),
+    };
     profile.push_str(&protected_subdir_deny_rules(&root));
     profile.push_str(&credential_deny_rules(&home));
     profile.push_str(&policy_overlay_rules(policy)?);
@@ -114,10 +154,17 @@ pub(crate) fn home_path(home: &str, rel: &str) -> String {
 /// Build the seatbelt profile for the project-mode baseline.
 ///
 /// Strategy: deny-by-default (allowlist), then open reads everywhere and
-/// restrict writes to project + temp + cache dirs.  Network left
-/// unrestricted so `curl` / `cargo fetch` / `npm install` work without
-/// modification (Phase 3 adds the proxy-based egress filter).
-pub(crate) fn build_profile_string(root: &str, home: &str) -> String {
+/// restrict writes to project + temp + cache dirs. Network policy is
+/// pluggable via `network_rules` so the same baseline serves both the
+/// open-network mode (legacy) and the proxied mode (Phase 3a).
+///
+/// Use [`network_open_rules`] for the legacy behavior or
+/// [`network_proxied_rules`] for deny-by-default + single-port hole.
+pub(crate) fn build_profile_string_with_network(
+    root: &str,
+    home: &str,
+    network_rules: &str,
+) -> String {
     format!(
         "(version 1)\n\
          (deny default)\n\
@@ -133,13 +180,80 @@ pub(crate) fn build_profile_string(root: &str, home: &str) -> String {
            (literal \"/dev/stderr\")\n\
            (literal \"/dev/stdout\")\n\
            (literal \"/dev/urandom\"))\n\
-         (allow network*)\n\
+         {network_rules}\
          (allow process-exec*)\n\
          (allow process-fork)\n\
          (allow sysctl-read)\n\
          (allow ipc-posix*)\n\
          (allow mach*)\n"
     )
+}
+
+/// Build the seatbelt profile for the project-mode baseline (open network).
+///
+/// Strategy: deny-by-default (allowlist), then open reads everywhere and
+/// restrict writes to project + temp + cache dirs.  Network left
+/// unrestricted so `curl` / `cargo fetch` / `npm install` work without
+/// modification (Phase 3 adds the proxy-based egress filter).
+pub(crate) fn build_profile_string(root: &str, home: &str) -> String {
+    build_profile_string_with_network(root, home, &network_open_rules())
+}
+
+/// Network rules for the legacy unrestricted mode.
+///
+/// Equivalent to pre-Phase-3a behavior: every connect / bind / inbound is
+/// allowed.
+pub(crate) fn network_open_rules() -> String {
+    "(allow network*)\n".to_string()
+}
+
+/// Network rules for the Phase 3a proxied mode.
+///
+/// Deny-by-default network with these holes:
+///
+/// - **Outbound TCP to `127.0.0.1:{proxy_port}`** — the single egress hop.
+///   Every well-behaved HTTP client routed via [`crate::proxy::proxy_env_vars`]
+///   reaches the proxy through this rule.
+/// - **Outbound to Unix sockets** — git-over-ssh, ssh-agent, Docker socket
+///   (when bind-mounted), language servers. These never touch the network
+///   stack and the proxy can't intercept them anyway.
+/// - **Inbound on `localhost:*`** — debugger attach, Node `--inspect`, etc.
+///   Localhost-only, no security implication.
+/// - **Bind on `localhost:*`** — always allowed for the same reason.
+/// - **Bind on `*:*`** — only when `allow_local_binding` is true (user dev
+///   servers expecting external clients).
+///
+/// Pattern mirrors Gemini CLI's `sandbox-macos-strict-proxied.sb` plus the
+/// Unix-socket carve-out from Codex's seatbelt rules.
+pub fn network_proxied_rules(proxy_port: u16, allow_local_binding: bool) -> String {
+    let mut rules = String::new();
+    rules.push_str(&format!(
+        "(allow network-outbound (remote tcp \"127.0.0.1:{proxy_port}\"))\n"
+    ));
+    rules.push_str(&format!(
+        "(allow network-outbound (remote tcp \"localhost:{proxy_port}\"))\n"
+    ));
+    rules.push_str("(allow network-outbound (remote unix-socket))\n");
+    rules.push_str("(allow network-inbound (local ip \"localhost:*\"))\n");
+    rules.push_str("(allow network-bind (local ip \"localhost:*\"))\n");
+    if allow_local_binding {
+        rules.push_str("(allow network-bind (local ip \"*:*\"))\n");
+    }
+    rules
+}
+
+/// Build the seatbelt profile for the proxied egress mode (Phase 3a).
+///
+/// Same baseline as the open-network profile but with [`network_proxied_rules`]
+/// in place of the open-network allow.
+pub fn build_proxied_profile_string(
+    root: &str,
+    home: &str,
+    proxy_port: u16,
+    allow_local_binding: bool,
+) -> String {
+    let net = network_proxied_rules(proxy_port, allow_local_binding);
+    build_profile_string_with_network(root, home, &net)
 }
 
 /// Generate seatbelt deny-write rules for protected project subdirectories.
@@ -510,5 +624,150 @@ mod tests {
             credential_pos < overlay_pos,
             "policy overlay must come after credential rules"
         );
+    }
+
+    // ── Phase 3a: proxied network rules ─────────────────────────────
+
+    #[test]
+    fn proxied_profile_omits_open_network_allow() {
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+        assert!(
+            !p.contains("(allow network*)\n"),
+            "proxied profile must not include the open-network allow\nprofile:\n{p}"
+        );
+    }
+
+    #[test]
+    fn proxied_profile_allows_only_proxy_port_outbound_tcp() {
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+        assert!(p.contains("(allow network-outbound (remote tcp \"127.0.0.1:8877\"))"));
+        assert!(p.contains("(allow network-outbound (remote tcp \"localhost:8877\"))"));
+        // No other tcp outbound rule should be present.
+        let count = p.matches("(allow network-outbound (remote tcp ").count();
+        assert_eq!(
+            count, 2,
+            "expected exactly the 127.0.0.1 + localhost outbound rules; profile:\n{p}"
+        );
+    }
+
+    #[test]
+    fn proxied_profile_always_allows_unix_socket_outbound() {
+        // git-over-ssh, ssh-agent, language servers, Docker.sock when
+        // bind-mounted — all need this. Codex's seatbelt has the same
+        // carve-out.
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+        assert!(p.contains("(allow network-outbound (remote unix-socket))"));
+    }
+
+    #[test]
+    fn proxied_profile_allows_localhost_inbound_for_debuggers() {
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+        assert!(p.contains("(allow network-inbound (local ip \"localhost:*\"))"));
+    }
+
+    #[test]
+    fn proxied_profile_omits_wildcard_bind_when_local_binding_disabled() {
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+        // Localhost bind is always allowed; wildcard *:* must not be.
+        assert!(p.contains("(allow network-bind (local ip \"localhost:*\"))"));
+        assert!(
+            !p.contains("(allow network-bind (local ip \"*:*\"))"),
+            "wildcard bind must be gated on allow_local_binding"
+        );
+    }
+
+    #[test]
+    fn proxied_profile_includes_wildcard_bind_when_local_binding_enabled() {
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, true);
+        assert!(p.contains("(allow network-bind (local ip \"*:*\"))"));
+    }
+
+    #[test]
+    fn proxied_profile_keeps_baseline_file_writes_unchanged() {
+        // Regression guard: the proxied variant must only differ from the
+        // open variant in the network section. Same temp/cargo/npm/cache
+        // writes should still be present.
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+        assert!(p.contains("(subpath \"/work\")"));
+        assert!(p.contains("(subpath \"/private/tmp\")"));
+        assert!(p.contains("(subpath \"/Users/x/.cargo\")"));
+        assert!(p.contains("(subpath \"/Users/x/.npm\")"));
+        assert!(p.contains("(subpath \"/Users/x/.cache\")"));
+    }
+
+    #[test]
+    fn proxied_and_open_differ_only_in_network_section() {
+        // DRY guard: confirm that build_profile_string and
+        // build_proxied_profile_string share the same baseline.
+        let open = build_profile_string("/work", "/Users/x");
+        let proxied = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+
+        // Both must end the same way (process-exec onward is identical).
+        let tail = "(allow process-exec*)\n(allow process-fork)\n(allow sysctl-read)\n(allow ipc-posix*)\n(allow mach*)\n";
+        assert!(open.ends_with(tail), "open profile tail mismatch:\n{open}");
+        assert!(
+            proxied.ends_with(tail),
+            "proxied profile tail mismatch:\n{proxied}"
+        );
+    }
+
+    #[test]
+    fn build_command_with_proxy_uses_proxied_profile() {
+        // End-to-end check: the public entry point must produce a profile
+        // that contains the proxy-port outbound rule and omits the
+        // open-network allow.
+        let cmd = build_command_with_proxy(
+            "true",
+            Path::new("/tmp"),
+            &SandboxPolicy::default(),
+            8877,
+            false,
+        )
+        .unwrap();
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        // sandbox-exec layout: ["-p", <profile>, "sh", "-c", <cmd>]
+        let profile = &args[1];
+        assert!(profile.contains("127.0.0.1:8877"));
+        assert!(!profile.contains("(allow network*)\n"));
+    }
+
+    #[test]
+    fn build_command_without_proxy_keeps_open_network() {
+        // Regression guard: the no-proxy entry point must still produce
+        // the open-network profile (callers without a proxy should keep
+        // current behavior).
+        let cmd = build_command("true", Path::new("/tmp"), &SandboxPolicy::default()).unwrap();
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let profile = &args[1];
+        assert!(profile.contains("(allow network*)\n"));
+        assert!(!profile.contains("127.0.0.1:"));
+    }
+
+    #[test]
+    fn build_command_with_proxy_local_binding_propagates() {
+        // allow_local_binding=true should produce the wildcard bind rule.
+        let cmd = build_command_with_proxy(
+            "true",
+            Path::new("/tmp"),
+            &SandboxPolicy::default(),
+            8877,
+            true,
+        )
+        .unwrap();
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let profile = &args[1];
+        assert!(profile.contains("(allow network-bind (local ip \"*:*\"))"));
     }
 }

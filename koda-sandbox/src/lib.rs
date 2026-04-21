@@ -38,6 +38,7 @@ pub mod monitor;
 pub mod path_defense;
 pub mod policy;
 pub mod policy_check;
+pub mod proxy;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
 pub mod violations;
@@ -55,6 +56,10 @@ pub use policy::{
     TrustPreference,
 };
 pub use policy_check::is_fully_denied;
+pub use proxy::{
+    DEFAULT_NO_PROXY, ExternalProxy, PROXY_PORT_ENV_KEY, ProxyHandle, ca_bundle_for_policy,
+    proxy_env_vars,
+};
 pub use violations::{
     DEFAULT_RING_CAPACITY, SandboxViolationStore, Violation, ViolationKind, global_store,
     render_block,

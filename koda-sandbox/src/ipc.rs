@@ -117,6 +117,20 @@ pub enum Request {
         /// Absolute path to stat.
         path: PathBuf,
     },
+
+    /// Read one or more environment variables from the worker's process
+    /// environment.
+    ///
+    /// Phase 3a uses this to verify that proxy env vars (`HTTPS_PROXY`,
+    /// `SSL_CERT_FILE`, etc.) were piped into the worker subprocess. There
+    /// are no security implications — the caller already controls what
+    /// env vars the worker sees, so reading them back is just a mirror.
+    /// Useful for tests and for debugging proxy plumbing in production.
+    GetEnv {
+        /// Variable names to look up. Missing vars are reported as `None`
+        /// in the response, not as an error.
+        names: Vec<String>,
+    },
 }
 
 /// Worker → host message. Always matches the kind of the originating
@@ -166,6 +180,13 @@ pub enum Response {
         is_dir: bool,
         /// True if the path itself is a symlink (not its target).
         is_symlink: bool,
+    },
+
+    /// Reply to [`Request::GetEnv`].
+    GetEnv {
+        /// Same order as the request `names`. `None` means the variable
+        /// was unset (distinguished from empty-string).
+        values: Vec<Option<String>>,
     },
 
     /// Anything that didn't go right — policy denial, IO error,
