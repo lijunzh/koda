@@ -42,6 +42,7 @@
 
 use crate::fs::FsError;
 use crate::ipc::{Request, Response, read_message, write_message};
+use crate::policy::SandboxPolicy;
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -108,14 +109,41 @@ impl WorkerClient {
     /// Blocks the current async task for up to 5 seconds waiting for
     /// the worker to bind its socket and write "ready\n" to stdout.
     pub async fn spawn() -> Result<Self> {
+        Self::spawn_inner(None).await
+    }
+
+    /// Spawn a worker with write-policy enforcement.
+    ///
+    /// Passes `--root <writable_root>` and the serialized `policy`
+    /// (via `KODA_FS_WORKER_POLICY`) to the binary. Every `Write` and
+    /// `Edit` request will be validated against the root and policy
+    /// before touching the filesystem.
+    ///
+    /// Use this for production slots; use [`spawn`](Self::spawn) only
+    /// for tests and the `--no-sandbox` escape hatch.
+    pub async fn spawn_with_policy(writable_root: PathBuf, policy: &SandboxPolicy) -> Result<Self> {
+        Self::spawn_inner(Some((writable_root, policy))).await
+    }
+
+    /// Shared spawn logic. `policy_args` being `None` → no `--root`/policy env.
+    async fn spawn_inner(policy_args: Option<(PathBuf, &SandboxPolicy)>) -> Result<Self> {
         let socket_path = unique_socket_path();
         let bin = worker_binary()?;
 
-        let mut child = Command::new(&bin)
-            .arg("--socket")
+        let mut cmd = Command::new(&bin);
+        cmd.arg("--socket")
             .arg(&socket_path)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
+
+        if let Some((ref root, policy)) = policy_args {
+            cmd.arg("--root").arg(root);
+            let policy_json =
+                serde_json::to_string(policy).context("serialize SandboxPolicy for worker env")?;
+            cmd.env("KODA_FS_WORKER_POLICY", policy_json);
+        }
+
+        let mut child = cmd
             .spawn()
             .with_context(|| format!("spawn {}", bin.display()))?;
 
