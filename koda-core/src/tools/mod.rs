@@ -931,6 +931,8 @@ mod tests {
 
     #[test]
     fn proxy_port_defaults_to_none() {
+        // Standalone ToolRegistry (no KodaSession) starts with no port —
+        // production sessions overwrite this in `KodaSession::new`.
         let registry = ToolRegistry::new(root(), 100_000);
         assert_eq!(registry.proxy_port(), None);
     }
@@ -940,25 +942,6 @@ mod tests {
         let registry = ToolRegistry::new(root(), 100_000);
         registry.set_proxy_port(Some(31415));
         assert_eq!(registry.proxy_port(), Some(31415));
-    }
-
-    #[test]
-    fn proxy_port_can_be_cleared() {
-        let registry = ToolRegistry::new(root(), 100_000);
-        registry.set_proxy_port(Some(8080));
-        registry.set_proxy_port(None);
-        assert_eq!(registry.proxy_port(), None);
-    }
-
-    #[test]
-    fn proxy_port_setter_replaces_previous_value() {
-        // Idempotent + replacing semantics: KodaSession::enable_built_in_proxy
-        // can be called repeatedly to swap proxies (e.g. user reconfigures
-        // allowlist mid-session). Last write wins.
-        let registry = ToolRegistry::new(root(), 100_000);
-        registry.set_proxy_port(Some(1111));
-        registry.set_proxy_port(Some(2222));
-        assert_eq!(registry.proxy_port(), Some(2222));
     }
 
     #[test]
