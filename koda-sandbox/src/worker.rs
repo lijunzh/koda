@@ -332,6 +332,13 @@ async fn handle(ctx: &Context, req: Request) -> Response {
             },
             Err(e) => fs_err_to_resp(e),
         },
+        Request::GetEnv { names } => {
+            // No fs/policy check — the caller already controls what env vars
+            // we see, so this is a mirror, not a leak. Used by Phase 3a tests
+            // to verify proxy env-var injection across the process boundary.
+            let values = names.into_iter().map(|n| std::env::var(&n).ok()).collect();
+            Response::GetEnv { values }
+        }
     }
 }
 

@@ -214,7 +214,10 @@ impl ExternalProxy {
             .await
             .with_context(|| format!("external proxy did not bind 127.0.0.1:{port}"))?;
 
-        Ok(ProxyHandle { port, child: Some(child) })
+        Ok(ProxyHandle {
+            port,
+            child: Some(child),
+        })
     }
 }
 
@@ -403,10 +406,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert_eq!(
-            ca_bundle_for_policy(&policy),
-            Some(Path::new("/x/ca.pem"))
-        );
+        assert_eq!(ca_bundle_for_policy(&policy), Some(Path::new("/x/ca.pem")));
     }
 
     #[test]

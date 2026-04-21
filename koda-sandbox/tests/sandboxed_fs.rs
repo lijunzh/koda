@@ -250,4 +250,218 @@ mod unix {
             "symlink escape should be denied, got {resp:?}"
         );
     }
+
+    // ── Phase 3a: spawn_with_policy_and_proxy integration ──────────────
+
+    /// Build the netcat listen-in-background command we use as a stand-in
+    /// for a real proxy. macOS BSD `nc` and Linux netcat-openbsd both
+    /// accept `-l -k <port>` (-k = stay alive across multiple connections,
+    /// otherwise BSD nc one-shots and the wait_for_bind poll races to
+    /// connect before nc exits).
+    fn netcat_listen_command(port: u16) -> Vec<String> {
+        vec![
+            "nc".to_string(),
+            "-l".to_string(),
+            "-k".to_string(),
+            port.to_string(),
+        ]
+    }
+
+    #[tokio::test]
+    async fn spawn_with_policy_and_proxy_injects_env_vars() {
+        use koda_sandbox::ipc::{Request, Response};
+        use koda_sandbox::policy::SandboxPolicy;
+        use koda_sandbox::proxy::{DEFAULT_NO_PROXY, ExternalProxy};
+
+        let root = TempDir::new().unwrap();
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+
+        // Spawn a fake proxy via ExternalProxy + nc. nc may not be installed
+        // everywhere; skip the test if spawn fails for that reason.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let p = l.local_addr().unwrap().port();
+            drop(l);
+            p
+        };
+        let proxy_spec = ExternalProxy {
+            command: netcat_listen_command(port),
+            env: Default::default(),
+            port: Some(port),
+            startup_timeout: std::time::Duration::from_secs(2),
+        };
+        let proxy = match proxy_spec.spawn().await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("skipping: nc unavailable or failed to bind: {e:#}");
+                return;
+            }
+        };
+
+        let mut client = WorkerClient::spawn_with_policy_and_proxy(
+            canonical_root,
+            &SandboxPolicy::default(),
+            Some(&proxy),
+        )
+        .await
+        .expect("spawn_with_policy_and_proxy");
+
+        let resp = client
+            .request(&Request::GetEnv {
+                names: vec![
+                    "HTTPS_PROXY".into(),
+                    "https_proxy".into(),
+                    "HTTP_PROXY".into(),
+                    "NO_PROXY".into(),
+                    "SSL_CERT_FILE".into(), // None: no MITM configured
+                ],
+            })
+            .await
+            .expect("GetEnv request");
+
+        let values = match resp {
+            Response::GetEnv { values } => values,
+            other => panic!("expected GetEnv response, got {other:?}"),
+        };
+        assert_eq!(
+            values[0].as_deref(),
+            Some(format!("http://127.0.0.1:{port}").as_str())
+        );
+        assert_eq!(
+            values[1].as_deref(),
+            Some(format!("http://127.0.0.1:{port}").as_str())
+        );
+        assert_eq!(
+            values[2].as_deref(),
+            Some(format!("http://127.0.0.1:{port}").as_str())
+        );
+        assert_eq!(values[3].as_deref(), Some(DEFAULT_NO_PROXY));
+        // SSL_CERT_FILE must not be injected by *us* when policy.net.mitm
+        // is None. We can only assert this if the host doesn't already
+        // have it set — e.g. Ubuntu CI runners ship with SSL_CERT_FILE
+        // pointing at /etc/ssl/certs/ca-certificates.crt, which the worker
+        // inherits through normal subprocess env propagation.
+        if std::env::var("SSL_CERT_FILE").is_err() {
+            assert_eq!(
+                values[4], None,
+                "SSL_CERT_FILE must be unset when policy.net.mitm is None"
+            );
+        } else {
+            // Host had it set — verify we didn't *override* it with our own
+            // path (which would only happen with a CA bundle in policy).
+            assert_eq!(
+                values[4],
+                std::env::var("SSL_CERT_FILE").ok(),
+                "SSL_CERT_FILE must be the host's value, not overridden"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_with_policy_and_proxy_injects_ca_bundle_when_mitm_set() {
+        use koda_sandbox::ipc::{Request, Response};
+        use koda_sandbox::policy::{MitmConfig, NetPolicy, SandboxPolicy};
+        use koda_sandbox::proxy::ExternalProxy;
+        use std::path::PathBuf;
+
+        let root = TempDir::new().unwrap();
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let p = l.local_addr().unwrap().port();
+            drop(l);
+            p
+        };
+        let proxy_spec = ExternalProxy {
+            command: netcat_listen_command(port),
+            env: Default::default(),
+            port: Some(port),
+            startup_timeout: std::time::Duration::from_secs(2),
+        };
+        let proxy = match proxy_spec.spawn().await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("skipping: nc unavailable or failed to bind: {e:#}");
+                return;
+            }
+        };
+
+        let policy = SandboxPolicy {
+            net: NetPolicy {
+                mitm: Some(MitmConfig {
+                    ca_bundle: PathBuf::from("/etc/ssl/corp-ca.pem"),
+                    socket_map: vec![],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut client =
+            WorkerClient::spawn_with_policy_and_proxy(canonical_root, &policy, Some(&proxy))
+                .await
+                .expect("spawn_with_policy_and_proxy");
+
+        let resp = client
+            .request(&Request::GetEnv {
+                names: vec![
+                    "SSL_CERT_FILE".into(),
+                    "NODE_EXTRA_CA_CERTS".into(),
+                    "REQUESTS_CA_BUNDLE".into(),
+                    "CURL_CA_BUNDLE".into(),
+                ],
+            })
+            .await
+            .expect("GetEnv request");
+
+        let values = match resp {
+            Response::GetEnv { values } => values,
+            other => panic!("expected GetEnv response, got {other:?}"),
+        };
+        for (i, v) in values.iter().enumerate() {
+            assert_eq!(
+                v.as_deref(),
+                Some("/etc/ssl/corp-ca.pem"),
+                "index {i} should be the CA bundle path"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_with_policy_and_proxy_none_omits_env_vars() {
+        use koda_sandbox::ipc::{Request, Response};
+        use koda_sandbox::policy::SandboxPolicy;
+
+        let root = TempDir::new().unwrap();
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+
+        let mut client = WorkerClient::spawn_with_policy_and_proxy(
+            canonical_root,
+            &SandboxPolicy::default(),
+            None,
+        )
+        .await
+        .expect("spawn_with_policy_and_proxy");
+
+        let resp = client
+            .request(&Request::GetEnv {
+                names: vec!["HTTPS_PROXY".into(), "NO_PROXY".into()],
+            })
+            .await
+            .expect("GetEnv request");
+
+        let values = match resp {
+            Response::GetEnv { values } => values,
+            other => panic!("expected GetEnv response, got {other:?}"),
+        };
+        // proxy=None must not inherit the host's HTTPS_PROXY either — we
+        // only inject what we explicitly set. But std::env::var on the worker
+        // side reads the worker's environment, which inherits ours. So this
+        // assertion is conditional: skip if the host already had HTTPS_PROXY
+        // set (e.g. behind a corp proxy at test time).
+        if std::env::var("HTTPS_PROXY").is_err() {
+            assert_eq!(values[0], None, "HTTPS_PROXY must not be injected");
+        }
+    }
 }
