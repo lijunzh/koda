@@ -1,25 +1,22 @@
 #!/usr/bin/env bash
-# .githooks/pre-push — minimal local sanity check before pushing.
+# .githooks/pre-push — fmt + scoped clippy before every push.
 #
-# Philosophy: catch the ONE failure mode that's both (a) cheap to verify
-# locally and (b) maximally embarrassing to ship to CI — formatting.
-# Everything else (clippy, check, semver, tests, audit, docs) runs as
-# parallel jobs in CI with sub-2-minute granular feedback. Trust CI.
+# Two checks, both fast:
 #
-# History: this hook used to also run `cargo clippy --workspace`, costing
-# ~50-90s per push. Across a representative sample of pushes, clippy
-# locally caught 0 issues vs ~5 minutes of cumulative wait. Net negative
-# on dev time once CI was split into per-tool jobs (see PR #979) where
-# each lint failure surfaces as its own red label in <2 min — without
-# spinning up your laptop fans.
+#   1. cargo fmt --check                        (~1s, always)
+#   2. cargo clippy -p <changed> -- -D warnings (~5-20s, scoped)
+#   3. RUSTDOCFLAGS=-D warnings cargo doc        (~2-5s, scoped)
 #
-# Skip with `git push --no-verify` if you need to push WIP.
+# "Scoped" means we diff HEAD against the remote tracking sha (or
+# origin/main as fallback) and only lint workspace members whose files
+# appear in that diff. A single-crate push costs the same as before;
+# a full-workspace push is capped at the workspace total.
 #
-# One-time setup (per clone):
-#   git config core.hooksPath .githooks
+# The full suite (all crates, all features, tests, audit, semver) still
+# lives in ./scripts/preflight.sh — run that before opening a PR.
 #
-# For comprehensive pre-PR validation (full clippy + tests + audit), run:
-#   ./scripts/preflight.sh
+# Skip entirely with:  git push --no-verify
+# One-time setup:      git config core.hooksPath .githooks
 
 set -euo pipefail
 
@@ -32,15 +29,94 @@ ok()   { echo -e "${GREEN}✓${NC} $*"; }
 fail() { echo -e "${RED}✗${NC} $*"; }
 info() { echo -e "${YELLOW}→${NC} $*"; }
 
-info "Running pre-push fmt check (skip with --no-verify)..."
+info "pre-push: fmt + scoped clippy (skip with --no-verify)"
 
-# --- Format ------------------------------------------------------------------
-# Instant (~1s), and a fmt failure in CI is the most annoying possible reason
-# to wait for a re-run. This is the entire hook now — clippy/check/test all
-# run in parallel CI jobs with their own granular pass/fail labels.
-if cargo fmt --all --check; then
-    ok "fmt clean — pushing. (clippy + tests + semver run in CI)"
-else
+# ── 1. Format ────────────────────────────────────────────────────────────────
+
+if ! cargo fmt --all --check 2>&1; then
     fail "fmt: run 'cargo fmt --all' to fix"
+    exit 1
+fi
+ok "fmt"
+
+# ── 2. Detect which workspace members changed ─────────────────────────────────
+#
+# Git passes push refs on stdin: <local-ref> <local-sha> <remote-ref> <remote-sha>
+# For a new branch, remote-sha is all zeros.
+
+ZERO="0000000000000000000000000000000000000000"
+MERGE_BASE=""
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    if [[ "$remote_sha" != "$ZERO" && "$remote_sha" != "" ]]; then
+        MERGE_BASE=$(git merge-base "$local_sha" "$remote_sha" 2>/dev/null || true)
+        [[ -n "$MERGE_BASE" ]] && break
+    fi
+done
+
+# Fallback 1: compare against origin/main (new branches, no tracking sha)
+if [[ -z "$MERGE_BASE" ]]; then
+    MERGE_BASE=$(git merge-base HEAD origin/main 2>/dev/null || true)
+fi
+
+# Fallback 2: just the last commit (detached HEAD, initial push, etc.)
+if [[ -z "$MERGE_BASE" ]]; then
+    MERGE_BASE="HEAD~1"
+fi
+
+# Discover workspace members: top-level dirs that contain a Cargo.toml.
+WORKSPACE_MEMBERS=()
+for d in */; do
+    d="${d%/}"
+    [[ -f "${d}/Cargo.toml" ]] && WORKSPACE_MEMBERS+=("$d")
+done
+
+# Files changed since the merge-base → first path component → unique.
+CHANGED_TOP=$(git diff --name-only "$MERGE_BASE" HEAD 2>/dev/null \
+    | cut -d/ -f1 | sort -u)
+
+# If the workspace root Cargo.toml changed, lint everything.
+if echo "$CHANGED_TOP" | grep -qx "Cargo.toml"; then
+    CHANGED_PKGS=("${WORKSPACE_MEMBERS[@]}")
+else
+    CHANGED_PKGS=()
+    for pkg in "${WORKSPACE_MEMBERS[@]}"; do
+        echo "$CHANGED_TOP" | grep -qx "$pkg" && CHANGED_PKGS+=("$pkg")
+    done
+fi
+
+if [[ ${#CHANGED_PKGS[@]} -eq 0 ]]; then
+    ok "clippy + doc — no workspace members changed, skipping"
+    exit 0
+fi
+
+# ── 3. Clippy (changed packages only, deny warnings) ─────────────────────────
+
+PKG_FLAGS=()
+for pkg in "${CHANGED_PKGS[@]}"; do
+    PKG_FLAGS+=("-p" "$pkg")
+done
+
+info "clippy [${CHANGED_PKGS[*]}] -- -D warnings"
+T0=$(date +%s)
+
+if cargo clippy "${PKG_FLAGS[@]}" --all-targets -- -D warnings 2>&1; then
+    ELAPSED=$(( $(date +%s) - T0 ))
+    ok "clippy (${ELAPSED}s)"
+else
+    fail "clippy: fix the warnings above, or 'git push --no-verify' for WIP"
+    exit 1
+fi
+
+# ── 4. Docs (changed packages only, deny warnings) ───────────────────────────
+
+info "doc [${CHANGED_PKGS[*]}] -- -D warnings"
+T0=$(date +%s)
+
+if RUSTDOCFLAGS="-D warnings" cargo doc "${PKG_FLAGS[@]}" --no-deps 2>&1; then
+    ELAPSED=$(( $(date +%s) - T0 ))
+    ok "doc (${ELAPSED}s)"
+else
+    fail "doc: fix the rustdoc warnings above, or 'git push --no-verify' for WIP"
     exit 1
 fi

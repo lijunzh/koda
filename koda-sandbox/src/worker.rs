@@ -1,59 +1,74 @@
-//! FS worker dispatch loop (Phase 2a of #934).
+//! FS worker dispatch loop (Phase 2c of #934).
 //!
 //! The worker is a tiny event loop:
 //!
 //! ```text
 //! loop {
 //!     read_message(transport) -> Request
-//!     handle(request)         -> Response
+//!     handle(ctx, request)   -> Response
 //!     write_message(transport, response)
 //! }
 //! ```
 //!
-//! It exits when:
-//! - The peer closes the transport (clean EOF on `read_message`).
-//! - It receives [`Request::Shutdown`] (sends `Pong`-equivalent ack
-//!   then breaks the loop).
-//! - An IO error occurs (logs and exits non-zero).
+//! Phase 2c implements all FS request kinds by delegating to
+//! [`LocalFileSystem`]. Policy enforcement (checking requests against
+//! [`crate::policy::SandboxPolicy`]) is wired in Phase 2f once the
+//! CC defense patterns land. For now the worker enforces nothing —
+//! the kernel-level sandbox does that job.
 //!
-//! Phase 2a only implements `Ping` and `Shutdown`. Every other request
-//! kind returns `Response::Error { code: Unimplemented }`. The handlers
-//! land in Phase 2c when the [`crate::ipc::Request::Read`] et al.
-//! variants get real implementations against an enforced policy.
-//!
-//! ## Why a separate process at all?
-//!
-//! In-tree file-tool code runs in the same process as the LLM client
-//! and the agent loop. That process is *the* trusted supervisor —
-//! the kernel sandbox enforces nothing on it. Putting the FS code in a
-//! worker process means we can:
-//!
-//! 1. **Run the worker outside the kernel sandbox** (it needs to
-//!    actually do FS work), but still **enforce the policy in code**
-//!    for every request. Matches CC's `SandboxedFileSystem` shape.
-//! 2. **Bind the worker's lifecycle to a sub-agent slot** (Phase 4).
-//!    Per-slot policy = per-slot worker = no cross-talk.
-//! 3. **Crash isolation** — a panicking file handler kills the worker,
-//!    not the host. The host can respawn.
-//!
-//! See #934 §4.5 for the full motivation.
+//! The transport is either:
+//! - **Unix domain socket** (production, Phase 2c+): the host spawns
+//!   the binary with `--socket <path>`, the worker binds and signals
+//!   "ready\n" on stdout, the host connects. See [`run_unix_socket`].
+//! - **stdin/stdout** (testing / legacy): [`run_stdio`] — the
+//!   `worker_binary` integration tests still use this path.
 
+use crate::fs::{FileSystem, FsError, LocalFileSystem};
 use crate::ipc::{ErrorCode, Request, Response, read_message, write_message};
 use anyhow::Result;
+use std::path::Path;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, warn};
 
+// ── Context ──────────────────────────────────────────────────────────────
+
+/// Per-connection state threaded through every handler.
+///
+/// Today this is just a [`LocalFileSystem`] — a zero-cost newtype.
+/// Phase 2f adds a `policy: SandboxPolicy` field so the handlers can
+/// enforce rules on each path before touching the filesystem.
+struct Context {
+    fs: LocalFileSystem,
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self {
+            fs: LocalFileSystem::new(),
+        }
+    }
+}
+
+// ── Dispatch loop ─────────────────────────────────────────────────────────
+
 /// Run the worker dispatch loop against an arbitrary duplex transport.
 ///
-/// Production callers ([`run_stdio`] today, Unix socket spawner in
-/// Phase 2c) wrap their transport and call this. Tests pass an
-/// in-memory `tokio::io::duplex` half.
+/// Creates a default context (bare `LocalFileSystem`, no policy
+/// enforcement yet). All existing tests call this entry point.
 ///
 /// Returns `Ok(())` on clean shutdown (peer EOF or `Request::Shutdown`).
-/// Returns `Err(...)` only for genuine transport errors — malformed
-/// requests are reported back as `Response::Error` and the loop
-/// continues.
+/// Returns `Err(...)` only for genuine transport errors.
 pub async fn run<R, W>(reader: &mut R, writer: &mut W) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let ctx = Context::default();
+    run_with_ctx(&ctx, reader, writer).await
+}
+
+/// Inner loop — separated so Phase 2f can inject a policy-bearing context.
+async fn run_with_ctx<R, W>(ctx: &Context, reader: &mut R, writer: &mut W) -> Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -67,7 +82,6 @@ where
             }
             Err(e) => {
                 warn!("worker: transport read error: {e}");
-                // Try to tell the peer it sent garbage before bailing.
                 let _ = write_message(
                     writer,
                     &Response::Error {
@@ -81,7 +95,7 @@ where
         };
 
         let is_shutdown = matches!(req, Request::Shutdown);
-        let resp = handle(req).await;
+        let resp = handle(ctx, req).await;
         write_message(writer, &resp).await?;
 
         if is_shutdown {
@@ -91,56 +105,119 @@ where
     }
 }
 
-/// Handle a single request. Pure function of input → output (no shared
-/// state today; that comes when handlers need a policy reference).
-async fn handle(req: Request) -> Response {
+// ── Request handlers ──────────────────────────────────────────────────────
+
+async fn handle(ctx: &Context, req: Request) -> Response {
     match req {
-        Request::Ping => Response::Pong,
-        // Shutdown's response is just a Pong-style ack so the host knows
-        // the worker received the request before exiting. Any non-Error
-        // variant would do; Pong is the obvious one.
-        Request::Shutdown => Response::Pong,
-        // ── Phase 2c stubs ─────────────────────────────────────────────
-        Request::Read { .. }
-        | Request::Write { .. }
-        | Request::Edit { .. }
-        | Request::Glob { .. }
-        | Request::Grep { .. }
-        | Request::Stat { .. } => Response::Error {
-            code: ErrorCode::Unimplemented,
-            message: "FS request handlers land in Phase 2c of #934".into(),
+        Request::Ping | Request::Shutdown => Response::Pong,
+        Request::Read { path, max_bytes } => match ctx.fs.read(&path, max_bytes).await {
+            Ok(content) => Response::Read { content },
+            Err(e) => fs_err_to_resp(e),
+        },
+        Request::Write { path, content } => match ctx.fs.write(&path, &content).await {
+            Ok(bytes_written) => Response::Write { bytes_written },
+            Err(e) => fs_err_to_resp(e),
+        },
+        Request::Edit {
+            path,
+            old_string,
+            new_string,
+        } => {
+            // Workers always do single-occurrence edits — the
+            // `all` flag is a tool-layer choice, not an IPC primitive.
+            match ctx.fs.edit(&path, &old_string, &new_string, false).await {
+                Ok(replacements) => Response::Edit { replacements },
+                Err(e) => fs_err_to_resp(e),
+            }
+        }
+        Request::Glob { pattern, root } => match ctx.fs.glob(&pattern, &root).await {
+            Ok(paths) => Response::Glob { paths },
+            Err(e) => fs_err_to_resp(e),
+        },
+        Request::Grep {
+            pattern,
+            root,
+            include,
+        } => match ctx.fs.grep(&pattern, &root, include.as_deref()).await {
+            Ok(matches) => Response::Grep { matches },
+            Err(e) => fs_err_to_resp(e),
+        },
+        Request::Stat { path } => match ctx.fs.stat(&path).await {
+            Ok(m) => Response::Stat {
+                size: m.size,
+                is_dir: m.is_dir,
+                is_symlink: m.is_symlink,
+            },
+            Err(e) => fs_err_to_resp(e),
         },
     }
 }
 
-/// Convenience entry point: run the dispatch loop against process
-/// stdin/stdout. This is what the `koda-fs-worker` binary calls.
+fn fs_err_to_resp(e: FsError) -> Response {
+    let (code, message) = match e {
+        FsError::Io(e) => (ErrorCode::Io, e.to_string()),
+        FsError::PolicyDenied { message } => (ErrorCode::PolicyDenied, message),
+        FsError::EditNotFound { path } => (
+            ErrorCode::Io,
+            format!("old_string not found in {}", path.display()),
+        ),
+        FsError::InvalidPattern { message } => (ErrorCode::Protocol, message),
+        FsError::Transport { message } => (ErrorCode::Internal, message),
+    };
+    Response::Error { code, message }
+}
+
+// ── Transport entry points ────────────────────────────────────────────────
+
+/// Run the dispatch loop against process stdin/stdout.
 ///
-/// Phase 2c will add `run_unix_socket(path)` for the production
-/// per-slot wiring; stdio is what the unit tests use today.
+/// Used by the binary when invoked without `--socket` (integration
+/// tests and legacy callers).
 pub async fn run_stdio() -> Result<()> {
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     run(&mut stdin, &mut stdout).await
 }
 
+/// Bind a Unix domain socket at `path`, signal readiness to the host
+/// by writing "ready\n" to stdout, accept exactly one connection, and
+/// run the dispatch loop over it.
+///
+/// This is the production transport used by [`crate::worker_client`].
+/// One connection, one slot, one worker — per-slot policy comes in 2f.
+#[cfg(unix)]
+pub async fn run_unix_socket(path: &Path) -> Result<()> {
+    use std::io::Write as _;
+    use tokio::net::UnixListener;
+
+    let listener = UnixListener::bind(path)?;
+
+    // Signal host — must flush before the host tries to connect.
+    println!("ready");
+    std::io::stdout().flush()?;
+
+    let (stream, _addr) = listener.accept().await?;
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    run(&mut reader, &mut writer).await
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::{ErrorCode, Request, Response};
-    use std::path::PathBuf;
+    use crate::ipc::{Request, Response};
+    use tempfile::TempDir;
     use tokio::io::duplex;
 
-    /// Spawn the worker against one half of a duplex pair, return the
-    /// other half for the test to drive. The worker task is spawned on
-    /// the runtime so the test can interleave reads and writes against
-    /// it like a real peer.
     fn spawn_worker() -> (tokio::io::DuplexStream, tokio::task::JoinHandle<Result<()>>) {
-        let (host, worker) = duplex(4096);
+        let (host, worker) = duplex(65536);
         let (mut wr, mut ww) = tokio::io::split(worker);
         let join = tokio::spawn(async move { run(&mut wr, &mut ww).await });
         (host, join)
     }
+
+    // ── Protocol mechanics (unchanged from 2a) ───────────────────────
 
     #[tokio::test]
     async fn ping_returns_pong() {
@@ -156,44 +233,27 @@ mod tests {
         write_message(&mut host, &Request::Shutdown).await.unwrap();
         let resp: Response = read_message(&mut host).await.unwrap().unwrap();
         assert_eq!(resp, Response::Pong);
-        // Drop our end so the worker sees clean EOF if it didn't exit yet.
         drop(host);
         tokio::time::timeout(std::time::Duration::from_secs(2), join)
             .await
             .expect("worker must exit within 2s of Shutdown")
-            .expect("worker join error")
+            .expect("join error")
             .expect("worker returned Err");
     }
 
     #[tokio::test]
-    async fn unimplemented_request_returns_error_response() {
-        // Phase 2c will replace this assertion. Until then, every
-        // FS-flavored variant must surface as Unimplemented so callers
-        // get a clear signal instead of silent success.
-        let (mut host, _join) = spawn_worker();
-        write_message(
-            &mut host,
-            &Request::Read {
-                path: PathBuf::from("/etc/passwd"),
-                max_bytes: None,
-            },
-        )
-        .await
-        .unwrap();
-        let resp: Response = read_message(&mut host).await.unwrap().unwrap();
-        match resp {
-            Response::Error {
-                code: ErrorCode::Unimplemented,
-                ..
-            } => {}
-            other => panic!("expected Unimplemented error, got {other:?}"),
-        }
+    async fn peer_eof_exits_loop_cleanly() {
+        let (host, join) = spawn_worker();
+        drop(host);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), join)
+            .await
+            .expect("worker must exit within 2s of EOF")
+            .expect("join error");
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn worker_loops_for_multiple_requests() {
-        // Pipelining sanity check: the loop must process N requests
-        // back-to-back without losing framing or returning early.
         let (mut host, _join) = spawn_worker();
         for _ in 0..5 {
             write_message(&mut host, &Request::Ping).await.unwrap();
@@ -202,16 +262,116 @@ mod tests {
         }
     }
 
+    // ── FS handlers ──────────────────────────────────────────────────
+
     #[tokio::test]
-    async fn peer_eof_exits_loop_cleanly() {
-        // Drop the host end immediately. The worker must see EOF on
-        // its next read and return Ok(()) — not panic, not block forever.
-        let (host, join) = spawn_worker();
-        drop(host);
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), join)
+    async fn read_handler_returns_file_contents() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("hello.txt");
+        std::fs::write(&path, b"hello from worker").unwrap();
+
+        let (mut host, _join) = spawn_worker();
+        write_message(
+            &mut host,
+            &Request::Read {
+                path,
+                max_bytes: None,
+            },
+        )
+        .await
+        .unwrap();
+        let resp: Response = read_message(&mut host).await.unwrap().unwrap();
+        assert_eq!(
+            resp,
+            Response::Read {
+                content: b"hello from worker".to_vec()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn write_handler_creates_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("out.txt");
+
+        let (mut host, _join) = spawn_worker();
+        write_message(
+            &mut host,
+            &Request::Write {
+                path: path.clone(),
+                content: b"written".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+        let resp: Response = read_message(&mut host).await.unwrap().unwrap();
+        assert_eq!(resp, Response::Write { bytes_written: 7 });
+        assert_eq!(std::fs::read(&path).unwrap(), b"written");
+    }
+
+    #[tokio::test]
+    async fn edit_handler_replaces_string() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("e.txt");
+        std::fs::write(&path, b"foo bar baz").unwrap();
+
+        let (mut host, _join) = spawn_worker();
+        write_message(
+            &mut host,
+            &Request::Edit {
+                path: path.clone(),
+                old_string: "bar".to_string(),
+                new_string: "BAR".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let resp: Response = read_message(&mut host).await.unwrap().unwrap();
+        assert_eq!(resp, Response::Edit { replacements: 1 });
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo BAR baz");
+    }
+
+    #[tokio::test]
+    async fn stat_handler_reports_file_metadata() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("s.txt");
+        std::fs::write(&path, b"123456").unwrap();
+
+        let (mut host, _join) = spawn_worker();
+        write_message(&mut host, &Request::Stat { path })
             .await
-            .expect("worker must exit within 2s of EOF")
-            .expect("worker join error");
-        assert!(result.is_ok(), "expected clean exit, got {result:?}");
+            .unwrap();
+        let resp: Response = read_message(&mut host).await.unwrap().unwrap();
+        assert_eq!(
+            resp,
+            Response::Stat {
+                size: 6,
+                is_dir: false,
+                is_symlink: false
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn read_missing_file_returns_io_error() {
+        let dir = TempDir::new().unwrap();
+        let (mut host, _join) = spawn_worker();
+        write_message(
+            &mut host,
+            &Request::Read {
+                path: dir.path().join("nope"),
+                max_bytes: None,
+            },
+        )
+        .await
+        .unwrap();
+        let resp: Response = read_message(&mut host).await.unwrap().unwrap();
+        assert!(matches!(
+            resp,
+            Response::Error {
+                code: ErrorCode::Io,
+                ..
+            }
+        ));
     }
 }

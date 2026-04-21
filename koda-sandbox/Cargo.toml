@@ -19,7 +19,7 @@ ignore = "0.4"
 regex = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["process", "rt", "io-util", "io-std", "net", "macros", "fs"] }
+tokio = { workspace = true, features = ["process", "rt", "io-util", "io-std", "net", "macros", "fs", "time", "sync"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

@@ -54,8 +54,12 @@ use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 
 pub mod local;
+#[cfg(unix)]
+pub mod sandboxed;
 
 pub use local::LocalFileSystem;
+#[cfg(unix)]
+pub use sandboxed::SandboxedFileSystem;
 
 /// Abstraction over filesystem operations needed by the file tools.
 ///

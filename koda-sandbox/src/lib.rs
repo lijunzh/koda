@@ -41,6 +41,8 @@ pub mod policy_check;
 pub mod seatbelt;
 pub mod violations;
 pub mod worker;
+#[cfg(unix)]
+pub mod worker_client;
 pub mod workspace;
 
 pub use policy::{
