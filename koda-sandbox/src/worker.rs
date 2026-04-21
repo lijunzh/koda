@@ -193,7 +193,7 @@ pub async fn run_unix_socket(path: &Path) -> Result<()> {
     let listener = UnixListener::bind(path)?;
 
     // Signal host — must flush before the host tries to connect.
-    print!("ready\n");
+    println!("ready");
     std::io::stdout().flush()?;
 
     let (stream, _addr) = listener.accept().await?;

@@ -162,9 +162,7 @@ impl SandboxedFileSystem {
         if let Response::Error { code, message } = resp {
             return Err(match code {
                 ErrorCode::PolicyDenied => FsError::PolicyDenied { message },
-                ErrorCode::Io => {
-                    FsError::Io(std::io::Error::new(std::io::ErrorKind::Other, message))
-                }
+                ErrorCode::Io => FsError::Io(std::io::Error::other(message)),
                 ErrorCode::Protocol | ErrorCode::Internal | ErrorCode::Unimplemented => {
                     FsError::Transport { message }
                 }
