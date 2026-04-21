@@ -243,6 +243,13 @@ pub struct ToolRegistry {
     /// MCP connection manager — owns all MCP server connections (#662).
     /// `None` until attached via `set_mcp_manager()`.
     mcp_manager: std::sync::RwLock<Option<Arc<tokio::sync::RwLock<crate::mcp::McpManager>>>>,
+    /// Loopback port of the per-session HTTP CONNECT proxy (Phase 3b of
+    /// #934). When `Some`, [`crate::sandbox::build`] attaches the
+    /// canonical `HTTPS_PROXY`/`NO_PROXY`/etc. env-var bouquet to every
+    /// Bash invocation so child processes route HTTP through the proxy.
+    /// `None` (default) preserves the pre-3b unfiltered behavior —
+    /// session code opts in by calling [`Self::set_proxy_port`].
+    proxy_port: std::sync::RwLock<Option<u16>>,
 }
 
 impl ToolRegistry {
@@ -320,6 +327,7 @@ impl ToolRegistry {
             bg_registry: bg_process::BgRegistry::new(),
             trust,
             mcp_manager: std::sync::RwLock::new(None),
+            proxy_port: std::sync::RwLock::new(None),
         }
     }
 
@@ -378,6 +386,26 @@ impl ToolRegistry {
     /// Get the MCP manager (if attached).
     pub fn mcp_manager(&self) -> Option<Arc<tokio::sync::RwLock<crate::mcp::McpManager>>> {
         self.mcp_manager.read().ok().and_then(|guard| guard.clone())
+    }
+
+    /// Attach (or detach) the per-session HTTP CONNECT proxy port.
+    ///
+    /// Called from [`crate::session::KodaSession::enable_built_in_proxy`]
+    /// after spawning a [`koda_sandbox::BuiltInProxy`]. Pass `None` to
+    /// detach (Bash invocations revert to unfiltered network access).
+    /// Lock-poisoning is non-fatal — we silently keep the previous
+    /// value, matching the precedent set by `set_mcp_manager`.
+    pub fn set_proxy_port(&self, port: Option<u16>) {
+        if let Ok(mut guard) = self.proxy_port.write() {
+            *guard = port;
+        }
+    }
+
+    /// Current proxy port, if one has been attached. Read by the Bash
+    /// dispatch path; threaded into [`crate::sandbox::build`] which
+    /// turns it into the env-var bouquet on the spawned `Command`.
+    pub fn proxy_port(&self) -> Option<u16> {
+        self.proxy_port.read().ok().and_then(|guard| *guard)
     }
 
     /// Classify a tool, using MCP annotations when available.
@@ -571,6 +599,7 @@ impl ToolRegistry {
                     &self.bg_registry,
                     sink_for_streaming,
                     &self.trust,
+                    self.proxy_port(),
                 )
                 .await;
                 return match shell_result {
@@ -896,6 +925,40 @@ mod tests {
 
     fn root() -> PathBuf {
         PathBuf::from("/home/user/project")
+    }
+
+    // ── Phase 3b: proxy port wiring (Bash → sandbox::build) ──────────
+
+    #[test]
+    fn proxy_port_defaults_to_none() {
+        let registry = ToolRegistry::new(root(), 100_000);
+        assert_eq!(registry.proxy_port(), None);
+    }
+
+    #[test]
+    fn proxy_port_round_trips_through_setter() {
+        let registry = ToolRegistry::new(root(), 100_000);
+        registry.set_proxy_port(Some(31415));
+        assert_eq!(registry.proxy_port(), Some(31415));
+    }
+
+    #[test]
+    fn proxy_port_can_be_cleared() {
+        let registry = ToolRegistry::new(root(), 100_000);
+        registry.set_proxy_port(Some(8080));
+        registry.set_proxy_port(None);
+        assert_eq!(registry.proxy_port(), None);
+    }
+
+    #[test]
+    fn proxy_port_setter_replaces_previous_value() {
+        // Idempotent + replacing semantics: KodaSession::enable_built_in_proxy
+        // can be called repeatedly to swap proxies (e.g. user reconfigures
+        // allowlist mid-session). Last write wins.
+        let registry = ToolRegistry::new(root(), 100_000);
+        registry.set_proxy_port(Some(1111));
+        registry.set_proxy_port(Some(2222));
+        assert_eq!(registry.proxy_port(), Some(2222));
     }
 
     #[test]

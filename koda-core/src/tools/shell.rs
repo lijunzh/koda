@@ -109,6 +109,7 @@ pub async fn run_shell_command(
     bg: &BgRegistry,
     sink: Option<(&dyn EngineSink, &str)>,
     trust: &crate::trust::TrustMode,
+    proxy_port: Option<u16>,
 ) -> Result<ShellOutput> {
     let command = args["command"]
         .as_str()
@@ -121,7 +122,7 @@ pub async fn run_shell_command(
     );
 
     if background {
-        let msg = spawn_background(project_root, command, bg, trust)?;
+        let msg = spawn_background(project_root, command, bg, trust, proxy_port)?;
         return Ok(ShellOutput {
             summary: msg,
             full_output: None,
@@ -134,7 +135,7 @@ pub async fn run_shell_command(
         .min(MAX_TIMEOUT_SECS);
 
     // Spawn via sandbox wrapper (enforced for all trust modes).
-    let mut child = crate::sandbox::build(command, project_root, trust)?
+    let mut child = crate::sandbox::build(command, project_root, trust, proxy_port)?
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -285,10 +286,11 @@ fn spawn_background(
     command: &str,
     bg: &BgRegistry,
     trust: &crate::trust::TrustMode,
+    proxy_port: Option<u16>,
 ) -> Result<String> {
     // Spawn via sandbox wrapper (enforced for all trust modes).
     // Detach stdio so the process doesn't block on terminal I/O.
-    let child = crate::sandbox::build(command, project_root, trust)?
+    let child = crate::sandbox::build(command, project_root, trust, proxy_port)?
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -460,6 +462,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .await
         .unwrap();
@@ -481,6 +484,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .await
         .unwrap();
@@ -502,6 +506,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .await
         .unwrap();
@@ -524,6 +529,7 @@ mod tests {
             &registry,
             None,
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .await
         .unwrap();
@@ -552,6 +558,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .await
         .unwrap();
@@ -643,6 +650,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .await
         .unwrap();
@@ -700,6 +708,7 @@ mod tests {
             &bg(),
             Some((sink.as_ref(), "test_id")),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .await
         .unwrap();
@@ -798,6 +807,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .await
         .expect("run_shell_command should succeed even when child fails");

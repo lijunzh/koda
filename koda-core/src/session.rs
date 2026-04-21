@@ -31,7 +31,8 @@ use crate::inference::InferenceContext;
 use crate::providers::{self, ImageData, LlmProvider};
 use crate::trust::TrustMode;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use koda_sandbox::{BuiltInProxy, Filter, ProxyHandle};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -57,6 +58,23 @@ pub struct KodaSession {
     pub file_tracker: FileTracker,
     /// Whether the session title has already been set (first-message guard).
     pub title_set: bool,
+    /// Per-session HTTP CONNECT proxy (Phase 3b of #934).
+    ///
+    /// `None` means "no network filtering" — the pre-3b default and
+    /// what every session gets unless [`Self::enable_built_in_proxy`] is
+    /// called. Held as `Option<ProxyHandle>` rather than `Arc` because
+    /// session ownership is exclusive: when the session drops, the proxy
+    /// task aborts and the listener closes. Future code paths that need
+    /// to clone the port for sub-agents read it via
+    /// [`koda_sandbox::ProxyHandle::port`] and stash that instead of the
+    /// handle itself.
+    ///
+    /// `pub` for parity with the other state fields — integration tests
+    /// construct `KodaSession` with struct-literal syntax. Production code
+    /// should still go through [`Self::enable_built_in_proxy`] /
+    /// [`Self::disable_built_in_proxy`] so the agent's `ToolRegistry`
+    /// stays in sync.
+    pub proxy: Option<ProxyHandle>,
 }
 
 impl KodaSession {
@@ -102,7 +120,41 @@ impl KodaSession {
             cancel: CancellationToken::new(),
             file_tracker,
             title_set: false,
+            proxy: None,
         }
+    }
+
+    /// Spawn an in-process HTTP CONNECT proxy with hostname allowlisting
+    /// and wire its port into the agent's [`crate::tools::ToolRegistry`]
+    /// so every Bash invocation routes its HTTP traffic through it.
+    ///
+    /// Phase 3b of #934. Idempotent: a second call replaces the existing
+    /// proxy (the old `ProxyHandle` is dropped, which aborts its task).
+    ///
+    /// **Fail-open semantics**: on spawn failure (e.g. ephemeral-port
+    /// exhaustion, runtime shutdown) we log a warning and leave the
+    /// session running unfiltered — matches the contract of
+    /// [`koda_sandbox::ExternalProxy::spawn`] and Claude Code's
+    /// `upstreamproxy`. A broken proxy must never break a session.
+    pub async fn enable_built_in_proxy(&mut self, filter: Filter) -> Result<()> {
+        let handle = BuiltInProxy::new(filter)
+            .spawn()
+            .await
+            .context("spawn built-in egress proxy")?;
+        let port = handle.port;
+        self.agent.tools.set_proxy_port(Some(port));
+        // Replace any previous handle (drops it → aborts the task).
+        self.proxy = Some(handle);
+        tracing::debug!("session {} enabled built-in proxy on port {port}", self.id);
+        Ok(())
+    }
+
+    /// Drop the per-session proxy if any, reverting Bash to unfiltered
+    /// network access. Idempotent. Mostly useful in tests; production
+    /// code lets `Drop` handle it at session end.
+    pub fn disable_built_in_proxy(&mut self) {
+        self.agent.tools.set_proxy_port(None);
+        self.proxy = None;
     }
 
     /// Run one inference turn: prompt → streaming → tool execution → response.

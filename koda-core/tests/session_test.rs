@@ -59,6 +59,7 @@ async fn make_session(
         cancel: cancel.clone(),
         file_tracker,
         title_set: false,
+        proxy: None,
     };
     (session, cancel)
 }

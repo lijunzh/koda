@@ -31,7 +31,7 @@
 use anyhow::Result;
 use koda_sandbox::{
     SandboxPolicy, SandboxRuntime, SandboxTransformRequest, current_runtime,
-    is_available as ks_is_available,
+    is_available as ks_is_available, proxy_env_vars,
 };
 use std::path::Path;
 use std::sync::OnceLock;
@@ -62,6 +62,14 @@ pub(crate) fn is_fully_denied(path: &Path) -> bool {
 /// same strict kernel-enforced baseline. Phase 1 of #934 will diverge
 /// per-mode policies through this entry point.
 ///
+/// The `proxy_port` argument is the loopback port of an in-process or
+/// external HTTP CONNECT proxy spawned by [`crate::session::KodaSession`]
+/// (Phase 3b of #934). When `Some`, the canonical env-var bouquet
+/// (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, lowercase variants) is
+/// attached to the Command so well-behaved HTTP clients (curl, gh, npm,
+/// pip, cargo, go, node, python) route their traffic through the proxy.
+/// `None` preserves the pre-3b unfiltered behavior.
+///
 /// Falls back to unsandboxed execution with a one-time warning when the
 /// platform sandbox backend is unavailable. The sandbox is best-effort:
 /// we never block the user just because the kernel enforcement layer is
@@ -70,6 +78,7 @@ pub fn build(
     command: &str,
     project_root: &Path,
     _trust: &crate::trust::TrustMode,
+    proxy_port: Option<u16>,
 ) -> Result<Command> {
     let runtime = current_runtime();
     warn_if_unavailable_once(runtime.as_ref());
@@ -81,15 +90,27 @@ pub fn build(
         policy: &policy,
     };
 
-    match runtime.transform(req) {
-        Ok(exec) => Ok(exec.command),
+    let mut cmd = match runtime.transform(req) {
+        Ok(exec) => exec.command,
         Err(e) => {
             tracing::warn!("Sandbox transform failed, running unsandboxed: {e}");
             let mut cmd = Command::new("sh");
             cmd.arg("-c").arg(command).current_dir(project_root);
-            Ok(cmd)
+            cmd
+        }
+    };
+
+    // Attach the proxy env-var bouquet last so it overrides anything the
+    // sandbox builder set (the builder doesn't touch HTTPS_PROXY, but
+    // belt-and-suspenders). 3b doesn't ship MITM yet so no CA bundle is
+    // advertised — phase 3d will plumb that through.
+    if let Some(port) = proxy_port {
+        for (k, v) in proxy_env_vars(port, None) {
+            cmd.env(k, v);
         }
     }
+
+    Ok(cmd)
 }
 
 /// Emit a single warning per process if the active runtime can't enforce
@@ -110,18 +131,98 @@ fn warn_if_unavailable_once(runtime: &dyn SandboxRuntime) {
     });
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+// ── Tests ───────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Phase 3b: proxy env-var injection ──────────────────────────────────
+
+    /// `proxy_port = Some(N)` must attach the canonical env-var bouquet
+    /// to the spawned Command. We verify by running `echo $HTTPS_PROXY`
+    /// inside the sandbox and reading stdout — platform-agnostic and
+    /// independent of the kernel sandbox availability.
+    #[tokio::test]
+    async fn build_attaches_proxy_env_when_port_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = build(
+            "echo \"$HTTPS_PROXY\"",
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+            Some(31415),
+        )
+        .unwrap()
+        .output()
+        .await
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("http://127.0.0.1:31415"),
+            "HTTPS_PROXY must be set, got stdout={stdout:?}"
+        );
+    }
+
+    /// `proxy_port = None` must not set any of the bouquet vars —
+    /// behavioral parity with pre-3b. Regression guard.
+    #[tokio::test]
+    async fn build_omits_proxy_env_when_port_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = build(
+            "echo \"[$HTTPS_PROXY]\"",
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+            None,
+        )
+        .unwrap()
+        .output()
+        .await
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        // The shell expands an unset var to the empty string; we should
+        // see literal "[]" with nothing in between.
+        assert!(
+            stdout.contains("[]"),
+            "HTTPS_PROXY must be unset, got stdout={stdout:?}"
+        );
+    }
+
+    /// All six lower/UPPER proxy vars + NO_PROXY must reach the child.
+    /// Defensive test: if a sed-of-bouquet refactor ever drops a var,
+    /// the corresponding language ecosystem (Go reads UPPER, Python httpx
+    /// reads lower) would silently bypass the proxy. Better to know.
+    #[tokio::test]
+    async fn build_attaches_all_proxy_var_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        // Print each var on its own line so we can assert presence
+        // without relying on shell escape order.
+        let cmd = r#"
+            for v in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy NO_PROXY no_proxy; do
+                eval "echo $v=\$$v"
+            done
+        "#;
+        let out = build(cmd, dir.path(), &crate::trust::TrustMode::Safe, Some(8080))
+            .unwrap()
+            .output()
+            .await
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for v in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+            assert!(
+                stdout.contains(&format!("{v}=http://127.0.0.1:8080")),
+                "{v} missing from child env, got: {stdout:?}"
+            );
+        }
+        assert!(stdout.contains("NO_PROXY="), "NO_PROXY missing: {stdout:?}");
+        assert!(stdout.contains("no_proxy="), "no_proxy missing: {stdout:?}");
+    }
 
     /// Sandbox build must always succeed (falls back to unsandboxed if
     /// the platform backend is unavailable, e.g. no `bwrap` on CI Linux).
     #[tokio::test]
     async fn build_always_succeeds_and_runs_echo() {
         let dir = tempfile::tempdir().unwrap();
-        let status = build("echo ok", dir.path(), &crate::trust::TrustMode::Safe)
+        let status = build("echo ok", dir.path(), &crate::trust::TrustMode::Safe, None)
             .unwrap()
             .status()
             .await
@@ -138,6 +239,7 @@ mod tests {
             "touch sandbox_canary",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -159,6 +261,7 @@ mod tests {
             &format!("echo pwned > {}", target.display()),
             project.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -179,6 +282,7 @@ mod tests {
             "cat /etc/hosts > /dev/null",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -196,6 +300,7 @@ mod tests {
             "touch strict_canary",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -220,6 +325,7 @@ mod tests {
             &format!("echo pwned > {}", target.display()),
             project.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -239,6 +345,7 @@ mod tests {
             "cat /etc/hosts > /dev/null",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -265,6 +372,7 @@ mod tests {
             &format!("ls {db_dir}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -291,6 +399,7 @@ mod tests {
             &format!("ls {ssh_dir}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -318,6 +427,7 @@ mod tests {
             &format!("touch {canary}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -345,6 +455,7 @@ mod tests {
             &format!("echo '{{}}' > {}", target.display()),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -370,6 +481,7 @@ mod tests {
             &format!("echo '{{}}' > {}", target.display()),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -394,6 +506,7 @@ mod tests {
             "touch normal_file.txt",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -420,6 +533,7 @@ mod tests {
             &format!("echo '# evil' > {}", target.display()),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -450,6 +564,7 @@ mod tests {
             &format!("ls {ssh_dir}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -477,6 +592,7 @@ mod tests {
             &format!("touch {canary}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
@@ -504,6 +620,7 @@ mod tests {
             &format!("ls {aws_dir}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
         )
         .unwrap()
         .status()
