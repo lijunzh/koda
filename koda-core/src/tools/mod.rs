@@ -390,11 +390,13 @@ impl ToolRegistry {
 
     /// Attach (or detach) the per-session HTTP CONNECT proxy port.
     ///
-    /// Called from [`crate::session::KodaSession::enable_built_in_proxy`]
-    /// after spawning a [`koda_sandbox::BuiltInProxy`]. Pass `None` to
-    /// detach (Bash invocations revert to unfiltered network access).
-    /// Lock-poisoning is non-fatal — we silently keep the previous
-    /// value, matching the precedent set by `set_mcp_manager`.
+    /// Called from [`crate::session::KodaSession::new`] after spawning
+    /// the always-on [`koda_sandbox::BuiltInProxy`]. Pass `None` to
+    /// detach (Bash invocations revert to unfiltered network access —
+    /// only used in standalone-ToolRegistry tests; production sessions
+    /// keep this set for their full lifetime). Lock-poisoning is
+    /// non-fatal — we silently keep the previous value, matching the
+    /// precedent set by `set_mcp_manager`.
     pub fn set_proxy_port(&self, port: Option<u16>) {
         if let Ok(mut guard) = self.proxy_port.write() {
             *guard = port;
