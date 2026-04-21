@@ -3,9 +3,9 @@
 #
 # Two checks, both fast:
 #
-#   1. cargo fmt --check          (~1s, always)
-#   2. cargo clippy -p <changed>  (~5-20s, only crates modified since
-#                                   the tracking remote branch)
+#   1. cargo fmt --check                        (~1s, always)
+#   2. cargo clippy -p <changed> -- -D warnings (~5-20s, scoped)
+#   3. RUSTDOCFLAGS=-D warnings cargo doc        (~2-5s, scoped)
 #
 # "Scoped" means we diff HEAD against the remote tracking sha (or
 # origin/main as fallback) and only lint workspace members whose files
@@ -86,7 +86,7 @@ else
 fi
 
 if [[ ${#CHANGED_PKGS[@]} -eq 0 ]]; then
-    ok "clippy — no workspace members changed, skipping"
+    ok "clippy + doc — no workspace members changed, skipping"
     exit 0
 fi
 
@@ -105,5 +105,18 @@ if cargo clippy "${PKG_FLAGS[@]}" --all-targets -- -D warnings 2>&1; then
     ok "clippy (${ELAPSED}s)"
 else
     fail "clippy: fix the warnings above, or 'git push --no-verify' for WIP"
+    exit 1
+fi
+
+# ── 4. Docs (changed packages only, deny warnings) ───────────────────────────
+
+info "doc [${CHANGED_PKGS[*]}] -- -D warnings"
+T0=$(date +%s)
+
+if RUSTDOCFLAGS="-D warnings" cargo doc "${PKG_FLAGS[@]}" --no-deps 2>&1; then
+    ELAPSED=$(( $(date +%s) - T0 ))
+    ok "doc (${ELAPSED}s)"
+else
+    fail "doc: fix the rustdoc warnings above, or 'git push --no-verify' for WIP"
     exit 1
 fi

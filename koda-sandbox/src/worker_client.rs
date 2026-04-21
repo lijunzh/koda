@@ -170,7 +170,7 @@ impl WorkerClient {
     /// Send one request and receive one response.
     ///
     /// Callers must not pipeline — wait for the response before
-    /// sending the next request. [`SandboxedFileSystem`] enforces
+    /// sending the next request. `SandboxedFileSystem` enforces
     /// this via the mutex.
     pub async fn request(&mut self, req: &Request) -> Result<Response, FsError> {
         write_message(&mut self.writer, req)

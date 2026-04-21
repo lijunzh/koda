@@ -53,7 +53,7 @@ impl Default for Context {
 
 /// Run the worker dispatch loop against an arbitrary duplex transport.
 ///
-/// Creates a default [`Context`] (bare `LocalFileSystem`, no policy
+/// Creates a default context (bare `LocalFileSystem`, no policy
 /// enforcement yet). All existing tests call this entry point.
 ///
 /// Returns `Ok(())` on clean shutdown (peer EOF or `Request::Shutdown`).
