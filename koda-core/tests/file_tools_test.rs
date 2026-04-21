@@ -5,6 +5,7 @@
 use koda_core::tools::FileReadCache;
 use koda_core::tools::file_tools;
 use koda_core::tools::safe_resolve_path;
+use koda_sandbox::fs::LocalFileSystem;
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
@@ -14,6 +15,10 @@ use tempfile::TempDir;
 /// Convenience: fresh empty read cache for tests that don't need pre-seeded state.
 fn empty_cache() -> FileReadCache {
     Arc::new(Mutex::new(HashMap::new()))
+}
+
+fn fs() -> LocalFileSystem {
+    LocalFileSystem::new()
 }
 
 #[test]
@@ -58,7 +63,7 @@ async fn test_edit_file_replacement() {
         "path": "example.rs",
         "replacements": [{"old_str": "\"old\"", "new_str": "\"new\""}]
     });
-    file_tools::edit_file(tmp.path(), &args, &empty_cache())
+    file_tools::edit_file(tmp.path(), &args, &empty_cache(), &fs())
         .await
         .unwrap();
     let result = std::fs::read_to_string(tmp.path().join("example.rs")).unwrap();
@@ -78,7 +83,7 @@ async fn test_edit_file_delete_snippet() {
         "path": "with_comment.rs",
         "replacements": [{"old_str": "// TODO: remove this\n", "new_str": ""}]
     });
-    file_tools::edit_file(tmp.path(), &args, &empty_cache())
+    file_tools::edit_file(tmp.path(), &args, &empty_cache(), &fs())
         .await
         .unwrap();
     let result = std::fs::read_to_string(tmp.path().join("with_comment.rs")).unwrap();
@@ -98,7 +103,7 @@ async fn test_edit_replace_all_replaces_every_occurrence() {
         "path": "vars.rs",
         "replacements": [{"old_str": "foo", "new_str": "bar", "replace_all": true}]
     });
-    let result = file_tools::edit_file(tmp.path(), &args, &empty_cache())
+    let result = file_tools::edit_file(tmp.path(), &args, &empty_cache(), &fs())
         .await
         .unwrap();
     let content = std::fs::read_to_string(tmp.path().join("vars.rs")).unwrap();
@@ -120,7 +125,7 @@ async fn test_edit_without_replace_all_errors_on_multi_match() {
         "path": "vars.rs",
         "replacements": [{"old_str": "foo", "new_str": "bar"}]
     });
-    let err = file_tools::edit_file(tmp.path(), &args, &empty_cache())
+    let err = file_tools::edit_file(tmp.path(), &args, &empty_cache(), &fs())
         .await
         .unwrap_err();
     let msg = err.to_string();
@@ -139,7 +144,7 @@ async fn test_edit_replace_all_single_occurrence_no_count_label() {
         "path": "one.rs",
         "replacements": [{"old_str": "old", "new_str": "new", "replace_all": true}]
     });
-    let result = file_tools::edit_file(tmp.path(), &args, &empty_cache())
+    let result = file_tools::edit_file(tmp.path(), &args, &empty_cache(), &fs())
         .await
         .unwrap();
     let content = std::fs::read_to_string(tmp.path().join("one.rs")).unwrap();

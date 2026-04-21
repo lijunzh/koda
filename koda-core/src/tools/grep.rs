@@ -1,19 +1,22 @@
 //! Grep tool — recursive text search across files.
 //!
-//! Uses the `ignore` crate to walk directories (respecting `.gitignore`)
-//! and searches for text patterns. Match cap is set by `OutputCaps`
-//! (context-scaled).
+//! Uses the `FileSystem` trait (Phase 2d, #934) to walk directories
+//! (respecting `.gitignore`) and search for text patterns. This lets
+//! `LocalFileSystem` walk the host tree directly, while `SandboxedFileSystem`
+//! routes the same walk through the policy-enforcing worker process.
+//!
+//! Match cap is set by `OutputCaps` (context-scaled).
 //!
 //! ## Parameters
 //!
 //! - **`pattern`** (required) — Text or regex pattern to search for
 //! - **`path`** (optional, default `.`) — Directory or file to search in
-//! - **`include`** (optional) — Glob pattern to filter files (e.g., `"*.rs"`)
+//! - **`case_insensitive`** (optional) — Ignore case (default: false)
 //!
 //! ## Output format
 //!
-//! Returns matches as `file:line: content`, one per line. When matches
-//! exceed the cap, output is truncated with a count of remaining matches.
+//! Returns matches as `file:line:content`, one per line. When matches
+//! exceed the cap, output is truncated with a count note.
 //!
 //! ## When to use Grep vs Bash
 //!
@@ -23,6 +26,7 @@
 use super::resolve_read_path;
 use crate::providers::ToolDefinition;
 use anyhow::Result;
+use koda_sandbox::fs::FileSystem;
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -58,11 +62,19 @@ pub fn definitions() -> Vec<ToolDefinition> {
 }
 
 /// Search for a text pattern across files in a directory.
-pub async fn grep(project_root: &Path, args: &Value, max_matches: usize) -> Result<String> {
-    let pattern = args["pattern"]
+///
+/// The pattern is treated as a **literal string** (not a regex) and escaped
+/// before being handed to the [`FileSystem`] impl. `case_insensitive=true`
+/// prepends a `(?i)` inline flag so the regex engine handles case folding.
+pub async fn grep(
+    project_root: &Path,
+    args: &Value,
+    max_matches: usize,
+    fs: &dyn FileSystem,
+) -> Result<String> {
+    let raw_pattern = args["pattern"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' argument"))?
-        .to_string();
+        .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' argument"))?;
     let path_str = args["file_path"]
         .as_str()
         .or_else(|| args["path"].as_str())
@@ -70,99 +82,65 @@ pub async fn grep(project_root: &Path, args: &Value, max_matches: usize) -> Resu
     let case_insensitive = args["case_insensitive"].as_bool().unwrap_or(false);
 
     let search_root = resolve_read_path(project_root, path_str)?;
-    let project_root = project_root.to_path_buf();
 
-    // Run blocking file I/O off the tokio thread pool
-    tokio::task::spawn_blocking(move || {
-        grep_blocking(
-            &project_root,
-            &search_root,
-            &pattern,
-            case_insensitive,
-            max_matches,
-        )
-    })
-    .await?
-}
-
-/// Blocking grep implementation (runs on a dedicated thread).
-fn grep_blocking(
-    project_root: &Path,
-    search_root: &Path,
-    pattern: &str,
-    case_insensitive: bool,
-    max_matches: usize,
-) -> Result<String> {
-    let regex = if case_insensitive {
-        regex::RegexBuilder::new(&regex::escape(pattern))
-            .case_insensitive(true)
-            .build()?
+    // Treat the user input as a literal string, not a regex — escape specials.
+    // This prevents "fn (" from blowing up the regex engine (#807 family).
+    let escaped = regex::escape(raw_pattern);
+    let regex_pattern = if case_insensitive {
+        format!("(?i){escaped}")
     } else {
-        regex::Regex::new(&regex::escape(pattern))?
+        escaped
     };
 
-    let walker = ignore::WalkBuilder::new(search_root)
-        .hidden(true)
-        .git_ignore(true)
-        .build();
+    let all_matches = fs
+        .grep(&regex_pattern, &search_root, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("Grep error: {e}"))?;
 
-    let mut matches = Vec::new();
-    let mut files_searched = 0u64;
-
-    for entry in walker.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-
-        // Skip binary files: read only the first 8KB to check
-        let content = match std::fs::read(path) {
-            Ok(bytes) => match String::from_utf8(bytes) {
-                Ok(s) => s,
-                Err(_) => continue,
-            },
-            Err(_) => continue,
-        };
-
-        files_searched += 1;
-
-        let relative = path.strip_prefix(project_root).unwrap_or(path);
-        for (line_num, line) in content.lines().enumerate() {
-            if regex.is_match(line) {
-                matches.push(format!(
-                    "{}:{}:{}",
-                    relative.display(),
-                    line_num + 1,
-                    truncate_line(line, 200)
-                ));
-
-                if matches.len() >= max_matches {
-                    matches.push(format!(
-                        "\n... [CAPPED at {max_matches} matches. \
-                         Narrow your search pattern.]"
-                    ));
-                    return Ok(format_output(&matches, files_searched));
-                }
-            }
-        }
+    if all_matches.is_empty() {
+        return Ok(format!("No matches found for '{raw_pattern}'"));
     }
 
-    if matches.is_empty() {
-        Ok(format!(
-            "No matches found for \'{pattern}\' (searched {files_searched} files)"
-        ))
-    } else {
-        Ok(format_output(&matches, files_searched))
-    }
-}
+    // Cap the result set and build output lines.
+    let capped = all_matches.len() > max_matches;
+    let shown = &all_matches[..all_matches.len().min(max_matches)];
 
-fn format_output(matches: &[String], files_searched: u64) -> String {
-    format!(
-        "{} matches (searched {} files):\n{}",
-        matches.len(),
-        files_searched,
-        matches.join("\n")
-    )
+    // Count unique matched files for the summary line.
+    let files_with_matches = {
+        let mut seen = std::collections::HashSet::new();
+        for m in shown {
+            seen.insert(&m.path);
+        }
+        seen.len()
+    };
+
+    let mut lines: Vec<String> = shown
+        .iter()
+        .map(|m| {
+            let rel = m.path.strip_prefix(project_root).unwrap_or(&m.path);
+            format!(
+                "{}:{}:{}",
+                rel.display(),
+                m.line,
+                truncate_line(&m.text, 200)
+            )
+        })
+        .collect();
+
+    if capped {
+        lines.push(format!(
+            "\n... [CAPPED at {max_matches} matches. \
+             Narrow your search pattern.]"
+        ));
+    }
+
+    Ok(format!(
+        "{} matches ({} file{}):\n{}",
+        shown.len(),
+        files_with_matches,
+        if files_with_matches == 1 { "" } else { "s" },
+        lines.join("\n")
+    ))
 }
 
 /// Truncate a line to at most `max_bytes` bytes, snapping down to
@@ -187,6 +165,7 @@ fn truncate_line(line: &str, max_bytes: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use koda_sandbox::fs::LocalFileSystem;
     use tempfile::TempDir;
 
     fn setup_test_dir() -> TempDir {
@@ -214,7 +193,9 @@ mod tests {
     async fn test_grep_finds_matches() {
         let tmp = setup_test_dir();
         let args = json!({ "pattern": "hello" });
-        let result = grep(tmp.path(), &args, 100).await.unwrap();
+        let result = grep(tmp.path(), &args, 100, &LocalFileSystem::new())
+            .await
+            .unwrap();
         assert!(result.contains("hello.rs"));
         assert!(result.contains("lib.rs"));
     }
@@ -223,7 +204,9 @@ mod tests {
     async fn test_grep_no_matches() {
         let tmp = setup_test_dir();
         let args = json!({ "pattern": "zzzznotfound" });
-        let result = grep(tmp.path(), &args, 100).await.unwrap();
+        let result = grep(tmp.path(), &args, 100, &LocalFileSystem::new())
+            .await
+            .unwrap();
         assert!(result.contains("No matches"));
     }
 
@@ -231,7 +214,9 @@ mod tests {
     async fn test_grep_case_insensitive() {
         let tmp = setup_test_dir();
         let args = json!({ "pattern": "HELLO", "case_insensitive": true });
-        let result = grep(tmp.path(), &args, 100).await.unwrap();
+        let result = grep(tmp.path(), &args, 100, &LocalFileSystem::new())
+            .await
+            .unwrap();
         assert!(result.contains("hello.rs"));
     }
 
@@ -270,7 +255,9 @@ mod tests {
     async fn test_grep_scoped_to_subdirectory() {
         let tmp = setup_test_dir();
         let args = json!({ "pattern": "nope", "path": "nested" });
-        let result = grep(tmp.path(), &args, 100).await.unwrap();
+        let result = grep(tmp.path(), &args, 100, &LocalFileSystem::new())
+            .await
+            .unwrap();
         assert!(result.contains("deep.rs"));
     }
 
@@ -284,7 +271,9 @@ mod tests {
         std::fs::write(tmp.path().join("text.rs"), "hello world").unwrap();
 
         let args = json!({ "pattern": "hello" });
-        let result = grep(tmp.path(), &args, 100).await.unwrap();
+        let result = grep(tmp.path(), &args, 100, &LocalFileSystem::new())
+            .await
+            .unwrap();
         // Binary file should be silently skipped; text file should match.
         assert!(result.contains("text.rs"));
         assert!(!result.contains("data.bin"));
@@ -303,7 +292,9 @@ mod tests {
         }
         // Cap at 5 matches.
         let args = json!({ "pattern": "needle" });
-        let result = grep(tmp.path(), &args, 5).await.unwrap();
+        let result = grep(tmp.path(), &args, 5, &LocalFileSystem::new())
+            .await
+            .unwrap();
         // Result should mention truncation when matches exceed the cap.
         assert!(
             result.contains("CAPPED"),
@@ -316,7 +307,9 @@ mod tests {
         // The tool accepts both "path" and "file_path" as the directory param.
         let tmp = setup_test_dir();
         let args = json!({ "pattern": "nope", "file_path": "nested" });
-        let result = grep(tmp.path(), &args, 100).await.unwrap();
+        let result = grep(tmp.path(), &args, 100, &LocalFileSystem::new())
+            .await
+            .unwrap();
         assert!(result.contains("deep.rs"));
     }
 
@@ -328,7 +321,9 @@ mod tests {
         // If the pattern were treated as regex, "fn (" would be a parse error.
         // Since we escape it, it should match the literal text.
         let args = json!({ "pattern": "fn (" });
-        let result = grep(tmp.path(), &args, 100).await.unwrap();
+        let result = grep(tmp.path(), &args, 100, &LocalFileSystem::new())
+            .await
+            .unwrap();
         assert!(
             result.contains("code.rs"),
             "literal paren should be matched without regex error"

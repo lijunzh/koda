@@ -144,6 +144,7 @@ pub mod web_fetch;
 pub mod web_search;
 
 use anyhow::Result;
+use koda_sandbox::fs::{FileSystem, LocalFileSystem};
 use path_clean::PathClean;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -217,6 +218,9 @@ pub struct ToolRegistry {
     project_root: PathBuf,
     definitions: HashMap<String, ToolDefinition>,
     read_cache: FileReadCache,
+    /// Filesystem abstraction — `LocalFileSystem` by default; swap to
+    /// `SandboxedFileSystem` when a sandbox slot is active (Phase 2d, #934).
+    fs: Arc<dyn FileSystem>,
     /// Per-file last-writer tracking for richer staleness errors (#804 item 7).
     last_writer: LastWriterCache,
     /// Most recent Bash invocation for staleness error context (#804 item 7).
@@ -305,6 +309,7 @@ impl ToolRegistry {
             project_root,
             definitions,
             read_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            fs: Arc::new(LocalFileSystem::new()),
             last_writer: Arc::new(std::sync::Mutex::new(HashMap::new())),
             last_bash: Arc::new(std::sync::Mutex::new(None)),
             undo: std::sync::Mutex::new(crate::undo::UndoStack::new()),
@@ -325,6 +330,14 @@ impl ToolRegistry {
     pub fn with_shared_cache(mut self, cache: FileReadCache) -> Self {
         self.read_cache = cache;
         self
+    }
+
+    /// Inject a custom [`FileSystem`] implementation.
+    ///
+    /// Call this after construction to swap `LocalFileSystem` for
+    /// `SandboxedFileSystem` when a sandbox slot is ready (#934).
+    pub fn set_fs(&mut self, fs: Arc<dyn FileSystem>) {
+        self.fs = fs;
     }
 
     /// Get a clone of the `Arc` file-read cache for sharing with sub-agents.
@@ -527,18 +540,25 @@ impl ToolRegistry {
 
         let result = match name {
             // File tools
-            "Read" => file_tools::read_file(&self.project_root, &args, &self.read_cache).await,
-            "Write" => file_tools::write_file(&self.project_root, &args).await,
-            "Edit" => file_tools::edit_file(&self.project_root, &args, &self.read_cache).await,
+            "Read" => {
+                file_tools::read_file(&self.project_root, &args, &self.read_cache, &*self.fs).await
+            }
+            "Write" => file_tools::write_file(&self.project_root, &args, &*self.fs).await,
+            "Edit" => {
+                file_tools::edit_file(&self.project_root, &args, &self.read_cache, &*self.fs).await
+            }
             "Delete" => file_tools::delete_file(&self.project_root, &args).await,
             "List" => {
                 file_tools::list_files(&self.project_root, &args, self.caps.list_entries).await
             }
 
             // Search tools
-            "Grep" => grep::grep(&self.project_root, &args, self.caps.grep_matches).await,
+            "Grep" => {
+                grep::grep(&self.project_root, &args, self.caps.grep_matches, &*self.fs).await
+            }
             "Glob" => {
-                glob_tool::glob_search(&self.project_root, &args, self.caps.glob_results).await
+                glob_tool::glob_search(&self.project_root, &args, self.caps.glob_results, &*self.fs)
+                    .await
             }
 
             // Shell
