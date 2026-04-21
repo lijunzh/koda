@@ -54,7 +54,7 @@ pub use violations::{
     DEFAULT_RING_CAPACITY, SandboxViolationStore, Violation, ViolationKind, global_store,
     render_block,
 };
-pub use workspace::{CwdProvider, WorkspaceProvider};
+pub use workspace::{CwdProvider, GitWorktreeProvider, WorkspaceProvider};
 
 use anyhow::Result;
 use std::path::Path;
