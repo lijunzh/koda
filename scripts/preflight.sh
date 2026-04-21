@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 # scripts/preflight.sh — comprehensive pre-PR validation.
 #
-# Mirrors what CI runs on both ubuntu-latest and macos-latest. Use this
-# before opening a PR if you want full confidence — the pre-push hook
-# only runs fmt + lib clippy for speed.
+# Mirrors what CI runs on both ubuntu-latest and macos-latest.
+#
+# The pre-push hook already handles:
+#   • cargo fmt --check    (always, ~1s)
+#   • cargo clippy -p <changed-crates> -- -D warnings  (scoped, ~5-20s)
+#
+# This script adds the stuff the hook deliberately skips for speed:
+#   • clippy across ALL workspace members + features
+#   • cargo check (catches feature-gating issues)
+#   • unit + integration test suite
+#
+# Run this before opening a PR for full confidence.
 #
 # Usage:
 #   ./scripts/preflight.sh
