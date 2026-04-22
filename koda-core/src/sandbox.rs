@@ -86,13 +86,36 @@ pub(crate) fn is_fully_denied(path: &Path) -> bool {
 pub fn build(
     command: &str,
     project_root: &Path,
-    _trust: &crate::trust::TrustMode,
+    trust: &crate::trust::TrustMode,
     policy: &SandboxPolicy,
     proxy_port: Option<u16>,
     socks5_port: Option<u16>,
 ) -> Result<Command> {
     let runtime = current_runtime();
     warn_if_unavailable_once(runtime.as_ref());
+
+    // Phase 5 of #934 (item 2 — `failIfUnavailable`): refuse to run
+    // unsandboxed in Auto mode. Auto's whole value proposition is
+    // "trust the kernel sandbox to contain auto-approved destructive
+    // ops" — silently dropping that boundary at process startup
+    // because `bwrap` happens to be missing is a sharp footgun.
+    // #860's confirmation-prompt downgrade is a UX fallback, not a
+    // security guarantee (the model can still read anywhere on the
+    // FS in unsandboxed Auto).
+    //
+    // Safe and Plan keep the warn-and-fallback path: the user is
+    // already in the approval loop (Safe) or the tool registry filters
+    // writes (Plan), so sandbox is defense-in-depth there, not the
+    // primary boundary. No env-var escape hatch exists by design —
+    // if you don't want fail-if-unavailable, drop to Safe/Plan.
+    if matches!(trust, crate::trust::TrustMode::Auto) && !is_available() {
+        anyhow::bail!(
+            "Kernel sandbox backend unavailable in Auto mode \u{2014} refusing to run \
+             unsandboxed. Install the platform sandbox dependency (e.g. `bwrap` on \
+             Linux) or switch to Safe/Plan mode (which keeps the user in the \
+             approval loop)."
+        );
+    }
 
     // Phase 5 of #934 (PR-1): policy is now plumbed in from the caller
     // instead of synthesized here as `strict_default()`. This is the
@@ -793,5 +816,120 @@ mod tests {
             status.success(),
             "linux strict: reading ~/.aws/ must be allowed (aws CLI needs credentials)"
         );
+    }
+
+    // ── Phase 5 of #934 (item 2): Auto-mode hard-fail when sandbox missing ──
+    //
+    // Behavior matrix is intentionally tiny:
+    //
+    //   TrustMode::Auto  + sandbox unavailable  →  build() returns Err
+    //   TrustMode::Safe  + sandbox unavailable  →  build() returns Ok (warn-and-fallback)
+    //   TrustMode::Plan  + sandbox unavailable  →  build() returns Ok (warn-and-fallback)
+    //   *                + sandbox available    →  build() returns Ok
+    //
+    // No env-var override exists by design: if you don't want
+    // fail-if-unavailable, drop to Safe/Plan. Keeps the surface area
+    // crisp and the security posture predictable across hosts.
+    //
+    // The unavailable-host tests skip on macOS (seatbelt always
+    // present) and Linux-with-bwrap. The available-host test runs
+    // everywhere is_available() is true.
+
+    #[tokio::test]
+    async fn build_errors_in_auto_mode_when_sandbox_unavailable() {
+        if is_available() {
+            eprintln!("skip: kernel sandbox is available on this host");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let result = build(
+            "echo hi",
+            dir.path(),
+            &crate::trust::TrustMode::Auto,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+        );
+        assert!(
+            result.is_err(),
+            "Auto mode without kernel sandbox must hard-error \u{2014} the whole \
+             point of Auto is the kernel boundary"
+        );
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("Auto"),
+            "error message must name the offending mode so the user knows what to change: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_falls_back_in_safe_mode_when_sandbox_unavailable() {
+        if is_available() {
+            eprintln!("skip: kernel sandbox is available on this host");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let result = build(
+            "echo hi",
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "Safe mode must keep the warn-and-fallback path \u{2014} the user is \
+             already in the approval loop: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_falls_back_in_plan_mode_when_sandbox_unavailable() {
+        if is_available() {
+            eprintln!("skip: kernel sandbox is available on this host");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let result = build(
+            "echo hi",
+            dir.path(),
+            &crate::trust::TrustMode::Plan,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "Plan mode must keep the warn-and-fallback path \u{2014} the tool registry \
+             filters writes already: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_succeeds_in_all_modes_when_sandbox_available() {
+        if !is_available() {
+            eprintln!("skip: kernel sandbox not available on this host");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        for mode in [
+            crate::trust::TrustMode::Plan,
+            crate::trust::TrustMode::Safe,
+            crate::trust::TrustMode::Auto,
+        ] {
+            let result = build(
+                "echo hi",
+                dir.path(),
+                &mode,
+                &koda_sandbox::SandboxPolicy::strict_default(),
+                None,
+                None,
+            );
+            assert!(
+                result.is_ok(),
+                "{mode:?} must succeed when sandbox is available: {result:?}"
+            );
+        }
     }
 }
