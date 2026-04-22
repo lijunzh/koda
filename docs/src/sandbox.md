@@ -136,3 +136,64 @@ even if the agent JSON specifies `"mode": "auto"`.
 If the platform backend is unavailable (e.g. `bwrap` not installed on
 Linux), Koda falls back to unsandboxed execution with a warning logged
 via `tracing::warn!`. Install the backend for full protection.
+
+## Workspace providers
+
+The **sandbox backend** (above) restricts what syscalls a sub-agent can
+make. The **workspace provider** is a separate layer that decides where
+those syscalls write — it materializes an isolated copy of your project
+for each write-capable sub-agent so concurrent fan-out doesn't trample
+shared files.
+
+Isolation guarantees are **identical across platforms**. Only how the
+isolated workspace is materialized — and therefore how fast it is —
+differs:
+
+| Platform | Provider (write-capable agents) | Backing primitive | Typical provision time |
+|----------|---------------------------------|-------------------|------------------------|
+| macOS | `ClonefileProvider` | APFS `clonefile(2)` | ~0.4 s for 30-parallel |
+| Linux | `GitWorktreeProvider` | `git worktree add` | ~1.6 s for 30-parallel |
+| Windows | Not supported | — | — |
+
+*Numbers from the `parallel_dispatch` bench (`cargo bench --bench
+parallel_dispatch -p koda-sandbox`) on a fixture project; exact figures
+vary by hardware and project size.*
+
+**Read-only sub-agents** (no `Write` or `Edit` tools) skip the workspace
+provider entirely on every platform — they share the parent project
+root for free, no provisioning cost.
+
+### Why the platforms differ
+
+macOS exposes a kernel primitive (`clonefile(2)`) that creates a
+copy-on-write snapshot of an entire directory tree in a single syscall.
+Linux has no equivalent that's both unprivileged *and* available out of
+the box across distros — `reflink` requires an FS that supports it
+(XFS, Btrfs, some ext4 configs), `overlayfs` typically requires
+`CAP_SYS_ADMIN`, and `fuse-overlayfs` is a userspace dep. Until
+production usage shows Linux fan-out is meaningfully bottlenecked by
+the `git worktree` cost, Koda uses git worktrees there for portability.
+
+### Practical implications
+
+- **macOS sub-agent fan-out is faster than Linux** by a constant factor
+  (~3-4× in the workspace-provision phase). For typical interactive
+  use (a few sub-agents per task) the difference is sub-second and not
+  noticeable. For heavy parallel fan-out (dozens of sub-agents) it
+  shows up.
+- **The 30-parallel acceptance gate is met on both platforms.** Even
+  the slower Linux path runs in single-digit seconds for 30 concurrent
+  write-capable sub-agents.
+- **Falling back gracefully:** if `ClonefileProvider` can't be
+  constructed on macOS (e.g. `$HOME` unset, project path can't
+  canonicalize), Koda automatically falls back to `GitWorktreeProvider`
+  with a `tracing::warn!`. If the actual `clonefile(2)` syscall fails
+  at runtime (rare — happens on non-APFS volumes), the dispatcher
+  falls back to running unisolated against the shared project root
+  with a warning.
+- **Closing the gap:** a Linux CoW backend is on the roadmap but
+  parked until production telemetry justifies it (tracked in
+  [#934](https://github.com/lijunzh/koda/issues/934)). If you run
+  large parallel fan-out workloads on Linux and feel the slowness,
+  please open an issue — that's exactly the signal that would
+  un-defer the work.
