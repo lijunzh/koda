@@ -43,6 +43,8 @@ pub mod policy_check;
 pub mod proxy;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
+#[cfg(target_os = "macos")]
+pub mod seatbelt_cache;
 #[cfg(target_os = "linux")]
 pub mod stage2;
 pub mod violations;

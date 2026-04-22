@@ -68,7 +68,7 @@ impl DomainPattern {
 ///
 /// Phase 0 ignores all fields — the seatbelt/bwrap builders use the
 /// hardcoded defaults from [`crate::defaults`]. Phase 1 wires them in.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FsPolicy {
     /// Paths whose reads are denied at the kernel layer.
@@ -92,7 +92,7 @@ pub struct FsPolicy {
 
 /// Network egress policy. All fields are Phase-3 territory — the runtime
 /// ignores them in Phase 0–2.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NetPolicy {
     /// Domain allowlist. Empty + `denied_domains` empty == allow-all
@@ -116,7 +116,7 @@ pub struct NetPolicy {
 }
 
 /// Corporate MITM proxy configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MitmConfig {
     /// Path to the trusted CA bundle (Zscaler / corp PKI).
     pub ca_bundle: PathBuf,
@@ -130,7 +130,7 @@ pub struct MitmConfig {
 /// Per-process resource limits. Phase 0 placeholder; enforcement lands in
 /// Phase 5 per the issue's roadmap. Using `Option<u64>` so absent ==
 /// "no limit" without needing a magic sentinel value.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ResourceLimits {
     /// Max CPU time (seconds). `None` = unlimited.
@@ -147,7 +147,7 @@ pub struct ResourceLimits {
 
 /// Codex-style trust preference. Orthogonal to the FS/net policy: this
 /// controls *whether the user is asked*, not *what is allowed*.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrustPreference {
     /// Auto-approve any tool call the policy permits.
@@ -161,7 +161,7 @@ pub enum TrustPreference {
 
 /// Top-level sandbox policy. One per slot; sub-agent slots inherit and
 /// `restrict()` from the parent (Phase 5 — `EffectiveSandboxPermissions::compose`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SandboxPolicy {
     /// Filesystem rules (read/write deny + allow).
