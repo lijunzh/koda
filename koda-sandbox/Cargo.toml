@@ -50,3 +50,18 @@ path = "src/bin/koda-fs-worker.rs"
 name = "koda-sandbox-stage2"
 path = "src/bin/koda-sandbox-stage2.rs"
 required-features = []
+
+# Phase 4g of #934: prove the pool hits the < 15 ms p95 warm gate.
+# Unix-only because SandboxPool depends on WorkerClient (UnixStream).
+[[bench]]
+name = "acquire_slot"
+harness = false
+required-features = []
+
+# Phase 4g of #934: 30-parallel sub-agent demo + ClonefileProvider
+# vs GitWorktreeProvider comparison. Also reports the signal data
+# that drives the deferred 4e/4f decisions.
+[[bench]]
+name = "parallel_dispatch"
+harness = false
+required-features = []
