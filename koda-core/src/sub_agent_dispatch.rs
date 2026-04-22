@@ -64,6 +64,15 @@ async fn run_bg_agent(
         &sub_agent_cache,
         &parent_session,
         &nested_bg,
+        // Phase 5 PR-4 of #934: bg-spawned sub-agents have no live
+        // parent registry to pull a policy from (the spawning agent
+        // already returned). `strict_default()` is the safe choice —
+        // it means "no extra parent restrictions" so the child's own
+        // `policy_for_agent` result wins. If we later make the main
+        // agent registry-policy non-default, we should snapshot it
+        // into the bg-agent task at spawn time so this path inherits
+        // the same restrictions.
+        &koda_sandbox::SandboxPolicy::strict_default(),
     )
     .await;
 
@@ -95,6 +104,12 @@ pub(crate) async fn execute_sub_agent(
     sub_agent_cache: &SubAgentCache,
     parent_session_id: &str,
     bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
+    // Phase 5 PR-4 of #934: parent's effective sandbox policy. The
+    // child policy is composed onto this so the child can only narrow,
+    // never widen — see [`koda_sandbox::SandboxPolicy::compose`] for
+    // the per-field rules. Pass `&SandboxPolicy::strict_default()`
+    // when there is no meaningful parent (top-level invocation).
+    parent_sandbox_policy: &koda_sandbox::SandboxPolicy,
 ) -> Result<String> {
     let args: serde_json::Value = serde_json::from_str(arguments)?;
     let agent_name = args["agent_name"].as_str().unwrap_or("task");
@@ -309,16 +324,19 @@ pub(crate) async fn execute_sub_agent(
             sub_config.max_context_tokens,
             sub_config.trust,
         );
-        // Phase 5 PR-2 of #934: install the sub-agent's sandbox policy.
-        // Today `policy_for_agent` returns `strict_default()` for every
-        // input so behavior is unchanged — the wiring exists so PR-3 can
-        // start populating the policy with non-default values (e.g.
-        // narrower fs.allow_write for read-only sub-agents) without
-        // touching this dispatch site again.
-        let registry = registry.with_sandbox_policy(crate::sandbox::policy_for_agent(
+        // Phase 5 PR-4 of #934: compose the parent's effective policy
+        // with the child's. Per-field rules in [`SandboxPolicy::compose`]
+        // (denies union, allows parent-wins, limits min, trust strictest)
+        // ensure the child can never widen the parent's surface — only
+        // narrow it. PR-2 installed the child policy verbatim; PR-4
+        // makes the install additive over the parent so chains of
+        // sub-agents accumulate restrictions monotonically.
+        let composed_policy = crate::sandbox::compose_child_policy(
+            parent_sandbox_policy,
             sub_config.trust,
             effective_root_ref,
-        ));
+        );
+        let registry = registry.with_sandbox_policy(composed_policy);
         match parent_cache {
             Some(cache) => registry.with_shared_cache(cache),
             None => registry,

@@ -210,6 +210,32 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
     });
     policy
 }
+
+/// Compute a sub-agent's effective policy by composing the parent's
+/// active policy with the sub-agent's per-trust derivation.
+///
+/// Phase 5 PR-4 of #934. Convenience wrapper over
+/// [`policy_for_agent`] + [`SandboxPolicy::compose`] so the dispatch
+/// site stays a one-liner and the policy-derivation logic is unit-
+/// testable in isolation (the full async dispatch path is awkward to
+/// drive from a unit test).
+///
+/// Parent-policy passing convention: callers without a meaningful
+/// parent (top-level invocations, bg-spawned agents whose parent has
+/// already returned) pass [`SandboxPolicy::strict_default`] — that's
+/// the algebraic identity for the union/AND/min rules in `compose`,
+/// so it has the effect of "child policy wins".
+///
+/// Returns a policy whose surface is **strictly no more permissive
+/// than the parent**: see `compose` rustdoc for the per-field rules.
+pub fn compose_child_policy(
+    parent: &SandboxPolicy,
+    sub_trust: crate::trust::TrustMode,
+    project_root: &Path,
+) -> SandboxPolicy {
+    let child = policy_for_agent(sub_trust, project_root);
+    SandboxPolicy::compose(parent, &child)
+}
 /// execution on, e.g., Linux without `bwrap` installed — surprising
 /// behavior that the previous `build_inner()` path warned about explicitly.
 fn warn_if_unavailable_once(runtime: &dyn SandboxRuntime) {
@@ -1016,6 +1042,82 @@ mod tests {
         let _ = policy_for_agent(
             crate::trust::TrustMode::Safe,
             std::path::Path::new("/nonexistent/path/that/should/not/exist"),
+        );
+    }
+
+    // ── Phase 5 PR-4 of #934: `compose_child_policy` wiring ──
+    //
+    // PR-3 added `SandboxPolicy::compose` as a pure function with its
+    // own tests in koda-sandbox. PR-4 wires it into sub-agent dispatch
+    // through `compose_child_policy`. These tests pin that the wrapper
+    // *actually calls compose* (not just `policy_for_agent`) and that
+    // the parent's restrictions are honored end-to-end.
+
+    #[test]
+    fn compose_child_policy_with_strict_default_parent_is_just_child_policy() {
+        // Identity case: when there's no meaningful parent (top-level
+        // invocation, bg-spawned agent), `strict_default()` is the
+        // algebraic identity. The composed policy should equal what
+        // `policy_for_agent` would have returned alone.
+        let dir = tempfile::tempdir().unwrap();
+        let parent = SandboxPolicy::strict_default();
+        let composed = compose_child_policy(&parent, crate::trust::TrustMode::Safe, dir.path());
+        let child_alone = policy_for_agent(crate::trust::TrustMode::Safe, dir.path());
+        assert_eq!(
+            composed, child_alone,
+            "strict_default parent must be the identity for compose"
+        );
+    }
+
+    #[test]
+    fn compose_child_policy_inherits_parent_denies() {
+        // Parent restriction that the child doesn't know about must
+        // survive into the composed policy. This is the load-bearing
+        // contract: a parent that bans /etc/secrets can't be widened
+        // by a child that has no opinion on /etc/secrets.
+        let dir = tempfile::tempdir().unwrap();
+        let mut parent = SandboxPolicy::strict_default();
+        parent
+            .fs
+            .deny_read
+            .push(koda_sandbox::PathPattern::new("/etc/secrets"));
+        let composed = compose_child_policy(&parent, crate::trust::TrustMode::Safe, dir.path());
+        assert!(
+            composed
+                .fs
+                .deny_read
+                .contains(&koda_sandbox::PathPattern::new("/etc/secrets")),
+            "parent's deny_read must survive composing with the child"
+        );
+    }
+
+    #[test]
+    fn compose_child_policy_takes_tighter_wall_time() {
+        // When parent has wall_time=10 and child policy_for_agent says
+        // 60, the composed wall_time must be 10 (min). This proves
+        // compose's `min_opt` rule is reachable through the wrapper.
+        let dir = tempfile::tempdir().unwrap();
+        let mut parent = SandboxPolicy::strict_default();
+        parent.limits.wall_time_secs = Some(10);
+        let composed = compose_child_policy(&parent, crate::trust::TrustMode::Safe, dir.path());
+        assert_eq!(
+            composed.limits.wall_time_secs,
+            Some(10),
+            "parent's tighter wall_time must beat the child's looser default"
+        );
+    }
+
+    #[test]
+    fn compose_child_policy_takes_strictest_trust() {
+        // Parent: Forbid (most restrictive). Child: Auto (least). Result: Forbid.
+        let dir = tempfile::tempdir().unwrap();
+        let mut parent = SandboxPolicy::strict_default();
+        parent.trust = koda_sandbox::TrustPreference::Forbid;
+        let composed = compose_child_policy(&parent, crate::trust::TrustMode::Auto, dir.path());
+        assert_eq!(
+            composed.trust,
+            koda_sandbox::TrustPreference::Forbid,
+            "strictest trust wins regardless of which side it came from"
         );
     }
 }
