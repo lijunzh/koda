@@ -179,18 +179,21 @@ impl SandboxRuntime for SeatbeltRuntime {
         // proxy port, so even ill-behaved binaries that ignore
         // `HTTPS_PROXY` env vars cannot escape via direct TCP.
         //
-        // `allow_local_binding=false` is hardcoded until
-        // `policy.net.allow_local_binding` exists. Localhost binds
-        // (e.g. dev servers on 127.0.0.1:3000) are still allowed by
-        // [`network_proxied_rules`]; only wildcard `*:*` binds are
-        // gated by this flag.
+        // `allow_local_binding` and `weaker_macos_isolation` come
+        // straight from the policy. Localhost binds (e.g. dev servers
+        // on 127.0.0.1:3000) are still allowed by
+        // [`network_proxied_rules`] regardless; the bind flag only
+        // gates wildcard `*:*`. The trustd flag (Phase 3e of #934) is
+        // off by default and only set by callers that need Go-style
+        // out-of-process TLS validation to work inside the sandbox.
         let command = match req.proxy_port {
             Some(port) => seatbelt::build_command_with_proxy(
                 req.command,
                 req.project_root,
                 req.policy,
                 port,
-                false,
+                req.policy.net.allow_local_binding,
+                req.policy.net.weaker_macos_isolation,
             )?,
             None => seatbelt::build_command(req.command, req.project_root, req.policy)?,
         };
