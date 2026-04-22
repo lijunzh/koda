@@ -175,6 +175,33 @@ pub fn build(
     Ok(cmd)
 }
 
+/// Construct the [`SandboxPolicy`] that should govern a given agent's
+/// tool invocations.
+///
+/// Phase 5 PR-2 of #934 establishes the constructor and its call sites
+/// (Bash dispatch, sub-agent dispatch). The body intentionally returns
+/// [`SandboxPolicy::strict_default`] for every input today — enforcement
+/// of per-agent variation lands in PR-3 alongside the resource-limit
+/// and `compose()` work that needs distinct policies to act on.
+///
+/// Why a free function here (not a method on `SandboxPolicy`):
+/// - Keeps `koda-sandbox::policy` ignorant of `koda-core::trust` and
+///   `koda-core::config` (the policy crate is the lower layer; the
+///   construction policy that combines runtime context lives upstream).
+/// - Mirrors the existing pattern in this module: `build()` is also a
+///   construction-policy free function, not a method on `Command`.
+///
+/// Inputs deliberately minimal until PR-3 needs more:
+/// - `trust`: today unused; reserved for PR-3 (e.g. `Plan` may map to
+///   stricter `fs.allow_write` than `Auto`).
+/// - `project_root`: today unused; reserved for PR-3 to seed allow lists.
+pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> SandboxPolicy {
+    // Suppress unused-warning without `_` prefix so the API surface
+    // documents the intended inputs. PR-3 turns these into reads.
+    let _ = (trust, project_root);
+    SandboxPolicy::strict_default()
+}
+
 /// Emit a single warning per process if the active runtime can't enforce
 /// kernel-level isolation. Without this users get silent unsandboxed
 /// execution on, e.g., Linux without `bwrap` installed — surprising
@@ -931,5 +958,44 @@ mod tests {
                 "{mode:?} must succeed when sandbox is available: {result:?}"
             );
         }
+    }
+
+    // ── Phase 5 PR-2 of #934: `policy_for_agent` constructor ──
+    //
+    // The constructor is a stub today — it returns `strict_default()`
+    // for every input. These tests pin that contract so PR-3 changes
+    // are forced through review (instead of silently shifting per-agent
+    // capability without anyone noticing). When PR-3 lands, these tests
+    // get rewritten to assert the actual derivation rules — the *names*
+    // stay so it's obvious in `git log` what behavioral promise changed.
+
+    #[test]
+    fn policy_for_agent_returns_strict_default_for_all_trust_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let strict = SandboxPolicy::strict_default();
+        for mode in [
+            crate::trust::TrustMode::Plan,
+            crate::trust::TrustMode::Safe,
+            crate::trust::TrustMode::Auto,
+        ] {
+            assert_eq!(
+                policy_for_agent(mode, dir.path()),
+                strict,
+                "PR-2 contract: every trust mode maps to strict_default(). \
+                 If you're changing this in PR-3, update the test name + body \
+                 to describe the new derivation rule. Mode under test: {mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_for_agent_does_not_panic_on_nonexistent_project_root() {
+        // Defensive: the constructor must be safe to call before the
+        // project root is materialized on disk (sub-agent dispatch can
+        // build the policy before its workspace exists).
+        let _ = policy_for_agent(
+            crate::trust::TrustMode::Safe,
+            std::path::Path::new("/nonexistent/path/that/should/not/exist"),
+        );
     }
 }
