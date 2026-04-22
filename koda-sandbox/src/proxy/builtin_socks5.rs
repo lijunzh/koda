@@ -138,13 +138,10 @@ mod tests {
             Err(_) => {} // ECONNREFUSED — listener gone.
             Ok(mut sock) => {
                 let mut buf = [0u8; 16];
-                let n = tokio::time::timeout(
-                    Duration::from_millis(200),
-                    sock.read(&mut buf),
-                )
-                .await
-                .expect("read must not hang post-drop")
-                .expect("read must not error");
+                let n = tokio::time::timeout(Duration::from_millis(200), sock.read(&mut buf))
+                    .await
+                    .expect("read must not hang post-drop")
+                    .expect("read must not error");
                 assert_eq!(n, 0, "post-drop socket must EOF immediately");
             }
         }

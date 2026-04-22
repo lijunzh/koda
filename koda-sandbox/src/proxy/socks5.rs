@@ -48,10 +48,6 @@ use tracing::{debug, warn};
 /// arrive in a single TCP segment in practice.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Upstream `connect()` ceiling. Same number used by
-/// [`super::server`] so behaviour is consistent across both proxies.
-const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-
 /// Maximum DOMAIN length per RFC 1928 (the length byte is `u8`, so
 /// 255 is the wire ceiling). Valid hostnames cap at 253; we accept up
 /// to 255 to match the spec but the hostname allowlist will reject
@@ -74,6 +70,15 @@ pub struct Socks5Server {
     listener: TcpListener,
     filter: Filter,
     port: u16,
+    /// Upstream-connection policy snapshotted from the koda process's
+    /// env at bind time (Phase 3d.3 of #934). `Direct` in plain dev
+    /// environments; `HttpProxy` when the user has corp-set
+    /// `HTTPS_PROXY` so we can chain through Zscaler / Squid / etc.
+    /// Even though SOCKS5 itself is wire-incompatible with HTTP
+    /// CONNECT, the *upstream* hop only needs raw TCP — we open it
+    /// via CONNECT to the corp proxy and treat the returned tunnel
+    /// as a transparent socket.
+    upstream: crate::proxy::upstream::UpstreamConfig,
 }
 
 impl Socks5Server {
@@ -88,10 +93,12 @@ impl Socks5Server {
             .await
             .with_context(|| format!("bind socks5 listener on 127.0.0.1:{bind_port}"))?;
         let port = listener.local_addr()?.port();
+        let upstream = crate::proxy::upstream::UpstreamConfig::from_env();
         Ok(Self {
             listener,
             filter,
             port,
+            upstream,
         })
     }
 
@@ -101,10 +108,20 @@ impl Socks5Server {
         self.port
     }
 
+    /// Override the upstream-connection policy that [`Self::bind`]
+    /// snapshotted from `HTTPS_PROXY`. Sibling of
+    /// [`super::server::Server::with_upstream`] — see that fn for
+    /// rationale.
+    pub fn with_upstream(mut self, upstream: crate::proxy::upstream::UpstreamConfig) -> Self {
+        self.upstream = upstream;
+        self
+    }
+
     /// Run the accept loop forever. Caller drops the server (or aborts
     /// the spawning [`tokio::task::JoinHandle`]) for shutdown.
     pub async fn serve(self) {
         let filter = self.filter;
+        let upstream = std::sync::Arc::new(self.upstream);
         loop {
             let (sock, peer) = match self.listener.accept().await {
                 Ok(t) => t,
@@ -114,8 +131,9 @@ impl Socks5Server {
                 }
             };
             let f = filter.clone();
+            let up = std::sync::Arc::clone(&upstream);
             tokio::spawn(async move {
-                if let Err(e) = handle_one(sock, &f).await {
+                if let Err(e) = handle_one(sock, &f, &up).await {
                     debug!("socks5 connection from {peer} ended: {e:#}");
                 }
             });
@@ -128,7 +146,11 @@ impl Socks5Server {
 /// Returns `Ok(())` for cleanly-rejected requests (any REP code) AND
 /// for the happy path; `Err` is reserved for socket failures the
 /// caller can't act on beyond logging.
-async fn handle_one(mut client: TcpStream, filter: &Filter) -> Result<()> {
+async fn handle_one(
+    mut client: TcpStream,
+    filter: &Filter,
+    upstream: &crate::proxy::upstream::UpstreamConfig,
+) -> Result<()> {
     tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         greet(&mut client).await?;
         let target = read_request(&mut client).await?;
@@ -147,25 +169,28 @@ async fn handle_one(mut client: TcpStream, filter: &Filter) -> Result<()> {
             return Ok(());
         }
 
-        // Allowed. Resolve + dial upstream.
+        // Allowed. Resolve + dial upstream — either directly or through
+        // the chained corp proxy. The `connect_upstream` helper handles
+        // the dispatch, including NO_PROXY bypass for hosts that the
+        // user's environment marks as direct-routable.
         let upstream_addr = format!("{}:{}", target.host, target.port);
-        let upstream = tokio::time::timeout(
-            UPSTREAM_CONNECT_TIMEOUT,
-            TcpStream::connect(&upstream_addr),
-        )
-        .await;
+        let dial = crate::proxy::upstream::connect_upstream(&upstream_addr, upstream).await;
 
-        let mut upstream = match upstream {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => {
-                let rep = io_error_to_rep(&e);
-                warn!("socks5: upstream connect to {upstream_addr} failed: {e}");
+        let mut upstream_sock = match dial {
+            Ok(s) => s,
+            Err(e) => {
+                // The upstream layer wraps anyhow::Error around a root
+                // cause that may be an `io::Error` (direct dial) or a
+                // CONNECT-status error (chained dial). For the former we
+                // can map to a precise REP code; for the latter we use
+                // REP_GENERAL_FAILURE because none of the SOCKS5 codes
+                // really capture "corp proxy refused".
+                let rep = e
+                    .downcast_ref::<std::io::Error>()
+                    .map(io_error_to_rep)
+                    .unwrap_or(REP_GENERAL_FAILURE);
+                warn!("socks5: upstream connect to {upstream_addr} failed: {e:#}");
                 send_reply(&mut client, rep, 0x03).await?;
-                return Ok(());
-            }
-            Err(_) => {
-                warn!("socks5: upstream connect to {upstream_addr} timed out");
-                send_reply(&mut client, REP_HOST_UNREACHABLE, 0x03).await?;
                 return Ok(());
             }
         };
@@ -176,7 +201,7 @@ async fn handle_one(mut client: TcpStream, filter: &Filter) -> Result<()> {
         // [`super::server`]: a naive `tokio::join!` of two `copy()`s
         // would deadlock because clients typically never close their
         // write half after the SOCKS5 reply.
-        let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+        let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream_sock).await;
         Ok::<_, anyhow::Error>(())
     })
     .await
@@ -220,7 +245,10 @@ enum RequestOutcome {
     Connect(ConnectTarget),
     /// Send `rep`, with BND.ATYP = `atyp` (echoes whatever the client
     /// sent so well-behaved clients can pretty-print the failure).
-    Reject { rep: u8, atyp: u8 },
+    Reject {
+        rep: u8,
+        atyp: u8,
+    },
 }
 
 /// Parse `[VER=5][CMD][RSV=0][ATYP][DST.ADDR][DST.PORT]`. RFC 1928 §4.
@@ -336,7 +364,11 @@ async fn send_reply(client: &mut TcpStream, rep: u8, atyp: u8) -> Result<()> {
     reply[0] = 0x05;
     reply[1] = rep;
     reply[2] = 0x00;
-    reply[3] = if matches!(atyp, 0x01 | 0x04) { atyp } else { 0x03 };
+    reply[3] = if matches!(atyp, 0x01 | 0x04) {
+        atyp
+    } else {
+        0x03
+    };
     // Bytes [4..] already zero from `vec![0u8; ...]`.
     client.write_all(&reply).await?;
     Ok(())

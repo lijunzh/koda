@@ -61,7 +61,8 @@
 //! ├── server.rs         — HTTP CONNECT proxy (3b)
 //! ├── builtin.rs        — BuiltInProxy::spawn (3b)
 //! ├── socks5.rs         — SOCKS5 server (3d)
-//! └── builtin_socks5.rs — BuiltInSocks5Proxy::spawn (3d)
+//! ├── builtin_socks5.rs — BuiltInSocks5Proxy::spawn (3d)
+//! └── upstream.rs       — corp HTTPS_PROXY chaining (3d.3)
 //! ```
 
 pub mod builtin;
@@ -72,6 +73,7 @@ pub mod filter;
 pub mod handle;
 pub mod server;
 pub mod socks5;
+pub mod upstream;
 
 pub use builtin::BuiltInProxy;
 pub use builtin_socks5::BuiltInSocks5Proxy;
@@ -83,6 +85,7 @@ pub use filter::{DEFAULT_DEV_ALLOWLIST, Filter};
 pub use handle::ProxyHandle;
 pub use server::Server;
 pub use socks5::Socks5Server;
+pub use upstream::UpstreamConfig;
 
 // ── Shared internal helpers ──────────────────────────────────────────────────
 //
