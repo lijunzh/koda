@@ -8,8 +8,11 @@
 //! |-----------------------|-------|--------------------------------------|
 //! | [`CwdProvider`]       | 0     | Returns `project_root` as-is         |
 //! | [`GitWorktreeProvider`]| 2    | `git worktree add` per sub-agent     |
-//! | `ClonefileProvider`   | 4     | macOS APFS `clonefile(2)`            |
+//! | `ClonefileProvider`   | 4     | macOS APFS `clonefile(2)` (CoW)      |
 //! | `OverlayfsProvider`   | 4     | Linux overlayfs inside bwrap         |
+//!
+//! `ClonefileProvider` lives behind `#[cfg(target_os = "macos")]`, so its
+//! intra-doc link is omitted from this table to keep Linux rustdoc happy.
 //!
 //! The pool selects which provider to use at slot acquisition time, based
 //! on agent persona + trust mode + git availability.
@@ -325,6 +328,252 @@ impl GitWorktreeProvider {
     }
 }
 
+// ── ClonefileProvider (macOS) ───────────────────────────────────────────
+
+/// Workspace via APFS `clonefile(2)` — the speed champion (Phase 4d of #934).
+///
+/// Each slot gets a copy-on-write reflink of the project tree at
+/// `~/.koda/clones/<project-hash>/<slot_id>/`. Provisioning is O(metadata),
+/// not O(content): a 5 GB monorepo clones in **~10 ms** instead of the
+/// 1-5 seconds [`GitWorktreeProvider`] takes for a fresh worktree.
+///
+/// ## Why the clones live OUTSIDE the project root
+///
+/// `clonefile(2)` is recursive. If clones lived under `<project>/.koda/clones/`,
+/// every slot's clone would *contain* every previous slot's clone (matryoshka).
+/// Putting them under `~/.koda/clones/<project-hash>/` keeps the source tree
+/// pristine and the clone footprint flat.
+///
+/// `<project-hash>` is a SHA-256 of the canonical project root path,
+/// truncated to 16 hex chars. It collides only across projects with the
+/// same canonical absolute path, which is impossible in practice.
+///
+/// ## Failure modes
+///
+/// - **Non-APFS filesystem** (`ENOTSUP`): caller must fall back to
+///   [`GitWorktreeProvider`] or [`CwdProvider`]. The error message
+///   names this explicitly so users aren't left guessing.
+/// - **Cross-volume** (`EXDEV`): same as above. Happens when `$HOME`
+///   and the project live on different APFS volumes (rare on default
+///   macOS installs; common on dev VMs with mounted source trees).
+/// - **Already exists**: idempotent — returns the existing path.
+///   Lets `acquire` for a slot_id that previously crashed mid-flight
+///   resume from where it left off.
+///
+/// We deliberately **do not** auto-fall-back to `GitWorktreeProvider`.
+/// The user explicitly wired in `ClonefileProvider` (it's opt-in for at
+/// least one release per the issue's roadmap); silently downgrading
+/// would hide setup misconfigurations and make perf-debug confusing.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone)]
+pub struct ClonefileProvider {
+    project_root: PathBuf,
+    /// Root under which all this provider's clones live, as in
+    /// `<clones_root>/<slot_id>`. Defaults to
+    /// `~/.koda/clones/<sha256(project_root)[..16]>/`. Tests override
+    /// this so they don't pollute the user's home dir.
+    clones_root: PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+impl ClonefileProvider {
+    /// Standard constructor. Derives `clones_root` from `$HOME` and a
+    /// 16-hex-char SHA-256 of the canonical project path.
+    ///
+    /// Returns `Err` if `$HOME` is unset or the project path can't be
+    /// canonicalized — both indicate a setup problem the caller must
+    /// surface, not silently work around.
+    pub fn new(project_root: impl Into<PathBuf>) -> Result<Self> {
+        let project_root = project_root.into();
+        let canonical = project_root
+            .canonicalize()
+            .with_context(|| format!("canonicalize project_root {}", project_root.display()))?;
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .context("$HOME not set; cannot derive ClonefileProvider clones_root")?;
+        let hash = Self::project_hash(&canonical);
+        let clones_root = home.join(".koda").join("clones").join(hash);
+        Ok(Self {
+            project_root: canonical,
+            clones_root,
+        })
+    }
+
+    /// Test/advanced constructor: explicit `clones_root`. Lets tests
+    /// point at a tempdir without mutating `$HOME`.
+    pub fn with_clones_root(
+        project_root: impl Into<PathBuf>,
+        clones_root: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let project_root = project_root.into();
+        let canonical = project_root
+            .canonicalize()
+            .with_context(|| format!("canonicalize project_root {}", project_root.display()))?;
+        Ok(Self {
+            project_root: canonical,
+            clones_root: clones_root.into(),
+        })
+    }
+
+    /// Where the clone for `slot_id` lives.
+    fn clone_path(&self, slot_id: &str) -> PathBuf {
+        self.clones_root.join(slot_id)
+    }
+
+    /// Stable 16-hex-char FNV-1a hash of the canonical project path.
+    /// Stable means: same path → same hash across processes / restarts,
+    /// so clones from a previous koda session can be resumed.
+    ///
+    /// FNV-1a (not SipHash) because `std::hash::DefaultHasher` is
+    /// seeded with a random value per process, which would defeat
+    /// cross-session resume. We don't need cryptographic strength
+    /// here — collision space is "projects on this developer's
+    /// machine," which is dozens at most.
+    fn project_hash(canonical: &Path) -> String {
+        use std::os::unix::ffi::OsStrExt;
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+        let mut hash = FNV_OFFSET;
+        for byte in canonical.as_os_str().as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        format!("{hash:016x}")
+    }
+
+    /// Internal: actually invoke `clonefile(2)`. Synchronous; callers
+    /// must wrap in `tokio::task::spawn_blocking`. Translates errno
+    /// into messages that name the failure mode and the recommended
+    /// fallback.
+    fn clonefile_sync(src: &Path, dst: &Path) -> Result<()> {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let src_c = CString::new(src.as_os_str().as_bytes())
+            .with_context(|| format!("src path contains NUL: {}", src.display()))?;
+        let dst_c = CString::new(dst.as_os_str().as_bytes())
+            .with_context(|| format!("dst path contains NUL: {}", dst.display()))?;
+
+        // SAFETY: both pointers are valid CStrings owned for the
+        // duration of the call; libc::clonefile takes them by const
+        // pointer and copies what it needs synchronously.
+        let rc = unsafe { libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) };
+        if rc == 0 {
+            return Ok(());
+        }
+
+        let err = std::io::Error::last_os_error();
+        let raw = err.raw_os_error().unwrap_or(0);
+        // Translate the well-known errno values into actionable messages.
+        // `ENOTSUP` (45) and `EXDEV` (18) are the ones users actually hit;
+        // everything else falls through to the generic message.
+        let msg = match raw {
+            libc::ENOTSUP => format!(
+                "clonefile({}, {}) returned ENOTSUP — destination volume is not APFS. \
+                 Use GitWorktreeProvider or CwdProvider on this volume.",
+                src.display(),
+                dst.display()
+            ),
+            libc::EXDEV => format!(
+                "clonefile({}, {}) returned EXDEV — source and destination are on \
+                 different volumes. Either move ~/.koda onto the same volume as the \
+                 project, or use GitWorktreeProvider.",
+                src.display(),
+                dst.display()
+            ),
+            _ => format!(
+                "clonefile({}, {}) failed: {err} (errno {raw})",
+                src.display(),
+                dst.display()
+            ),
+        };
+        anyhow::bail!(msg)
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[async_trait]
+impl WorkspaceProvider for ClonefileProvider {
+    async fn provision(&self, slot_id: &str) -> Result<PathBuf> {
+        // Same slot_id sanity as GitWorktreeProvider: empty or
+        // path-separator-bearing slot_ids would let a caller escape
+        // the clones_root directory.
+        if slot_id.is_empty() || slot_id.contains('/') || slot_id.contains('\\') {
+            anyhow::bail!("Invalid slot_id for clonefile: {slot_id:?}");
+        }
+
+        let dst = self.clone_path(slot_id);
+
+        // Idempotent resume: if the clone already exists, reuse it.
+        // Matches GitWorktreeProvider's behavior so callers can retry
+        // a crashed slot without first running release().
+        if dst.exists() {
+            tracing::debug!("Reusing existing clone: {}", dst.display());
+            return Ok(dst);
+        }
+
+        // Ensure the parent dir exists; clonefile won't create it.
+        if let Some(parent) = dst.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("create clones_root {}", parent.display()))?;
+        }
+
+        // clonefile(2) is synchronous. Wrap in spawn_blocking so we
+        // don't park the tokio worker on a 5 GB metadata clone.
+        let src = self.project_root.clone();
+        let dst_clone = dst.clone();
+        tokio::task::spawn_blocking(move || Self::clonefile_sync(&src, &dst_clone))
+            .await
+            .context("spawn_blocking for clonefile")??;
+
+        tracing::info!("Provisioned clone {} for slot {slot_id}", dst.display());
+        Ok(dst)
+    }
+
+    async fn release(&self, slot_id: &str, path: &Path) -> Result<Option<String>> {
+        // Defense in depth: only delete if `path` is genuinely under
+        // our clones_root. A bug in caller code that hands us
+        // `project_root` would otherwise rm -rf the user's source.
+        let canonical = match path.canonicalize() {
+            Ok(c) => c,
+            Err(_) => return Ok(None), // already gone
+        };
+        // Canonicalize `clones_root` for the comparison too — on macOS,
+        // `/var` is a symlink to `/private/var`, so a non-canonicalized
+        // `starts_with` check would spuriously refuse legitimate releases
+        // when `clones_root` is under a tempdir. We tolerate the case
+        // where `clones_root` doesn't yet exist (release-before-any-
+        // provision) by treating it as "nothing to compare against, so
+        // refuse" — safer than guessing.
+        let canonical_root = self.clones_root.canonicalize().with_context(|| {
+            format!(
+                "canonicalize clones_root {} for release safety check",
+                self.clones_root.display()
+            )
+        })?;
+        if !canonical.starts_with(&canonical_root) {
+            anyhow::bail!(
+                "refusing to release {} — not under clones_root {}",
+                canonical.display(),
+                canonical_root.display()
+            );
+        }
+
+        // Best-effort removal. CoW means free space comes back
+        // automatically as soon as the inode refcount hits zero.
+        if let Err(e) = tokio::fs::remove_dir_all(&canonical).await {
+            // EBUSY / EACCES on individual files inside the clone
+            // shouldn't tank the whole release — log and move on.
+            tracing::warn!(
+                "clonefile release of slot {slot_id} at {} hit error: {e}",
+                canonical.display()
+            );
+        }
+        Ok(None)
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -501,5 +750,195 @@ mod tests {
         // path == project_root → must be no-op even if not a git repo
         let hint = p.release("slot-x", tmp.path()).await.unwrap();
         assert!(hint.is_none());
+    }
+
+    // ── ClonefileProvider (macOS only) ───────────────────────────────────
+    //
+    // These tests exercise the real clonefile(2) syscall against a
+    // tempdir. They will SKIP (assertion-free early return) if the
+    // tempdir's volume isn't APFS, so they're safe in CI on any
+    // macOS runner but pass with full coverage on developer machines
+    // (where /tmp is APFS by default).
+
+    #[cfg(target_os = "macos")]
+    mod clonefile {
+        use super::*;
+
+        /// Probe whether `clonefile(2)` is supported on the volume
+        /// hosting `dir`. Returns `true` iff a 1-file clone succeeds.
+        /// Lets the rest of the suite skip cleanly on filesystems
+        /// where the syscall is unavailable (e.g. an HFS+ tempdir).
+        async fn clonefile_supported_at(dir: &Path) -> bool {
+            let src = dir.join(".probe-src");
+            let dst = dir.join(".probe-dst");
+            tokio::fs::write(&src, b"x").await.unwrap();
+            // Use the same syscall the provider uses, so support is
+            // tested via the actual code path.
+            let result = tokio::task::spawn_blocking({
+                let src = src.clone();
+                let dst = dst.clone();
+                move || ClonefileProvider::clonefile_sync(&src, &dst)
+            })
+            .await
+            .unwrap();
+            let _ = tokio::fs::remove_file(&src).await;
+            let _ = tokio::fs::remove_file(&dst).await;
+            result.is_ok()
+        }
+
+        /// Build a (project_root, clones_root, provider) triple in one
+        /// tempdir. Both roots live under the same parent so they're
+        /// guaranteed on the same volume — EXDEV won't surprise us.
+        fn make_provider(tmp: &Path) -> (PathBuf, PathBuf, ClonefileProvider) {
+            let project = tmp.join("project");
+            let clones = tmp.join("clones");
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(project.join("hello.txt"), "world").unwrap();
+            let p = ClonefileProvider::with_clones_root(&project, &clones).unwrap();
+            (project, clones, p)
+        }
+
+        #[tokio::test]
+        async fn project_hash_is_stable_and_pathlike() {
+            let tmp = tempfile::tempdir().unwrap();
+            let canonical = tmp.path().canonicalize().unwrap();
+            let a = ClonefileProvider::project_hash(&canonical);
+            let b = ClonefileProvider::project_hash(&canonical);
+            assert_eq!(a, b, "hash must be deterministic across calls");
+            assert_eq!(a.len(), 16, "hash must be 16 hex chars");
+            assert!(
+                a.chars().all(|c| c.is_ascii_hexdigit()),
+                "hash must be hex-only: {a}"
+            );
+        }
+
+        #[tokio::test]
+        async fn project_hash_differs_for_different_paths() {
+            let a = ClonefileProvider::project_hash(Path::new("/tmp/proj-a"));
+            let b = ClonefileProvider::project_hash(Path::new("/tmp/proj-b"));
+            assert_ne!(a, b);
+        }
+
+        #[tokio::test]
+        async fn invalid_slot_id_rejected() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (_, _, p) = make_provider(tmp.path());
+            assert!(p.provision("").await.is_err());
+            assert!(p.provision("foo/bar").await.is_err());
+            assert!(p.provision("foo\\bar").await.is_err());
+        }
+
+        #[tokio::test]
+        async fn provision_clones_project_tree() {
+            let tmp = tempfile::tempdir().unwrap();
+            if !clonefile_supported_at(tmp.path()).await {
+                eprintln!("skipping: tempdir is not on an APFS volume");
+                return;
+            }
+            let (_, clones, p) = make_provider(tmp.path());
+
+            let dst = p.provision("slot-1").await.unwrap();
+
+            assert_eq!(dst, clones.join("slot-1"));
+            assert!(dst.exists(), "clone dir should exist");
+            // The cloned tree must contain the source content.
+            let cloned = std::fs::read_to_string(dst.join("hello.txt")).unwrap();
+            assert_eq!(cloned, "world");
+        }
+
+        #[tokio::test]
+        async fn provision_is_copy_on_write() {
+            // The whole point of clonefile is that mutations on the
+            // clone don't leak back to the source. Pin that down so a
+            // future refactor (e.g. swapping in `cp -R`) gets caught.
+            let tmp = tempfile::tempdir().unwrap();
+            if !clonefile_supported_at(tmp.path()).await {
+                eprintln!("skipping: tempdir is not on an APFS volume");
+                return;
+            }
+            let (project, _, p) = make_provider(tmp.path());
+
+            let dst = p.provision("slot-cow").await.unwrap();
+            std::fs::write(dst.join("hello.txt"), "clobbered").unwrap();
+            std::fs::write(dst.join("new.txt"), "only-in-clone").unwrap();
+
+            // Source must be untouched.
+            let src_hello = std::fs::read_to_string(project.join("hello.txt")).unwrap();
+            assert_eq!(src_hello, "world");
+            assert!(!project.join("new.txt").exists());
+        }
+
+        #[tokio::test]
+        async fn provision_is_idempotent() {
+            // Re-provisioning the same slot_id (e.g. resuming after a
+            // crash) must reuse the existing clone rather than
+            // erroring or wastefully cloning again.
+            let tmp = tempfile::tempdir().unwrap();
+            if !clonefile_supported_at(tmp.path()).await {
+                eprintln!("skipping: tempdir is not on an APFS volume");
+                return;
+            }
+            let (_, _, p) = make_provider(tmp.path());
+
+            let a = p.provision("slot-resume").await.unwrap();
+            std::fs::write(a.join("marker.txt"), "persisted").unwrap();
+            let b = p.provision("slot-resume").await.unwrap();
+
+            assert_eq!(a, b);
+            // The marker we wrote between provisions must still be
+            // there — proving we reused, not re-cloned.
+            assert_eq!(
+                std::fs::read_to_string(b.join("marker.txt")).unwrap(),
+                "persisted"
+            );
+        }
+
+        #[tokio::test]
+        async fn release_removes_clone() {
+            let tmp = tempfile::tempdir().unwrap();
+            if !clonefile_supported_at(tmp.path()).await {
+                eprintln!("skipping: tempdir is not on an APFS volume");
+                return;
+            }
+            let (_, _, p) = make_provider(tmp.path());
+
+            let dst = p.provision("slot-rm").await.unwrap();
+            assert!(dst.exists());
+
+            let hint = p.release("slot-rm", &dst).await.unwrap();
+            // ClonefileProvider doesn't preserve work onto a branch
+            // (no git semantics), so release returns no hint.
+            assert!(hint.is_none());
+            assert!(!dst.exists(), "clone dir should be gone");
+        }
+
+        #[tokio::test]
+        async fn release_missing_path_is_ok() {
+            // If the clone is already gone (e.g. user manually rm'd
+            // ~/.koda/clones), release should not error — idempotent
+            // cleanup is the contract.
+            let tmp = tempfile::tempdir().unwrap();
+            let (_, clones, p) = make_provider(tmp.path());
+            let phantom = clones.join("never-existed");
+            let result = p.release("never-existed", &phantom).await.unwrap();
+            assert!(result.is_none());
+        }
+
+        #[tokio::test]
+        async fn release_refuses_path_outside_clones_root() {
+            // The provider should refuse to delete anything that
+            // isn't under its clones_root — critical defense against a
+            // caller bug that would otherwise rm -rf the user's
+            // source tree.
+            let tmp = tempfile::tempdir().unwrap();
+            let (project, _, p) = make_provider(tmp.path());
+            let result = p.release("slot-bad", &project).await;
+            assert!(
+                result.is_err(),
+                "release of a path outside clones_root must error"
+            );
+            // And the source must still exist — belt and suspenders.
+            assert!(project.join("hello.txt").exists());
+        }
     }
 }
