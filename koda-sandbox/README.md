@@ -286,7 +286,7 @@ as enforcement code lands.
 | `fs.allow_write` | ✅ | ✅ kernel + worker |
 | `fs.deny_write_within_allow` | ✅ | ✅ kernel + worker |
 | `fs.allow_git_config` | ✅ | ✅ worker |
-| `fs.mandatory_deny_search_depth` | ✅ | 🟡 declared-only — wired into matching in PR-6 |
+| `fs.mandatory_deny_search_depth` | ✅ | ✅ worker — clamped via `effective_chain_depth` floor=8 / ceiling=40 |
 | `net.allowed_domains` / `net.denied_domains` | ✅ | ✅ egress proxy |
 | `net.allow_local_binding` | ✅ | ✅ kernel |
 | `net.mitm` | ✅ | ✅ egress proxy |
