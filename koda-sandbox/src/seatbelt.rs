@@ -105,15 +105,13 @@ fn build_command_inner(
     // so the denies override the earlier broad `(allow file-read*)`.
     // Same last-match-wins approach as Gemini CLI's seatbeltArgsBuilder.ts.
     let mut profile = match proxy {
-        Some((port, allow_local_binding, weaker_macos_isolation)) => {
-            build_proxied_profile_string(
-                &root,
-                &home,
-                port,
-                allow_local_binding,
-                weaker_macos_isolation,
-            )
-        }
+        Some((port, allow_local_binding, weaker_macos_isolation)) => build_proxied_profile_string(
+            &root,
+            &home,
+            port,
+            allow_local_binding,
+            weaker_macos_isolation,
+        ),
         None => build_profile_string(&root, &home),
     };
     profile.push_str(&protected_subdir_deny_rules(&root));

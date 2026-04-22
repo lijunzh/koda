@@ -32,9 +32,9 @@
 //! - **No upload/idle timeouts** — Phase 3d (resource limits).
 
 use super::Filter;
-use super::relay;
 #[cfg(test)]
 use super::pick_ephemeral_port;
+use super::relay;
 use anyhow::{Context, Result, bail};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -175,8 +175,7 @@ async fn handle_one(
     }
 
     // Allowed. Connect upstream and bridge.
-    let upstream_sock = match crate::proxy::upstream::connect_upstream(&target, upstream).await
-    {
+    let upstream_sock = match crate::proxy::upstream::connect_upstream(&target, upstream).await {
         Ok(s) => s,
         Err(e) => {
             warn!("proxy: upstream connect to {target} failed: {e:#}");

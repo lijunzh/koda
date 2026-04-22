@@ -30,7 +30,7 @@
 
 use anyhow::Result;
 use koda_sandbox::{
-    SandboxPolicy, SandboxRuntime, SandboxTransformRequest, current_runtime,
+    SandboxPolicy, SandboxRuntime, SandboxTransformRequest, ca_bundle_for_policy, current_runtime,
     is_available as ks_is_available, proxy_env_vars,
 };
 use std::path::Path;
@@ -118,12 +118,17 @@ pub fn build(
         }
     };
 
-    // Attach the proxy env-var bouquet last so it overrides anything the
-    // sandbox builder set (the builder doesn't touch HTTPS_PROXY, but
-    // belt-and-suspenders). 3b doesn't ship MITM yet so no CA bundle is
-    // advertised — phase 3d will plumb that through.
+    // Attach the proxy env-var bouquet last so it overrides anything
+    // the sandbox builder set (the builder doesn't touch HTTPS_PROXY,
+    // but belt-and-suspenders). The CA bundle, when policy.net.mitm
+    // is configured (Phase 3g of #934), advertises the corp PKI to
+    // sandboxed subprocesses via SSL_CERT_FILE / NODE_EXTRA_CA_CERTS
+    // / REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE — see
+    // [`koda_sandbox::proxy::env::proxy_env_vars`] for the full key
+    // matrix and which runtime cares about which key.
     if let Some(port) = proxy_port {
-        for (k, v) in proxy_env_vars(port, None) {
+        let ca = ca_bundle_for_policy(&policy.net);
+        for (k, v) in proxy_env_vars(port, ca) {
             cmd.env(k, v);
         }
     }

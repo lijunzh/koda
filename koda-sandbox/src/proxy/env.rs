@@ -234,4 +234,67 @@ mod tests {
         };
         assert_eq!(ca_bundle_for_policy(&policy), Some(Path::new("/x/ca.pem")));
     }
+
+    /// Phase 3g of #934: full pipeline from a policy with `MitmConfig`
+    /// to the env bouquet that lands in the sandboxed subprocess.
+    /// Composes `ca_bundle_for_policy` and `proxy_env_vars` exactly
+    /// the way `worker_client.rs` and `koda-core/src/sandbox.rs` do
+    /// at runtime — catches a regression where a future refactor
+    /// detaches the two halves and silently sends `None` again.
+    #[test]
+    fn policy_with_mitm_yields_full_ca_bouquet() {
+        let policy = crate::policy::NetPolicy {
+            mitm: Some(crate::policy::MitmConfig {
+                ca_bundle: PathBuf::from("/etc/ssl/corp.pem"),
+                socket_map: vec![],
+            }),
+            ..Default::default()
+        };
+        let ca = ca_bundle_for_policy(&policy);
+        let vars = proxy_env_vars(8080, ca);
+
+        // All four CA-bundle keys must be present and point at the
+        // same path — different runtimes look at different keys (see
+        // the table in `proxy_env_vars` doc), and a partial bouquet
+        // means some tools silently bypass the corp-CA verification.
+        for key in [
+            "SSL_CERT_FILE",
+            "NODE_EXTRA_CA_CERTS",
+            "REQUESTS_CA_BUNDLE",
+            "CURL_CA_BUNDLE",
+        ] {
+            let v = vars
+                .iter()
+                .find(|(k, _)| k == key)
+                .unwrap_or_else(|| panic!("missing {key} in {vars:?}"));
+            assert_eq!(
+                v.1, "/etc/ssl/corp.pem",
+                "{key} must point at the policy's ca_bundle"
+            );
+        }
+    }
+
+    /// Negative companion: the default policy (no MITM configured)
+    /// must NOT inject any CA env vars — doing so would override the
+    /// platform default trust store with an empty path and break
+    /// every TLS handshake. Same composition shape as the positive
+    /// case to make the diff between them obvious.
+    #[test]
+    fn policy_without_mitm_yields_no_ca_bouquet() {
+        let policy = crate::policy::NetPolicy::default();
+        let ca = ca_bundle_for_policy(&policy);
+        let vars = proxy_env_vars(8080, ca);
+
+        for key in [
+            "SSL_CERT_FILE",
+            "NODE_EXTRA_CA_CERTS",
+            "REQUESTS_CA_BUNDLE",
+            "CURL_CA_BUNDLE",
+        ] {
+            assert!(
+                !vars.iter().any(|(k, _)| k == key),
+                "default policy must not advertise {key}; got {vars:?}"
+            );
+        }
+    }
 }
