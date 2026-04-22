@@ -143,11 +143,23 @@ pub async fn run_shell_command(
         .min(MAX_TIMEOUT_SECS);
 
     // Spawn via sandbox wrapper (enforced for all trust modes).
-    let mut child = crate::sandbox::build(command, project_root, trust, proxy_port, socks5_port)?
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to execute command: {e}"))?;
+    // Phase 5 PR-1 of #934: pass an explicit policy. Today this is
+    // `strict_default()` for byte-for-byte parity with pre-PR
+    // behavior; PR-2 will derive a real policy from trust + agent
+    // config so kernel enforcement actually varies per agent.
+    let policy = koda_sandbox::SandboxPolicy::strict_default();
+    let mut child = crate::sandbox::build(
+        command,
+        project_root,
+        trust,
+        &policy,
+        proxy_port,
+        socks5_port,
+    )?
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .map_err(|e| anyhow::anyhow!("Failed to execute command: {e}"))?;
 
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
@@ -299,12 +311,22 @@ fn spawn_background(
 ) -> Result<String> {
     // Spawn via sandbox wrapper (enforced for all trust modes).
     // Detach stdio so the process doesn't block on terminal I/O.
-    let child = crate::sandbox::build(command, project_root, trust, proxy_port, socks5_port)?
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to spawn background command: {e}"))?;
+    // Phase 5 PR-1 of #934: see comment on the foreground call site
+    // above for why `strict_default()` is used today.
+    let policy = koda_sandbox::SandboxPolicy::strict_default();
+    let child = crate::sandbox::build(
+        command,
+        project_root,
+        trust,
+        &policy,
+        proxy_port,
+        socks5_port,
+    )?
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .spawn()
+    .map_err(|e| anyhow::anyhow!("Failed to spawn background command: {e}"))?;
 
     let pid = child
         .id()

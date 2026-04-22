@@ -87,17 +87,23 @@ pub fn build(
     command: &str,
     project_root: &Path,
     _trust: &crate::trust::TrustMode,
+    policy: &SandboxPolicy,
     proxy_port: Option<u16>,
     socks5_port: Option<u16>,
 ) -> Result<Command> {
     let runtime = current_runtime();
     warn_if_unavailable_once(runtime.as_ref());
 
-    let policy = SandboxPolicy::strict_default();
+    // Phase 5 of #934 (PR-1): policy is now plumbed in from the caller
+    // instead of synthesized here as `strict_default()`. This is the
+    // first step in making per-agent / per-tool capability variation
+    // possible. Today every caller still passes `strict_default()` so
+    // behavior is byte-for-byte unchanged — PR-2 introduces real
+    // construction logic; PR-3 adds resource-limit + compose() callers.
     let req = SandboxTransformRequest {
         command,
         project_root,
-        policy: &policy,
+        policy,
         // Phase 3c: thread the proxy port into the kernel sandbox so
         // the seatbelt SBPL denies any TCP outbound that doesn't
         // target 127.0.0.1:proxy_port. Belt-and-suspenders alongside
@@ -183,6 +189,7 @@ mod tests {
             "echo \"$HTTPS_PROXY\"",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             Some(31415),
             None,
         )
@@ -206,6 +213,7 @@ mod tests {
             "echo \"[$HTTPS_PROXY]\"",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -232,6 +240,7 @@ mod tests {
             "echo \"$ALL_PROXY|$all_proxy\"",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             Some(27182),
         )
@@ -256,6 +265,7 @@ mod tests {
             "echo \"[$ALL_PROXY]\"",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -279,6 +289,7 @@ mod tests {
             "echo \"$HTTPS_PROXY|$ALL_PROXY\"",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             Some(8080),
             Some(1080),
         )
@@ -311,6 +322,7 @@ mod tests {
             cmd,
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             Some(8080),
             None,
         )
@@ -338,6 +350,7 @@ mod tests {
             "echo ok",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -357,6 +370,7 @@ mod tests {
             "touch sandbox_canary",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -380,6 +394,7 @@ mod tests {
             &format!("echo pwned > {}", target.display()),
             project.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -402,6 +417,7 @@ mod tests {
             "cat /etc/hosts > /dev/null",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -421,6 +437,7 @@ mod tests {
             "touch strict_canary",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -447,6 +464,7 @@ mod tests {
             &format!("echo pwned > {}", target.display()),
             project.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -468,6 +486,7 @@ mod tests {
             "cat /etc/hosts > /dev/null",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -496,6 +515,7 @@ mod tests {
             &format!("ls {db_dir}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -524,6 +544,7 @@ mod tests {
             &format!("ls {ssh_dir}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -553,6 +574,7 @@ mod tests {
             &format!("touch {canary}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -582,6 +604,7 @@ mod tests {
             &format!("echo '{{}}' > {}", target.display()),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -609,6 +632,7 @@ mod tests {
             &format!("echo '{{}}' > {}", target.display()),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -635,6 +659,7 @@ mod tests {
             "touch normal_file.txt",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -663,6 +688,7 @@ mod tests {
             &format!("echo '# evil' > {}", target.display()),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -695,6 +721,7 @@ mod tests {
             &format!("ls {ssh_dir}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -724,6 +751,7 @@ mod tests {
             &format!("touch {canary}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -753,6 +781,7 @@ mod tests {
             &format!("ls {aws_dir}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
