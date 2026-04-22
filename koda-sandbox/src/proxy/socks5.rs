@@ -176,7 +176,7 @@ async fn handle_one(
         let upstream_addr = format!("{}:{}", target.host, target.port);
         let dial = crate::proxy::upstream::connect_upstream(&upstream_addr, upstream).await;
 
-        let mut upstream_sock = match dial {
+        let upstream_sock = match dial {
             Ok(s) => s,
             Err(e) => {
                 // The upstream layer wraps anyhow::Error around a root
@@ -197,11 +197,19 @@ async fn handle_one(
 
         send_reply(&mut client, REP_SUCCEEDED, 0x03).await?;
 
-        // Bidirectional copy with proper half-close. Same rationale as
-        // [`super::server`]: a naive `tokio::join!` of two `copy()`s
-        // would deadlock because clients typically never close their
-        // write half after the SOCKS5 reply.
-        let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream_sock).await;
+        // Bidirectional copy with idle + total timeouts (Phase 3f of
+        // #934). Same rationale as [`super::server`]: SOCKS5 clients
+        // (git-over-https, raw TCP) never half-close after the reply,
+        // so without an idle deadline a wedged peer pins the slot for
+        // the kernel keepalive's two-hour default. See
+        // [`super::relay::relay_with_timeouts`] for the design notes.
+        let _ = super::relay::relay_with_timeouts(
+            client,
+            upstream_sock,
+            super::relay::DEFAULT_IDLE_TIMEOUT,
+            super::relay::DEFAULT_TOTAL_TIMEOUT,
+        )
+        .await;
         Ok::<_, anyhow::Error>(())
     })
     .await

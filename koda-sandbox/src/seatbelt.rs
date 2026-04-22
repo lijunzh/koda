@@ -62,18 +62,27 @@ pub fn build_command(
 /// `allow_local_binding` corresponds to `policy.net.allow_local_binding`
 /// (when that field exists — today it's a hardcoded `false` until the
 /// `NetPolicy` schema gains the field). Pass `false` for the strict default.
+///
+/// `weaker_macos_isolation` (Phase 3e of #934) corresponds to
+/// `policy.net.weaker_macos_isolation`. When `true`, the proxied profile
+/// permits mach-lookups to Apple's `trustd` and `trustd.agent` daemons
+/// so Go-binary TLS handshakes (which validate certs out-of-process via
+/// trustd, bypassing the rustls/openssl in-process path) succeed. Off
+/// by default — leaks a small amount of metadata to Apple's daemons
+/// but doesn't widen the network egress surface.
 pub fn build_command_with_proxy(
     command: &str,
     project_root: &Path,
     policy: &SandboxPolicy,
     proxy_port: u16,
     allow_local_binding: bool,
+    weaker_macos_isolation: bool,
 ) -> Result<Command> {
     build_command_inner(
         command,
         project_root,
         policy,
-        Some((proxy_port, allow_local_binding)),
+        Some((proxy_port, allow_local_binding, weaker_macos_isolation)),
     )
 }
 
@@ -81,7 +90,7 @@ fn build_command_inner(
     command: &str,
     project_root: &Path,
     policy: &SandboxPolicy,
-    proxy: Option<(u16, bool)>,
+    proxy: Option<(u16, bool, bool)>,
 ) -> Result<Command> {
     let canonical = project_root
         .canonicalize()
@@ -96,9 +105,13 @@ fn build_command_inner(
     // so the denies override the earlier broad `(allow file-read*)`.
     // Same last-match-wins approach as Gemini CLI's seatbeltArgsBuilder.ts.
     let mut profile = match proxy {
-        Some((port, allow_local_binding)) => {
-            build_proxied_profile_string(&root, &home, port, allow_local_binding)
-        }
+        Some((port, allow_local_binding, weaker_macos_isolation)) => build_proxied_profile_string(
+            &root,
+            &home,
+            port,
+            allow_local_binding,
+            weaker_macos_isolation,
+        ),
         None => build_profile_string(&root, &home),
     };
     profile.push_str(&protected_subdir_deny_rules(&root));
@@ -223,9 +236,23 @@ pub(crate) fn network_open_rules() -> String {
 /// - **Bind on `*:*`** — only when `allow_local_binding` is true (user dev
 ///   servers expecting external clients).
 ///
+/// When `weaker_macos_isolation` is true (Phase 3e of #934) we additionally
+/// permit mach-lookups to Apple's `trustd` and `trustd.agent` daemons.
+/// Without this, Go's standard library TLS — which validates server certs
+/// by IPC to `trustd` rather than in-process — fails on every handshake
+/// inside the proxied sandbox. Same toggle Claude Code exposes as
+/// `enableWeakerNetworkIsolation`. The trade-off is intentional: trustd
+/// learns the hostnames you're validating against (a metadata leak), but
+/// it has no power to widen the network egress surface, which the kernel
+/// SBPL still enforces independently.
+///
 /// Pattern mirrors Gemini CLI's `sandbox-macos-strict-proxied.sb` plus the
 /// Unix-socket carve-out from Codex's seatbelt rules.
-pub fn network_proxied_rules(proxy_port: u16, allow_local_binding: bool) -> String {
+pub fn network_proxied_rules(
+    proxy_port: u16,
+    allow_local_binding: bool,
+    weaker_macos_isolation: bool,
+) -> String {
     let mut rules = String::new();
     // SBPL gotcha: `(remote tcp "<host>:<port>")` only accepts `*` or
     // `localhost` as the host — a literal `127.0.0.1` causes
@@ -246,6 +273,29 @@ pub fn network_proxied_rules(proxy_port: u16, allow_local_binding: bool) -> Stri
     if allow_local_binding {
         rules.push_str("(allow network-bind (local ip \"*:*\"))\n");
     }
+    if weaker_macos_isolation {
+        rules.push_str(&trustd_mach_lookup_rules());
+    }
+    rules
+}
+
+/// SBPL rules permitting mach-lookups to Apple's `trustd` family.
+///
+/// These two services are the entire reason the `weaker_macos_isolation`
+/// flag exists. Kept as a separate fn so the snapshot tests can
+/// substring-match against the exact wire form without re-deriving it.
+///
+/// Why both names: Apple split `trustd` into `trustd` (system) and
+/// `trustd.agent` (per-user) somewhere around macOS 11; depending on
+/// what the calling binary links against and which user it runs as,
+/// either may be the actual lookup target. Permitting both is the only
+/// way to handle every binary in one rule set.
+fn trustd_mach_lookup_rules() -> String {
+    let mut rules = String::from(
+        "; \u{2500}\u{2500} weaker_macos_isolation: Apple trustd for Go-style out-of-process TLS \u{2500}\u{2500}\n",
+    );
+    rules.push_str("(allow mach-lookup (global-name \"com.apple.trustd\"))\n");
+    rules.push_str("(allow mach-lookup (global-name \"com.apple.trustd.agent\"))\n");
     rules
 }
 
@@ -258,8 +308,9 @@ pub fn build_proxied_profile_string(
     home: &str,
     proxy_port: u16,
     allow_local_binding: bool,
+    weaker_macos_isolation: bool,
 ) -> String {
-    let net = network_proxied_rules(proxy_port, allow_local_binding);
+    let net = network_proxied_rules(proxy_port, allow_local_binding, weaker_macos_isolation);
     build_profile_string_with_network(root, home, &net)
 }
 
@@ -637,7 +688,7 @@ mod tests {
 
     #[test]
     fn proxied_profile_omits_open_network_allow() {
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
         assert!(
             !p.contains("(allow network*)\n"),
             "proxied profile must not include the open-network allow\nprofile:\n{p}"
@@ -646,7 +697,7 @@ mod tests {
 
     #[test]
     fn proxied_profile_allows_only_proxy_port_outbound_tcp() {
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
         // Phase 3c fix: SBPL only accepts `*` or `localhost` as the
         // host in `(remote tcp ...)`. A literal `127.0.0.1` causes
         // sandbox-exec to reject the entire profile. `localhost`
@@ -673,19 +724,19 @@ mod tests {
         // git-over-ssh, ssh-agent, language servers, Docker.sock when
         // bind-mounted — all need this. Codex's seatbelt has the same
         // carve-out.
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
         assert!(p.contains("(allow network-outbound (remote unix-socket))"));
     }
 
     #[test]
     fn proxied_profile_allows_localhost_inbound_for_debuggers() {
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
         assert!(p.contains("(allow network-inbound (local ip \"localhost:*\"))"));
     }
 
     #[test]
     fn proxied_profile_omits_wildcard_bind_when_local_binding_disabled() {
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
         // Localhost bind is always allowed; wildcard *:* must not be.
         assert!(p.contains("(allow network-bind (local ip \"localhost:*\"))"));
         assert!(
@@ -696,7 +747,7 @@ mod tests {
 
     #[test]
     fn proxied_profile_includes_wildcard_bind_when_local_binding_enabled() {
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, true);
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, true, false);
         assert!(p.contains("(allow network-bind (local ip \"*:*\"))"));
     }
 
@@ -705,7 +756,7 @@ mod tests {
         // Regression guard: the proxied variant must only differ from the
         // open variant in the network section. Same temp/cargo/npm/cache
         // writes should still be present.
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
         assert!(p.contains("(subpath \"/work\")"));
         assert!(p.contains("(subpath \"/private/tmp\")"));
         assert!(p.contains("(subpath \"/Users/x/.cargo\")"));
@@ -718,7 +769,7 @@ mod tests {
         // DRY guard: confirm that build_profile_string and
         // build_proxied_profile_string share the same baseline.
         let open = build_profile_string("/work", "/Users/x");
-        let proxied = build_proxied_profile_string("/work", "/Users/x", 8877, false);
+        let proxied = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
 
         // Both must end the same way (process-exec onward is identical).
         let tail = "(allow process-exec*)\n(allow process-fork)\n(allow sysctl-read)\n(allow ipc-posix*)\n(allow mach*)\n";
@@ -739,6 +790,7 @@ mod tests {
             Path::new("/tmp"),
             &SandboxPolicy::default(),
             8877,
+            false,
             false,
         )
         .unwrap();
@@ -781,6 +833,7 @@ mod tests {
             &SandboxPolicy::default(),
             8877,
             true,
+            false,
         )
         .unwrap();
         let args: Vec<String> = cmd
@@ -790,5 +843,98 @@ mod tests {
             .collect();
         let profile = &args[1];
         assert!(profile.contains("(allow network-bind (local ip \"*:*\"))"));
+    }
+
+    // ── Phase 3e: weaker_macos_isolation toggle ────────────────────────────
+
+    #[test]
+    fn proxied_profile_omits_trustd_by_default() {
+        // Strict default: no mach-lookup carve-outs. The trustd daemons
+        // are deliberately UNREACHABLE without the explicit opt-in,
+        // mirroring the deny-by-default network posture.
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
+        assert!(
+            !p.contains("com.apple.trustd"),
+            "strict default must not permit trustd lookups; got:\n{p}"
+        );
+        assert!(
+            !p.contains("mach-lookup"),
+            "strict default must not contain any mach-lookup allow; got:\n{p}"
+        );
+    }
+
+    #[test]
+    fn proxied_profile_permits_trustd_when_weaker_isolation_set() {
+        // Opt-in: both trustd names must appear so per-user agent and
+        // system daemon lookups both succeed regardless of binary.
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, true);
+        assert!(
+            p.contains("(allow mach-lookup (global-name \"com.apple.trustd\"))"),
+            "weaker isolation must permit com.apple.trustd; got:\n{p}"
+        );
+        assert!(
+            p.contains("(allow mach-lookup (global-name \"com.apple.trustd.agent\"))"),
+            "weaker isolation must permit com.apple.trustd.agent; got:\n{p}"
+        );
+    }
+
+    #[test]
+    fn weaker_isolation_does_not_widen_network_egress() {
+        // The whole point of the toggle: it relaxes mach-lookup ONLY.
+        // The kernel-enforced TCP egress remains pinned to the loopback
+        // proxy port. Regression guard against a future maintainer
+        // sneaking a `(allow network*)` in alongside the trustd rules.
+        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, true);
+        assert!(
+            !p.contains("(allow network*)\n"),
+            "weaker isolation must not include the open-network blanket allow; got:\n{p}"
+        );
+        assert!(
+            p.contains("(allow network-outbound (remote tcp \"localhost:8877\"))"),
+            "single-port loopback rule must remain intact; got:\n{p}"
+        );
+    }
+
+    #[test]
+    fn weaker_isolation_propagates_through_build_command_with_proxy() {
+        // End-to-end: the public entry point must thread the bool all
+        // the way to the emitted profile.
+        let cmd = build_command_with_proxy(
+            "true",
+            Path::new("/tmp"),
+            &SandboxPolicy::default(),
+            8877,
+            false,
+            true,
+        )
+        .unwrap();
+        let profile = cmd
+            .as_std()
+            .get_args()
+            .nth(1)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            profile.contains("com.apple.trustd"),
+            "weaker isolation flag must reach the profile; got:\n{profile}"
+        );
+    }
+
+    #[test]
+    fn trustd_rules_are_idempotent_on_section_header() {
+        // The section header is a comment used as a visual landmark in
+        // log output. If a future refactor changes the header text, the
+        // log/grep tooling that hunts for sandbox events will silently
+        // stop matching. Pin the exact prefix.
+        let rules = trustd_mach_lookup_rules();
+        assert!(
+            rules.starts_with("; "),
+            "trustd block must lead with an SBPL comment; got:\n{rules}"
+        );
+        assert!(
+            rules.contains("weaker_macos_isolation"),
+            "comment must mention the policy field name for grep-ability; got:\n{rules}"
+        );
     }
 }
