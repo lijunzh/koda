@@ -409,8 +409,21 @@ mod tests {
     use super::*;
 
     /// Spawn a server on an ephemeral port and return its port.
+    ///
+    /// Always pins the upstream to `Direct` so the test is immune to
+    /// any ambient `HTTPS_PROXY` in the dev's shell (e.g. corp-network
+    /// setups). Without this, `Socks5Server::bind` would snapshot the
+    /// env var and chain 127.0.0.1 connections through the corp proxy,
+    /// returning failures that look like product bugs but aren't. See
+    /// the doc comment on [`Socks5Server::with_upstream`]. Any future
+    /// socks5 test that needs a non-`Direct` upstream should call
+    /// `Socks5Server::bind(...).with_upstream(...)` directly instead
+    /// of this helper.
     async fn spawn(filter: Filter) -> (u16, tokio::task::JoinHandle<()>) {
-        let server = Socks5Server::bind(None, filter).await.unwrap();
+        let server = Socks5Server::bind(None, filter)
+            .await
+            .unwrap()
+            .with_upstream(crate::proxy::upstream::UpstreamConfig::Direct);
         let port = server.port();
         let task = tokio::spawn(server.serve());
         (port, task)

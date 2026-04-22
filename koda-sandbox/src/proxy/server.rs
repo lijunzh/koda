@@ -360,9 +360,17 @@ mod tests {
         // Allowlist the upstream's loopback "host". 127.0.0.1 is an exact
         // match in the filter — works because the filter is just doing
         // string matching on the host part of "host:port".
+        //
+        // `.with_upstream(Direct)` shields the test from any ambient
+        // `HTTPS_PROXY` in the dev's shell (e.g. corp-network setups).
+        // Without it, `Server::bind` snapshots the env var and the
+        // proxy under test tries to chain its 127.0.0.1 connection
+        // through the corp proxy, returning 502. See the doc comment
+        // on `Self::with_upstream`.
         let server = Server::bind(None, Filter::new(["127.0.0.1"]).unwrap())
             .await
-            .unwrap();
+            .unwrap()
+            .with_upstream(crate::proxy::upstream::UpstreamConfig::Direct);
         let proxy_port = server.port();
         tokio::spawn(server.serve());
 
