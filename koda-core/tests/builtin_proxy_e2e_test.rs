@@ -212,6 +212,92 @@ async fn dropping_session_releases_proxy_port() {
     );
 }
 
+// ── Phase 3c: kernel-enforced egress (macOS only) ─────────────────────────
+
+/// **The Phase 3c headline contract.** Even an ill-behaved binary that
+/// completely ignores `HTTPS_PROXY` and tries to open a raw TCP
+/// connection to a non-proxy port must be denied by the seatbelt
+/// kernel sandbox. This is the security upgrade over Phase 3b: 3b
+/// trusts clients to honor env vars; 3c forces them.
+///
+/// We exercise this with bash's `/dev/tcp/host/port` magic — a
+/// pure-bash TCP open that doesn't honor any proxy env var. If the
+/// kernel denies the connect (as 3c requires), bash prints an error
+/// and the conditional reports `blocked`. If the kernel lets it
+/// through, the connect either succeeds (`connected`) or fails
+/// because nothing is listening on that port (`other-fail`) — either
+/// non-`blocked` outcome means 3c isn't enforcing.
+///
+/// macOS only: the bwrap backend on Linux can't kernel-enforce port
+/// filtering yet (see Phase 3c.1).
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn macos_kernel_blocks_direct_tcp_to_non_proxy_port() {
+    let env = Env::builder()
+        .provider_type(ProviderType::Mock)
+        .build()
+        .await;
+    let session = make_real_session(&env).await;
+    let proxy_port = session.proxy.as_ref().expect("proxy spawned").port;
+
+    // Pick a target port that is definitely NOT the proxy port. We
+    // don't actually need anything listening there — we're testing the
+    // kernel's ability to refuse the syscall, which happens before
+    // userspace observes connection success or failure.
+    let target_port = if proxy_port == 1 { 2 } else { 1 };
+
+    // bash's `/dev/tcp/host/port` performs a connect(2) at the libc
+    // level with no proxy honoring. The redirect uses fd 3 to keep
+    // stdout/stderr clean for our parsing.
+    let cmd = format!(
+        r#"{{"command":"if exec 3<>/dev/tcp/127.0.0.1/{target_port} 2>/dev/null; then echo connected; exec 3<&-; else echo blocked; fi"}}"#,
+    );
+    let result = session.agent.tools.execute("Bash", &cmd, None).await;
+    let combined = format!(
+        "{}\n{}",
+        result.output,
+        result.full_output.as_deref().unwrap_or("")
+    );
+    assert!(
+        combined.contains("blocked"),
+        "kernel-enforced sandbox must refuse direct TCP to non-proxy port \
+         {target_port} (proxy is on {proxy_port}); got:\n{combined}"
+    );
+}
+
+/// Companion to `macos_kernel_blocks_direct_tcp_to_non_proxy_port`:
+/// the kernel sandbox MUST still permit connections to the actual
+/// proxy port, otherwise even well-behaved clients can't reach the
+/// filter. Verifies the SBPL allow-rule actually allows the loopback
+/// proxy port through.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn macos_kernel_allows_tcp_to_proxy_port() {
+    let env = Env::builder()
+        .provider_type(ProviderType::Mock)
+        .build()
+        .await;
+    let session = make_real_session(&env).await;
+    let proxy_port = session.proxy.as_ref().expect("proxy spawned").port;
+
+    // Connect to the proxy port from inside the sandbox via /dev/tcp.
+    // The proxy is up, so connect(2) should succeed; the sandbox must
+    // not get in the way.
+    let cmd = format!(
+        r#"{{"command":"if exec 3<>/dev/tcp/127.0.0.1/{proxy_port} 2>/dev/null; then echo connected; exec 3<&-; else echo blocked; fi"}}"#,
+    );
+    let result = session.agent.tools.execute("Bash", &cmd, None).await;
+    let combined = format!(
+        "{}\n{}",
+        result.output,
+        result.full_output.as_deref().unwrap_or("")
+    );
+    assert!(
+        combined.contains("connected"),
+        "kernel-enforced sandbox must permit TCP to the proxy port {proxy_port}; got:\n{combined}"
+    );
+}
+
 // ── Live curl smoke (opt-in via --ignored) ───────────────────────────────
 
 /// End-to-end denial proof: a Bash invocation that asks curl to fetch

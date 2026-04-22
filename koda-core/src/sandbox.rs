@@ -88,6 +88,14 @@ pub fn build(
         command,
         project_root,
         policy: &policy,
+        // Phase 3c: thread the proxy port into the kernel sandbox so
+        // the seatbelt SBPL denies any TCP outbound that doesn't
+        // target 127.0.0.1:proxy_port. Belt-and-suspenders alongside
+        // the env-var bouquet (which catches well-behaved clients)
+        // so even ill-behaved binaries that ignore `HTTPS_PROXY`
+        // can't escape via direct TCP. On Linux this is a no-op
+        // until 3c.1 ships kernel-enforcement (slirp4netns / similar).
+        proxy_port,
     };
 
     let mut cmd = match runtime.transform(req) {
