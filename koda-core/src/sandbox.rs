@@ -178,32 +178,38 @@ pub fn build(
 /// Construct the [`SandboxPolicy`] that should govern a given agent's
 /// tool invocations.
 ///
-/// Phase 5 PR-2 of #934 establishes the constructor and its call sites
-/// (Bash dispatch, sub-agent dispatch). The body intentionally returns
-/// [`SandboxPolicy::strict_default`] for every input today — enforcement
-/// of per-agent variation lands in PR-3 alongside the resource-limit
-/// and `compose()` work that needs distinct policies to act on.
+/// Phase 5 PR-2 of #934 established the constructor and its call sites.
+/// PR-3 starts populating it: every trust mode now ships with a
+/// non-empty `limits.wall_time_secs` so the Bash dispatch path picks up
+/// a per-agent default deadline (precedence: explicit `timeout` arg >
+/// policy default > legacy hardcoded fallback). Other resource limits
+/// (CPU, RSS, FDs, output) stay `None` until the runtime grows actual
+/// enforcement code — the policy field exists, but no setter populates
+/// it yet (YAGNI: don't promise a limit we can't enforce).
 ///
-/// Why a free function here (not a method on `SandboxPolicy`):
-/// - Keeps `koda-sandbox::policy` ignorant of `koda-core::trust` and
-///   `koda-core::config` (the policy crate is the lower layer; the
-///   construction policy that combines runtime context lives upstream).
-/// - Mirrors the existing pattern in this module: `build()` is also a
-///   construction-policy free function, not a method on `Command`.
+/// ## Per-trust defaults (today, intentionally conservative)
 ///
-/// Inputs deliberately minimal until PR-3 needs more:
-/// - `trust`: today unused; reserved for PR-3 (e.g. `Plan` may map to
-///   stricter `fs.allow_write` than `Auto`).
-/// - `project_root`: today unused; reserved for PR-3 to seed allow lists.
+/// | Trust | wall_time_secs | rationale                                                  |
+/// |-------|----------------|------------------------------------------------------------|
+/// | Plan  | 60             | Read-only — 60s is more than enough for greps/reads.       |
+/// | Safe  | 60             | Matches pre-PR `DEFAULT_TIMEOUT_SECS`. Byte-for-byte parity. |
+/// | Auto  | 60             | Same as Safe today. Future PR may bump for build/test workloads once telemetry justifies it. |
+///
+/// Tuning per-trust differently is deliberately deferred — PR-3's job
+/// is the *lift* (make limits policy-driven, not hardcoded), not the
+/// retune. We change values once we have data; we change *where the
+/// values live* now so the change is one-line later.
 pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> SandboxPolicy {
-    // Suppress unused-warning without `_` prefix so the API surface
-    // documents the intended inputs. PR-3 turns these into reads.
-    let _ = (trust, project_root);
-    SandboxPolicy::strict_default()
+    // `project_root` reserved for PR-4+ (seeding fs.allow_write).
+    let _ = project_root;
+    let mut policy = SandboxPolicy::strict_default();
+    policy.limits.wall_time_secs = Some(match trust {
+        crate::trust::TrustMode::Plan
+        | crate::trust::TrustMode::Safe
+        | crate::trust::TrustMode::Auto => 60,
+    });
+    policy
 }
-
-/// Emit a single warning per process if the active runtime can't enforce
-/// kernel-level isolation. Without this users get silent unsandboxed
 /// execution on, e.g., Linux without `bwrap` installed — surprising
 /// behavior that the previous `build_inner()` path warned about explicitly.
 fn warn_if_unavailable_once(runtime: &dyn SandboxRuntime) {
@@ -960,32 +966,46 @@ mod tests {
         }
     }
 
-    // ── Phase 5 PR-2 of #934: `policy_for_agent` constructor ──
+    // ── Phase 5 PR-3 of #934: `policy_for_agent` populates resource limits ──
     //
-    // The constructor is a stub today — it returns `strict_default()`
-    // for every input. These tests pin that contract so PR-3 changes
-    // are forced through review (instead of silently shifting per-agent
-    // capability without anyone noticing). When PR-3 lands, these tests
-    // get rewritten to assert the actual derivation rules — the *names*
-    // stay so it's obvious in `git log` what behavioral promise changed.
+    // PR-2 left the constructor returning `strict_default()` for every
+    // input. PR-3 starts populating `limits.wall_time_secs` so the
+    // Bash dispatch path picks up a policy-driven default deadline.
+    // The other limits (CPU/RSS/FDs/output) stay None until the runtime
+    // grows actual enforcement — declared but not yet used.
 
     #[test]
-    fn policy_for_agent_returns_strict_default_for_all_trust_modes() {
+    fn policy_for_agent_sets_wall_time_for_all_trust_modes() {
         let dir = tempfile::tempdir().unwrap();
-        let strict = SandboxPolicy::strict_default();
         for mode in [
             crate::trust::TrustMode::Plan,
             crate::trust::TrustMode::Safe,
             crate::trust::TrustMode::Auto,
         ] {
+            let policy = policy_for_agent(mode, dir.path());
             assert_eq!(
-                policy_for_agent(mode, dir.path()),
-                strict,
-                "PR-2 contract: every trust mode maps to strict_default(). \
-                 If you're changing this in PR-3, update the test name + body \
-                 to describe the new derivation rule. Mode under test: {mode:?}"
+                policy.limits.wall_time_secs,
+                Some(60),
+                "PR-3 contract: every trust mode ships with a wall_time default \
+                 so the Bash dispatch path stops needing a hardcoded fallback. \
+                 Mode under test: {mode:?}"
             );
         }
+    }
+
+    #[test]
+    fn policy_for_agent_leaves_other_limits_unlimited() {
+        // Defensive: the runtime doesn't enforce CPU/RSS/FD/output
+        // limits yet. Setting them here would lie about enforcement.
+        // When PR-? wires up enforcement, update this test to assert
+        // the new defaults; until then, presence-without-enforcement
+        // is worse than absence (silent unlimited > silent ignored).
+        let dir = tempfile::tempdir().unwrap();
+        let policy = policy_for_agent(crate::trust::TrustMode::Safe, dir.path());
+        assert_eq!(policy.limits.cpu_time_secs, None);
+        assert_eq!(policy.limits.max_rss_bytes, None);
+        assert_eq!(policy.limits.max_open_fds, None);
+        assert_eq!(policy.limits.max_output_bytes, None);
     }
 
     #[test]

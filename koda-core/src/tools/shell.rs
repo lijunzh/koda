@@ -146,8 +146,16 @@ pub async fn run_shell_command(
         });
     }
 
+    // Phase 5 PR-3 of #934: timeout precedence is
+    //   1. explicit `timeout` arg (model-supplied per-call)
+    //   2. `policy.limits.wall_time_secs` (per-agent default)
+    //   3. `DEFAULT_TIMEOUT_SECS` legacy constant fallback
+    // Hard ceiling `MAX_TIMEOUT_SECS` clamps all three — keeps the
+    // DoS protection that the LLM can't widen its own deadline by
+    // asking for a 1-hour run.
     let timeout_secs = args["timeout"]
         .as_u64()
+        .or(policy.limits.wall_time_secs)
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .min(MAX_TIMEOUT_SECS);
 
@@ -720,12 +728,85 @@ mod tests {
 
     #[test]
     fn test_timeout_capped_at_max() {
+        // Mirrors the precedence formula in `run_shell_command` so a
+        // refactor here forces a refactor there (and vice versa).
         let args = serde_json::json!({"command": "echo hi", "timeout": 99999});
+        let policy = koda_sandbox::SandboxPolicy::strict_default();
         let t = args["timeout"]
             .as_u64()
+            .or(policy.limits.wall_time_secs)
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
             .min(MAX_TIMEOUT_SECS);
         assert_eq!(t, MAX_TIMEOUT_SECS);
+    }
+
+    // Phase 5 PR-3 of #934: timeout precedence is
+    //   arg > policy.limits.wall_time_secs > DEFAULT_TIMEOUT_SECS
+    // Each rung is pinned by its own test so a regression in one
+    // (e.g. swapping arg and policy precedence — letting a per-agent
+    // policy override an explicit per-call deadline) names the bug.
+
+    #[test]
+    fn timeout_precedence_arg_beats_policy() {
+        let args = serde_json::json!({"command": "x", "timeout": 42});
+        let mut policy = koda_sandbox::SandboxPolicy::strict_default();
+        policy.limits.wall_time_secs = Some(120);
+        let t = args["timeout"]
+            .as_u64()
+            .or(policy.limits.wall_time_secs)
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .min(MAX_TIMEOUT_SECS);
+        assert_eq!(
+            t, 42,
+            "explicit per-call timeout must win over policy default"
+        );
+    }
+
+    #[test]
+    fn timeout_precedence_policy_beats_legacy_default() {
+        let args = serde_json::json!({"command": "x"}); // no timeout arg
+        let mut policy = koda_sandbox::SandboxPolicy::strict_default();
+        policy.limits.wall_time_secs = Some(45);
+        let t = args["timeout"]
+            .as_u64()
+            .or(policy.limits.wall_time_secs)
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .min(MAX_TIMEOUT_SECS);
+        assert_eq!(
+            t, 45,
+            "policy-supplied wall_time_secs must beat the legacy DEFAULT_TIMEOUT_SECS const"
+        );
+    }
+
+    #[test]
+    fn timeout_precedence_legacy_default_when_arg_and_policy_absent() {
+        let args = serde_json::json!({"command": "x"});
+        let policy = koda_sandbox::SandboxPolicy::strict_default(); // wall_time_secs = None
+        let t = args["timeout"]
+            .as_u64()
+            .or(policy.limits.wall_time_secs)
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .min(MAX_TIMEOUT_SECS);
+        assert_eq!(t, DEFAULT_TIMEOUT_SECS, "fallback chain bottom rung");
+    }
+
+    #[test]
+    fn timeout_max_ceiling_clamps_policy_too() {
+        // Defense against "sub-agent gets a generous wall_time policy
+        // and bypasses the global DoS ceiling". The ceiling must clamp
+        // *all* sources, not just user-supplied args.
+        let args = serde_json::json!({"command": "x"});
+        let mut policy = koda_sandbox::SandboxPolicy::strict_default();
+        policy.limits.wall_time_secs = Some(99_999);
+        let t = args["timeout"]
+            .as_u64()
+            .or(policy.limits.wall_time_secs)
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
+            .min(MAX_TIMEOUT_SECS);
+        assert_eq!(
+            t, MAX_TIMEOUT_SECS,
+            "policy can't widen its own deadline past the hard DoS ceiling"
+        );
     }
 
     #[tokio::test]

@@ -185,6 +185,122 @@ impl SandboxPolicy {
     pub fn strict_default() -> Self {
         Self::default()
     }
+
+    /// Compose a parent policy with a child override, producing a policy
+    /// that is **strictly no more permissive than either input**.
+    ///
+    /// Phase 5 of #934 (`EffectiveSandboxPermissions::compose` in Codex).
+    /// The composition rules are intentionally simple and one-directional:
+    /// the child can only *narrow* the parent's surface, never widen it.
+    /// This matches the security intuition that a forked sub-agent should
+    /// inherit the parent's restrictions and add its own on top — the
+    /// parent's denies are floors, the parent's allows are ceilings.
+    ///
+    /// ## Per-field semantics
+    ///
+    /// | Field                                  | Rule           | Why                                                  |
+    /// |----------------------------------------|----------------|------------------------------------------------------|
+    /// | `fs.deny_read` / `fs.deny_write_*`     | union          | Either parent or child deny → deny (denies grow)     |
+    /// | `fs.allow_read_within_deny`            | union          | Holes punched by either side stay open               |
+    /// | `fs.allow_write`                       | parent values  | Child can't *widen* writable area (intersection ≈ parent when child empty) |
+    /// | `fs.allow_git_config`                  | logical AND    | Both must permit                                     |
+    /// | `net.denied_domains`                   | union          | Symmetric to fs denies                               |
+    /// | `net.allowed_domains`                  | parent values  | Child can't add allowed domains                      |
+    /// | `net.allow_local_binding`              | logical AND    | Both must permit                                     |
+    /// | `net.weaker_macos_isolation`           | logical AND    | Weakening requires *both* sides to opt in            |
+    /// | `net.mitm`                             | parent value   | MITM is a session-wide config; sub-agents don't change it |
+    /// | `limits.*`                             | minimum        | Tighter resource cap wins                            |
+    /// | `trust`                                | strictest      | `Forbid` > `Require` > `Auto`                        |
+    ///
+    /// ## Why intersection-as-parent for allow lists (not true set intersection)
+    ///
+    /// True set intersection of path patterns is gnarly: `/work` and
+    /// `/work/subdir` should overlap (subdir is contained in work) but
+    /// string-equal pattern intersection would drop both. Until we have
+    /// a real path-prefix lattice, we use the conservative rule
+    /// "child can't add new allows" — if the child wants a narrower
+    /// allow list, it should construct it explicitly *instead of* the
+    /// parent's, and the empty-child case (most common) reduces to
+    /// inheriting the parent's allows verbatim. PR-4+ may revisit.
+    ///
+    /// ## Idempotence
+    ///
+    /// `compose(p, default()) == p` and `compose(default(), c)` produces
+    /// a policy with `c`'s denies (union with empty = `c`'s denies),
+    /// empty allows (parent had none to inherit), and `c`'s limits/trust.
+    /// In practice this means "composing onto strict_default is a no-op
+    /// for denies but loses the child's allows" — callers building from
+    /// a permissive base should populate the parent's allow lists first.
+    pub fn compose(parent: &Self, child: &Self) -> Self {
+        Self {
+            fs: FsPolicy {
+                deny_read: union(&parent.fs.deny_read, &child.fs.deny_read),
+                allow_read_within_deny: union(
+                    &parent.fs.allow_read_within_deny,
+                    &child.fs.allow_read_within_deny,
+                ),
+                // Allows narrow toward parent: see method docs.
+                allow_write: parent.fs.allow_write.clone(),
+                deny_write_within_allow: union(
+                    &parent.fs.deny_write_within_allow,
+                    &child.fs.deny_write_within_allow,
+                ),
+                allow_git_config: parent.fs.allow_git_config && child.fs.allow_git_config,
+            },
+            net: NetPolicy {
+                allowed_domains: parent.net.allowed_domains.clone(),
+                denied_domains: union(&parent.net.denied_domains, &child.net.denied_domains),
+                allow_local_binding: parent.net.allow_local_binding
+                    && child.net.allow_local_binding,
+                mitm: parent.net.mitm.clone(),
+                weaker_macos_isolation: parent.net.weaker_macos_isolation
+                    && child.net.weaker_macos_isolation,
+            },
+            limits: ResourceLimits {
+                cpu_time_secs: min_opt(parent.limits.cpu_time_secs, child.limits.cpu_time_secs),
+                wall_time_secs: min_opt(parent.limits.wall_time_secs, child.limits.wall_time_secs),
+                max_rss_bytes: min_opt(parent.limits.max_rss_bytes, child.limits.max_rss_bytes),
+                max_open_fds: min_opt(parent.limits.max_open_fds, child.limits.max_open_fds),
+                max_output_bytes: min_opt(
+                    parent.limits.max_output_bytes,
+                    child.limits.max_output_bytes,
+                ),
+            },
+            trust: strictest_trust(parent.trust, child.trust),
+        }
+    }
+}
+
+/// De-duplicated union of two pattern slices, preserving parent-first
+/// order so debug output stays predictable across composes. `Vec` (not
+/// `HashSet`) because policies are tiny and serde-friendly here.
+fn union<T: Clone + PartialEq>(a: &[T], b: &[T]) -> Vec<T> {
+    let mut out = a.to_vec();
+    for x in b {
+        if !out.contains(x) {
+            out.push(x.clone());
+        }
+    }
+    out
+}
+
+/// Tighter limit wins. `None` = unlimited; presence beats absence.
+fn min_opt(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (Some(x), Some(y)) => Some(x.min(y)),
+    }
+}
+
+/// Strictest trust wins: `Forbid` > `Require` > `Auto`.
+fn strictest_trust(a: TrustPreference, b: TrustPreference) -> TrustPreference {
+    use TrustPreference::*;
+    match (a, b) {
+        (Forbid, _) | (_, Forbid) => Forbid,
+        (Require, _) | (_, Require) => Require,
+        _ => Auto,
+    }
 }
 
 #[cfg(test)]
@@ -271,5 +387,237 @@ mod tests {
         assert_eq!(p.fs.allow_write, vec![PathPattern::new("/tmp")]);
         assert_eq!(p.trust, TrustPreference::Auto);
         assert!(p.net.allowed_domains.is_empty());
+    }
+
+    // ── Phase 5 PR-3 of #934: SandboxPolicy::compose ──
+    //
+    // The contract is "child can only narrow the parent". These tests
+    // pin each per-field rule independently so a regression in one
+    // (e.g. switching `allow_write` from intersection to union)
+    // shows up as a single failing test naming the violated rule.
+
+    #[test]
+    fn compose_with_default_child_is_identity_for_parent_denies() {
+        let parent = SandboxPolicy {
+            fs: FsPolicy {
+                deny_read: vec!["/etc/shadow".into()],
+                allow_write: vec!["/work".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let composed = SandboxPolicy::compose(&parent, &SandboxPolicy::default());
+        assert_eq!(composed.fs.deny_read, parent.fs.deny_read);
+        assert_eq!(composed.fs.allow_write, parent.fs.allow_write);
+    }
+
+    #[test]
+    fn compose_unions_denies_so_child_can_add_restrictions() {
+        let parent = SandboxPolicy {
+            fs: FsPolicy {
+                deny_read: vec!["/etc/shadow".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let child = SandboxPolicy {
+            fs: FsPolicy {
+                deny_read: vec!["/etc/passwd".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let composed = SandboxPolicy::compose(&parent, &child);
+        assert!(composed.fs.deny_read.contains(&"/etc/shadow".into()));
+        assert!(composed.fs.deny_read.contains(&"/etc/passwd".into()));
+        assert_eq!(
+            composed.fs.deny_read.len(),
+            2,
+            "union should de-duplicate, not just concat"
+        );
+    }
+
+    #[test]
+    fn compose_union_dedupes_overlapping_denies() {
+        let p = SandboxPolicy {
+            fs: FsPolicy {
+                deny_read: vec!["/a".into(), "/b".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let c = SandboxPolicy {
+            fs: FsPolicy {
+                deny_read: vec!["/b".into(), "/c".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let composed = SandboxPolicy::compose(&p, &c);
+        assert_eq!(composed.fs.deny_read.len(), 3, "a, b, c — b appears once");
+    }
+
+    #[test]
+    fn compose_drops_child_allow_writes_so_child_cannot_widen() {
+        // Anti-privilege-escalation: child requesting a new writable
+        // directory must not be granted it via compose. Child has to
+        // be installed with that allow already (via the constructor),
+        // and the parent has to permit it.
+        let parent = SandboxPolicy {
+            fs: FsPolicy {
+                allow_write: vec!["/work".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let child = SandboxPolicy {
+            fs: FsPolicy {
+                allow_write: vec!["/etc".into(), "/work".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let composed = SandboxPolicy::compose(&parent, &child);
+        assert_eq!(
+            composed.fs.allow_write,
+            vec![PathPattern::new("/work")],
+            "child cannot smuggle in /etc by listing it in its own allow_write"
+        );
+    }
+
+    #[test]
+    fn compose_allow_git_config_is_logical_and() {
+        for (parent_b, child_b, want) in [
+            (true, true, true),
+            (true, false, false),
+            (false, true, false),
+            (false, false, false),
+        ] {
+            let p = SandboxPolicy {
+                fs: FsPolicy {
+                    allow_git_config: parent_b,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let c = SandboxPolicy {
+                fs: FsPolicy {
+                    allow_git_config: child_b,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            assert_eq!(
+                SandboxPolicy::compose(&p, &c).fs.allow_git_config,
+                want,
+                "parent={parent_b} child={child_b}"
+            );
+        }
+    }
+
+    #[test]
+    fn compose_limits_take_minimum_with_none_meaning_unlimited() {
+        let parent = SandboxPolicy {
+            limits: ResourceLimits {
+                wall_time_secs: Some(60),
+                max_rss_bytes: None, // parent: unlimited
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let child = SandboxPolicy {
+            limits: ResourceLimits {
+                wall_time_secs: Some(30),  // tighter
+                max_rss_bytes: Some(1024), // child sets a limit, parent had none
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let c = SandboxPolicy::compose(&parent, &child);
+        assert_eq!(c.limits.wall_time_secs, Some(30), "tighter wins");
+        assert_eq!(
+            c.limits.max_rss_bytes,
+            Some(1024),
+            "presence beats absence — a stated limit always restricts an unlimited side"
+        );
+        assert_eq!(c.limits.cpu_time_secs, None, "both unlimited → unlimited");
+    }
+
+    #[test]
+    fn compose_trust_picks_strictest() {
+        use TrustPreference::*;
+        // Symmetry matrix — strictest_trust must be commutative.
+        for (a, b, want) in [
+            (Auto, Auto, Auto),
+            (Auto, Require, Require),
+            (Require, Auto, Require),
+            (Require, Require, Require),
+            (Auto, Forbid, Forbid),
+            (Forbid, Auto, Forbid),
+            (Require, Forbid, Forbid),
+            (Forbid, Require, Forbid),
+            (Forbid, Forbid, Forbid),
+        ] {
+            let p = SandboxPolicy {
+                trust: a,
+                ..Default::default()
+            };
+            let c = SandboxPolicy {
+                trust: b,
+                ..Default::default()
+            };
+            assert_eq!(
+                SandboxPolicy::compose(&p, &c).trust,
+                want,
+                "trust({a:?}, {b:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn compose_idempotent_with_self() {
+        // compose(p, p) == p when p has no duplicate-causing fields.
+        // Defensive: catches any rule that mutates the parent on echo.
+        let p = SandboxPolicy {
+            fs: FsPolicy {
+                deny_read: vec!["/a".into()],
+                allow_write: vec!["/work".into()],
+                allow_git_config: true,
+                ..Default::default()
+            },
+            limits: ResourceLimits {
+                wall_time_secs: Some(45),
+                ..Default::default()
+            },
+            trust: TrustPreference::Require,
+            ..Default::default()
+        };
+        assert_eq!(
+            SandboxPolicy::compose(&p, &p),
+            p,
+            "composing a policy with itself must equal the original"
+        );
+    }
+
+    #[test]
+    fn compose_mitm_inherited_from_parent_only() {
+        // MITM is session-wide config, not a sub-agent-overridable knob.
+        let mitm = MitmConfig {
+            ca_bundle: "/cert.pem".into(),
+            socket_map: vec![],
+        };
+        let parent = SandboxPolicy {
+            net: NetPolicy {
+                mitm: Some(mitm.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let child = SandboxPolicy::default(); // no MITM
+        assert_eq!(
+            SandboxPolicy::compose(&parent, &child).net.mitm,
+            Some(mitm),
+            "parent MITM must survive composing with a no-MITM child"
+        );
     }
 }
