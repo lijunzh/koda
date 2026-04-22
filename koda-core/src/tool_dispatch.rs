@@ -223,6 +223,9 @@ pub(crate) async fn execute_one_tool(
             sub_agent_cache,
             _session_id,
             bg_agents,
+            // Phase 5 PR-4 of #934: hand the parent's effective policy
+            // to the child so `compose()` can stack restrictions.
+            tools.sandbox_policy(),
         )
         .await
         {
