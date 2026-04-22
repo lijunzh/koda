@@ -202,6 +202,14 @@ impl SandboxPool {
         proxy: Option<&ProxyHandle>,
         slot_id: String,
     ) -> Result<SandboxSlot> {
+        // Phase 5 of #934: emit acquisition latency as a structured
+        // tracing event rather than building an in-process histogram.
+        // Tracing integrates with whatever `KODA_LOG=info` consumer the
+        // user already has, requires zero per-process state, and —
+        // critically — adds zero new runtime config knobs. Aggregators
+        // that want histograms can build them on the event stream.
+        let acquire_start = std::time::Instant::now();
+
         let key = BucketKey {
             writable_root: writable_root.clone(),
             policy: policy.clone(),
@@ -213,6 +221,7 @@ impl SandboxPool {
             let mut map = self.free.lock().expect("pool mutex poisoned");
             map.get_mut(&key).and_then(|bucket| bucket.pop())
         };
+        let was_warm = warm.is_some();
         let worker = if let Some(w) = warm {
             debug!("acquire: warm hit for slot_id={slot_id}");
             w
@@ -231,6 +240,18 @@ impl SandboxPool {
                 return Err(e);
             }
         };
+
+        // Latency event. Microseconds because warm acquires are
+        // sub-millisecond (~1µs p95 measured in benches/acquire_slot.rs);
+        // millisecond resolution would round most values to 0.
+        let latency_us = acquire_start.elapsed().as_micros() as u64;
+        tracing::info!(
+            target: "sandbox.acquire",
+            slot_id = %slot_id,
+            latency_us,
+            warm = was_warm,
+            "sandbox slot acquired",
+        );
 
         Ok(SandboxSlot {
             worker: Some(worker),

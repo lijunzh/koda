@@ -36,7 +36,7 @@ pub const DEFAULT_RING_CAPACITY: usize = 100;
 
 /// What the kernel actually denied. Open enum because new platforms
 /// (Linux landlock, macOS endpoint-security) may surface novel kinds.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ViolationKind {
     /// Read attempt on a denied path.
@@ -178,6 +178,28 @@ impl SandboxViolationStore {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Per-kind tally over the current ring contents. Phase 5 of #934
+    /// — the headline "violation counts per session" telemetry. Cheap
+    /// (one lock + one pass over up to `DEFAULT_RING_CAPACITY` entries)
+    /// so callers can read it on every `/sandbox status` invocation
+    /// without worrying about overhead.
+    ///
+    /// Returns counts for the variants present in the buffer; absent
+    /// kinds are simply not in the map. Use `unwrap_or(0)` at the
+    /// read site if you want a zero default.
+    #[must_use]
+    pub fn count_by_kind(&self) -> std::collections::HashMap<ViolationKind, usize> {
+        let buf = match self.inner.lock() {
+            Ok(b) => b,
+            Err(_) => return std::collections::HashMap::new(),
+        };
+        let mut counts = std::collections::HashMap::new();
+        for v in buf.iter() {
+            *counts.entry(v.kind.clone()).or_insert(0) += 1;
+        }
+        counts
     }
 }
 
@@ -343,5 +365,30 @@ mod tests {
         assert_eq!(b.len(), before + 1);
         // Drain so this test doesn't leak state into other tests.
         let _ = a.drain();
+    }
+
+    #[test]
+    fn count_by_kind_tallies_per_variant() {
+        // Phase 5 of #934: prove the new per-kind accessor returns
+        // accurate tallies and is robust against zero/empty cases.
+        let s = SandboxViolationStore::new();
+        assert!(
+            s.count_by_kind().is_empty(),
+            "empty store should yield empty map"
+        );
+
+        s.record(Violation::new(ViolationKind::FileRead, None, None));
+        s.record(Violation::new(ViolationKind::FileRead, None, None));
+        s.record(Violation::new(ViolationKind::FileWrite, None, None));
+        s.record(Violation::new(ViolationKind::NetworkOutbound, None, None));
+
+        let counts = s.count_by_kind();
+        assert_eq!(counts.get(&ViolationKind::FileRead), Some(&2));
+        assert_eq!(counts.get(&ViolationKind::FileWrite), Some(&1));
+        assert_eq!(counts.get(&ViolationKind::NetworkOutbound), Some(&1));
+        // ProcessExec was never recorded — absent from the map by
+        // design (callers `unwrap_or(0)` if they want a zero default).
+        assert!(!counts.contains_key(&ViolationKind::ProcessExec));
+        assert_eq!(counts.values().sum::<usize>(), s.len());
     }
 }
