@@ -227,9 +227,16 @@ pub(crate) fn network_open_rules() -> String {
 /// Unix-socket carve-out from Codex's seatbelt rules.
 pub fn network_proxied_rules(proxy_port: u16, allow_local_binding: bool) -> String {
     let mut rules = String::new();
-    rules.push_str(&format!(
-        "(allow network-outbound (remote tcp \"127.0.0.1:{proxy_port}\"))\n"
-    ));
+    // SBPL gotcha: `(remote tcp "<host>:<port>")` only accepts `*` or
+    // `localhost` as the host — a literal `127.0.0.1` causes
+    // sandbox-exec to reject the entire profile with
+    // "host must be * or localhost in network address". `localhost`
+    // covers both 127.0.0.1 and ::1 via the kernel resolver, so a
+    // single rule is correct AND complete. Discovered the hard way
+    // when wiring 3c kernel-enforcement to the koda-core test that
+    // actually invokes sandbox-exec (the unit tests in 3b only
+    // grepped the profile string and never asked the kernel to parse
+    // it). See koda-core/src/sandbox.rs::tests::build_attaches_*.
     rules.push_str(&format!(
         "(allow network-outbound (remote tcp \"localhost:{proxy_port}\"))\n"
     ));
@@ -640,13 +647,24 @@ mod tests {
     #[test]
     fn proxied_profile_allows_only_proxy_port_outbound_tcp() {
         let p = build_proxied_profile_string("/work", "/Users/x", 8877, false);
-        assert!(p.contains("(allow network-outbound (remote tcp \"127.0.0.1:8877\"))"));
-        assert!(p.contains("(allow network-outbound (remote tcp \"localhost:8877\"))"));
-        // No other tcp outbound rule should be present.
+        // Phase 3c fix: SBPL only accepts `*` or `localhost` as the
+        // host in `(remote tcp ...)`. A literal `127.0.0.1` causes
+        // sandbox-exec to reject the entire profile. `localhost`
+        // resolves to both 127.0.0.1 and ::1 via the kernel, so a
+        // single rule is correct AND complete.
+        assert!(
+            p.contains("(allow network-outbound (remote tcp \"localhost:8877\"))"),
+            "profile must include the localhost:proxy_port allow; got:\n{p}"
+        );
+        assert!(
+            !p.contains("127.0.0.1:8877"),
+            "profile must NOT include literal 127.0.0.1 — SBPL rejects it; got:\n{p}"
+        );
+        // Exactly one tcp outbound rule should be present.
         let count = p.matches("(allow network-outbound (remote tcp ").count();
         assert_eq!(
-            count, 2,
-            "expected exactly the 127.0.0.1 + localhost outbound rules; profile:\n{p}"
+            count, 1,
+            "expected exactly one (localhost) outbound rule; profile:\n{p}"
         );
     }
 
@@ -731,7 +749,10 @@ mod tests {
             .collect();
         // sandbox-exec layout: ["-p", <profile>, "sh", "-c", <cmd>]
         let profile = &args[1];
-        assert!(profile.contains("127.0.0.1:8877"));
+        // SBPL host syntax: must be `localhost` not `127.0.0.1` (kernel
+        // resolves localhost to both v4 + v6 loopback). See
+        // [`network_proxied_rules`].
+        assert!(profile.contains("localhost:8877"));
         assert!(!profile.contains("(allow network*)\n"));
     }
 

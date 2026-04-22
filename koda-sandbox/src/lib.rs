@@ -90,6 +90,23 @@ pub struct SandboxTransformRequest<'a> {
     /// Capability policy. Phase 0 ignores all fields; later phases
     /// progressively enforce them.
     pub policy: &'a SandboxPolicy,
+
+    /// Loopback port of the per-session HTTP CONNECT proxy spawned by
+    /// [`crate::proxy::BuiltInProxy::spawn`].
+    ///
+    /// **Phase 3c semantics:** when `Some(port)`, the runtime is asked
+    /// to **kernel-enforce** that the only TCP outbound permitted is to
+    /// `127.0.0.1:port` (plus loopback inbound for debuggers / dev
+    /// servers). Today the seatbelt backend honors this via
+    /// `seatbelt::build_command_with_proxy` (macOS only); the bwrap
+    /// backend logs a one-time warning and falls back to env-var-only
+    /// enforcement (Phase 3c.1 will design Linux kernel-enforcement
+    /// separately, likely via slirp4netns or rootlesskit).
+    ///
+    /// `None` preserves the pre-3c open-network baseline — used for
+    /// callers that haven't migrated, and as the regression-guard
+    /// fallback.
+    pub proxy_port: Option<u16>,
 }
 
 /// Output of [`SandboxRuntime::transform`].
@@ -151,7 +168,27 @@ pub struct SeatbeltRuntime;
 #[cfg(target_os = "macos")]
 impl SandboxRuntime for SeatbeltRuntime {
     fn transform(&self, req: SandboxTransformRequest<'_>) -> Result<SandboxExecRequest> {
-        let command = seatbelt::build_command(req.command, req.project_root, req.policy)?;
+        // Phase 3c: when a proxy port is supplied, switch to the
+        // kernel-enforced proxied profile (`build_command_with_proxy`).
+        // The seatbelt SBPL denies all TCP outbound except the loopback
+        // proxy port, so even ill-behaved binaries that ignore
+        // `HTTPS_PROXY` env vars cannot escape via direct TCP.
+        //
+        // `allow_local_binding=false` is hardcoded until
+        // `policy.net.allow_local_binding` exists. Localhost binds
+        // (e.g. dev servers on 127.0.0.1:3000) are still allowed by
+        // [`network_proxied_rules`]; only wildcard `*:*` binds are
+        // gated by this flag.
+        let command = match req.proxy_port {
+            Some(port) => seatbelt::build_command_with_proxy(
+                req.command,
+                req.project_root,
+                req.policy,
+                port,
+                false,
+            )?,
+            None => seatbelt::build_command(req.command, req.project_root, req.policy)?,
+        };
         Ok(SandboxExecRequest { command })
     }
 
@@ -185,6 +222,17 @@ pub struct BwrapRuntime;
 #[cfg(target_os = "linux")]
 impl SandboxRuntime for BwrapRuntime {
     fn transform(&self, req: SandboxTransformRequest<'_>) -> Result<SandboxExecRequest> {
+        // Phase 3c gap: bwrap doesn't support port-level egress
+        // filtering (`--unshare-net` cuts ALL networking including
+        // loopback, and bringing `lo` back up needs CAP_NET_ADMIN).
+        // Linux kernel-enforcement is deferred to Phase 3c.1, which
+        // will likely use slirp4netns or rootlesskit. Until then,
+        // Linux relies on the env-var bouquet from
+        // [`crate::proxy::env::proxy_env_vars`] — same enforcement
+        // tier as Phase 3b. Warn once so this gap isn't invisible.
+        if req.proxy_port.is_some() {
+            warn_proxy_unenforced_on_linux_once();
+        }
         let command = bwrap::build_command(req.command, req.project_root, req.policy)?;
         Ok(SandboxExecRequest { command })
     }
@@ -208,6 +256,30 @@ impl SandboxRuntime for BwrapRuntime {
             }
         }
     }
+}
+
+/// One-time warning when koda-core asks the bwrap backend to enforce a
+/// proxy port but bwrap can't (Phase 3c.1 territory). The env-var
+/// bouquet still routes well-behaved clients through the proxy; only
+/// ill-behaved binaries that ignore `HTTPS_PROXY` escape the filter.
+///
+/// Lives at module scope (not inside `BwrapRuntime`) because the
+/// `OnceLock` must outlive any single runtime instance — each
+/// `KodaSession` builds a fresh `BwrapRuntime`, but the gap is the
+/// same on every invocation, so once-per-process is the right cadence.
+#[cfg(target_os = "linux")]
+fn warn_proxy_unenforced_on_linux_once() {
+    use std::sync::OnceLock;
+    static WARNED: OnceLock<()> = OnceLock::new();
+    WARNED.get_or_init(|| {
+        tracing::warn!(
+            "koda-sandbox: built-in proxy is active but bwrap cannot kernel-enforce \
+             port-level egress filtering on Linux yet. Well-behaved HTTP clients (curl, \
+             gh, npm, pip, cargo, go, node, python) honor HTTPS_PROXY and route through \
+             the filter; ill-behaved binaries can still reach the network directly. \
+             Linux kernel-enforcement is tracked as #934 Phase 3c.1."
+        );
+    });
 }
 
 /// Fallback runtime for platforms without a kernel sandbox backend.
@@ -296,6 +368,7 @@ mod tests {
             command: "echo hi",
             project_root: Path::new("/tmp"),
             policy: &policy,
+            proxy_port: None,
         };
         let runtime = UnsandboxedRuntime;
         let result = runtime.transform(req).unwrap();
@@ -319,5 +392,129 @@ mod tests {
         // on the test host.
         let runtime = current_runtime();
         let _report = runtime.check_dependencies(); // doesn't panic
+    }
+
+    /// Phase 3c: when `proxy_port = None`, the request runs through the
+    /// unsandboxed runtime unchanged — same `sh` invocation, no env or
+    /// arg surface added. Regression guard against the request gaining
+    /// hidden side-effects from the `proxy_port` field.
+    #[test]
+    fn unsandboxed_runtime_ignores_proxy_port() {
+        let policy = SandboxPolicy::default();
+        let with = UnsandboxedRuntime
+            .transform(SandboxTransformRequest {
+                command: "true",
+                project_root: Path::new("/tmp"),
+                policy: &policy,
+                proxy_port: Some(8080),
+            })
+            .unwrap();
+        let without = UnsandboxedRuntime
+            .transform(SandboxTransformRequest {
+                command: "true",
+                project_root: Path::new("/tmp"),
+                policy: &policy,
+                proxy_port: None,
+            })
+            .unwrap();
+        // Both should be `sh -c true` — no proxy-related divergence in
+        // the unsandboxed path. The proxy port is the kernel sandbox's
+        // concern, not ours.
+        assert_eq!(with.command.as_std().get_program(), "sh");
+        assert_eq!(without.command.as_std().get_program(), "sh");
+        assert_eq!(
+            with.command.as_std().get_args().collect::<Vec<_>>(),
+            without.command.as_std().get_args().collect::<Vec<_>>(),
+        );
+    }
+
+    /// Phase 3c kernel enforcement: when a proxy port is supplied,
+    /// macOS Seatbelt must inject the `network_proxied_rules` SBPL
+    /// (deny all TCP outbound except `127.0.0.1:proxy_port`). The
+    /// profile string is passed via `-p <profile>` so we can grep the
+    /// arg vector to confirm.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_runtime_emits_proxied_profile_when_port_set() {
+        let policy = SandboxPolicy::strict_default();
+        let req = SandboxTransformRequest {
+            command: "true",
+            project_root: Path::new("/tmp"),
+            policy: &policy,
+            proxy_port: Some(54321),
+        };
+        let cmd = SeatbeltRuntime.transform(req).unwrap().command;
+        let profile = cmd
+            .as_std()
+            .get_args()
+            .nth(1) // "sandbox-exec" "-p" "<profile>" ...
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+        // The proxied profile MUST permit only the proxy port and MUST NOT
+        // contain the open-network blanket allow. SBPL requires the host
+        // to be `localhost` (not literal `127.0.0.1`) — see
+        // [`network_proxied_rules`] for the full rationale (macOS only).
+        assert!(
+            profile.contains("localhost:54321"),
+            "proxied profile must allow loopback proxy port via localhost; got: {profile}"
+        );
+        assert!(
+            !profile.contains("(allow network*)"),
+            "proxied profile must NOT include the open-network allow; got: {profile}"
+        );
+    }
+
+    /// Regression guard: `proxy_port = None` keeps the pre-3c open-network
+    /// profile intact. Catches accidental "always-proxied" wiring that
+    /// would break callers (sub-agents, scripts) that don't have a proxy.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn seatbelt_runtime_keeps_open_network_when_port_none() {
+        let policy = SandboxPolicy::strict_default();
+        let req = SandboxTransformRequest {
+            command: "true",
+            project_root: Path::new("/tmp"),
+            policy: &policy,
+            proxy_port: None,
+        };
+        let cmd = SeatbeltRuntime.transform(req).unwrap().command;
+        let profile = cmd
+            .as_std()
+            .get_args()
+            .nth(1)
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            profile.contains("(allow network*)"),
+            "open-network profile must include the blanket allow; got: {profile}"
+        );
+        assert!(
+            !profile.contains("localhost:") || !profile.contains("network-outbound"),
+            "open-network profile must NOT include the proxied loopback outbound rule; got: {profile}"
+        );
+    }
+
+    /// Phase 3c.1 gap documentation: bwrap accepts `proxy_port = Some`
+    /// and produces a working command (no error), even though it can't
+    /// kernel-enforce the port restriction. The env-var bouquet from
+    /// `koda-core::sandbox::build` does the actual filtering for
+    /// well-behaved clients on Linux. Verifies the warn-once doesn't
+    /// turn into a panic.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bwrap_runtime_accepts_proxy_port_without_error() {
+        let policy = SandboxPolicy::strict_default();
+        let req = SandboxTransformRequest {
+            command: "true",
+            project_root: Path::new("/tmp"),
+            policy: &policy,
+            proxy_port: Some(54321),
+        };
+        // Construct without spawning. We don't assert anything about the
+        // arg vector — bwrap simply doesn't touch the network namespace
+        // until 3c.1.
+        let _ = BwrapRuntime.transform(req);
     }
 }

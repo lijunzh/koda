@@ -31,7 +31,9 @@
 //! - **No SOCKS5** — Phase 3d (separate ≤200-LOC module).
 //! - **No upload/idle timeouts** — Phase 3d (resource limits).
 
-use super::{Filter, pick_ephemeral_port};
+use super::Filter;
+#[cfg(test)]
+use super::pick_ephemeral_port;
 use anyhow::{Context, Result, bail};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -69,13 +71,16 @@ impl Server {
     /// Returns immediately with a configured server. Call [`Self::serve`]
     /// to start accepting connections.
     pub async fn bind(port: Option<u16>, filter: Filter) -> Result<Self> {
-        let port = match port {
-            Some(p) => p,
-            None => pick_ephemeral_port().context("pick ephemeral port for built-in proxy")?,
-        };
-        let listener = TcpListener::bind(("127.0.0.1", port))
+        // Phase 3c drive-by: bind directly with port `0` for the
+        // ephemeral case instead of going through `pick_ephemeral_port`
+        // (which has a TOCTOU race — another process can grab the port
+        // between drop and re-bind, and it intermittently does in CI /
+        // parallel test runs). Letting the kernel pick + keep the port
+        // in one syscall closes the race entirely.
+        let bind_port = port.unwrap_or(0);
+        let listener = TcpListener::bind(("127.0.0.1", bind_port))
             .await
-            .with_context(|| format!("bind built-in proxy on 127.0.0.1:{port}"))?;
+            .with_context(|| format!("bind built-in proxy on 127.0.0.1:{bind_port}"))?;
         let actual = listener
             .local_addr()
             .context("read local_addr from listener")?
