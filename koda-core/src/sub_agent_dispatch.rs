@@ -21,6 +21,9 @@ use crate::trust::{self, ToolApproval, TrustMode};
 
 use anyhow::{Context, Result};
 use koda_sandbox::{CwdProvider, GitWorktreeProvider, WorkspaceProvider};
+
+#[cfg(target_os = "macos")]
+use koda_sandbox::ClonefileProvider;
 use std::path::Path;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -259,14 +262,28 @@ pub(crate) async fn execute_sub_agent(
         .await?;
 
     let provider = crate::providers::create_provider(&sub_config);
-    // Select workspace provider. Write-capable agents get a git worktree for
-    // isolation when available; read-only agents share the parent root.
+    // Select workspace provider. Write-capable agents get an isolated
+    // workspace; read-only agents share the parent root for free.
+    //
+    // Per-platform write-isolation choice:
+    //
+    // - **macOS:** `ClonefileProvider` (APFS clonefile(2)) is
+    //   preferred for its ~3-4× provision speedup over git worktree
+    //   (Phase 4d / #934). Falls back to git worktree if construction
+    //   fails (e.g. `$HOME` unset, project path can't canonicalize).
+    // - **Linux + others:** `GitWorktreeProvider`. The Linux CoW
+    //   equivalent (4e in #934) is deferred until production
+    //   telemetry shows it's worth building.
+    //
+    // **Documented platform divergence** — see `docs/src/sandbox.md`
+    // → "Workspace providers". Both backends provide the same
+    // isolation guarantees; only provision speed differs.
     let has_write_tools = !sub_config
         .disallowed_tools
         .iter()
         .any(|t| t == "Write" || t == "Edit");
     let workspace: Box<dyn WorkspaceProvider> = if has_write_tools {
-        Box::new(GitWorktreeProvider::new(project_root, agent_name))
+        pick_write_provider(project_root, agent_name)
     } else {
         Box::new(CwdProvider::new(project_root))
     };
@@ -482,4 +499,53 @@ pub(crate) async fn execute_sub_agent(
         });
     }
     Ok("(sub-agent reached maximum iterations)".to_string())
+}
+
+// ── Workspace provider selection ────────────────────────────────────────────
+//
+// Two cfg-gated definitions of `pick_write_provider` rather than
+// inline `cfg!()` branches because:
+//
+//  * `ClonefileProvider` is itself `cfg(target_os = "macos")` in
+//    koda-sandbox; inline branches would still need cfg gating to
+//    avoid "unresolved import" on Linux.
+//  * Each platform's selection logic is small but distinct (macOS
+//    has a fallback path, Linux doesn't), and side-by-side cfg
+//    bodies read more honestly than a tangled inline form.
+//
+// Behavior is documented for users in `docs/src/sandbox.md`
+// → "Workspace providers".
+
+#[cfg(target_os = "macos")]
+fn pick_write_provider(
+    project_root: &std::path::Path,
+    agent_name: &str,
+) -> Box<dyn WorkspaceProvider> {
+    // Try `ClonefileProvider` first — its 3-4× provision speedup
+    // (Phase 4d / #934 bench) is durable and the implementation is
+    // a thin wrapper over the OS primitive designed for this.
+    //
+    // Fall back to `GitWorktreeProvider` only if construction itself
+    // fails (e.g. `$HOME` unset, project path can't canonicalize).
+    // Runtime `clonefile(2)` failures (non-APFS volume etc.) surface
+    // through the existing `provision()` error path which already
+    // falls back to the unisolated project root with a warning.
+    match ClonefileProvider::new(project_root) {
+        Ok(p) => Box::new(p),
+        Err(e) => {
+            tracing::warn!("ClonefileProvider unavailable, falling back to git worktree: {e}");
+            Box::new(GitWorktreeProvider::new(project_root, agent_name))
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pick_write_provider(
+    project_root: &std::path::Path,
+    agent_name: &str,
+) -> Box<dyn WorkspaceProvider> {
+    // Linux + others: GitWorktreeProvider. The Linux CoW equivalent
+    // (4e in #934) is parked until production telemetry shows it's
+    // worth building — see #934 deferral comments.
+    Box::new(GitWorktreeProvider::new(project_root, agent_name))
 }

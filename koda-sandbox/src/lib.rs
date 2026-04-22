@@ -75,6 +75,12 @@ pub use violations::{
 };
 pub use workspace::{CwdProvider, GitWorktreeProvider, WorkspaceProvider};
 
+// macOS-only: APFS clonefile-backed workspace provider. Re-exported
+// at the crate root so consumers (notably `koda-core::sub_agent_dispatch`)
+// don't have to repeat the cfg gate at the import site.
+#[cfg(target_os = "macos")]
+pub use workspace::ClonefileProvider;
+
 use anyhow::Result;
 use std::path::Path;
 use tokio::process::Command;
