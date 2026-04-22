@@ -70,6 +70,15 @@ pub(crate) fn is_fully_denied(path: &Path) -> bool {
 /// pip, cargo, go, node, python) route their traffic through the proxy.
 /// `None` preserves the pre-3b unfiltered behavior.
 ///
+/// The `socks5_port` argument is the loopback port of the in-process
+/// SOCKS5 proxy (Phase 3d.1 of #934). When `Some`, `ALL_PROXY` and
+/// `all_proxy` are appended pointing at `socks5h://127.0.0.1:port` so
+/// raw-TCP clients (git over ssh, gRPC tools) that ignore `HTTPS_PROXY`
+/// route through hostname-filtered SOCKS5 instead of dialing direct.
+/// `None` omits both vars; clients fall back to whatever they'd do
+/// without `ALL_PROXY` (typically: dial direct, get filtered out by
+/// the kernel-enforced sandbox layer where present).
+///
 /// Falls back to unsandboxed execution with a one-time warning when the
 /// platform sandbox backend is unavailable. The sandbox is best-effort:
 /// we never block the user just because the kernel enforcement layer is
@@ -79,6 +88,7 @@ pub fn build(
     project_root: &Path,
     _trust: &crate::trust::TrustMode,
     proxy_port: Option<u16>,
+    socks5_port: Option<u16>,
 ) -> Result<Command> {
     let runtime = current_runtime();
     warn_if_unavailable_once(runtime.as_ref());
@@ -114,6 +124,16 @@ pub fn build(
     // advertised — phase 3d will plumb that through.
     if let Some(port) = proxy_port {
         for (k, v) in proxy_env_vars(port, None) {
+            cmd.env(k, v);
+        }
+    }
+
+    // 3d.2: append the SOCKS5 bouquet (ALL_PROXY + lowercase) when the
+    // session has a SOCKS5 proxy spawned. Independent of `proxy_port` —
+    // a session can have either, both, or neither, though in practice
+    // [`crate::session::KodaSession`] spawns them as a pair.
+    if let Some(port) = socks5_port {
+        for (k, v) in koda_sandbox::socks5_env_vars(port) {
             cmd.env(k, v);
         }
     }
@@ -159,6 +179,7 @@ mod tests {
             dir.path(),
             &crate::trust::TrustMode::Safe,
             Some(31415),
+            None,
         )
         .unwrap()
         .output()
@@ -181,6 +202,7 @@ mod tests {
             dir.path(),
             &crate::trust::TrustMode::Safe,
             None,
+            None,
         )
         .unwrap()
         .output()
@@ -192,6 +214,77 @@ mod tests {
         assert!(
             stdout.contains("[]"),
             "HTTPS_PROXY must be unset, got stdout={stdout:?}"
+        );
+    }
+
+    /// Phase 3d.2: `socks5_port = Some(N)` injects ALL_PROXY +
+    /// all_proxy with the `socks5h://` scheme. Counterpart to
+    /// `build_attaches_proxy_env_when_port_set`.
+    #[tokio::test]
+    async fn build_attaches_socks5_env_when_port_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = build(
+            "echo \"$ALL_PROXY|$all_proxy\"",
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+            None,
+            Some(27182),
+        )
+        .unwrap()
+        .output()
+        .await
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("socks5h://127.0.0.1:27182|socks5h://127.0.0.1:27182"),
+            "ALL_PROXY/all_proxy must be set, got stdout={stdout:?}"
+        );
+    }
+
+    /// Phase 3d.2: `socks5_port = None` must not set ALL_PROXY — some
+    /// dev tools change behaviour wildly when ALL_PROXY appears (e.g.
+    /// boto3 routes signing requests through it). Regression guard.
+    #[tokio::test]
+    async fn build_omits_socks5_env_when_port_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = build(
+            "echo \"[$ALL_PROXY]\"",
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+            None,
+            None,
+        )
+        .unwrap()
+        .output()
+        .await
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("[]"),
+            "ALL_PROXY must be unset, got stdout={stdout:?}"
+        );
+    }
+
+    /// Phase 3d.2: HTTP and SOCKS5 are independent — setting one must
+    /// not clobber or interfere with the other.
+    #[tokio::test]
+    async fn build_attaches_both_proxy_and_socks5_when_both_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = build(
+            "echo \"$HTTPS_PROXY|$ALL_PROXY\"",
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+            Some(8080),
+            Some(1080),
+        )
+        .unwrap()
+        .output()
+        .await
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("http://127.0.0.1:8080|socks5h://127.0.0.1:1080"),
+            "both vars must be set with their distinct schemes, got stdout={stdout:?}"
         );
     }
 
@@ -209,11 +302,17 @@ mod tests {
                 eval "echo $v=\$$v"
             done
         "#;
-        let out = build(cmd, dir.path(), &crate::trust::TrustMode::Safe, Some(8080))
-            .unwrap()
-            .output()
-            .await
-            .unwrap();
+        let out = build(
+            cmd,
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+            Some(8080),
+            None,
+        )
+        .unwrap()
+        .output()
+        .await
+        .unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
         for v in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
             assert!(
@@ -230,11 +329,17 @@ mod tests {
     #[tokio::test]
     async fn build_always_succeeds_and_runs_echo() {
         let dir = tempfile::tempdir().unwrap();
-        let status = build("echo ok", dir.path(), &crate::trust::TrustMode::Safe, None)
-            .unwrap()
-            .status()
-            .await
-            .unwrap();
+        let status = build(
+            "echo ok",
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+            None,
+            None,
+        )
+        .unwrap()
+        .status()
+        .await
+        .unwrap();
         assert!(status.success());
     }
 
@@ -247,6 +352,7 @@ mod tests {
             "touch sandbox_canary",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
             None,
         )
         .unwrap()
@@ -270,6 +376,7 @@ mod tests {
             project.path(),
             &crate::trust::TrustMode::Safe,
             None,
+            None,
         )
         .unwrap()
         .status()
@@ -291,6 +398,7 @@ mod tests {
             dir.path(),
             &crate::trust::TrustMode::Safe,
             None,
+            None,
         )
         .unwrap()
         .status()
@@ -308,6 +416,7 @@ mod tests {
             "touch strict_canary",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
             None,
         )
         .unwrap()
@@ -334,6 +443,7 @@ mod tests {
             project.path(),
             &crate::trust::TrustMode::Safe,
             None,
+            None,
         )
         .unwrap()
         .status()
@@ -353,6 +463,7 @@ mod tests {
             "cat /etc/hosts > /dev/null",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
             None,
         )
         .unwrap()
@@ -381,6 +492,7 @@ mod tests {
             dir.path(),
             &crate::trust::TrustMode::Safe,
             None,
+            None,
         )
         .unwrap()
         .status()
@@ -407,6 +519,7 @@ mod tests {
             &format!("ls {ssh_dir}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
             None,
         )
         .unwrap()
@@ -436,6 +549,7 @@ mod tests {
             dir.path(),
             &crate::trust::TrustMode::Safe,
             None,
+            None,
         )
         .unwrap()
         .status()
@@ -464,6 +578,7 @@ mod tests {
             dir.path(),
             &crate::trust::TrustMode::Safe,
             None,
+            None,
         )
         .unwrap()
         .status()
@@ -490,6 +605,7 @@ mod tests {
             dir.path(),
             &crate::trust::TrustMode::Safe,
             None,
+            None,
         )
         .unwrap()
         .status()
@@ -514,6 +630,7 @@ mod tests {
             "touch normal_file.txt",
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
             None,
         )
         .unwrap()
@@ -541,6 +658,7 @@ mod tests {
             &format!("echo '# evil' > {}", target.display()),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
             None,
         )
         .unwrap()
@@ -573,6 +691,7 @@ mod tests {
             dir.path(),
             &crate::trust::TrustMode::Safe,
             None,
+            None,
         )
         .unwrap()
         .status()
@@ -601,6 +720,7 @@ mod tests {
             dir.path(),
             &crate::trust::TrustMode::Safe,
             None,
+            None,
         )
         .unwrap()
         .status()
@@ -628,6 +748,7 @@ mod tests {
             &format!("ls {aws_dir}"),
             dir.path(),
             &crate::trust::TrustMode::Safe,
+            None,
             None,
         )
         .unwrap()

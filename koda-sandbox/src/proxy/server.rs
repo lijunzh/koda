@@ -50,10 +50,6 @@ const MAX_REQUEST_BYTES: usize = 8 * 1024;
 /// one TCP segment.
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long to wait for the upstream TCP handshake. Anything past
-/// this and the host is effectively unreachable.
-const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-
 /// Built-in HTTP CONNECT proxy.
 ///
 /// Cheap-to-construct. Holds a [`TcpListener`] and a [`Filter`]; spawn
@@ -63,6 +59,11 @@ pub struct Server {
     listener: TcpListener,
     filter: Filter,
     port: u16,
+    /// Upstream-connection policy snapshotted from the koda process's
+    /// env at bind time (Phase 3d.3 of #934). `Direct` in plain dev
+    /// environments; `HttpProxy` when the user has corp-set
+    /// `HTTPS_PROXY` so we can chain through Zscaler / Squid / etc.
+    upstream: crate::proxy::upstream::UpstreamConfig,
 }
 
 impl Server {
@@ -90,10 +91,15 @@ impl Server {
             actual,
             filter.len()
         );
+        let upstream = crate::proxy::upstream::UpstreamConfig::from_env();
+        if !matches!(upstream, crate::proxy::upstream::UpstreamConfig::Direct) {
+            debug!("built-in proxy chaining upstream via {upstream:?}");
+        }
         Ok(Self {
             listener,
             filter,
             port: actual,
+            upstream,
         })
     }
 
@@ -101,6 +107,16 @@ impl Server {
     /// called with `None` and the caller wants the ephemeral port.
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Override the upstream-connection policy that [`Self::bind`]
+    /// snapshotted from `HTTPS_PROXY`. Used by tests that need a
+    /// deterministic upstream config without racing on the process
+    /// env (which is shared across parallel `cargo test` runs).
+    /// Production code should rely on the env snapshot.
+    pub fn with_upstream(mut self, upstream: crate::proxy::upstream::UpstreamConfig) -> Self {
+        self.upstream = upstream;
+        self
     }
 
     /// Run the accept loop forever.
@@ -112,6 +128,7 @@ impl Server {
     /// containing JoinHandle is aborted).
     pub async fn serve(self) {
         let filter = self.filter;
+        let upstream = std::sync::Arc::new(self.upstream);
         loop {
             let (sock, peer) = match self.listener.accept().await {
                 Ok(t) => t,
@@ -121,8 +138,9 @@ impl Server {
                 }
             };
             let f = filter.clone();
+            let up = std::sync::Arc::clone(&upstream);
             tokio::spawn(async move {
-                if let Err(e) = handle_one(sock, &f).await {
+                if let Err(e) = handle_one(sock, &f, &up).await {
                     debug!("proxy connection from {peer} ended: {e:#}");
                 }
             });
@@ -135,7 +153,11 @@ impl Server {
 /// Returns `Ok(())` for the happy path AND for cleanly-rejected requests
 /// (403/405) — the `Err` return is reserved for socket/IO failures the
 /// caller can't do anything about beyond logging.
-async fn handle_one(mut client: TcpStream, filter: &Filter) -> Result<()> {
+async fn handle_one(
+    mut client: TcpStream,
+    filter: &Filter,
+    upstream: &crate::proxy::upstream::UpstreamConfig,
+) -> Result<()> {
     let req = read_request(&mut client).await?;
     let (method, target) = parse_request_line(&req)?;
 
@@ -152,7 +174,8 @@ async fn handle_one(mut client: TcpStream, filter: &Filter) -> Result<()> {
     }
 
     // Allowed. Connect upstream and bridge.
-    let mut upstream = match connect_upstream(&target).await {
+    let mut upstream_sock = match crate::proxy::upstream::connect_upstream(&target, upstream).await
+    {
         Ok(s) => s,
         Err(e) => {
             warn!("proxy: upstream connect to {target} failed: {e:#}");
@@ -169,7 +192,7 @@ async fn handle_one(mut client: TcpStream, filter: &Filter) -> Result<()> {
     // so the peer can observe the close and tear down. Without this
     // (e.g. naive tokio::join! of two copy()s) we'd deadlock — clients
     // typically never close their write side after CONNECT.
-    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream_sock).await;
     Ok(())
 }
 
@@ -228,15 +251,6 @@ fn parse_request_line(req: &[u8]) -> Result<(String, String)> {
         bail!("malformed request: unexpected version {version:?}");
     }
     Ok((method, target))
-}
-
-/// `target` is `host:port` per the CONNECT spec (RFC 9110 §9.3.6).
-async fn connect_upstream(target: &str) -> Result<TcpStream> {
-    let stream = tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, TcpStream::connect(target))
-        .await
-        .with_context(|| format!("upstream connect to {target} timed out"))?
-        .with_context(|| format!("upstream connect to {target} failed"))?;
-    Ok(stream)
 }
 
 /// Write `HTTP/1.1 <code> <reason>\r\n\r\n`. Best-effort; failure to
@@ -369,6 +383,170 @@ mod tests {
         let dead = pick_ephemeral_port().unwrap();
         let (status, _) = do_connect(proxy_port, &format!("127.0.0.1:{dead}")).await;
         assert!(status.starts_with("HTTP/1.1 502"), "got: {status:?}");
+    }
+
+    /// Phase 3d.3: when configured with an HttpProxy upstream, the
+    /// CONNECT must be tunnelled through that proxy rather than dialed
+    /// directly. We stand up a fake corp proxy that records the
+    /// CONNECT it receives, then chain through it.
+    #[tokio::test]
+    async fn chains_through_upstream_http_proxy() {
+        // Real upstream that the corp proxy will dial on our behalf.
+        let payload = "PAYLOAD-FROM-REAL-UPSTREAM";
+        let (real_port, _) = fake_upstream(payload).await;
+
+        // Fake corp proxy: accept CONNECT, record the target, dial it,
+        // reply 200, splice. Minimal logic but exercises the same wire
+        // format real corp proxies (Squid/Zscaler) speak.
+        let connect_log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let corp_listener = StdTcpListener::bind("127.0.0.1:0").await.unwrap();
+        let corp_port = corp_listener.local_addr().unwrap().port();
+        let log_for_corp = std::sync::Arc::clone(&connect_log);
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = corp_listener.accept().await {
+                let log = std::sync::Arc::clone(&log_for_corp);
+                tokio::spawn(async move {
+                    // Read just the CONNECT request line.
+                    let mut reader = BufReader::new(&mut sock);
+                    let mut req = String::new();
+                    reader.read_line(&mut req).await.unwrap();
+                    // Drain headers up to the empty line.
+                    loop {
+                        let mut line = String::new();
+                        let n = reader.read_line(&mut line).await.unwrap();
+                        if n == 0 || line == "\r\n" || line == "\n" {
+                            break;
+                        }
+                    }
+                    // Parse the target out of "CONNECT host:port HTTP/1.1".
+                    let target = req.split_whitespace().nth(1).unwrap().to_string();
+                    log.lock().unwrap().push(target.clone());
+                    // Dial the real target on behalf of the client.
+                    let mut up = TcpStream::connect(&target).await.unwrap();
+                    sock.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                        .await
+                        .unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut sock, &mut up).await;
+                });
+            }
+        });
+
+        // Stand up our proxy and inject the corp proxy as upstream.
+        let server = Server::bind(None, Filter::new(["127.0.0.1"]).unwrap())
+            .await
+            .unwrap()
+            .with_upstream(crate::proxy::upstream::UpstreamConfig::HttpProxy {
+                host: "127.0.0.1".into(),
+                port: corp_port,
+                no_proxy: vec![],
+            });
+        let proxy_port = server.port();
+        tokio::spawn(server.serve());
+
+        let target = format!("127.0.0.1:{real_port}");
+        let (status, body) = do_connect(proxy_port, &target).await;
+        assert!(status.starts_with("HTTP/1.1 200"), "got: {status:?}");
+        let body_str = String::from_utf8_lossy(&body);
+        let body_str = body_str.trim_start_matches("\r\n");
+        assert_eq!(body_str, payload, "tunneled body mismatch");
+
+        // The corp proxy must have seen exactly the original target —
+        // no rewriting, no leakage of internal request structure.
+        let log = connect_log.lock().unwrap();
+        assert_eq!(*log, vec![target], "corp proxy must see original target");
+    }
+
+    /// Phase 3d.3: NO_PROXY entries take a host out of the chained
+    /// upstream and back onto the direct path. Critical because
+    /// `*.walmart.com` (and friends) are corp-internal and routing
+    /// them through Zscaler produces 403s.
+    #[tokio::test]
+    async fn chains_skips_upstream_for_no_proxy_hosts() {
+        let payload = "DIRECT-NOT-CHAINED";
+        let (real_port, _) = fake_upstream(payload).await;
+
+        // Bind a corp proxy that will NEVER receive a connection —
+        // we'll fail the test if it does. Don't even spawn an accept
+        // loop: an unbound port would be the cleanest signal, but the
+        // upstream layer treats "connect refused" as a real failure
+        // (502 to client) and would mask a NO_PROXY bug. Instead bind
+        // and assert no accepts happen by counting through a channel.
+        let corp_listener = StdTcpListener::bind("127.0.0.1:0").await.unwrap();
+        let corp_port = corp_listener.local_addr().unwrap().port();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        tokio::spawn(async move {
+            while corp_listener.accept().await.is_ok() {
+                let _ = tx.send(());
+            }
+        });
+
+        let server = Server::bind(None, Filter::new(["127.0.0.1"]).unwrap())
+            .await
+            .unwrap()
+            .with_upstream(crate::proxy::upstream::UpstreamConfig::HttpProxy {
+                host: "127.0.0.1".into(),
+                port: corp_port,
+                no_proxy: vec!["127.0.0.1".into()],
+            });
+        let proxy_port = server.port();
+        tokio::spawn(server.serve());
+
+        let (status, body) = do_connect(proxy_port, &format!("127.0.0.1:{real_port}")).await;
+        assert!(status.starts_with("HTTP/1.1 200"), "got: {status:?}");
+        let body_str = String::from_utf8_lossy(&body);
+        let body_str = body_str.trim_start_matches("\r\n");
+        assert_eq!(body_str, payload);
+
+        // Give the accept loop a moment; corp proxy must not have been
+        // contacted because 127.0.0.1 is in NO_PROXY.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "NO_PROXY-listed host must bypass upstream proxy"
+        );
+    }
+
+    /// Phase 3d.3: a chained upstream that rejects with 407 (auth
+    /// required) must surface as 502 to the client — we have no
+    /// credentials to retry with, and silently sending the request
+    /// direct would defeat the point of the corp policy.
+    #[tokio::test]
+    async fn surfaces_upstream_407_as_502() {
+        let corp_listener = StdTcpListener::bind("127.0.0.1:0").await.unwrap();
+        let corp_port = corp_listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = corp_listener.accept().await {
+                tokio::spawn(async move {
+                    // Drain request, reply 407, hang up.
+                    let mut buf = [0u8; 1024];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(
+                            b"HTTP/1.1 407 Proxy Authentication Required\r\n\
+                              Proxy-Authenticate: Basic\r\n\r\n",
+                        )
+                        .await;
+                    let _ = sock.shutdown().await;
+                });
+            }
+        });
+
+        let server = Server::bind(None, Filter::new(["127.0.0.1"]).unwrap())
+            .await
+            .unwrap()
+            .with_upstream(crate::proxy::upstream::UpstreamConfig::HttpProxy {
+                host: "127.0.0.1".into(),
+                port: corp_port,
+                no_proxy: vec![],
+            });
+        let proxy_port = server.port();
+        tokio::spawn(server.serve());
+
+        let (status, _) = do_connect(proxy_port, "127.0.0.1:1").await;
+        assert!(
+            status.starts_with("HTTP/1.1 502"),
+            "upstream auth failure must surface as 502, got: {status:?}"
+        );
     }
 
     // ── parse_request_line ──────────────────────────────────────────────

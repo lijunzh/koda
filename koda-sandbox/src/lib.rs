@@ -61,8 +61,9 @@ pub use policy::{
 };
 pub use policy_check::is_fully_denied;
 pub use proxy::{
-    BuiltInProxy, DEFAULT_DEV_ALLOWLIST, DEFAULT_NO_PROXY, ExternalProxy, Filter,
-    PROXY_PORT_ENV_KEY, ProxyHandle, ca_bundle_for_policy, proxy_env_vars,
+    BuiltInProxy, BuiltInSocks5Proxy, DEFAULT_DEV_ALLOWLIST, DEFAULT_NO_PROXY, ExternalProxy,
+    Filter, PROXY_PORT_ENV_KEY, ProxyHandle, Socks5Server, ca_bundle_for_policy, proxy_env_vars,
+    socks5_env_vars,
 };
 pub use violations::{
     DEFAULT_RING_CAPACITY, SandboxViolationStore, Violation, ViolationKind, global_store,

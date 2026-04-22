@@ -60,6 +60,7 @@ async fn make_session(
         file_tracker,
         title_set: false,
         proxy: None,
+        socks5_proxy: None,
     };
     (session, cancel)
 }

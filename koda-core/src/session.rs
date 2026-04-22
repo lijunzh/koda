@@ -32,7 +32,7 @@ use crate::providers::{self, ImageData, LlmProvider};
 use crate::trust::TrustMode;
 
 use anyhow::Result;
-use koda_sandbox::{BuiltInProxy, DEFAULT_DEV_ALLOWLIST, Filter, ProxyHandle};
+use koda_sandbox::{BuiltInProxy, BuiltInSocks5Proxy, DEFAULT_DEV_ALLOWLIST, Filter, ProxyHandle};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -78,6 +78,14 @@ pub struct KodaSession {
     /// Held for the session's lifetime; `Drop` aborts the proxy task
     /// and closes the listener — no manual teardown needed.
     pub proxy: Option<ProxyHandle>,
+
+    /// Per-session SOCKS5 proxy (Phase 3d.1 of #934). Sibling of
+    /// [`Self::proxy`] for raw-TCP clients (git over ssh, gRPC) that
+    /// don't honor `HTTPS_PROXY`. Same fail-open contract: spawn
+    /// failure logs a warning and the field stays `None`. Uses the
+    /// same hostname allowlist as the HTTP proxy by construction —
+    /// see [`koda_sandbox::BuiltInSocks5Proxy`].
+    pub socks5_proxy: Option<ProxyHandle>,
 }
 
 impl KodaSession {
@@ -123,7 +131,7 @@ impl KodaSession {
         // `koda_sandbox::filter::tests::default_allowlist_parses`
         // guards against regression.
         let filter = Filter::new(DEFAULT_DEV_ALLOWLIST).expect("default allowlist must parse");
-        let proxy = match BuiltInProxy::new(filter).spawn().await {
+        let proxy = match BuiltInProxy::new(filter.clone()).spawn().await {
             Ok(handle) => {
                 agent.tools.set_proxy_port(Some(handle.port));
                 tracing::debug!(
@@ -138,6 +146,26 @@ impl KodaSession {
             }
         };
 
+        // 3d.2: spin up the SOCKS5 sibling using the same allowlist.
+        // Same fail-open contract as the HTTP proxy — raw-TCP clients
+        // will fall through to whatever they'd do without ALL_PROXY
+        // (i.e. dial direct, get caught by kernel-enforced egress where
+        // present, or actually escape on platforms where it isn't).
+        let socks5_proxy = match BuiltInSocks5Proxy::new(filter).spawn().await {
+            Ok(handle) => {
+                agent.tools.set_socks5_port(Some(handle.port));
+                tracing::debug!(
+                    "session {id} socks5 proxy listening on 127.0.0.1:{}",
+                    handle.port
+                );
+                Some(handle)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "socks5 proxy spawn failed; raw-TCP clients unfiltered");
+                None
+            }
+        };
+
         Self {
             id,
             agent,
@@ -148,6 +176,7 @@ impl KodaSession {
             file_tracker,
             title_set: false,
             proxy,
+            socks5_proxy,
         }
     }
 
