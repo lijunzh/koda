@@ -309,6 +309,16 @@ pub(crate) async fn execute_sub_agent(
             sub_config.max_context_tokens,
             sub_config.trust,
         );
+        // Phase 5 PR-2 of #934: install the sub-agent's sandbox policy.
+        // Today `policy_for_agent` returns `strict_default()` for every
+        // input so behavior is unchanged — the wiring exists so PR-3 can
+        // start populating the policy with non-default values (e.g.
+        // narrower fs.allow_write for read-only sub-agents) without
+        // touching this dispatch site again.
+        let registry = registry.with_sandbox_policy(crate::sandbox::policy_for_agent(
+            sub_config.trust,
+            effective_root_ref,
+        ));
         match parent_cache {
             Some(cache) => registry.with_shared_cache(cache),
             None => registry,

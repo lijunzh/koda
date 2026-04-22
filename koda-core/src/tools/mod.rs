@@ -240,6 +240,12 @@ pub struct ToolRegistry {
     pub bg_registry: bg_process::BgRegistry,
     /// Trust mode — determines sandbox configuration for Bash tool.
     trust: crate::trust::TrustMode,
+    /// Active sandbox policy. Phase 5 PR-2 of #934 wires this through
+    /// the Bash dispatch path so per-agent variation becomes possible.
+    /// Today every constructor seeds it with `SandboxPolicy::strict_default()`
+    /// so behavior is byte-for-byte unchanged — PR-3 starts populating it
+    /// with non-default values via [`crate::sandbox::policy_for_agent`].
+    sandbox_policy: koda_sandbox::SandboxPolicy,
     /// MCP connection manager — owns all MCP server connections (#662).
     /// `None` until attached via `set_mcp_manager()`.
     mcp_manager: std::sync::RwLock<Option<Arc<tokio::sync::RwLock<crate::mcp::McpManager>>>>,
@@ -333,6 +339,10 @@ impl ToolRegistry {
             caps: OutputCaps::for_context(max_context_tokens),
             bg_registry: bg_process::BgRegistry::new(),
             trust,
+            // Phase 5 PR-2 of #934: seed with strict_default(). Callers
+            // can override via [`Self::with_sandbox_policy`] (sub-agent
+            // dispatch does this; the main agent inherits the default).
+            sandbox_policy: koda_sandbox::SandboxPolicy::strict_default(),
             mcp_manager: std::sync::RwLock::new(None),
             proxy_port: std::sync::RwLock::new(None),
             socks5_port: std::sync::RwLock::new(None),
@@ -346,6 +356,26 @@ impl ToolRegistry {
     pub fn with_shared_cache(mut self, cache: FileReadCache) -> Self {
         self.read_cache = cache;
         self
+    }
+
+    /// Override the active sandbox policy.
+    ///
+    /// Phase 5 PR-2 of #934. Builder-style; chains after `with_trust`
+    /// (or `new`). Sub-agent dispatch uses this to install the policy
+    /// produced by [`crate::sandbox::policy_for_agent`] on the child's
+    /// registry. The main agent path doesn't call this and inherits
+    /// the `strict_default()` seed from `with_trust` — byte-for-byte
+    /// unchanged behavior in PR-2.
+    pub fn with_sandbox_policy(mut self, policy: koda_sandbox::SandboxPolicy) -> Self {
+        self.sandbox_policy = policy;
+        self
+    }
+
+    /// Borrow the active sandbox policy. Used by the Bash dispatch
+    /// path to thread the per-registry policy into
+    /// [`crate::sandbox::build`].
+    pub fn sandbox_policy(&self) -> &koda_sandbox::SandboxPolicy {
+        &self.sandbox_policy
     }
 
     /// Inject a custom [`FileSystem`] implementation.
@@ -625,6 +655,7 @@ impl ToolRegistry {
                     &self.bg_registry,
                     sink_for_streaming,
                     &self.trust,
+                    self.sandbox_policy(),
                     self.proxy_port(),
                     self.socks5_port(),
                 )
@@ -1350,5 +1381,54 @@ mod describe_action_tests {
         let registry = ToolRegistry::new(PathBuf::from("/tmp"), 128_000);
         let all = registry.get_definitions(&[], &[]);
         assert!(all.len() > 10, "Should have many tools");
+    }
+
+    // ── Phase 5 PR-2 of #934: SandboxPolicy threading on ToolRegistry ──
+    //
+    // The Bash dispatch path now reads `self.sandbox_policy()` instead
+    // of synthesizing `strict_default()` inline. These tests pin:
+    //   1. The default seed is `strict_default()` so unchanged callers
+    //      preserve byte-for-byte behavior.
+    //   2. `with_sandbox_policy` actually replaces the field (the
+    //      threading is real, not a stub).
+    //   3. The accessor returns the most recent setter's value (no
+    //      caching/aliasing surprises).
+
+    #[test]
+    fn registry_sandbox_policy_defaults_to_strict() {
+        let registry = ToolRegistry::new(PathBuf::from("/tmp"), 128_000);
+        assert_eq!(
+            *registry.sandbox_policy(),
+            koda_sandbox::SandboxPolicy::strict_default(),
+            "PR-2 contract: ToolRegistry::new must seed strict_default() so \
+             pre-PR callers see unchanged behavior"
+        );
+    }
+
+    #[test]
+    fn with_sandbox_policy_overrides_the_default() {
+        // Build a deliberately-non-default policy by mutating one field.
+        // We don't care which field — only that round-tripping through
+        // `with_sandbox_policy` preserves the override and the default
+        // would not match.
+        let mut custom = koda_sandbox::SandboxPolicy::strict_default();
+        custom
+            .fs
+            .allow_write
+            .push(koda_sandbox::PathPattern::new("/pr2-marker"));
+
+        let registry =
+            ToolRegistry::new(PathBuf::from("/tmp"), 128_000).with_sandbox_policy(custom.clone());
+
+        assert_eq!(
+            *registry.sandbox_policy(),
+            custom,
+            "with_sandbox_policy must replace the field, not no-op"
+        );
+        assert_ne!(
+            *registry.sandbox_policy(),
+            koda_sandbox::SandboxPolicy::strict_default(),
+            "sanity: the override is observably different from the default"
+        );
     }
 }

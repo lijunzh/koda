@@ -116,6 +116,7 @@ pub async fn run_shell_command(
     bg: &BgRegistry,
     sink: Option<(&dyn EngineSink, &str)>,
     trust: &crate::trust::TrustMode,
+    policy: &koda_sandbox::SandboxPolicy,
     proxy_port: Option<u16>,
     socks5_port: Option<u16>,
 ) -> Result<ShellOutput> {
@@ -130,7 +131,15 @@ pub async fn run_shell_command(
     );
 
     if background {
-        let msg = spawn_background(project_root, command, bg, trust, proxy_port, socks5_port)?;
+        let msg = spawn_background(
+            project_root,
+            command,
+            bg,
+            trust,
+            policy,
+            proxy_port,
+            socks5_port,
+        )?;
         return Ok(ShellOutput {
             summary: msg,
             full_output: None,
@@ -143,16 +152,16 @@ pub async fn run_shell_command(
         .min(MAX_TIMEOUT_SECS);
 
     // Spawn via sandbox wrapper (enforced for all trust modes).
-    // Phase 5 PR-1 of #934: pass an explicit policy. Today this is
-    // `strict_default()` for byte-for-byte parity with pre-PR
-    // behavior; PR-2 will derive a real policy from trust + agent
-    // config so kernel enforcement actually varies per agent.
-    let policy = koda_sandbox::SandboxPolicy::strict_default();
+    // Phase 5 PR-2 of #934: policy is now threaded in from the
+    // ToolRegistry (set via [`ToolRegistry::with_sandbox_policy`] in
+    // sub-agent dispatch; defaults to `strict_default()` for the main
+    // agent). PR-3 will start populating the policy with non-default
+    // values via [`crate::sandbox::policy_for_agent`].
     let mut child = crate::sandbox::build(
         command,
         project_root,
         trust,
-        &policy,
+        policy,
         proxy_port,
         socks5_port,
     )?
@@ -306,19 +315,19 @@ fn spawn_background(
     command: &str,
     bg: &BgRegistry,
     trust: &crate::trust::TrustMode,
+    policy: &koda_sandbox::SandboxPolicy,
     proxy_port: Option<u16>,
     socks5_port: Option<u16>,
 ) -> Result<String> {
     // Spawn via sandbox wrapper (enforced for all trust modes).
     // Detach stdio so the process doesn't block on terminal I/O.
-    // Phase 5 PR-1 of #934: see comment on the foreground call site
-    // above for why `strict_default()` is used today.
-    let policy = koda_sandbox::SandboxPolicy::strict_default();
+    // Phase 5 PR-2 of #934: policy threaded in from the registry
+    // (see comment on `run_shell_command` above for the threading rationale).
     let child = crate::sandbox::build(
         command,
         project_root,
         trust,
-        &policy,
+        policy,
         proxy_port,
         socks5_port,
     )?
@@ -493,6 +502,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -516,6 +526,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -539,6 +550,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -563,6 +575,7 @@ mod tests {
             &registry,
             None,
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -593,6 +606,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -686,6 +700,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -745,6 +760,7 @@ mod tests {
             &bg(),
             Some((sink.as_ref(), "test_id")),
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
@@ -845,6 +861,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         )
