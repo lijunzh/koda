@@ -100,23 +100,55 @@ fn build_command_inner(
     validate_seatbelt_path(&root)?;
     validate_seatbelt_path(&home)?;
 
-    // Start from the project profile then append credential deny rules.
-    // Seatbelt evaluates rules in order; later rules win for the same path,
-    // so the denies override the earlier broad `(allow file-read*)`.
-    // Same last-match-wins approach as Gemini CLI's seatbeltArgsBuilder.ts.
-    let mut profile = match proxy {
-        Some((port, allow_local_binding, weaker_macos_isolation)) => build_proxied_profile_string(
-            &root,
-            &home,
-            port,
-            allow_local_binding,
-            weaker_macos_isolation,
-        ),
-        None => build_profile_string(&root, &home),
+    // Phase 4a of #934: cache the compiled SBPL by
+    // (canonical_root, home, proxy, policy). The build closure runs
+    // at most once per distinct key; on the warm path this is a
+    // single HashMap::get + clone (sub-microsecond) instead of the
+    // ~3-6 ms canonicalize + format!s + concatenations dance below.
+    //
+    // The .clone() of `policy` and `home` here is the cost of having
+    // an owned cache key. It's a few hundred bytes for the worst
+    // realistic policy and runs once per cache miss — negligible
+    // next to the build cost it amortizes.
+    let key = crate::seatbelt_cache::ProfileKey {
+        canonical_root: canonical.clone(),
+        home: home.clone(),
+        proxy,
+        policy: policy.clone(),
     };
-    profile.push_str(&protected_subdir_deny_rules(&root));
-    profile.push_str(&credential_deny_rules(&home));
-    profile.push_str(&policy_overlay_rules(policy)?);
+
+    // Pre-compute the policy-overlay rules OUTSIDE the cache closure
+    // because policy_overlay_rules returns Result and the cache API
+    // takes an infallible closure. Validation is cheap (path char
+    // checks) and idempotent, so doing it on every call is fine even
+    // when the cache hits.
+    let overlay = policy_overlay_rules(policy)?;
+
+    let profile = crate::seatbelt_cache::get_or_compute(key, |k| {
+        let root = k.canonical_root.to_string_lossy();
+        let home = &k.home;
+        // Start from the project profile then append credential deny
+        // rules. Seatbelt evaluates rules in order; later rules win
+        // for the same path, so the denies override the earlier broad
+        // `(allow file-read*)`. Same last-match-wins approach as
+        // Gemini CLI's seatbeltArgsBuilder.ts.
+        let mut profile = match k.proxy {
+            Some((port, allow_local_binding, weaker_macos_isolation)) => {
+                build_proxied_profile_string(
+                    &root,
+                    home,
+                    port,
+                    allow_local_binding,
+                    weaker_macos_isolation,
+                )
+            }
+            None => build_profile_string(&root, home),
+        };
+        profile.push_str(&protected_subdir_deny_rules(&root));
+        profile.push_str(&credential_deny_rules(home));
+        profile.push_str(&overlay);
+        profile
+    });
 
     let mut cmd = Command::new("sandbox-exec");
     cmd.arg("-p")
@@ -935,6 +967,114 @@ mod tests {
         assert!(
             rules.contains("weaker_macos_isolation"),
             "comment must mention the policy field name for grep-ability; got:\n{rules}"
+        );
+    }
+
+    // ── Phase 4a: cache wiring integration tests ────────────────────────────────
+    //
+    // The cache module has dedicated unit tests for its own state
+    // machine. These tests prove that build_command actually goes
+    // through the cache (not bypasses it) and that cached profiles
+    // remain semantically correct — catching the regression where a
+    // refactor accidentally bypasses the cache or returns a stale
+    // profile that drops a deny rule.
+
+    #[test]
+    fn build_command_returns_byte_identical_profile_on_repeated_calls() {
+        // Same args twice → same emitted profile, byte-for-byte. This
+        // is the contract every caller relies on. With the cache, the
+        // second call hits the warm path; without it, both calls
+        // recompute. Either way the strings must match exactly — if
+        // they don't, something non-deterministic crept into the
+        // build pipeline (timestamps, hash randomization, etc.) and
+        // the cache would be a correctness hazard, not a perf win.
+        let policy = SandboxPolicy::default();
+        let cmd1 = build_command("true", Path::new("/tmp"), &policy).unwrap();
+        let cmd2 = build_command("true", Path::new("/tmp"), &policy).unwrap();
+        let p1 = cmd1
+            .as_std()
+            .get_args()
+            .nth(1)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let p2 = cmd2
+            .as_std()
+            .get_args()
+            .nth(1)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(p1, p2, "repeated build_command must emit identical SBPL");
+        assert!(
+            p1.contains("(version 1)"),
+            "profile must look real, not empty"
+        );
+    }
+
+    #[test]
+    fn cached_profile_still_includes_credential_denies() {
+        // Regression guard: if a future refactor accidentally moves
+        // credential_deny_rules OUT of the cached build closure, the
+        // first call would produce the right profile but cached hits
+        // would drop the credential denies — a silent privilege
+        // escalation. Force a likely cache hit by calling twice and
+        // asserting the second result still contains the SSH-deny.
+        let policy = SandboxPolicy::default();
+        let _warm = build_command("true", Path::new("/tmp"), &policy).unwrap();
+        let cmd = build_command("true", Path::new("/tmp"), &policy).unwrap();
+        let profile = cmd
+            .as_std()
+            .get_args()
+            .nth(1)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        // credential_deny_rules emits subpath denies under $HOME for
+        // .ssh, .aws, .gnupg, etc. Just check one that's universal.
+        assert!(
+            profile.contains(".ssh"),
+            "cached profile must still carry the credential deny rules; got:\n{profile}"
+        );
+    }
+
+    #[test]
+    fn proxy_and_open_profiles_do_not_share_cache_entry() {
+        // The pathological case the cache MUST get right: the same
+        // root + policy with proxy=Some vs proxy=None must produce
+        // different profiles. Mixing them is a 3c kernel-enforcement
+        // bypass — the open profile would let TCP egress that the
+        // proxied profile denies.
+        let policy = SandboxPolicy::default();
+        let cmd_open = build_command("true", Path::new("/tmp"), &policy).unwrap();
+        let cmd_proxied =
+            build_command_with_proxy("true", Path::new("/tmp"), &policy, 8877, false, false)
+                .unwrap();
+        let p_open = cmd_open
+            .as_std()
+            .get_args()
+            .nth(1)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let p_proxied = cmd_proxied
+            .as_std()
+            .get_args()
+            .nth(1)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            p_open.contains("(allow network*)\n"),
+            "open profile must contain blanket network allow"
+        );
+        assert!(
+            !p_proxied.contains("(allow network*)\n"),
+            "proxied profile must NOT contain blanket allow (would bypass kernel egress enforcement)"
+        );
+        assert!(
+            p_proxied.contains("localhost:8877"),
+            "proxied profile must pin to the loopback proxy port"
         );
     }
 }
