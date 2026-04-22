@@ -102,6 +102,13 @@ pub fn definitions() -> Vec<ToolDefinition> {
 /// When `args["background"]` is `true`, the process is spawned detached and
 /// this function returns immediately with the PID.  The `BgRegistry` tracks
 /// the child so it is cleaned up (SIGTERM) when the session ends.
+//
+// 9 args is over clippy's default 7 — every one is load-bearing context
+// (project root, args, output cap, bg registry, streaming sink, trust
+// mode, two proxy ports). Bundling into a struct just to placate a lint
+// would obscure the call sites; the named-keyword feel comes for free
+// from Rust's positional-with-types discipline.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_shell_command(
     project_root: &Path,
     args: &Value,
@@ -110,6 +117,7 @@ pub async fn run_shell_command(
     sink: Option<(&dyn EngineSink, &str)>,
     trust: &crate::trust::TrustMode,
     proxy_port: Option<u16>,
+    socks5_port: Option<u16>,
 ) -> Result<ShellOutput> {
     let command = args["command"]
         .as_str()
@@ -122,7 +130,7 @@ pub async fn run_shell_command(
     );
 
     if background {
-        let msg = spawn_background(project_root, command, bg, trust, proxy_port)?;
+        let msg = spawn_background(project_root, command, bg, trust, proxy_port, socks5_port)?;
         return Ok(ShellOutput {
             summary: msg,
             full_output: None,
@@ -135,7 +143,7 @@ pub async fn run_shell_command(
         .min(MAX_TIMEOUT_SECS);
 
     // Spawn via sandbox wrapper (enforced for all trust modes).
-    let mut child = crate::sandbox::build(command, project_root, trust, proxy_port)?
+    let mut child = crate::sandbox::build(command, project_root, trust, proxy_port, socks5_port)?
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -287,10 +295,11 @@ fn spawn_background(
     bg: &BgRegistry,
     trust: &crate::trust::TrustMode,
     proxy_port: Option<u16>,
+    socks5_port: Option<u16>,
 ) -> Result<String> {
     // Spawn via sandbox wrapper (enforced for all trust modes).
     // Detach stdio so the process doesn't block on terminal I/O.
-    let child = crate::sandbox::build(command, project_root, trust, proxy_port)?
+    let child = crate::sandbox::build(command, project_root, trust, proxy_port, socks5_port)?
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -463,6 +472,7 @@ mod tests {
             None,
             &crate::trust::TrustMode::Safe,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -484,6 +494,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            None,
             None,
         )
         .await
@@ -507,6 +518,7 @@ mod tests {
             None,
             &crate::trust::TrustMode::Safe,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -529,6 +541,7 @@ mod tests {
             &registry,
             None,
             &crate::trust::TrustMode::Safe,
+            None,
             None,
         )
         .await
@@ -558,6 +571,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            None,
             None,
         )
         .await
@@ -651,6 +665,7 @@ mod tests {
             None,
             &crate::trust::TrustMode::Safe,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -708,6 +723,7 @@ mod tests {
             &bg(),
             Some((sink.as_ref(), "test_id")),
             &crate::trust::TrustMode::Safe,
+            None,
             None,
         )
         .await
@@ -807,6 +823,7 @@ mod tests {
             &bg(),
             None,
             &crate::trust::TrustMode::Safe,
+            None,
             None,
         )
         .await

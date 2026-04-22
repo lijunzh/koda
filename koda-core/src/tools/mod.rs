@@ -250,6 +250,13 @@ pub struct ToolRegistry {
     /// `None` (default) preserves the pre-3b unfiltered behavior —
     /// session code opts in by calling [`Self::set_proxy_port`].
     proxy_port: std::sync::RwLock<Option<u16>>,
+    /// Loopback port of the per-session SOCKS5 proxy (Phase 3d.1 of
+    /// #934). When `Some`, [`crate::sandbox::build`] appends
+    /// `ALL_PROXY=socks5h://127.0.0.1:port` (+ lowercase alias) so
+    /// raw-TCP clients (git over ssh, gRPC) that ignore `HTTPS_PROXY`
+    /// also route through the hostname-filtered proxy. Independent
+    /// from `proxy_port` so tests can attach one without the other.
+    socks5_port: std::sync::RwLock<Option<u16>>,
 }
 
 impl ToolRegistry {
@@ -328,6 +335,7 @@ impl ToolRegistry {
             trust,
             mcp_manager: std::sync::RwLock::new(None),
             proxy_port: std::sync::RwLock::new(None),
+            socks5_port: std::sync::RwLock::new(None),
         }
     }
 
@@ -408,6 +416,22 @@ impl ToolRegistry {
     /// turns it into the env-var bouquet on the spawned `Command`.
     pub fn proxy_port(&self) -> Option<u16> {
         self.proxy_port.read().ok().and_then(|guard| *guard)
+    }
+
+    /// Attach (or detach) the per-session SOCKS5 proxy port. Mirrors
+    /// [`Self::set_proxy_port`] — see that fn's docs for the
+    /// lock-poisoning policy.
+    pub fn set_socks5_port(&self, port: Option<u16>) {
+        if let Ok(mut guard) = self.socks5_port.write() {
+            *guard = port;
+        }
+    }
+
+    /// Current SOCKS5 port, if one has been attached. Threaded into
+    /// [`crate::sandbox::build`] which appends `ALL_PROXY` to the
+    /// spawned `Command`'s env.
+    pub fn socks5_port(&self) -> Option<u16> {
+        self.socks5_port.read().ok().and_then(|guard| *guard)
     }
 
     /// Classify a tool, using MCP annotations when available.
@@ -602,6 +626,7 @@ impl ToolRegistry {
                     sink_for_streaming,
                     &self.trust,
                     self.proxy_port(),
+                    self.socks5_port(),
                 )
                 .await;
                 return match shell_result {
@@ -944,6 +969,34 @@ mod tests {
         let registry = ToolRegistry::new(root(), 100_000);
         registry.set_proxy_port(Some(31415));
         assert_eq!(registry.proxy_port(), Some(31415));
+    }
+
+    // ── Phase 3d.2: SOCKS5 port wiring (Bash → sandbox::build) ───────
+
+    #[test]
+    fn socks5_port_defaults_to_none() {
+        let registry = ToolRegistry::new(root(), 100_000);
+        assert_eq!(registry.socks5_port(), None);
+    }
+
+    #[test]
+    fn socks5_port_round_trips_through_setter() {
+        let registry = ToolRegistry::new(root(), 100_000);
+        registry.set_socks5_port(Some(27182));
+        assert_eq!(registry.socks5_port(), Some(27182));
+    }
+
+    #[test]
+    fn socks5_and_http_ports_are_independent() {
+        // Setting one must not clobber the other — the two proxies are
+        // spawned independently and may live or die independently.
+        let registry = ToolRegistry::new(root(), 100_000);
+        registry.set_proxy_port(Some(8080));
+        registry.set_socks5_port(Some(1080));
+        assert_eq!(registry.proxy_port(), Some(8080));
+        assert_eq!(registry.socks5_port(), Some(1080));
+        registry.set_proxy_port(None);
+        assert_eq!(registry.socks5_port(), Some(1080));
     }
 
     #[test]

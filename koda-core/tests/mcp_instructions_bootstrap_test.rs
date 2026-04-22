@@ -101,6 +101,7 @@ async fn make_session_with_mcp(
         file_tracker,
         title_set: false,
         proxy: None,
+        socks5_proxy: None,
     };
     (session, cancel, recorded)
 }
