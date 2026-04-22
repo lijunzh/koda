@@ -146,6 +146,25 @@ fn parse_args() -> Result<Args> {
 /// Returns an error when the variable is set but cannot be parsed \u2014 a
 /// malformed policy env var is a programming error in the host, not a
 /// user error, so we fail hard rather than silently falling back.
+///
+/// # Architectural note: sole authorized SandboxPolicy deserialization site
+///
+/// Koda is **config-free at runtime** — every behavioral dial is
+/// derived from the trust mode at compile time via
+/// `koda_core::sandbox::policy_for_agent`. There is no JSON config file,
+/// no CLI override, no env-var dial.
+///
+/// This function is the **single legitimate exception**: it deserializes
+/// `SandboxPolicy` purely to receive an in-memory policy across a
+/// process boundary (the host crashes the worker and respawns to keep
+/// the sandbox crash-isolated, so the policy must travel as bytes).
+/// The host built that policy in-memory via `policy_for_agent` — the
+/// JSON is just the wire format, not user-facing config.
+///
+/// A regression test in `koda_sandbox::policy::tests` mechanically
+/// enforces that no other deserialization site exists. If you need a
+/// new IPC boundary, update its allowlist with a comment explaining
+/// why the new site is IPC and not user-facing config.
 fn read_policy_env() -> Result<SandboxPolicy> {
     match std::env::var("KODA_FS_WORKER_POLICY") {
         Ok(json) => serde_json::from_str(&json)

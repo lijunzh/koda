@@ -208,6 +208,21 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
         | crate::trust::TrustMode::Safe
         | crate::trust::TrustMode::Auto => 60,
     });
+    // Phase 5 PR-5 of #934: deny-rule traversal depth, derived from
+    // trust mode (NOT a runtime config knob — koda is config-free).
+    //
+    // The security argument: the more permissive the trust mode, the
+    // less human gating exists, so the more paranoid the sandbox
+    // should be. Plan mode is read-only (lowest blast radius, perf
+    // matters because grep/read are hot); Auto has no human gate
+    // (highest blast radius, max paranoia). Safe sits in between.
+    //
+    // Bounds match the issue #934 spec: "default 3, max 10".
+    policy.fs.mandatory_deny_search_depth = match trust {
+        crate::trust::TrustMode::Plan => 3,  // read-only — perf-sensitive
+        crate::trust::TrustMode::Safe => 5,  // user gate exists, balanced
+        crate::trust::TrustMode::Auto => 10, // no human gate — max paranoia
+    };
     policy
 }
 
@@ -1042,6 +1057,61 @@ mod tests {
         let _ = policy_for_agent(
             crate::trust::TrustMode::Safe,
             std::path::Path::new("/nonexistent/path/that/should/not/exist"),
+        );
+    }
+
+    // ── Phase 5 PR-5 of #934: trust-derived deny-rule traversal depth ──
+
+    #[test]
+    fn policy_for_agent_plan_mode_uses_shallow_depth() {
+        // Plan is read-only (lowest blast radius). Perf > paranoia.
+        let dir = tempfile::tempdir().unwrap();
+        let policy = policy_for_agent(crate::trust::TrustMode::Plan, dir.path());
+        assert_eq!(policy.fs.mandatory_deny_search_depth, 3);
+    }
+
+    #[test]
+    fn policy_for_agent_safe_mode_uses_balanced_depth() {
+        // Safe has a user gate — middle of the road.
+        let dir = tempfile::tempdir().unwrap();
+        let policy = policy_for_agent(crate::trust::TrustMode::Safe, dir.path());
+        assert_eq!(policy.fs.mandatory_deny_search_depth, 5);
+    }
+
+    #[test]
+    fn policy_for_agent_auto_mode_uses_max_depth() {
+        // Auto has NO human gate — max paranoia. The security argument
+        // is the load-bearing rationale for the per-trust derivation.
+        let dir = tempfile::tempdir().unwrap();
+        let policy = policy_for_agent(crate::trust::TrustMode::Auto, dir.path());
+        assert_eq!(
+            policy.fs.mandatory_deny_search_depth, 10,
+            "Auto mode runs without a user gate — deep deny-rule checking is the \
+             defense-in-depth that prevents creative path-evasion bypasses"
+        );
+    }
+
+    #[test]
+    fn policy_for_agent_depth_is_strictly_monotone_with_permissiveness() {
+        // Architectural invariant: more permissive trust mode → deeper
+        // (more paranoid) deny checking. If anyone changes the per-trust
+        // values to violate this, they're breaking the security argument
+        // documented in `policy_for_agent`. This test names the invariant
+        // so the violation shows up in `git log` clearly.
+        let dir = tempfile::tempdir().unwrap();
+        let plan = policy_for_agent(crate::trust::TrustMode::Plan, dir.path())
+            .fs
+            .mandatory_deny_search_depth;
+        let safe = policy_for_agent(crate::trust::TrustMode::Safe, dir.path())
+            .fs
+            .mandatory_deny_search_depth;
+        let auto = policy_for_agent(crate::trust::TrustMode::Auto, dir.path())
+            .fs
+            .mandatory_deny_search_depth;
+        assert!(
+            plan < safe && safe < auto,
+            "trust permissiveness must imply paranoia depth: \
+             Plan({plan}) < Safe({safe}) < Auto({auto})"
         );
     }
 

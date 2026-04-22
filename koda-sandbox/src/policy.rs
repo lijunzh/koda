@@ -68,7 +68,7 @@ impl DomainPattern {
 ///
 /// Phase 0 ignores all fields — the seatbelt/bwrap builders use the
 /// hardcoded defaults from [`crate::defaults`]. Phase 1 wires them in.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FsPolicy {
     /// Paths whose reads are denied at the kernel layer.
@@ -88,6 +88,49 @@ pub struct FsPolicy {
     /// Whether `git config` writes are permitted. Off by default to
     /// prevent agents from registering `core.fsmonitor` hooks → RCE.
     pub allow_git_config: bool,
+
+    /// How deeply path-deny matching walks the path hierarchy when
+    /// checking a candidate path against [`Self::deny_read`] /
+    /// [`Self::deny_write_within_allow`].
+    ///
+    /// **Perf vs paranoia dial.** Larger = catches more evasion patterns
+    /// (deep symlink chains, `..`-laden paths) but costs more per check.
+    /// Smaller = faster but might miss creative deny-rule bypasses.
+    ///
+    /// Phase 5 of #934. **Trust-derived, not user-configurable** —
+    /// populated by `koda_core::sandbox::policy_for_agent` from the
+    /// runtime trust mode (Plan/Safe/Auto). The serde default exists
+    /// purely for the IPC channel to `koda-fs-worker`: a worker spawned
+    /// without an explicit policy must still get a safe non-zero value.
+    ///
+    /// Compose rule: `max(parent, child)` — a child may *ratchet up*
+    /// paranoia (deeper checks) but never ratchet it down. See
+    /// [`SandboxPolicy::compose`].
+    #[serde(default = "default_mandatory_deny_search_depth")]
+    pub mandatory_deny_search_depth: u8,
+}
+
+/// Default depth for [`FsPolicy::mandatory_deny_search_depth`].
+///
+/// Matches the issue #934 spec: "default 3, max 10". Used by both the
+/// `Default` impl and serde's missing-field fallback so policies
+/// constructed in Rust *and* policies deserialized from the worker IPC
+/// channel get the same safe baseline.
+fn default_mandatory_deny_search_depth() -> u8 {
+    3
+}
+
+impl Default for FsPolicy {
+    fn default() -> Self {
+        Self {
+            deny_read: Vec::new(),
+            allow_read_within_deny: Vec::new(),
+            allow_write: Vec::new(),
+            deny_write_within_allow: Vec::new(),
+            allow_git_config: false,
+            mandatory_deny_search_depth: default_mandatory_deny_search_depth(),
+        }
+    }
 }
 
 /// Network egress policy. All fields are Phase-3 territory — the runtime
@@ -161,6 +204,25 @@ pub enum TrustPreference {
 
 /// Top-level sandbox policy. One per slot; sub-agent slots inherit and
 /// `restrict()` from the parent (Phase 5 — `EffectiveSandboxPermissions::compose`).
+///
+/// # Deserialization is IPC-only — NOT for runtime config
+///
+/// Koda is **config-free at runtime**: every behavioral dial is derived
+/// at compile-time from the trust mode (Plan/Safe/Auto) via
+/// `koda_core::sandbox::policy_for_agent`. There is no JSON config file,
+/// no CLI override, no env-var dial that the user can twiddle.
+///
+/// `Deserialize` is implemented **solely** because [`crate::worker::run_unix_socket_with_policy`]
+/// is a separate crash-isolated process and the policy must cross that
+/// process boundary. The host serializes → JSON → env var
+/// `KODA_FS_WORKER_POLICY` → worker deserializes back. **That is the
+/// only authorized deserialization site in the entire workspace.**
+///
+/// A regression test (`sandbox_policy_deserialize_only_used_in_fs_worker_binary`
+/// in this module's tests) scans the workspace for any other call site
+/// and fails the build if one appears. If you have a legitimate reason
+/// to add another, update the allowlist in that test and explain why
+/// the new site doesn't violate the "no runtime config" principle.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SandboxPolicy {
@@ -204,6 +266,7 @@ impl SandboxPolicy {
     /// | `fs.allow_read_within_deny`            | union          | Holes punched by either side stay open               |
     /// | `fs.allow_write`                       | parent values  | Child can't *widen* writable area (intersection ≈ parent when child empty) |
     /// | `fs.allow_git_config`                  | logical AND    | Both must permit                                     |
+    /// | `fs.mandatory_deny_search_depth`       | **maximum**    | Deeper = more paranoid; child may ratchet up, never down |
     /// | `net.denied_domains`                   | union          | Symmetric to fs denies                               |
     /// | `net.allowed_domains`                  | parent values  | Child can't add allowed domains                      |
     /// | `net.allow_local_binding`              | logical AND    | Both must permit                                     |
@@ -246,6 +309,14 @@ impl SandboxPolicy {
                     &child.fs.deny_write_within_allow,
                 ),
                 allow_git_config: parent.fs.allow_git_config && child.fs.allow_git_config,
+                // MAX (not min): for a depth dial, larger = more paranoid.
+                // Child may ratchet UP paranoia (request deeper checks)
+                // but never ratchet it down (which would be widening).
+                // Symmetric to the union/AND rules: "strictest wins".
+                mandatory_deny_search_depth: parent
+                    .fs
+                    .mandatory_deny_search_depth
+                    .max(child.fs.mandatory_deny_search_depth),
             },
             net: NetPolicy {
                 allowed_domains: parent.net.allowed_domains.clone(),
@@ -619,5 +690,187 @@ mod tests {
             Some(mitm),
             "parent MITM must survive composing with a no-MITM child"
         );
+    }
+
+    // ── Phase 5 of #934: mandatory_deny_search_depth (perf-vs-paranoia dial) ──
+
+    #[test]
+    fn fs_policy_default_has_safe_baseline_depth() {
+        // Both Rust-constructed and JSON-deserialized FsPolicy must
+        // get the same non-zero depth. A zero default would silently
+        // disable deny-rule traversal — a security regression.
+        assert_eq!(
+            FsPolicy::default().mandatory_deny_search_depth,
+            3,
+            "Rust default must match the issue's documented baseline"
+        );
+        let from_empty_json: FsPolicy = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            from_empty_json.mandatory_deny_search_depth, 3,
+            "serde missing-field default must match Rust default"
+        );
+    }
+
+    #[test]
+    fn compose_takes_max_mandatory_deny_search_depth() {
+        // Child wants deeper checking (more paranoid) than parent.
+        // Composed policy must adopt the deeper depth — child can ratchet UP.
+        let parent = SandboxPolicy {
+            fs: FsPolicy {
+                mandatory_deny_search_depth: 3,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let child = SandboxPolicy {
+            fs: FsPolicy {
+                mandatory_deny_search_depth: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            SandboxPolicy::compose(&parent, &child)
+                .fs
+                .mandatory_deny_search_depth,
+            10,
+            "child must be able to ratchet paranoia UP via deeper checks"
+        );
+    }
+
+    #[test]
+    fn compose_keeps_parent_depth_when_child_is_shallower() {
+        // Anti-escalation: child trying to set a SHALLOWER depth than
+        // parent must be ignored. Child can only ratchet up paranoia,
+        // never down. Same security shape as deny-list union and
+        // logical-AND on bool flags.
+        let parent = SandboxPolicy {
+            fs: FsPolicy {
+                mandatory_deny_search_depth: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let child = SandboxPolicy {
+            fs: FsPolicy {
+                mandatory_deny_search_depth: 3,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            SandboxPolicy::compose(&parent, &child)
+                .fs
+                .mandatory_deny_search_depth,
+            10,
+            "child cannot widen by requesting shallower deny-rule checks"
+        );
+    }
+
+    // ── Architectural guard: SandboxPolicy is config-free at runtime ──
+
+    /// Koda's design rule: **no runtime config**. Every behavioral dial
+    /// is derived from trust mode at compile-time via
+    /// `koda_core::sandbox::policy_for_agent`. The single legitimate
+    /// `SandboxPolicy` deserialization site is `koda-fs-worker`'s boot
+    /// path — it's IPC across a process boundary, not config.
+    ///
+    /// This test mechanically enforces that rule by scanning the
+    /// workspace for any other deserialization call site. If you have
+    /// a legitimate reason to add one (e.g. a new IPC boundary), update
+    /// the `ALLOWED` allowlist with the file path and a comment
+    /// explaining why the new site is IPC-only and not user-facing
+    /// config. If your motivation is "users want to override", **stop**
+    /// and add a trust mode or extend `policy_for_agent` instead.
+    #[test]
+    fn sandbox_policy_deserialize_only_used_in_fs_worker_binary() {
+        const ALLOWED: &[&str] = &[
+            // The crash-isolated FS worker process receives policy via
+            // env var (KODA_FS_WORKER_POLICY) at boot. Sole IPC channel.
+            "src/bin/koda-fs-worker.rs",
+        ];
+        // Patterns that indicate a SandboxPolicy is being deserialized.
+        // Kept narrow on purpose — false positives are worse than misses
+        // here because they punish legitimate refactors.
+        const PATTERNS: &[&str] = &[
+            "from_str::<SandboxPolicy>",
+            "from_slice::<SandboxPolicy>",
+            "from_str::<crate::policy::SandboxPolicy>",
+            ": SandboxPolicy = serde_json",
+            ": SandboxPolicy = serde",
+        ];
+
+        // Walk this crate + sibling crates from CARGO_MANIFEST_DIR.
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir
+            .parent()
+            .expect("koda-sandbox lives one level under the workspace root");
+        let mut violations: Vec<String> = Vec::new();
+        scan_rust_files(workspace_root, &mut |path, contents| {
+            // Skip target/ and any path containing this exact test (we
+            // mention the patterns ourselves and would self-flag).
+            let rel = path
+                .strip_prefix(workspace_root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if rel.starts_with("target/") {
+                return;
+            }
+            if rel.ends_with("koda-sandbox/src/policy.rs") {
+                // This file defines the patterns inside the test's
+                // `PATTERNS` const — don't self-flag.
+                return;
+            }
+            for pat in PATTERNS {
+                if contents.contains(pat) {
+                    let allowed = ALLOWED.iter().any(|a| rel.ends_with(a) || rel.contains(a));
+                    if !allowed {
+                        violations.push(format!("  {rel}: matched `{pat}`"));
+                    }
+                }
+            }
+        });
+
+        assert!(
+            violations.is_empty(),
+            "\n\nUnauthorized SandboxPolicy deserialization site(s) detected:\n{}\n\n\
+             koda is config-free at runtime. Trust mode → policy_for_agent is the\n\
+             only path. The single allowed deserialization site is the koda-fs-worker\n\
+             binary (IPC across a process boundary). If you have a legitimate IPC\n\
+             reason to add another, update the ALLOWED allowlist in this test with\n\
+             a comment explaining why. If your motivation is \"users want to override\",\n\
+             extend `policy_for_agent` or add a trust mode instead.\n",
+            violations.join("\n")
+        );
+    }
+
+    /// Recursive walker over .rs files. Hand-rolled to avoid pulling in
+    /// `walkdir` purely for one test. Skips hidden dirs and target/.
+    fn scan_rust_files(root: &std::path::Path, on_file: &mut dyn FnMut(&std::path::Path, &str)) {
+        let entries = match std::fs::read_dir(root) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || name == "target" || name == "node_modules" {
+                continue;
+            }
+            let file_type = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if file_type.is_dir() {
+                scan_rust_files(&path, on_file);
+            } else if file_type.is_file()
+                && path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && let Ok(contents) = std::fs::read_to_string(&path)
+            {
+                on_file(&path, &contents);
+            }
+        }
     }
 }
