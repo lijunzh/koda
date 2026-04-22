@@ -214,8 +214,11 @@ fn check_write_path(ctx: &Context, path: &Path) -> Result<(), FsError> {
     };
 
     // Expand the full symlink chain so a symlink pointing outside the root
-    // is caught even when the link itself lives inside it.
-    let chain = paths_for_write_check(path);
+    // is caught even when the link itself lives inside it. The chain depth
+    // is policy-derived (Plan/Safe/Auto get different ceilings via
+    // `policy_for_agent`), with a hardcoded floor of MIN_SAFE_SYMLINK_DEPTH
+    // inside the helper so a low policy value can't weaken this check.
+    let chain = paths_for_write_check(path, ctx.policy.fs.mandatory_deny_search_depth);
 
     for candidate in &chain {
         // Absolute-deny overrides a broad allow-write rule.

@@ -53,7 +53,26 @@ use std::path::{Component, Path, PathBuf};
 
 /// Maximum symlink hops before we declare a cycle and stop.
 /// Matches Linux/macOS `SYMLOOP_MAX` (40) and the CC implementation.
+///
+/// Acts as the **upper ceiling** on per-write symlink walking. The kernel
+/// itself refuses to follow more than this many links, so walking beyond
+/// it would be wasted I/O — anything deeper would be denied at the syscall
+/// anyway.
 const MAX_SYMLINK_DEPTH: usize = 40;
+
+/// Minimum symlink hops the deny-rule walker is **always** willing to follow,
+/// regardless of policy.
+///
+/// Acts as the **lower floor** that prevents the trust-derived
+/// `mandatory_deny_search_depth` from weakening the symlink-chain check
+/// below a defensible baseline. Plan mode declares depth = 3 for perf,
+/// but giving up that early would let an agent register a 4-hop chain
+/// (cheap to construct) and bypass the deny check.
+///
+/// 8 covers the realistic short-chain attack patterns (link → link →
+/// dir/file) while still leaving meaningful headroom under `MAX_SYMLINK_DEPTH`
+/// for genuinely paranoid (Auto) mode.
+const MIN_SAFE_SYMLINK_DEPTH: usize = 8;
 
 // ── 1. find_symlink_in_path ───────────────────────────────────────────────
 
@@ -193,7 +212,17 @@ pub fn resolve_deepest_existing_ancestor(path: &Path) -> std::io::Result<Option<
     Ok(None)
 }
 
-// ── 3. paths_for_write_check ──────────────────────────────────────────────
+// ── 3. paths_for_write_check ───────────────────────────────────────────
+
+/// Clamp a policy-supplied symlink-chain depth into the safe operating
+/// range `[MIN_SAFE_SYMLINK_DEPTH, MAX_SYMLINK_DEPTH]`.
+///
+/// Pure function — extracted so the floor/ceiling math can be pinned
+/// directly without constructing 12-symlink chains in the test setup.
+/// See [`paths_for_write_check`] for the policy semantics.
+fn effective_chain_depth(policy_depth: u8) -> usize {
+    (policy_depth as usize).clamp(MIN_SAFE_SYMLINK_DEPTH, MAX_SYMLINK_DEPTH)
+}
 
 /// Collect every path that must be validated before allowing a write to
 /// `path`. The returned `Vec` always contains at least `[path]`.
@@ -211,9 +240,24 @@ pub fn resolve_deepest_existing_ancestor(path: &Path) -> std::io::Result<Option<
 ///    redirects and add the resolved destination.
 /// 3. Otherwise follow the symlink chain: at each hop, add the current
 ///    target; break on non-symlink, FIFO/socket/device, or cycle.
-/// 4. Cap at `MAX_SYMLINK_DEPTH` hops (matches `SYMLOOP_MAX`).
+/// 4. Cap hops at the **effective depth** — see below.
 /// 5. Add the final `canonicalize()` result for completeness (resolves any
 ///    remaining directory-component symlinks).
+///
+/// ## Effective depth
+///
+/// The actual hop limit is
+/// `clamp(deny_search_depth, MIN_SAFE_SYMLINK_DEPTH..=MAX_SYMLINK_DEPTH)`:
+///
+/// - **Floor at `MIN_SAFE_SYMLINK_DEPTH` (8)** — stops Plan mode's perf
+///   tuning (depth = 3) from weakening the deny check below a defensible
+///   baseline. A 4-hop bypass chain is cheap to construct, so capping
+///   below 8 would be a real security regression.
+/// - **Ceiling at `MAX_SYMLINK_DEPTH` (40)** — the kernel refuses past
+///   `SYMLOOP_MAX` anyway, so walking deeper is wasted I/O.
+///
+/// `deny_search_depth = 0` is a legal sentinel meaning "use the floor";
+/// callers without policy context can pass `0` and get safe behavior.
 ///
 /// ## Errors
 ///
@@ -221,7 +265,7 @@ pub fn resolve_deepest_existing_ancestor(path: &Path) -> std::io::Result<Option<
 /// and the function returns whatever it collected so far. The caller's
 /// policy check is fail-closed: if we can't prove a path is inside the
 /// root, it's denied.
-pub fn paths_for_write_check(path: &Path) -> Vec<PathBuf> {
+pub fn paths_for_write_check(path: &Path, deny_search_depth: u8) -> Vec<PathBuf> {
     let mut result: HashSet<PathBuf> = HashSet::new();
     result.insert(path.to_path_buf());
 
@@ -243,7 +287,7 @@ pub fn paths_for_write_check(path: &Path) -> Vec<PathBuf> {
     let mut current = path.to_path_buf();
     let mut visited: HashSet<PathBuf> = HashSet::new();
 
-    for _ in 0..MAX_SYMLINK_DEPTH {
+    for _ in 0..effective_chain_depth(deny_search_depth) {
         if visited.contains(&current) {
             break; // cycle detected
         }
@@ -534,7 +578,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("plain.txt");
         fs::write(&file, b"x").unwrap();
-        let paths = paths_for_write_check(&file);
+        let paths = paths_for_write_check(&file, 0);
         assert!(paths.contains(&file) || paths.iter().any(|p| p.ends_with("plain.txt")));
     }
 
@@ -547,7 +591,7 @@ mod tests {
         fs::write(&real, b"secret").unwrap();
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        let paths = paths_for_write_check(&link);
+        let paths = paths_for_write_check(&link, 0);
 
         // Should contain at minimum: the link itself and the real target.
         assert!(paths.len() >= 2, "expected ≥2 paths, got {paths:?}");
@@ -572,7 +616,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, &link).unwrap();
 
         let check_target = link.join("new_file.txt");
-        let paths = paths_for_write_check(&check_target);
+        let paths = paths_for_write_check(&check_target, 0);
 
         // The resolved path should point to outside/new_file.txt, not link/new_file.txt.
         let has_outside = paths.iter().any(|p| p.ends_with("outside/new_file.txt"));
@@ -580,6 +624,65 @@ mod tests {
             has_outside,
             "dangling symlink should resolve to outside dir: {paths:?}"
         );
+    }
+
+    // ── effective_chain_depth (PR-6a: trust-derived deny-search depth) ────────
+
+    /// Load-bearing test for the security argument of
+    /// `mandatory_deny_search_depth`'s floor: Plan mode declares depth = 3
+    /// for perf, but we MUST never walk fewer than `MIN_SAFE_SYMLINK_DEPTH`
+    /// hops or a 4-link bypass chain becomes a real escape.
+    #[test]
+    fn effective_chain_depth_respects_min_floor_for_plan_mode() {
+        // Plan mode value from policy_for_agent.
+        assert_eq!(effective_chain_depth(3), MIN_SAFE_SYMLINK_DEPTH);
+        // Sentinel "no policy" value also routes through the floor.
+        assert_eq!(effective_chain_depth(0), MIN_SAFE_SYMLINK_DEPTH);
+        // Any policy below the floor pins to the floor.
+        for d in 0..=MIN_SAFE_SYMLINK_DEPTH as u8 {
+            assert_eq!(
+                effective_chain_depth(d),
+                MIN_SAFE_SYMLINK_DEPTH,
+                "depth {d} must clamp UP to floor {MIN_SAFE_SYMLINK_DEPTH}"
+            );
+        }
+    }
+
+    /// Auto mode declares depth = 10. Verify that's allowed through
+    /// unmodified — the floor only kicks in below MIN_SAFE.
+    #[test]
+    fn effective_chain_depth_passes_through_in_band_values() {
+        // Safe = 5 — below floor, clamps up.
+        assert_eq!(effective_chain_depth(5), MIN_SAFE_SYMLINK_DEPTH);
+        // Auto = 10 — above floor, passes through.
+        assert_eq!(effective_chain_depth(10), 10);
+        // Mid-range value passes through unmodified.
+        assert_eq!(effective_chain_depth(20), 20);
+    }
+
+    /// Load-bearing test for the ceiling: no policy value can push us
+    /// past the kernel's own SYMLOOP_MAX. Walking deeper would be wasted
+    /// I/O — the kernel rejects past 40 anyway.
+    #[test]
+    fn effective_chain_depth_caps_at_kernel_max() {
+        assert_eq!(effective_chain_depth(40), MAX_SYMLINK_DEPTH);
+        assert_eq!(effective_chain_depth(100), MAX_SYMLINK_DEPTH);
+        assert_eq!(effective_chain_depth(u8::MAX), MAX_SYMLINK_DEPTH);
+    }
+
+    /// Strictly-monotone-non-decreasing across the [MIN_SAFE, MAX] band.
+    /// If this fires, someone broke the clamp shape.
+    #[test]
+    fn effective_chain_depth_is_monotone_non_decreasing() {
+        let mut prev = effective_chain_depth(0);
+        for d in 1..=u8::MAX {
+            let cur = effective_chain_depth(d);
+            assert!(
+                cur >= prev,
+                "depth {d}: {cur} regressed from prev {prev}"
+            );
+            prev = cur;
+        }
     }
 
     // ── resolve_deepest_existing_ancestor ─────────────────────────────
