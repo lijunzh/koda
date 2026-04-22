@@ -124,10 +124,25 @@ async fn bash_sees_proxy_env_pointing_at_session_proxy() {
         result.output,
         result.full_output.as_deref().unwrap_or("")
     );
-    let expected = format!("http://127.0.0.1:{port}");
+    // Phase 3c.1 caveat: on Linux with kernel-enforced egress, stage 2
+    // rewrites HTTPS_PROXY to point at the *in-netns* port, not the
+    // host port — so an exact port match would fail there for the
+    // right reason. We just verify the env var has the expected shape
+    // (`http://127.0.0.1:<some-port>`) on both platforms; the exact
+    // port plumbing is covered by `linux_kernel_allows_tcp_to_proxy_port`.
+    let prefix = "http://127.0.0.1:";
+    let url_line = combined
+        .lines()
+        .find(|l| l.starts_with(prefix))
+        .unwrap_or_else(|| panic!("no HTTPS_PROXY url in {combined:?}"));
+    let port_str = &url_line[prefix.len()..];
+    let observed_port: u16 = port_str
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("HTTPS_PROXY port not parseable: {url_line:?}"));
     assert!(
-        combined.contains(&expected),
-        "child process must see HTTPS_PROXY={expected}; got: {combined:?}"
+        observed_port > 0,
+        "HTTPS_PROXY must contain a non-zero port (host proxy is {port}); got {url_line:?}"
     );
 }
 
@@ -295,6 +310,127 @@ async fn macos_kernel_allows_tcp_to_proxy_port() {
     assert!(
         combined.contains("connected"),
         "kernel-enforced sandbox must permit TCP to the proxy port {proxy_port}; got:\n{combined}"
+    );
+}
+
+// ── Phase 3c.1: kernel-enforced egress on Linux ──────────────────────────
+//
+// Mirrors the macOS pair above. The kernel mechanism is different
+// (bwrap netns + UDS bridge instead of seatbelt SBPL) but the
+// observable contract from inside the sandbox is identical: direct
+// TCP to a non-proxy port must fail; TCP to the proxy port must
+// succeed.
+
+/// Linux equivalent of `macos_kernel_blocks_direct_tcp_to_non_proxy_port`.
+///
+/// Catches regressions in the bwrap `--unshare-net` + stage 2 stack:
+/// if any of the four pieces (UDS bridge, --unshare-net flag,
+/// stage 2 fork, env rewriting) silently degrades, this test will
+/// see a `connected` instead of `blocked` and fail.
+///
+/// Skips when `bwrap` isn't installed (CI may run on a runner without
+/// bubblewrap; we handle that elsewhere with a top-level skip).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_kernel_blocks_direct_tcp_to_non_proxy_port() {
+    if !koda_sandbox::bwrap::is_available() {
+        eprintln!("bwrap not available; skipping Linux kernel-enforcement test");
+        return;
+    }
+
+    let env = Env::builder()
+        .provider_type(ProviderType::Mock)
+        .build()
+        .await;
+    let session = make_real_session(&env).await;
+    let proxy_port = session.proxy.as_ref().expect("proxy spawned").port;
+
+    // Sanity-check that the kernel-enforced path is actually wired
+    // up for this session. If the UDS bridge didn't spawn (e.g.
+    // /tmp not writable in the test sandbox), the assertions below
+    // would still pass for the wrong reason — the env-var path also
+    // doesn't enable connections to non-allowlisted hosts. So we
+    // assert the kernel path is live before testing it.
+    let uds = koda_sandbox::bwrap_proxy::proxy_uds_path(std::process::id(), proxy_port);
+    assert!(
+        uds.exists(),
+        "Phase 3c.1.b regression: UDS bridge {} should exist for the kernel-enforced \
+         path to activate. Without it, this test would pass spuriously via the \
+         env-var fallback.",
+        uds.display()
+    );
+
+    let target_port = if proxy_port == 1 { 2 } else { 1 };
+
+    // bash's /dev/tcp/host/port performs a connect(2) at libc level
+    // with no proxy honoring — same probe used in the macOS test.
+    // We invoke bash explicitly because Ubuntu's /bin/sh is dash,
+    // which doesn't implement the /dev/tcp magic.
+    let cmd = format!(
+        r#"{{"command":"bash -c 'if exec 3<>/dev/tcp/127.0.0.1/{target_port} 2>/dev/null; then echo connected; exec 3<&-; else echo blocked; fi'"}}"#,
+    );
+    let result = session.agent.tools.execute("Bash", &cmd, None).await;
+    let combined = format!(
+        "{}\n{}",
+        result.output,
+        result.full_output.as_deref().unwrap_or("")
+    );
+    assert!(
+        combined.contains("blocked"),
+        "kernel-enforced sandbox must refuse direct TCP to non-proxy port \
+         {target_port} (proxy is on {proxy_port}); got:\n{combined}"
+    );
+}
+
+/// Linux equivalent of `macos_kernel_allows_tcp_to_proxy_port`.
+///
+/// In the bwrap+stage2 design, "the proxy port" inside the sandbox is
+/// the *in-netns ephemeral port* stage 2 binds (which then bridges
+/// through the UDS to the real host proxy). The user command sees
+/// `HTTPS_PROXY=http://127.0.0.1:NEW_PORT` because stage 2 rewrote
+/// it. So this test parses the rewritten env var rather than using
+/// the host port directly — that's both more honest and more
+/// regression-resistant (a broken rewriter would surface here).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_kernel_allows_tcp_to_proxy_port() {
+    if !koda_sandbox::bwrap::is_available() {
+        eprintln!("bwrap not available; skipping Linux kernel-allow test");
+        return;
+    }
+
+    let env = Env::builder()
+        .provider_type(ProviderType::Mock)
+        .build()
+        .await;
+    let session = make_real_session(&env).await;
+    let proxy_port = session.proxy.as_ref().expect("proxy spawned").port;
+
+    let uds = koda_sandbox::bwrap_proxy::proxy_uds_path(std::process::id(), proxy_port);
+    if !uds.exists() {
+        eprintln!(
+            "UDS bridge {} not present — kernel-enforced path inactive; skipping",
+            uds.display()
+        );
+        return;
+    }
+
+    // Read the (stage-2-rewritten) HTTPS_PROXY from inside the
+    // sandbox, extract the port via bash parameter expansion
+    // (`${var##*:}` = strip everything up to the last `:`), then
+    // verify /dev/tcp can reach it. Bash explicitly because
+    // Ubuntu's /bin/sh is dash (no /dev/tcp, no `${var##*:}`).
+    let cmd = r#"{"command":"bash -c 'port=\"${HTTPS_PROXY##*:}\"; if exec 3<>/dev/tcp/127.0.0.1/$port 2>/dev/null; then echo connected; exec 3<&-; else echo blocked; fi'"}"#;
+    let result = session.agent.tools.execute("Bash", cmd, None).await;
+    let combined = format!(
+        "{}\n{}",
+        result.output,
+        result.full_output.as_deref().unwrap_or("")
+    );
+    assert!(
+        combined.contains("connected"),
+        "kernel-enforced sandbox must permit TCP to the in-netns proxy port \
+         (rewritten by stage 2 from host port {proxy_port}); got:\n{combined}"
     );
 }
 

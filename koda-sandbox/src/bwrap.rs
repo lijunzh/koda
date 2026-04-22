@@ -181,12 +181,18 @@ fn apply_policy_overlay(cmd: &mut Command, policy: &SandboxPolicy) -> Result<()>
 
 /// Locate the `koda-sandbox-stage2` helper binary.
 ///
-/// Resolution order (mirrors [`crate::worker_client`]'s discovery):
+/// Resolution order (mirrors [`crate::worker_client`]'s discovery,
+/// plus a deps-dir fallback for cargo-test invocations):
 ///
 /// 1. `KODA_SANDBOX_STAGE2_BIN` env var — explicit override (e2e tests).
 /// 2. `CARGO_BIN_EXE_koda-sandbox-stage2` — Cargo sets this for
-///    integration tests.
+///    integration tests *of this same crate*.
 /// 3. Sibling of the current executable (production install).
+/// 4. Parent's sibling — cargo runs test exes from `target/debug/deps/`
+///    while built binaries live one level up at `target/debug/`. This
+///    branch lets cross-crate integration tests (notably the
+///    `koda-core` e2e suite) find the helper without setting an env
+///    var.
 pub fn stage2_binary() -> Result<PathBuf> {
     if let Ok(p) = std::env::var(STAGE2_BIN_ENV_KEY) {
         return Ok(PathBuf::from(p));
@@ -194,14 +200,26 @@ pub fn stage2_binary() -> Result<PathBuf> {
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_koda-sandbox-stage2") {
         return Ok(PathBuf::from(p));
     }
-    let mut p = std::env::current_exe().context("locate koda executable")?;
-    p.set_file_name("koda-sandbox-stage2");
-    if p.exists() {
-        return Ok(p);
+    let exe = std::env::current_exe().context("locate koda executable")?;
+
+    let mut sibling = exe.clone();
+    sibling.set_file_name("koda-sandbox-stage2");
+    if sibling.exists() {
+        return Ok(sibling);
     }
+
+    // Cargo-test fallback: target/debug/deps/<test-bin> →
+    // target/debug/koda-sandbox-stage2.
+    if let Some(parent) = exe.parent().and_then(|p| p.parent()) {
+        let cargo_built = parent.join("koda-sandbox-stage2");
+        if cargo_built.exists() {
+            return Ok(cargo_built);
+        }
+    }
+
     anyhow::bail!(
         "koda-sandbox-stage2 not found next to {}; set {STAGE2_BIN_ENV_KEY} to override",
-        p.display()
+        sibling.display()
     )
 }
 
