@@ -31,6 +31,8 @@
 
 #[cfg(target_os = "linux")]
 pub mod bwrap;
+#[cfg(target_os = "linux")]
+pub mod bwrap_proxy;
 pub mod defaults;
 pub mod fs;
 pub mod ipc;
@@ -41,6 +43,8 @@ pub mod policy_check;
 pub mod proxy;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
+#[cfg(target_os = "linux")]
+pub mod stage2;
 pub mod violations;
 pub mod worker;
 #[cfg(unix)]
@@ -222,18 +226,32 @@ pub struct BwrapRuntime;
 #[cfg(target_os = "linux")]
 impl SandboxRuntime for BwrapRuntime {
     fn transform(&self, req: SandboxTransformRequest<'_>) -> Result<SandboxExecRequest> {
-        // Phase 3c gap: bwrap doesn't support port-level egress
-        // filtering (`--unshare-net` cuts ALL networking including
-        // loopback, and bringing `lo` back up needs CAP_NET_ADMIN).
-        // Linux kernel-enforcement is deferred to Phase 3c.1, which
-        // will likely use slirp4netns or rootlesskit. Until then,
-        // Linux relies on the env-var bouquet from
-        // [`crate::proxy::env::proxy_env_vars`] — same enforcement
-        // tier as Phase 3b. Warn once so this gap isn't invisible.
-        if req.proxy_port.is_some() {
-            warn_proxy_unenforced_on_linux_once();
-        }
-        let command = bwrap::build_command(req.command, req.project_root, req.policy)?;
+        // Phase 3c.1.d: try kernel-enforced egress via the stage 2
+        // helper. Falls back to env-var-only if any prerequisite is
+        // missing (no proxy, bridge spawn failed, stage 2 binary
+        // unlocatable). The fallback path is the same enforcement
+        // tier as Phase 3b — well-behaved clients (curl, gh, npm,
+        // pip, cargo, go, node, python) honor HTTPS_PROXY and route
+        // through the proxy; ill-behaved binaries can still reach
+        // the network. Every fallback emits the once-per-process
+        // warning so the gap stays visible.
+        let command = match try_build_kernel_enforced(&req) {
+            Ok(Some(cmd)) => cmd,
+            Ok(None) => {
+                if req.proxy_port.is_some() {
+                    warn_proxy_unenforced_on_linux_once();
+                }
+                bwrap::build_command(req.command, req.project_root, req.policy)?
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "koda-sandbox: kernel-enforced egress setup failed ({e:#}); \
+                     falling back to env-var enforcement."
+                );
+                warn_proxy_unenforced_on_linux_once();
+                bwrap::build_command(req.command, req.project_root, req.policy)?
+            }
+        };
         Ok(SandboxExecRequest { command })
     }
 
@@ -258,10 +276,49 @@ impl SandboxRuntime for BwrapRuntime {
     }
 }
 
+/// Try to build a kernel-enforced (Phase 3c.1) bwrap command.
+///
+/// Returns:
+/// - `Ok(Some(cmd))` — prerequisites met, kernel-enforced path active.
+/// - `Ok(None)` — prerequisites missing (no proxy port, or no UDS
+///   bridge spawned). Caller falls back to env-var-only enforcement.
+/// - `Err(_)` — prerequisites partially met but stage 2 binary
+///   couldn't be located. Caller logs and falls back.
+///
+/// The UDS path is derived deterministically from the proxy port +
+/// our own PID via [`crate::bwrap_proxy::proxy_uds_path`] (same
+/// formula the host bridge uses). No IPC needed to discover it.
+#[cfg(target_os = "linux")]
+fn try_build_kernel_enforced(
+    req: &SandboxTransformRequest<'_>,
+) -> Result<Option<tokio::process::Command>> {
+    use anyhow::Context as _;
+    let Some(port) = req.proxy_port else {
+        return Ok(None);
+    };
+    let uds = bwrap_proxy::proxy_uds_path(std::process::id(), port);
+    if !uds.exists() {
+        // Bridge didn't spawn this session (BuiltInProxy::spawn would
+        // have warned). Fall back silently — no second warning.
+        return Ok(None);
+    }
+    let stage2 = bwrap::stage2_binary().context("locate koda-sandbox-stage2")?;
+    let cmd = bwrap::build_command_with_proxy(
+        req.command,
+        req.project_root,
+        req.policy,
+        port,
+        &uds,
+        &stage2,
+    )?;
+    Ok(Some(cmd))
+}
+
 /// One-time warning when koda-core asks the bwrap backend to enforce a
-/// proxy port but bwrap can't (Phase 3c.1 territory). The env-var
-/// bouquet still routes well-behaved clients through the proxy; only
-/// ill-behaved binaries that ignore `HTTPS_PROXY` escape the filter.
+/// proxy port but bwrap can't kernel-enforce it for this session
+/// (e.g. UDS bridge spawn failed). The env-var bouquet still routes
+/// well-behaved clients through the proxy; only ill-behaved binaries
+/// that ignore `HTTPS_PROXY` escape the filter.
 ///
 /// Lives at module scope (not inside `BwrapRuntime`) because the
 /// `OnceLock` must outlive any single runtime instance — each
@@ -273,11 +330,12 @@ fn warn_proxy_unenforced_on_linux_once() {
     static WARNED: OnceLock<()> = OnceLock::new();
     WARNED.get_or_init(|| {
         tracing::warn!(
-            "koda-sandbox: built-in proxy is active but bwrap cannot kernel-enforce \
-             port-level egress filtering on Linux yet. Well-behaved HTTP clients (curl, \
-             gh, npm, pip, cargo, go, node, python) honor HTTPS_PROXY and route through \
-             the filter; ill-behaved binaries can still reach the network directly. \
-             Linux kernel-enforcement is tracked as #934 Phase 3c.1."
+            "koda-sandbox: built-in proxy is active but the kernel-enforced \
+             egress path didn't activate for this session (UDS bridge or \
+             stage 2 helper unavailable). Well-behaved HTTP clients (curl, \
+             gh, npm, pip, cargo, go, node, python) honor HTTPS_PROXY and \
+             route through the filter; ill-behaved binaries can still reach \
+             the network directly."
         );
     });
 }

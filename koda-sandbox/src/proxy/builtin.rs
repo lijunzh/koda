@@ -85,7 +85,46 @@ impl BuiltInProxy {
             port,
             self.filter.len()
         );
-        Ok(ProxyHandle::from_task(port, task))
+        let handle = ProxyHandle::from_task(port, task);
+
+        // Linux-only: also bind a UDS bridge that the bwrap
+        // kernel-enforced sandbox (Phase 3c.1) can `connect()` through
+        // after `--unshare-net` cuts host TCP. Bridge failure is not
+        // fatal — the env-var enforcement tier still works for
+        // well-behaved clients on every backend; we just lose the
+        // kernel-enforced tier on Linux for this session.
+        #[cfg(target_os = "linux")]
+        let handle = match attach_uds_bridge(handle, port).await {
+            Ok(h) => h,
+            Err((h, e)) => {
+                tracing::warn!(
+                    "koda-sandbox: UDS bridge spawn failed: {e}. Linux kernel-enforced \
+                     egress unavailable for this session; well-behaved clients still \
+                     route through the env-var tier."
+                );
+                h
+            }
+        };
+
+        Ok(handle)
+    }
+}
+
+/// Attach the Linux UDS bridge to a freshly-spawned `ProxyHandle`.
+///
+/// Returns the (possibly-decorated) handle. On bridge spawn failure,
+/// returns the original handle unchanged together with the error so
+/// the caller can log + degrade rather than fail the whole session.
+#[cfg(target_os = "linux")]
+async fn attach_uds_bridge(
+    handle: ProxyHandle,
+    tcp_port: u16,
+) -> std::result::Result<ProxyHandle, (ProxyHandle, anyhow::Error)> {
+    let pid = std::process::id();
+    let uds_path = crate::bwrap_proxy::proxy_uds_path(pid, tcp_port);
+    match crate::bwrap_proxy::spawn_uds_bridge(uds_path.clone(), tcp_port).await {
+        Ok(task) => Ok(handle.with_uds_bridge(uds_path, task)),
+        Err(e) => Err((handle, e)),
     }
 }
 
@@ -177,5 +216,44 @@ mod tests {
         let p = BuiltInProxy::new(Filter::default());
         let h = p.spawn().await.unwrap();
         assert!(h.ca_bundle().is_none());
+    }
+
+    /// Phase 3c.1.b contract: on Linux, every successful built-in proxy
+    /// spawn also stands up a UDS bridge so the bwrap kernel-enforced
+    /// path has a connectable socket inside the eventual `--unshare-net`
+    /// sandbox.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_spawn_attaches_uds_bridge() {
+        let p = BuiltInProxy::new(Filter::new(["github.com"]).unwrap());
+        let h = p.spawn().await.unwrap();
+        let uds = h
+            .uds_path()
+            .expect("Linux built-in proxy must attach a UDS bridge");
+        assert!(
+            uds.exists(),
+            "UDS path {} should exist after bridge spawn",
+            uds.display()
+        );
+    }
+
+    /// Companion: dropping the handle removes the UDS file so the next
+    /// spawn can re-bind cleanly. Without this, repeated session
+    /// creation in the same process would accumulate stale sockets.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_drop_removes_uds_path() {
+        let p = BuiltInProxy::new(Filter::new(["github.com"]).unwrap());
+        let h = p.spawn().await.unwrap();
+        let uds = h.uds_path().expect("bridge attached").to_owned();
+        assert!(uds.exists());
+        drop(h);
+        // Cleanup is synchronous in `ProxyHandle::shutdown`, so the
+        // file should be gone immediately — no sleep needed.
+        assert!(
+            !uds.exists(),
+            "UDS path {} must be unlinked after drop",
+            uds.display()
+        );
     }
 }
