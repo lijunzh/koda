@@ -31,6 +31,8 @@
 
 #[cfg(target_os = "linux")]
 pub mod bwrap;
+#[cfg(target_os = "linux")]
+pub mod bwrap_proxy;
 pub mod defaults;
 pub mod fs;
 pub mod ipc;
