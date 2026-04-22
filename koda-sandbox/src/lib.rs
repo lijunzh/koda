@@ -40,6 +40,8 @@ pub mod monitor;
 pub mod path_defense;
 pub mod policy;
 pub mod policy_check;
+#[cfg(unix)]
+pub mod pool;
 pub mod proxy;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;
