@@ -30,7 +30,8 @@
 //! that would be a privilege-escalation bug, not just a perf miss.
 //!
 //! The bucket key uses **owned** `SandboxPolicy` (not a hash) for the
-//! same security reason as [`crate::seatbelt_cache`]: a hash-only key
+//! same security reason as `seatbelt_cache` (macOS-only sibling): a
+//! hash-only key
 //! could theoretically let two policies share a free-list entry on
 //! collision, silently widening one of them.
 //!
