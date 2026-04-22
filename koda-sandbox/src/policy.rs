@@ -105,7 +105,7 @@ pub struct FsPolicy {
     ///
     /// Compose rule: `max(parent, child)` — a child may *ratchet up*
     /// paranoia (deeper checks) but never ratchet it down. See
-    /// [`Self::compose`].
+    /// [`SandboxPolicy::compose`].
     #[serde(default = "default_mandatory_deny_search_depth")]
     pub mandatory_deny_search_depth: u8,
 }
