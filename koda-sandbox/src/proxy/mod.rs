@@ -53,28 +53,36 @@
 //!
 //! ```text
 //! proxy/
-//! ├── mod.rs       — this docstring + shared internal helpers
-//! ├── env.rs       — env-var bouquet + DEFAULT_NO_PROXY (3a)
-//! ├── external.rs  — ExternalProxy::spawn (3a)
-//! ├── handle.rs    — ProxyHandle (External + BuiltIn variants)
-//! ├── filter.rs    — hostname allowlist (3b)
-//! ├── server.rs    — HTTP CONNECT proxy (3b)
-//! └── builtin.rs   — BuiltInProxy::spawn (3b)
+//! ├── mod.rs            — this docstring + shared internal helpers
+//! ├── env.rs            — env-var bouquet + DEFAULT_NO_PROXY (3a) + socks5 (3d)
+//! ├── external.rs       — ExternalProxy::spawn (3a)
+//! ├── handle.rs         — ProxyHandle (External + BuiltIn variants)
+//! ├── filter.rs         — hostname allowlist (3b)
+//! ├── server.rs         — HTTP CONNECT proxy (3b)
+//! ├── builtin.rs        — BuiltInProxy::spawn (3b)
+//! ├── socks5.rs         — SOCKS5 server (3d)
+//! └── builtin_socks5.rs — BuiltInSocks5Proxy::spawn (3d)
 //! ```
 
 pub mod builtin;
+pub mod builtin_socks5;
 pub mod env;
 pub mod external;
 pub mod filter;
 pub mod handle;
 pub mod server;
+pub mod socks5;
 
 pub use builtin::BuiltInProxy;
-pub use env::{DEFAULT_NO_PROXY, PROXY_PORT_ENV_KEY, ca_bundle_for_policy, proxy_env_vars};
+pub use builtin_socks5::BuiltInSocks5Proxy;
+pub use env::{
+    DEFAULT_NO_PROXY, PROXY_PORT_ENV_KEY, ca_bundle_for_policy, proxy_env_vars, socks5_env_vars,
+};
 pub use external::ExternalProxy;
 pub use filter::{DEFAULT_DEV_ALLOWLIST, Filter};
 pub use handle::ProxyHandle;
 pub use server::Server;
+pub use socks5::Socks5Server;
 
 // ── Shared internal helpers ──────────────────────────────────────────────────
 //

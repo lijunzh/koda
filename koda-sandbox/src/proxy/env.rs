@@ -74,6 +74,31 @@ pub fn proxy_env_vars(port: u16, ca_bundle: Option<&Path>) -> Vec<(String, Strin
     vars
 }
 
+/// Env-var bouquet for the SOCKS5 proxy: `ALL_PROXY` + lowercase
+/// alias, both pointing at `socks5h://127.0.0.1:port`.
+///
+/// The `socks5h://` (vs `socks5://`) scheme is **not optional** — it
+/// instructs the client to forward the hostname to the proxy for
+/// resolution rather than pre-resolving locally and sending an IP
+/// literal. The built-in SOCKS5 server [refuses IP literals]
+/// (super::socks5#subset) precisely because they bypass the hostname
+/// allow list. Mismatched schemes here would silently break SOCKS5
+/// for every client that obeys `ALL_PROXY`.
+///
+/// Returned as a separate `Vec` (rather than appended to
+/// [`proxy_env_vars`]) so callers can opt into SOCKS5 independently —
+/// not every session needs it, and a sandboxed shell that only ever
+/// runs `curl` doesn't benefit from one extra env knob to debug.
+pub fn socks5_env_vars(port: u16) -> Vec<(String, String)> {
+    let url = format!("socks5h://127.0.0.1:{port}");
+    let mut vars = vec![
+        ("ALL_PROXY".to_string(), url.clone()),
+        ("all_proxy".to_string(), url),
+    ];
+    vars.sort_by(|a, b| a.0.cmp(&b.0));
+    vars
+}
+
 /// Path to the CA bundle to advertise via env vars, given a [`crate::policy::NetPolicy`].
 ///
 /// Returns `None` when no MITM is configured — in that case the subprocess
@@ -162,6 +187,34 @@ mod tests {
         // AWS / GCE IMDS link-local: dropping this would prevent cloud
         // workloads from reading instance metadata.
         assert!(DEFAULT_NO_PROXY.contains("169.254.0.0/16"));
+    }
+
+    #[test]
+    fn socks5_env_vars_uses_socks5h_scheme() {
+        // The `h` matters — see fn docs.
+        let vars = socks5_env_vars(1080);
+        for (_, v) in &vars {
+            assert!(v.starts_with("socks5h://"), "got: {v}");
+        }
+    }
+
+    #[test]
+    fn socks5_env_vars_includes_upper_and_lower() {
+        let vars = socks5_env_vars(1080);
+        let keys: Vec<&str> = vars.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"ALL_PROXY"));
+        assert!(keys.contains(&"all_proxy"));
+    }
+
+    #[test]
+    fn socks5_env_vars_uses_loopback_ipv4() {
+        let vars = socks5_env_vars(31415);
+        let url = vars
+            .iter()
+            .find(|(k, _)| k == "ALL_PROXY")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert_eq!(url, "socks5h://127.0.0.1:31415");
     }
 
     #[test]
