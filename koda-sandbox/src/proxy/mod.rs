@@ -71,6 +71,7 @@ pub mod env;
 pub mod external;
 pub mod filter;
 pub mod handle;
+pub mod relay;
 pub mod server;
 pub mod socks5;
 pub mod upstream;

@@ -32,6 +32,7 @@
 //! - **No upload/idle timeouts** — Phase 3d (resource limits).
 
 use super::Filter;
+use super::relay;
 #[cfg(test)]
 use super::pick_ephemeral_port;
 use anyhow::{Context, Result, bail};
@@ -174,7 +175,7 @@ async fn handle_one(
     }
 
     // Allowed. Connect upstream and bridge.
-    let mut upstream_sock = match crate::proxy::upstream::connect_upstream(&target, upstream).await
+    let upstream_sock = match crate::proxy::upstream::connect_upstream(&target, upstream).await
     {
         Ok(s) => s,
         Err(e) => {
@@ -186,13 +187,21 @@ async fn handle_one(
 
     write_status(&mut client, 200, "Connection Established").await?;
 
-    // Bidirectional copy until either side closes. tokio's helper does
-    // the half-close dance correctly: when one direction reports EOF
-    // it shuts down the corresponding write half on the other socket
-    // so the peer can observe the close and tear down. Without this
-    // (e.g. naive tokio::join! of two copy()s) we'd deadlock — clients
-    // typically never close their write side after CONNECT.
-    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream_sock).await;
+    // Bidirectional copy with idle + total timeouts (Phase 3f of
+    // #934). We use [`crate::proxy::relay`] instead of tokio's
+    // copy_bidirectional so a wedged peer (corp middlebox eating
+    // RST, NAT silently dropping) can't pin a task slot for the
+    // kernel keepalive's two-hour default. Errors are intentionally
+    // swallowed: the connection is already torn down by the time we
+    // see them, and surfacing them as proxy-side log spam would just
+    // be noise — clients can't act on it.
+    let _ = relay::relay_with_timeouts(
+        client,
+        upstream_sock,
+        relay::DEFAULT_IDLE_TIMEOUT,
+        relay::DEFAULT_TOTAL_TIMEOUT,
+    )
+    .await;
     Ok(())
 }
 
