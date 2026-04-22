@@ -29,6 +29,10 @@ tracing-subscriber = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
+# macOS needs libc for clonefile(2) used by ClonefileProvider (Phase 4d).
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 insta = { workspace = true }
 tempfile = { workspace = true }
