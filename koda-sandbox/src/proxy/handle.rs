@@ -15,6 +15,8 @@
 //! See [parent module docs](super) for the broader why.
 
 use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 use tokio::process::Child;
 use tokio::task::JoinHandle;
 use tracing::warn;
@@ -30,6 +32,30 @@ pub struct ProxyHandle {
     pub port: u16,
     /// Backing resource. Boxed-enum so callers don't need to match.
     inner: Inner,
+    /// Linux-only side-channel: the UDS path of a tokio task that
+    /// bridges Unix-socket accepts to the proxy's TCP port. Spawned
+    /// alongside the TCP listener by
+    /// [`crate::proxy::BuiltInProxy::spawn`] so the bwrap kernel-enforced
+    /// egress path (Phase 3c.1) has something the sandbox can
+    /// `connect()` through after `--unshare-net` strips all networking.
+    ///
+    /// `None` on macOS, on Linux when the bridge failed to bind, and
+    /// for [`crate::proxy::ExternalProxy`] (which doesn't need the
+    /// in-process bridge — the user already has a proxy elsewhere).
+    /// `Some` on Linux for the in-process built-in proxy.
+    ///
+    /// `Drop` removes the file (best-effort) and aborts the task.
+    #[cfg(target_os = "linux")]
+    uds_bridge: Option<UdsBridge>,
+}
+
+/// Linux-only bridge bookkeeping. Kept inline (not its own module) since
+/// it's a tiny pair of fields and only used here.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct UdsBridge {
+    path: PathBuf,
+    task: JoinHandle<()>,
 }
 
 #[derive(Debug)]
@@ -49,6 +75,8 @@ impl ProxyHandle {
         Self {
             port,
             inner: Inner::External(Some(child)),
+            #[cfg(target_os = "linux")]
+            uds_bridge: None,
         }
     }
 
@@ -58,7 +86,32 @@ impl ProxyHandle {
         Self {
             port,
             inner: Inner::BuiltIn(Some(task)),
+            #[cfg(target_os = "linux")]
+            uds_bridge: None,
         }
+    }
+
+    /// Attach a Linux-only UDS bridge spawned by
+    /// [`crate::bwrap_proxy::spawn_uds_bridge`]. The handle takes
+    /// ownership of the task + path, abort-and-unlinks them on drop.
+    ///
+    /// Crate-private — only `BuiltInProxy::spawn` is meant to call
+    /// this, immediately after spawning both the TCP listener and the
+    /// bridge.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_uds_bridge(mut self, path: PathBuf, task: JoinHandle<()>) -> Self {
+        self.uds_bridge = Some(UdsBridge { path, task });
+        self
+    }
+
+    /// Path of the UDS bridge if one was attached. Used by
+    /// [`crate::BwrapRuntime`] (Phase 3c.1.d) to know what to bind-mount
+    /// into the sandbox.
+    ///
+    /// Returns `None` on macOS and for ExternalProxy.
+    #[cfg(target_os = "linux")]
+    pub fn uds_path(&self) -> Option<&Path> {
+        self.uds_bridge.as_ref().map(|b| b.path.as_path())
     }
 
     /// Path to a CA bundle the proxy expects clients to trust, if any.
@@ -97,6 +150,14 @@ impl ProxyHandle {
                     task.abort();
                 }
             }
+        }
+        // Linux-only: tear down the UDS bridge alongside. Order doesn't
+        // matter — if a sandboxed client is mid-CONNECT through the
+        // bridge, both halves dying simultaneously yields a clean EOF.
+        #[cfg(target_os = "linux")]
+        if let Some(bridge) = self.uds_bridge.take() {
+            bridge.task.abort();
+            crate::bwrap_proxy::cleanup_uds_path(&bridge.path);
         }
     }
 }
