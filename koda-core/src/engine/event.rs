@@ -371,12 +371,28 @@ pub struct ImageAttachment {
 pub enum ApprovalDecision {
     /// Approve and execute the action.
     Approve,
-    /// Reject the action.
+    /// Reject the action (interactive: a human said no).
     Reject,
     /// Reject with feedback (tells the LLM what to change).
     RejectWithFeedback {
         /// Feedback explaining why the action was rejected.
         feedback: String,
+    },
+    /// Reject *automatically*, with no human in the loop. Distinct from
+    /// [`ApprovalDecision::Reject`] because the model needs to know **why** it was
+    /// rejected to act intelligently — a human "no" is a signal to
+    /// re-plan or ask, but an auto-reject (e.g. headless mode
+    /// refusing destructive ops by policy) is a structural constraint
+    /// the model should adapt around for the rest of the session.
+    ///
+    /// **#1022 B15**: pre-fix, headless mode emitted `Reject` for
+    /// auto-blocked destructive tools, which the model saw as `"User
+    /// rejected this action."` — indistinguishable from a real human
+    /// reject. The model would then ask the (nonexistent) user how to
+    /// proceed, then time out.
+    RejectAuto {
+        /// Why the action was auto-rejected (surfaced to the model).
+        reason: String,
     },
 }
 
@@ -611,12 +627,34 @@ mod tests {
             ApprovalDecision::RejectWithFeedback {
                 feedback: "try again".into(),
             },
+            // #1022 B15: new variant for headless / no-human-in-loop
+            // auto-rejection. Distinct from `Reject` on the wire so
+            // the model can adapt its plan instead of asking a
+            // nonexistent user.
+            ApprovalDecision::RejectAuto {
+                reason: "destructive op blocked by headless policy".into(),
+            },
         ];
         for d in decisions {
             let json = serde_json::to_string(&d).unwrap();
             let roundtripped: ApprovalDecision = serde_json::from_str(&json).unwrap();
             assert_eq!(d, roundtripped);
         }
+    }
+
+    /// #1022 B15: wire-format guard. The `decision` tag for the new
+    /// `RejectAuto` variant must be `"reject_auto"` (snake_case via
+    /// `#[serde(rename_all = "snake_case")]`). Renaming this would
+    /// break ACP clients silently — they'd see an unknown decision
+    /// and fall through to `Reject`, re-introducing the bug.
+    #[test]
+    fn test_reject_auto_wire_tag_is_snake_case() {
+        let d = ApprovalDecision::RejectAuto { reason: "r".into() };
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(
+            json.contains("\"decision\":\"reject_auto\""),
+            "expected snake_case tag, got: {json}"
+        );
     }
 
     #[test]

@@ -33,6 +33,20 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
+/// Payload sent over the bg-agent oneshot.
+///
+/// Pre-#1022-B9 this was just `String` (the model's final output).
+/// Now also carries the trace lines collected by
+/// [`crate::engine::sink::BufferingSink`] so the inference loop
+/// can surface them to the user when injecting the result.
+///
+/// The `Result<BgPayload, BgPayload>` shape preserves the prior
+/// success/failure discrimination: `Ok` means `execute_sub_agent`
+/// returned text, `Err` means it returned an error (the trace is
+/// useful in *both* cases — the bg agent may have done several
+/// steps before erroring).
+pub type BgPayload = (String, Vec<String>);
+
 /// A completed background agent result.
 #[derive(Debug)]
 pub struct BgAgentResult {
@@ -44,6 +58,15 @@ pub struct BgAgentResult {
     pub output: String,
     /// Whether the agent succeeded.
     pub success: bool,
+    /// **#1022 B9**: narrative trace lines captured by
+    /// [`crate::engine::sink::BufferingSink`] inside the bg agent.
+    /// Pre-fix this was implicitly always empty (bg agents ran with
+    /// `NullSink`). Now populated with one line per significant
+    /// event (tool start, info, auto-rejected approval) so the user
+    /// can see what the bg agent did at result-injection time.
+    /// Empty for the cancelled / panicked case (`output` carries the
+    /// failure detail in those paths).
+    pub events: Vec<String>,
 }
 
 /// Handle returned when a background agent is spawned.
@@ -56,7 +79,7 @@ pub struct BgAgentResult {
 struct BgAgentEntry {
     agent_name: String,
     prompt: String,
-    rx: oneshot::Receiver<Result<String, String>>,
+    rx: oneshot::Receiver<Result<BgPayload, BgPayload>>,
     /// Per-task cancel — derived as a `child_token()` of the parent
     /// session's token at spawn time. Firing this token causes the
     /// in-flight bg agent to observe `is_cancelled()` on its next
@@ -98,10 +121,10 @@ pub struct BgAgentReservation {
     pub task_id: u32,
     /// Sender half of the result oneshot. Move into the spawned
     /// future so it can deliver `Ok(output)` / `Err(message)`.
-    pub tx: oneshot::Sender<Result<String, String>>,
+    pub tx: oneshot::Sender<Result<BgPayload, BgPayload>>,
     /// Receiver half. Move back into the registry via [`BgAgentRegistry::attach`]
     /// so `drain_completed()` can poll it.
-    pub rx: oneshot::Receiver<Result<String, String>>,
+    pub rx: oneshot::Receiver<Result<BgPayload, BgPayload>>,
     /// Per-task cancel token. Cloned for the spawned future
     /// (`bg_cancel`) and re-stored on the registry entry
     /// (`entry_cancel`); both halves observe parent cancellation
@@ -151,7 +174,7 @@ impl BgAgentRegistry {
         reservation_id: u32,
         agent_name: &str,
         prompt: &str,
-        rx: oneshot::Receiver<Result<String, String>>,
+        rx: oneshot::Receiver<Result<BgPayload, BgPayload>>,
         cancel: CancellationToken,
         handle: tokio::task::JoinHandle<()>,
     ) {
@@ -176,7 +199,7 @@ impl BgAgentRegistry {
         &self,
         agent_name: &str,
         prompt: &str,
-    ) -> (u32, oneshot::Sender<Result<String, String>>) {
+    ) -> (u32, oneshot::Sender<Result<BgPayload, BgPayload>>) {
         let (tx, rx) = oneshot::channel();
         let mut id = self.next_id.lock().unwrap();
         let task_id = *id;
@@ -206,35 +229,39 @@ impl BgAgentRegistry {
 
         for (id, entry) in guard.iter_mut() {
             match entry.rx.try_recv() {
-                Ok(Ok(output)) => {
+                Ok(Ok((output, events))) => {
                     done_ids.push(*id);
                     completed.push(BgAgentResult {
                         agent_name: entry.agent_name.clone(),
                         prompt: entry.prompt.clone(),
                         output,
                         success: true,
+                        events,
                     });
                 }
-                Ok(Err(err)) => {
+                Ok(Err((err, events))) => {
                     done_ids.push(*id);
                     completed.push(BgAgentResult {
                         agent_name: entry.agent_name.clone(),
                         prompt: entry.prompt.clone(),
                         output: err,
                         success: false,
+                        events,
                     });
                 }
                 Err(oneshot::error::TryRecvError::Empty) => {
                     // Still running
                 }
                 Err(oneshot::error::TryRecvError::Closed) => {
-                    // Sender dropped without sending — task panicked or was cancelled
+                    // Sender dropped without sending — task panicked or was cancelled.
+                    // No events available (the buffering sink died with the task).
                     done_ids.push(*id);
                     completed.push(BgAgentResult {
                         agent_name: entry.agent_name.clone(),
                         prompt: entry.prompt.clone(),
                         output: "[background agent task was cancelled]".to_string(),
                         success: false,
+                        events: Vec::new(),
                     });
                 }
             }
@@ -307,7 +334,8 @@ mod tests {
         assert!(reg.drain_completed().is_empty());
 
         // Complete it
-        tx.send(Ok("found 42 tests".to_string())).unwrap();
+        tx.send(Ok(("found 42 tests".to_string(), Vec::new())))
+            .unwrap();
         let results = reg.drain_completed();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].agent_name, "explore");
@@ -322,7 +350,7 @@ mod tests {
         let (_id1, tx1) = reg.register_test("task", "build");
         let (_id2, _tx2) = reg.register_test("explore", "search");
 
-        tx1.send(Ok("done".to_string())).unwrap();
+        tx1.send(Ok(("done".to_string(), Vec::new()))).unwrap();
 
         let results = reg.drain_completed();
         assert_eq!(results.len(), 1);
@@ -346,12 +374,80 @@ mod tests {
     async fn error_result() {
         let reg = BgAgentRegistry::new();
         let (_id, tx) = reg.register_test("verify", "check");
-        tx.send(Err("test failures".to_string())).unwrap();
+        tx.send(Err(("test failures".to_string(), Vec::new())))
+            .unwrap();
 
         let results = reg.drain_completed();
         assert_eq!(results.len(), 1);
         assert!(!results[0].success);
         assert_eq!(results[0].output, "test failures");
+    }
+
+    /// #1022 B9 regression: the narrative trace captured by
+    /// `BufferingSink` inside the bg agent must propagate through
+    /// the oneshot → registry → `BgAgentResult.events`. Pre-fix
+    /// this field didn't exist; bg agents ran with `NullSink` and
+    /// the user only saw spawn + completion lines. The fix is
+    /// useless if the trace gets dropped at any of the three hops,
+    /// so this test pins the round-trip end-to-end.
+    #[tokio::test]
+    async fn events_propagate_through_drain_for_success() {
+        let reg = BgAgentRegistry::new();
+        let (_id, tx) = reg.register_test("explore", "map repo");
+        let trace = vec![
+            "  \u{1f527} Read".to_string(),
+            "  \u{1f527} Grep".to_string(),
+            "  \u{26a1} cache hit".to_string(),
+        ];
+        tx.send(Ok(("map result".to_string(), trace.clone())))
+            .unwrap();
+
+        let results = reg.drain_completed();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success);
+        assert_eq!(
+            results[0].events, trace,
+            "trace lost between sender and BgAgentResult"
+        );
+    }
+
+    /// #1022 B9 regression: trace must propagate even when the bg
+    /// agent failed. The trace is *most* useful in the failure case
+    /// — "the agent tried Read, Bash, Edit, then errored" is the
+    /// kind of breadcrumb that turns a black-box failure into a
+    /// debuggable one.
+    #[tokio::test]
+    async fn events_propagate_through_drain_for_failure() {
+        let reg = BgAgentRegistry::new();
+        let (_id, tx) = reg.register_test("build", "compile");
+        let trace = vec![
+            "  \u{1f527} Bash".to_string(),
+            "  \u{2398} approval auto-rejected for Delete (no user channel)".to_string(),
+        ];
+        tx.send(Err(("compile failed".to_string(), trace.clone())))
+            .unwrap();
+
+        let results = reg.drain_completed();
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].success);
+        assert_eq!(results[0].events, trace);
+    }
+
+    /// #1022 B9 corollary: cancelled / panicked tasks have *no*
+    /// trace available (the buffering sink died with the task), and
+    /// that's an explicitly-empty Vec rather than uninitialized.
+    #[tokio::test]
+    async fn cancelled_task_has_empty_event_trace() {
+        let reg = BgAgentRegistry::new();
+        let (_id, tx) = reg.register_test("flaky", "x");
+        drop(tx); // simulate panic / abort
+        let results = reg.drain_completed();
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].success);
+        assert!(
+            results[0].events.is_empty(),
+            "cancel path must yield empty trace"
+        );
     }
 
     /// Phase 1 of #1022, B3 regression test: dropping the registry
@@ -387,7 +483,7 @@ mod tests {
                     flag.store(true, Ordering::SeqCst);
                 }
             }
-            let _ = tx.send(Ok("done".to_string()));
+            let _ = tx.send(Ok(("done".to_string(), Vec::new())));
         });
         reg.attach(
             task_id,

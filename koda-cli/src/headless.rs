@@ -142,9 +142,21 @@ impl EngineSink for HeadlessSink {
                     eprintln!(
                         "\x1b[31m  ✗ Rejected destructive action: {tool_name} — {detail}\x1b[0m"
                     );
+                    // #1022 B15: use `RejectAuto` so the model can
+                    // distinguish a structural headless-policy block
+                    // from a real human "no". Pre-fix it saw `"User
+                    // rejected this action."` and would loop asking
+                    // the (nonexistent) user for clarification.
+                    let reason = format!(
+                        "destructive action '{tool_name}' auto-rejected (headless mode \
+                         refuses destructive ops by policy; no human is available to \
+                         approve). Adapt your plan: avoid this kind of action for the \
+                         rest of this session, or ask the operator to re-run \
+                         interactively."
+                    );
                     let _ = self.cmd_tx.try_send(EngineCommand::ApprovalResponse {
                         id,
-                        decision: ApprovalDecision::Reject,
+                        decision: ApprovalDecision::RejectAuto { reason },
                     });
                 } else {
                     let _ = self.cmd_tx.try_send(EngineCommand::ApprovalResponse {

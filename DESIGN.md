@@ -268,6 +268,23 @@ emits `EngineEvent::ApprovalRequest` and awaits
 `EngineCommand::ApprovalResponse` — works identically over in-process
 channels or network transport.
 
+**Decision variants distinguish the source of "no" (#1022 B15)**.
+`ApprovalDecision` has four variants, not three: `Approve`, `Reject`,
+`RejectWithFeedback { feedback }`, `RejectAuto { reason }`. The split
+between `Reject` (interactive: a human said no) and `RejectAuto`
+(structural: no human is in the loop, e.g. headless mode refuses
+destructive ops by policy) matters because the model adapts
+differently to each. A human "no" is a signal to ask or re-plan; an
+auto-reject is a constraint to route around for the rest of the
+session. Pre-fix, headless emitted `Reject` for policy-blocked tools,
+the model saw `"User rejected this action."`, and would loop asking
+the (nonexistent) user for clarification until timeout. Now the model
+sees `[auto-rejected: <reason>]` — the same shape as the bg-agent
+closed-channel auto-reject (B10), so the "no human, here's why"
+signal is uniform across all auto-reject paths. Wire format is
+`{"decision":"reject_auto","reason":"…"}` (snake_case, pinned by
+`test_reject_auto_wire_tag_is_snake_case`).
+
 ### Tool Dispatch: Match Statement, Not Trait Registry (P2)
 
 Tools are dispatched via a `match` statement in `ToolRegistry::execute()`,
@@ -347,7 +364,17 @@ Four execution modes, one mental model:
    transitive offender (generic IPC helpers in `koda-sandbox::ipc`) carry
    matching `Send` bounds on their `R`/`W`/`T` parameters; without them,
    `tokio::sync::MutexGuard<WorkerClient>` held across an `await` was
-   silently non-Send.
+   silently non-Send. **Visibility (#1022 B9)**: bg agents run with
+   `engine::sink::BufferingSink`, not `NullSink`. The buffering sink
+   captures a narrative trace (one short line per `ToolCallStart`,
+   `Info`, auto-rejected approval) capped at 256 lines. The trace
+   ships back over the result oneshot as a `BgPayload = (output,
+   Vec<String>)` and is surfaced to the user as a multi-line `Info`
+   event at result-injection time. `NullSink` is preserved for tests
+   and any future fully-detached path. Streaming text
+   (`TextDelta`/`TextDone`) is intentionally *not* captured — the
+   final output already crosses the oneshot, so capturing would
+   duplicate.
 4. **Forked context** (`agent_name="fork"`) — copies the parent's full
    conversation history into the new session. Fork children cannot spawn
    sub-agents (recursion guard) — same blanket rule that applies to all
