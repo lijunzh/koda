@@ -364,7 +364,31 @@ Four execution modes, one mental model:
   `CwdProvider`. Parallel write-agents cannot trample each other.
 - **Result caching** (P1, cost lever). `SubAgentCache` keyed by
   `(agent_name, prompt_hash)`. Cache hits = no LLM call. Invalidated on any
-  mutating tool — including mutations performed *inside* a sub-agent.
+  mutating tool — including mutations performed *inside* a sub-agent
+  (sub-agent dispatch routes through `execute_one_tool`, which honors
+  `is_mutating_tool` invalidation just like the top-level path).
+- **Single tool-dispatch path**. Sub-agent tool execution does *not*
+  re-implement approval+execute logic. After the sub-agent's own approval
+  check (using its `effective_root` for path-aware decisions), the call
+  flows through `tool_dispatch::execute_one_tool` — the same function the
+  parent uses. This guarantees three things uniformly: nested `InvokeAgent`
+  recurses (via `Box::pin` to break the mutually-recursive `async fn`
+  cycle) instead of hitting a stub error; mutating tools invalidate
+  `SubAgentCache`; Bash output streams through the parent's sink.
+- **Pre-flight validation everywhere**. `tools::validate::validate_tool_call`
+  runs *before* approval prompting in the sequential arm (so the user is
+  never asked to approve a tool that's guaranteed to fail) and *before*
+  execution in the parallel + split-batch parallel + sub-agent arms (where
+  every tool was already classified `AutoApprove` and the next step is
+  execution). The wrapper `validate_then_execute_one_tool` exists for
+  exactly this purpose.
+- **No user interaction from sub-agents**. `AskUser` is filtered from
+  every sub-agent's tool definitions — both foreground and background.
+  Sub-agents are autonomous delegation: the parent gathers any required
+  input *before* dispatching, then passes the answer in the prompt. This
+  matches Codex / Claude Code / Gemini-CLI's design and avoids the
+  multi-sub-agent attribution problem (which sub-agent is asking?) plus
+  the bg-agent deadlock problem (no `cmd_rx` reachable from the user).
 
 **What we considered and rejected**:
 

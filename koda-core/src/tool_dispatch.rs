@@ -209,7 +209,16 @@ pub(crate) async fn execute_one_tool(
 ) -> (String, String, bool, Option<String>) {
     let (result, success, full_output) = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
-        match sub_agent_dispatch::execute_sub_agent(
+        //
+        // `Box::pin` is mandatory here: `execute_sub_agent` now
+        // dispatches its own tool calls back through `execute_one_tool`
+        // (#1022 B7), making the two functions mutually recursive
+        // `async fn`s. Without indirection the resulting future is
+        // infinitely sized (E0733).
+        let (_dummy_tx, mut dummy_rx) = mpsc::channel(1);
+        let policy = tools.sandbox_policy().clone();
+        let read_cache = tools.file_read_cache();
+        let fut = sub_agent_dispatch::execute_sub_agent(
             project_root,
             config,
             db,
@@ -218,17 +227,16 @@ pub(crate) async fn execute_one_tool(
             sink,
             cancel.clone(),
             // Sub-agents get a fresh command channel (they auto-approve in all modes)
-            &mut mpsc::channel(1).1,
-            Some(tools.file_read_cache()),
+            &mut dummy_rx,
+            Some(read_cache),
             sub_agent_cache,
             _session_id,
             bg_agents,
             // Phase 5 PR-4 of #934: hand the parent's effective policy
             // to the child so `compose()` can stack restrictions.
-            tools.sandbox_policy(),
-        )
-        .await
-        {
+            &policy,
+        );
+        match Box::pin(fut).await {
             Ok(output) => (output, true, None),
             Err(e) => (format!("Error invoking sub-agent: {e}"), false, None),
         }
@@ -249,6 +257,70 @@ pub(crate) async fn execute_one_tool(
     };
 
     (tc.id.clone(), result, success, full_output)
+}
+
+/// Pre-flight validate a tool call, then execute it.
+///
+/// Used by the parallel + split-batch arms (#1022 B14). The sequential
+/// arm keeps its own pre-execute validation step because it runs *before*
+/// approval prompting — we don't want to bother the user with a
+/// confirmation that's guaranteed to fail. Parallel/split-batch only
+/// reach this point when every tool was already classified `AutoApprove`,
+/// so validate-then-execute is the right order.
+#[allow(clippy::too_many_arguments)]
+async fn validate_then_execute_one_tool(
+    tc: &ToolCall,
+    project_root: &Path,
+    config: &KodaConfig,
+    db: &Database,
+    session_id: &str,
+    tools: &crate::tools::ToolRegistry,
+    mode: TrustMode,
+    sink: &dyn crate::engine::EngineSink,
+    cancel: CancellationToken,
+    sub_agent_cache: &SubAgentCache,
+    bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
+) -> (String, String, bool, Option<String>) {
+    let parsed_args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+
+    let validation_error = {
+        let cache = tools.file_read_cache();
+        let last_writer = tools.last_writer_cache();
+        let last_bash = tools.last_bash_cache();
+        tools::validate::validate_tool_call(
+            &tc.function_name,
+            &parsed_args,
+            project_root,
+            Some(&cache),
+            Some(&last_writer),
+            Some(&last_bash),
+        )
+        .await
+    };
+
+    if let Some(error) = validation_error {
+        return (
+            tc.id.clone(),
+            format!("Validation error: {error}"),
+            false,
+            None,
+        );
+    }
+
+    execute_one_tool(
+        tc,
+        project_root,
+        config,
+        db,
+        session_id,
+        tools,
+        mode,
+        sink,
+        cancel,
+        sub_agent_cache,
+        bg_agents,
+    )
+    .await
 }
 
 /// Run multiple tool calls concurrently and store results.
@@ -276,7 +348,11 @@ pub(crate) async fn execute_tools_parallel(
     let futures: Vec<_> = tool_calls
         .iter()
         .map(|tc| {
-            execute_one_tool(
+            // #1022 B14: validate before executing. The sequential arm
+            // does this *before* approval; here every tool is already
+            // AutoApproved (see `can_parallelize`) so validate-then-execute
+            // is the right order.
+            validate_then_execute_one_tool(
                 tc,
                 project_root,
                 config,
@@ -358,7 +434,10 @@ pub(crate) async fn execute_tools_split_batch(
         let futures: Vec<_> = parallel
             .iter()
             .map(|tc| {
-                execute_one_tool(
+                // #1022 B14: validate before executing. Same reasoning
+                // as `execute_tools_parallel` — every tool here is
+                // already AutoApproved.
+                validate_then_execute_one_tool(
                     tc,
                     project_root,
                     config,
