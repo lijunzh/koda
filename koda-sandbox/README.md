@@ -292,9 +292,9 @@ as enforcement code lands.
 | `net.mitm` | ✅ | ✅ egress proxy |
 | `net.weaker_macos_isolation` | ✅ | ✅ Seatbelt profile |
 | `limits.wall_time_secs` | ✅ | ✅ shell tool dispatch |
-| `limits.cpu_time_secs` | ✅ | 🟡 declared-only — rlimits in PR-6 |
-| `limits.max_rss_bytes` | ✅ | 🟡 declared-only — rlimits in PR-6 |
-| `limits.max_open_fds` | ✅ | 🟡 declared-only — rlimits in PR-6 |
+| `limits.cpu_time_secs` | ✅ | ✅ setrlimit RLIMIT_CPU — SIGXCPU at cap |
+| `limits.max_rss_bytes` | ✅ | ✅ setrlimit RLIMIT_AS — ENOMEM at cap (Linux RLIMIT_RSS is a no-op; AS caps virtual memory) |
+| `limits.max_open_fds` | ✅ | ✅ setrlimit RLIMIT_NOFILE — EMFILE at cap |
 | `limits.max_output_bytes` | ✅ | ✅ shell tool dispatch (line cap) |
 | `trust` (TrustPreference) | ✅ | ✅ approval gate (`koda-core::trust`) |
 
