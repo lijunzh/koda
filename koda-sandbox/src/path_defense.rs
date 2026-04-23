@@ -677,10 +677,7 @@ mod tests {
         let mut prev = effective_chain_depth(0);
         for d in 1..=u8::MAX {
             let cur = effective_chain_depth(d);
-            assert!(
-                cur >= prev,
-                "depth {d}: {cur} regressed from prev {prev}"
-            );
+            assert!(cur >= prev, "depth {d}: {cur} regressed from prev {prev}");
             prev = cur;
         }
     }
