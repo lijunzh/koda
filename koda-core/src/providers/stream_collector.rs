@@ -56,7 +56,7 @@ pub struct SseCollector {
 /// background reader and close the HTTP connection (#825).
 pub fn spawn_sse_collector(
     response: reqwest::Response,
-    parser: Box<dyn ChunkParser>,
+    parser: Box<dyn ChunkParser + Send>,
 ) -> SseCollector {
     let (tx, rx) = mpsc::channel(64);
     let handle = tokio::spawn(drive_sse_stream(response, parser, tx));
@@ -78,7 +78,7 @@ pub fn spawn_sse_collector(
 /// is responsible for discarding any partial response — see `collect_stream()`.
 async fn drive_sse_stream(
     response: reqwest::Response,
-    mut parser: Box<dyn ChunkParser>,
+    mut parser: Box<dyn ChunkParser + Send>,
     tx: mpsc::Sender<StreamChunk>,
 ) {
     use futures_util::StreamExt;

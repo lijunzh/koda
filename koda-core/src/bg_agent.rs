@@ -64,12 +64,12 @@ struct BgAgentEntry {
     /// path; per-task cancel UX lands in #996.
     #[allow(dead_code)]
     cancel: CancellationToken,
-    /// Aborts the spawned task on drop. Today the bg path uses
-    /// `spawn_blocking` (because `execute_sub_agent`'s future is
-    /// not yet `Send` — see #1022 B5). The `JoinHandle` returned
-    /// by `spawn_blocking` is still abortable, though abort is a
-    /// no-op while the inner blocking call is in flight; the
-    /// cancel-token cascade is the primary stop signal.
+    /// Aborts the spawned task on drop. The bg path uses
+    /// `tokio::spawn` on the multi-thread runtime (#1022 B5):
+    /// `execute_sub_agent` returns an explicitly `Send`-bounded
+    /// future, so abort works promptly at any await point. The
+    /// cancel-token cascade is still the primary stop signal
+    /// (so the bg task can run any cleanup it owns).
     _handle: AbortOnDropHandle<()>,
 }
 
