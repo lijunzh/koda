@@ -30,8 +30,13 @@ use tokio_util::sync::CancellationToken;
 
 /// Run a sub-agent in the background. Owns all data (no borrows).
 ///
-/// This is a standalone async fn so the future is `Send + 'static`,
-/// which `tokio::spawn` requires.
+/// **Phase 1 of #1022 fixes B1–B4:** the parent's cancel token,
+/// trust mode, and sandbox policy are threaded through here — a bg
+/// agent can never widen its parent's surface, and parent
+/// cancellation cascades correctly. The owning `tokio::spawn`
+/// (B5) remains deferred while we audit the transitive `Send`
+/// status of `execute_sub_agent`'s future.
+#[allow(clippy::too_many_arguments)]
 async fn run_bg_agent(
     project_root: std::path::PathBuf,
     parent_config: KodaConfig,
@@ -40,13 +45,27 @@ async fn run_bg_agent(
     sub_agent_cache: SubAgentCache,
     parent_session: String,
     tx: tokio::sync::oneshot::Sender<Result<String, String>>,
+    // B2 of #1022: parent's cancel token, threaded as a `child_token()`
+    // so a Ctrl-C in the parent loop cancels the bg agent.
+    cancel: CancellationToken,
+    // B1 of #1022: parent's trust mode — used both as the approval
+    // mode for tool calls inside the bg agent and (via the recursive
+    // `execute_sub_agent` call) as the clamp ceiling for the
+    // sub-agent's own declared trust.
+    parent_trust: TrustMode,
+    // B4 of #1022: parent's effective sandbox policy at spawn time.
+    // The recursive `execute_sub_agent` composes the child policy
+    // onto this so the bg agent inherits any parent narrowing.
+    parent_sandbox_policy: koda_sandbox::SandboxPolicy,
 ) {
-    let cancel = CancellationToken::new();
     let (_, mut cmd_rx) = mpsc::channel(1);
     let null_sink = crate::engine::sink::NullSink;
     let nested_bg = crate::bg_agent::new_shared();
 
-    // Override background=false to prevent infinite spawn
+    // Override background=false to prevent infinite spawn — a bg agent
+    // that itself emitted `InvokeAgent { background: true }` would
+    // never see its child's result (no inference loop is running
+    // *inside* a bg agent to drain results).
     let mut sync_args: serde_json::Value = serde_json::from_str(&arguments).unwrap_or_default();
     sync_args["background"] = serde_json::Value::Bool(false);
     let sync_arguments = serde_json::to_string(&sync_args).unwrap();
@@ -56,7 +75,7 @@ async fn run_bg_agent(
         &parent_config,
         &db,
         &sync_arguments,
-        TrustMode::Auto,
+        parent_trust,
         &null_sink,
         cancel,
         &mut cmd_rx,
@@ -64,15 +83,7 @@ async fn run_bg_agent(
         &sub_agent_cache,
         &parent_session,
         &nested_bg,
-        // Phase 5 PR-4 of #934: bg-spawned sub-agents have no live
-        // parent registry to pull a policy from (the spawning agent
-        // already returned). `strict_default()` is the safe choice —
-        // it means "no extra parent restrictions" so the child's own
-        // `policy_for_agent` result wins. If we later make the main
-        // agent registry-policy non-default, we should snapshot it
-        // into the bg-agent task at spawn time so this path inherits
-        // the same restrictions.
-        &koda_sandbox::SandboxPolicy::strict_default(),
+        &parent_sandbox_policy,
     )
     .await;
 
@@ -121,36 +132,85 @@ pub(crate) async fn execute_sub_agent(
     let is_fork = agent_name == "fork";
     let background = args["background"].as_bool().unwrap_or(false);
 
-    // Background mode: spawn and return immediately
+    // Background mode: spawn and return immediately.
+    //
+    // Phase 1 of #1022 fixes B1–B4 here:
+    //  * **B1 trust:** the recursive `execute_sub_agent` call below
+    //    receives `mode` (the parent's trust mode) instead of
+    //    hard-coded `TrustMode::Auto`. The clamp inside that call
+    //    then guarantees the bg agent can only narrow, never widen.
+    //  * **B2 cancellation:** the bg task receives a `child_token()`
+    //    of the parent's `cancel`. Ctrl-C in the parent loop now
+    //    cascades into every in-flight bg agent.
+    //  * **B3 lifecycle:** the spawned `JoinHandle` is held by the
+    //    registry as an `AbortOnDropHandle`, so a registry drop
+    //    aborts the task and releases its worktree.
+    //  * **B4 sandbox:** `parent_sandbox_policy.clone()` is captured
+    //    at spawn time, so the recursive call composes the bg
+    //    agent's policy onto the parent's effective policy instead
+    //    of regressing to `strict_default()`.
+    //
+    // **B5 deferred to Phase 2 (#1022):** the inner future built by
+    // `execute_sub_agent` is not `Send` (some `Box<dyn Trait>` /
+    // `Arc<dyn Trait>` in the transitive type graph lacks an
+    // explicit `+ Send` annotation — trait-object auto-traits don't
+    // inherit from supertraits). Until that's audited and fixed,
+    // we keep `spawn_blocking + new_current_thread` so the bg
+    // future runs on a single-threaded runtime where Send isn't
+    // required. The new cancel cascade still works because the
+    // child token is shared by reference (`CancellationToken` is
+    // cheaply cloneable across runtimes), and `AbortOnDropHandle`
+    // still gets the `JoinHandle<()>` from `spawn_blocking`.
     if background {
-        let (task_id, tx) = bg_agents.register(agent_name, prompt);
-        let project_root = project_root.to_path_buf();
-        let parent_config = parent_config.clone();
+        let reservation = bg_agents.reserve(&cancel);
+        let task_id = reservation.task_id;
+        let bg_cancel = reservation.cancel.clone();
+        let bg_tx = reservation.tx;
+        let bg_rx = reservation.rx;
+        let entry_cancel = reservation.cancel;
+
+        let project_root_owned = project_root.to_path_buf();
+        let parent_config_owned = parent_config.clone();
         let agent_name_owned = agent_name.to_string();
-        let arguments = arguments.to_string();
-        let sub_agent_cache = sub_agent_cache.clone();
-        let parent_session = parent_session_id.to_string();
+        let prompt_owned = prompt.to_string();
+        let arguments_owned = arguments.to_string();
+        let sub_agent_cache_owned = sub_agent_cache.clone();
+        let parent_session_owned = parent_session_id.to_string();
         let bg_db = db.clone();
+        let bg_policy = parent_sandbox_policy.clone();
+        let bg_trust = mode;
 
         sink.emit(EngineEvent::Info {
             message: format!("  \u{1f680} {agent_name} launched in background (task {task_id})"),
         });
 
-        tokio::task::spawn_blocking(move || {
+        let handle = tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("bg agent runtime");
             rt.block_on(run_bg_agent(
-                project_root,
-                parent_config,
+                project_root_owned,
+                parent_config_owned,
                 bg_db,
-                arguments,
-                sub_agent_cache,
-                parent_session,
-                tx,
+                arguments_owned,
+                sub_agent_cache_owned,
+                parent_session_owned,
+                bg_tx,
+                bg_cancel,
+                bg_trust,
+                bg_policy,
             ));
         });
+
+        bg_agents.attach(
+            task_id,
+            &agent_name_owned,
+            &prompt_owned,
+            bg_rx,
+            entry_cancel,
+            handle,
+        );
 
         return Ok(format!(
             "Background agent '{agent_name_owned}' started (task {task_id}). \
@@ -297,7 +357,13 @@ pub(crate) async fn execute_sub_agent(
         .disallowed_tools
         .iter()
         .any(|t| t == "Write" || t == "Edit");
-    let workspace: Box<dyn WorkspaceProvider> = if has_write_tools {
+    // Phase 1 of #1022: explicit `+ Send + Sync` on the trait object.
+    // The supertrait bound `WorkspaceProvider: Send + Sync` constrains
+    // *implementors*, but Rust trait objects don't auto-inherit those
+    // bounds — `Box<dyn WorkspaceProvider>` is `!Send` without the
+    // explicit annotation, which makes the whole `execute_sub_agent`
+    // future `!Send` and unspawnable.
+    let workspace: Box<dyn WorkspaceProvider + Send + Sync> = if has_write_tools {
         pick_write_provider(project_root, agent_name)
     } else {
         Box::new(CwdProvider::new(project_root))
@@ -548,7 +614,7 @@ pub(crate) async fn execute_sub_agent(
 fn pick_write_provider(
     project_root: &std::path::Path,
     agent_name: &str,
-) -> Box<dyn WorkspaceProvider> {
+) -> Box<dyn WorkspaceProvider + Send + Sync> {
     // Try `ClonefileProvider` first — its 3-4× provision speedup
     // (Phase 4d / #934 bench) is durable and the implementation is
     // a thin wrapper over the OS primitive designed for this.
@@ -571,7 +637,7 @@ fn pick_write_provider(
 fn pick_write_provider(
     project_root: &std::path::Path,
     agent_name: &str,
-) -> Box<dyn WorkspaceProvider> {
+) -> Box<dyn WorkspaceProvider + Send + Sync> {
     // Linux + others: GitWorktreeProvider. The Linux CoW equivalent
     // (4e in #934) is parked until production telemetry shows it's
     // worth building — see #934 deferral comments.

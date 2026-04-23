@@ -355,7 +355,7 @@ pub trait LlmProvider: Send + Sync {
 use crate::config::{KodaConfig, ProviderType};
 
 /// Create an LLM provider from the given configuration.
-pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider> {
+pub fn create_provider(config: &KodaConfig) -> Box<dyn LlmProvider + Send + Sync> {
     let api_key = crate::runtime_env::get(config.provider_type.env_key_name());
     match config.provider_type {
         ProviderType::Anthropic => {

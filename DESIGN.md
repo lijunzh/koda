@@ -153,12 +153,26 @@ Studied four projects:
 - **xi-editor**: Used stdio JSON-RPC. Discontinued. Lesson: protocol becomes
   bottleneck when core and frontend are separate processes.
 - **Zed**: Keeps `agent` (engine) and `agent_ui` (rendering) as separate crates
-  in the same binary. Engine has zero UI imports.
+  in the same binary. Engine has zero UI imports — but it *does* import
+  `gpui`, `project`, `fs`, and `language_model`. Zed's "engine" is a
+  gpui-flavored library; you cannot run `Thread` outside a `gpui::App`.
 - **Goose**: Rust engine + ACP server + multiple frontends (Electron, Ink TUI, CLI).
 - **Neovim**: C core + msgpack-RPC. Terminal TUI is just one client.
 
-**Zed's approach wins**: engine and primary client in the same binary. Server
-mode is optional for external clients.
+**Zed's approach inspires; Koda finishes the job**: engine and primary client
+in the same binary, server mode optional. But Koda goes one step further than
+Zed — `koda-core` has zero IO, all output goes through `EngineSink`, all
+input arrives via `EngineCommand` over `mpsc::Receiver`, and `EngineEvent` is
+`Serialize`. The proof is the ACP server in `koda-cli/src/server.rs` (~430 LOC)
+vs. Zed's equivalent in `zed/crates/agent_servers/src/acp.rs` (~3,467 LOC) —
+Koda's smaller because the engine boundary is a serializable enum, not a
+bridge between gpui's `Entity`/`Task` world and the wire protocol.
+
+**Concrete consequence**: `KodaAgent` (immutable, `Arc`-shared) is separated
+from `KodaSession` (per-conversation, mutable). Zed conflates these into
+`Thread`. The split is what makes parallel sub-agents safe: each sub-agent
+shares the agent definition by `Arc` and has its own session for state. No
+`Arc<RwLock<>>` everywhere.
 
 ### ACP (Agent Client Protocol) (P3)
 
@@ -302,6 +316,93 @@ The biggest cost lever — expensive models think, cheap models grunt. A scout
 on Gemini Flash costs 1/20th of Opus for codebase exploration. The parent's
 Anthropic prompt cache is unaffected because sub-agents make independent API
 calls to potentially different providers.
+
+### Sub-Agent Lifecycle (P2, P3)
+
+Four execution modes, one mental model:
+
+1. **Sequential foreground** (`InvokeAgent { prompt }`) — one sub-agent at a
+   time, blocks the parent loop until done. Default.
+2. **Parallel foreground** (multiple `InvokeAgent` calls in one batch) —
+   `tool_dispatch::execute_tools_parallel` runs them concurrently via
+   `futures_util::future::join_all`. Each gets its own DB session and (if
+   write-capable) its own workspace.
+3. **Background fire-and-forget** (`InvokeAgent { prompt, background: true }`)
+   — spawned via `tokio::task::spawn_blocking` onto a per-task
+   `new_current_thread` runtime, with the resulting `JoinHandle` held
+   by `BgAgentRegistry` as an `AbortOnDropHandle`. The inference loop
+   drains completed handles before each iteration via
+   `BgAgentRegistry::drain_completed()` and injects results as user
+   messages. Bg-spawned agents cannot themselves spawn bg agents
+   (override `background: false`). The current-thread runtime exists
+   only because `execute_sub_agent`'s future is not yet `Send`;
+   collapsing to a plain `tokio::spawn` is tracked separately and
+   does not change the invariants below.
+4. **Forked context** (`agent_name="fork"`) — copies the parent's full
+   conversation history into the new session. Fork children cannot spawn
+   sub-agents (recursion guard).
+
+**Invariants** — enforced consistently across all four modes:
+
+- **Trust never widens**. `derive_child_trust(parent, declared) =
+  TrustMode::clamp(parent, declared)` is the *only* way to compute child
+  trust. Same helper for fork, named, and bg paths.
+- **Sandbox never widens**. `compose_child_policy(parent_policy, child_trust,
+  root)` calls `SandboxPolicy::compose()` (denies = union, allows = intersect,
+  limits = min). Bg agents snapshot the parent's effective policy at spawn
+  time — they do not regress to `strict_default()`.
+- **Cancellation cascades**. Sub-agents receive `parent_cancel.child_token()`
+  via `tokio_util::sync::CancellationToken`. Bg agents are no exception:
+  Ctrl+C in the parent kills in-flight bg work. `tokio::task::JoinSet` (or
+  `AbortOnDropHandle`) ensures registry drop = task abort = workspace release.
+- **Workspace isolation** (P3). Write-capable sub-agents get an isolated
+  worktree (macOS: `ClonefileProvider` ~3-4× faster; Linux:
+  `GitWorktreeProvider`). Read-only agents share the parent root via
+  `CwdProvider`. Parallel write-agents cannot trample each other.
+- **Result caching** (P1, cost lever). `SubAgentCache` keyed by
+  `(agent_name, prompt_hash)`. Cache hits = no LLM call. Invalidated on any
+  mutating tool — including mutations performed *inside* a sub-agent.
+
+**What we considered and rejected**:
+
+- **Codex's collab v2 surface** (`spawn_agent`/`send_input`/`wait_agent`/
+  `close_agent`/`resume_agent`, persistent ThreadId-addressed agents,
+  inter-agent mailboxes). ~3,000 LOC for a workflow that's rare in personal
+  use. P2 says no. The `background: true` + drain-on-next-iter pattern
+  covers the same ground in 200 LOC. If the model wants more work it just
+  calls `InvokeAgent` again.
+- **Codex's `agent_max_depth` + `agent_max_threads` atomic CAS reservations**.
+  Koda's hardcoded "fork children cannot spawn sub-agents" + per-agent
+  iteration cap covers 99% of footguns at zero cost. Revisit only if a model
+  actually loops infinitely via depth.
+- **Claude Code's seven-typed `Task` taxonomy**
+  (`local_bash | local_agent | remote_agent | in_process_teammate | ...`).
+  Exactly the "feature surface for many users" P1 rejects. `BgAgentRegistry`
+  + `BgRegistry` (for bash) cover the "long-running thing with a result"
+  case in 200 lines. Don't grow a `trait Task`.
+- **Gemini CLI's LLM-based loop detection** (asks the model "are you stuck?"
+  every 10–15 turns at extra token cost). Apex form of the anti-pattern P3
+  warns about — "don't scaffold around weakness". Frontier models won't need
+  this in six months.
+- **Code Puppy's plugin system** (`callbacks.py` with 30+ hooks, agent
+  frontmatter that can spawn its own MCP servers). Direct violation of P1
+  "customization over configuration". Per-agent MCP = per-agent trust audit.
+
+**What we deferred** (architecture supports it; we'll add when the bug exists):
+
+- **Per-tool `is_concurrency_safe(args)` predicate** (Gemini CLI). Would let
+  read-only `Bash` (e.g. `ls`, `cat`) join the parallel batch. Today all
+  `Bash` is forced sequential. `bash_safety.rs` already does the analysis
+  — surfacing it as a `ToolRegistry` method is ~80 LOC.
+- **Sibling-cancel on parallel `Bash` failure** (Claude Code). Per-batch
+  child `CancellationToken` + typed `[Cancelled: parallel call X errored]`
+  result. ~30 LOC.
+- **Streaming tool inputs** (Zed `supports_input_streaming`). High-value
+  for `Edit`/`Bash` but requires reworking `ToolRegistry::execute` to take
+  a stream. P1 says wait for the bug.
+- **`FuturesUnordered` instead of `join_all`** for parallel tool execution
+  — emits results as they complete instead of after the slowest. ~20 LOC
+  win, no protocol change.
 
 ---
 
@@ -455,7 +556,10 @@ the [trust module docs](https://docs.rs/koda-core/latest/koda_core/trust/).
 
 **Key design choices**:
 - Sub-agents inherit the parent’s trust mode (clamped via `TrustMode::clamp()`
-  — child can never run with less protection than parent)
+  — child can never run with less protection than parent). The clamp is the
+  *single source of truth* across all four sub-agent modes (sequential,
+  parallel, background, fork) — there is no path that hard-codes a child
+  trust value. Same rule for sandbox policy via `SandboxPolicy::compose()`.
 - **Kernel-level sandboxing** — always active. macOS uses `sandbox-exec`
   (seatbelt); Linux uses `bwrap` (bubblewrap). Credential directories
   are always protected.

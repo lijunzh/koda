@@ -39,6 +39,8 @@ pub struct Env {
     pub config: KodaConfig,
     /// Tool registry scoped to the test root.
     pub tools: ToolRegistry,
+    /// Trust mode used by the inference loop (default: `Auto`).
+    pub trust: TrustMode,
 }
 
 /// Builder for [`Env`] — customise provider, context window, agent name, etc.
@@ -54,6 +56,7 @@ pub struct EnvBuilder {
     provider_type: ProviderType,
     agent_name: String,
     max_context_tokens: Option<usize>,
+    trust: TrustMode,
 }
 
 impl Default for EnvBuilder {
@@ -62,6 +65,7 @@ impl Default for EnvBuilder {
             provider_type: ProviderType::LMStudio,
             agent_name: "test-agent".into(),
             max_context_tokens: None,
+            trust: TrustMode::Auto,
         }
     }
 }
@@ -85,6 +89,14 @@ impl EnvBuilder {
         self
     }
 
+    /// Override the trust mode used by the inference loop (default: `Auto`).
+    /// Sets both the inference-loop `mode` and the config trust so
+    /// sub-agent clamping observes the correct parent value.
+    pub fn trust(mut self, trust: TrustMode) -> Self {
+        self.trust = trust;
+        self
+    }
+
     /// Build the environment.  Creates a temp dir, DB, session, and tool registry.
     pub async fn build(self) -> Env {
         let tmp = tempfile::tempdir().unwrap();
@@ -92,11 +104,12 @@ impl EnvBuilder {
         let db = Database::init(&root).await.unwrap();
         let session_id = db.create_session(&self.agent_name, &root).await.unwrap();
         let mut config = KodaConfig::default_for_testing(self.provider_type);
+        config.trust = self.trust;
         if let Some(n) = self.max_context_tokens {
             config.max_context_tokens = n;
             config.model_settings.max_context_tokens = n;
         }
-        let tools = ToolRegistry::new(root.clone(), config.max_context_tokens);
+        let tools = ToolRegistry::with_trust(root.clone(), config.max_context_tokens, self.trust);
         Env {
             _tmp: tmp,
             root,
@@ -104,6 +117,7 @@ impl EnvBuilder {
             session_id,
             config,
             tools,
+            trust: self.trust,
         }
     }
 }
@@ -197,7 +211,7 @@ impl Env {
             tools: &self.tools,
             tool_defs: &tool_defs,
             pending_images: None,
-            mode: TrustMode::Auto,
+            mode: self.trust,
             sink: &sink,
             cancel,
             cmd_rx: &mut cmd_rx,

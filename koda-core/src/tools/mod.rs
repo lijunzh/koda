@@ -220,7 +220,11 @@ pub struct ToolRegistry {
     read_cache: FileReadCache,
     /// Filesystem abstraction — `LocalFileSystem` by default; swap to
     /// `SandboxedFileSystem` when a sandbox slot is active (Phase 2d, #934).
-    fs: Arc<dyn FileSystem>,
+    /// Explicit `+ Send + Sync` is required: trait objects don't
+    /// auto-inherit auto-traits from the supertrait, so without these
+    /// bounds `ToolRegistry` becomes `!Send` and any future holding
+    /// it (e.g. `execute_sub_agent`) cannot be `tokio::spawn`'d.
+    fs: Arc<dyn FileSystem + Send + Sync>,
     /// Per-file last-writer tracking for richer staleness errors (#804 item 7).
     last_writer: LastWriterCache,
     /// Most recent Bash invocation for staleness error context (#804 item 7).
@@ -382,7 +386,7 @@ impl ToolRegistry {
     ///
     /// Call this after construction to swap `LocalFileSystem` for
     /// `SandboxedFileSystem` when a sandbox slot is ready (#934).
-    pub fn set_fs(&mut self, fs: Arc<dyn FileSystem>) {
+    pub fn set_fs(&mut self, fs: Arc<dyn FileSystem + Send + Sync>) {
         self.fs = fs;
     }
 
