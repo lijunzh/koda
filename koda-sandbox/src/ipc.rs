@@ -245,8 +245,8 @@ pub struct GrepMatch {
 ///   [`MAX_PAYLOAD_BYTES`] or the payload is not valid JSON-of-`T`.
 pub async fn read_message<R, T>(reader: &mut R) -> io::Result<Option<T>>
 where
-    R: AsyncRead + Unpin,
-    T: serde::de::DeserializeOwned,
+    R: AsyncRead + Unpin + Send,
+    T: serde::de::DeserializeOwned + Send,
 {
     // Read the 4-byte length prefix manually so we can distinguish the
     // two flavors of EOF: clean (0 bytes read — peer hung up between
@@ -295,8 +295,8 @@ where
 /// - Any IO error from the underlying transport.
 pub async fn write_message<W, T>(writer: &mut W, msg: &T) -> io::Result<()>
 where
-    W: AsyncWrite + Unpin,
-    T: serde::Serialize,
+    W: AsyncWrite + Unpin + Send,
+    T: serde::Serialize + Sync,
 {
     let payload = serde_json::to_vec(msg)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("serialize: {e}")))?;

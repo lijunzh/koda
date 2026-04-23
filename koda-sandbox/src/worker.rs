@@ -78,8 +78,8 @@ impl Context {
 /// Returns `Err(...)` only for genuine transport errors.
 pub async fn run<R, W>(reader: &mut R, writer: &mut W) -> Result<()>
 where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
 {
     let ctx = Context::default();
     run_with_ctx(&ctx, reader, writer).await
@@ -97,8 +97,8 @@ pub async fn run_with_policy<R, W>(
     writer: &mut W,
 ) -> Result<()>
 where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
 {
     let ctx = Context::with_policy(writable_root, policy);
     run_with_ctx(&ctx, reader, writer).await
@@ -107,8 +107,8 @@ where
 /// Inner loop — separated so Phase 2f can inject a policy-bearing context.
 async fn run_with_ctx<R, W>(ctx: &Context, reader: &mut R, writer: &mut W) -> Result<()>
 where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
 {
     loop {
         let req = match read_message::<R, Request>(reader).await {

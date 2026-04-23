@@ -328,16 +328,19 @@ Four execution modes, one mental model:
    `futures_util::future::join_all`. Each gets its own DB session and (if
    write-capable) its own workspace.
 3. **Background fire-and-forget** (`InvokeAgent { prompt, background: true }`)
-   — spawned via `tokio::task::spawn_blocking` onto a per-task
-   `new_current_thread` runtime, with the resulting `JoinHandle` held
-   by `BgAgentRegistry` as an `AbortOnDropHandle`. The inference loop
-   drains completed handles before each iteration via
-   `BgAgentRegistry::drain_completed()` and injects results as user
-   messages. Bg-spawned agents cannot themselves spawn bg agents
-   (override `background: false`). The current-thread runtime exists
-   only because `execute_sub_agent`'s future is not yet `Send`;
-   collapsing to a plain `tokio::spawn` is tracked separately and
-   does not change the invariants below.
+   — spawned via `tokio::spawn` onto the multi-thread runtime, with the
+   resulting `JoinHandle` held by `BgAgentRegistry` as an
+   `AbortOnDropHandle`. The inference loop drains completed handles
+   before each iteration via `BgAgentRegistry::drain_completed()` and
+   injects results as user messages. Bg-spawned agents cannot themselves
+   spawn bg agents (override `background: false`). `execute_sub_agent`'s
+   future is `Send` by construction — the function returns
+   `impl Future<Output = ...> + Send + 'a` rather than using `async fn`,
+   forcing the compiler to *prove* Send-ness at the boundary. The
+   transitive offender (generic IPC helpers in `koda-sandbox::ipc`) carry
+   matching `Send` bounds on their `R`/`W`/`T` parameters; without them,
+   `tokio::sync::MutexGuard<WorkerClient>` held across an `await` was
+   silently non-Send.
 4. **Forked context** (`agent_name="fork"`) — copies the parent's full
    conversation history into the new session. Fork children cannot spawn
    sub-agents (recursion guard).
