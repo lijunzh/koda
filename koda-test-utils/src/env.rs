@@ -200,6 +200,11 @@ impl Env {
         let tool_defs = self.tool_defs();
         let mut file_tracker =
             koda_core::file_tracker::FileTracker::new(&self.session_id, self.db.clone()).await;
+        // #1022 B12: registry + cache live on the session in production.
+        // Tests construct fresh per-call versions — same observable
+        // contract for single-turn tests.
+        let bg_agents = koda_core::bg_agent::new_shared();
+        let sub_agent_cache = koda_core::sub_agent_cache::SubAgentCache::new();
 
         let result = inference::inference_loop(InferenceContext {
             project_root: &self.root,
@@ -216,6 +221,8 @@ impl Env {
             cancel,
             cmd_rx: &mut cmd_rx,
             file_tracker: &mut file_tracker,
+            bg_agents: &bg_agents,
+            sub_agent_cache: &sub_agent_cache,
         })
         .await;
 

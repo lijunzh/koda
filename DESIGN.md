@@ -330,11 +330,18 @@ Four execution modes, one mental model:
 3. **Background fire-and-forget** (`InvokeAgent { prompt, background: true }`)
    — spawned via `tokio::spawn` onto the multi-thread runtime, with the
    resulting `JoinHandle` held by `BgAgentRegistry` as an
-   `AbortOnDropHandle`. The inference loop drains completed handles
-   before each iteration via `BgAgentRegistry::drain_completed()` and
-   injects results as user messages. Bg-spawned agents cannot themselves
-   spawn bg agents (override `background: false`). `execute_sub_agent`'s
-   future is `Send` by construction — the function returns
+   `AbortOnDropHandle`. The registry **lives on `KodaSession`**, not
+   inside `inference_loop`, so bg agents survive across turns: the
+   model can spawn a long-running explorer in turn 1, return final
+   text in the same iteration, and turn 2's first iteration drains
+   the result. Owning per-loop would have aborted every still-pending
+   task on every turn boundary via `AbortOnDropHandle` (silent data
+   loss in the single-iteration response case). The inference loop
+   drains completed handles before each iteration via
+   `BgAgentRegistry::drain_completed()` and injects results as user
+   messages. Bg-spawned agents cannot themselves spawn bg agents
+   (override `background: false`). `execute_sub_agent`'s future is
+   `Send` by construction — the function returns
    `impl Future<Output = ...> + Send + 'a` rather than using `async fn`,
    forcing the compiler to *prove* Send-ness at the boundary. The
    transitive offender (generic IPC helpers in `koda-sandbox::ipc`) carry
@@ -364,10 +371,15 @@ Four execution modes, one mental model:
   `GitWorktreeProvider`). Read-only agents share the parent root via
   `CwdProvider`. Parallel write-agents cannot trample each other.
 - **Result caching** (P1, cost lever). `SubAgentCache` keyed by
-  `(agent_name, prompt_hash)`. Cache hits = no LLM call. Invalidated on any
+  `(agent_name, prompt_hash)`. Cache hits = no LLM call. Lives on
+  `KodaSession` (sibling of `BgAgentRegistry`) so cross-turn hits
+  work — the natural "explore X / read result / explore X again"
+  follow-up flow doesn't pay LLM cost twice. Invalidated on any
   mutating tool — including mutations performed *inside* a sub-agent
   (sub-agent dispatch routes through `execute_one_tool`, which honors
   `is_mutating_tool` invalidation just like the top-level path).
+  Generation-bumping invalidation makes cross-turn safe: stale entries
+  become misses without needing explicit eviction.
 - **Single tool-dispatch path**. Sub-agent tool execution does *not*
   re-implement approval+execute logic. After the sub-agent's own approval
   check (using its `effective_root` for path-aware decisions), the call
@@ -405,6 +417,17 @@ Four execution modes, one mental model:
   matches Codex / Claude Code / Gemini-CLI's design and avoids the
   multi-sub-agent attribution problem (which sub-agent is asking?) plus
   the bg-agent deadlock problem (no `cmd_rx` reachable from the user).
+  As a defense-in-depth backstop, the dummy `cmd_rx` handed to every
+  sub-agent is constructed with the sender bound to `_` so it drops
+  immediately at construction — if a non-AskUser tool ever hits the
+  `request_approval` path inside a sub-agent (e.g. a Destructive
+  operation under inherited Plan trust), `recv()` returns `None`
+  rather than blocking forever, and the sub-agent loop maps that to a
+  clear `[auto-rejected: '<tool>' requires user confirmation but this
+  sub-agent has no channel to the user]` tool result. The model can
+  reason about and recover from the rejection; the dispatch loop
+  continues. This distinguishes from genuine cancellation (Ctrl+C),
+  which still surfaces as `[cancelled]`.
 
 **What we considered and rejected**:
 

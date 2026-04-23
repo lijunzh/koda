@@ -575,6 +575,15 @@ pub struct InferenceContext<'a> {
     pub cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
     /// File lifecycle tracker for ownership-aware approval (#465).
     pub file_tracker: &'a mut FileTracker,
+    /// Background sub-agent registry (#1022 B12). Owned by [`crate::session::KodaSession`]
+    /// so bg agents survive across turns; this is just a borrow into
+    /// the loop. Drained at the top of every iteration to inject
+    /// completed bg results into the conversation.
+    pub bg_agents: &'a std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
+    /// Cross-turn sub-agent result cache (#1022 B12). Owned by [`crate::session::KodaSession`].
+    /// Generation-based invalidation on mutating tool calls is
+    /// honored uniformly via `crate::tool_dispatch::execute_one_tool`.
+    pub sub_agent_cache: &'a crate::sub_agent_cache::SubAgentCache,
 }
 
 /// Run the inference loop: send messages, stream responses, dispatch tool calls.
@@ -595,6 +604,8 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         cancel,
         cmd_rx,
         file_tracker,
+        bg_agents,
+        sub_agent_cache,
     } = ctx;
 
     // Hard cap is configurable per-agent; user can extend it interactively.
@@ -603,8 +614,14 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     let mut made_tool_calls = false;
     let mut retried_empty = false;
     let mut loop_detector = LoopDetector::new();
-    let sub_agent_cache = crate::sub_agent_cache::SubAgentCache::new();
-    let bg_agents = crate::bg_agent::new_shared();
+    // #1022 B12: `bg_agents` and `sub_agent_cache` now live on
+    // `KodaSession` and are borrowed in via `InferenceContext`. Local
+    // construction here was the root cause of the cross-turn drop bug:
+    // when this function returned, the `Arc<BgAgentRegistry>` dropped,
+    // every still-pending bg task was aborted by `AbortOnDropHandle`,
+    // and the result was lost. Owning on the session means the
+    // registry survives across turns and the next call drains anything
+    // that completed during the idle gap.
     let mut skill_scope = SkillToolScope::new();
     let mut total_prompt_tokens: i64 = 0;
     let mut total_completion_tokens: i64 = 0;
@@ -1125,9 +1142,9 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 mode,
                 sink,
                 cancel.clone(),
-                &sub_agent_cache,
+                sub_agent_cache,
                 file_tracker,
-                &bg_agents,
+                bg_agents,
             )
             .await?;
         } else if remaining_tools.len() > 1 {
@@ -1142,9 +1159,9 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 sink,
                 cancel.clone(),
                 cmd_rx,
-                &sub_agent_cache,
+                sub_agent_cache,
                 file_tracker,
-                &bg_agents,
+                bg_agents,
             )
             .await?;
         } else if !remaining_tools.is_empty() {
@@ -1159,9 +1176,9 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 sink,
                 cancel.clone(),
                 cmd_rx,
-                &sub_agent_cache,
+                sub_agent_cache,
                 file_tracker,
-                &bg_agents,
+                bg_agents,
             )
             .await?;
         }

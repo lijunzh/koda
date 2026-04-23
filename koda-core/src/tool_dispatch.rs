@@ -224,7 +224,17 @@ pub(crate) async fn execute_one_tool(
         // *type* cycle by erasing the future to `Pin<Box<dyn Future>>`.
         // The heap allocation is negligible — we already pay for
         // workspace setup, DB session, and a provider call.
-        let (_dummy_tx, mut dummy_rx) = mpsc::channel(1);
+        //
+        // #1022 B10: bind the sender to `_` (drops immediately) rather
+        // than `_dummy_tx` (lives until end of scope). With the sender
+        // alive a sub-agent that hits `request_approval` would block
+        // forever on `cmd_rx.recv()`. Dropping at construction makes
+        // the channel closed from the receiver's perspective, which
+        // `request_approval` already handles — it returns `None` and
+        // the sub-agent dispatch loop maps that to a clean auto-reject
+        // tool result the model can act on. Sub-agents have no path to
+        // the user's prompt by design.
+        let (_, mut dummy_rx) = mpsc::channel(1);
         let policy = tools.sandbox_policy().clone();
         let read_cache = tools.file_read_cache();
         let fut = sub_agent_dispatch::execute_sub_agent(
