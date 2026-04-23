@@ -1130,8 +1130,14 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             remaining_tools
         };
 
-        // Execute remaining tool calls — parallelize when possible
-        if remaining_tools.len() > 1 && can_parallelize(&remaining_tools, mode, project_root) {
+        // Execute remaining tool calls — parallelize when possible.
+        // #1022 B13: pass `file_tracker` so the parallelizability check
+        // sees the same Koda-owned-file downgrade the sequential path
+        // sees. Without it, batches containing `Delete owned.tmp` are
+        // spuriously refused parallelization (perf regression).
+        if remaining_tools.len() > 1
+            && can_parallelize(&remaining_tools, mode, project_root, Some(file_tracker))
+        {
             execute_tools_parallel(
                 &remaining_tools,
                 project_root,

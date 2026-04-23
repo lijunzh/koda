@@ -157,15 +157,45 @@ async fn track_file_lifecycle(
     }
 }
 
+/// Decide whether a batch of tool calls can run in parallel.
+///
+/// A batch is parallel-eligible iff every call in it (a) auto-approves
+/// under the current trust mode and (b) doesn't conflict with another
+/// call in the batch on the same target file.
+///
+/// **#1022 B13**: this used to call [`trust::check_tool`] (no
+/// `FileTracker`), which is *not* the same classification the
+/// sequential dispatch loop uses. Sequential calls
+/// [`trust::check_tool_with_tracker`] so that `Delete` of a
+/// Koda-owned file (created via `Write` earlier this session)
+/// downgrades from `NeedsConfirmation` to `AutoApprove` per #465. The
+/// mismatch meant batches like `[Read other.txt, Delete owned.tmp]`
+/// were spuriously refused parallelization — each tool was eligible
+/// in isolation, but the batch fell into the slower split-batch /
+/// sequential path. Pure perf regression, no correctness impact, but
+/// the kind of invariant violation that grows teeth over time as
+/// other path-aware downgrades get added to the tracker path.
+///
+/// Now takes the same `Option<&FileTracker>` the sequential loop
+/// passes, and forwards it to `check_tool_with_tracker`. Same
+/// classification, same answer. Tests guard the regression below
+/// (`test_can_parallelize_delete_owned_file_uses_tracker`).
 pub(crate) fn can_parallelize(
     tool_calls: &[ToolCall],
     mode: TrustMode,
     project_root: &Path,
+    file_tracker: Option<&crate::file_tracker::FileTracker>,
 ) -> bool {
     let all_approved = !tool_calls.iter().any(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            trust::check_tool(&tc.function_name, &args, mode, Some(project_root)),
+            trust::check_tool_with_tracker(
+                &tc.function_name,
+                &args,
+                mode,
+                Some(project_root),
+                file_tracker,
+            ),
             ToolApproval::NeedsConfirmation | ToolApproval::Blocked
         )
     });
@@ -774,7 +804,8 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             TrustMode::Safe,
-            Path::new("/test/project")
+            Path::new("/test/project"),
+            None,
         ));
     }
 
@@ -784,7 +815,8 @@ mod tests {
         assert!(!can_parallelize(
             &calls,
             TrustMode::Safe,
-            Path::new("/test/project")
+            Path::new("/test/project"),
+            None,
         ));
     }
 
@@ -803,7 +835,8 @@ mod tests {
         assert!(!can_parallelize(
             &calls,
             TrustMode::Safe,
-            Path::new("/test/project")
+            Path::new("/test/project"),
+            None,
         ));
     }
 
@@ -813,7 +846,8 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             TrustMode::Safe,
-            Path::new("/test/project")
+            Path::new("/test/project"),
+            None,
         ));
     }
 
@@ -836,7 +870,8 @@ mod tests {
         assert!(!can_parallelize(
             &calls,
             TrustMode::Auto, // Auto mode would normally allow parallelization
-            Path::new("/test/project")
+            Path::new("/test/project"),
+            None,
         ));
     }
 
@@ -859,7 +894,8 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             TrustMode::Auto,
-            Path::new("/test/project")
+            Path::new("/test/project"),
+            None,
         ));
     }
 
@@ -882,7 +918,8 @@ mod tests {
         assert!(!can_parallelize(
             &calls,
             TrustMode::Safe,
-            Path::new("/test/project")
+            Path::new("/test/project"),
+            None,
         ));
     }
 
@@ -892,7 +929,74 @@ mod tests {
         assert!(can_parallelize(
             &calls,
             TrustMode::Auto,
-            Path::new("/test/project")
+            Path::new("/test/project"),
+            None,
         ));
+    }
+
+    /// #1022 B13 regression: `can_parallelize` must use the same
+    /// approval classification the sequential dispatch loop uses,
+    /// i.e. `check_tool_with_tracker` not `check_tool`. Without the
+    /// tracker, `Delete owned.tmp` looks like `NeedsConfirmation`
+    /// (because Delete is Destructive in Safe mode); with the tracker
+    /// it auto-approves (#465: Koda created it, Koda removes it). The
+    /// bug spuriously refused parallelization for batches that
+    /// included a Delete of a file Koda created earlier in the
+    /// session — pure perf regression, but the kind of
+    /// classification mismatch that compounds.
+    #[tokio::test]
+    async fn test_can_parallelize_delete_owned_file_uses_tracker() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = crate::db::Database::open(&dir.path().join("test.db"))
+            .await
+            .unwrap();
+        let mut tracker = crate::file_tracker::FileTracker::new("test-sess", db).await;
+        // Canonicalize root so the tracked path matches what
+        // `resolve_file_path_from_args` produces at lookup time — on
+        // macOS, tempdirs live under `/var/folders/...` but
+        // `canonicalize()` resolves to `/private/var/folders/...`.
+        // Production code goes through canonicalization on both write
+        // and lookup, so we mirror that here.
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let owned_abs = root.join("temp_output.md");
+        std::fs::write(&owned_abs, "").unwrap();
+        tracker
+            .track_created(owned_abs.canonicalize().unwrap())
+            .await;
+
+        // Batch: Read other.txt + Delete owned.tmp. Both auto-approve
+        // when the tracker is consulted; without the tracker the
+        // Delete is misclassified as NeedsConfirmation.
+        let calls = vec![
+            ToolCall {
+                id: "t1".to_string(),
+                function_name: "Read".to_string(),
+                arguments: r#"{"path": "other.txt"}"#.to_string(),
+                thought_signature: None,
+            },
+            ToolCall {
+                id: "t2".to_string(),
+                function_name: "Delete".to_string(),
+                arguments: r#"{"path": "temp_output.md"}"#.to_string(),
+                thought_signature: None,
+            },
+        ];
+
+        // Bug repro: without the tracker, Safe mode refuses
+        // parallelization because Delete → NeedsConfirmation.
+        assert!(
+            !can_parallelize(&calls, TrustMode::Safe, &root, None),
+            "sanity: without tracker, Delete must look like NeedsConfirmation"
+        );
+
+        // Fix proof: with the tracker, Delete of owned file
+        // auto-approves → batch is parallelizable.
+        assert!(
+            can_parallelize(&calls, TrustMode::Safe, &root, Some(&tracker)),
+            "with tracker, Delete of Koda-owned file must be \
+             parallel-eligible (matches sequential path classification)"
+        );
     }
 }
