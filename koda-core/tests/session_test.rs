@@ -61,6 +61,8 @@ async fn make_session(
         title_set: false,
         proxy: None,
         socks5_proxy: None,
+        bg_agents: koda_core::bg_agent::new_shared(),
+        sub_agent_cache: koda_core::sub_agent_cache::SubAgentCache::new(),
     };
     (session, cancel)
 }

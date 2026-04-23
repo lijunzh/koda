@@ -23,12 +23,14 @@
 //! (e.g., main REPL + background sub-agents) without shared mutable state.
 
 use crate::agent::KodaAgent;
+use crate::bg_agent::{self, BgAgentRegistry};
 use crate::config::KodaConfig;
 use crate::db::Database;
 use crate::engine::{EngineCommand, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference::InferenceContext;
 use crate::providers::{self, ImageData, LlmProvider};
+use crate::sub_agent_cache::SubAgentCache;
 use crate::trust::TrustMode;
 
 use anyhow::Result;
@@ -86,6 +88,46 @@ pub struct KodaSession {
     /// same hostname allowlist as the HTTP proxy by construction —
     /// see [`koda_sandbox::BuiltInSocks5Proxy`].
     pub socks5_proxy: Option<ProxyHandle>,
+
+    /// Background sub-agent registry (#1022 B12).
+    ///
+    /// Lives on the session, not on `inference_loop`, so background
+    /// agents survive across turns. The previous design constructed
+    /// the registry locally inside `inference_loop`; when the loop
+    /// returned (final text, error, hard-stop) the `Arc` dropped and
+    /// every still-pending bg task was aborted via
+    /// [`tokio_util::task::AbortOnDropHandle`] — silently discarding
+    /// any not-yet-completed result. With single-iteration responses
+    /// (`InvokeAgent { background: true }` followed by final text in
+    /// the same turn) this lost the bg result every time.
+    ///
+    /// Owning here means: bg tasks keep running between turns, and the
+    /// next turn's first iteration drains anything that completed
+    /// during the idle gap. Registry abort still happens at
+    /// `Drop` — i.e. when the session itself is dropped — which is
+    /// what users actually mean by "stop".
+    ///
+    /// Wrapped in `Arc` because tool dispatch needs to hand the same
+    /// registry into the recursive `execute_sub_agent` call (so
+    /// nested `InvokeAgent { background: true }` registers in the
+    /// caller-visible slot, not a fresh per-call one).
+    pub bg_agents: Arc<BgAgentRegistry>,
+
+    /// Cross-turn sub-agent result cache (#1022 B12).
+    ///
+    /// Same lifetime motivation as [`Self::bg_agents`]: was previously
+    /// re-created per `inference_loop` invocation, which threw away
+    /// every cache entry on each turn boundary and made the cache
+    /// useless for the natural "ask, follow up, ask again" flow.
+    /// Living on the session means the second turn can hit results
+    /// computed in the first.
+    ///
+    /// Invalidation still happens on every mutating tool call via
+    /// `crate::tool_dispatch::execute_one_tool` — generation bump,
+    /// cached entries with stale generations are treated as misses.
+    /// Cross-turn doesn't change that contract; it just extends the
+    /// window in which a still-fresh entry can be reused.
+    pub sub_agent_cache: SubAgentCache,
 }
 
 impl KodaSession {
@@ -177,6 +219,11 @@ impl KodaSession {
             title_set: false,
             proxy,
             socks5_proxy,
+            // #1022 B12: registry + cache live on the session so bg
+            // agents survive across turns and the cache yields
+            // cross-turn hits.
+            bg_agents: bg_agent::new_shared(),
+            sub_agent_cache: SubAgentCache::new(),
         }
     }
 
@@ -236,6 +283,8 @@ impl KodaSession {
             cancel: self.cancel.clone(),
             cmd_rx,
             file_tracker: &mut self.file_tracker,
+            bg_agents: &self.bg_agents,
+            sub_agent_cache: &self.sub_agent_cache,
         })
         .await;
 

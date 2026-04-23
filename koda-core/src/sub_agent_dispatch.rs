@@ -707,7 +707,27 @@ pub(crate) fn execute_sub_agent<'a>(
                                 Some(ApprovalDecision::RejectWithFeedback { feedback }) => {
                                     format!("[rejected: {feedback}]")
                                 }
-                                None => "[cancelled]".to_string(),
+                                None => {
+                                    // #1022 B10: `request_approval` returns `None`
+                                    // when the command channel is closed (sub-agents
+                                    // don't have a live channel to the user) or
+                                    // cancelled. Distinguish the two so the model
+                                    // gets actionable signal instead of a generic
+                                    // "[cancelled]" that looked like the user
+                                    // hit Ctrl+C.
+                                    if cancel.is_cancelled() {
+                                        "[cancelled]".to_string()
+                                    } else {
+                                        format!(
+                                            "[auto-rejected: '{tool}' requires user \
+                                             confirmation but this sub-agent has no \
+                                             channel to the user. The parent agent \
+                                             must pre-approve destructive operations \
+                                             or run the tool itself.]",
+                                            tool = tc.function_name,
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
