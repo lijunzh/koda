@@ -210,11 +210,20 @@ pub(crate) async fn execute_one_tool(
     let (result, success, full_output) = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
         //
-        // `Box::pin` is mandatory here: `execute_sub_agent` now
-        // dispatches its own tool calls back through `execute_one_tool`
-        // (#1022 B7), making the two functions mutually recursive
-        // `async fn`s. Without indirection the resulting future is
-        // infinitely sized (E0733).
+        // Runtime invariant: the sub-agent dispatch loop short-circuits
+        // `InvokeAgent` with a refusal (#1022 B7 revised), so this
+        // branch is only ever reached from top-level inference. There
+        // is no actual recursion at runtime.
+        //
+        // *Type*-level cycle still exists, however: `execute_one_tool`
+        // calls `execute_sub_agent`, which calls `execute_one_tool` for
+        // each of the sub-agent's *non-InvokeAgent* tool calls. The
+        // borrow checker can't prove the runtime short-circuit, so it
+        // sees a mutually-recursive `async fn` cycle and rejects the
+        // future as infinitely sized (E0733). `Box::pin` breaks the
+        // *type* cycle by erasing the future to `Pin<Box<dyn Future>>`.
+        // The heap allocation is negligible — we already pay for
+        // workspace setup, DB session, and a provider call.
         let (_dummy_tx, mut dummy_rx) = mpsc::channel(1);
         let policy = tools.sandbox_policy().clone();
         let read_cache = tools.file_read_cache();

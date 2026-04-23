@@ -406,8 +406,30 @@ pub(crate) fn execute_sub_agent<'a>(
         };
         let tool_defs = {
             let mut denied = sub_config.disallowed_tools.clone();
-            // Anti-recursion: fork children cannot spawn sub-agents
-            if is_fork && !denied.contains(&"InvokeAgent".to_string()) {
+            // #1022 B7 (revised): sub-agents cannot spawn sub-agents.
+            // Period. Originally only `is_fork` blocked `InvokeAgent`,
+            // but that left a sharp edge: named sub-agents could call
+            // it, the call fell through to a registry stub returning
+            // `"InvokeAgent is handled by the inference loop."` with
+            // `success=false`, and the model would hallucinate around
+            // the bogus error.
+            //
+            // Allowing real recursion was the alternative considered,
+            // but it requires a depth cap (~hundreds of KB of `async
+            // fn` state per level), `Box::pin` on a mutually-recursive
+            // future, threading `depth: u32` through five functions,
+            // and the resulting design has no use case worth the
+            // surface area. Codex matches this stance — their
+            // sub-agents can't spawn sub-agents either. The master
+            // agent at depth 0 can fire as many parallel/background
+            // workers as it wants; workers complete their task and
+            // report back. Flat by design.
+            //
+            // Filtering at the tool-def level keeps the model from
+            // ever seeing the tool. The sub-agent dispatch loop also
+            // contains a defense-in-depth refusal in case a rogue or
+            // scripted model emits `InvokeAgent` regardless.
+            if !denied.contains(&"InvokeAgent".to_string()) {
                 denied.push("InvokeAgent".to_string());
             }
             // #1022 B8: AskUser requires a live `cmd_rx` connected to the
@@ -516,6 +538,50 @@ pub(crate) fn execute_sub_agent<'a>(
                 // Sub-agents inherit the parent's approval mode
                 let parsed_args: serde_json::Value =
                     serde_json::from_str(&tc.arguments).unwrap_or_default();
+
+                // #1022 B7 (revised): defense-in-depth refusal of
+                // `InvokeAgent` and `AskUser`. Both are filtered from
+                // the sub-agent's `tool_defs` above, so a well-behaved
+                // model never emits them. A misbehaving or scripted
+                // model still might — short-circuit here with a clear
+                // refusal message instead of falling through to
+                // `execute_one_tool` (which would happily recurse for
+                // InvokeAgent) or the registry stub (which returns
+                // confusing `success=false` boilerplate).
+                if tc.function_name == "InvokeAgent" {
+                    let refusal = "InvokeAgent is not available inside a sub-agent. \
+                                   Sub-agents are autonomous workers and cannot spawn \
+                                   further sub-agents. Complete the task directly with \
+                                   the tools you have, or report back what additional \
+                                   dispatch the parent agent should perform.";
+                    db.insert_message(
+                        &sub_session,
+                        &Role::Tool,
+                        Some(refusal),
+                        None,
+                        Some(&tc.id),
+                        None,
+                    )
+                    .await?;
+                    continue;
+                }
+                if tc.function_name == "AskUser" {
+                    let refusal = "AskUser is not available inside a sub-agent. \
+                                   Sub-agents have no channel to the user; the parent \
+                                   agent gathers any required input before delegating. \
+                                   Proceed with the information you already have or \
+                                   report what's missing.";
+                    db.insert_message(
+                        &sub_session,
+                        &Role::Tool,
+                        Some(refusal),
+                        None,
+                        Some(&tc.id),
+                        None,
+                    )
+                    .await?;
+                    continue;
+                }
 
                 // #1022 B14: pre-flight validation — catch obvious errors
                 // (missing path, bad regex, file-cache violations) before

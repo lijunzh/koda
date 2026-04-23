@@ -343,7 +343,8 @@ Four execution modes, one mental model:
    silently non-Send.
 4. **Forked context** (`agent_name="fork"`) — copies the parent's full
    conversation history into the new session. Fork children cannot spawn
-   sub-agents (recursion guard).
+   sub-agents (recursion guard) — same blanket rule that applies to all
+   sub-agents (see invariant below).
 
 **Invariants** — enforced consistently across all four modes:
 
@@ -371,10 +372,25 @@ Four execution modes, one mental model:
   re-implement approval+execute logic. After the sub-agent's own approval
   check (using its `effective_root` for path-aware decisions), the call
   flows through `tool_dispatch::execute_one_tool` — the same function the
-  parent uses. This guarantees three things uniformly: nested `InvokeAgent`
-  recurses (via `Box::pin` to break the mutually-recursive `async fn`
-  cycle) instead of hitting a stub error; mutating tools invalidate
-  `SubAgentCache`; Bash output streams through the parent's sink.
+  parent uses. This guarantees two things uniformly: mutating tools
+  invalidate `SubAgentCache` regardless of who called them, and Bash
+  output streams through the parent's sink. (`InvokeAgent` is the one
+  exception — see the no-nesting invariant below.)
+- **No nested sub-agents**. Sub-agents (named, fork, *and* background)
+  cannot themselves call `InvokeAgent`. Enforced two ways: (1) the tool
+  is filtered from every sub-agent's tool definitions so the model never
+  sees it; (2) the sub-agent dispatch loop short-circuits with a clear
+  refusal message if a rogue or scripted model emits it anyway. The
+  parent at depth 0 can fan out as many parallel/background workers as
+  it wants — fan-out is what scales delegation, not depth. Allowing real
+  recursion was considered and rejected: it requires a depth cap
+  (~hundreds of KB of `async fn` state per level), threading `depth: u32`
+  through five functions, and matches no real use case anyone has asked
+  for. Codex takes the same stance (their sub-agents can't spawn
+  sub-agents either). The type-level mutual-recursion cycle between
+  `execute_one_tool` and `execute_sub_agent` is broken with `Box::pin`
+  so the compiler accepts the call graph; runtime recursion is
+  unreachable by construction.
 - **Pre-flight validation everywhere**. `tools::validate::validate_tool_call`
   runs *before* approval prompting in the sequential arm (so the user is
   never asked to approve a tool that's guaranteed to fail) and *before*
@@ -399,9 +415,20 @@ Four execution modes, one mental model:
   covers the same ground in 200 LOC. If the model wants more work it just
   calls `InvokeAgent` again.
 - **Codex's `agent_max_depth` + `agent_max_threads` atomic CAS reservations**.
-  Koda's hardcoded "fork children cannot spawn sub-agents" + per-agent
-  iteration cap covers 99% of footguns at zero cost. Revisit only if a model
-  actually loops infinitely via depth.
+  Koda hardcodes "sub-agents cannot spawn sub-agents" (depth = exactly 1
+  for any worker) and adds a per-agent iteration cap. Removes the entire
+  class of recursion-depth footguns at zero cost. Revisit only if a real
+  use case for depth ≥ 2 ever surfaces — fan-out at depth 1 has covered
+  every workflow we've tried.
+- **Nested sub-agents** (sub-agent calling `InvokeAgent`). Considered
+  during #1022. Tempting because it would let a "manager" sub-agent
+  decompose work, but: (a) the master agent can already do that
+  decomposition itself; (b) each level costs hundreds of KB of `async
+  fn` state plus a workspace, provider, and DB session, so deep stacks
+  exhaust the OS thread before the cost dominates; (c) requires depth
+  threading through five functions and a hard cap; (d) Codex agrees —
+  their sub-agents can't either. Same YAGNI reasoning as `AskUser` from
+  sub-agents.
 - **Claude Code's seven-typed `Task` taxonomy**
   (`local_bash | local_agent | remote_agent | in_process_teammate | ...`).
   Exactly the "feature surface for many users" P1 rejects. `BgAgentRegistry`
