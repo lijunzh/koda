@@ -147,6 +147,18 @@ pub fn build(
         }
     };
 
+    // Phase 5 PR-6b of #934: apply trust-derived resource limits via
+    // setrlimit(2) in the child between fork and exec. Backstops the
+    // wall-time ceiling for cases that wall-time can't catch (CPU
+    // busy-loops that block signal delivery, malloc bombs that exhaust
+    // memory before wall expires, fork bombs that exhaust FDs before
+    // any wall-time tick fires). Applied on *both* the sandboxed and
+    // unsandboxed-fallback paths above so a missing kernel sandbox
+    // doesn't silently drop this layer too — defense in depth between
+    // layers, not just inside one. No-op when no limits are set
+    // (the common case today; only Auto trust mode populates them).
+    koda_sandbox::rlimits::apply_to_command(&mut cmd, &policy.limits);
+
     // Attach the proxy env-var bouquet last so it overrides anything
     // the sandbox builder set (the builder doesn't touch HTTPS_PROXY,
     // but belt-and-suspenders). The CA bundle, when policy.net.mitm
@@ -1007,13 +1019,53 @@ mod tests {
         }
     }
 
-    // ── Phase 5 PR-3 of #934: `policy_for_agent` populates resource limits ──
+    /// Phase 5 PR-6b of #934: load-bearing test that
+    /// [`build()`] threads `policy.limits` into the spawned child via
+    /// the rlimits `pre_exec` hook. Spawns `ulimit -n` through the
+    /// returned Command and verifies the policy-supplied FD cap is
+    /// observed by the child. Pins the integration between
+    /// `koda_core::sandbox::build` and `koda_sandbox::rlimits` —
+    /// without this test, a future refactor could silently drop the
+    /// `apply_to_command` call and only the existing rlimits-module
+    /// tests would catch it (which they wouldn't, since they bypass
+    /// `build()`).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn build_applies_resource_limits_to_spawned_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut policy = koda_sandbox::SandboxPolicy::strict_default();
+        policy.limits.max_open_fds = Some(64);
+
+        let mut cmd = build(
+            "ulimit -n",
+            dir.path(),
+            &crate::trust::TrustMode::Safe,
+            &policy,
+            None,
+            None,
+        )
+        .expect("build must succeed (Safe mode falls back if sandbox unavailable)");
+
+        let out = cmd.output().await.expect("spawn ok");
+        assert!(out.status.success(), "child should succeed: {out:?}");
+        let reported: u64 = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .expect("ulimit -n prints a number");
+        assert_eq!(
+            reported, 64,
+            "build() must apply policy.limits.max_open_fds to the child"
+        );
+    }
     //
     // PR-2 left the constructor returning `strict_default()` for every
     // input. PR-3 starts populating `limits.wall_time_secs` so the
     // Bash dispatch path picks up a policy-driven default deadline.
-    // The other limits (CPU/RSS/FDs/output) stay None until the runtime
-    // grows actual enforcement — declared but not yet used.
+    // PR-6b wires CPU/RSS/FD enforcement via setrlimit, but
+    // `policy_for_agent` still leaves those `None` — per-trust-mode
+    // values for them are a separate design call (what's a sensible
+    // default RSS cap for Plan vs Auto?). When that decision lands,
+    // the rlimits enforcement is already waiting.
 
     #[test]
     fn policy_for_agent_sets_wall_time_for_all_trust_modes() {
