@@ -219,7 +219,16 @@ pub async fn run_shell_command(
             annotate_violations(exit_code, command, &mut stderr_lines);
 
             let summary = format_summary(exit_code, &stdout_lines, &stderr_lines);
-            let full = format_full_output(exit_code, &stdout_lines, &stderr_lines);
+            // Phase 5 PR-8 of #934: thread the policy-supplied output cap
+            // into format_full_output. `None` keeps the historical 2 MB
+            // default so today's behavior is byte-identical until a
+            // future PR populates `policy.limits.max_output_bytes`.
+            let max_bytes = policy
+                .limits
+                .max_output_bytes
+                .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+                .unwrap_or(DEFAULT_MAX_FULL_OUTPUT_BYTES);
+            let full = format_full_output(exit_code, &stdout_lines, &stderr_lines, max_bytes);
 
             Ok(ShellOutput {
                 summary,
@@ -424,15 +433,47 @@ fn format_summary(exit_code: i32, stdout_lines: &[String], stderr_lines: &[Strin
     out
 }
 
+/// Default per-command full-output cap when the active sandbox policy
+/// doesn't override it. 2 MB is the historical value — generous enough
+/// for RecallContext to find errors deep in build/test output, while
+/// still preventing pathological commands from bloating the SQLite DB.
+///
+/// Per-policy override comes in via `policy.limits.max_output_bytes`,
+/// threaded through to [`format_full_output`] (Phase 5 PR-8 of #934 —
+/// the last declared-but-not-enforced field in the sandbox policy).
+const DEFAULT_MAX_FULL_OUTPUT_BYTES: usize = 2 * 1024 * 1024; // 2 MB
+
+/// Render a byte count as a human-friendly string for the truncation
+/// marker. Round numbers get clean labels ("2MB", "512KB"); everything
+/// else falls back to raw bytes so the model + human reader can always
+/// tell exactly where the cap landed.
+fn format_byte_cap(bytes: usize) -> String {
+    const KB: usize = 1024;
+    const MB: usize = 1024 * 1024;
+    if bytes >= MB && bytes.is_multiple_of(MB) {
+        format!("{}MB", bytes / MB)
+    } else if bytes >= KB && bytes.is_multiple_of(KB) {
+        format!("{}KB", bytes / KB)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
 /// Build the full output for DB storage.
 ///
 /// Stored in `messages.full_content` and searchable via RecallContext.
-/// Capped at 2 MB — generous enough for RecallContext to find errors deep in
-/// build/test output, while still preventing pathological commands from
-/// bloating the SQLite DB.
-fn format_full_output(exit_code: i32, stdout_lines: &[String], stderr_lines: &[String]) -> String {
-    const MAX_FULL_OUTPUT_BYTES: usize = 2 * 1024 * 1024; // 2 MB
-
+///
+/// `max_bytes` is the hard cap. The caller computes it from
+/// `policy.limits.max_output_bytes`, falling back to
+/// [`DEFAULT_MAX_FULL_OUTPUT_BYTES`] when the policy is silent. Threading
+/// the cap as a parameter (rather than reading the policy here) keeps
+/// this function trivially testable without spinning up a `SandboxPolicy`.
+fn format_full_output(
+    exit_code: i32,
+    stdout_lines: &[String],
+    stderr_lines: &[String],
+    max_bytes: usize,
+) -> String {
     let mut out = format!("Exit code: {exit_code}\n");
     if !stdout_lines.is_empty() {
         out.push_str("\n--- stdout ---\n");
@@ -443,14 +484,20 @@ fn format_full_output(exit_code: i32, stdout_lines: &[String], stderr_lines: &[S
         out.push_str(&stderr_lines.join("\n"));
     }
 
-    // Hard cap to prevent DB bloat from pathological commands.
-    if out.len() > MAX_FULL_OUTPUT_BYTES {
-        out.truncate(MAX_FULL_OUTPUT_BYTES);
+    // Hard cap to prevent DB bloat from pathological commands. Cap is
+    // policy-controlled (see `max_bytes` doc above); the message names
+    // the actual byte count so a future per-trust-mode override is
+    // legible to the model and the human reading the DB.
+    if out.len() > max_bytes {
+        out.truncate(max_bytes);
         // Find safe char boundary
         while !out.is_char_boundary(out.len()) {
             out.pop();
         }
-        out.push_str("\n\n[... output truncated at 2MB ...]");
+        out.push_str(&format!(
+            "\n\n[... output truncated at {} ...]",
+            format_byte_cap(max_bytes)
+        ));
     }
 
     out
@@ -571,6 +618,54 @@ mod tests {
         );
     }
 
+    /// Phase 5 PR-8 of #934: end-to-end test that
+    /// `policy.limits.max_output_bytes` actually flows through
+    /// `run_shell_command` to truncate `full_output`. Pins the
+    /// integration that the unit tests on `format_full_output` can't
+    /// see — without this, a future refactor could silently drop the
+    /// policy lookup at the call site and only the unit tests would
+    /// stay green (because they call `format_full_output` directly).
+    ///
+    /// Generates ~10KB of stdout under a 1KB cap and asserts the
+    /// stored full_output respects the cap + carries the policy-aware
+    /// truncation marker.
+    #[tokio::test]
+    async fn run_shell_command_honors_policy_max_output_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        // ~10KB of output: yes printed 1000 times of a 10-char string.
+        let args = serde_json::json!({
+            "command": "yes 'aaaaaaaaa' | head -1000"
+        });
+        let mut policy = koda_sandbox::SandboxPolicy::strict_default();
+        policy.limits.max_output_bytes = Some(1024); // 1 KB cap
+
+        let result = run_shell_command(
+            tmp.path(),
+            &args,
+            2000,
+            &bg(),
+            None,
+            &crate::trust::TrustMode::Safe,
+            &policy,
+            None,
+            None,
+        )
+        .await
+        .expect("shell command must succeed");
+
+        let full = result.full_output.expect("full_output should be populated");
+        assert!(
+            full.len() <= 1024 + 50,
+            "full_output ({} bytes) must respect policy cap (1024) + small marker overhead",
+            full.len()
+        );
+        assert!(
+            full.contains("truncated at 1KB"),
+            "truncation marker should name the policy-supplied cap, got tail: {:?}",
+            full.lines().last()
+        );
+    }
+
     #[tokio::test]
     async fn background_spawn_returns_pid() {
         let tmp = tempfile::tempdir().unwrap();
@@ -666,7 +761,7 @@ mod tests {
     fn test_format_full_output_includes_everything() {
         let stdout: Vec<String> = (0..100).map(|i| format!("line {i}")).collect();
         let stderr: Vec<String> = vec!["err1".into(), "err2".into()];
-        let full = format_full_output(1, &stdout, &stderr);
+        let full = format_full_output(1, &stdout, &stderr, DEFAULT_MAX_FULL_OUTPUT_BYTES);
         assert!(full.contains("Exit code: 1"));
         assert!(full.contains("line 0"));
         assert!(full.contains("line 99"));
@@ -678,9 +773,47 @@ mod tests {
     fn test_format_full_output_capped_at_2mb() {
         // Each line is ~16 bytes; 200K lines ≈ 3.2 MB → should truncate.
         let stdout: Vec<String> = (0..200_000).map(|i| format!("line {i}: padding")).collect();
-        let full = format_full_output(0, &stdout, &[]);
+        let full = format_full_output(0, &stdout, &[], DEFAULT_MAX_FULL_OUTPUT_BYTES);
         assert!(full.len() <= 2 * 1024 * 1024 + 50); // 2MB + truncation message
         assert!(full.contains("truncated at 2MB"));
+    }
+
+    /// Phase 5 PR-8 of #934: the policy-supplied `max_output_bytes`
+    /// overrides the historical 2 MB default. Pins the contract that
+    /// `format_full_output` honors its `max_bytes` parameter and
+    /// surfaces the actual cap in the truncation marker (so the model
+    /// + human reading the DB can always tell where output stopped).
+    #[test]
+    fn format_full_output_honors_explicit_cap() {
+        // Tight 4KB cap; the marker should show "4KB", and total output
+        // length must not exceed the cap + a small marker overhead.
+        let stdout: Vec<String> = (0..2000).map(|i| format!("line {i}: padding")).collect();
+        let cap = 4 * 1024;
+        let full = format_full_output(0, &stdout, &[], cap);
+        assert!(
+            full.len() <= cap + 50,
+            "output {} should fit within cap {} + marker",
+            full.len(),
+            cap
+        );
+        assert!(
+            full.contains("truncated at 4KB"),
+            "truncation marker should name the actual cap, got: {}",
+            full.lines().last().unwrap_or("")
+        );
+    }
+
+    /// `format_byte_cap` formats round MB / KB cleanly so the truncation
+    /// marker is human-legible for the common cases (2 MB default,
+    /// future per-trust-mode caps that'll likely be round numbers).
+    /// Falls back to raw bytes for anything weird so the marker is
+    /// always exact, never lossy.
+    #[test]
+    fn format_byte_cap_renders_round_units() {
+        assert_eq!(format_byte_cap(2 * 1024 * 1024), "2MB");
+        assert_eq!(format_byte_cap(4 * 1024), "4KB");
+        assert_eq!(format_byte_cap(1500), "1500 bytes");
+        assert_eq!(format_byte_cap(0), "0 bytes");
     }
 
     #[test]

@@ -295,7 +295,7 @@ as enforcement code lands.
 | `limits.cpu_time_secs` | ✅ | ✅ setrlimit RLIMIT_CPU — SIGXCPU at cap |
 | `limits.max_rss_bytes` | ✅ | ✅ setrlimit RLIMIT_AS — ENOMEM at cap (Linux RLIMIT_RSS is a no-op; AS caps virtual memory) |
 | `limits.max_open_fds` | ✅ | ✅ setrlimit RLIMIT_NOFILE — EMFILE at cap |
-| `limits.max_output_bytes` | ✅ | ✅ shell tool dispatch (line cap) |
+| `limits.max_output_bytes` | ✅ | ✅ shell tool dispatch — truncates `messages.full_content` at policy-supplied byte cap (default 2 MB when `None`) |
 | `trust` (TrustPreference) | ✅ | ✅ approval gate (`koda-core::trust`) |
 
 Declared-only fields are intentionally inert; setting them today has no
