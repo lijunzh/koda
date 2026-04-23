@@ -249,3 +249,64 @@ async fn without_skip_memory_project_memory_reaches_sub_agent() {
         "skip_memory: false must include project memory in sub-agent system prompt; got:\n{all_content}"
     );
 }
+
+// ── #1022 B7 (revised): sub-agents cannot spawn sub-agents ─────────────────
+
+/// If a sub-agent's model emits `InvokeAgent` anyway (rogue, scripted,
+/// or just confused), the dispatch loop short-circuits with a clean
+/// refusal rather than recursing or returning the registry's confusing
+/// `success=false` boilerplate. The sub-agent then continues and
+/// produces its final text response.
+///
+/// This is the regression test for the original B7 bug where nested
+/// `InvokeAgent` fell through to a registry stub returning
+/// `"InvokeAgent is handled by the inference loop."` — and for the
+/// stack-overflow risk that allowing real recursion would have created.
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::new().await;
+
+    write_agent_config(&env, "would-recurse", /* skip_memory */ true);
+
+    // Sub-agent's mock plays two responses in order: it first tries to
+    // call `InvokeAgent` (which should be refused), then emits its
+    // final text. The refusal must not abort the sub-agent.
+    //
+    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
+    unsafe {
+        std::env::set_var(
+            "KODA_MOCK_RESPONSES",
+            r#"[{"tool": "InvokeAgent", "args": {"agent_name": "would-recurse", "prompt": "recurse"}}, {"text": "final after refusal"}]"#,
+        );
+    }
+
+    env.insert_user_message("delegate").await;
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({"agent_name": "would-recurse", "prompt": "go"}),
+        ),
+        MockResponse::Text("parent done".into()),
+    ]);
+    let _events = env.run_inference(&provider).await;
+
+    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
+    unsafe {
+        std::env::remove_var("KODA_MOCK_RESPONSES");
+    }
+
+    // The sub-agent's final text reached the parent — i.e. the refusal
+    // did not abort the sub-agent loop, and the parent received a
+    // useful result.
+    let last = env
+        .db
+        .last_assistant_message(&env.session_id)
+        .await
+        .unwrap();
+    assert!(
+        last.contains("parent done"),
+        "parent must complete after sub-agent refusal cycle; got: {last}"
+    );
+}

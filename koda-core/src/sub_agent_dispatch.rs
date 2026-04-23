@@ -16,6 +16,7 @@ use crate::preview;
 use crate::prompt::build_system_prompt;
 use crate::providers::{ChatMessage, ToolCall};
 use crate::sub_agent_cache::SubAgentCache;
+use crate::tool_dispatch::execute_one_tool;
 use crate::tools::{self, ToolRegistry};
 use crate::trust::{self, ToolApproval, TrustMode};
 
@@ -405,9 +406,43 @@ pub(crate) fn execute_sub_agent<'a>(
         };
         let tool_defs = {
             let mut denied = sub_config.disallowed_tools.clone();
-            // Anti-recursion: fork children cannot spawn sub-agents
-            if is_fork && !denied.contains(&"InvokeAgent".to_string()) {
+            // #1022 B7 (revised): sub-agents cannot spawn sub-agents.
+            // Period. Originally only `is_fork` blocked `InvokeAgent`,
+            // but that left a sharp edge: named sub-agents could call
+            // it, the call fell through to a registry stub returning
+            // `"InvokeAgent is handled by the inference loop."` with
+            // `success=false`, and the model would hallucinate around
+            // the bogus error.
+            //
+            // Allowing real recursion was the alternative considered,
+            // but it requires a depth cap (~hundreds of KB of `async
+            // fn` state per level), `Box::pin` on a mutually-recursive
+            // future, threading `depth: u32` through five functions,
+            // and the resulting design has no use case worth the
+            // surface area. Codex matches this stance — their
+            // sub-agents can't spawn sub-agents either. The master
+            // agent at depth 0 can fire as many parallel/background
+            // workers as it wants; workers complete their task and
+            // report back. Flat by design.
+            //
+            // Filtering at the tool-def level keeps the model from
+            // ever seeing the tool. The sub-agent dispatch loop also
+            // contains a defense-in-depth refusal in case a rogue or
+            // scripted model emits `InvokeAgent` regardless.
+            if !denied.contains(&"InvokeAgent".to_string()) {
                 denied.push("InvokeAgent".to_string());
+            }
+            // #1022 B8: AskUser requires a live `cmd_rx` connected to the
+            // user. Sub-agents have a detached channel (foreground sub-agents
+            // get `&mut mpsc::channel(1).1` from the parent dispatch path,
+            // bg agents get an even more detached one). Filter the tool out
+            // entirely so the model never tries to call it. Without this
+            // filter the call falls through to the registry stub and the
+            // sub-agent gets `"AskUser is handled by the inference loop."`
+            // back as a tool result — which the model then dutifully
+            // hallucinates around.
+            if !denied.contains(&"AskUser".to_string()) {
+                denied.push("AskUser".to_string());
             }
             tools.get_definitions(&sub_config.allowed_tools, &denied)
         };
@@ -503,64 +538,177 @@ pub(crate) fn execute_sub_agent<'a>(
                 // Sub-agents inherit the parent's approval mode
                 let parsed_args: serde_json::Value =
                     serde_json::from_str(&tc.arguments).unwrap_or_default();
-                let approval = trust::check_tool(
-                    &tc.function_name,
-                    &parsed_args,
-                    mode,
-                    Some(effective_root_ref),
-                );
 
-                let output = match approval {
-                    ToolApproval::AutoApprove => {
-                        tools
-                            .execute(&tc.function_name, &tc.arguments, None)
+                // #1022 B7 (revised): defense-in-depth refusal of
+                // `InvokeAgent` and `AskUser`. Both are filtered from
+                // the sub-agent's `tool_defs` above, so a well-behaved
+                // model never emits them. A misbehaving or scripted
+                // model still might — short-circuit here with a clear
+                // refusal message instead of falling through to
+                // `execute_one_tool` (which would happily recurse for
+                // InvokeAgent) or the registry stub (which returns
+                // confusing `success=false` boilerplate).
+                if tc.function_name == "InvokeAgent" {
+                    let refusal = "InvokeAgent is not available inside a sub-agent. \
+                                   Sub-agents are autonomous workers and cannot spawn \
+                                   further sub-agents. Complete the task directly with \
+                                   the tools you have, or report back what additional \
+                                   dispatch the parent agent should perform.";
+                    db.insert_message(
+                        &sub_session,
+                        &Role::Tool,
+                        Some(refusal),
+                        None,
+                        Some(&tc.id),
+                        None,
+                    )
+                    .await?;
+                    continue;
+                }
+                if tc.function_name == "AskUser" {
+                    let refusal = "AskUser is not available inside a sub-agent. \
+                                   Sub-agents have no channel to the user; the parent \
+                                   agent gathers any required input before delegating. \
+                                   Proceed with the information you already have or \
+                                   report what's missing.";
+                    db.insert_message(
+                        &sub_session,
+                        &Role::Tool,
+                        Some(refusal),
+                        None,
+                        Some(&tc.id),
+                        None,
+                    )
+                    .await?;
+                    continue;
+                }
+
+                // #1022 B14: pre-flight validation — catch obvious errors
+                // (missing path, bad regex, file-cache violations) before
+                // we burn an approval prompt or execute. The top-level
+                // sequential dispatcher does the same; without this the
+                // sub-agent would hit the same class of errors *after*
+                // the user had already approved.
+                let validation_error = {
+                    let cache = tools.file_read_cache();
+                    let last_writer = tools.last_writer_cache();
+                    let last_bash = tools.last_bash_cache();
+                    tools::validate::validate_tool_call(
+                        &tc.function_name,
+                        &parsed_args,
+                        effective_root_ref,
+                        Some(&cache),
+                        Some(&last_writer),
+                        Some(&last_bash),
+                    )
+                    .await
+                };
+
+                let output = if let Some(error) = validation_error {
+                    format!("Validation error: {error}")
+                } else {
+                    let approval = trust::check_tool(
+                        &tc.function_name,
+                        &parsed_args,
+                        mode,
+                        Some(effective_root_ref),
+                    );
+
+                    match approval {
+                        ToolApproval::AutoApprove => {
+                            // #1022 B6 + B7: route through `execute_one_tool`
+                            // (instead of calling `tools.execute()` directly)
+                            // so that:
+                            //   - mutating tool calls invalidate the
+                            //     `SubAgentCache` (B6) — otherwise an
+                            //     identical follow-up `InvokeAgent` returns
+                            //     a stale cached result.
+                            //   - nested `InvokeAgent` from inside this
+                            //     sub-agent dispatches recursively into
+                            //     `execute_sub_agent` (B7), instead of
+                            //     hitting the registry stub that returns
+                            //     "InvokeAgent is handled by the inference
+                            //     loop." with success=false.
+                            //   - Bash output streams through the parent
+                            //     sink (free visibility win).
+                            let (_id, result, _success, _full) = execute_one_tool(
+                                tc,
+                                project_root,
+                                &sub_config,
+                                db,
+                                &sub_session,
+                                &tools,
+                                mode,
+                                sink,
+                                cancel.clone(),
+                                sub_agent_cache,
+                                bg_agents,
+                            )
+                            .await;
+                            result
+                        }
+                        ToolApproval::Blocked => {
+                            let detail = tools::describe_action(&tc.function_name, &parsed_args);
+                            let diff_preview = preview::compute(
+                                &tc.function_name,
+                                &parsed_args,
+                                effective_root_ref,
+                            )
+                            .await;
+                            sink.emit(EngineEvent::ActionBlocked {
+                                tool_name: tc.function_name.clone(),
+                                detail,
+                                preview: diff_preview,
+                            });
+                            "[safe mode] Action blocked.".to_string()
+                        }
+                        ToolApproval::NeedsConfirmation => {
+                            let detail = tools::describe_action(&tc.function_name, &parsed_args);
+                            let diff_preview = preview::compute(
+                                &tc.function_name,
+                                &parsed_args,
+                                effective_root_ref,
+                            )
+                            .await;
+                            let effect = crate::trust::resolve_tool_effect_with_registry(
+                                &tc.function_name,
+                                &parsed_args,
+                                &tools,
+                            );
+                            match request_approval(
+                                sink,
+                                cmd_rx,
+                                &cancel,
+                                &tc.function_name,
+                                &detail,
+                                diff_preview,
+                                effect,
+                            )
                             .await
-                            .output
-                    }
-                    ToolApproval::Blocked => {
-                        let detail = tools::describe_action(&tc.function_name, &parsed_args);
-                        let diff_preview =
-                            preview::compute(&tc.function_name, &parsed_args, effective_root_ref)
-                                .await;
-                        sink.emit(EngineEvent::ActionBlocked {
-                            tool_name: tc.function_name.clone(),
-                            detail,
-                            preview: diff_preview,
-                        });
-                        "[safe mode] Action blocked.".to_string()
-                    }
-                    ToolApproval::NeedsConfirmation => {
-                        let detail = tools::describe_action(&tc.function_name, &parsed_args);
-                        let diff_preview =
-                            preview::compute(&tc.function_name, &parsed_args, effective_root_ref)
-                                .await;
-                        let effect = crate::trust::resolve_tool_effect_with_registry(
-                            &tc.function_name,
-                            &parsed_args,
-                            &tools,
-                        );
-                        match request_approval(
-                            sink,
-                            cmd_rx,
-                            &cancel,
-                            &tc.function_name,
-                            &detail,
-                            diff_preview,
-                            effect,
-                        )
-                        .await
-                        {
-                            Some(ApprovalDecision::Approve) => {
-                                tools
-                                    .execute(&tc.function_name, &tc.arguments, None)
-                                    .await
-                                    .output
+                            {
+                                Some(ApprovalDecision::Approve) => {
+                                    let (_id, result, _success, _full) = execute_one_tool(
+                                        tc,
+                                        project_root,
+                                        &sub_config,
+                                        db,
+                                        &sub_session,
+                                        &tools,
+                                        mode,
+                                        sink,
+                                        cancel.clone(),
+                                        sub_agent_cache,
+                                        bg_agents,
+                                    )
+                                    .await;
+                                    result
+                                }
+                                Some(ApprovalDecision::Reject) => "[rejected by user]".to_string(),
+                                Some(ApprovalDecision::RejectWithFeedback { feedback }) => {
+                                    format!("[rejected: {feedback}]")
+                                }
+                                None => "[cancelled]".to_string(),
                             }
-                            Some(ApprovalDecision::Reject) => "[rejected by user]".to_string(),
-                            Some(ApprovalDecision::RejectWithFeedback { feedback }) => {
-                                format!("[rejected: {feedback}]")
-                            }
-                            None => "[cancelled]".to_string(),
                         }
                     }
                 };
