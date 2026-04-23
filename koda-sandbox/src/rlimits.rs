@@ -207,13 +207,19 @@ mod tests {
             !out.status.success(),
             "busy loop should be killed, got {out:?}"
         );
-        // SIGXCPU on Unix is 24; surface via signal exit on Unix.
+        // SIGXCPU on Unix is 24; surface via signal exit on Unix. We
+        // accept SIGKILL (9) as well: when `rlim_cur == rlim_max` (which
+        // we set deliberately) some Linux kernels skip the SIGXCPU grace
+        // period and deliver SIGKILL directly once the hard cap is hit.
+        // Both signals prove the rlimit took effect; the test pins "got
+        // killed by the kernel within the budget", not the specific
+        // signal number.
         use std::os::unix::process::ExitStatusExt as _;
-        assert_eq!(
-            out.status.signal(),
-            Some(libc::SIGXCPU),
-            "child should be killed by SIGXCPU, got status {:?}",
-            out.status
+        let signal = out.status.signal();
+        assert!(
+            matches!(signal, Some(s) if s == libc::SIGXCPU || s == libc::SIGKILL),
+            "child should be killed by SIGXCPU or SIGKILL (kernel-dependent), got status {:?} (signal {signal:?})",
+            out.status,
         );
     }
 
@@ -240,11 +246,7 @@ mod tests {
         );
         let result = cmd.output().await;
         assert!(
-            result.is_err()
-                || !result
-                    .as_ref()
-                    .map(|o| o.status.success())
-                    .unwrap_or(true),
+            result.is_err() || !result.as_ref().map(|o| o.status.success()).unwrap_or(true),
             "unsatisfiable rlimit must fail-closed, got {result:?}"
         );
     }
