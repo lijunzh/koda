@@ -35,9 +35,30 @@ use crate::trust::TrustMode;
 
 use anyhow::Result;
 use koda_sandbox::{BuiltInProxy, BuiltInSocks5Proxy, DEFAULT_DEV_ALLOWLIST, Filter, ProxyHandle};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+/// Cached parse of [`DEFAULT_DEV_ALLOWLIST`].
+///
+/// **#1022 B22**: pre-fix, `Filter::new(DEFAULT_DEV_ALLOWLIST).expect(…)`
+/// was called on every session creation. The args are static, the
+/// result is identical, and parsing the regex set isn't free. More
+/// importantly: a bad pattern in `DEFAULT_DEV_ALLOWLIST` would panic
+/// at *every* session creation in production rather than failing
+/// once at startup. The CI test
+/// `koda_sandbox::filter::tests::default_allowlist_parses` already
+/// guards the static, so the `expect` is sound — but hoisting into
+/// a `OnceLock` makes the contract structural: parse once, panic
+/// once if it ever does, clone-cheap (`Filter` is
+/// `#[derive(Clone)]` and holds a `Vec<Pattern>`) for each session.
+static DEV_ALLOWLIST_FILTER: OnceLock<Filter> = OnceLock::new();
+
+/// Get (or initialize) the cached default-allowlist filter.
+fn dev_allowlist_filter() -> &'static Filter {
+    DEV_ALLOWLIST_FILTER
+        .get_or_init(|| Filter::new(DEFAULT_DEV_ALLOWLIST).expect("default allowlist must parse"))
+}
 
 /// A single conversation session with its own state.
 ///
@@ -168,11 +189,10 @@ impl KodaSession {
         // Spawn the per-session HTTP CONNECT proxy with the default dev
         // allowlist. Fail-open: on spawn failure, log + run unfiltered.
         // Always-on — koda is config-free, there's no "disable" knob.
-        // `expect` on `Filter::new` is sound because
-        // `DEFAULT_DEV_ALLOWLIST` is a static known-good list and
-        // `koda_sandbox::filter::tests::default_allowlist_parses`
-        // guards against regression.
-        let filter = Filter::new(DEFAULT_DEV_ALLOWLIST).expect("default allowlist must parse");
+        // **#1022 B22**: parse-once via `OnceLock` instead of
+        // re-parsing the static allowlist on every session creation.
+        // See `dev_allowlist_filter()` above for the rationale.
+        let filter = dev_allowlist_filter().clone();
         let proxy = match BuiltInProxy::new(filter.clone()).spawn().await {
             Ok(handle) => {
                 agent.tools.set_proxy_port(Some(handle.port));
@@ -303,5 +323,49 @@ impl KodaSession {
     /// Replace the provider (e.g., after switching models or providers).
     pub fn update_provider(&mut self, config: &KodaConfig) {
         self.provider = providers::create_provider(config);
+    }
+}
+
+#[cfg(test)]
+mod b22_tests {
+    //! **#1022 B22** regression tests.
+    //!
+    //! These pin the OnceLock semantics: parse exactly once, return
+    //! the same instance across calls, and stay valid across
+    //! threads. Without these, a future "helpful" refactor that
+    //! moves the cache to a thread-local or a `RwLock<Option<...>>`
+    //! would silently re-introduce the per-session reparse cost
+    //! (or, worse, the per-session panic path).
+    use super::dev_allowlist_filter;
+    use koda_sandbox::DEFAULT_DEV_ALLOWLIST;
+
+    #[test]
+    fn dev_allowlist_filter_is_singleton() {
+        let a = dev_allowlist_filter();
+        let b = dev_allowlist_filter();
+        // Same `&'static` reference \u2014 not just equal contents.
+        // OnceLock guarantees this; if someone refactors to a Box
+        // and clones, this fails fast.
+        assert!(
+            std::ptr::eq(a, b),
+            "dev_allowlist_filter must return the same instance across calls"
+        );
+    }
+
+    #[test]
+    fn dev_allowlist_filter_matches_static_size() {
+        let f = dev_allowlist_filter();
+        // Sanity: every pattern in the static parsed and made it
+        // into the filter. If a future patch silently drops
+        // patterns (e.g. a filter with a max-size cap), this catches it.
+        assert_eq!(f.len(), DEFAULT_DEV_ALLOWLIST.len());
+    }
+
+    #[test]
+    fn dev_allowlist_filter_is_send_sync() {
+        // `OnceLock<Filter>` requires `Filter: Send + Sync` to give
+        // out `&'static Filter` across threads. Pin it.
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<koda_sandbox::Filter>();
     }
 }
