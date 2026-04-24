@@ -60,7 +60,24 @@ async fn run_bg_agent(
     // The recursive `execute_sub_agent` composes the child policy
     // onto this so the bg agent inherits any parent narrowing.
     parent_sandbox_policy: koda_sandbox::SandboxPolicy,
+    // Layer 0 of #996: status channel — we own the writer end.
+    // Pending → Running on entry; one of Completed/Errored/Cancelled
+    // before the future returns. The registry's matching
+    // `watch::Receiver` is what `/agents` and the (future) status-bar
+    // pill read. `send` failures are deliberately ignored: the
+    // receiver lives on the entry inside the registry, and the only
+    // way `send` returns `Err` is if every receiver was dropped —
+    // which means the registry itself was dropped, in which case our
+    // result oneshot below is also doomed and the user can't see us
+    // anyway. Logging would be noise.
+    status_tx: tokio::sync::watch::Sender<crate::bg_agent::AgentStatus>,
 ) {
+    // We don't have per-iteration visibility yet (Layer 4 work);
+    // `iter: 0` means "started, no iter info". Once the inference
+    // loop inside `execute_sub_agent` learns to push iter updates,
+    // the field will reflect 1..=20.
+    let _ = status_tx.send(crate::bg_agent::AgentStatus::Running { iter: 0 });
+
     let (_, mut cmd_rx) = mpsc::channel(1);
     // #1022 B9: bg agents used to run with `NullSink`, so every
     // event inside them was silently dropped — the user only saw
@@ -80,6 +97,13 @@ async fn run_bg_agent(
     let mut sync_args: serde_json::Value = serde_json::from_str(&arguments).unwrap_or_default();
     sync_args["background"] = serde_json::Value::Bool(false);
     let sync_arguments = serde_json::to_string(&sync_args).unwrap();
+
+    // We need to inspect `cancel` *after* the call to decide between
+    // Cancelled and Errored when `execute_sub_agent` returns Err —
+    // a cancelled future typically surfaces as an error from inside
+    // the loop, but the user-visible state should be "Cancelled",
+    // not "Errored". Clone before the move.
+    let cancel_for_status = cancel.clone();
 
     let result = execute_sub_agent(
         &project_root,
@@ -103,6 +127,35 @@ async fn run_bg_agent(
     // error message (for the failure case) so the user can see
     // *what the bg agent attempted* even when it failed.
     let events = buffering_sink.take_lines();
+
+    // Set terminal status *before* sending the result oneshot so a
+    // racing `snapshot()` between the `tx.send` and the entry being
+    // drained sees the terminal state, not stale `Running`.
+    match &result {
+        Ok(output) => {
+            let _ = status_tx.send(crate::bg_agent::AgentStatus::Completed {
+                // `summary` is currently the full output — truncation
+                // is the display layer's job (Codex pattern: see
+                // `COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES`).
+                summary: output.clone(),
+            });
+        }
+        Err(e) => {
+            // Cancellation typically reaches us as an error from
+            // somewhere deep in the loop. Disambiguate by checking
+            // the token: if it fired, the user-visible reason is
+            // "Cancelled", not the inner error string.
+            let status = if cancel_for_status.is_cancelled() {
+                crate::bg_agent::AgentStatus::Cancelled
+            } else {
+                crate::bg_agent::AgentStatus::Errored {
+                    error: e.to_string(),
+                }
+            };
+            let _ = status_tx.send(status);
+        }
+    }
+
     let _ = match result {
         Ok(output) => tx.send(Ok((output, events))),
         Err(e) => tx.send(Err((format!("Error: {e}"), events))),
@@ -183,6 +236,12 @@ pub(crate) fn execute_sub_agent<'a>(
             let bg_tx = reservation.tx;
             let bg_rx = reservation.rx;
             let entry_cancel = reservation.cancel;
+            // Layer 0 of #996: status sender goes to the spawned
+            // future (sole writer); receiver stays on the registry
+            // entry so `snapshot()` / `/agents` can read it without
+            // touching the spawn site.
+            let bg_status_tx = reservation.status_tx;
+            let entry_status_rx = reservation.status_rx;
 
             let project_root_owned = project_root.to_path_buf();
             let parent_config_owned = parent_config.clone();
@@ -212,6 +271,7 @@ pub(crate) fn execute_sub_agent<'a>(
                 bg_cancel,
                 bg_trust,
                 bg_policy,
+                bg_status_tx,
             ));
 
             bg_agents.attach(
@@ -220,6 +280,7 @@ pub(crate) fn execute_sub_agent<'a>(
                 &prompt_owned,
                 bg_rx,
                 entry_cancel,
+                entry_status_rx,
                 handle,
             );
 

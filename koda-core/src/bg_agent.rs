@@ -29,6 +29,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 // **#1022 B16**: was `std::sync::Mutex`. Switched to `parking_lot::Mutex`
 // for three reasons:
 //   1. **No poisoning** — if a thread panics while holding the lock,
@@ -44,9 +45,80 @@ use std::sync::Arc;
 // We deliberately keep this *sync* (not `tokio::sync::Mutex`) because
 // the critical sections are short HashMap ops with no awaits inside.
 use parking_lot::Mutex;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
+
+// ── Layer 0 of #996 ──────────────────────────────────────────────────────
+//
+// Status enum + watch-channel plumbing + per-task cancel + snapshot API.
+// Pure infrastructure: no slash commands, no LLM tools, no UI changes.
+// Layers 1+ (slash commands, tools, status-bar pill) consume this surface.
+//
+// Modeled on Codex's `tokio::sync::watch::Receiver<AgentStatus>` pattern
+// (codex-rs/core/src/session/mod.rs). The bg-agent task drives the
+// `watch::Sender`; the registry stores the matching `Receiver` and exposes
+// snapshots to whoever asks (slash command, LLM tool, status-bar pill).
+
+/// Lifecycle of a single background sub-agent task.
+///
+/// The bg-agent future drives transitions through `watch::Sender<AgentStatus>`.
+/// Initial value is [`AgentStatus::Pending`]; the future flips to `Running`
+/// when execution actually starts and to one of the terminal variants
+/// (`Completed`, `Errored`, `Cancelled`) when it finishes.
+///
+/// `Running.iter` is reserved for Layer 4 (live heartbeat) — Layer 0 just
+/// sets it to `0` so the field shape is stable across PRs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentStatus {
+    /// Reserved but the spawned future hasn't started yet.
+    Pending,
+    /// Actively executing. `iter` is the current inference iteration
+    /// (1..=20); `0` means "started, no iter info yet" (Layer 0 default).
+    Running {
+        /// Current inference iteration (1..=20). `0` is the
+        /// Layer-0 placeholder for "started but no per-iter
+        /// reporting wired yet" — Layer 4 will populate this.
+        iter: u8,
+    },
+    /// User or parent fired the cancel token. Terminal.
+    Cancelled,
+    /// Sub-agent returned a final answer. Terminal.
+    Completed {
+        /// The agent's final output. Truncation for display is the
+        /// renderer's job (see Codex's `COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES`).
+        summary: String,
+    },
+    /// Sub-agent returned an error. Terminal.
+    Errored {
+        /// Error message as produced by `execute_sub_agent`. Same
+        /// truncation note as `Completed.summary`.
+        error: String,
+    },
+}
+
+/// Snapshot of a pending bg-agent task — what `/agents` and the
+/// `ListBackgroundTasks` LLM tool will render.
+///
+/// Cloned out of the registry under the lock so callers can format/display
+/// without holding it. `age` is computed from `started_at` at snapshot time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BgTaskSnapshot {
+    /// Monotonic id assigned at `reserve()` time. Stable for the
+    /// lifetime of the task; reused across snapshots.
+    pub task_id: u32,
+    /// Configured agent name (`explore`, `verify`, ...).
+    pub agent_name: String,
+    /// The prompt the parent delegated. Surfaced verbatim by
+    /// `/agents -v`; truncation is the renderer's job.
+    pub prompt: String,
+    /// Wall-clock duration since the task was attached. Computed at
+    /// snapshot time, so successive snapshots of the same task
+    /// report different ages.
+    pub age: Duration,
+    /// Latest value from the task's `watch::Receiver<AgentStatus>`.
+    pub status: AgentStatus,
+}
 
 /// Payload sent over the bg-agent oneshot.
 ///
@@ -96,12 +168,16 @@ struct BgAgentEntry {
     prompt: String,
     rx: oneshot::Receiver<Result<BgPayload, BgPayload>>,
     /// Per-task cancel — derived as a `child_token()` of the parent
-    /// session's token at spawn time. Firing this token causes the
-    /// in-flight bg agent to observe `is_cancelled()` on its next
-    /// loop iteration. Currently used only for the registry-drop
-    /// path; per-task cancel UX lands in #996.
-    #[allow(dead_code)]
+    /// session's token at spawn time. Firing this token (via
+    /// [`BgAgentRegistry::cancel`] for #996, or via the registry-drop
+    /// path) causes the in-flight bg agent to observe `is_cancelled()`
+    /// on its next loop iteration.
     cancel: CancellationToken,
+    /// Live status channel — the spawned future writes; the registry
+    /// reads at snapshot time. See [`AgentStatus`] for the lifecycle.
+    status_rx: watch::Receiver<AgentStatus>,
+    /// When the task was attached. Used to compute `age` in snapshots.
+    started_at: Instant,
     /// Aborts the spawned task on drop. The bg path uses
     /// `tokio::spawn` on the multi-thread runtime (#1022 B5):
     /// `execute_sub_agent` returns an explicitly `Send`-bounded
@@ -132,7 +208,7 @@ pub struct BgAgentRegistry {
 pub struct BgAgentReservation {
     /// Monotonically-assigned task ID. Surfaces in user-facing
     /// messages (`Background agent 'foo' started (task 7)`) and
-    /// will key the future per-task `/cancel <id>` UX (#996).
+    /// keys the per-task `/cancel <id>` UX (#996).
     pub task_id: u32,
     /// Sender half of the result oneshot. Move into the spawned
     /// future so it can deliver `Ok(output)` / `Err(message)`.
@@ -145,6 +221,14 @@ pub struct BgAgentReservation {
     /// (`entry_cancel`); both halves observe parent cancellation
     /// because this is a `child_token()` of the parent.
     pub cancel: CancellationToken,
+    /// Status sender — move into the spawned future. The future is
+    /// the sole writer; it transitions through
+    /// [`AgentStatus::Pending`] → `Running` → terminal.
+    pub status_tx: watch::Sender<AgentStatus>,
+    /// Status receiver — hand back to the registry via [`BgAgentRegistry::attach`]
+    /// so `snapshot()` and `/agents` can read the current state without
+    /// touching the spawn site.
+    pub status_rx: watch::Receiver<AgentStatus>,
 }
 
 impl BgAgentRegistry {
@@ -166,6 +250,7 @@ impl BgAgentRegistry {
     /// `tx` early; attach binds the handle once it exists.
     pub fn reserve(&self, parent_cancel: &CancellationToken) -> BgAgentReservation {
         let (tx, rx) = oneshot::channel();
+        let (status_tx, status_rx) = watch::channel(AgentStatus::Pending);
         let mut id = self.next_id.lock();
         let task_id = *id;
         *id += 1;
@@ -174,6 +259,8 @@ impl BgAgentRegistry {
             tx,
             rx,
             cancel: parent_cancel.child_token(),
+            status_tx,
+            status_rx,
         }
     }
 
@@ -181,9 +268,19 @@ impl BgAgentRegistry {
     ///
     /// `rx` must be the receiver paired with the `tx` handed out by
     /// `reserve`. Holding `handle` as `AbortOnDropHandle` ensures the
-    /// task is aborted on registry drop (B3 of #1022).
+    /// task is aborted on registry drop (B3 of #1022). `status_rx`
+    /// is the read half of the watch channel whose write half
+    /// (`status_tx`) was moved into the spawned future.
     ///
     /// [`reserve`]: Self::reserve
+    //
+    // 8 args trips `clippy::too_many_arguments` (limit 7). Each one
+    // is load-bearing: id + name + prompt are display metadata;
+    // rx/cancel/status_rx are the three channels we own; handle is
+    // the AbortOnDropHandle. Bundling into a struct just to satisfy
+    // a heuristic would add a one-use type for no readability win
+    // — "practicality beats purity".
+    #[allow(clippy::too_many_arguments)]
     pub fn attach(
         &self,
         reservation_id: u32,
@@ -191,6 +288,7 @@ impl BgAgentRegistry {
         prompt: &str,
         rx: oneshot::Receiver<Result<BgPayload, BgPayload>>,
         cancel: CancellationToken,
+        status_rx: watch::Receiver<AgentStatus>,
         handle: tokio::task::JoinHandle<()>,
     ) {
         self.pending.lock().insert(
@@ -200,6 +298,8 @@ impl BgAgentRegistry {
                 prompt: prompt.to_string(),
                 rx,
                 cancel,
+                status_rx,
+                started_at: Instant::now(),
                 _handle: AbortOnDropHandle::new(handle),
             },
         );
@@ -215,12 +315,33 @@ impl BgAgentRegistry {
         agent_name: &str,
         prompt: &str,
     ) -> (u32, oneshot::Sender<Result<BgPayload, BgPayload>>) {
+        let (id, tx, _status_tx, _cancel) = self.register_test_with_status(agent_name, prompt);
+        (id, tx)
+    }
+
+    /// Test-only sibling of [`register_test`] that returns the status
+    /// sender so a test can manually drive transitions without
+    /// needing a real spawned `run_bg_agent`. The cancel token also
+    /// comes back so cancel-cascade tests can verify the channel.
+    #[cfg(test)]
+    pub fn register_test_with_status(
+        &self,
+        agent_name: &str,
+        prompt: &str,
+    ) -> (
+        u32,
+        oneshot::Sender<Result<BgPayload, BgPayload>>,
+        watch::Sender<AgentStatus>,
+        CancellationToken,
+    ) {
         let (tx, rx) = oneshot::channel();
+        let (status_tx, status_rx) = watch::channel(AgentStatus::Pending);
         let mut id = self.next_id.lock();
         let task_id = *id;
         *id += 1;
         drop(id);
         let cancel = CancellationToken::new();
+        let cancel_observer = cancel.clone();
         let noop = tokio::spawn(async {});
         self.pending.lock().insert(
             task_id,
@@ -229,10 +350,12 @@ impl BgAgentRegistry {
                 prompt: prompt.to_string(),
                 rx,
                 cancel,
+                status_rx,
+                started_at: Instant::now(),
                 _handle: AbortOnDropHandle::new(noop),
             },
         );
-        (task_id, tx)
+        (task_id, tx, status_tx, cancel_observer)
     }
 
     /// Drain all completed background agents. Non-blocking — only takes
@@ -292,6 +415,55 @@ impl BgAgentRegistry {
     /// How many background agents are still running.
     pub fn pending_count(&self) -> usize {
         self.pending.lock().len()
+    }
+
+    // ── Layer 0 of #996: per-task cancel + snapshot ───────────────────────────────
+
+    /// Fire the cancel token for a single task.
+    ///
+    /// Returns `true` if a pending task with that id existed and was
+    /// signalled, `false` if the id is unknown (already drained,
+    /// completed, or never registered). Idempotent: calling twice on
+    /// the same id is safe — [`CancellationToken::cancel`] is itself
+    /// idempotent.
+    ///
+    /// The entry stays in `pending` until the spawned future actually
+    /// observes the token and finishes. `drain_completed()` then
+    /// reaps it via the closed-sender path (or the future's terminal
+    /// `tx.send` if it noticed and shut down cleanly).
+    pub fn cancel(&self, task_id: u32) -> bool {
+        let guard = self.pending.lock();
+        match guard.get(&task_id) {
+            Some(entry) => {
+                entry.cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Snapshot every pending task's metadata for `/agents` and the
+    /// `ListBackgroundTasks` LLM tool.
+    ///
+    /// `age` is computed against `Instant::now()` at call time, so two
+    /// snapshots of the same task report different ages. Status is read
+    /// from each entry's `watch::Receiver` (no blocking, no waiting).
+    /// Sorted by ascending `task_id` so the output is stable across calls.
+    pub fn snapshot(&self) -> Vec<BgTaskSnapshot> {
+        let guard = self.pending.lock();
+        let now = Instant::now();
+        let mut out: Vec<_> = guard
+            .iter()
+            .map(|(id, entry)| BgTaskSnapshot {
+                task_id: *id,
+                agent_name: entry.agent_name.clone(),
+                prompt: entry.prompt.clone(),
+                age: now.saturating_duration_since(entry.started_at),
+                status: entry.status_rx.borrow().clone(),
+            })
+            .collect();
+        out.sort_by_key(|s| s.task_id);
+        out
     }
 }
 
@@ -481,6 +653,7 @@ mod tests {
         let tx = reservation.tx;
         let rx = reservation.rx;
         let cancel_for_entry = reservation.cancel;
+        let status_rx = reservation.status_rx;
 
         // Use a flag the task sets only if it ever finishes a full
         // sleep. If abort works, the flag stays false even though
@@ -506,6 +679,7 @@ mod tests {
             "long task",
             rx,
             cancel_for_entry,
+            status_rx,
             handle,
         );
 
@@ -547,6 +721,161 @@ mod tests {
         assert!(
             r2.cancel.is_cancelled(),
             "child 2 token should observe parent cancel"
+        );
+    }
+
+    // ── Layer 0 of #996 ──────────────────────────────────────────────────────
+    //
+    // Status channel + per-task cancel + snapshot.
+
+    /// `cancel(task_id)` must fire that task's cancel token.
+    /// This is the hook the future `/cancel <id>` slash command and
+    /// `CancelAgent` LLM tool will call. Verifies a known id returns
+    /// true *and* the underlying token actually fires.
+    #[tokio::test]
+    async fn cancel_known_task_fires_token() {
+        let reg = BgAgentRegistry::new();
+        let (task_id, _tx, _status_tx, observer) =
+            reg.register_test_with_status("explore", "map repo");
+
+        assert!(!observer.is_cancelled(), "precondition");
+        let fired = reg.cancel(task_id);
+        assert!(fired, "cancel(known_id) should report success");
+        assert!(
+            observer.is_cancelled(),
+            "the task's cancel token should observe the cancellation"
+        );
+    }
+
+    /// `cancel` on an unknown / already-drained id must return false
+    /// instead of panicking. The slash command and LLM tool will
+    /// surface this to the user as "no such task".
+    #[tokio::test]
+    async fn cancel_unknown_task_returns_false() {
+        let reg = BgAgentRegistry::new();
+        assert!(
+            !reg.cancel(999),
+            "cancel of an unknown id should be a no-op returning false"
+        );
+    }
+
+    /// `cancel` is idempotent — calling twice on the same id is safe
+    /// (the underlying [`CancellationToken::cancel`] is itself
+    /// idempotent). Both calls return true while the entry is still
+    /// in `pending`; a third call after drain returns false.
+    #[tokio::test]
+    async fn cancel_is_idempotent_while_pending() {
+        let reg = BgAgentRegistry::new();
+        let (task_id, _tx, _status_tx, _observer) = reg.register_test_with_status("explore", "x");
+
+        assert!(reg.cancel(task_id));
+        assert!(
+            reg.cancel(task_id),
+            "second cancel should still find the entry and report success"
+        );
+    }
+
+    /// `snapshot()` must return one entry per pending task with
+    /// stable ordering by `task_id`. Status defaults to `Pending`
+    /// because no spawned future has flipped it yet.
+    #[tokio::test]
+    async fn snapshot_lists_pending_tasks_in_id_order() {
+        let reg = BgAgentRegistry::new();
+        let (id_a, _tx_a) = reg.register_test("explore", "map");
+        let (id_b, _tx_b) = reg.register_test("verify", "check");
+
+        let snap = reg.snapshot();
+        assert_eq!(snap.len(), 2);
+        // Ordering is by ascending task_id, regardless of HashMap
+        // iteration order — this is the contract `/agents` relies on.
+        assert_eq!(snap[0].task_id, id_a);
+        assert_eq!(snap[0].agent_name, "explore");
+        assert_eq!(snap[0].prompt, "map");
+        assert_eq!(snap[0].status, AgentStatus::Pending);
+        assert_eq!(snap[1].task_id, id_b);
+        assert_eq!(snap[1].agent_name, "verify");
+        assert_eq!(snap[1].status, AgentStatus::Pending);
+    }
+
+    /// `snapshot()` reads the live status channel — a `status_tx.send`
+    /// must be observable on the very next snapshot, with no polling
+    /// or yielding required (`watch::Receiver::borrow` is sync).
+    /// This is the contract that lets the status-bar pill (Layer 3)
+    /// and live `/agents -v` (Layer 1) reflect transitions immediately.
+    #[tokio::test]
+    async fn snapshot_reflects_status_writes() {
+        let reg = BgAgentRegistry::new();
+        let (task_id, _tx, status_tx, _cancel) = reg.register_test_with_status("explore", "map");
+
+        // Default is Pending.
+        assert_eq!(reg.snapshot()[0].status, AgentStatus::Pending);
+
+        // Flip to Running and observe.
+        status_tx.send(AgentStatus::Running { iter: 3 }).unwrap();
+        let snap = reg.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].task_id, task_id);
+        assert_eq!(snap[0].status, AgentStatus::Running { iter: 3 });
+
+        // Flip to Completed and observe.
+        status_tx
+            .send(AgentStatus::Completed {
+                summary: "42 files".to_string(),
+            })
+            .unwrap();
+        assert_eq!(
+            reg.snapshot()[0].status,
+            AgentStatus::Completed {
+                summary: "42 files".to_string()
+            }
+        );
+    }
+
+    /// `snapshot()` reports a sane `age` that grows monotonically.
+    /// We don't assert exact values (CI clocks are jittery) — just
+    /// that two successive snapshots show a non-decreasing age and
+    /// that the value is non-negative (saturating subtraction
+    /// prevents underflow if the system clock jumps backwards).
+    #[tokio::test]
+    async fn snapshot_age_is_monotonic() {
+        let reg = BgAgentRegistry::new();
+        let (_id, _tx) = reg.register_test("explore", "x");
+
+        let age1 = reg.snapshot()[0].age;
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        let age2 = reg.snapshot()[0].age;
+        assert!(
+            age2 >= age1,
+            "age should be monotonic non-decreasing across snapshots"
+        );
+    }
+
+    /// `snapshot()` on an empty registry returns an empty Vec, not a
+    /// panic and not None. `/agents` will use this to render "No
+    /// background agents."
+    #[tokio::test]
+    async fn snapshot_empty_registry_is_empty_vec() {
+        let reg = BgAgentRegistry::new();
+        assert!(reg.snapshot().is_empty());
+    }
+
+    /// Once a task is drained (completed and removed from `pending`),
+    /// it disappears from `snapshot()` immediately. This pins the
+    /// contract that `/agents` reflects the *currently-pending* set,
+    /// not historical tasks. The Layer 1 "recently-completed lingers
+    /// 30 s" UX is implemented at the *display* layer, not here.
+    #[tokio::test]
+    async fn snapshot_drops_drained_tasks() {
+        let reg = BgAgentRegistry::new();
+        let (_id, tx) = reg.register_test("explore", "x");
+        assert_eq!(reg.snapshot().len(), 1);
+
+        tx.send(Ok(("done".to_string(), Vec::new()))).unwrap();
+        let _ = reg.drain_completed();
+
+        assert!(
+            reg.snapshot().is_empty(),
+            "drained tasks must not appear in snapshots"
         );
     }
 }
