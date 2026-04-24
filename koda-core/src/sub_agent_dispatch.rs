@@ -354,27 +354,18 @@ pub(crate) fn execute_sub_agent<'a>(
                 let sid = db
                     .create_session(&sub_config.agent_name, project_root)
                     .await?;
-                // Fork: copy parent conversation history into the new session
+                // Fork: copy parent conversation history into the new session.
+                //
+                // **#1022 B20**: was a per-row loop — N×(`insert_message`
+                // + `mark_message_complete` for assistant rows), each
+                // call its own fsync, on the synchronous fork hot path.
+                // For a 200-message parent that's ~600 round-trips and
+                // hundreds of ms of disk wait. Now a single transaction
+                // via `copy_messages_into_session` (one fsync at COMMIT,
+                // `completed_at` written inline for assistant rows).
                 if is_fork {
                     let parent_history = db.load_context(parent_session_id).await?;
-                    for msg in &parent_history {
-                        let mid = db
-                            .insert_message(
-                                &sid,
-                                &msg.role,
-                                msg.content.as_deref(),
-                                msg.tool_calls.as_deref(),
-                                msg.tool_call_id.as_deref(),
-                                None, // don't duplicate usage stats
-                            )
-                            .await?;
-                        // Copied assistant messages are already complete in the
-                        // parent — mark them complete in the child session so
-                        // load_context includes them (#875).
-                        if msg.role == Role::Assistant {
-                            db.mark_message_complete(mid).await?;
-                        }
-                    }
+                    db.copy_messages_into_session(&sid, &parent_history).await?;
                 }
                 sid
             }

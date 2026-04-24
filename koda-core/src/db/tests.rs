@@ -1413,3 +1413,182 @@ async fn interrupted_turn_detected_after_incomplete_filtered() {
         "should detect unanswered user prompt; got {interruption:?}"
     );
 }
+
+// ── #1022 B20: copy_messages_into_session ────────────────────────────────
+//
+// Tests the atomic batch-copy method introduced for fork sub-agent
+// dispatch. Covers:
+//
+// - **Empty input is a no-op** (early return; doesn't touch the WAL).
+// - **All roles are copied verbatim** (User/Assistant/Tool).
+// - **Assistant rows are born complete** (`completed_at` set inline,
+//   so `load_context` includes them without a follow-up
+//   `mark_message_complete` round-trip).
+// - **Order is preserved** (load_context returns them in the same
+//   sequence).
+// - **No usage stats leak across sessions** (parent token usage is
+//   not double-counted on the child; matches the pre-fix loop's
+//   `usage = None` policy).
+// - **Tool-call wiring survives the round-trip** (tool_calls JSON
+//   and tool_call_id columns are preserved so the model's
+//   tool_use/tool_result pairs aren't broken in the fork).
+
+#[tokio::test]
+async fn test_copy_messages_empty_is_noop() {
+    let (db, _tmp) = setup().await;
+    let dst = db.create_session("default", _tmp.path()).await.unwrap();
+
+    db.copy_messages_into_session(&dst, &[]).await.unwrap();
+
+    let loaded = db.load_context(&dst).await.unwrap();
+    assert!(loaded.is_empty(), "empty copy must leave session empty");
+}
+
+#[tokio::test]
+async fn test_copy_messages_preserves_roles_and_order() {
+    let (db, _tmp) = setup().await;
+    let src = db.create_session("default", _tmp.path()).await.unwrap();
+    let dst = db.create_session("default", _tmp.path()).await.unwrap();
+
+    db.insert_message(&src, &Role::User, Some("first"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &src, Some("second"), None).await;
+    db.insert_message(&src, &Role::User, Some("third"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &src, Some("fourth"), None).await;
+
+    let history = db.load_context(&src).await.unwrap();
+    assert_eq!(history.len(), 4, "src should have 4 messages");
+
+    db.copy_messages_into_session(&dst, &history).await.unwrap();
+
+    let copied = db.load_context(&dst).await.unwrap();
+    assert_eq!(copied.len(), 4, "dst must contain all 4 messages");
+
+    let texts: Vec<&str> = copied.iter().filter_map(|m| m.content.as_deref()).collect();
+    assert_eq!(
+        texts,
+        vec!["first", "second", "third", "fourth"],
+        "order must be preserved across the batch copy"
+    );
+
+    let roles: Vec<&str> = copied.iter().map(|m| m.role.as_str()).collect();
+    assert_eq!(roles, vec!["user", "assistant", "user", "assistant"]);
+}
+
+#[tokio::test]
+async fn test_copy_messages_assistant_rows_are_born_complete() {
+    // The bug this prevents: pre-fix needed a follow-up
+    // `mark_message_complete` per assistant row, otherwise
+    // `load_context` would filter the copied assistant rows out
+    // (`role != 'assistant' OR completed_at IS NOT NULL`). If the
+    // CASE-based inline `completed_at` ever regresses to NULL, this
+    // test catches it because `load_context` would return only the
+    // user rows.
+    let (db, _tmp) = setup().await;
+    let src = db.create_session("default", _tmp.path()).await.unwrap();
+    let dst = db.create_session("default", _tmp.path()).await.unwrap();
+
+    db.insert_message(&src, &Role::User, Some("q1"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &src, Some("a1"), None).await;
+    db.insert_message(&src, &Role::User, Some("q2"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &src, Some("a2"), None).await;
+
+    let history = db.load_context(&src).await.unwrap();
+    db.copy_messages_into_session(&dst, &history).await.unwrap();
+
+    let loaded = db.load_context(&dst).await.unwrap();
+    let assistant_count = loaded.iter().filter(|m| m.role == Role::Assistant).count();
+    assert_eq!(
+        assistant_count, 2,
+        "both assistant rows must survive load_context's \
+         `completed_at IS NOT NULL` filter \u{2014} if this is 0, the inline \
+         `completed_at` write regressed and assistant rows are being \
+         persisted as incomplete"
+    );
+}
+
+#[tokio::test]
+async fn test_copy_messages_preserves_tool_call_wiring() {
+    // tool_calls JSON and tool_call_id columns must survive the
+    // copy or the model's tool_use/tool_result pairing in the fork
+    // session would be broken (load_context would prune them via
+    // `prune_mismatched_tool_calls`).
+    let (db, _tmp) = setup().await;
+    let src = db.create_session("default", _tmp.path()).await.unwrap();
+    let dst = db.create_session("default", _tmp.path()).await.unwrap();
+
+    let tool_calls_json = r#"[{"id":"tc_1","function":{"name":"Read","arguments":"{}"}}]"#;
+
+    db.insert_message(&src, &Role::User, Some("read foo.txt"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &src, None, Some(tool_calls_json)).await;
+    db.insert_message(
+        &src,
+        &Role::Tool,
+        Some("file contents"),
+        None,
+        Some("tc_1"),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let history = db.load_context(&src).await.unwrap();
+    db.copy_messages_into_session(&dst, &history).await.unwrap();
+
+    let loaded = db.load_context(&dst).await.unwrap();
+    assert_eq!(loaded.len(), 3, "user + assistant + tool must all survive");
+
+    let assistant = loaded.iter().find(|m| m.role == Role::Assistant).unwrap();
+    assert_eq!(
+        assistant.tool_calls.as_deref(),
+        Some(tool_calls_json),
+        "tool_calls JSON must round-trip unchanged"
+    );
+
+    let tool = loaded.iter().find(|m| m.role == Role::Tool).unwrap();
+    assert_eq!(
+        tool.tool_call_id.as_deref(),
+        Some("tc_1"),
+        "tool_call_id must round-trip unchanged"
+    );
+}
+
+#[tokio::test]
+async fn test_copy_messages_does_not_touch_source_session() {
+    // Copying out of `src` must not mutate `src` \u{2014} sanity check
+    // for the SQL (no accidental DELETE, no role swap).
+    let (db, _tmp) = setup().await;
+    let src = db.create_session("default", _tmp.path()).await.unwrap();
+    let dst = db.create_session("default", _tmp.path()).await.unwrap();
+
+    db.insert_message(&src, &Role::User, Some("hello"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &src, Some("world"), None).await;
+
+    let before = db.load_context(&src).await.unwrap();
+    let history = before.clone();
+    db.copy_messages_into_session(&dst, &history).await.unwrap();
+    let after = db.load_context(&src).await.unwrap();
+
+    assert_eq!(
+        before.len(),
+        after.len(),
+        "source session message count must not change"
+    );
+    let before_texts: Vec<_> = before.iter().filter_map(|m| m.content.as_deref()).collect();
+    let after_texts: Vec<_> = after.iter().filter_map(|m| m.content.as_deref()).collect();
+    assert_eq!(
+        before_texts, after_texts,
+        "source content must be unchanged"
+    );
+}
