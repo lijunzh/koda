@@ -261,12 +261,19 @@ pub(crate) fn execute_sub_agent<'a>(
         //   Anthropic), so if the agent has its own provider we leave the model
         //   resolved from that provider's defaults.
         let sub_config = if is_fork {
-            // Fork inherits the parent config verbatim — including trust mode.
-            // The clone preserves trust; no clamping needed since
-            // fork == exact copy.  Assertion guards against future changes
-            // that might add config overrides to the fork path.
+            // Fork inherits the parent config verbatim — including
+            // trust mode. The clone preserves trust; no clamping
+            // needed since fork == exact copy.
+            //
+            // **#1022 B17**: was `debug_assert!`, which is *compiled
+            // out* in release builds. The fork-trust invariant is a
+            // security-relevant property (a future change that
+            // accidentally narrowed/widened trust between the clone
+            // and use would silently ship). Promoted to `assert!`
+            // — the runtime cost is a single enum equality check, so
+            // there's no reason to weaken the guarantee for release.
             let cfg = parent_config.clone();
-            debug_assert!(
+            assert!(
                 cfg.trust == parent_config.trust,
                 "fork must inherit parent trust exactly"
             );
