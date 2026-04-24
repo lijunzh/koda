@@ -37,6 +37,16 @@ pub fn definitions() -> Vec<ToolDefinition> {
             name: "InvokeAgent".to_string(),
             description: "Delegate a task to a specialized sub-agent.
 
+EXECUTION MODES (pick one per call):
+- Sequential foreground (default): one sub-agent runs, blocks until done.
+- Parallel foreground: emit multiple InvokeAgent tool calls in the same
+  message and they run concurrently. Each write-capable agent gets its own
+  isolated workspace, so parallel write-agents cannot trample each other.
+- Background (background=true): returns immediately. Results inject as a
+  user message on the next iteration. Use for long-running independent work.
+- Forked context (agent_name='fork'): inherits your full conversation
+  history. Useful when the sub-agent needs everything you've already loaded.
+
 Use InvokeAgent when:
 - The task requires exploring many files or running many searches that would pollute your context
 - Work is independent and can run in parallel with your current reasoning
@@ -44,16 +54,17 @@ Use InvokeAgent when:
 
 Do NOT use InvokeAgent when:
 - A single Read, Grep, or Glob would answer the question (overhead > benefit)
-- The task requires real-time back-and-forth with the user (sub-agents can't ask questions)
+- The task requires real-time back-and-forth with the user (sub-agents have no way to ask questions; AskUser is filtered from their tool set)
 - You've already loaded the relevant context (just do the work yourself)
 
 Key rules:
 - Sub-agent results are NOT shown to the user — you must summarize them in your reply
-- You can launch multiple InvokeAgent calls in one message to run agents in parallel
+- Sub-agents CANNOT spawn other sub-agents. Plan all fan-out at this level; the InvokeAgent tool is filtered from every sub-agent's tool set.
+- Identical (agent_name, prompt) calls hit a cache and skip the LLM call. Cheap to retry idempotent tasks; no need to memoize yourself.
+- A result starting with '[ERROR: sub-agent ...]' is a structural failure (e.g. iteration cap, workspace setup), not a model answer. Re-strategize rather than treat as content.
 - Always write a clear, self-contained prompt — the sub-agent hasn't seen your conversation
 - Include specific file paths, function names, and success criteria in your prompt
-- Omit agent_name to use the 'task' worker (full write access)
-- Use agent_name='fork' to give the sub-agent your full conversation context"
+- Omit agent_name to use the 'task' worker (full write access)"
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -73,8 +84,10 @@ Key rules:
                     "background": {
                         "type": "boolean",
                         "description": "Run in background and return immediately (default: false). \
-                            Results are injected when complete. Use for independent tasks \
-                            that don't block your current work."
+                            Results are drained and injected as a user message at the start of \
+                            the next iteration — NOT mid-iteration. The bg agent inherits the \
+                            parent's trust + sandbox at spawn time and is cancelled on Ctrl+C. \
+                            Use for independent long-running tasks that don't block your current work."
                     }
                 },
                 "required": ["prompt"]
@@ -270,6 +283,89 @@ mod tests {
         assert_eq!(defs.len(), 2);
         assert_eq!(defs[0].name, "InvokeAgent");
         assert_eq!(defs[1].name, "ListAgents");
+    }
+
+    /// Pin the load-bearing pieces of the InvokeAgent description so future
+    /// "tighter wording" refactors don't silently drop the bits the model
+    /// needs to dispatch correctly. We don't pin exact wording — just the
+    /// concepts that have engineering meaning behind them.
+    #[test]
+    fn test_invoke_agent_description_documents_all_four_modes() {
+        let defs = definitions();
+        let desc = &defs[0].description;
+        // The four execution modes are the user-facing vocabulary the
+        // engine actually implements (sub_agent_dispatch.rs + bg_agent.rs).
+        assert!(
+            desc.contains("Sequential foreground"),
+            "description must name the sequential foreground mode"
+        );
+        assert!(
+            desc.contains("Parallel foreground"),
+            "description must name the parallel foreground mode"
+        );
+        assert!(
+            desc.contains("Background") && desc.contains("background=true"),
+            "description must explain background dispatch and the parameter"
+        );
+        assert!(
+            desc.contains("Forked context") && desc.contains("agent_name='fork'"),
+            "description must name fork mode and its trigger"
+        );
+    }
+
+    #[test]
+    fn test_invoke_agent_description_warns_about_no_nested_invocation() {
+        // Sub-agents cannot spawn other sub-agents (DESIGN.md invariant).
+        // The model needs to know this so it doesn't try a workaround that
+        // hits the empty-tool refusal at runtime.
+        let defs = definitions();
+        let desc = &defs[0].description;
+        assert!(
+            desc.contains("CANNOT spawn other sub-agents") || desc.contains("cannot spawn"),
+            "description must surface the no-nested-invocation rule"
+        );
+    }
+
+    #[test]
+    fn test_invoke_agent_description_explains_error_marker_convention() {
+        // The [ERROR: ...] marker (B18, B21) is structural failure metadata,
+        // not a model answer. The model needs to know that so it
+        // re-strategizes instead of treating the marker as content.
+        let defs = definitions();
+        let desc = &defs[0].description;
+        assert!(
+            desc.contains("[ERROR: sub-agent"),
+            "description must explain the [ERROR: marker so the model knows to re-strategize"
+        );
+    }
+
+    #[test]
+    fn test_invoke_agent_description_mentions_result_caching() {
+        // SubAgentCache lives on KodaSession and survives across turns.
+        // The model should know calls are memoized so it doesn't build its
+        // own (worse) memoization on top.
+        let defs = definitions();
+        let desc = &defs[0].description;
+        assert!(
+            desc.contains("cache") || desc.contains("memoize"),
+            "description must mention result caching so the model doesn't roll its own"
+        );
+    }
+
+    #[test]
+    fn test_invoke_agent_background_param_documents_drain_semantics() {
+        // The drain-on-next-iteration timing is load-bearing: the model
+        // shouldn't expect mid-iteration results from a bg agent.
+        let defs = definitions();
+        let bg_desc = defs[0]
+            .parameters
+            .pointer("/properties/background/description")
+            .and_then(|v| v.as_str())
+            .expect("background param must have a description");
+        assert!(
+            bg_desc.contains("next iteration"),
+            "background param must explain drain-on-next-iteration timing"
+        );
     }
 
     #[test]
