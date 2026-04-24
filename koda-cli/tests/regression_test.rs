@@ -335,3 +335,82 @@ mod hardcoded_trust_mode_at_session_creation {
         assert_no_hardcoded_auto_in_session_new("koda-cli/src/tui_context/mod.rs");
     }
 }
+
+/// **#1022 B19** \u{2014} sub-agent dispatch must clamp child trust against
+/// the **runtime** trust mode (the `mode` parameter), not the
+/// **stale startup** value `parent_config.trust`.
+///
+/// `cycle_trust` and `set_trust` mutate the `SharedTrustMode` atomic
+/// but never the `KodaConfig.trust` field. Pre-fix, sub_agent_dispatch
+/// passed `parent_config.trust` as the parent side of the clamp, so a
+/// user who started in Auto and hit `/safe` would still get sub-agents
+/// clamped against Auto \u{2014} the child could run with broader privileges
+/// than the parent's *current* mode. Real escalation.
+///
+/// The fix routes all three dispatch paths (fork/named/bg) through
+/// `derive_child_trust(mode, declared)`. This test scans
+/// `sub_agent_dispatch.rs` for the antipatterns
+/// (`clamp(parent_config.trust,` or `derive_child_trust(parent_config.trust,`)
+/// and fails with a clear pointer if either reappears.
+///
+/// Why structural and not e2e: an e2e test would need to (1) toggle
+/// trust mid-session, (2) dispatch a sub-agent, (3) introspect the
+/// child's effective trust. That's a heavy harness for a one-line
+/// regression. The structural test catches the only way the bug
+/// reintroduces.
+mod sub_agent_dispatch_uses_runtime_trust_not_stale_config {
+    use std::fs;
+    use std::path::Path;
+
+    #[test]
+    fn no_clamp_or_derive_against_parent_config_trust() {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let path = manifest_dir
+            .join("..")
+            .join("koda-core/src/sub_agent_dispatch.rs");
+        let src =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path.display(), e));
+
+        // Strip rustdoc + line comments before scanning so the
+        // "antipattern this helper exists to prevent" prose in
+        // doc comments doesn't trip the lint. Cheap pass: drop
+        // anything from `//` to end of line. Block comments are
+        // unused in this file but `///` is a `//` so it falls out
+        // naturally.
+        let code: String = src
+            .lines()
+            .map(|line| {
+                if let Some(idx) = line.find("//") {
+                    &line[..idx]
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for needle in [
+            "clamp(parent_config.trust",
+            "derive_child_trust(parent_config.trust",
+        ] {
+            assert!(
+                !code.contains(needle),
+                "sub_agent_dispatch.rs uses `{needle}` \u{2014} this is the \
+                 #1022 B19 antipattern. `parent_config.trust` is the \
+                 stale startup value; runtime trust toggles never \
+                 update it. Pass the runtime `mode` parameter instead. \
+                 See `derive_child_trust` doc in `koda-core/src/trust.rs`."
+            );
+        }
+
+        // Positive assertion: the helper *is* called somewhere.
+        // Catches a refactor that drops trust derivation entirely.
+        assert!(
+            code.contains("derive_child_trust("),
+            "sub_agent_dispatch.rs no longer calls `derive_child_trust` \
+             at all \u{2014} child trust derivation has been bypassed. \
+             Every fork/named/bg path must derive child trust through \
+             this helper."
+        );
+    }
+}

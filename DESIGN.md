@@ -382,9 +382,14 @@ Four execution modes, one mental model:
 
 **Invariants** — enforced consistently across all four modes:
 
-- **Trust never widens**. `derive_child_trust(parent, declared) =
-  TrustMode::clamp(parent, declared)` is the *only* way to compute child
-  trust. Same helper for fork, named, and bg paths.
+- **Trust never widens**. `derive_child_trust(parent_runtime, declared)`
+  in `koda_core::trust` is the *only* way to compute child trust. Same
+  helper for fork, named, and bg paths. **Critical**: `parent_runtime`
+  must be the runtime `mode` parameter threaded through dispatch —
+  never `parent_config.trust`, which is the *startup* value and is
+  not updated by `/safe`/`/auto` toggles (#1022 B19). The structural
+  lint test in `koda-cli/tests/regression_test.rs` enforces this at
+  CI time.
 - **Sandbox never widens**. `compose_child_policy(parent_policy, child_trust,
   root)` calls `SandboxPolicy::compose()` (denies = union, allows = intersect,
   limits = min). Bg agents snapshot the parent's effective policy at spawn

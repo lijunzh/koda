@@ -18,7 +18,7 @@ use crate::providers::{ChatMessage, ToolCall};
 use crate::sub_agent_cache::SubAgentCache;
 use crate::tool_dispatch::execute_one_tool;
 use crate::tools::{self, ToolRegistry};
-use crate::trust::{self, ToolApproval, TrustMode};
+use crate::trust::{self, ToolApproval, TrustMode, derive_child_trust};
 
 use anyhow::{Context, Result};
 use koda_sandbox::{CwdProvider, GitWorktreeProvider, WorkspaceProvider};
@@ -261,9 +261,9 @@ pub(crate) fn execute_sub_agent<'a>(
         //   Anthropic), so if the agent has its own provider we leave the model
         //   resolved from that provider's defaults.
         let sub_config = if is_fork {
-            // Fork inherits the parent config verbatim — including
-            // trust mode. The clone preserves trust; no clamping
-            // needed since fork == exact copy.
+            // Fork inherits the parent config verbatim, *except* for
+            // trust — which must come from the **runtime** mode
+            // (see `derive_child_trust` doc).
             //
             // **#1022 B17**: was `debug_assert!`, which is *compiled
             // out* in release builds. The fork-trust invariant is a
@@ -272,10 +272,25 @@ pub(crate) fn execute_sub_agent<'a>(
             // and use would silently ship). Promoted to `assert!`
             // — the runtime cost is a single enum equality check, so
             // there's no reason to weaken the guarantee for release.
-            let cfg = parent_config.clone();
+            //
+            // **#1022 B19**: pre-fix asserted `cfg.trust ==
+            // parent_config.trust` after a clone, which checked the
+            // wrong thing — `parent_config.trust` is the *startup*
+            // value of the trust mode and ignores `/safe`/`/auto`
+            // toggles. The actual invariant is "fork runs at the
+            // parent's *runtime* trust", and the runtime mode is
+            // `mode`. Now we explicitly write `cfg.trust` from
+            // `derive_child_trust(mode, mode)` (= `mode`) and
+            // assert against `mode`. The clone-then-overwrite
+            // pattern is intentional: keeps the rest of
+            // `parent_config` (model, base_url, system prompt
+            // overrides, ...) verbatim while making the trust
+            // derivation explicit and uniform with the named path.
+            let mut cfg = parent_config.clone();
+            cfg.trust = derive_child_trust(mode, mode);
             assert!(
-                cfg.trust == parent_config.trust,
-                "fork must inherit parent trust exactly"
+                cfg.trust == mode,
+                "fork must inherit parent's runtime trust mode exactly"
             );
             cfg
         } else {
@@ -301,15 +316,29 @@ pub(crate) fn execute_sub_agent<'a>(
             // else: agent opted into its own provider — use its resolved config
             // as-is. The agent JSON is responsible for any model it needs.
 
-            // Inherit trust: child can never exceed parent's trust (#845).
-            // Same pattern as Codex's `apply_spawn_agent_runtime_overrides()`
-            // which copies the parent's runtime sandbox_policy onto the child.
+            // Inherit trust: child can never exceed parent's *runtime*
+            // trust (#845, #1022 B19). Same pattern as Codex's
+            // `apply_spawn_agent_runtime_overrides()` which copies the
+            // parent's runtime sandbox_policy onto the child.
+            //
+            // **#1022 B19**: pre-fix used `parent_config.trust` as the
+            // ceiling. That field is the *startup* trust value;
+            // `cycle_trust`/`set_trust` mutate the SharedTrustMode
+            // atomic but never the config field. So a user who
+            // started in Auto and hit `/safe` would get sub-agents
+            // clamped against the stale Auto, allowing the child to
+            // run with broader privileges than the parent's *current*
+            // mode. Real escalation. The runtime mode is `mode`,
+            // threaded through `execute_one_tool` from the inference
+            // loop — that's the only authoritative value. The helper
+            // `derive_child_trust` exists to make this antipattern
+            // greppable (see its doc).
             let child_trust = cfg.trust;
-            cfg.trust = TrustMode::clamp(parent_config.trust, cfg.trust);
+            cfg.trust = derive_child_trust(mode, cfg.trust);
             if cfg.trust != child_trust {
                 tracing::info!(
                     agent = agent_name,
-                    parent = %parent_config.trust,
+                    parent = %mode,
                     child = %child_trust,
                     effective = %cfg.trust,
                     "sub-agent trust clamped to match parent",

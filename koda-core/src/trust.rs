@@ -122,6 +122,76 @@ impl TrustMode {
     }
 }
 
+// ── Child trust derivation (#1022 B19) ─────────────────────────────────
+
+/// The single, authoritative way to compute a child agent's trust mode.
+///
+/// **Per DESIGN.md § "Trust never widens"**: this helper is the *only*
+/// way fork, named, and bg sub-agent dispatch paths derive child
+/// trust. Three call sites converging on one function ensures the
+/// invariant cannot drift between paths.
+///
+/// # `parent_runtime` MUST be the runtime mode
+///
+/// **#1022 B19**: pre-fix, `sub_agent_dispatch` clamped against
+/// `parent_config.trust` — the *startup* value of the trust mode.
+/// `cycle_trust`/`set_trust` mutate the `SharedTrustMode` atomic but
+/// **never** the `KodaConfig.trust` field. So a user who started in
+/// `Auto` and hit `/safe` would still get sub-agents clamped against
+/// the stale `Auto`, allowing the child to run with broader
+/// privileges than the parent's *current* mode. Real escalation.
+///
+/// The runtime trust mode is the `mode: TrustMode` parameter
+/// threaded through `execute_one_tool` → `execute_sub_agent`. That
+/// value is read from the `SharedTrustMode` atomic at the start of
+/// each turn and is the only source of truth for "what trust level
+/// is this turn running at".
+///
+/// Passing `parent_config.trust` here is the antipattern this helper
+/// exists to prevent.
+///
+/// # `declared` is the child's own declaration
+///
+/// For named sub-agents this is `cfg.trust` loaded from the agent's
+/// JSON. For `fork` (which has no separate declaration) the call
+/// site passes `parent_runtime` again — the helper then collapses
+/// to identity, but the symmetry across all three paths is what
+/// makes the invariant easy to audit.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::trust::{derive_child_trust, TrustMode};
+///
+/// // Named child declares Auto, parent runtime is Safe → child
+/// // clamps down to Safe (declared narrows toward parent).
+/// assert_eq!(
+///     derive_child_trust(TrustMode::Safe, TrustMode::Auto),
+///     TrustMode::Safe,
+/// );
+///
+/// // Named child declares Plan, parent runtime is Auto → child
+/// // stays Plan (declared is already stricter).
+/// assert_eq!(
+///     derive_child_trust(TrustMode::Auto, TrustMode::Plan),
+///     TrustMode::Plan,
+/// );
+///
+/// // Fork case: declared = parent_runtime → identity.
+/// assert_eq!(
+///     derive_child_trust(TrustMode::Safe, TrustMode::Safe),
+///     TrustMode::Safe,
+/// );
+/// ```
+pub fn derive_child_trust(parent_runtime: TrustMode, declared: TrustMode) -> TrustMode {
+    // Implementation is `clamp` — the named function exists to make
+    // "trust derivation" greppable and to carry the documentation
+    // about which `parent` to pass. **Do not inline back into
+    // `TrustMode::clamp` at call sites** — that re-opens the door
+    // for `parent_config.trust` to creep back in.
+    TrustMode::clamp(parent_runtime, declared)
+}
+
 impl From<u8> for TrustMode {
     fn from(v: u8) -> Self {
         match v {
@@ -421,6 +491,91 @@ mod tests {
             TrustMode::clamp(TrustMode::Auto, TrustMode::Auto),
             TrustMode::Auto
         );
+    }
+
+    // ── #1022 B19: derive_child_trust contract ──
+    //
+    // The helper *is* `clamp` underneath, so the matrix duplicates
+    // the `test_clamp` cases. That duplication is intentional:
+    //
+    // - `test_clamp` pins the math.
+    // - These tests pin the **named contract** — if a future refactor
+    //   inlines `clamp` back into call sites, these tests still pass
+    //   (clamp didn't break) but the structural lint test in
+    //   `koda-cli/tests/regression_test.rs` catches the call-site
+    //   regression. Tests target different layers; both must hold.
+    //
+    // The naming (`fork_identity`, `named_clamps_down`,
+    // `child_already_stricter_passes_through`) documents the
+    // architectural cases each call site exercises.
+
+    #[test]
+    fn derive_child_trust_fork_identity() {
+        // Fork passes (mode, mode) — helper collapses to identity.
+        // Documents that the symmetry is preserved.
+        for parent in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
+            assert_eq!(
+                derive_child_trust(parent, parent),
+                parent,
+                "fork (parent==declared) must return parent verbatim"
+            );
+        }
+    }
+
+    #[test]
+    fn derive_child_trust_named_clamps_down() {
+        // Named child declares Auto; parent runtime is Safe →
+        // child must clamp down to Safe. This is the load-bearing
+        // case — a child that wanted broader privileges than its
+        // parent's runtime mode is forcibly narrowed.
+        assert_eq!(
+            derive_child_trust(TrustMode::Safe, TrustMode::Auto),
+            TrustMode::Safe
+        );
+        assert_eq!(
+            derive_child_trust(TrustMode::Plan, TrustMode::Auto),
+            TrustMode::Plan
+        );
+        assert_eq!(
+            derive_child_trust(TrustMode::Plan, TrustMode::Safe),
+            TrustMode::Plan
+        );
+    }
+
+    #[test]
+    fn derive_child_trust_child_already_stricter_passes_through() {
+        // Named child declares Plan with parent Auto → child stays
+        // Plan. Clamp never *widens*, only narrows.
+        assert_eq!(
+            derive_child_trust(TrustMode::Auto, TrustMode::Plan),
+            TrustMode::Plan
+        );
+        assert_eq!(
+            derive_child_trust(TrustMode::Auto, TrustMode::Safe),
+            TrustMode::Safe
+        );
+        assert_eq!(
+            derive_child_trust(TrustMode::Safe, TrustMode::Plan),
+            TrustMode::Plan
+        );
+    }
+
+    #[test]
+    fn derive_child_trust_is_commutative_in_min_but_not_in_meaning() {
+        // Math is symmetric: min(a, b) == min(b, a).
+        // But the *contract* is asymmetric: arg 1 is parent runtime,
+        // arg 2 is declared. This test pins that the math is
+        // commutative (so no path is order-sensitive in result),
+        // while the function name and docstring make the semantic
+        // asymmetry explicit. Catches a refactor that introduces
+        // *non-commutative* behavior (e.g. "if declared is Plan
+        // unconditionally allow it") which would silently change
+        // dispatch semantics.
+        for a in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
+            for b in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
+                assert_eq!(derive_child_trust(a, b), derive_child_trust(b, a));
+            }
+        }
     }
 
     #[test]
