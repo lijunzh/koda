@@ -265,6 +265,34 @@ pub trait Persistence: Send + Sync {
     /// A `NULL` `completed_at` means the message is in-progress or was interrupted.
     async fn mark_message_complete(&self, message_id: i64) -> Result<()>;
 
+    /// Atomically copy a slice of pre-loaded messages into a session.
+    ///
+    /// Used by `fork` sub-agent dispatch (#1022 B20). Pre-fix, the fork
+    /// path looped over `Persistence::insert_message` row-by-row — each
+    /// iteration was 2 queries (INSERT + UPDATE last_accessed_at) plus,
+    /// for assistant rows, a separate `mark_message_complete` (1 more
+    /// query). For an N-message parent history that's ~3N round-trips
+    /// to SQLite, each its own commit, on the synchronous fork hot path.
+    ///
+    /// This method:
+    /// - Wraps every INSERT in a single transaction (one fsync at COMMIT
+    ///   instead of N).
+    /// - Sets `completed_at = datetime('now')` inline at INSERT time for
+    ///   `Role::Assistant` rows, eliminating the separate
+    ///   `mark_message_complete` round-trip per row.
+    /// - Updates `last_accessed_at` on the destination session exactly
+    ///   once at the end (not per-row).
+    ///
+    /// Token usage stats are intentionally **not** copied: fork creates a
+    /// new conversation perspective and cost-attributing parent tokens
+    /// to the child would double-count session usage. Same policy as the
+    /// pre-fix loop, which passed `usage = None` for every copied row.
+    async fn copy_messages_into_session(
+        &self,
+        dst_session: &str,
+        messages: &[Message],
+    ) -> Result<()>;
+
     /// Persist thinking/reasoning text for an assistant message.
     ///
     /// Called only for Claude with extended thinking enabled. All other
