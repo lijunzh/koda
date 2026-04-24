@@ -268,6 +268,69 @@ impl Persistence for Database {
         Ok(())
     }
 
+    /// **#1022 B20**: atomic batch copy of messages into a session.
+    ///
+    /// Replaces the pre-fix per-row loop (`insert_message` x N times,
+    /// each a separate UPDATE-last_accessed_at + optional
+    /// `mark_message_complete`). All inserts run inside a single sqlx
+    /// transaction — one fsync at COMMIT instead of N — with
+    /// `completed_at` written inline for assistant rows so no follow-up
+    /// UPDATE is needed.
+    ///
+    /// Errors mid-loop bubble up via `?`; the transaction is dropped
+    /// without `commit()`, so the destination session sees no partial
+    /// state. Sqlx rolls back on Drop.
+    async fn copy_messages_into_session(
+        &self,
+        dst_session: &str,
+        messages: &[Message],
+    ) -> Result<()> {
+        // Empty-input shortcut: skip the BEGIN/COMMIT roundtrip
+        // entirely. Cheap branch; matches "do nothing if there's
+        // nothing to do" intent and avoids touching the WAL for
+        // a no-op fork (fresh session has no history).
+        if messages.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        for msg in messages {
+            // Inline `completed_at`: assistant rows are born complete
+            // (they've already been delivered to the parent session),
+            // everything else stays NULL. This eliminates the
+            // per-row `mark_message_complete` round-trip from the
+            // pre-fix loop. Mirrors the `completed_at = datetime('now')`
+            // inline pattern already used by the compaction continuation
+            // hint elsewhere in this file.
+            sqlx::query(
+                "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, completed_at) \
+                 VALUES (?, ?, ?, ?, ?, \
+                   CASE WHEN ? = 'assistant' THEN datetime('now') ELSE NULL END)",
+            )
+            .bind(dst_session)
+            .bind(msg.role.as_str())
+            .bind(msg.content.as_deref())
+            .bind(msg.tool_calls.as_deref())
+            .bind(msg.tool_call_id.as_deref())
+            .bind(msg.role.as_str()) // bound twice for the CASE; sqlx has no positional reuse
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // Single last_accessed_at bump for the whole batch. Parent's
+        // per-row pattern updated this N times; the value is
+        // monotonic-by-second so collapsing to one update is
+        // observationally identical.
+        sqlx::query("UPDATE sessions SET last_accessed_at = datetime('now') WHERE id = ?")
+            .bind(dst_session)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Persist the accumulated thinking/reasoning text for an assistant message.
     ///
     /// Called after `insert_message` so the INSERT signature stays lean —
