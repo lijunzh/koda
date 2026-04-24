@@ -321,8 +321,7 @@ mod tests {
         let defs = definitions();
         let desc = &defs[0].description;
         assert!(
-            desc.contains("CANNOT spawn other sub-agents")
-                || desc.contains("cannot spawn"),
+            desc.contains("CANNOT spawn other sub-agents") || desc.contains("cannot spawn"),
             "description must surface the no-nested-invocation rule"
         );
     }
