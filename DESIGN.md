@@ -378,7 +378,15 @@ Four execution modes, one mental model:
 4. **Forked context** (`agent_name="fork"`) — copies the parent's full
    conversation history into the new session. Fork children cannot spawn
    sub-agents (recursion guard) — same blanket rule that applies to all
-   sub-agents (see invariant below).
+   sub-agents (see invariant below). The copy itself is **atomic and
+   batched** (#1022 B20): a single sqlx transaction inserts every parent
+   row with `completed_at` written inline for assistant rows, so an
+   N-message fork costs N+3 queries with one fsync instead of ~3N
+   queries with N fsyncs. `Persistence::copy_messages_into_session` is
+   the only fork-copy path; the row-by-row loop it replaced was a hot
+   path the user waits on synchronously, and partial writes on error
+   are impossible because the transaction is dropped without
+   `commit()` on any `?`.
 
 **Invariants** — enforced consistently across all four modes:
 
@@ -402,6 +410,33 @@ Four execution modes, one mental model:
   worktree (macOS: `ClonefileProvider` ~3-4× faster; Linux:
   `GitWorktreeProvider`). Read-only agents share the parent root via
   `CwdProvider`. Parallel write-agents cannot trample each other.
+  **Provision failure on a write-tool sub-agent does not silently
+  downgrade** (#1022 B21): the dispatch short-circuits with a
+  structural failure marker (see next invariant) instead of dropping
+  the sub-agent into the parent's unisolated tree, which would let
+  parallel sub-agents race on the same files. The user-visible warning
+  surfaces through `EngineEvent::Info` so it isn't buried in trace
+  logs. Read-only failures keep the project_root fallback because
+  there's no race-on-files corruption mode without write tools.
+- **Structural failures use the `[ERROR: ...]` marker convention**
+  (#1022 B18, B21). When a sub-agent can't produce an answer for
+  reasons that are *not* the model's fault — iteration cap exhausted,
+  workspace provision failed, future failure modes — the dispatch
+  returns a single-line marker shaped `[ERROR: sub-agent '<name>' ...
+  <reason> ... <re-strategize hint>]`. Three properties are
+  load-bearing and pinned by unit tests: (1) the `[ERROR:` prefix
+  signals "structural failure metadata, not a sub-agent answer" so
+  the parent model doesn't treat the marker as content; (2) the
+  agent name appears so multi-agent flows can disambiguate which
+  sub-agent failed; (3) the marker is single-line so it formats
+  cleanly as a tool result. Markers are cached by `SubAgentCache`
+  with the same key as a successful result, so a verbatim
+  re-dispatch with the same prompt doesn't pay the failure cost
+  twice — the cache invalidates on any mutating tool, so a
+  write-then-retry naturally bypasses the marker. Free constructor
+  functions (e.g. `iteration_cap_marker`, `workspace_provision_failure_marker`)
+  keep the contract testable without standing up the full sub-agent
+  harness.
 - **Result caching** (P1, cost lever). `SubAgentCache` keyed by
   `(agent_name, prompt_hash)`. Cache hits = no LLM call. Lives on
   `KodaSession` (sibling of `BgAgentRegistry`) so cross-turn hits
