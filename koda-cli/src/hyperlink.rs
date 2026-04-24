@@ -10,15 +10,28 @@
 //! \x1B]8;;<URI>\x07<visible char>\x1B]8;;\x07
 //! ```
 //!
-//! ## Why per-cell wrapping
+//! ## Why "first-cell-only" wrapping (#995 fix)
 //!
-//! ratatui's crossterm backend emits a `MoveTo` between every cell when
-//! flushing a frame, which means a single OSC 8 sequence spanning many
-//! cells gets shredded by cursor moves. The fix \u2014 borrowed from
-//! `codex-rs/tui/src/onboarding/auth.rs::mark_url_hyperlink` \u2014 is to put
-//! the *full* `OPEN \u2026 BEL <char> CLOSE BEL` pair inside *each* cell's
-//! symbol. Terminals dedupe consecutive identical OSC 8 IDs, so adjacent
-//! cells render as one continuous link.
+//! The naive approach is to wrap *each* cell of a path run with its own
+//! `OPEN \u2026 BEL <char> CLOSE BEL` pair so a per-cell `MoveTo` from the
+//! crossterm backend can't shred the link. That works for *visible*
+//! output but silently corrupts ratatui's diff: `Buffer::diff` calls
+//! `current.symbol().width()` (via `unicode-width`) which counts every
+//! printable byte inside the OSC 8 payload as a column. A wrap with a
+//! 30-byte URL inflates a 1-column cell to a `width()` of ~37, which
+//! makes the diff treat the next ~36 cells as wide-character trailers
+//! and drop them from the update set. On the next frame, those skipped
+//! cells display *previous-frame* content \u2014 the "two layers of garbled
+//! text" symptom in #995.
+//!
+//! Fix: put the *entire* visible text of the run plus a single OSC 8
+//! pair in the run's first cell, and mark the trailing cells with
+//! `set_skip(true)` so the diff leaves them alone. The terminal renders
+//! the visible text in one go (cursor advances by the visible width,
+//! not the symbol byte count), correctly painting over every column the
+//! run occupies. The width inflation is now contained to one cell, and
+//! the trailing cells are explicitly skipped \u2014 not implicitly via
+//! `to_skip`/`invalidated` arithmetic ratatui can't reason about.
 //!
 //! ## Why no terminal-support probe
 //!
@@ -156,16 +169,37 @@ fn escape_url(raw: &str) -> String {
     cleaned
 }
 
-/// Replace the symbol of every cell in `[start, end)` of row `y` with
-/// `OSC8 uri BEL <sym> OSC8 BEL` so each cell is a self-contained link.
+/// Wrap a contiguous PATH-styled run with a single OSC 8 hyperlink.
+///
+/// The run's first cell carries the full payload
+/// (`OSC8_OPEN <uri> BEL <visible text> OSC8_CLOSE BEL`); trailing
+/// cells in the run are cleared and marked `skip = true` so ratatui's
+/// diff won't push them to the terminal. See the module-level rationale
+/// (#995) for why this asymmetric layout is required.
 fn wrap_run_with_osc8(buf: &mut Buffer, y: u16, start: u16, end: u16, uri: &str) {
+    // Concatenate the visible text from each cell in the run.
+    let mut visible = String::new();
     for x in start..end {
+        visible.push_str(buf[(x, y)].symbol());
+    }
+    if visible.is_empty() {
+        return;
+    }
+    // Sanitize the visible text the same way we sanitize the URI: ESC and
+    // BEL bytes from a hostile filename would otherwise prematurely close
+    // the OSC 8 hyperlink and let attacker-controlled bytes execute as
+    // terminal control sequences.
+    let safe_visible = escape_url(&visible);
+    buf[(start, y)].set_symbol(&format!("\x1B]8;;{uri}\x07{safe_visible}\x1B]8;;\x07"));
+    // Clear the trailing cells and mark them skip. The first cell's wide
+    // symbol already paints these columns visually \u2014 keeping stale
+    // per-cell symbols here would mislead callers that read the buffer
+    // (mouse-select extraction, snapshot tests) and confuse ratatui's
+    // diff if the run ever shrinks between frames.
+    for x in (start + 1)..end {
         let cell = &mut buf[(x, y)];
-        let sym = cell.symbol().to_string();
-        if sym.is_empty() {
-            continue;
-        }
-        cell.set_symbol(&format!("\x1B]8;;{uri}\x07{sym}\x1B]8;;\x07"));
+        cell.set_symbol("");
+        cell.set_skip(true);
     }
 }
 
@@ -388,5 +422,125 @@ mod tests {
         // Visible content unchanged.
         let visible = strip_osc8(&raw);
         assert!(visible.contains("\u{25cf} Read src/main.rs"));
+    }
+
+    /// Regression for #995: OSC 8 wrapping must not inflate ratatui's
+    /// per-cell width accounting in a way that makes `Buffer::diff` skip
+    /// neighboring cells.
+    ///
+    /// `Buffer::diff` reads `current.symbol().width()` (via `unicode-width`)
+    /// and uses it to set `to_skip`/`invalidated` for trailing cells. If
+    /// the symbol contains the printable bytes of a long URI, that width
+    /// can balloon to 30+ columns \u2014 ratatui then treats the next 30 cells
+    /// as wide-character trailers and drops them from the diff. On the
+    /// next frame those skipped cells display *previous-frame* content,
+    /// which is the visible "two layers of garbled text" symptom in the
+    /// bug report.
+    ///
+    /// The fix: only the run's *first* cell carries the OSC 8 payload,
+    /// trailing cells are cleared and `set_skip(true)`'d so the diff
+    /// doesn't skip beyond the run.
+    #[test]
+    fn osc8_wrap_does_not_inflate_diff_skip_beyond_run() {
+        use ratatui::text::{Line, Span};
+        use ratatui::widgets::{Paragraph, Widget};
+        use unicode_width::UnicodeWidthStr;
+
+        // Lay out: "Read <PATH-styled>some/long/path.rs</PATH>  <plain>END</plain>"
+        // The plain "END" sits AFTER the path run \u2014 if the diff over-skips
+        // due to OSC 8 width inflation, those cells won't be in the diff.
+        let area = Rect::new(0, 0, 40, 1);
+        let path = "some/long/path.rs";
+        let line = Line::from(vec![
+            Span::raw("Read "),
+            Span::styled(path, theme::PATH),
+            Span::raw("  END"),
+        ]);
+        let mut prev = Buffer::empty(area);
+        Paragraph::new(line.clone()).render(area, &mut prev);
+        link_paths_in_buffer(&mut prev, area, Path::new("/p"));
+
+        // Build a "next" frame with different visible text in the path run
+        // (same length so column layout stays comparable). If the diff
+        // works correctly, the cell containing the new path's first char
+        // must appear in the update set.
+        let next_path = "diff/long/PATH.rs";
+        let next_line = Line::from(vec![
+            Span::raw("Read "),
+            Span::styled(next_path, theme::PATH),
+            Span::raw("  END"),
+        ]);
+        let mut next = Buffer::empty(area);
+        Paragraph::new(next_line).render(area, &mut next);
+        link_paths_in_buffer(&mut next, area, Path::new("/p"));
+
+        let updates = prev.diff(&next);
+
+        // The first cell of the path run (column 5) MUST be in the diff
+        // \u2014 it carries the new OSC 8 payload + visible text.
+        assert!(
+            updates.iter().any(|(x, _, _)| *x == 5),
+            "diff missing path-run head cell: {updates:?}"
+        );
+
+        // Sanity check: the trailing cells of the path run should NOT
+        // appear in the diff (they're skip=true). If they DO appear,
+        // we've regressed back to per-cell wrapping.
+        let path_len = path.chars().count() as u16;
+        let trailing_in_diff: Vec<u16> = updates
+            .iter()
+            .map(|(x, _, _)| *x)
+            .filter(|&x| x > 5 && x < 5 + path_len)
+            .collect();
+        assert!(
+            trailing_in_diff.is_empty(),
+            "trailing path cells should be skip=true, but found in diff: {trailing_in_diff:?}"
+        );
+
+        // The width of the head cell's symbol is naturally inflated by the
+        // OSC 8 escape \u2014 that's expected. What matters is that the
+        // trailing cells are explicitly skipped, which we just verified.
+        let head_width = next[(5, 0)].symbol().width();
+        assert!(
+            head_width > 1,
+            "OSC 8 wrap should inflate head cell width (got {head_width})"
+        );
+    }
+
+    /// Regression for #995 (companion): when the path-run shrinks between
+    /// frames, the now-blank cells must end up in the diff so the
+    /// terminal clears the leftover characters from the longer prior path.
+    #[test]
+    fn osc8_wrap_clears_leftover_when_path_shrinks() {
+        use ratatui::text::{Line, Span};
+        use ratatui::widgets::{Paragraph, Widget};
+
+        let area = Rect::new(0, 0, 40, 1);
+
+        // Frame 1: long path occupies cols 0..20.
+        let mut prev = Buffer::empty(area);
+        Paragraph::new(Line::from(Span::styled("a/very/long/path.rs", theme::PATH)))
+            .render(area, &mut prev);
+        link_paths_in_buffer(&mut prev, area, Path::new("/p"));
+
+        // Frame 2: short path occupies cols 0..5 only; the remaining
+        // columns become blank cells.
+        let mut next = Buffer::empty(area);
+        Paragraph::new(Line::from(Span::styled("a.rs", theme::PATH))).render(area, &mut next);
+        link_paths_in_buffer(&mut next, area, Path::new("/p"));
+
+        let updates = prev.diff(&next);
+
+        // Expect at least one update at columns >= 4 (where the long
+        // path's leftover chars sat) so the terminal clears them.
+        let trailing_clears: Vec<u16> = updates
+            .iter()
+            .map(|(x, _, _)| *x)
+            .filter(|&x| x >= 4)
+            .collect();
+        assert!(
+            !trailing_clears.is_empty(),
+            "shrinking path must produce trailing clear updates, got: {updates:?}"
+        );
     }
 }
