@@ -659,12 +659,26 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                  Result:\n{}",
                 bg_result.agent_name, bg_result.prompt, bg_result.output
             );
-            sink.emit(EngineEvent::Info {
-                message: format!(
-                    "  \u{2705} Background agent '{}' {status}",
-                    bg_result.agent_name
-                ),
-            });
+            // #1022 B9: surface the bg agent's narrative trace so the
+            // user can see what it did, not just that it finished.
+            // Pre-fix this was a single-line "✅ X completed" with
+            // *no visibility* into intermediate tool calls (bg agents
+            // ran with NullSink). Now the trace is appended as
+            // bullet-formatted lines under the completion header.
+            // Trace goes to the *user* via Info; the model sees the
+            // result via the injected user message above (which is
+            // intentionally trace-free — the model already chose
+            // those tool calls and doesn't need to re-read its own
+            // history).
+            let mut msg = format!(
+                "  \u{2705} Background agent '{}' {status}",
+                bg_result.agent_name
+            );
+            if !bg_result.events.is_empty() {
+                msg.push('\n');
+                msg.push_str(&bg_result.events.join("\n"));
+            }
+            sink.emit(EngineEvent::Info { message: msg });
             db.insert_message(session_id, &Role::User, Some(&injection), None, None, None)
                 .await?;
         }

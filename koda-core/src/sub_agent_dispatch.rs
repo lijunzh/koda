@@ -45,7 +45,9 @@ async fn run_bg_agent(
     arguments: String,
     sub_agent_cache: SubAgentCache,
     parent_session: String,
-    tx: tokio::sync::oneshot::Sender<Result<String, String>>,
+    tx: tokio::sync::oneshot::Sender<
+        Result<crate::bg_agent::BgPayload, crate::bg_agent::BgPayload>,
+    >,
     // B2 of #1022: parent's cancel token, threaded as a `child_token()`
     // so a Ctrl-C in the parent loop cancels the bg agent.
     cancel: CancellationToken,
@@ -60,7 +62,15 @@ async fn run_bg_agent(
     parent_sandbox_policy: koda_sandbox::SandboxPolicy,
 ) {
     let (_, mut cmd_rx) = mpsc::channel(1);
-    let null_sink = crate::engine::sink::NullSink;
+    // #1022 B9: bg agents used to run with `NullSink`, so every
+    // event inside them was silently dropped — the user only saw
+    // the spawn line and the eventual completion line. Now we use
+    // `BufferingSink` to capture a narrative trace (tool calls,
+    // info, auto-rejected approvals) that ships back over the
+    // result oneshot and gets surfaced to the user at
+    // result-injection time. See `engine::sink::BufferingSink` for
+    // the capture rules.
+    let buffering_sink = crate::engine::sink::BufferingSink::new();
     let nested_bg = crate::bg_agent::new_shared();
 
     // Override background=false to prevent infinite spawn — a bg agent
@@ -77,7 +87,7 @@ async fn run_bg_agent(
         &db,
         &sync_arguments,
         parent_trust,
-        &null_sink,
+        &buffering_sink,
         cancel,
         &mut cmd_rx,
         None,
@@ -88,9 +98,14 @@ async fn run_bg_agent(
     )
     .await;
 
+    // Drain the buffered trace exactly once. The events ship back
+    // alongside the output (for the success case) or alongside the
+    // error message (for the failure case) so the user can see
+    // *what the bg agent attempted* even when it failed.
+    let events = buffering_sink.take_lines();
     let _ = match result {
-        Ok(output) => tx.send(Ok(output)),
-        Err(e) => tx.send(Err(format!("Error: {e}"))),
+        Ok(output) => tx.send(Ok((output, events))),
+        Err(e) => tx.send(Err((format!("Error: {e}"), events))),
     };
 }
 
@@ -706,6 +721,15 @@ pub(crate) fn execute_sub_agent<'a>(
                                 Some(ApprovalDecision::Reject) => "[rejected by user]".to_string(),
                                 Some(ApprovalDecision::RejectWithFeedback { feedback }) => {
                                     format!("[rejected: {feedback}]")
+                                }
+                                Some(ApprovalDecision::RejectAuto { reason }) => {
+                                    // #1022 B15: same shape as the existing
+                                    // sub-agent auto-reject below, so the model
+                                    // sees a uniform "no human, here's why"
+                                    // signal regardless of whether the auto-
+                                    // rejection came from headless policy or
+                                    // from a closed approval channel.
+                                    format!("[auto-rejected: {reason}]")
                                 }
                                 None => {
                                     // #1022 B10: `request_approval` returns `None`

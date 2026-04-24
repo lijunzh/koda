@@ -745,6 +745,23 @@ pub(crate) async fn execute_tools_sequential(
                         .await?;
                         continue;
                     }
+                    Some(ApprovalDecision::RejectAuto { reason }) => {
+                        // #1022 B15: distinct from Reject so the model knows
+                        // there's no human in the loop — it should adapt its
+                        // plan to the structural constraint, not ask for
+                        // clarification.
+                        let result = format!("[auto-rejected: {reason}]");
+                        db.insert_message(
+                            session_id,
+                            &Role::Tool,
+                            Some(&result),
+                            None,
+                            Some(&tc.id),
+                            None,
+                        )
+                        .await?;
+                        continue;
+                    }
                     None => {
                         // Cancelled
                         return Ok(());
