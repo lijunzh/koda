@@ -14,8 +14,8 @@ cargo test --workspace --features koda-core/test-support
 
 ## Local checks (one-time setup)
 
-Activate the pre-push hook to catch `fmt`, `clippy`, and test failures before
-they hit CI:
+Activate the pre-push hook to catch `fmt` and `clippy` failures before they
+hit CI:
 
 ```bash
 git config core.hooksPath .githooks
@@ -23,14 +23,11 @@ git config core.hooksPath .githooks
 
 The hook runs:
 1. `cargo fmt --all --check`
-2. `cargo clippy --workspace … -D warnings`
-3. `cargo check --workspace --all-targets`
-4. `cargo test --lib` across the workspace + all fast integration suites
-   (`e2e_safety_test`, `e2e_tools_test`, `file_tools_test`, `guarantee_matrix_test`, …)
+2. `cargo clippy --workspace --all-targets -- -D warnings`
 
-Slow suites (`mcp_http_transport`, `inference_edge`, `inference_recovery`) are
-skipped in the hook — they involve sleep/retry loops and would make every push
-take 5+ minutes. CI runs them on every push.
+That's it — typical wall-clock is ~6–35s depending on cache warmth. CI runs
+everything else (`cargo check`, full test matrix on Linux + macOS, `cargo doc`,
+`cargo audit`).
 
 > **`--no-verify` is for genuine WIP pushes only** (draft PR, CI debugging,
 > mid-refactor checkpoint). Using it on a branch you intend to merge defeats

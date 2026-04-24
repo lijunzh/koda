@@ -394,8 +394,8 @@ audit      (independent)              reads Cargo.lock against advisories — or
   → `cargo check --all-targets` (no features, catches cfg-gated gaps) → `cargo test`.
   A failure in any step aborts the rest — fast-fail is preserved within the job.
 - One container = one compile chain = no redundant recompilation across separate runners.
-  The pre-push hook mirrors this sequence locally, so CI is a clean-environment confirmation
-  rather than a first-discovery gate.
+  The pre-push hook locally runs only `cargo fmt --check` + `cargo clippy --workspace`
+  (the two cheap checks) — CI is the source of truth for tests, doc, and audit.
 - `doc`, `audit` run unconditionally in parallel — independent signals, fast enough that
   cancelling them on test failure would lose information, not save time.
 
