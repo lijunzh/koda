@@ -28,7 +28,22 @@
 //! inference loop and the background task spawner.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+// **#1022 B16**: was `std::sync::Mutex`. Switched to `parking_lot::Mutex`
+// for three reasons:
+//   1. **No poisoning** — if a thread panics while holding the lock,
+//      subsequent calls don't get a `PoisonError`. The bg registry
+//      is shared between the main inference loop and N spawned tasks;
+//      a panic in one critical section bricking every subsequent
+//      drain would be a particularly bad failure mode.
+//   2. **Faster on contention** — no atomic check for poison flag,
+//      no `Result` allocation. The contention is real: `drain_completed`
+//      runs on every loop iteration.
+//   3. **Cleaner API** — `.lock()` returns a guard directly, no
+//      `.unwrap()` boilerplate at every call site.
+// We deliberately keep this *sync* (not `tokio::sync::Mutex`) because
+// the critical sections are short HashMap ops with no awaits inside.
+use parking_lot::Mutex;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
@@ -151,7 +166,7 @@ impl BgAgentRegistry {
     /// `tx` early; attach binds the handle once it exists.
     pub fn reserve(&self, parent_cancel: &CancellationToken) -> BgAgentReservation {
         let (tx, rx) = oneshot::channel();
-        let mut id = self.next_id.lock().unwrap();
+        let mut id = self.next_id.lock();
         let task_id = *id;
         *id += 1;
         BgAgentReservation {
@@ -178,7 +193,7 @@ impl BgAgentRegistry {
         cancel: CancellationToken,
         handle: tokio::task::JoinHandle<()>,
     ) {
-        self.pending.lock().unwrap().insert(
+        self.pending.lock().insert(
             reservation_id,
             BgAgentEntry {
                 agent_name: agent_name.to_string(),
@@ -201,13 +216,13 @@ impl BgAgentRegistry {
         prompt: &str,
     ) -> (u32, oneshot::Sender<Result<BgPayload, BgPayload>>) {
         let (tx, rx) = oneshot::channel();
-        let mut id = self.next_id.lock().unwrap();
+        let mut id = self.next_id.lock();
         let task_id = *id;
         *id += 1;
         drop(id);
         let cancel = CancellationToken::new();
         let noop = tokio::spawn(async {});
-        self.pending.lock().unwrap().insert(
+        self.pending.lock().insert(
             task_id,
             BgAgentEntry {
                 agent_name: agent_name.to_string(),
@@ -223,7 +238,7 @@ impl BgAgentRegistry {
     /// Drain all completed background agents. Non-blocking — only takes
     /// entries whose oneshot has already resolved.
     pub fn drain_completed(&self) -> Vec<BgAgentResult> {
-        let mut guard = self.pending.lock().unwrap();
+        let mut guard = self.pending.lock();
         let mut completed = Vec::new();
         let mut done_ids = Vec::new();
 
@@ -276,7 +291,7 @@ impl BgAgentRegistry {
 
     /// How many background agents are still running.
     pub fn pending_count(&self) -> usize {
-        self.pending.lock().unwrap().len()
+        self.pending.lock().len()
     }
 }
 
@@ -293,14 +308,14 @@ impl Drop for BgAgentRegistry {
     /// only to make the lifecycle explicit and to give a single
     /// place to add telemetry later.
     fn drop(&mut self) {
-        // Try to lock; if poisoned (a thread panicked while holding
-        // it) we still want to drain the entries so their handles
-        // get dropped. `into_inner` on a poisoned guard surfaces the
-        // map regardless of poison state.
-        let map = match self.pending.get_mut() {
-            Ok(map) => std::mem::take(map),
-            Err(poisoned) => std::mem::take(poisoned.into_inner()),
-        };
+        // **#1022 B16**: simplified post-parking_lot. The pre-fix
+        // version had to handle `PoisonError` (via
+        // `match get_mut() { Ok | Err(into_inner()) }`) because a
+        // panic-while-held would poison `std::sync::Mutex`.
+        // `parking_lot::Mutex` doesn't poison, so the cleanup path
+        // is now the obvious one: take the map, log if non-empty,
+        // let `AbortOnDropHandle::drop` do the actual abort work.
+        let map = std::mem::take(&mut *self.pending.lock());
         if !map.is_empty() {
             tracing::debug!(
                 count = map.len(),
