@@ -56,10 +56,10 @@ pub(crate) fn draw_viewport(
     // Determine menu height (only when active)
     let menu_height = match menu {
         MenuContent::None => 0u16,
-        MenuContent::Approval { .. }
-        | MenuContent::LoopCap
-        | MenuContent::PurgeConfirm { .. }
-        | MenuContent::AskUser { .. } => 2,
+        MenuContent::Approval { .. } | MenuContent::LoopCap | MenuContent::PurgeConfirm { .. } => 2,
+        MenuContent::AskUser {
+            question, options, ..
+        } => ask_user_menu_height(question, options, area.width, area.height),
         MenuContent::WizardTrail(trail) => (trail.len() as u16) + 1,
         MenuContent::Slash(dd) => dd.visible_count() as u16 + 1,
         MenuContent::Model(dd) => dd.visible_count() as u16 + 1,
@@ -390,7 +390,10 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
                     ),
                 ]),
             ];
-            frame.render_widget(Paragraph::new(lines), menu_area);
+            // `Wrap { trim: false }` mirrors the height calculation in
+            // `ask_user_menu_height` so what we draw matches what we
+            // reserved space for. See #1024.
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), menu_area);
         }
         MenuContent::HistorySearch {
             query,
@@ -437,6 +440,67 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
     }
 }
 
+// ── AskUser dynamic height (#1024) ─────────────────────
+
+/// Build the hint text for an AskUser menu, matching the renderer.
+fn build_ask_user_hint(options: &[String]) -> String {
+    if options.is_empty() {
+        "Type your answer and press Enter".to_string()
+    } else {
+        let choices = options
+            .iter()
+            .enumerate()
+            .map(|(i, o)| format!("[{}] {}", i + 1, o))
+            .collect::<Vec<_>>()
+            .join("  ");
+        format!("Choices: {choices}")
+    }
+}
+
+/// Compute the dynamic height for an AskUser menu so the question (and
+/// the hint with options) wraps instead of being truncated at the
+/// screen edge. Capped at half the viewport so the menu can never
+/// crowd out the history panel.
+///
+/// The two rendered lines are:
+/// - `"  ❓ " + question` (prefix is 5 visual cols: 2 spaces + wide
+///   emoji + 1 space).
+/// - `"  " + hint + "  · Esc to skip"` (prefix is 2 visual cols).
+///
+/// We compute the wrap count of each by reusing
+/// [`crate::wrap_util::visual_line_count`] \u2014 the same word-wrap
+/// algorithm ratatui's `Paragraph::wrap(Wrap { trim: false })` uses,
+/// so the rendered height matches the reserved menu_area height
+/// exactly.
+///
+/// Regression coverage for #1024.
+fn ask_user_menu_height(
+    question: &str,
+    options: &[String],
+    viewport_width: u16,
+    viewport_height: u16,
+) -> u16 {
+    use crate::wrap_util::visual_line_count;
+
+    // The Paragraph wraps each `Line` independently, so we measure
+    // each line's full text (prefix + content + suffix) at viewport
+    // width \u2014 not at "width minus prefix". Continuation rows wrap to
+    // column 0 just like ratatui does.
+    let q_text = format!("  \u{2753} {question}");
+    let q_rows = visual_line_count(&q_text, viewport_width as usize);
+
+    let hint = build_ask_user_hint(options);
+    let h_text = format!("  {hint}  \u{00b7} Esc to skip");
+    let h_rows = visual_line_count(&h_text, viewport_width as usize);
+
+    let total = (q_rows + h_rows) as u16;
+
+    // Cap at half the viewport (min 2) so the menu can't eat the
+    // history panel on a tiny terminal or with a giant question.
+    let cap = (viewport_height / 2).max(2);
+    total.clamp(2, cap)
+}
+
 // ── Terminal lifecycle ─────────────────────────────────
 
 /// Initialize the terminal in fullscreen mode (alternate screen buffer).
@@ -472,4 +536,95 @@ pub(crate) fn restore_terminal(terminal: &mut Term) {
         crossterm::terminal::LeaveAlternateScreen,
     );
     let _ = crossterm::terminal::disable_raw_mode();
+}
+
+#[cfg(test)]
+mod ask_user_height_tests {
+    use super::ask_user_menu_height;
+
+    /// Short question fits on one line → 2 rows total (question + hint).
+    /// Same as the legacy hardcoded value, so existing layouts don't shift.
+    #[test]
+    fn short_question_yields_two_rows() {
+        let h = ask_user_menu_height("Continue?", &[], 80, 24);
+        assert_eq!(h, 2);
+    }
+
+    /// Long question wraps to multiple rows. Regression for #1024.
+    /// Without the fix, the question would be truncated at column 80.
+    #[test]
+    fn long_question_wraps_and_grows_menu() {
+        // ~200-char question — must wrap to 3+ rows at width 80.
+        let q = "Should we proceed with the migration of all the legacy \
+                 modules to the new architecture, including the \
+                 deprecated bits and the experimental ones nobody \
+                 remembers writing in the first place?";
+        let h = ask_user_menu_height(q, &[], 80, 24);
+        assert!(
+            h > 2,
+            "long question should grow the menu beyond 2 rows, got {h}"
+        );
+    }
+
+    /// Width 80 with a 200-char question wraps to a known row count.
+    /// Pin a tight bound so regressions in the wrap math get caught.
+    #[test]
+    fn long_question_height_is_bounded_by_wrap_count() {
+        let q = "x".repeat(200);
+        // Question line text = "  \u{2753} " (5 cols: 2 spaces + 2-col emoji
+        // + 1 space) + 200 x's = 205 cols. At width 80 with word-wrap,
+        // the long single-word x-run wraps *before* the word when it
+        // doesn't fit (matching ratatui's `Wrap { trim: false }`):
+        //   Row 1: "  \u{2753} " + 75 x's (cols 0..79)
+        //   Row 2: 80 x's   (chars 76..155)
+        //   Row 3: 80 x's   (chars 156..200, force-break) — actually only 45
+        //   Row 4: trailing — depends on word-wrap re-flow accounting
+        // We don't pin the exact integer here (the algorithm has subtle
+        // word-relocation semantics); we just bound it.
+        let h = ask_user_menu_height(&q, &[], 80, 24);
+        assert!(
+            (4..=6).contains(&h),
+            "expected 4..=6 rows for 200-char question at width 80, got {h}"
+        );
+    }
+
+    /// Many options make the hint line wrap too — both lines contribute
+    /// to the total height.
+    #[test]
+    fn many_options_grow_the_hint_row() {
+        let opts: Vec<String> = (0..12).map(|i| format!("option-{i}")).collect();
+        let h = ask_user_menu_height("Pick one:", &opts, 80, 24);
+        // Hint becomes "Choices: [1] option-0  [2] option-1  …" which is
+        // > 80 chars → at least 2 hint rows + 1 question row.
+        assert!(h >= 3, "many options must wrap the hint row, got {h}");
+    }
+
+    /// Hard cap: menu can never exceed half the viewport height, even
+    /// for absurdly long questions. Protects the history panel.
+    #[test]
+    fn height_is_capped_to_half_viewport() {
+        let q = "x".repeat(10_000);
+        let h = ask_user_menu_height(&q, &[], 80, 20);
+        assert!(h <= 10, "must not exceed half viewport, got {h} > 10");
+    }
+
+    /// Cap floor: even on tiny terminals the menu is at least 2 rows
+    /// (question + hint), matching the legacy minimum.
+    #[test]
+    fn minimum_height_is_two_rows() {
+        let h = ask_user_menu_height("Q", &[], 80, 4);
+        assert_eq!(h, 2);
+    }
+
+    /// Narrow terminal: question with 60 chars at width 30 wraps to
+    /// 2+ rows. Catches off-by-one in the prefix-width accounting.
+    #[test]
+    fn narrow_terminal_wraps_short_question() {
+        let q = "a".repeat(60);
+        let h = ask_user_menu_height(&q, &[], 30, 24);
+        assert!(
+            h >= 3,
+            "60 chars at width 30 should be ≥2 q-rows + 1 hint, got {h}"
+        );
+    }
 }
