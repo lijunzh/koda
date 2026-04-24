@@ -424,8 +424,49 @@ pub(crate) fn execute_sub_agent<'a>(
                 }
                 path
             }
+            Err(e) if has_write_tools => {
+                // **#1022 B21**: pre-fix this branch silently fell
+                // back to `project_root.to_path_buf()`. With write
+                // tools requested, that drops the sub-agent into
+                // the parent's unisolated working tree — two
+                // parallel sub-agents would race on the same
+                // files, exactly the corruption mode the workspace
+                // provider exists to prevent. Worse, the only
+                // signal was a `tracing::warn!` invisible to most
+                // headless / TUI runs.
+                //
+                // Now: short-circuit with a structural-failure
+                // marker (same `[ERROR:` shape as the iteration-cap
+                // marker from B18) so the parent agent sees the
+                // failure as a sub-agent result and can adapt
+                // (retry without write tools, do the work itself,
+                // surface to the user). Also cache it so a
+                // verbatim re-dispatch with the same prompt
+                // doesn't pay the failed-provision cost twice —
+                // mirrors the iteration-cap caching policy.
+                let reason = e.to_string();
+                tracing::warn!("Workspace provision failed for sub-agent '{agent_name}': {reason}");
+                sink.emit(EngineEvent::Info {
+                    message: format!(
+                        "  \u{26a0}\u{fe0f}  {agent_name}: workspace isolation failed, not dispatching ({reason})"
+                    ),
+                });
+                let marker = workspace_provision_failure_marker(agent_name, &reason);
+                sub_agent_cache.put(agent_name, prompt, &marker);
+                return Ok(marker);
+            }
             Err(e) => {
-                tracing::warn!("Workspace provision failed: {e}");
+                // Read-only sub-agent (no write tools): isolation
+                // wasn't requested, so falling back to project_root
+                // is the *intended* behavior — there's no
+                // race-on-files corruption mode without write
+                // tools. Today this branch is unreachable because
+                // `CwdProvider::provision` is infallible, but the
+                // explicit arm documents intent and survives a
+                // future read-only provider that *can* fail.
+                tracing::warn!(
+                    "Workspace provision failed (read-only sub-agent '{agent_name}'): {e}"
+                );
                 project_root.to_path_buf()
             }
         };
@@ -881,8 +922,11 @@ fn pick_write_provider(
     // Fall back to `GitWorktreeProvider` only if construction itself
     // fails (e.g. `$HOME` unset, project path can't canonicalize).
     // Runtime `clonefile(2)` failures (non-APFS volume etc.) surface
-    // through the existing `provision()` error path which already
-    // falls back to the unisolated project root with a warning.
+    // through the existing `provision()` error path — **#1022 B21**
+    // makes that path short-circuit with a structural-failure marker
+    // instead of silently dropping the sub-agent into the parent's
+    // unisolated working tree (which would let parallel sub-agents
+    // race on the same files).
     match ClonefileProvider::new(project_root) {
         Ok(p) => Box::new(p),
         Err(e) => {
@@ -922,6 +966,27 @@ fn iteration_cap_marker(agent_name: &str, cap: usize) -> String {
     format!(
         "[ERROR: sub-agent '{agent_name}' exceeded its iteration cap of {cap} without producing \
          a final answer. Decompose the task into smaller pieces, or attempt the work \
+         directly without delegating.]"
+    )
+}
+
+/// **#1022 B21**: structural-failure marker returned when an
+/// isolated sub-agent's workspace provider can't provision.
+///
+/// Replaces the pre-fix silent fallback to `project_root` — which
+/// dropped the sub-agent into the parent's unisolated working
+/// tree and let parallel sub-agents race on the same files.
+///
+/// Same format / `[ERROR:` prefix as `iteration_cap_marker` so
+/// the model treats it as structural failure metadata rather
+/// than a sub-agent answer. Includes the failure reason so the
+/// parent can adapt (e.g. switch to a read-only sub-agent if
+/// the underlying issue is non-APFS volume / no git repo).
+fn workspace_provision_failure_marker(agent_name: &str, reason: &str) -> String {
+    format!(
+        "[ERROR: sub-agent '{agent_name}' could not provision an isolated workspace and was not \
+         dispatched, to avoid corrupting the parent project tree (reason: {reason}). Either \
+         resolve the workspace setup issue, retry without write tools, or attempt the work \
          directly without delegating.]"
     )
 }
@@ -1014,7 +1079,118 @@ mod b18_tests {
         // the user-facing trace; single-line keeps the failure
         // visible at a glance. This catches a future "helpful"
         // refactor that spreads the message across lines.
+        // content. Multi-line markers would format awkwardly in
+        // the user-facing trace; single-line keeps the failure
+        // visible at a glance. This catches a future "helpful"
+        // refactor that spreads the message across lines.
         let m = iteration_cap_marker("scout", 20);
+        assert!(
+            !m.contains('\n'),
+            "marker must be single-line for clean tool-result formatting; got:\n{m}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod b21_tests {
+    //! **#1022 B21** regression tests for the workspace-provision-
+    //! failure marker.
+    //!
+    //! Pre-fix, an `Err` from `workspace.provision()` silently fell
+    //! back to `project_root.to_path_buf()` — dropping the sub-agent
+    //! into the parent's unisolated working tree and letting parallel
+    //! sub-agents race on the same files. The marker is the
+    //! short-circuit that replaces that fallback for write-tool sub-
+    //! agents.
+    //!
+    //! These tests pin the *contract* of the marker (not its exact
+    //! wording):
+    //!
+    //! - `[ERROR:` prefix so the model treats it as structural
+    //!   failure metadata, not a sub-agent answer.
+    //! - The agent name appears so multi-agent flows can identify
+    //!   which sub-agent's workspace failed.
+    //! - The failure reason is included so the parent / user can
+    //!   diagnose (non-APFS volume, no git repo, etc.).
+    //! - A re-strategize hint so the model doesn't just retry the
+    //!   same prompt.
+    //! - Single-line so it formats cleanly as a tool result.
+    //!
+    //! End-to-end coverage of the dispatch short-circuit itself
+    //! requires injecting a `WorkspaceProvider` into the sub-agent
+    //! dispatch path, which is not currently a public seam. Until
+    //! that refactor lands, the marker contract here plus a manual
+    //! check on a non-APFS macOS volume is the regression net.
+
+    use super::workspace_provision_failure_marker;
+
+    #[test]
+    fn marker_has_error_prefix() {
+        let m = workspace_provision_failure_marker("writer", "clonefile: ENOTSUP");
+        assert!(
+            m.starts_with("[ERROR:"),
+            "marker must start with `[ERROR:` so the model treats it as \
+             structural failure, not a sub-agent answer; got: {m}"
+        );
+    }
+
+    #[test]
+    fn marker_includes_agent_name() {
+        let m = workspace_provision_failure_marker("writer", "clonefile: ENOTSUP");
+        assert!(
+            m.contains("'writer'"),
+            "marker must name the sub-agent that failed so multi-agent \
+             flows can disambiguate; got: {m}"
+        );
+    }
+
+    #[test]
+    fn marker_includes_failure_reason() {
+        // The reason is the actionable bit — if it's missing, the
+        // user has no way to know whether it's a misconfigured
+        // volume, missing git repo, or something else. This
+        // guarantees the underlying `e.to_string()` reaches the
+        // parent agent intact.
+        let m = workspace_provision_failure_marker("writer", "clonefile: ENOTSUP");
+        assert!(
+            m.contains("clonefile: ENOTSUP"),
+            "marker must include the failure reason verbatim so it's \
+             diagnosable; got: {m}"
+        );
+    }
+
+    #[test]
+    fn marker_does_not_silently_dispatch() {
+        // The whole point of B21: the marker explicitly states the
+        // sub-agent was *not* dispatched. If a future refactor
+        // re-introduces the silent fallback and forgets this
+        // wording, the model loses the signal that nothing ran.
+        let m = workspace_provision_failure_marker("writer", "x");
+        let lower = m.to_lowercase();
+        assert!(
+            lower.contains("not dispatched") || lower.contains("was not dispatched"),
+            "marker must state the sub-agent was not dispatched, so the \
+             parent doesn't assume the work happened; got: {m}"
+        );
+    }
+
+    #[test]
+    fn marker_includes_restrategize_hint() {
+        // Without a hint, the model would tend to retry the same
+        // prompt and hit the same provision failure. Same rationale
+        // as the iteration-cap marker.
+        let m = workspace_provision_failure_marker("writer", "x");
+        let lower = m.to_lowercase();
+        assert!(
+            lower.contains("directly") || lower.contains("resolve") || lower.contains("retry"),
+            "marker must hint at re-strategizing (e.g. resolve setup, \
+             retry without write tools, do directly); got: {m}"
+        );
+    }
+
+    #[test]
+    fn marker_is_single_line() {
+        let m = workspace_provision_failure_marker("writer", "clonefile: ENOTSUP");
         assert!(
             !m.contains('\n'),
             "marker must be single-line for clean tool-result formatting; got:\n{m}"
