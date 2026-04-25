@@ -159,6 +159,21 @@ pub async fn handle_slash_command(
             crate::tui_wizards::handle_list_agents(buffer, project_root);
             SlashAction::Continue
         }
+        // #996 Layer 1 — runtime task surfaces. Both reach into
+        // `session.bg_agents` (set up by `KodaSession::new` per the
+        // PR-1041 wiring) so no new lifetimes thread through here.
+        ReplAction::ListBackgroundTasks => {
+            crate::tui_bg_agents::handle_list_background_tasks(buffer, &session.bg_agents);
+            SlashAction::Continue
+        }
+        ReplAction::CancelBackgroundTask(task_id) => {
+            crate::tui_bg_agents::handle_cancel_background_task(
+                buffer,
+                &session.bg_agents,
+                task_id,
+            );
+            SlashAction::Continue
+        }
         ReplAction::ShowDiff => {
             crate::tui_wizards::handle_diff(buffer);
             SlashAction::Continue

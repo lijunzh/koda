@@ -12,6 +12,12 @@ use std::path::{Path, PathBuf};
 /// Single source of truth — used by completer and auto-dropdown.
 pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ("/agent", "Switch to a sub-agent", Some("<name>")),
+    ("/agents", "List running background sub-agents", None),
+    (
+        "/cancel",
+        "Cancel a background sub-agent (id from /agents)",
+        Some("<id>"),
+    ),
     (
         "/compact",
         "Summarize conversation to reclaim context",
