@@ -842,20 +842,13 @@ pub(crate) fn execute_sub_agent<'a>(
                 // sequential dispatcher does the same; without this the
                 // sub-agent would hit the same class of errors *after*
                 // the user had already approved.
-                let validation_error = {
-                    let cache = tools.file_read_cache();
-                    let last_writer = tools.last_writer_cache();
-                    let last_bash = tools.last_bash_cache();
-                    tools::validate::validate_tool_call(
-                        &tc.function_name,
-                        &parsed_args,
-                        effective_root_ref,
-                        Some(&cache),
-                        Some(&last_writer),
-                        Some(&last_bash),
-                    )
-                    .await
-                };
+                let validation_error = tools::validate::validate_with_registry(
+                    &tools,
+                    &tc.function_name,
+                    &parsed_args,
+                    effective_root_ref,
+                )
+                .await;
 
                 let output = if let Some(error) = validation_error {
                     format!("Validation error: {error}")
@@ -1401,7 +1394,10 @@ mod invocation_cleanup_tests {
             reg.register_test_with_status("scout", "a", Some(7));
         let (_id_b, _tx_b, _status_tx_b, cancel_b) =
             reg.register_test_with_status("scout", "b", Some(7));
-        assert!(!cancel_a.is_cancelled() && !cancel_b.is_cancelled(), "setup");
+        assert!(
+            !cancel_a.is_cancelled() && !cancel_b.is_cancelled(),
+            "setup"
+        );
 
         drop(InvocationCleanup {
             bg: &reg,
@@ -1451,8 +1447,7 @@ mod invocation_cleanup_tests {
     #[tokio::test]
     async fn drop_with_no_matching_entries_is_noop() {
         let reg = Arc::new(BgAgentRegistry::new());
-        let (_id, _tx, _status_tx, cancel) =
-            reg.register_test_with_status("a", "x", Some(99));
+        let (_id, _tx, _status_tx, cancel) = reg.register_test_with_status("a", "x", Some(99));
 
         // Cleanup for an invocation that never spawned anything —
         // common case: a sub-agent that did nothing bg-related.

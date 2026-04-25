@@ -359,20 +359,13 @@ async fn validate_then_execute_one_tool(
 ) -> (String, String, bool, Option<String>) {
     let parsed_args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
 
-    let validation_error = {
-        let cache = tools.file_read_cache();
-        let last_writer = tools.last_writer_cache();
-        let last_bash = tools.last_bash_cache();
-        tools::validate::validate_tool_call(
-            &tc.function_name,
-            &parsed_args,
-            project_root,
-            Some(&cache),
-            Some(&last_writer),
-            Some(&last_bash),
-        )
-        .await
-    };
+    let validation_error = tools::validate::validate_with_registry(
+        tools,
+        &tc.function_name,
+        &parsed_args,
+        project_root,
+    )
+    .await;
 
     if let Some(error) = validation_error {
         return (
@@ -669,20 +662,14 @@ pub(crate) async fn execute_tools_sequential(
 
         // Pre-flight validation: catch errors before bothering the user
         // with an approval prompt that will inevitably fail.
-        if let Some(error) = {
-            let cache = tools.file_read_cache();
-            let last_writer = tools.last_writer_cache();
-            let last_bash = tools.last_bash_cache();
-            tools::validate::validate_tool_call(
-                &tc.function_name,
-                &parsed_args,
-                project_root,
-                Some(&cache),
-                Some(&last_writer),
-                Some(&last_bash),
-            )
-            .await
-        } {
+        if let Some(error) = tools::validate::validate_with_registry(
+            tools,
+            &tc.function_name,
+            &parsed_args,
+            project_root,
+        )
+        .await
+        {
             record_tool_result(
                 tc,
                 &format!("Validation error: {error}"),
