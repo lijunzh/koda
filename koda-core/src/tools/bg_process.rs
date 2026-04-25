@@ -237,10 +237,10 @@ impl BgRegistry {
                 Err(e) => {
                     // try_wait can fail if the OS lost track (rare).
                     // Log + treat as terminal so we don't spin.
-                    tracing::warn!("BgRegistry reap try_wait failed for PID {}: {e}", entry
-                        .child
-                        .id()
-                        .unwrap_or(0));
+                    tracing::warn!(
+                        "BgRegistry reap try_wait failed for PID {}: {e}",
+                        entry.child.id().unwrap_or(0)
+                    );
                     entry.status = BgProcessStatus::Exited { code: None };
                 }
             }
@@ -571,7 +571,11 @@ mod tests {
             }
             other => panic!("expected TimedOut, got {other:?}"),
         }
-        assert_eq!(reg.snapshot().len(), 1, "entry must be preserved on timeout");
+        assert_eq!(
+            reg.snapshot().len(),
+            1,
+            "entry must be preserved on timeout"
+        );
     }
 
     #[tokio::test]
@@ -615,8 +619,11 @@ mod tests {
         let count = reg.kill_for_spawner(7);
         assert_eq!(count, 1);
 
-        let by_pid: HashMap<u32, BgProcessStatus> =
-            reg.snapshot().into_iter().map(|s| (s.pid, s.status)).collect();
+        let by_pid: HashMap<u32, BgProcessStatus> = reg
+            .snapshot()
+            .into_iter()
+            .map(|s| (s.pid, s.status))
+            .collect();
         assert_eq!(by_pid[&p_top], BgProcessStatus::Running);
         assert_eq!(by_pid[&p_a], BgProcessStatus::Killed);
         assert_eq!(by_pid[&p_b], BgProcessStatus::Running);

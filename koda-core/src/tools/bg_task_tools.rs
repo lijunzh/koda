@@ -38,13 +38,17 @@
 //! [`BgRegistry`]: crate::tools::bg_process::BgRegistry
 
 use crate::providers::ToolDefinition;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::bg_agent::{AgentStatus, BgAgentRegistry, BgAgentResult, BgTaskSnapshot, CancelOutcome, WaitOutcome};
-use crate::tools::bg_process::{BgProcessSnapshot, BgProcessStatus, BgRegistry, ProcessWaitOutcome};
+use crate::bg_agent::{
+    AgentStatus, BgAgentRegistry, BgAgentResult, BgTaskSnapshot, CancelOutcome, WaitOutcome,
+};
 use crate::tools::ToolResult;
+use crate::tools::bg_process::{
+    BgProcessSnapshot, BgProcessStatus, BgRegistry, ProcessWaitOutcome,
+};
 
 /// Maximum `timeout_secs` a `WaitTask` call may request. Higher values
 /// are clamped down by the dispatch layer before reaching the registry.
@@ -525,7 +529,10 @@ mod tests {
     #[test]
     fn parse_task_id_accepts_prefixed_forms() {
         assert_eq!(parse_task_id("agent:7").unwrap(), TaskId::Agent(7));
-        assert_eq!(parse_task_id("process:12345").unwrap(), TaskId::Process(12345));
+        assert_eq!(
+            parse_task_id("process:12345").unwrap(),
+            TaskId::Process(12345)
+        );
         // Whitespace tolerance — models sometimes add it.
         assert_eq!(parse_task_id("  agent:1  ").unwrap(), TaskId::Agent(1));
     }
@@ -597,8 +604,7 @@ mod tests {
     #[tokio::test]
     async fn execute_list_includes_caller_agent_tasks() {
         let (agents, processes) = fresh_registries();
-        let (id, _tx, _, _) =
-            agents.register_test_with_status("explore", "map repo", None);
+        let (id, _tx, _, _) = agents.register_test_with_status("explore", "map repo", None);
 
         let r = execute("ListBackgroundTasks", "{}", &agents, &processes, None).await;
         assert!(r.success);
@@ -634,8 +640,7 @@ mod tests {
     #[tokio::test]
     async fn execute_cancel_succeeds_for_owned_agent_task() {
         let (agents, processes) = fresh_registries();
-        let (id, _tx, _, observer) =
-            agents.register_test_with_status("x", "y", None);
+        let (id, _tx, _, observer) = agents.register_test_with_status("x", "y", None);
 
         let r = execute(
             "CancelTask",
@@ -670,8 +675,7 @@ mod tests {
     #[tokio::test]
     async fn execute_cancel_returns_forbidden_for_cross_caller() {
         let (agents, processes) = fresh_registries();
-        let (id, _tx, _, observer) =
-            agents.register_test_with_status("x", "y", Some(5));
+        let (id, _tx, _, observer) = agents.register_test_with_status("x", "y", Some(5));
 
         // Top-level (None) tries to cancel sub-agent 5's task.
         let r = execute(
@@ -683,7 +687,11 @@ mod tests {
         )
         .await;
         assert!(!r.success);
-        assert!(r.output.contains("not owned by this caller"), "got: {}", r.output);
+        assert!(
+            r.output.contains("not owned by this caller"),
+            "got: {}",
+            r.output
+        );
         assert!(!observer.is_cancelled(), "forbidden must NOT fire token");
     }
 
@@ -708,11 +716,13 @@ mod tests {
     #[tokio::test]
     async fn execute_wait_returns_completed_for_finished_agent() {
         let (agents, processes) = fresh_registries();
-        let (id, tx, status_tx, _) =
-            agents.register_test_with_status("explore", "map", None);
-        tx.send(Ok(("final answer".into(), vec!["e1".into()]))).unwrap();
+        let (id, tx, status_tx, _) = agents.register_test_with_status("explore", "map", None);
+        tx.send(Ok(("final answer".into(), vec!["e1".into()])))
+            .unwrap();
         status_tx
-            .send(AgentStatus::Completed { summary: "final".into() })
+            .send(AgentStatus::Completed {
+                summary: "final".into(),
+            })
             .unwrap();
 
         let r = execute(
@@ -740,8 +750,7 @@ mod tests {
         // Bind ALL four to keep the channels alive — if status_tx
         // drops, the watch sender is gone and `wait_for_terminal_status`
         // early-returns, surfacing as Cancelled instead of TimedOut.
-        let (id, _tx, _status_tx, _observer) =
-            agents.register_test_with_status("slow", "x", None);
+        let (id, _tx, _status_tx, _observer) = agents.register_test_with_status("slow", "x", None);
 
         let r = execute(
             "WaitTask",

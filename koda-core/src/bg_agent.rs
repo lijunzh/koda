@@ -680,10 +680,7 @@ impl BgAgentRegistry {
                 // Timeout: the task is still pending. Re-snapshot so
                 // the caller sees the latest status (it may have
                 // transitioned `Pending` → `Running` while we waited).
-                let snap = self
-                    .snapshot()
-                    .into_iter()
-                    .find(|s| s.task_id == task_id);
+                let snap = self.snapshot().into_iter().find(|s| s.task_id == task_id);
                 match snap {
                     Some(s) => WaitOutcome::TimedOut(s),
                     // Task vanished mid-wait — drain reaped it. The
@@ -727,15 +724,13 @@ impl BgAgentRegistry {
                         // Worst case (channel closed concurrently) we
                         // fall through to Cancelled below.
                         match entry.rx.try_recv() {
-                            Ok(Ok((output, events))) => {
-                                WaitOutcome::Completed(BgAgentResult {
-                                    agent_name: entry.agent_name,
-                                    prompt: entry.prompt,
-                                    output,
-                                    success: true,
-                                    events,
-                                })
-                            }
+                            Ok(Ok((output, events))) => WaitOutcome::Completed(BgAgentResult {
+                                agent_name: entry.agent_name,
+                                prompt: entry.prompt,
+                                output,
+                                success: true,
+                                events,
+                            }),
                             Ok(Err((err, events))) => WaitOutcome::Completed(BgAgentResult {
                                 agent_name: entry.agent_name,
                                 prompt: entry.prompt,
@@ -764,9 +759,7 @@ async fn wait_for_terminal_status(mut rx: watch::Receiver<AgentStatus>) {
     loop {
         let is_terminal = matches!(
             *rx.borrow(),
-            AgentStatus::Completed { .. }
-                | AgentStatus::Errored { .. }
-                | AgentStatus::Cancelled
+            AgentStatus::Completed { .. } | AgentStatus::Errored { .. } | AgentStatus::Cancelled
         );
         if is_terminal {
             return;
@@ -1250,10 +1243,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_as_caller_returns_not_found_for_unknown_id() {
         let reg = BgAgentRegistry::new();
-        assert_eq!(
-            reg.cancel_as_caller(999, None),
-            CancelOutcome::NotFound
-        );
+        assert_eq!(reg.cancel_as_caller(999, None), CancelOutcome::NotFound);
     }
 
     /// `cancel_for_spawner` cleans up exactly one sub-agent's children
@@ -1380,10 +1370,7 @@ mod tests {
         let outcome = reg
             .wait_for_completion(id, None, Duration::from_secs(1))
             .await;
-        assert!(
-            matches!(outcome, WaitOutcome::Cancelled),
-            "got {outcome:?}"
-        );
+        assert!(matches!(outcome, WaitOutcome::Cancelled), "got {outcome:?}");
         assert!(reg.snapshot().is_empty(), "entry must be reaped");
     }
 
