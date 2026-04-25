@@ -82,6 +82,13 @@ pub fn classify_tool(name: &str) -> ToolEffect {
         "WebSearch" => ToolEffect::ReadOnly,   // read-only search
         "InvokeAgent" => ToolEffect::ReadOnly, // sub-agents inherit parent's mode
 
+        // Background task management (Layer 2 of #996). ListBackgroundTasks
+        // is a pure read; CancelTask / WaitTask signal but don't write
+        // files — they're idempotent observation/control of work the
+        // model already started. Treating as ReadOnly avoids an approval
+        // prompt every time the model checks on a bg task.
+        "ListBackgroundTasks" | "CancelTask" | "WaitTask" => ToolEffect::ReadOnly,
+
         // Local mutations — write to filesystem or local state
         "Write" | "Edit" | "MemoryWrite" | "TodoWrite" => ToolEffect::LocalMutation,
 
@@ -119,6 +126,9 @@ pub fn is_mutating_tool(name: &str) -> bool {
 pub mod agent;
 pub mod ask_user;
 pub mod bg_process;
+/// Background-task management tools — `ListBackgroundTasks`,
+/// `CancelTask`, `WaitTask` (Layer 2 of #996).
+pub mod bg_task_tools;
 /// File CRUD tools (`Read`, `Write`, `Edit`, `Delete`, `List`).
 pub mod file_tools;
 pub mod fuzzy;
@@ -301,6 +311,9 @@ impl ToolRegistry {
             definitions.insert(def.name.clone(), def);
         }
         for def in agent::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
+        for def in bg_task_tools::definitions() {
             definitions.insert(def.name.clone(), def);
         }
         for def in ask_user::definitions() {
