@@ -358,7 +358,7 @@ fn spawn_background(
         .id()
         .ok_or_else(|| anyhow::anyhow!("Spawned process has no PID (already exited)"))?;
 
-    bg.insert(pid, command.to_string(), child);
+    bg.insert(pid, command.to_string(), child, None);
 
     Ok(format!(
         "Background process started.\n  PID:     {pid}\n  Command: {command}\n\
