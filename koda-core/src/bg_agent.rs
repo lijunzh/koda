@@ -691,57 +691,62 @@ impl BgAgentRegistry {
             }
             Ok(()) => {
                 // Terminal status observed. Pull the entry out so the
-                // auto-drain path won't see it again, then map the
-                // oneshot to a BgAgentResult / Cancelled.
-                let mut guard = self.pending.lock();
-                let Some(mut entry) = guard.remove(&task_id) else {
-                    // Drain raced us and reaped first. Rare but
-                    // possible. The model already saw the result in
-                    // the prior turn's auto-drain.
-                    return WaitOutcome::NotFound;
+                // auto-drain path won't see it again, then await the
+                // oneshot for the payload.
+                //
+                // PR #1043 review fix: previously this used
+                // `try_recv` + a back-to-back retry. The retry was a
+                // placebo — both calls run in the same scheduler tick
+                // with no `await` between them, so when the bg future
+                // sets `status_tx` *before* `tx.send` (the standard
+                // ordering in `sub_agent_dispatch::run_bg_agent`),
+                // a multi-thread runtime can wake the waiter on a
+                // *different* worker, observe `Empty` twice, and
+                // falsely report `Cancelled` for a successful task.
+                //
+                // `oneshot::Receiver` IS a `Future` — just `.await`
+                // it. The bound is set by `wait_for_terminal_status`
+                // having already observed the terminal status, so the
+                // sender is either landing or already dropped (the
+                // future writes status before sending the result, and
+                // panics drop both). A short inner timeout caps the
+                // "in-flight" window; the outer timeout is already
+                // exhausted at this point.
+                let entry = {
+                    let mut guard = self.pending.lock();
+                    let Some(entry) = guard.remove(&task_id) else {
+                        // Drain raced us and reaped first. Rare but
+                        // possible. The model already saw the result
+                        // in the prior turn's auto-drain.
+                        return WaitOutcome::NotFound;
+                    };
+                    entry
+                    // `guard` drops here — explicit scope guarantees
+                    // we don't hold the (non-Send) `parking_lot`
+                    // guard across the upcoming `.await`.
                 };
-                drop(guard);
-                match entry.rx.try_recv() {
-                    Ok(Ok((output, events))) => WaitOutcome::Completed(BgAgentResult {
-                        agent_name: entry.agent_name,
-                        prompt: entry.prompt,
+                let agent_name = entry.agent_name;
+                let prompt = entry.prompt;
+                match tokio::time::timeout(Duration::from_millis(50), entry.rx).await {
+                    Ok(Ok(Ok((output, events)))) => WaitOutcome::Completed(BgAgentResult {
+                        agent_name,
+                        prompt,
                         output,
                         success: true,
                         events,
                     }),
-                    Ok(Err((err, events))) => WaitOutcome::Completed(BgAgentResult {
-                        agent_name: entry.agent_name,
-                        prompt: entry.prompt,
+                    Ok(Ok(Err((err, events)))) => WaitOutcome::Completed(BgAgentResult {
+                        agent_name,
+                        prompt,
                         output: err,
                         success: false,
                         events,
                     }),
-                    Err(oneshot::error::TryRecvError::Empty) => {
-                        // Status went terminal but oneshot hasn't
-                        // landed yet — the future writes status before
-                        // sending. Wait a few microseconds for the
-                        // send to complete, then try once more.
-                        // Worst case (channel closed concurrently) we
-                        // fall through to Cancelled below.
-                        match entry.rx.try_recv() {
-                            Ok(Ok((output, events))) => WaitOutcome::Completed(BgAgentResult {
-                                agent_name: entry.agent_name,
-                                prompt: entry.prompt,
-                                output,
-                                success: true,
-                                events,
-                            }),
-                            Ok(Err((err, events))) => WaitOutcome::Completed(BgAgentResult {
-                                agent_name: entry.agent_name,
-                                prompt: entry.prompt,
-                                output: err,
-                                success: false,
-                                events,
-                            }),
-                            _ => WaitOutcome::Cancelled,
-                        }
-                    }
-                    Err(oneshot::error::TryRecvError::Closed) => WaitOutcome::Cancelled,
+                    // Sender dropped (panic) or 50ms elapsed without
+                    // a value landing — surface as Cancelled. Both
+                    // are degenerate cases: status said terminal,
+                    // payload never arrived.
+                    Ok(Err(_)) | Err(_) => WaitOutcome::Cancelled,
                 }
             }
         }
@@ -1381,5 +1386,57 @@ mod tests {
             .wait_for_completion(999, None, Duration::from_millis(10))
             .await;
         assert!(matches!(outcome, WaitOutcome::NotFound), "got {outcome:?}");
+    }
+
+    /// Regression test for the PR #1043 race fix.
+    ///
+    /// Scenario: the bg future writes terminal `AgentStatus` to the
+    /// watch channel, then — after a yield-induced gap — sends the
+    /// payload on the oneshot. The waiter is woken on the watch
+    /// notify and races to read the oneshot.
+    ///
+    /// Before the fix, `wait_for_completion` did `try_recv()` twice
+    /// back-to-back with no `await` between them; on a multi-thread
+    /// runtime the second `try_recv` could observe `Empty` again and
+    /// return `Cancelled` for a successful task. The fix awaits the
+    /// oneshot future directly with a short inner timeout, which
+    /// gives the sender's task a chance to run.
+    ///
+    /// Multi-thread runtime + explicit `yield_now` between the two
+    /// sends reliably triggers the old race.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wait_for_completion_handles_status_then_yield_then_payload() {
+        let reg = Arc::new(BgAgentRegistry::new());
+        let (id, tx, status_tx, _observer) =
+            reg.register_test_with_status("explore", "map repo", None);
+
+        // Spawn a task that mimics `run_bg_agent`'s send ordering:
+        // status first, yield, payload. The yield is what exposed the
+        // race — it forces tokio to potentially schedule the waiter
+        // between the two sends.
+        let send_task = tokio::spawn(async move {
+            status_tx
+                .send(AgentStatus::Completed {
+                    summary: "done".into(),
+                })
+                .unwrap();
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+            let _ = tx.send(Ok(("final".into(), vec!["e1".into()])));
+        });
+
+        let outcome = reg
+            .wait_for_completion(id, None, Duration::from_secs(2))
+            .await;
+        send_task.await.unwrap();
+
+        match outcome {
+            WaitOutcome::Completed(result) => {
+                assert_eq!(result.output, "final");
+                assert!(result.success);
+                assert_eq!(result.events, vec!["e1".to_string()]);
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
     }
 }
