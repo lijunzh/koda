@@ -237,7 +237,30 @@ pub(crate) async fn execute_one_tool(
     sub_agent_cache: &SubAgentCache,
     bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
 ) -> (String, String, bool, Option<String>) {
-    let (result, success, full_output) = if tc.function_name == "InvokeAgent" {
+    let (result, success, full_output) = if matches!(
+        tc.function_name.as_str(),
+        "ListBackgroundTasks" | "CancelTask" | "WaitTask"
+    ) {
+        // Layer 2 of #996 — background-task management tools.
+        //
+        // These need the `Arc<BgAgentRegistry>` (not held by the
+        // ToolRegistry) plus the caller's spawner identity (only
+        // known here at the dispatch layer), so they can't go
+        // through the generic `tools.execute()` path. Phase E will
+        // thread a real `caller_spawner` from sub_agent_dispatch;
+        // for now top-level callers see `None` everywhere, which
+        // gives them access to their own (top-level-spawned) tasks
+        // — the most common case.
+        let r = crate::tools::bg_task_tools::execute(
+            &tc.function_name,
+            &tc.arguments,
+            bg_agents,
+            &tools.bg_registry,
+            None, // Phase E: pass real caller_spawner here
+        )
+        .await;
+        (r.output, r.success, r.full_output)
+    } else if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
         //
         // Runtime invariant: the sub-agent dispatch loop short-circuits

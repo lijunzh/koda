@@ -589,6 +589,22 @@ pub(crate) fn execute_sub_agent<'a>(
             if !denied.contains(&"AskUser".to_string()) {
                 denied.push("AskUser".to_string());
             }
+            // Layer 2 of #996 — background-task management tools.
+            //
+            // Until Phase E threads the spawning sub-agent's invocation
+            // id through the dispatch layer, sub-agents would call
+            // these tools with `caller_spawner = None` and end up
+            // looking at the top-level scope. That's a Model E
+            // violation (sub-agents must not see siblings' or parents'
+            // tasks). Easiest defence: hide the tools from sub-agents
+            // entirely until spawner threading lands. Phase E removes
+            // these three filters in the same commit that wires the
+            // real `caller_spawner` into `execute_one_tool`.
+            for tool in ["ListBackgroundTasks", "CancelTask", "WaitTask"] {
+                if !denied.iter().any(|d| d == tool) {
+                    denied.push(tool.to_string());
+                }
+            }
             tools.get_definitions(&sub_config.allowed_tools, &denied)
         };
         let semantic_memory = if sub_config.skip_memory {

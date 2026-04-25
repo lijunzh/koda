@@ -38,7 +38,13 @@
 //! [`BgRegistry`]: crate::tools::bg_process::BgRegistry
 
 use crate::providers::ToolDefinition;
-use serde_json::json;
+use serde_json::{json, Value};
+use std::sync::Arc;
+use std::time::Duration;
+
+use crate::bg_agent::{AgentStatus, BgAgentRegistry, BgAgentResult, BgTaskSnapshot, CancelOutcome, WaitOutcome};
+use crate::tools::bg_process::{BgProcessSnapshot, BgProcessStatus, BgRegistry, ProcessWaitOutcome};
+use crate::tools::ToolResult;
 
 /// Maximum `timeout_secs` a `WaitTask` call may request. Higher values
 /// are clamped down by the dispatch layer before reaching the registry.
@@ -219,6 +225,264 @@ pub fn clamp_wait_timeout_secs(requested: Option<u32>) -> u32 {
     raw.clamp(1, WAIT_TASK_MAX_TIMEOUT_SECS)
 }
 
+// ══ Execution ══════════════════════════════════════════════════════════════════════════════════════
+//
+// Dispatch entry point for the three Layer-2 tools. Called from
+// `tool_dispatch::execute_one_tool` when `tool_name` matches; never
+// goes through `ToolRegistry::execute()` because we need the
+// `Arc<BgAgentRegistry>` (not stored on the registry) and the caller's
+// spawner identity (only known at the dispatch layer).
+
+/// Render an [`AgentStatus`] as the lower-case status string we
+/// surface to the model. Stable strings — they're documented in the
+/// `ListBackgroundTasks` tool description and become part of the
+/// tool API surface.
+fn agent_status_str(s: &AgentStatus) -> &'static str {
+    match s {
+        AgentStatus::Pending => "pending",
+        AgentStatus::Running { .. } => "running",
+        AgentStatus::Completed { .. } => "completed",
+        AgentStatus::Errored { .. } => "errored",
+        AgentStatus::Cancelled => "cancelled",
+    }
+}
+
+/// Render a [`BgProcessStatus`] as the lower-case status string.
+fn process_status_str(s: &BgProcessStatus) -> &'static str {
+    match s {
+        BgProcessStatus::Running => "running",
+        BgProcessStatus::Exited { .. } => "exited",
+        BgProcessStatus::Killed => "killed",
+    }
+}
+
+fn agent_snapshot_to_json(s: &BgTaskSnapshot) -> Value {
+    json!({
+        "task_id": format!("agent:{}", s.task_id),
+        "task_type": "agent",
+        "description": format!("{}: {}", s.agent_name, s.prompt),
+        "status": agent_status_str(&s.status),
+        "age_secs": s.age.as_secs(),
+    })
+}
+
+fn process_snapshot_to_json(s: &BgProcessSnapshot) -> Value {
+    let mut obj = json!({
+        "task_id": format!("process:{}", s.pid),
+        "task_type": "process",
+        "description": s.command.clone(),
+        "status": process_status_str(&s.status),
+        "age_secs": s.age.as_secs(),
+    });
+    if let BgProcessStatus::Exited { code } = s.status {
+        obj.as_object_mut()
+            .unwrap()
+            .insert("exit_code".into(), json!(code));
+    }
+    obj
+}
+
+/// Helper for emitting an Err-shaped [`ToolResult`] with a model-readable
+/// message. The dispatch layer surfaces this back to the model as a
+/// failed tool call — same convention as every other tool.
+fn err(msg: impl Into<String>) -> ToolResult {
+    ToolResult {
+        output: msg.into(),
+        success: false,
+        full_output: None,
+    }
+}
+
+fn ok(value: Value) -> ToolResult {
+    ToolResult {
+        output: value.to_string(),
+        success: true,
+        full_output: None,
+    }
+}
+
+/// Dispatch a Layer-2 tool call. Returns a [`ToolResult`] in the same
+/// shape as `ToolRegistry::execute()` so the dispatch layer can plug
+/// it in without special-casing further.
+///
+/// `tool_name` must be one of `"ListBackgroundTasks"`, `"CancelTask"`,
+/// `"WaitTask"`. Any other name is a programmer error in the dispatch
+/// router — we return an `err` so it's loud-but-safe in production.
+pub async fn execute(
+    tool_name: &str,
+    arguments: &str,
+    bg_agents: &Arc<BgAgentRegistry>,
+    bg_processes: &BgRegistry,
+    caller_spawner: Option<u32>,
+) -> ToolResult {
+    match tool_name {
+        "ListBackgroundTasks" => execute_list(bg_agents, bg_processes, caller_spawner),
+        "CancelTask" => execute_cancel(arguments, bg_agents, bg_processes, caller_spawner),
+        "WaitTask" => execute_wait(arguments, bg_agents, bg_processes, caller_spawner).await,
+        other => err(format!(
+            "bg_task_tools::execute called with unknown tool '{other}' \
+             (router bug — should have matched in tool_dispatch)"
+        )),
+    }
+}
+
+fn execute_list(
+    bg_agents: &BgAgentRegistry,
+    bg_processes: &BgRegistry,
+    caller_spawner: Option<u32>,
+) -> ToolResult {
+    // Refresh process statuses so the model sees the latest exit codes.
+    bg_processes.reap();
+
+    let mut entries: Vec<Value> = bg_agents
+        .snapshot_for_caller(caller_spawner)
+        .iter()
+        .map(agent_snapshot_to_json)
+        .collect();
+    entries.extend(
+        bg_processes
+            .snapshot_for_caller(caller_spawner)
+            .iter()
+            .map(process_snapshot_to_json),
+    );
+    ok(Value::Array(entries))
+}
+
+fn execute_cancel(
+    arguments: &str,
+    bg_agents: &BgAgentRegistry,
+    bg_processes: &BgRegistry,
+    caller_spawner: Option<u32>,
+) -> ToolResult {
+    let args: Value = match serde_json::from_str(arguments) {
+        Ok(v) => v,
+        Err(e) => return err(format!("CancelTask: invalid JSON arguments: {e}")),
+    };
+    let task_id_str = match args.get("task_id").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return err("CancelTask: missing required 'task_id' (string)"),
+    };
+    let task_id = match parse_task_id(task_id_str) {
+        Ok(t) => t,
+        Err(e) => return err(format!("CancelTask: {e}")),
+    };
+
+    let outcome = match task_id {
+        TaskId::Agent(n) => bg_agents.cancel_as_caller(n, caller_spawner),
+        TaskId::Process(n) => bg_processes.kill_as_caller(n, caller_spawner),
+    };
+
+    match outcome {
+        CancelOutcome::Cancelled => ok(json!({
+            "task_id": task_id_str,
+            "cancelled": true,
+        })),
+        CancelOutcome::NotFound => err(format!(
+            "CancelTask: no background task with id '{task_id_str}' \
+             (already finished, never existed, or already drained)"
+        )),
+        CancelOutcome::Forbidden => err(format!(
+            "CancelTask: task '{task_id_str}' is not owned by this caller"
+        )),
+    }
+}
+
+async fn execute_wait(
+    arguments: &str,
+    bg_agents: &BgAgentRegistry,
+    bg_processes: &BgRegistry,
+    caller_spawner: Option<u32>,
+) -> ToolResult {
+    let args: Value = match serde_json::from_str(arguments) {
+        Ok(v) => v,
+        Err(e) => return err(format!("WaitTask: invalid JSON arguments: {e}")),
+    };
+    let task_id_str = match args.get("task_id").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return err("WaitTask: missing required 'task_id' (string)"),
+    };
+    let task_id = match parse_task_id(task_id_str) {
+        Ok(t) => t,
+        Err(e) => return err(format!("WaitTask: {e}")),
+    };
+    let timeout_secs = clamp_wait_timeout_secs(
+        args.get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32),
+    );
+    let timeout = Duration::from_secs(timeout_secs as u64);
+
+    match task_id {
+        TaskId::Agent(n) => {
+            let outcome = bg_agents
+                .wait_for_completion(n, caller_spawner, timeout)
+                .await;
+            agent_wait_to_tool_result(task_id_str, outcome)
+        }
+        TaskId::Process(n) => {
+            let outcome = bg_processes
+                .wait_for_exit_as_caller(n, caller_spawner, timeout)
+                .await;
+            process_wait_to_tool_result(task_id_str, outcome)
+        }
+    }
+}
+
+fn agent_wait_to_tool_result(task_id_str: &str, outcome: WaitOutcome) -> ToolResult {
+    match outcome {
+        WaitOutcome::Completed(BgAgentResult {
+            agent_name,
+            prompt,
+            output,
+            success,
+            events,
+        }) => ok(json!({
+            "task_id": task_id_str,
+            "status": if success { "completed" } else { "errored" },
+            "agent_name": agent_name,
+            "prompt": prompt,
+            "output": output,
+            "events": events,
+        })),
+        WaitOutcome::Cancelled => ok(json!({
+            "task_id": task_id_str,
+            "status": "cancelled",
+        })),
+        WaitOutcome::TimedOut(snap) => ok(json!({
+            "task_id": task_id_str,
+            "status": "timed_out",
+            "current": agent_snapshot_to_json(&snap),
+        })),
+        WaitOutcome::NotFound => err(format!(
+            "WaitTask: no background task with id '{task_id_str}'"
+        )),
+        WaitOutcome::Forbidden => err(format!(
+            "WaitTask: task '{task_id_str}' is not owned by this caller"
+        )),
+    }
+}
+
+fn process_wait_to_tool_result(task_id_str: &str, outcome: ProcessWaitOutcome) -> ToolResult {
+    match outcome {
+        ProcessWaitOutcome::Exited { code } => ok(json!({
+            "task_id": task_id_str,
+            "status": "exited",
+            "exit_code": code,
+        })),
+        ProcessWaitOutcome::TimedOut(snap) => ok(json!({
+            "task_id": task_id_str,
+            "status": "timed_out",
+            "current": process_snapshot_to_json(&snap),
+        })),
+        ProcessWaitOutcome::NotFound => err(format!(
+            "WaitTask: no background task with id '{task_id_str}'"
+        )),
+        ProcessWaitOutcome::Forbidden => err(format!(
+            "WaitTask: task '{task_id_str}' is not owned by this caller"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +575,198 @@ mod tests {
             clamp_wait_timeout_secs(Some(WAIT_TASK_MAX_TIMEOUT_SECS)),
             WAIT_TASK_MAX_TIMEOUT_SECS
         );
+    }
+
+    // ── execute() dispatch tests ─────────────────────────────────────────────────────
+
+    fn fresh_registries() -> (Arc<BgAgentRegistry>, BgRegistry) {
+        (Arc::new(BgAgentRegistry::new()), BgRegistry::new())
+    }
+
+    /// `ListBackgroundTasks` on empty registries returns `[]`, success.
+    #[tokio::test]
+    async fn execute_list_returns_empty_array_when_no_tasks() {
+        let (agents, processes) = fresh_registries();
+        let r = execute("ListBackgroundTasks", "{}", &agents, &processes, None).await;
+        assert!(r.success);
+        assert_eq!(r.output, "[]");
+    }
+
+    /// `ListBackgroundTasks` shows the caller's agent tasks with the
+    /// agreed-upon shape (prefixed task_id, lower-case status).
+    #[tokio::test]
+    async fn execute_list_includes_caller_agent_tasks() {
+        let (agents, processes) = fresh_registries();
+        let (id, _tx, _, _) =
+            agents.register_test_with_status("explore", "map repo", None);
+
+        let r = execute("ListBackgroundTasks", "{}", &agents, &processes, None).await;
+        assert!(r.success);
+        let arr: Value = serde_json::from_str(&r.output).unwrap();
+        let arr = arr.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["task_id"], format!("agent:{id}"));
+        assert_eq!(arr[0]["task_type"], "agent");
+        assert_eq!(arr[0]["status"], "pending");
+        assert_eq!(arr[0]["description"], "explore: map repo");
+    }
+
+    /// Caller scoping: a sub-agent caller (Some(7)) must not see the
+    /// top-level (None) task. Defence-in-depth on top of the
+    /// sub_agent_dispatch denylist.
+    #[tokio::test]
+    async fn execute_list_filters_out_other_callers_tasks() {
+        let (agents, processes) = fresh_registries();
+        agents.register_test_with_status("a", "top", None);
+        agents.register_test_with_status("b", "sub", Some(7));
+
+        let top = execute("ListBackgroundTasks", "{}", &agents, &processes, None).await;
+        let arr: Value = serde_json::from_str(&top.output).unwrap();
+        assert_eq!(arr.as_array().unwrap().len(), 1, "top sees only its own");
+
+        let sub = execute("ListBackgroundTasks", "{}", &agents, &processes, Some(7)).await;
+        let arr: Value = serde_json::from_str(&sub.output).unwrap();
+        assert_eq!(arr.as_array().unwrap().len(), 1, "sub sees only its own");
+    }
+
+    /// `CancelTask` routes `agent:N` to BgAgentRegistry and reports
+    /// success in the structured payload.
+    #[tokio::test]
+    async fn execute_cancel_succeeds_for_owned_agent_task() {
+        let (agents, processes) = fresh_registries();
+        let (id, _tx, _, observer) =
+            agents.register_test_with_status("x", "y", None);
+
+        let r = execute(
+            "CancelTask",
+            &json!({ "task_id": format!("agent:{id}") }).to_string(),
+            &agents,
+            &processes,
+            None,
+        )
+        .await;
+        assert!(r.success, "got: {}", r.output);
+        assert!(observer.is_cancelled(), "cancel token must fire");
+        let payload: Value = serde_json::from_str(&r.output).unwrap();
+        assert_eq!(payload["cancelled"], true);
+        assert_eq!(payload["task_id"], format!("agent:{id}"));
+    }
+
+    #[tokio::test]
+    async fn execute_cancel_returns_not_found_for_unknown_id() {
+        let (agents, processes) = fresh_registries();
+        let r = execute(
+            "CancelTask",
+            &json!({ "task_id": "agent:9999" }).to_string(),
+            &agents,
+            &processes,
+            None,
+        )
+        .await;
+        assert!(!r.success);
+        assert!(r.output.contains("no background task"), "got: {}", r.output);
+    }
+
+    #[tokio::test]
+    async fn execute_cancel_returns_forbidden_for_cross_caller() {
+        let (agents, processes) = fresh_registries();
+        let (id, _tx, _, observer) =
+            agents.register_test_with_status("x", "y", Some(5));
+
+        // Top-level (None) tries to cancel sub-agent 5's task.
+        let r = execute(
+            "CancelTask",
+            &json!({ "task_id": format!("agent:{id}") }).to_string(),
+            &agents,
+            &processes,
+            None,
+        )
+        .await;
+        assert!(!r.success);
+        assert!(r.output.contains("not owned by this caller"), "got: {}", r.output);
+        assert!(!observer.is_cancelled(), "forbidden must NOT fire token");
+    }
+
+    #[tokio::test]
+    async fn execute_cancel_rejects_malformed_json() {
+        let (agents, processes) = fresh_registries();
+        let r = execute("CancelTask", "not-json", &agents, &processes, None).await;
+        assert!(!r.success);
+        assert!(r.output.contains("invalid JSON"), "got: {}", r.output);
+    }
+
+    #[tokio::test]
+    async fn execute_cancel_rejects_missing_task_id() {
+        let (agents, processes) = fresh_registries();
+        let r = execute("CancelTask", "{}", &agents, &processes, None).await;
+        assert!(!r.success);
+        assert!(r.output.contains("missing required"), "got: {}", r.output);
+    }
+
+    /// `WaitTask` on a completed agent task returns `status:completed`
+    /// + the agent's output, and consumes the entry (drain sees nothing).
+    #[tokio::test]
+    async fn execute_wait_returns_completed_for_finished_agent() {
+        let (agents, processes) = fresh_registries();
+        let (id, tx, status_tx, _) =
+            agents.register_test_with_status("explore", "map", None);
+        tx.send(Ok(("final answer".into(), vec!["e1".into()]))).unwrap();
+        status_tx
+            .send(AgentStatus::Completed { summary: "final".into() })
+            .unwrap();
+
+        let r = execute(
+            "WaitTask",
+            &json!({ "task_id": format!("agent:{id}"), "timeout_secs": 1 }).to_string(),
+            &agents,
+            &processes,
+            None,
+        )
+        .await;
+        assert!(r.success, "got: {}", r.output);
+        let payload: Value = serde_json::from_str(&r.output).unwrap();
+        assert_eq!(payload["status"], "completed");
+        assert_eq!(payload["output"], "final answer");
+        assert_eq!(payload["events"].as_array().unwrap().len(), 1);
+        // Consumed — not in registry anymore.
+        assert_eq!(agents.snapshot().len(), 0);
+    }
+
+    /// `WaitTask` timeout returns `status:timed_out` + a snapshot of
+    /// the still-running task.
+    #[tokio::test]
+    async fn execute_wait_returns_timed_out_with_snapshot() {
+        let (agents, processes) = fresh_registries();
+        // Bind ALL four to keep the channels alive — if status_tx
+        // drops, the watch sender is gone and `wait_for_terminal_status`
+        // early-returns, surfacing as Cancelled instead of TimedOut.
+        let (id, _tx, _status_tx, _observer) =
+            agents.register_test_with_status("slow", "x", None);
+
+        let r = execute(
+            "WaitTask",
+            // Timeout below 1s gets clamped to 1s by clamp_wait_timeout_secs;
+            // we still want the test to be fast — 1 s is the minimum the
+            // tool surface allows.
+            &json!({ "task_id": format!("agent:{id}"), "timeout_secs": 1 }).to_string(),
+            &agents,
+            &processes,
+            None,
+        )
+        .await;
+        assert!(r.success);
+        let payload: Value = serde_json::from_str(&r.output).unwrap();
+        assert_eq!(payload["status"], "timed_out");
+        assert_eq!(payload["current"]["task_id"], format!("agent:{id}"));
+        // Entry preserved.
+        assert_eq!(agents.snapshot().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn execute_unknown_tool_name_returns_error() {
+        let (agents, processes) = fresh_registries();
+        let r = execute("NotAToolWeKnow", "{}", &agents, &processes, None).await;
+        assert!(!r.success);
+        assert!(r.output.contains("unknown tool"));
     }
 }
