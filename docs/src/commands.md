@@ -128,6 +128,49 @@ system prompt, model, and allowed tools replace the current defaults.
 /agent testgen     ← use the "testgen" agent definition
 ```
 
+## `/agents`
+
+Lists currently-running **background** sub-agents — the ones the
+model launched with `background: true` via `InvokeAgent`. Foreground
+sub-agents (the synchronous `/agent <name>` switch above) don't appear
+here because they block the conversation and are visible inline.
+
+```text
+  🐾 Background sub-agents
+
+  ID    AGENT     AGE     STATUS
+  1     explore   2m      ▶ Running (iter 8/20)
+  2     verify    45s     ◐ Pending
+```
+
+- `ID` — stable per-task id assigned at spawn. Pass to `/cancel`.
+- `AGENT` — the sub-agent definition that was invoked.
+- `AGE` — wall-clock time since the task was reserved, rounded
+  **down** (`1m` means "between 60 and 119 seconds").
+- `STATUS` — latest value from the task's status channel:
+  `Pending`, `Running { iter }`, `Cancelled`, `Completed`, or
+  `Errored`.
+
+The `iter` count comes from inside the inference loop; until that
+wiring lands (Layer 4 of #996), in-progress tasks just show
+`▶ Running` without the `(iter N/20)` suffix.
+
+## `/cancel <id>`
+
+Requests cancellation of a background sub-agent by its `/agents` id.
+Fires the per-task `CancellationToken`, which the inference loop
+checks between iterations — a cancelled task may run for one more
+iteration before noticing. The result still injects on the next user
+turn (with status `Cancelled` instead of `Completed`), so you don't
+lose any partial work the agent already did.
+
+```text
+/cancel 1     ← stop background task #1
+```
+
+Idempotent: re-running `/cancel 1` on an already-cancelled task is a
+no-op. Unknown ids report a helpful error rather than silently no-oping.
+
 ## `/expand [<n>]`
 
 Shows the full, untruncated output of a recent tool call. Useful when Koda

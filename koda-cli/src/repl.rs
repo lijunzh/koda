@@ -56,6 +56,23 @@ pub enum ReplAction {
     Verbose(Option<bool>),
     /// `/agent` — open the sub-agent picker.
     ListAgents,
+    /// `/agents` — list running background sub-agents (#996 Layer 1).
+    ///
+    /// Distinct from [`ListAgents`] (singular `/agent`) which lists
+    /// configured sub-agent **definitions**. This one lists
+    /// currently-**running** background tasks tracked in
+    /// `KodaSession::bg_agents`.
+    ///
+    /// [`ListAgents`]: ReplAction::ListAgents
+    ListBackgroundTasks,
+    /// `/cancel <id>` — fire one background sub-agent's cancel token.
+    ///
+    /// `None` means the user typed `/cancel` with no arg, or a
+    /// non-numeric arg — the handler renders a `Usage:` line.
+    /// We deliberately keep the arg-parse fallible at this layer so
+    /// the dispatch table stays a clean `&'static str -> ReplAction`
+    /// without an error sum type leaking into the parser.
+    CancelBackgroundTask(Option<u32>),
     /// `/diff` (no sub-command) — show the pending git diff summary.
     ShowDiff,
     /// `/memory [save|<text>]` — view/append memory files.
@@ -172,6 +189,30 @@ pub async fn handle_command(
         },
 
         "/agent" => ReplAction::ListAgents,
+
+        // #996 Layer 1: runtime task management. `/agents` is plural
+        // and disjoint from `/agent` — sub-agent **definitions** vs
+        // running **tasks**.
+        "/agents" => ReplAction::ListBackgroundTasks,
+
+        "/cancel" => {
+            // Empty / whitespace-only / non-numeric arg → None.
+            // The handler renders a Usage: line in those cases
+            // rather than the parser silently dropping the command
+            // (which would leave the user wondering what they
+            // mistyped). `arg` already had its leading whitespace
+            // trimmed by `splitn`, but `"   "` survives that trim,
+            // so we re-check `is_empty` after a fresh trim.
+            let parsed = arg.and_then(|s| {
+                let s = s.trim();
+                if s.is_empty() {
+                    None
+                } else {
+                    s.parse::<u32>().ok()
+                }
+            });
+            ReplAction::CancelBackgroundTask(parsed)
+        }
 
         "/sessions" => match arg {
             Some(sub) if sub.starts_with("delete ") => {
@@ -556,6 +597,75 @@ mod tests {
     #[test]
     fn agent_returns_list_agents() {
         assert!(matches!(dispatch("/agent"), ReplAction::ListAgents));
+    }
+
+    // ── #996 Layer 1: /agents and /cancel ───────────────────────────────────
+
+    /// `/agents` (plural) → runtime task list. Must stay disjoint
+    /// from `/agent` (singular) which is the sub-agent definition
+    /// picker. Pinning both directions in one test guards against an
+    /// accidental refactor that collapses them.
+    #[test]
+    fn agents_plural_returns_list_background_tasks() {
+        assert!(matches!(
+            dispatch("/agents"),
+            ReplAction::ListBackgroundTasks
+        ));
+        // Singular still goes the other way.
+        assert!(matches!(dispatch("/agent"), ReplAction::ListAgents));
+    }
+
+    /// Happy path: `/cancel 7` parses the numeric id. This is the
+    /// flow the user-facing fix depends on — if it ever silently
+    /// returns `None`, `/cancel` is broken end-to-end.
+    #[test]
+    fn cancel_with_numeric_id_returns_some() {
+        assert!(matches!(
+            dispatch("/cancel 7"),
+            ReplAction::CancelBackgroundTask(Some(7))
+        ));
+        // Sanity: u32::MAX still parses (well within bg-agent
+        // task_id space, which only ever increments from 1).
+        assert!(matches!(
+            dispatch("/cancel 4294967295"),
+            ReplAction::CancelBackgroundTask(Some(4_294_967_295))
+        ));
+    }
+
+    /// `/cancel` with no arg → `None` so the handler can render a
+    /// helpful `Usage:` line. We deliberately do NOT fall through
+    /// to `NotACommand` — that would treat `/cancel` as a chat
+    /// message, which is the worst possible UX (the user would
+    /// then wait for the model to respond to their slash command).
+    #[test]
+    fn cancel_bare_returns_none_for_handler_to_explain() {
+        assert!(matches!(
+            dispatch("/cancel"),
+            ReplAction::CancelBackgroundTask(None)
+        ));
+    }
+
+    /// Non-numeric and whitespace-only args also land on `None`.
+    /// Handler shows `Usage:`. Pinning these cases prevents
+    /// silent regressions if someone refactors the parser into
+    /// `arg.unwrap_or("0").parse()` (which would give `Some(0)`
+    /// for empty input — a very confusing "task 0 not found").
+    #[test]
+    fn cancel_with_non_numeric_arg_returns_none() {
+        assert!(matches!(
+            dispatch("/cancel foo"),
+            ReplAction::CancelBackgroundTask(None)
+        ));
+        // Negative numbers are not valid u32 — `parse::<u32>` rejects.
+        assert!(matches!(
+            dispatch("/cancel -5"),
+            ReplAction::CancelBackgroundTask(None)
+        ));
+        // Whitespace-only after the command — don't pass `Some(0)`.
+        assert!(matches!(
+            dispatch("/cancel    "),
+            ReplAction::CancelBackgroundTask(None)
+        ));
     }
 
     #[test]
