@@ -1165,6 +1165,9 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 sub_agent_cache,
                 file_tracker,
                 bg_agents,
+                // Phase E of #996: top-level inference has no spawner
+                // identity — bg-task tools see the global scope.
+                None,
             )
             .await?;
         } else if remaining_tools.len() > 1 {
@@ -1182,6 +1185,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 sub_agent_cache,
                 file_tracker,
                 bg_agents,
+                None,
             )
             .await?;
         } else if !remaining_tools.is_empty() {
@@ -1199,6 +1203,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 sub_agent_cache,
                 file_tracker,
                 bg_agents,
+                None,
             )
             .await?;
         }

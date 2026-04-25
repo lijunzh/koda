@@ -236,6 +236,7 @@ pub(crate) async fn execute_one_tool(
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
     bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
+    caller_spawner: Option<u32>,
 ) -> (String, String, bool, Option<String>) {
     let (result, success, full_output) = if matches!(
         tc.function_name.as_str(),
@@ -244,19 +245,15 @@ pub(crate) async fn execute_one_tool(
         // Layer 2 of #996 — background-task management tools.
         //
         // These need the `Arc<BgAgentRegistry>` (not held by the
-        // ToolRegistry) plus the caller's spawner identity (only
-        // known here at the dispatch layer), so they can't go
-        // through the generic `tools.execute()` path. Phase E will
-        // thread a real `caller_spawner` from sub_agent_dispatch;
-        // for now top-level callers see `None` everywhere, which
-        // gives them access to their own (top-level-spawned) tasks
-        // — the most common case.
+        // ToolRegistry) plus the caller's spawner identity (now
+        // threaded as `caller_spawner`), so they can't go through
+        // the generic `tools.execute()` path.
         let r = crate::tools::bg_task_tools::execute(
             &tc.function_name,
             &tc.arguments,
             bg_agents,
             &tools.bg_registry,
-            None, // Phase E: pass real caller_spawner here
+            caller_spawner,
         )
         .await;
         (r.output, r.success, r.full_output)
@@ -307,6 +304,12 @@ pub(crate) async fn execute_one_tool(
             // Phase 5 PR-4 of #934: hand the parent's effective policy
             // to the child so `compose()` can stack restrictions.
             &policy,
+            // Phase E of #996: parent's spawner identity. The new
+            // sub-agent uses this to tag any bg-sub-agent reservation
+            // it makes (so the parent owns/can-cancel its bg children),
+            // and allocates a fresh `my_invocation_id` internally for
+            // its own bg-task scoping.
+            caller_spawner,
         );
         match Box::pin(fut).await {
             Ok(output) => (output, true, None),
@@ -352,6 +355,7 @@ async fn validate_then_execute_one_tool(
     cancel: CancellationToken,
     sub_agent_cache: &SubAgentCache,
     bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
+    caller_spawner: Option<u32>,
 ) -> (String, String, bool, Option<String>) {
     let parsed_args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
 
@@ -391,6 +395,7 @@ async fn validate_then_execute_one_tool(
         cancel,
         sub_agent_cache,
         bg_agents,
+        caller_spawner,
     )
     .await
 }
@@ -410,6 +415,7 @@ pub(crate) async fn execute_tools_parallel(
     sub_agent_cache: &SubAgentCache,
     file_tracker: &mut FileTracker,
     bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
+    caller_spawner: Option<u32>,
 ) -> Result<()> {
     let count = tool_calls.len();
     sink.emit(EngineEvent::Info {
@@ -436,6 +442,7 @@ pub(crate) async fn execute_tools_parallel(
                 cancel.clone(),
                 sub_agent_cache,
                 bg_agents,
+                caller_spawner,
             )
         })
         .collect();
@@ -487,6 +494,7 @@ pub(crate) async fn execute_tools_split_batch(
     sub_agent_cache: &SubAgentCache,
     file_tracker: &mut FileTracker,
     bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
+    caller_spawner: Option<u32>,
 ) -> Result<()> {
     // Partition into parallelizable vs sequential
     let (parallel, sequential): (Vec<_>, Vec<_>) = tool_calls.iter().partition(|tc| {
@@ -521,6 +529,7 @@ pub(crate) async fn execute_tools_split_batch(
                     cancel.clone(),
                     sub_agent_cache,
                     bg_agents,
+                    caller_spawner,
                 )
             })
             .collect();
@@ -565,6 +574,7 @@ pub(crate) async fn execute_tools_split_batch(
                 sub_agent_cache,
                 file_tracker,
                 bg_agents,
+                caller_spawner,
             )
             .await?;
         }
@@ -587,6 +597,7 @@ pub(crate) async fn execute_tools_split_batch(
             sub_agent_cache,
             file_tracker,
             bg_agents,
+            caller_spawner,
         )
         .await?;
     }
@@ -610,6 +621,7 @@ pub(crate) async fn execute_tools_sequential(
     sub_agent_cache: &SubAgentCache,
     file_tracker: &mut FileTracker,
     bg_agents: &std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
+    caller_spawner: Option<u32>,
 ) -> Result<()> {
     for tc in tool_calls {
         // Check for interrupt before each tool
@@ -805,6 +817,7 @@ pub(crate) async fn execute_tools_sequential(
             cancel.clone(),
             sub_agent_cache,
             bg_agents,
+            caller_spawner,
         )
         .await;
         record_tool_result(

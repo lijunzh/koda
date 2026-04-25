@@ -26,8 +26,72 @@ use koda_sandbox::{CwdProvider, GitWorktreeProvider, WorkspaceProvider};
 #[cfg(target_os = "macos")]
 use koda_sandbox::ClonefileProvider;
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+/// Process-wide allocator for sub-agent invocation IDs.
+///
+/// Phase E of #996. Each `execute_sub_agent` call (foreground or
+/// background) draws a fresh id; that id becomes the **spawner tag**
+/// for any background work this sub-agent registers, and is the key
+/// used to cancel that work when the sub-agent exits.
+///
+/// Top-level inference uses `None` (no invocation id). Sub-agents at
+/// any nesting depth use `Some(N)`.
+///
+/// `u32::MAX` invocations is comfortably more than any single Code
+/// Puppy session needs; we don't bother with wrap-around handling.
+/// Starts at 1 so `0` can stay reserved for "unset" should the type
+/// ever change.
+static NEXT_INVOCATION_ID: AtomicU32 = AtomicU32::new(1);
+
+/// Allocate a fresh invocation id. See [`NEXT_INVOCATION_ID`].
+pub(crate) fn next_invocation_id() -> u32 {
+    NEXT_INVOCATION_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// RAII cleanup hook for #996 Phase E.
+///
+/// On drop, cancels every bg-agent registry entry tagged with this
+/// sub-agent's invocation id. That covers the two ways a sub-agent
+/// can exit and leave orphans:
+///
+///   1. **Iteration cap** (`Ok(iteration_cap_marker(...))`) — the
+///      sub-agent ran out of inference iterations *while* one of its
+///      bg children was still running.
+///   2. **Error return** (`Err(...)` from any `?` inside the loop) —
+///      e.g. provider failure, persistence failure, `?`-propagated
+///      cancellation.
+///
+/// On the cancel-token path we'd reap anyway via the parent's cascade,
+/// but the spawner-scoped cancel is cheap and idempotent so we just
+/// always run it. `cancel_for_spawner` is `O(n)` over the registry,
+/// which is fine for the < 100-entry registries we expect.
+///
+/// Background shell processes (`Bash{background:true}`) are *not*
+/// covered here — each sub-agent constructs its own `ToolRegistry`
+/// with its own `BgRegistry`, which `Drop`-SIGTERMs everything when
+/// the registry goes out of scope. That handles shell orphans for
+/// free; this struct only needs to deal with the *shared*
+/// `BgAgentRegistry`.
+struct InvocationCleanup<'a> {
+    bg: &'a std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
+    invocation_id: u32,
+}
+
+impl Drop for InvocationCleanup<'_> {
+    fn drop(&mut self) {
+        let cancelled = self.bg.cancel_for_spawner(self.invocation_id);
+        if cancelled > 0 {
+            tracing::debug!(
+                spawner = self.invocation_id,
+                cancelled,
+                "execute_sub_agent exit: cancelled orphaned bg agents",
+            );
+        }
+    }
+}
 
 /// Run a sub-agent in the background. Owns all data (no borrows).
 ///
@@ -119,6 +183,12 @@ async fn run_bg_agent(
         &parent_session,
         &nested_bg,
         &parent_sandbox_policy,
+        // Phase E of #996: the bg agent has no in-process parent in
+        // the spawner sense — its `nested_bg` registry is fresh, and
+        // any bg work it spawns gets tagged with the bg agent's *own*
+        // invocation id (allocated inside the recursive call). The
+        // parent's cascade-cancel covers cross-registry teardown.
+        None,
     )
     .await;
 
@@ -190,8 +260,20 @@ pub(crate) fn execute_sub_agent<'a>(
     // the per-field rules. Pass `&SandboxPolicy::strict_default()`
     // when there is no meaningful parent (top-level invocation).
     parent_sandbox_policy: &'a koda_sandbox::SandboxPolicy,
+    // Phase E of #996: the **caller's** invocation id. Used as the
+    // `spawner` tag on bg-sub-agent reservations so the parent (not
+    // the child) owns the right to wait/cancel its bg children. Pass
+    // `None` when called from top-level inference. Distinct from the
+    // child's own `my_invocation_id`, which is allocated below and
+    // tags any bg work the child itself spawns.
+    parent_spawner: Option<u32>,
 ) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
     async move {
+        // Phase E of #996: allocate this invocation's id up-front. It
+        // becomes the `caller_spawner` for every tool call inside
+        // this sub-agent's loop, AND the `spawner` tag the cleanup
+        // hook below uses to reap any orphaned bg work.
+        let my_invocation_id = next_invocation_id();
         let args: serde_json::Value = serde_json::from_str(arguments)?;
         let agent_name = args["agent_name"].as_str().unwrap_or("task");
         tracing::Span::current().record("agent_name", agent_name);
@@ -230,7 +312,16 @@ pub(crate) fn execute_sub_agent<'a>(
         //    so MutexGuards held across their awaits weren't Send. Bounds
         //    have been added there as well.
         if background {
-            let reservation = bg_agents.reserve(&cancel, None);
+            // Phase E of #996: tag the bg-sub-agent task with the
+            // **parent's** spawner identity. The parent (not the bg
+            // sub-agent itself) owns the right to wait/cancel its
+            // bg children via WaitTask/CancelTask. The bg sub-agent's
+            // own invocation id (`my_invocation_id` allocated above)
+            // is unused on this code path — it would matter if the
+            // bg sub-agent itself were to be cancelled-on-parent-exit,
+            // but the registry's parent->bg cancel-token cascade
+            // already handles that case.
+            let reservation = bg_agents.reserve(&cancel, parent_spawner);
             let task_id = reservation.task_id;
             let bg_cancel = reservation.cancel.clone();
             let bg_tx = reservation.tx;
@@ -281,7 +372,7 @@ pub(crate) fn execute_sub_agent<'a>(
                 bg_rx,
                 entry_cancel,
                 entry_status_rx,
-                None,
+                parent_spawner,
                 handle,
             );
 
@@ -290,6 +381,17 @@ pub(crate) fn execute_sub_agent<'a>(
              Results will be injected when complete."
             ));
         }
+
+        // From this point on, any bg work this invocation spawns is
+        // tagged with `my_invocation_id`. Install the RAII cleanup
+        // guard *now*, after the bg-spawn early-return — a bg-spawn
+        // path's child is intentionally meant to outlive us; the
+        // guard would (correctly!) reap it as an orphan, which is
+        // exactly the behaviour we want to AVOID for the bg branch.
+        let _cleanup = InvocationCleanup {
+            bg: bg_agents,
+            invocation_id: my_invocation_id,
+        };
         // Check result cache (only for stateless calls without a session_id,
         // since session continuations need fresh execution).
         if session_id.is_none()
@@ -589,22 +691,12 @@ pub(crate) fn execute_sub_agent<'a>(
             if !denied.contains(&"AskUser".to_string()) {
                 denied.push("AskUser".to_string());
             }
-            // Layer 2 of #996 — background-task management tools.
-            //
-            // Until Phase E threads the spawning sub-agent's invocation
-            // id through the dispatch layer, sub-agents would call
-            // these tools with `caller_spawner = None` and end up
-            // looking at the top-level scope. That's a Model E
-            // violation (sub-agents must not see siblings' or parents'
-            // tasks). Easiest defence: hide the tools from sub-agents
-            // entirely until spawner threading lands. Phase E removes
-            // these three filters in the same commit that wires the
-            // real `caller_spawner` into `execute_one_tool`.
-            for tool in ["ListBackgroundTasks", "CancelTask", "WaitTask"] {
-                if !denied.iter().any(|d| d == tool) {
-                    denied.push(tool.to_string());
-                }
-            }
+            // Phase E of #996 wired `caller_spawner` through the
+            // dispatch layer, so the bg-task tools (ListBackgroundTasks /
+            // CancelTask / WaitTask) now correctly scope to the calling
+            // sub-agent's own invocation id — a sub-agent only sees
+            // bg work *it* spawned. The earlier blanket denylist that
+            // hid these tools from sub-agents has been removed.
             tools.get_definitions(&sub_config.allowed_tools, &denied)
         };
         let semantic_memory = if sub_config.skip_memory {
@@ -804,6 +896,7 @@ pub(crate) fn execute_sub_agent<'a>(
                                 cancel.clone(),
                                 sub_agent_cache,
                                 bg_agents,
+                                Some(my_invocation_id),
                             )
                             .await;
                             result
@@ -860,6 +953,7 @@ pub(crate) fn execute_sub_agent<'a>(
                                         cancel.clone(),
                                         sub_agent_cache,
                                         bg_agents,
+                                        Some(my_invocation_id),
                                     )
                                     .await;
                                     result
@@ -1263,6 +1357,113 @@ mod b21_tests {
         assert!(
             !m.contains('\n'),
             "marker must be single-line for clean tool-result formatting; got:\n{m}"
+        );
+    }
+}
+
+/// Phase E of #996 — RAII cleanup hook tests.
+///
+/// `InvocationCleanup`'s job: when a sub-agent invocation exits
+/// (success, iteration cap, or error), **fire the cancel token** on
+/// every bg-agent registry entry tagged with that invocation's
+/// spawner id. The actual reaping (removal from `pending`) happens
+/// later — either when the bg future observes its cancel token and
+/// returns, then gets `drain_completed`'d, or when the registry's
+/// own Drop impl aborts the JoinHandle. Either way, the guard's job
+/// is just signalling.
+///
+/// Two contracts to pin:
+///
+///   1. **Drop fires cancel on matching entries.** Entries tagged with
+///      `Some(my_invocation_id)` must observe their cancel token fire
+///      after the guard drops.
+///   2. **Drop leaves non-matching entries alone.** Entries tagged with
+///      a *different* spawner id (sibling sub-agent, top-level, etc.)
+///      must NOT observe their cancel token fire.
+///
+/// We test the guard in isolation rather than driving a full
+/// `execute_sub_agent` because the function is too large to set up
+/// in a unit test. The guard's behaviour is the single load-bearing
+/// piece; everything else is plumbing the compiler already verified.
+#[cfg(test)]
+mod invocation_cleanup_tests {
+    use super::InvocationCleanup;
+    use crate::bg_agent::BgAgentRegistry;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn drop_cancels_entries_tagged_with_matching_spawner() {
+        let reg = Arc::new(BgAgentRegistry::new());
+        // Tag two bg entries with our invocation id. The 4th tuple
+        // element is a clone of the entry's cancel token — we use it
+        // as an observer to detect the guard firing the cancel.
+        let (_id_a, _tx_a, _status_tx_a, cancel_a) =
+            reg.register_test_with_status("scout", "a", Some(7));
+        let (_id_b, _tx_b, _status_tx_b, cancel_b) =
+            reg.register_test_with_status("scout", "b", Some(7));
+        assert!(!cancel_a.is_cancelled() && !cancel_b.is_cancelled(), "setup");
+
+        drop(InvocationCleanup {
+            bg: &reg,
+            invocation_id: 7,
+        });
+
+        assert!(
+            cancel_a.is_cancelled(),
+            "entry A's cancel token must fire when guard drops"
+        );
+        assert!(
+            cancel_b.is_cancelled(),
+            "entry B's cancel token must fire when guard drops"
+        );
+    }
+
+    #[tokio::test]
+    async fn drop_leaves_entries_with_different_spawner_alone() {
+        let reg = Arc::new(BgAgentRegistry::new());
+        // Mix: one tagged with our id, one with a sibling's, one with None.
+        let (_id_mine, _tx_m, _status_tx_m, cancel_mine) =
+            reg.register_test_with_status("a", "mine", Some(7));
+        let (_id_sib, _tx_s, _status_tx_s, cancel_sibling) =
+            reg.register_test_with_status("a", "sibling", Some(8));
+        let (_id_top, _tx_t, _status_tx_t, cancel_toplevel) =
+            reg.register_test_with_status("a", "toplevel", None);
+
+        drop(InvocationCleanup {
+            bg: &reg,
+            invocation_id: 7,
+        });
+
+        assert!(
+            cancel_mine.is_cancelled(),
+            "my own (spawner=7) entry must be cancelled"
+        );
+        assert!(
+            !cancel_sibling.is_cancelled(),
+            "sibling sub-agent's (spawner=8) entry must NOT be cancelled"
+        );
+        assert!(
+            !cancel_toplevel.is_cancelled(),
+            "top-level (spawner=None) entry must NOT be cancelled"
+        );
+    }
+
+    #[tokio::test]
+    async fn drop_with_no_matching_entries_is_noop() {
+        let reg = Arc::new(BgAgentRegistry::new());
+        let (_id, _tx, _status_tx, cancel) =
+            reg.register_test_with_status("a", "x", Some(99));
+
+        // Cleanup for an invocation that never spawned anything —
+        // common case: a sub-agent that did nothing bg-related.
+        drop(InvocationCleanup {
+            bg: &reg,
+            invocation_id: 7,
+        });
+
+        assert!(
+            !cancel.is_cancelled(),
+            "unrelated entry's cancel token must not fire"
         );
     }
 }
