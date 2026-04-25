@@ -326,7 +326,7 @@ pub(crate) async fn execute_one_tool(
             None
         };
         let r = tools
-            .execute(&tc.function_name, &tc.arguments, streaming)
+            .execute(&tc.function_name, &tc.arguments, streaming, caller_spawner)
             .await;
         (r.output, r.success, r.full_output)
     };

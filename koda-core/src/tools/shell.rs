@@ -119,6 +119,16 @@ pub async fn run_shell_command(
     policy: &koda_sandbox::SandboxPolicy,
     proxy_port: Option<u16>,
     socks5_port: Option<u16>,
+    // Phase E of #996: who invoked this Bash call? Threaded down to
+    // `spawn_background` so the bg-process registry entry is tagged
+    // with the right `spawner`. Without this, a sub-agent that calls
+    // `Bash{background:true}` and later tries to `CancelTask` its
+    // own process gets `Forbidden` because the entry is tagged with
+    // `None` while the caller is `Some(my_invocation_id)`.
+    //
+    // Top-level callers pass `None` and the entry is also tagged
+    // with `None` — the existing top-level happy path is preserved.
+    caller_spawner: Option<u32>,
 ) -> Result<ShellOutput> {
     let command = args["command"]
         .as_str()
@@ -139,6 +149,7 @@ pub async fn run_shell_command(
             policy,
             proxy_port,
             socks5_port,
+            caller_spawner,
         )?;
         return Ok(ShellOutput {
             summary: msg,
@@ -327,6 +338,7 @@ async fn read_streams(
 ///
 /// Returns immediately with PID + instructions. Sync because `spawn()` doesn't
 /// need to await — only `output()` / `wait()` block.
+#[allow(clippy::too_many_arguments)]
 fn spawn_background(
     project_root: &Path,
     command: &str,
@@ -335,6 +347,7 @@ fn spawn_background(
     policy: &koda_sandbox::SandboxPolicy,
     proxy_port: Option<u16>,
     socks5_port: Option<u16>,
+    caller_spawner: Option<u32>,
 ) -> Result<String> {
     // Spawn via sandbox wrapper (enforced for all trust modes).
     // Detach stdio so the process doesn't block on terminal I/O.
@@ -358,7 +371,7 @@ fn spawn_background(
         .id()
         .ok_or_else(|| anyhow::anyhow!("Spawned process has no PID (already exited)"))?;
 
-    bg.insert(pid, command.to_string(), child, None);
+    bg.insert(pid, command.to_string(), child, caller_spawner);
 
     Ok(format!(
         "Background process started.\n  PID:     {pid}\n  Command: {command}\n\
@@ -560,6 +573,7 @@ mod tests {
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -584,6 +598,7 @@ mod tests {
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -606,6 +621,7 @@ mod tests {
             None,
             &crate::trust::TrustMode::Safe,
             &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
             None,
             None,
         )
@@ -649,6 +665,7 @@ mod tests {
             &policy,
             None,
             None,
+            None,
         )
         .await
         .expect("shell command must succeed");
@@ -681,6 +698,7 @@ mod tests {
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -698,6 +716,47 @@ mod tests {
         assert_eq!(registry.len(), 1);
     }
 
+    /// Phase E of #996 regression: when a sub-agent (caller_spawner =
+    /// `Some(N)`) does `Bash{background:true}`, the bg-process entry
+    /// must be tagged with the same `Some(N)`. Without this fix, the
+    /// entry was hard-coded `None`, which meant the sub-agent's later
+    /// `CancelTask` / `WaitTask` (also `Some(N)`) would get
+    /// `Forbidden` because `None != Some(N)`.
+    ///
+    /// We assert at the registry level (`snapshot()` exposes the
+    /// `spawner` field) rather than driving CancelTask, because the
+    /// scoping check is what this PR fixes — the cancel mechanics are
+    /// already covered by `bg_process::tests::kill_as_caller_*`.
+    #[tokio::test]
+    async fn background_spawn_tags_entry_with_caller_spawner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry = BgRegistry::new();
+        let args = serde_json::json!({"command": "sleep 60", "background": true});
+        let _ = run_shell_command(
+            tmp.path(),
+            &args,
+            256,
+            &registry,
+            None,
+            &crate::trust::TrustMode::Safe,
+            &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
+            None,
+            Some(42), // sub-agent invocation id
+        )
+        .await
+        .unwrap();
+
+        let snap = registry.snapshot();
+        assert_eq!(snap.len(), 1, "one bg process expected");
+        assert_eq!(
+            snap[0].spawner,
+            Some(42),
+            "bg-process entry must carry the caller's spawner id so a \
+             same-spawner CancelTask doesn't get Forbidden"
+        );
+    }
+
     #[tokio::test]
     async fn background_false_runs_synchronously() {
         let tmp = tempfile::tempdir().unwrap();
@@ -710,6 +769,7 @@ mod tests {
             None,
             &crate::trust::TrustMode::Safe,
             &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
             None,
             None,
         )
@@ -842,6 +902,7 @@ mod tests {
             None,
             &crate::trust::TrustMode::Safe,
             &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
             None,
             None,
         )
@@ -977,6 +1038,7 @@ mod tests {
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1076,6 +1138,7 @@ mod tests {
             None,
             &crate::trust::TrustMode::Safe,
             &koda_sandbox::SandboxPolicy::strict_default(),
+            None,
             None,
             None,
         )

@@ -609,6 +609,10 @@ impl ToolRegistry {
         name: &str,
         arguments: &str,
         sink_for_streaming: Option<(&dyn crate::engine::EngineSink, &str)>,
+        // Phase E of #996: forwarded to `Bash` so that bg-shell
+        // entries are tagged with the calling agent's invocation id.
+        // Every other tool ignores this. Top-level callers pass `None`.
+        caller_spawner: Option<u32>,
     ) -> ToolResult {
         let raw = arguments.trim();
         let raw = if raw.is_empty() { "{}" } else { raw };
@@ -675,6 +679,7 @@ impl ToolRegistry {
                     self.sandbox_policy(),
                     self.proxy_port(),
                     self.socks5_port(),
+                    caller_spawner,
                 )
                 .await;
                 return match shell_result {
