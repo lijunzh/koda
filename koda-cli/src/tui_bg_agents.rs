@@ -278,7 +278,10 @@ mod tests {
         CancellationToken,
     ) {
         let parent = CancellationToken::new();
-        let r = reg.reserve(&parent);
+        // Phase A1 of #996 added a `spawner: Option<u32>` to both
+        // reserve() and attach(). The TUI test harness only ever
+        // exercises the top-level path, so `None` is the right value.
+        let r = reg.reserve(&parent, None);
         let task_id = r.task_id;
         let tx = r.tx;
         let status_tx = r.status_tx;
@@ -291,6 +294,7 @@ mod tests {
             r.rx,
             r.cancel,
             r.status_rx,
+            None,
             noop,
         );
         (task_id, tx, status_tx, observer)

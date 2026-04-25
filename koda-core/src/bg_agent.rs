@@ -118,6 +118,19 @@ pub struct BgTaskSnapshot {
     pub age: Duration,
     /// Latest value from the task's `watch::Receiver<AgentStatus>`.
     pub status: AgentStatus,
+    /// Sub-agent task that spawned this bg-agent. `None` = top-level
+    /// (the user's main conversation).
+    ///
+    /// **#996 Layer 2 / Model D**: tracked so that when a sub-agent
+    /// exits, [`BgAgentRegistry::cancel_for_spawner`] can fire the
+    /// cancel token on every bg-agent it left behind. Mirrors
+    /// Claude Code's `agentId` field on `LocalShellTaskState`
+    /// (`prevents 10-day fake-logs.sh zombies`).
+    ///
+    /// We don't use this for permission scoping — any caller with a
+    /// `task_id` can manage any task. Spawner is *only* a cleanup
+    /// hook (matching Claude Code's flat-permissions design).
+    pub spawner: Option<u32>,
 }
 
 /// Payload sent over the bg-agent oneshot.
@@ -178,6 +191,9 @@ struct BgAgentEntry {
     status_rx: watch::Receiver<AgentStatus>,
     /// When the task was attached. Used to compute `age` in snapshots.
     started_at: Instant,
+    /// Sub-agent task that spawned this bg-agent. `None` = top-level.
+    /// **#996 Layer 2 / Model D** — see [`BgTaskSnapshot::spawner`].
+    spawner: Option<u32>,
     /// Aborts the spawned task on drop. The bg path uses
     /// `tokio::spawn` on the multi-thread runtime (#1022 B5):
     /// `execute_sub_agent` returns an explicitly `Send`-bounded
@@ -229,6 +245,10 @@ pub struct BgAgentReservation {
     /// so `snapshot()` and `/agents` can read the current state without
     /// touching the spawn site.
     pub status_rx: watch::Receiver<AgentStatus>,
+    /// Sub-agent task id of the spawner, or `None` for the top-level
+    /// loop. Carried verbatim to [`BgAgentRegistry::attach`] so the
+    /// entry knows who spawned it (Model D cleanup-on-exit).
+    pub spawner: Option<u32>,
 }
 
 impl BgAgentRegistry {
@@ -244,11 +264,22 @@ impl BgAgentRegistry {
     /// token for the spawn site to consume. Call [`Self::attach`] with
     /// the resulting `JoinHandle` to complete registration.
     ///
-    /// The two-phase shape exists because `tokio::spawn` produces the
-    /// `JoinHandle` *after* the future is built, but the future needs
-    /// to own the `tx` to deliver its result. Reservation gives us
-    /// `tx` early; attach binds the handle once it exists.
-    pub fn reserve(&self, parent_cancel: &CancellationToken) -> BgAgentReservation {
+    /// `spawner` records who is reserving this slot. `None` means
+    /// the top-level inference loop; `Some(invocation_id)` means a
+    /// sub-agent invocation. Used by [`Self::cancel_for_spawner`] to
+    /// reap children when a sub-agent exits (Model E cleanup-on-exit)
+    /// and by [`Self::snapshot_for_caller`] to scope LLM-tool views.
+    ///
+    /// The two-phase shape (`reserve` → spawn → `attach`) exists
+    /// because `tokio::spawn` produces the `JoinHandle` *after* the
+    /// future is built, but the future needs to own the `tx` to deliver
+    /// its result. Reservation gives us `tx` early; attach binds the
+    /// handle once it exists.
+    pub fn reserve(
+        &self,
+        parent_cancel: &CancellationToken,
+        spawner: Option<u32>,
+    ) -> BgAgentReservation {
         let (tx, rx) = oneshot::channel();
         let (status_tx, status_rx) = watch::channel(AgentStatus::Pending);
         let mut id = self.next_id.lock();
@@ -261,6 +292,7 @@ impl BgAgentRegistry {
             cancel: parent_cancel.child_token(),
             status_tx,
             status_rx,
+            spawner,
         }
     }
 
@@ -274,10 +306,11 @@ impl BgAgentRegistry {
     ///
     /// [`reserve`]: Self::reserve
     //
-    // 8 args trips `clippy::too_many_arguments` (limit 7). Each one
+    // 9 args trips `clippy::too_many_arguments` (limit 7). Each one
     // is load-bearing: id + name + prompt are display metadata;
-    // rx/cancel/status_rx are the three channels we own; handle is
-    // the AbortOnDropHandle. Bundling into a struct just to satisfy
+    // rx/cancel/status_rx are the three channels we own; spawner is
+    // the cleanup-routing key (Model E); handle is the
+    // AbortOnDropHandle. Bundling into a struct just to satisfy
     // a heuristic would add a one-use type for no readability win
     // — "practicality beats purity".
     #[allow(clippy::too_many_arguments)]
@@ -289,6 +322,7 @@ impl BgAgentRegistry {
         rx: oneshot::Receiver<Result<BgPayload, BgPayload>>,
         cancel: CancellationToken,
         status_rx: watch::Receiver<AgentStatus>,
+        spawner: Option<u32>,
         handle: tokio::task::JoinHandle<()>,
     ) {
         self.pending.lock().insert(
@@ -300,6 +334,7 @@ impl BgAgentRegistry {
                 cancel,
                 status_rx,
                 started_at: Instant::now(),
+                spawner,
                 _handle: AbortOnDropHandle::new(handle),
             },
         );
@@ -315,7 +350,8 @@ impl BgAgentRegistry {
         agent_name: &str,
         prompt: &str,
     ) -> (u32, oneshot::Sender<Result<BgPayload, BgPayload>>) {
-        let (id, tx, _status_tx, _cancel) = self.register_test_with_status(agent_name, prompt);
+        let (id, tx, _status_tx, _cancel) =
+            self.register_test_with_status(agent_name, prompt, None);
         (id, tx)
     }
 
@@ -323,11 +359,16 @@ impl BgAgentRegistry {
     /// sender so a test can manually drive transitions without
     /// needing a real spawned `run_bg_agent`. The cancel token also
     /// comes back so cancel-cascade tests can verify the channel.
+    ///
+    /// `spawner` is recorded on the entry so scope-filtering /
+    /// kill-on-exit tests can exercise both the top-level (`None`)
+    /// and sub-agent (`Some(id)`) paths.
     #[cfg(test)]
     pub fn register_test_with_status(
         &self,
         agent_name: &str,
         prompt: &str,
+        spawner: Option<u32>,
     ) -> (
         u32,
         oneshot::Sender<Result<BgPayload, BgPayload>>,
@@ -352,6 +393,7 @@ impl BgAgentRegistry {
                 cancel,
                 status_rx,
                 started_at: Instant::now(),
+                spawner,
                 _handle: AbortOnDropHandle::new(noop),
             },
         );
@@ -449,6 +491,10 @@ impl BgAgentRegistry {
     /// snapshots of the same task report different ages. Status is read
     /// from each entry's `watch::Receiver` (no blocking, no waiting).
     /// Sorted by ascending `task_id` so the output is stable across calls.
+    ///
+    /// **Unscoped**: returns every task regardless of spawner. Used by
+    /// the TUI `/agents` command (humans want the global view) and as
+    /// the engine of [`Self::snapshot_for_caller`] (which filters).
     pub fn snapshot(&self) -> Vec<BgTaskSnapshot> {
         let guard = self.pending.lock();
         let now = Instant::now();
@@ -460,10 +506,28 @@ impl BgAgentRegistry {
                 prompt: entry.prompt.clone(),
                 age: now.saturating_duration_since(entry.started_at),
                 status: entry.status_rx.borrow().clone(),
+                spawner: entry.spawner,
             })
             .collect();
         out.sort_by_key(|s| s.task_id);
         out
+    }
+
+    /// Scoped snapshot for the `ListBackgroundTasks` LLM tool.
+    ///
+    /// **Model E scoping**: a caller only sees tasks whose `spawner`
+    /// matches its own `caller_spawner`. Top-level callers pass `None`
+    /// and see only top-level-spawned tasks; sub-agent callers pass
+    /// `Some(invocation_id)` and see only their own.
+    ///
+    /// Strict equality — a sub-agent does NOT see sibling sub-agents'
+    /// tasks, and the top-level does NOT see sub-agents' tasks via the
+    /// LLM (the TUI's `/agents` command remains the global view).
+    pub fn snapshot_for_caller(&self, caller_spawner: Option<u32>) -> Vec<BgTaskSnapshot> {
+        self.snapshot()
+            .into_iter()
+            .filter(|s| s.spawner == caller_spawner)
+            .collect()
     }
 }
 
@@ -647,7 +711,7 @@ mod tests {
     async fn registry_drop_aborts_pending_tasks() {
         let reg = BgAgentRegistry::new();
         let parent = CancellationToken::new();
-        let reservation = reg.reserve(&parent);
+        let reservation = reg.reserve(&parent, None);
         let task_id = reservation.task_id;
         let cancel_for_task = reservation.cancel.clone();
         let tx = reservation.tx;
@@ -680,6 +744,7 @@ mod tests {
             rx,
             cancel_for_entry,
             status_rx,
+            None,
             handle,
         );
 
@@ -706,8 +771,8 @@ mod tests {
     async fn parent_cancel_cascades_to_reserved_child() {
         let reg = BgAgentRegistry::new();
         let parent = CancellationToken::new();
-        let r1 = reg.reserve(&parent);
-        let r2 = reg.reserve(&parent);
+        let r1 = reg.reserve(&parent, None);
+        let r2 = reg.reserve(&parent, None);
 
         assert!(!r1.cancel.is_cancelled());
         assert!(!r2.cancel.is_cancelled());
@@ -736,7 +801,7 @@ mod tests {
     async fn cancel_known_task_fires_token() {
         let reg = BgAgentRegistry::new();
         let (task_id, _tx, _status_tx, observer) =
-            reg.register_test_with_status("explore", "map repo");
+            reg.register_test_with_status("explore", "map repo", None);
 
         assert!(!observer.is_cancelled(), "precondition");
         let fired = reg.cancel(task_id);
@@ -766,7 +831,8 @@ mod tests {
     #[tokio::test]
     async fn cancel_is_idempotent_while_pending() {
         let reg = BgAgentRegistry::new();
-        let (task_id, _tx, _status_tx, _observer) = reg.register_test_with_status("explore", "x");
+        let (task_id, _tx, _status_tx, _observer) =
+            reg.register_test_with_status("explore", "x", None);
 
         assert!(reg.cancel(task_id));
         assert!(
@@ -805,7 +871,8 @@ mod tests {
     #[tokio::test]
     async fn snapshot_reflects_status_writes() {
         let reg = BgAgentRegistry::new();
-        let (task_id, _tx, status_tx, _cancel) = reg.register_test_with_status("explore", "map");
+        let (task_id, _tx, status_tx, _cancel) =
+            reg.register_test_with_status("explore", "map", None);
 
         // Default is Pending.
         assert_eq!(reg.snapshot()[0].status, AgentStatus::Pending);

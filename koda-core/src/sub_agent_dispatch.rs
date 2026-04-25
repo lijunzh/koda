@@ -230,7 +230,7 @@ pub(crate) fn execute_sub_agent<'a>(
         //    so MutexGuards held across their awaits weren't Send. Bounds
         //    have been added there as well.
         if background {
-            let reservation = bg_agents.reserve(&cancel);
+            let reservation = bg_agents.reserve(&cancel, None);
             let task_id = reservation.task_id;
             let bg_cancel = reservation.cancel.clone();
             let bg_tx = reservation.tx;
@@ -281,6 +281,7 @@ pub(crate) fn execute_sub_agent<'a>(
                 bg_rx,
                 entry_cancel,
                 entry_status_rx,
+                None,
                 handle,
             );
 
