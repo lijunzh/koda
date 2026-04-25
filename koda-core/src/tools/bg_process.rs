@@ -41,6 +41,32 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio::process::Child;
 
+/// Outcome of [`BgRegistry::wait_for_exit_as_caller`].
+///
+/// Mirrors [`crate::bg_agent::WaitOutcome`] but carries process-specific
+/// terminal info (exit code) instead of an agent result. The two enums
+/// stay separate because they really are different things — forcing one
+/// to wear the other's shape would mean optionalizing fields that aren't
+/// optional in their natural domain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessWaitOutcome {
+    /// Process has exited — either naturally or as a result of an
+    /// earlier `kill`. `code` is the OS exit code if reported.
+    Exited {
+        /// Same semantics as [`BgProcessStatus::Exited::code`].
+        code: Option<i32>,
+    },
+    /// Wait deadline elapsed; the process is still running. The
+    /// returned snapshot reflects the latest state at the moment the
+    /// timeout fired (e.g. age has advanced).
+    TimedOut(BgProcessSnapshot),
+    /// PID is not in the registry (never tracked, or already removed).
+    NotFound,
+    /// PID exists but caller's `spawner` does not match. Model E
+    /// permission rule.
+    Forbidden,
+}
+
 /// Lifecycle of a single tracked background process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BgProcessStatus {
@@ -262,6 +288,76 @@ impl BgRegistry {
         CancelOutcome::Cancelled
     }
 
+    /// Block until a tracked process exits, with a timeout. Same
+    /// Model E permission rule as [`Self::kill_as_caller`].
+    ///
+    /// Implementation: poll-based. Calls [`Self::reap`] every
+    /// `POLL_INTERVAL`; cheap because reap is a `try_wait` per
+    /// running child. Once status leaves `Running`, returns
+    /// [`ProcessWaitOutcome::Exited`] (mapping `Killed` → `Exited`
+    /// with `code: None` if the OS hasn't reported the exit yet —
+    /// the model only cares that the process is gone).
+    ///
+    /// On timeout, leaves the entry in the registry so it can still
+    /// be queried via [`Self::snapshot`] / re-waited.
+    pub async fn wait_for_exit_as_caller(
+        &self,
+        pid: u32,
+        caller_spawner: Option<u32>,
+        timeout: Duration,
+    ) -> ProcessWaitOutcome {
+        const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+        // Sanity-check: known + owned. Done up-front so we can fail
+        // fast on the common error cases without spinning.
+        {
+            let guard = self.inner.lock().unwrap();
+            match guard.get(&pid) {
+                None => return ProcessWaitOutcome::NotFound,
+                Some(e) if e.spawner != caller_spawner => return ProcessWaitOutcome::Forbidden,
+                Some(_) => {}
+            }
+        }
+
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.reap();
+            {
+                let guard = self.inner.lock().unwrap();
+                let Some(entry) = guard.get(&pid) else {
+                    return ProcessWaitOutcome::NotFound;
+                };
+                match entry.status {
+                    BgProcessStatus::Running => {}
+                    BgProcessStatus::Exited { code } => {
+                        return ProcessWaitOutcome::Exited { code };
+                    }
+                    BgProcessStatus::Killed => {
+                        return ProcessWaitOutcome::Exited { code: None };
+                    }
+                }
+            }
+
+            if Instant::now() >= deadline {
+                let guard = self.inner.lock().unwrap();
+                let Some(entry) = guard.get(&pid) else {
+                    return ProcessWaitOutcome::NotFound;
+                };
+                let now = Instant::now();
+                return ProcessWaitOutcome::TimedOut(BgProcessSnapshot {
+                    pid,
+                    command: entry.command.clone(),
+                    age: now.saturating_duration_since(entry.started_at),
+                    status: entry.status,
+                    spawner: entry.spawner,
+                });
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            tokio::time::sleep(POLL_INTERVAL.min(remaining)).await;
+        }
+    }
+
     /// SIGTERM every still-running child whose `spawner` matches.
     /// Cleanup-on-exit hook for sub-agent exit (Model E). Returns
     /// the count of processes signalled. Idempotent.
@@ -431,6 +527,79 @@ mod tests {
 
         // Unknown PID for any caller → NotFound.
         assert_eq!(reg.kill_as_caller(987654, None), CancelOutcome::NotFound);
+    }
+
+    #[tokio::test]
+    async fn wait_for_exit_returns_exited_when_child_finishes() {
+        let reg = BgRegistry::new();
+        let (pid, child) = spawn_true_child();
+        reg.insert(pid, "true".into(), child, None);
+
+        let outcome = reg
+            .wait_for_exit_as_caller(pid, None, Duration::from_secs(2))
+            .await;
+        assert_eq!(outcome, ProcessWaitOutcome::Exited { code: Some(0) });
+    }
+
+    #[tokio::test]
+    async fn wait_for_exit_returns_exited_when_already_killed() {
+        let reg = BgRegistry::new();
+        let (pid, child) = spawn_sleep_child();
+        reg.insert(pid, "sleep 60".into(), child, Some(7));
+        reg.kill(pid); // status → Killed
+
+        let outcome = reg
+            .wait_for_exit_as_caller(pid, Some(7), Duration::from_secs(1))
+            .await;
+        assert_eq!(outcome, ProcessWaitOutcome::Exited { code: None });
+    }
+
+    #[tokio::test]
+    async fn wait_for_exit_returns_timed_out_with_snapshot() {
+        let reg = BgRegistry::new();
+        let (pid, child) = spawn_sleep_child();
+        reg.insert(pid, "sleep 60".into(), child, None);
+
+        let outcome = reg
+            .wait_for_exit_as_caller(pid, None, Duration::from_millis(150))
+            .await;
+        match outcome {
+            ProcessWaitOutcome::TimedOut(snap) => {
+                assert_eq!(snap.pid, pid);
+                assert_eq!(snap.status, BgProcessStatus::Running);
+                assert_eq!(snap.spawner, None);
+            }
+            other => panic!("expected TimedOut, got {other:?}"),
+        }
+        assert_eq!(reg.snapshot().len(), 1, "entry must be preserved on timeout");
+    }
+
+    #[tokio::test]
+    async fn wait_for_exit_enforces_spawner_scope() {
+        let reg = BgRegistry::new();
+        let (pid, child) = spawn_sleep_child();
+        reg.insert(pid, "sleep 60".into(), child, Some(5));
+
+        assert_eq!(
+            reg.wait_for_exit_as_caller(pid, None, Duration::from_millis(20))
+                .await,
+            ProcessWaitOutcome::Forbidden
+        );
+        assert_eq!(
+            reg.wait_for_exit_as_caller(pid, Some(99), Duration::from_millis(20))
+                .await,
+            ProcessWaitOutcome::Forbidden
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_exit_returns_not_found_for_unknown_pid() {
+        let reg = BgRegistry::new();
+        assert_eq!(
+            reg.wait_for_exit_as_caller(987654, None, Duration::from_millis(10))
+                .await,
+            ProcessWaitOutcome::NotFound
+        );
     }
 
     #[tokio::test]
