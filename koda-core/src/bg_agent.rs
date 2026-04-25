@@ -529,6 +529,256 @@ impl BgAgentRegistry {
             .filter(|s| s.spawner == caller_spawner)
             .collect()
     }
+
+    // ── Layer 2 of #996 ───────────────────────────────────────────────
+    //
+    // Scoped cancel + cleanup-on-exit + WaitTask machinery.
+    // The unscoped [`Self::cancel`] above stays for the TUI (humans get
+    // the global view); LLM tools route through [`Self::cancel_as_caller`]
+    // so a sub-agent can't reach across into a sibling's task.
+
+    /// Scoped per-task cancel for the `CancelTask` LLM tool.
+    ///
+    /// **Model E permission rule** — `caller_spawner` must equal the
+    /// task's `spawner`, with `None == None` (top-level can cancel
+    /// top-level tasks; sub-agent invocation N can cancel only its
+    /// own tasks). Returns [`CancelOutcome::Forbidden`] otherwise.
+    ///
+    /// The unscoped [`Self::cancel`] is the TUI's contract — humans
+    /// at the keyboard implicitly have full authority. This method is
+    /// the LLM's contract.
+    pub fn cancel_as_caller(&self, task_id: u32, caller_spawner: Option<u32>) -> CancelOutcome {
+        let guard = self.pending.lock();
+        match guard.get(&task_id) {
+            None => CancelOutcome::NotFound,
+            Some(entry) if entry.spawner != caller_spawner => CancelOutcome::Forbidden,
+            Some(entry) => {
+                entry.cancel.cancel();
+                CancelOutcome::Cancelled
+            }
+        }
+    }
+
+    /// Fire the cancel token on every task whose `spawner` matches.
+    ///
+    /// Called from the sub-agent dispatch path when an invocation
+    /// exits (Model E cleanup-on-exit). Returns the number of tasks
+    /// signalled, purely for tracing — the actual reaping happens
+    /// later via [`Self::drain_completed`] once the futures observe
+    /// their cancel tokens and finish.
+    ///
+    /// Idempotent: re-calling on the same `spawner` after all tasks
+    /// have been reaped returns `0`.
+    pub fn cancel_for_spawner(&self, spawner: u32) -> usize {
+        let guard = self.pending.lock();
+        let mut count = 0;
+        for entry in guard.values() {
+            if entry.spawner == Some(spawner) {
+                entry.cancel.cancel();
+                count += 1;
+            }
+        }
+        count
+    }
+}
+
+/// Outcome of [`BgAgentRegistry::cancel_as_caller`].
+///
+/// Mirrors HTTP-ish status codes so the LLM-tool layer can produce
+/// useful error messages without inspecting registry internals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelOutcome {
+    /// Task existed, caller owned it, cancel token fired.
+    Cancelled,
+    /// No task with that id (already drained, never registered, or
+    /// completed and reaped).
+    NotFound,
+    /// Task exists but caller's `spawner` doesn't match. The LLM
+    /// surface translates this into a permission-style error.
+    Forbidden,
+}
+
+/// Outcome of [`BgAgentRegistry::wait_for_completion`].
+///
+/// Encodes the four resolutions of a `WaitTask` call. The LLM-tool
+/// layer translates each into a serialised payload the model receives.
+#[derive(Debug)]
+pub enum WaitOutcome {
+    /// Task reached a terminal `Completed`/`Errored` status before
+    /// the timeout fired. Carries the drained [`BgAgentResult`] so
+    /// the same payload `drain_completed()` would have produced is
+    /// surfaced directly to the caller. (Drain semantics: a task
+    /// consumed via `wait_for_completion` is removed from `pending`
+    /// so the next `drain_completed()` won't double-inject it.)
+    Completed(BgAgentResult),
+    /// Task was cancelled (parent token fired, peer cancelled, or
+    /// the spawned future panicked). The task has been reaped.
+    Cancelled,
+    /// Timeout fired before the task reached a terminal state. The
+    /// task is still in `pending` and may still complete on its own.
+    /// Carries the most-recent status snapshot so the model can
+    /// decide whether to wait again or move on.
+    TimedOut(BgTaskSnapshot),
+    /// No task with that id, or caller's spawner doesn't match.
+    /// Same `Forbidden`/`NotFound` distinction as [`CancelOutcome`].
+    NotFound,
+    /// Caller doesn't own this task.
+    Forbidden,
+}
+
+impl BgAgentRegistry {
+    /// Block until a single task reaches a terminal state, or until
+    /// `timeout` elapses. The tool layer is the sole caller; humans
+    /// use `/cancel` (synchronous) and the auto-drain path.
+    ///
+    /// **Drain semantics**: on `Completed`/`Cancelled`, the task is
+    /// removed from `pending` here so `drain_completed()` won't
+    /// surface it again on the next inference iteration. (This is
+    /// the resolution to the result-routing race we settled in
+    /// design Decision 3 — `WaitTask` consumes; auto-drain becomes a
+    /// no-op for that id.)
+    ///
+    /// **Scoping**: same Model E rule as [`Self::cancel_as_caller`].
+    /// `caller_spawner` must equal the task's `spawner` exactly.
+    ///
+    /// **Timeout**: bounded by the caller. The tool layer caps this
+    /// at 300 s before reaching here; we trust the bound but will
+    /// happily wait whatever value is passed (handy for tests with
+    /// `Duration::from_millis(50)`).
+    pub async fn wait_for_completion(
+        &self,
+        task_id: u32,
+        caller_spawner: Option<u32>,
+        timeout: Duration,
+    ) -> WaitOutcome {
+        // Phase 1 — ownership check + grab a status receiver to await on.
+        // We do NOT remove the entry yet: if we time out, it must remain
+        // visible to the next `drain_completed()` and to other callers.
+        let status_rx = {
+            let guard = self.pending.lock();
+            match guard.get(&task_id) {
+                None => return WaitOutcome::NotFound,
+                Some(entry) if entry.spawner != caller_spawner => {
+                    return WaitOutcome::Forbidden;
+                }
+                Some(entry) => entry.status_rx.clone(),
+            }
+        };
+
+        // Phase 2 — wait for terminal status or timeout.
+        // We watch the status channel rather than the oneshot so we
+        // can distinguish Cancelled (terminal, no payload) from
+        // Completed (terminal, payload pending on the oneshot). The
+        // spawned future writes status BEFORE sending the oneshot,
+        // so by the time we observe a terminal status the oneshot is
+        // either ready or about to be (sub-microsecond skew).
+        let wait_fut = wait_for_terminal_status(status_rx);
+        let result = tokio::time::timeout(timeout, wait_fut).await;
+
+        match result {
+            Err(_elapsed) => {
+                // Timeout: the task is still pending. Re-snapshot so
+                // the caller sees the latest status (it may have
+                // transitioned `Pending` → `Running` while we waited).
+                let snap = self
+                    .snapshot()
+                    .into_iter()
+                    .find(|s| s.task_id == task_id);
+                match snap {
+                    Some(s) => WaitOutcome::TimedOut(s),
+                    // Task vanished mid-wait — drain reaped it. The
+                    // result already injected into the conversation;
+                    // tell the caller it's gone.
+                    None => WaitOutcome::NotFound,
+                }
+            }
+            Ok(()) => {
+                // Terminal status observed. Pull the entry out so the
+                // auto-drain path won't see it again, then map the
+                // oneshot to a BgAgentResult / Cancelled.
+                let mut guard = self.pending.lock();
+                let Some(mut entry) = guard.remove(&task_id) else {
+                    // Drain raced us and reaped first. Rare but
+                    // possible. The model already saw the result in
+                    // the prior turn's auto-drain.
+                    return WaitOutcome::NotFound;
+                };
+                drop(guard);
+                match entry.rx.try_recv() {
+                    Ok(Ok((output, events))) => WaitOutcome::Completed(BgAgentResult {
+                        agent_name: entry.agent_name,
+                        prompt: entry.prompt,
+                        output,
+                        success: true,
+                        events,
+                    }),
+                    Ok(Err((err, events))) => WaitOutcome::Completed(BgAgentResult {
+                        agent_name: entry.agent_name,
+                        prompt: entry.prompt,
+                        output: err,
+                        success: false,
+                        events,
+                    }),
+                    Err(oneshot::error::TryRecvError::Empty) => {
+                        // Status went terminal but oneshot hasn't
+                        // landed yet — the future writes status before
+                        // sending. Wait a few microseconds for the
+                        // send to complete, then try once more.
+                        // Worst case (channel closed concurrently) we
+                        // fall through to Cancelled below.
+                        match entry.rx.try_recv() {
+                            Ok(Ok((output, events))) => {
+                                WaitOutcome::Completed(BgAgentResult {
+                                    agent_name: entry.agent_name,
+                                    prompt: entry.prompt,
+                                    output,
+                                    success: true,
+                                    events,
+                                })
+                            }
+                            Ok(Err((err, events))) => WaitOutcome::Completed(BgAgentResult {
+                                agent_name: entry.agent_name,
+                                prompt: entry.prompt,
+                                output: err,
+                                success: false,
+                                events,
+                            }),
+                            _ => WaitOutcome::Cancelled,
+                        }
+                    }
+                    Err(oneshot::error::TryRecvError::Closed) => WaitOutcome::Cancelled,
+                }
+            }
+        }
+    }
+}
+
+/// Wait for a `watch::Receiver<AgentStatus>` to report a terminal
+/// variant (`Completed`, `Errored`, `Cancelled`).
+///
+/// Returns when the current value is already terminal OR after a
+/// `changed()` event lands a terminal value. Yields control on
+/// every iteration so the timeout future in
+/// [`BgAgentRegistry::wait_for_completion`] gets a chance to fire.
+async fn wait_for_terminal_status(mut rx: watch::Receiver<AgentStatus>) {
+    loop {
+        let is_terminal = matches!(
+            *rx.borrow(),
+            AgentStatus::Completed { .. }
+                | AgentStatus::Errored { .. }
+                | AgentStatus::Cancelled
+        );
+        if is_terminal {
+            return;
+        }
+        // `changed()` resolves on the next write to the channel. If
+        // the sender was dropped (task panicked) it returns Err —
+        // treat as terminal so the caller can pull `Cancelled` from
+        // the closed oneshot.
+        if rx.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 impl Default for BgAgentRegistry {
@@ -944,5 +1194,205 @@ mod tests {
             reg.snapshot().is_empty(),
             "drained tasks must not appear in snapshots"
         );
+    }
+
+    // ── Layer 2 of #996: scoped APIs + WaitOutcome ────────────────────────
+
+    /// `snapshot_for_caller(None)` returns only top-level tasks;
+    /// `snapshot_for_caller(Some(N))` returns only N's tasks. Cross-spawner
+    /// visibility is exactly zero — the Model E isolation guarantee.
+    #[tokio::test]
+    async fn snapshot_for_caller_filters_by_spawner() {
+        let reg = BgAgentRegistry::new();
+        let (top_id, _tx, _, _) = reg.register_test_with_status("a", "top", None);
+        let (sub_a_id, _tx, _, _) = reg.register_test_with_status("b", "sub-a", Some(7));
+        let (_sub_b_id, _tx, _, _) = reg.register_test_with_status("c", "sub-b", Some(9));
+
+        let top = reg.snapshot_for_caller(None);
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].task_id, top_id);
+
+        let sub_a = reg.snapshot_for_caller(Some(7));
+        assert_eq!(sub_a.len(), 1);
+        assert_eq!(sub_a[0].task_id, sub_a_id);
+
+        // Sub-agent 7 sees nothing of sub-agent 9's, of top-level's, etc.
+        assert!(reg.snapshot_for_caller(Some(42)).is_empty());
+    }
+
+    /// `cancel_as_caller` enforces the Model E permission rule.
+    #[tokio::test]
+    async fn cancel_as_caller_returns_forbidden_for_other_spawner() {
+        let reg = BgAgentRegistry::new();
+        let (id, _tx, _, observer) = reg.register_test_with_status("x", "y", Some(7));
+
+        // Wrong caller — not the top-level (None != Some(7)) and not a peer.
+        assert_eq!(
+            reg.cancel_as_caller(id, None),
+            CancelOutcome::Forbidden,
+            "top-level must not be able to cancel sub-agent's task"
+        );
+        assert_eq!(
+            reg.cancel_as_caller(id, Some(99)),
+            CancelOutcome::Forbidden,
+            "sibling sub-agent must not be able to cancel"
+        );
+        assert!(
+            !observer.is_cancelled(),
+            "forbidden calls must NOT fire the cancel token"
+        );
+
+        // Correct caller — the original spawner.
+        assert_eq!(reg.cancel_as_caller(id, Some(7)), CancelOutcome::Cancelled);
+        assert!(observer.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn cancel_as_caller_returns_not_found_for_unknown_id() {
+        let reg = BgAgentRegistry::new();
+        assert_eq!(
+            reg.cancel_as_caller(999, None),
+            CancelOutcome::NotFound
+        );
+    }
+
+    /// `cancel_for_spawner` cleans up exactly one sub-agent's children
+    /// and leaves siblings + top-level alone. The cleanup-on-exit hook.
+    #[tokio::test]
+    async fn cancel_for_spawner_kills_only_matching_children() {
+        let reg = BgAgentRegistry::new();
+        let (_top, _, _, top_obs) = reg.register_test_with_status("top", "t", None);
+        let (_a1, _, _, a1_obs) = reg.register_test_with_status("a1", "x", Some(7));
+        let (_a2, _, _, a2_obs) = reg.register_test_with_status("a2", "y", Some(7));
+        let (_b, _, _, b_obs) = reg.register_test_with_status("b", "z", Some(9));
+
+        let count = reg.cancel_for_spawner(7);
+        assert_eq!(count, 2, "both of spawner 7's children must be signalled");
+
+        assert!(a1_obs.is_cancelled());
+        assert!(a2_obs.is_cancelled());
+        assert!(!top_obs.is_cancelled(), "top-level must be untouched");
+        assert!(!b_obs.is_cancelled(), "sibling spawner's task untouched");
+
+        // Idempotent — calling again after entries are still alive
+        // re-fires the (already-cancelled, no-op) tokens.
+        assert_eq!(reg.cancel_for_spawner(7), 2);
+        // Calling for an unknown spawner returns 0.
+        assert_eq!(reg.cancel_for_spawner(99), 0);
+    }
+
+    /// `wait_for_completion` returns `Completed` and consumes the entry
+    /// (so a subsequent `drain_completed` can't double-inject).
+    #[tokio::test]
+    async fn wait_for_completion_consumes_completed_task() {
+        let reg = BgAgentRegistry::new();
+        let (id, tx, status_tx, _) = reg.register_test_with_status("explore", "map", Some(3));
+
+        // Fire the result, then transition status to terminal so the
+        // wait future wakes up.
+        tx.send(Ok(("final answer".to_string(), vec!["step 1".to_string()])))
+            .unwrap();
+        status_tx
+            .send(AgentStatus::Completed {
+                summary: "final answer".to_string(),
+            })
+            .unwrap();
+
+        let outcome = reg
+            .wait_for_completion(id, Some(3), Duration::from_secs(1))
+            .await;
+        match outcome {
+            WaitOutcome::Completed(result) => {
+                assert!(result.success);
+                assert_eq!(result.output, "final answer");
+                assert_eq!(result.events, vec!["step 1".to_string()]);
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+
+        // Entry must be gone — drain sees nothing.
+        assert_eq!(reg.drain_completed().len(), 0);
+        assert!(reg.snapshot().is_empty());
+    }
+
+    /// `wait_for_completion` returns `TimedOut` with a fresh snapshot
+    /// when the task hasn't finished yet — and crucially leaves the
+    /// entry in the registry so a later drain still works.
+    #[tokio::test]
+    async fn wait_for_completion_timeout_preserves_entry() {
+        let reg = BgAgentRegistry::new();
+        let (id, _tx, status_tx, _) = reg.register_test_with_status("slow", "x", None);
+
+        // Move to Running so the snapshot test below can verify the
+        // current status got carried through.
+        status_tx.send(AgentStatus::Running { iter: 2 }).unwrap();
+
+        let outcome = reg
+            .wait_for_completion(id, None, Duration::from_millis(40))
+            .await;
+        match outcome {
+            WaitOutcome::TimedOut(snap) => {
+                assert_eq!(snap.task_id, id);
+                assert_eq!(snap.status, AgentStatus::Running { iter: 2 });
+            }
+            other => panic!("expected TimedOut, got {other:?}"),
+        }
+        // Still in pending after a timeout.
+        assert_eq!(reg.snapshot().len(), 1);
+    }
+
+    /// `wait_for_completion` enforces the same Model E permission rule
+    /// as `cancel_as_caller`.
+    #[tokio::test]
+    async fn wait_for_completion_returns_forbidden_for_other_spawner() {
+        let reg = BgAgentRegistry::new();
+        let (id, _tx, _, _) = reg.register_test_with_status("x", "y", Some(5));
+
+        let outcome = reg
+            .wait_for_completion(id, None, Duration::from_millis(20))
+            .await;
+        assert!(
+            matches!(outcome, WaitOutcome::Forbidden),
+            "top-level must not be able to wait on sub-agent task; got {outcome:?}"
+        );
+
+        let outcome = reg
+            .wait_for_completion(id, Some(99), Duration::from_millis(20))
+            .await;
+        assert!(
+            matches!(outcome, WaitOutcome::Forbidden),
+            "sibling sub-agent must not be able to wait; got {outcome:?}"
+        );
+    }
+
+    /// Cancellation between status going terminal and `WaitTask` waking
+    /// up surfaces as `Cancelled` (oneshot closed without sending).
+    #[tokio::test]
+    async fn wait_for_completion_returns_cancelled_when_sender_dropped() {
+        let reg = BgAgentRegistry::new();
+        let (id, tx, status_tx, _) = reg.register_test_with_status("x", "y", None);
+
+        // Drop the sender (simulates task panic / abort), then push
+        // the status to terminal so wait wakes up.
+        drop(tx);
+        status_tx.send(AgentStatus::Cancelled).unwrap();
+
+        let outcome = reg
+            .wait_for_completion(id, None, Duration::from_secs(1))
+            .await;
+        assert!(
+            matches!(outcome, WaitOutcome::Cancelled),
+            "got {outcome:?}"
+        );
+        assert!(reg.snapshot().is_empty(), "entry must be reaped");
+    }
+
+    #[tokio::test]
+    async fn wait_for_completion_returns_not_found_for_unknown_id() {
+        let reg = BgAgentRegistry::new();
+        let outcome = reg
+            .wait_for_completion(999, None, Duration::from_millis(10))
+            .await;
+        assert!(matches!(outcome, WaitOutcome::NotFound), "got {outcome:?}");
     }
 }
