@@ -62,17 +62,25 @@ jobs:
             --lcov --output-path lcov-core.info \
             -- --test-threads=1
 
-      - name: koda-sandbox coverage (informational — threshold TBD, see #1051)
+      - name: koda-sandbox coverage (≥ 80% lines)
         id: sandbox
         if: steps.install.outcome == 'success'
         continue-on-error: true
         run: |
-          # koda-sandbox is the security boundary; tracking coverage here
-          # so we can establish a baseline and set a gate in a follow-up.
-          # No --fail-under-lines yet — numbers collected only.
+          # koda-sandbox is the security boundary. Gate: 80% lines,
+          # same as koda-core. Measured baseline (2026-04-26): ~87.5%.
+          #
+          # --skip pool::tests: pool tests spawn a koda-fs-worker subprocess;
+          # under llvm-cov the instrumented binary path differs from the one
+          # cargo placed in PATH, so the worker is never found and all 12
+          # pool tests fail with "worker not found". They pass cleanly under
+          # `cargo test` — this is a tooling artifact, not a real failure.
+          # Normal CI already covers pool code at full fidelity.
           cargo llvm-cov \
             --lib -p koda-sandbox \
-            --lcov --output-path lcov-sandbox.info
+            --fail-under-lines 80 \
+            --lcov --output-path lcov-sandbox.info \
+            -- --skip pool::tests
 
       # Drop a marker so the report job can distinguish "tooling broken,
       # never measured coverage" from "actually measured, dropped below
