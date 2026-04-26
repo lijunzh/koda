@@ -57,7 +57,7 @@
 //!   PR. Drained results still inject into the conversation, so the
 //!   user isn't missing info, just visual confirmation.
 //! - Status-bar pill — Layer 3 / PR #1044.
-//! - Per-iter `iter` updates — Layer 4 / PR #1045.
+//! - Per-iter `iter` updates — Layer 4 / PR #1058 (landed).
 //!
 //! [`parse_task_id`]: koda_core::tools::bg_task_tools::parse_task_id
 
@@ -296,7 +296,8 @@ fn agent_status_spans(status: &koda_core::bg_agent::AgentStatus) -> Vec<Span<'st
             let label = if *iter == 0 {
                 // PR #1041's `Running { iter: 0 }` is a Layer-0
                 // placeholder for "started but no per-iter info
-                // wired yet." Layer 4 will populate it. Don't
+                // wired yet." Foreground sub-agents still send 0;
+                // background agents emit live updates (Layer 4, #1058). Don't
                 // render "iter 0/20" — it misleads the user into
                 // thinking nothing has happened.
                 "\u{25b6} Running".to_string()
@@ -626,7 +627,7 @@ mod tests {
 
     /// Layer-0 placeholder semantics: `Running { iter: 0 }` means
     /// "started but no per-iter info yet" — don't render a misleading
-    /// `"iter 0/20"`. Layer 4 (PR #1045) will populate the field.
+    /// `"iter 0/20"`. Layer 4 (#1058) populated the field for bg agents.
     #[tokio::test]
     async fn list_background_tasks_hides_iter_zero_placeholder() {
         let mut buf = ScrollBuffer::new(64);

@@ -67,8 +67,9 @@ use tokio_util::task::AbortOnDropHandle;
 /// when execution actually starts and to one of the terminal variants
 /// (`Completed`, `Errored`, `Cancelled`) when it finishes.
 ///
-/// `Running.iter` is reserved for #1058 (live heartbeat) — currently
-/// set to `0` so the field shape is stable until that ships.
+/// `Running.iter` reflects the current inference iteration (1..=20).
+/// Background agents emit live updates via Layer 4 (#1058); `0` is
+/// the entry-point placeholder before the first iteration fires.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentStatus {
     /// Reserved but the spawned future hasn't started yet.
@@ -77,8 +78,9 @@ pub enum AgentStatus {
     /// (1..=20); `0` means "started, no iter info yet" (Layer 0 default).
     Running {
         /// Current inference iteration (1..=20). `0` is the
-        /// placeholder for "started but no per-iter reporting wired
-        /// yet" — see #1058.
+        /// entry-point placeholder emitted before the first iteration
+        /// in `run_bg_agent`; background agents update this live
+        /// (Layer 4, #1058).
         iter: u8,
     },
     /// User or parent fired the cancel token. Terminal.
