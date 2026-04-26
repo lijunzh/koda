@@ -1,12 +1,11 @@
 [package]
 name = "koda-sandbox"
-version = "0.1.0"
+version = "0.2.19"
 edition = "2024"
 description = "Capability-aware sandbox layer for Koda — kernel-enforced FS/net/exec policies (refs #934)"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/lijunzh/koda"
-publish = false
 
 [dependencies]
 anyhow = { workspace = true }
