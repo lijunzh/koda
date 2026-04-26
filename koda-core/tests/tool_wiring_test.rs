@@ -14,11 +14,24 @@ fn all_tool_names() -> Vec<String> {
 /// Every tool must be routable in the dispatcher.
 /// Tools handled externally (InvokeAgent) return sentinel strings.
 /// None should return "Unknown tool".
+///
+/// Exception (#996 Layer 2): the background-task management tools
+/// (`ListBackgroundTasks`, `CancelTask`, `WaitTask`) are intentionally
+/// not routed through `ToolRegistry::execute()` — they need an
+/// `Arc<BgAgentRegistry>` plus the caller's spawner identity, neither
+/// of which the `ToolRegistry` holds. They're routed one layer up in
+/// `tool_dispatch::execute_one_tool` (see the early `if matches!(...)
+/// branch there). Skipping them here keeps the test honest about what
+/// `ToolRegistry::execute()` is responsible for.
 #[tokio::test]
 async fn test_all_tools_routable_in_dispatcher() {
+    const HIGHER_LAYER_DISPATCH: &[&str] = &["ListBackgroundTasks", "CancelTask", "WaitTask"];
     let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"), 100_000);
     for name in all_tool_names() {
-        let result = registry.execute(&name, "{}", None).await;
+        if HIGHER_LAYER_DISPATCH.contains(&name.as_str()) {
+            continue;
+        }
+        let result = registry.execute(&name, "{}", None, None).await;
         assert!(
             !result.output.contains("Unknown tool"),
             "Tool '{name}' is not routed in the dispatcher (tools/mod.rs execute()). \
@@ -34,7 +47,7 @@ async fn test_all_tools_routable_in_dispatcher() {
 async fn test_empty_args_default_to_empty_object() {
     let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"), 100_000);
     for input in ["", "  ", "\n", "\t "] {
-        let result = registry.execute("List", input, None).await;
+        let result = registry.execute("List", input, None, None).await;
         assert!(
             !result.output.contains("Invalid JSON"),
             "Empty args '{input:?}' should not produce a JSON parse error. Got: {}",
@@ -103,6 +116,13 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         ("WebFetch", ToolEffect::ReadOnly),
         ("WebSearch", ToolEffect::ReadOnly),
         ("InvokeAgent", ToolEffect::ReadOnly),
+        // Background-task management (#996 Layer 2). All three are
+        // ReadOnly: List is a pure read; Cancel/Wait signal but don't
+        // write files — idempotent control of work the model already
+        // started. See the matching arms in `tools::classify_tool`.
+        ("ListBackgroundTasks", ToolEffect::ReadOnly),
+        ("CancelTask", ToolEffect::ReadOnly),
+        ("WaitTask", ToolEffect::ReadOnly),
         // Local mutations
         ("Write", ToolEffect::LocalMutation),
         ("Edit", ToolEffect::LocalMutation),

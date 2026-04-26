@@ -69,6 +69,44 @@ pub async fn validate_tool_call(
     }
 }
 
+/// DRY wrapper: pull the three caches from a `ToolRegistry` and run
+/// the standard pre-flight validation against the given root.
+///
+/// Three call sites used to inline the same 9-line cache-pull-then-
+/// call-validate dance:
+///
+///   * `tool_dispatch::validate_then_execute_one_tool` (parallel +
+///     split-batch arms, validates after auto-approval)
+///   * `tool_dispatch::execute_tools_sequential` (sequential arm,
+///     validates before approval prompting so we don't bother the
+///     user with doomed prompts)
+///   * `sub_agent_dispatch::execute_sub_agent` (sub-agent loop,
+///     validates before per-tool approval branch)
+///
+/// `project_root` is taken explicitly because the sub-agent path
+/// validates against its (possibly worktree-shifted) effective root,
+/// not the registry's `project_root`. Everything else is mechanical
+/// cache plumbing that's identical across call sites.
+pub async fn validate_with_registry(
+    registry: &super::ToolRegistry,
+    tool_name: &str,
+    args: &serde_json::Value,
+    project_root: &Path,
+) -> Option<String> {
+    let read_cache = registry.file_read_cache();
+    let last_writer = registry.last_writer_cache();
+    let last_bash = registry.last_bash_cache();
+    validate_tool_call(
+        tool_name,
+        args,
+        project_root,
+        Some(&read_cache),
+        Some(&last_writer),
+        Some(&last_bash),
+    )
+    .await
+}
+
 /// Build a parenthetical hint describing what tool last modified a file.
 ///
 /// Priority:

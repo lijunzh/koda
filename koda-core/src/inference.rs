@@ -474,7 +474,12 @@ async fn collect_stream(
                     // Execute eagerly — read-only tools are fast (10–50ms),
                     // the channel buffers incoming chunks while we run.
                     tracing::debug!("Eager dispatch: {} (id={})", tc.function_name, tc.id);
-                    let r = tools.execute(&tc.function_name, &tc.arguments, None).await;
+                    // Eager dispatch only fires for read-only tools (filtered
+                    // above). Bash is never read-only, so `caller_spawner=None`
+                    // is correct here — there is no Bash path to mis-tag.
+                    let r = tools
+                        .execute(&tc.function_name, &tc.arguments, None, None)
+                        .await;
                     eager_results.push((tc.id.clone(), r.output, r.success, r.full_output));
                 }
                 // Always add to tool_calls for persistence and normal flow
@@ -1165,6 +1170,9 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 sub_agent_cache,
                 file_tracker,
                 bg_agents,
+                // Phase E of #996: top-level inference has no spawner
+                // identity — bg-task tools see the global scope.
+                None,
             )
             .await?;
         } else if remaining_tools.len() > 1 {
@@ -1182,6 +1190,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 sub_agent_cache,
                 file_tracker,
                 bg_agents,
+                None,
             )
             .await?;
         } else if !remaining_tools.is_empty() {
@@ -1199,6 +1208,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 sub_agent_cache,
                 file_tracker,
                 bg_agents,
+                None,
             )
             .await?;
         }

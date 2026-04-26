@@ -223,6 +223,7 @@ mod naming_convention {
         "ActivateSkill",
         "AskUser",
         "Bash",
+        "CancelTask",
         "Delete",
         "Edit",
         "Glob",
@@ -230,12 +231,14 @@ mod naming_convention {
         "InvokeAgent",
         "List",
         "ListAgents",
+        "ListBackgroundTasks",
         "ListSkills",
         "MemoryRead",
         "MemoryWrite",
         "Read",
         "RecallContext",
         "TodoWrite",
+        "WaitTask",
         "WebFetch",
         "WebSearch",
         "Write",
@@ -271,8 +274,9 @@ mod naming_convention {
 
     #[test]
     fn test_expected_tool_count() {
-        // 22 built-in tools (AstAnalysis removed in #608, AskUser + WebSearch + TodoWrite added)
-        assert_eq!(BUILTIN_TOOLS.len(), 19);
+        // 22 built-in tools (#996 Layer 2 added ListBackgroundTasks,
+        // CancelTask, WaitTask — bringing 19 → 22).
+        assert_eq!(BUILTIN_TOOLS.len(), 22);
     }
 
     /// Ensure BUILTIN_TOOLS stays in sync with the actual registry.
