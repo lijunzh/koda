@@ -66,11 +66,11 @@ jobs:
         # bridge the log crate into tracing and flip our exposure). Fail the
         # release if that assumption is ever violated. See #1050.
         run: |
-          if grep -rn 'LogTracer\|tracing_log' koda-cli/src/; then
-            echo "::error::RUSTSEC-2026-0097 suppression invalid: LogTracer/tracing_log found in koda-cli/src. Remove the usage or drop the suppression in .cargo/audit.toml."
+          if grep -rn 'LogTracer\|tracing_log' koda-cli/src/ koda-core/src/ koda-sandbox/src/; then
+            echo "::error::RUSTSEC-2026-0097 suppression invalid: LogTracer/tracing_log found in workspace src. Remove the usage or drop the suppression in .cargo/audit.toml."
             exit 1
           fi
-          echo "✅ RUSTSEC-2026-0097 suppression valid: no LogTracer/tracing_log in koda-cli/src"
+          echo "✅ RUSTSEC-2026-0097 suppression valid: no LogTracer/tracing_log in workspace src"
 
   # Cross-platform tests before shipping binaries.
   # Depends on verify-version + audit: no point burning 30+ min of cross-platform

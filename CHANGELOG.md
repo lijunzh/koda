@@ -6,6 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.20] - 2026-04-26
+
+### Added
+
+- **Live iteration counter in background agent status** (#1058) — `/agents`
+  and the status-bar pill now show `▶ Running (iter N/20)` as background
+  sub-agents progress through inference iterations, instead of always showing
+  a flat `▶ Running`.
+
+### Removed
+
+- **`TodoRead` tool removed** — the session task list is write-only;
+  `TodoWrite` is the only task-tracking tool. The model sees `TodoWrite`
+  only, removing a redundant read path.
+- **`session_id` parameter removed from `InvokeAgent` tool schema** (#1056).
+  Sub-agent sessions are always freshly created; the parameter was never
+  honoured and caused model hallucination.
+- **`koda_core::approval` re-export shim deleted**. Downstream code should
+  use `koda_core::trust` directly (`TrustMode`, `check_tool`, etc.).
+- **Speculative dead wire-protocol types removed** from `EngineCommand`:
+  variants `UserPrompt`, `SlashCommand(SlashCommand)`, `Quit`; structs
+  `ImageAttachment` and `SlashCommand`. All were `#[allow(dead_code)]` with
+  zero consumers.
+
+### Fixed
+
+- **B19 child-trust regression** (#1022) — child trust mode is now clamped
+  to the parent's *runtime* mode (e.g. after `/safe`), not the startup
+  config mode. Switching to `/safe` mid-session now correctly prevents
+  sub-agents from inheriting the original, wider trust level.
+- **RUSTSEC-2026-0097 release-gate expanded** (#1050) — the CI grep that
+  verifies the `rand` unsoundness suppression now covers all workspace
+  `src/` directories (`koda-cli`, `koda-core`, `koda-sandbox`), not just
+  `koda-cli/src/`.
+
+### Internal
+
+- `once_cell` dep removed from `koda-cli`; replaced with
+  `std::sync::LazyLock` (stable since Rust 1.80).
+- `repl.rs` deleted (−965 LOC); slash-command parse+dispatch folded into a
+  single `match` in `tui_commands.rs`. Adding a slash command now requires
+  one edit instead of four.
+- `koda-sandbox/Cargo.toml` now inherits `homepage`, `authors`, `readme`,
+  and gains `keywords`/`categories` for crates.io discoverability.
+- RUSTSEC-2026-0097 suppression carries a tracking issue (#1050), an
+  exposure rationale, and an exit condition (tungstenite ≥ 0.30).
+
 ## [0.2.19] - 2026-04-26
 
 Infrastructure release. Fixes the crates.io publish pipeline that was

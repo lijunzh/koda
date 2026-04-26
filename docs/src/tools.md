@@ -18,7 +18,6 @@ within the project sandbox are auto-approved.
 | `Think` | Internal | Extended reasoning step (no side effects) |
 | `MemoryRead` | Read-only | Read from project or global memory |
 | `MemoryWrite` | Mutating | Append a fact to a memory file |
-| `TodoRead` | Read-only | Read the session task list |
 | `TodoWrite` | Mutating | Update the session task list |
 | `RecallContext` | Read-only | Search session history for past context |
 | `ListSkills` | Read-only | List available skills |
@@ -34,7 +33,7 @@ within the project sandbox are auto-approved.
 
 | Category | Tools | Plan | Safe | Auto |
 |----------|-------|------|------|------|
-| Read-only | Read, Grep, Glob, ListFiles, WebFetch, WebSearch, TodoRead, RecallContext | ✅ Auto | ✅ Auto | ✅ Auto |
+| Read-only | Read, Grep, Glob, ListFiles, WebFetch, WebSearch, RecallContext | ✅ Auto | ✅ Auto | ✅ Auto |
 | Internal | Think, ActivateSkill | ✅ Auto | ✅ Auto | ✅ Auto |
 | Mutations | Write, Edit, MemoryWrite, TodoWrite | ❌ Deny | ⏸ Prompt | ✅ Auto |
 | Destructive | Delete | ❌ Deny | ⏸ Prompt | ✅ Auto |
