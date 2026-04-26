@@ -321,7 +321,7 @@ fn tool_icon(name: &str) -> &'static str {
         "Grep" => "🔍",
         "List" | "Glob" => "📁",
         "WebFetch" => "🌐",
-        "TodoWrite" | "TodoRead" => "📋",
+        "TodoWrite" => "📋",
         "MemoryWrite" | "MemoryRead" => "🧠",
         "InvokeAgent" => "🤖",
         "AskUser" => "💬",

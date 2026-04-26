@@ -21,7 +21,6 @@
 //! | **ListAgents** | `agent` | ReadOnly | List available sub-agents |
 //! | **MemoryRead** | `memory` | ReadOnly | Read project/global memory |
 //! | **MemoryWrite** | `memory` | LocalMutation | Save facts to memory |
-//! | **TodoRead** | `todo` | ReadOnly | Read task list |
 //! | **TodoWrite** | `todo` | LocalMutation | Update task list |
 //! | **AskUser** | `ask_user` | ReadOnly | Ask the user a question |
 //! | **ActivateSkill** | `skills` | ReadOnly | Load a skill's instructions |
@@ -78,7 +77,7 @@ pub fn classify_tool(name: &str) -> ToolEffect {
     match name {
         // Pure reads — zero side-effects
         "Read" | "List" | "Grep" | "Glob" | "MemoryRead" | "ListAgents" | "ListSkills"
-        | "ActivateSkill" | "RecallContext" | "AskUser" | "TodoRead" => ToolEffect::ReadOnly,
+        | "ActivateSkill" | "RecallContext" | "AskUser" => ToolEffect::ReadOnly,
 
         // Remote actions — side-effects on remote services only
         "WebFetch" => ToolEffect::ReadOnly,    // GET-only fetch
