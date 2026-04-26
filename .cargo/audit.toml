@@ -40,6 +40,8 @@ ignore = [
 
     # RUSTSEC-2026-0097 — rand 0.8.x / 0.9.x: unsound with custom log handler
     #
+    # Tracking issue: #1050
+    #
     # The advisory is triggered by two transitive dependency chains we don't
     # directly control:
     #   rand 0.8.5  ← phf_generator 0.11 ← termwiz ← ratatui (TUI rendering)
@@ -49,6 +51,11 @@ ignore = [
     # The unsoundness only manifests when an application installs a custom
     # global `log` handler *and* calls `rand::rng()` from inside that handler.
     # koda uses `tracing`, not a custom `log` handler, so we are not exposed.
+    #
+    # Suppression assumption: koda-cli must NOT use LogTracer or tracing_log
+    # (which would bridge log → tracing and silently flip the exposure).
+    # The release workflow verifies this with a grep check — see
+    # .github/workflows/release.yml "Verify RUSTSEC-2026-0097 suppression".
     #
     # Track resolution: remove this ignore once tungstenite ≥ 0.30 and
     # phf_generator ≥ 0.12 ship with rand 0.10 bounds.
