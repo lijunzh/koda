@@ -130,46 +130,75 @@ system prompt, model, and allowed tools replace the current defaults.
 
 ## `/agents`
 
-Lists currently-running **background** sub-agents — the ones the
-model launched with `background: true` via `InvokeAgent`. Foreground
-sub-agents (the synchronous `/agent <name>` switch above) don't appear
-here because they block the conversation and are visible inline.
+Lists currently-running **background tasks** — both background
+sub-agents (the ones the model launched with `background: true` via
+`InvokeAgent`) and background shell processes (spawned with
+`Bash { background: true }`). Foreground sub-agents (the synchronous
+`/agent <name>` switch above) don't appear here because they block
+the conversation and are visible inline.
 
 ```text
-  🐾 Background sub-agents
+  🐾 Background tasks
 
-  ID    AGENT     AGE     STATUS
-  1     explore   2m      ▶ Running (iter 8/20)
-  2     verify    45s     ◐ Pending
+  ID            NAME              AGE     STATUS
+  agent:1       explore           2m      ▶ Running (iter 8/20)
+  agent:2       verify            45s     ◐ Pending
+  process:5821  cargo test --w…   1m      ▶ Running
+  process:5849  npm run dev       12s     ✓ Exited (0)
 ```
 
-- `ID` — stable per-task id assigned at spawn. Pass to `/cancel`.
-- `AGENT` — the sub-agent definition that was invoked.
-- `AGE` — wall-clock time since the task was reserved, rounded
+- `ID` — stable per-task id, **prefixed** by kind. `agent:N` for
+  background sub-agents (assigned at spawn); `process:N` for
+  background shell processes (the OS pid). Pass either form
+  verbatim to `/cancel`.
+- `NAME` — the sub-agent definition (for `agent:` rows) or a
+  truncated head of the shell command (for `process:` rows).
+- `AGE` — wall-clock time since the task was registered, rounded
   **down** (`1m` means "between 60 and 119 seconds").
 - `STATUS` — latest value from the task's status channel:
-  `Pending`, `Running { iter }`, `Cancelled`, `Completed`, or
-  `Errored`.
+  - Sub-agents: `Pending`, `Running { iter }`, `Cancelled`,
+    `Completed`, or `Errored`.
+  - Processes: `Running`, `Killed` (we sent SIGTERM but the OS
+    hasn't reaped yet), or `Exited (code)` (`✓` for code 0, `✗`
+    for any other code or signal exit).
 
 The `iter` count comes from inside the inference loop; until that
 wiring lands (Layer 4 of #996), in-progress tasks just show
 `▶ Running` without the `(iter N/20)` suffix.
 
+The LLM-facing equivalent is the `ListBackgroundTasks` tool — the
+model sees the same data when it asks about its own background work.
+
 ## `/cancel <id>`
 
-Requests cancellation of a background sub-agent by its `/agents` id.
-Fires the per-task `CancellationToken`, which the inference loop
-checks between iterations — a cancelled task may run for one more
-iteration before noticing. The result still injects on the next user
-turn (with status `Cancelled` instead of `Completed`), so you don't
-lose any partial work the agent already did.
+Requests cancellation of a background task by its `/agents` id.
+Accepts three forms:
+
+- `agent:N` — fires the per-task `CancellationToken`, which the
+  inference loop checks between iterations. A cancelled sub-agent
+  may run for one more iteration before noticing. The result still
+  injects on the next user turn (with status `Cancelled` instead
+  of `Completed`), so you don't lose any partial work the agent
+  already did.
+- `process:N` — sends SIGTERM to the shell process. The reaper
+  transitions the entry to `Killed` immediately and to
+  `Exited` once the OS confirms the process is gone.
+- `N` (bare numeric) — back-compat with the original single-
+  registry `/cancel` UX; treated as `agent:N`.
 
 ```text
-/cancel 1     ← stop background task #1
+/cancel agent:1       ← cancel background sub-agent #1
+/cancel process:5821  ← SIGTERM background shell process pid 5821
+/cancel 1             ← back-compat: same as `/cancel agent:1`
 ```
 
-Idempotent: re-running `/cancel 1` on an already-cancelled task is a
-no-op. Unknown ids report a helpful error rather than silently no-oping.
+Idempotent: re-running `/cancel agent:1` on an already-cancelled
+task is a no-op; `/cancel process:N` on an already-dead pid is also
+a no-op (the kernel just rejects the SIGTERM). Unknown ids report a
+helpful error rather than silently no-oping.
+
+The LLM-facing equivalent is the `CancelTask` tool, which uses the
+same parser and accepts the same prefixed forms.
 
 ## `/expand [<n>]`
 

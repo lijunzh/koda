@@ -388,6 +388,73 @@ Four execution modes, one mental model:
    are impossible because the transaction is dropped without
    `commit()` on any `?`.
 
+### Background-task management surface (#996)
+
+Both background sub-agents (mode 3 above) and background shell
+processes (`Bash { background: true }`) need a runtime surface for
+listing, waiting, and cancelling — otherwise the user's only escape
+hatch is `/exit`, which nukes everything indiscriminately, and the
+model has no way to coordinate its own background work. #996 ships
+that surface as a **single unified concept** "background task" with
+two flavors distinguished by a prefixed id (`agent:N` /
+`process:N`).
+
+Four layers, all on `main`:
+
+- **Layer 0** (#1041): `AgentStatus` enum + `tokio::sync::watch`
+  channel per task + per-task `CancellationToken`. Foundation; no
+  user-visible change.
+- **Layer 1** (#1042): `/agents` and `/cancel <id>` slash commands
+  for sub-agents only. Closes #996 P0 for the TUI.
+- **Layer 2** (#1043): `ListBackgroundTasks`, `CancelTask`,
+  `WaitTask` LLM tools so the model can manage *its own* background
+  work (spawner-scoped via `caller_spawner: Option<u32>`). Adds
+  shared `parse_task_id` accepting `agent:N` / `process:N` /
+  bare-numeric.
+- **Phase F** (this PR): `/agents` and `/cancel` extended to cover
+  background processes too — same parser, same registry-routing
+  logic as the LLM tools, one unified table in the TUI.
+- **Phase G** (this PR): `ListBackgroundTasks`, `CancelTask`,
+  `WaitTask` added to `META_TOOLS` in `skill_scope` so a
+  skill-scoped agent can still see / wait / cancel its own
+  background work; docs updated.
+
+**Spawner scoping** (Layer 2). Each bg-task entry carries an
+`Option<u32>` spawner id — the sub-agent invocation id of whoever
+kicked it off, or `None` for the top-level inference loop. The LLM
+tools filter visibility through `snapshot_for_caller(caller_spawner)`
+(plus matching `cancel_as_caller` / `kill_as_caller` paths) so a
+sub-agent only sees tasks *it* spawned, not its siblings' or its
+parent's. The TUI is the top-level caller (`caller_spawner = None`)
+so the user sees everything regardless of who spawned what — they
+are the human in the loop.
+
+**Why one surface for both flavors**. Codex / Gemini-CLI / Claude
+Code all converge on a unified "background work" surface; splitting
+by spawn mechanism (`/agents` vs `/processes`) would push the user
+to remember which command launched which task — exactly the friction
+the unified view fixes. The `agent:` / `process:` prefix
+disambiguates routing in `parse_task_id` so the dispatch layer
+knows which registry to hit without re-parsing in three places.
+
+**Bare-numeric back-compat**. The original #1042 `/cancel <id>`
+accepted only bare integers (treated as agent ids). Phase F
+preserves that form — `/cancel 7` still means `agent:7` — so users
+who memorized the old UX don't break. The LLM tool descriptions
+*require* the prefix to avoid implicit-routing bugs in agent
+workflows, but the shared parser tolerates the bare form for the
+TUI path.
+
+**Why bg-task tools are meta** (Phase G). `ListBackgroundTasks`,
+`CancelTask`, and `WaitTask` are added to `skill_scope::META_TOOLS`
+alongside `ActivateSkill` / `InvokeAgent` / `AskUser`. Background
+work outlives any single `ActivateSkill` boundary: a skill that
+scopes to e.g. `["Read", "Grep"]` would otherwise lose the ability
+to wait on or cancel a process the agent kicked off before
+activation. Excluding them would force callers to either re-list
+the tools in every skill manifest, or leak background work the
+agent can no longer manage.
+
 **Invariants** — enforced consistently across all four modes:
 
 - **Trust never widens**. `derive_child_trust(parent_runtime, declared)`

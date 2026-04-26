@@ -95,10 +95,7 @@ pub(crate) fn handle_list_background_tasks(
     let process_snaps = bg_processes.snapshot();
 
     tui_output::blank(buffer);
-    tui_output::emit_line(
-        buffer,
-        Line::styled("  \u{1f43e} Background tasks", BOLD),
-    );
+    tui_output::emit_line(buffer, Line::styled("  \u{1f43e} Background tasks", BOLD));
     tui_output::blank(buffer);
 
     if agent_snaps.is_empty() && process_snaps.is_empty() {
@@ -120,11 +117,7 @@ pub(crate) fn handle_list_background_tasks(
     let id_strings: Vec<String> = agent_snaps
         .iter()
         .map(|s| format!("agent:{}", s.task_id))
-        .chain(
-            process_snaps
-                .iter()
-                .map(|s| format!("process:{}", s.pid)),
-        )
+        .chain(process_snaps.iter().map(|s| format!("process:{}", s.pid)))
         .collect();
     let id_col = id_strings.iter().map(|s| s.len()).max().unwrap_or(8).max(8);
 
@@ -220,9 +213,7 @@ pub(crate) fn handle_cancel_background_task(
             if bg_agents.cancel(n) {
                 tui_output::ok_msg(
                     buffer,
-                    format!(
-                        "Cancellation requested for agent:{n}. Result will inject shortly."
-                    ),
+                    format!("Cancellation requested for agent:{n}. Result will inject shortly."),
                 );
             } else {
                 tui_output::warn_msg(
@@ -751,8 +742,7 @@ mod tests {
             "success message should mention the prefixed id, got: {text}"
         );
         assert!(
-            text.to_lowercase().contains("sigterm")
-                || text.to_lowercase().contains("exit"),
+            text.to_lowercase().contains("sigterm") || text.to_lowercase().contains("exit"),
             "expected SIGTERM acknowledgement, got: {text}"
         );
     }
