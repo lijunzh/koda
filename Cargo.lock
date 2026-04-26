@@ -1775,7 +1775,6 @@ dependencies = [
  "crossterm",
  "futures-util",
  "koda-core",
- "once_cell",
  "ratatui",
  "ratatui-textarea",
  "regex",

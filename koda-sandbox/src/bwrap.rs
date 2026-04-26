@@ -519,12 +519,14 @@ mod tests {
     /// rely on this.
     #[test]
     fn stage2_binary_respects_env_override() {
-        // SAFETY: tests run single-threaded for env mutations; we
-        // restore the original value after the assertion.
         let original = std::env::var(STAGE2_BIN_ENV_KEY).ok();
+        // SAFETY: this test binary is single-threaded; no other thread
+        // can observe the env mutation between set and restore.
         unsafe { std::env::set_var(STAGE2_BIN_ENV_KEY, "/tmp/fake-stage2") };
         let p = stage2_binary().unwrap();
         assert_eq!(p, std::path::PathBuf::from("/tmp/fake-stage2"));
+        // SAFETY: same single-threaded guarantee as above; restoring
+        // to the original value (or removing) is always safe here.
         unsafe {
             match original {
                 Some(v) => std::env::set_var(STAGE2_BIN_ENV_KEY, v),
