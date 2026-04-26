@@ -136,7 +136,7 @@ async fn run_bg_agent(
     // anyway. Logging would be noise.
     status_tx: tokio::sync::watch::Sender<crate::bg_agent::AgentStatus>,
 ) {
-    // We don't have per-iteration visibility yet (Layer 4 work);
+    // We don't have per-iteration visibility yet — see #1058.
     // `iter: 0` means "started, no iter info". Once the inference
     // loop inside `execute_sub_agent` learns to push iter updates,
     // the field will reflect 1..=20.

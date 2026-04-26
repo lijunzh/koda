@@ -112,7 +112,6 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         ("ActivateSkill", ToolEffect::ReadOnly),
         ("RecallContext", ToolEffect::ReadOnly),
         ("AskUser", ToolEffect::ReadOnly),
-        ("TodoRead", ToolEffect::ReadOnly),
         ("WebFetch", ToolEffect::ReadOnly),
         ("WebSearch", ToolEffect::ReadOnly),
         ("InvokeAgent", ToolEffect::ReadOnly),
