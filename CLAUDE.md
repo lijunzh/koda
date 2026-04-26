@@ -159,7 +159,7 @@ koda/
 │   │       ├── recall.rs   # RecallContext (session history)
 │   │       ├── shell.rs    # Bash command execution
 │   │       ├── skill_tools.rs # ListSkills, ActivateSkill
-│   │       ├── todo.rs     # TodoRead, TodoWrite
+│   │       ├── todo.rs     # TodoWrite
 │   │       ├── validate.rs # Pre-flight input validation
 │   │       ├── web_fetch.rs# WebFetch (URL content retrieval)
 │   │       └── web_search.rs # WebSearch (DuckDuckGo)
@@ -358,7 +358,7 @@ For capabilities that ship in the koda workspace (same release cycle):
 7. Add `--version` flag to `main.rs` (standalone server wrapper)
 8. Write integration tests in `tests/mcp_integration_test.rs`
 9. Update `release.yml`: version verify, build, package, publish, Homebrew
-10. Sync version with workspace (currently 0.2.19)
+10. Sync version with workspace (currently 0.2.20)
 11. Update this file (CLAUDE.md)
 
 ## CI Workflows

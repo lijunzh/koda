@@ -51,8 +51,6 @@
 
 /// Sub-agent configuration, discovery, and invocation.
 pub mod agent;
-/// Tool approval modes, safety gates, and shared mode state.
-/// Deprecated: prefer [`trust`] module. This module re-exports from `trust`.
 /// Approval flow and user interaction during tool execution.
 pub(crate) mod approval_flow;
 /// Heuristic path-escape detection for bash commands.
