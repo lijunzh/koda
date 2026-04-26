@@ -629,21 +629,24 @@ a `claude_code_docs_map.md` index file that the guide agent fetches at
 runtime to answer user questions. This requires a docs build pipeline,
 hosting infrastructure, and a separate content workflow.
 
-Koda takes a different approach: both `koda-core` (engine library) and
-`koda-cli` (TUI, slash commands, REPL) expose their modules as `pub mod`
-so that `cargo doc` renders them. The guide agent fetches these pages the
-same way CC's guide agent fetches `code.claude.com` — but the content
-comes from rustdoc, not a custom site.
+Koda takes a different approach: `koda-core` (engine library) exposes
+its modules as `pub mod` so that `cargo doc` renders them. The guide
+agent fetches these pages the same way CC's guide agent fetches
+`code.claude.com` — but the content comes from rustdoc, not a custom
+site.
 
 This means:
 
 - **Module-level `//!` docs are user-facing documentation**, not just
   developer notes. They should explain *what the feature does and how to
   use it*, not just implementation details.
-- **koda-cli modules must be `pub`** even though they have no external
-  consumers. This is a deliberate visibility trade for documentation
-  coverage — the guide agent needs to read slash command docs, TUI
-  keybindings, and onboarding flow.
+- **`koda-core` modules are `pub`.** The engine library has real
+  external consumers (tests, the CLI crate, future server mode) so `pub`
+  visibility is correct.
+- **`koda-cli` modules are `pub(crate)`.** `koda-cli` is a binary, not
+  a library. Its API surface is exactly one function: `run()`. Slash
+  command docs, TUI keybindings, and onboarding flow are user docs that
+  belong in the README and `koda-core` rustdoc, not in binary internals.
 - **Zero infrastructure.** `cargo doc --open` works offline. docs.rs
   publishes automatically on `cargo publish`. No CI pipeline for docs.
 - **Single source of truth.** Docs live next to code, never drift.

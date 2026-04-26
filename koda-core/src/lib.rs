@@ -53,7 +53,6 @@
 pub mod agent;
 /// Tool approval modes, safety gates, and shared mode state.
 /// Deprecated: prefer [`trust`] module. This module re-exports from `trust`.
-pub mod approval;
 /// Approval flow and user interaction during tool execution.
 pub(crate) mod approval_flow;
 /// Heuristic path-escape detection for bash commands.

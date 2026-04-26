@@ -256,7 +256,7 @@ impl TuiContext {
         if first_run {
             // Onboarding: auto-open provider dropdown
             // (emit_above happens after terminal is created below)
-            let providers = crate::repl::PROVIDERS;
+            let providers = menus::PROVIDERS;
             let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
                 .iter()
                 .map(|(key, name)| {

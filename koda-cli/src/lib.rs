@@ -32,7 +32,6 @@ pub(crate) mod md_render;
 pub(crate) mod mouse_select;
 pub(crate) mod onboarding;
 pub(crate) mod queue_lanes;
-pub(crate) mod repl;
 pub(crate) mod scroll_buffer;
 pub(crate) mod server;
 pub(crate) mod sink;
