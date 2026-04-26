@@ -219,8 +219,7 @@ pub async fn handle_slash_command(
                 }
                 // Bare ID shorthand: /sessions <hex-id>
                 Some(id)
-                    if !id.is_empty()
-                        && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') =>
+                    if !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') =>
                 {
                     handle_resume_session(buffer, session, id, project_root, shared_mode).await;
                 }
@@ -273,7 +272,15 @@ pub async fn handle_slash_command(
                 }
                 None => (false, None),
             };
-            handle_export(buffer, session, dest.as_deref(), summary, config, project_root).await;
+            handle_export(
+                buffer,
+                session,
+                dest.as_deref(),
+                summary,
+                config,
+                project_root,
+            )
+            .await;
             SlashAction::Continue
         }
 
