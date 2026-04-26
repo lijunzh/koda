@@ -26,6 +26,7 @@ const CANONICAL: &[&str] = &[
     "ActivateSkill",
     "AskUser",
     "Bash",
+    "CancelTask",
     "Delete",
     "Edit",
     "Glob",
@@ -33,12 +34,14 @@ const CANONICAL: &[&str] = &[
     "InvokeAgent",
     "List",
     "ListAgents",
+    "ListBackgroundTasks",
     "ListSkills",
     "MemoryRead",
     "MemoryWrite",
     "Read",
     "RecallContext",
     "TodoWrite",
+    "WaitTask",
     "WebFetch",
     "WebSearch",
     "Write",
@@ -138,6 +141,13 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
     // Recall
     m.insert("recall_context".into(), "RecallContext");
     m.insert("recall".into(), "RecallContext");
+
+    // #996 Layer 2 — background-task management
+    m.insert("list_background_tasks".into(), "ListBackgroundTasks");
+    m.insert("list_bg_tasks".into(), "ListBackgroundTasks");
+    m.insert("cancel_task".into(), "CancelTask");
+    m.insert("wait_task".into(), "WaitTask");
+    m.insert("wait_for_task".into(), "WaitTask");
 
     m
 });
