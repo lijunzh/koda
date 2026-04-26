@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.19] - 2026-04-26
+
+Infrastructure release. Fixes the crates.io publish pipeline that was
+broke in v0.2.18, and supersedes that release. No API or behaviour changes.
+
+> **v0.2.18 note:** the GitHub Release binaries for v0.2.18 are correct and
+> usable, but `koda-core` and `koda-cli` were never published to crates.io
+> (`cargo publish` died because `koda-sandbox` lacked a `version` field).
+> v0.2.18 has been marked pre-release on GitHub to avoid confusion.
+> `cargo install koda-cli` will install v0.2.19.
+
+### Fixed
+
+- **`koda-sandbox` missing `version` in `koda-core` dependency caused
+  `cargo publish` to fail** (#1052). `koda-core/Cargo.toml` declared
+  `koda-sandbox = { path = "../koda-sandbox" }` with no `version`. When
+  cargo publishes and strips `path`, it has no constraint to substitute and
+  rejects the manifest outright. Fixed by:
+  1. Removing `publish = false` from `koda-sandbox/Cargo.toml` — the crate
+     is now a first-class published workspace member.
+  2. Bumping `koda-sandbox` from `0.1.0` to match the workspace version
+     (`0.2.19`) so all three crates are versioned in lockstep.
+  3. Adding `version = "0.2.19"` to the `koda-sandbox` dep in
+     `koda-core/Cargo.toml`.
+  4. Expanding `release.yml` `verify-version` to check `koda-sandbox`
+     alongside `koda-core` and `koda-cli`.
+  5. Prepending a `Publish koda-sandbox` + sparse-index-wait step to the
+     `publish` job so the dep is in the registry before `koda-core` resolves
+     it.
+
 ## [0.2.18] - 2026-04-26
 
 Large architectural release with two main threads: a full kernel-sandbox

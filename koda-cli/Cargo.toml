@@ -1,6 +1,6 @@
 [package]
 name = "koda-cli"
-version = "0.2.18"
+version = "0.2.19"
 edition = "2024"
 description = "A high-performance AI coding agent for macOS and Linux"
 license = "MIT"
@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core engine
-koda-core = { path = "../koda-core", version = "0.2.18" }
+koda-core = { path = "../koda-core", version = "0.2.19" }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -78,6 +78,6 @@ harness = false
 
 [dev-dependencies]
 tempfile = { workspace = true }
-koda-core = { path = "../koda-core", version = "0.2.18", features = ["test-support"] }
+koda-core = { path = "../koda-core", version = "0.2.19", features = ["test-support"] }
 serde_json = { workspace = true }
 

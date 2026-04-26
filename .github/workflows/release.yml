@@ -28,8 +28,13 @@ jobs:
       - name: Check tag matches workspace versions
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
+          SANDBOX_VER=$(grep '^version' koda-sandbox/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           CORE_VER=$(grep '^version' koda-core/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           CLI_VER=$(grep '^version' koda-cli/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          if [ "$TAG" != "$SANDBOX_VER" ]; then
+            echo "::error::Tag v$TAG does not match koda-sandbox version $SANDBOX_VER"
+            exit 1
+          fi
           if [ "$TAG" != "$CORE_VER" ]; then
             echo "::error::Tag v$TAG does not match koda-core version $CORE_VER"
             exit 1
@@ -38,7 +43,7 @@ jobs:
             echo "::error::Tag v$TAG does not match koda-cli version $CLI_VER"
             exit 1
           fi
-          echo "✅ Tag v$TAG matches koda-core ($CORE_VER) and koda-cli ($CLI_VER)"
+          echo "✅ Tag v$TAG matches koda-sandbox ($SANDBOX_VER), koda-core ($CORE_VER), koda-cli ($CLI_VER)"
 
 
   # Security audit — run after version is verified but before burning
@@ -132,7 +137,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      # Publish order follows dependency graph: koda-core → koda-cli.
+      # Publish order follows dependency graph: koda-sandbox → koda-core → koda-cli.
+      # Each crate waits for its dep to appear in the sparse index before publishing,
+      # otherwise cargo resolve will fail with "no matching version".
+      - name: Publish koda-sandbox
+        run: cargo publish -p koda-sandbox
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Wait for koda-sandbox in sparse index
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          URL="https://index.crates.io/ko/da/koda-sandbox"
+          echo "Polling $URL for koda-sandbox $VERSION ..."
+          for i in $(seq 1 20); do
+            if curl -sf "$URL" | grep -q "\"vers\":\"${VERSION}\""; then
+              echo "✅ koda-sandbox $VERSION is in the index (attempt $i)"
+              exit 0
+            fi
+            echo "  attempt $i/20 — not yet, sleeping 15s"
+            sleep 15
+          done
+          echo "⚠️ timed out after 300s — koda-sandbox $VERSION may still propagate"
       - name: Publish koda-core
         run: cargo publish -p koda-core
         env:
