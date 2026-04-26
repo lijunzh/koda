@@ -6,33 +6,205 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-04-26
+
+Large architectural release with two main threads: a full kernel-sandbox
+overhual (`koda-sandbox` crate) and a comprehensive background sub-agent
+hardening pass (22 lifecycle fixes). Also ships the background-task management
+UI and three new LLM meta-tools.
+
 ### Added
 
-- **`/agents` and `/cancel` now cover background processes too** (#996,
-  Phase F). The slash commands shipped in #1042 only saw background
-  sub-agents; they now render a unified table of *all* background
-  tasks (sub-agents + shell processes) with prefixed ids
-  (`agent:N` / `process:N`). `/cancel` accepts the same prefixed
-  forms as the LLM-facing `CancelTask` tool and routes to the right
-  registry; bare numeric (`/cancel 7`) stays as `agent:7` for
-  back-compat. Process status spans get their own palette
-  (`Running` / `Killed` / `Exited (code)`). The TUI sees every task
-  regardless of spawner because the user is the top-level caller.
+- **Background task system — Layer 0: `AgentStatus` + watch channel + per-task
+  cancel** (#996, #1041). `BgAgentRegistry` now tracks running sub-agents
+  with a typed `AgentStatus` enum (`Running`, `Completed`, `Failed`,
+  `Cancelled`, `TimedOut`) broadcast over a `tokio::sync::watch` channel.
+  Every agent gets an individual cancel token so the parent can terminate a
+  specific task without killing siblings.
+
+- **Background task system — Layer 1: `/agents` and `/cancel` slash
+  commands** (#996, #1042). `/agents` renders a live table of all background
+  tasks in the TUI. `/cancel <id>` accepts both `agent:N` and `process:N`
+  prefixed forms and routes to the right registry. Bare numeric
+  (`/cancel 7`) aliases to `agent:7` for back-compat. Process status spans
+  use their own palette (`Running` / `Killed` / `Exited (code)`).
+
+- **Background task system — Layer 2: `ListBackgroundTasks`, `CancelTask`,
+  `WaitTask` LLM tools** (#996, #1043). Three new model-callable meta-tools
+  giving the LLM first-class access to the task registry. `WaitTask` polls
+  up to 300 s and returns a typed payload (`status`, `output_preview`).
+  Caller-scoping is enforced: a sub-agent cannot see or cancel a sibling's
+  tasks; the TUI (human operator) is unscoped and sees everything.
+
+- **Background task system — unified TUI surface + meta-tool wiring** (#996,
+  #1044, Phase F+G). `/agents` and `/cancel` now cover *all* background
+  tasks (sub-agents + shell processes) in one unified table. `ListBackgroundTasks`,
+  `CancelTask`, and `WaitTask` are promoted to `skill_scope::META_TOOLS`
+  alongside `ActivateSkill` / `InvokeAgent` / `AskUser` — skill-scoped
+  agents can manage their own background work without re-listing the tools.
+
+- **`koda-sandbox` crate extracted** (#934, #984). All kernel-sandbox
+  machinery lifted from `koda-core` into an independent `koda-sandbox` crate
+  with `publish = false`. Clean dependency boundary: `koda-core` depends on
+  `koda-sandbox`; the sandbox has no back-reference.
+
+- **Sandbox violation reporting + two-layer policy overlay** (#934, #985).
+  Structured `PolicyViolation` events with source attribution; child sandbox
+  policy always narrows from the parent (union of deny sets, intersection of
+  allow sets, minimum of limits). Compose invariant: `SandboxPolicy::compose`
+  can only restrict, never widen.
+
+- **Sandboxed filesystem over IPC** (#934, #986–#989). Full
+  `FileSystem` trait with `LocalFileSystem` and `SandboxedFileSystem`
+  implementations. All five file tools (`Read`, `Write`, `Edit`, `Glob`,
+  `Grep`) thread the `FileSystem` trait so they can run against a
+  sandbox-isolated worker via Unix socket transport.
+
+- **`GitWorktreeProvider`; `WorkspaceProvider` trait** (#934, #990). Sub-agent
+  dispatch uses `WorkspaceProvider` — swap between local CWD, git worktree
+  clone, or APFS reflink slot without touching dispatch logic.
+
+- **Path defense primitives + worker policy gate** (#934, #991). Symlink
+  escape detection (full chain walk + cycle detection), FIFO/socket/device
+  blocking, `is_dangerous_system_path` guard, and `mandatory_deny_search_depth`
+  floor to prevent shallow symlink walks in Plan mode.
+
+- **Built-in HTTP CONNECT egress proxy with hostname allowlisting** (#934,
+  #994). Outbound HTTP/HTTPS traffic from sandboxed processes routes through
+  koda's built-in proxy. The allowlist uses RFC 6125 single-label wildcard
+  matching — `*.example.com` matches `api.example.com` but not
+  `a.b.example.com`; bare `*`, `*foo.com`, and `foo.*` are rejected at
+  construction time.
+
+- **Kernel-enforced egress proxy** on macOS (seatbelt, #934, #997) and
+  Linux (bwrap network namespace, #934, #998).
+
+- **SOCKS5 proxy + corporate `HTTPS_PROXY` chaining** (#934, #999).
+  Multi-hop proxy stack: built-in CONNECT proxy → upstream SOCKS5 →
+  corp `HTTPS_PROXY`.
+
+- **`SandboxPool` + `SandboxSlot` lifecycle** (#934, #1004). Pool of
+  pre-warmed sandbox slots; `reserve()` → `attach()` two-phase handoff
+  ensures oneshot sender is in hand before the task handle is captured.
+  Distinct policy buckets never share a slot.
+
+- **APFS reflinks via `ClonefileProvider`** (#934, #1005). On macOS,
+  workspace slots are provisioned with `clonefile(2)` (copy-on-write)
+  for near-zero-cost snapshot isolation. Falls back gracefully on
+  non-APFS volumes (`ENOTSUP`).
+
+- **Phase 5 telemetry hooks** (#934, #1010). Structured event callbacks
+  for sandbox slot acquire/release, policy decisions, and egress decisions.
+
+- **`SandboxPolicy` constructor + sub-agent threading** (#934, #1014–#1017).
+  `SandboxPolicy::compose` wired through all sub-agent dispatch paths.
+  Trust-derived `mandatoryDenySearchDepth` (min 8, non-bypassable) wired
+  into `paths_for_write_check`. IPC-only deserialize guard prevents
+  `SandboxedFileSystem` from being constructed outside the IPC transport.
+
+- **CPU / RSS / FD resource limits via `setrlimit(2)`** (#934, #1020).
+  Per-trust wall-time defaults. Unsatisfiable limits fail closed at spawn
+  time rather than silently continuing uncapped.
+
+- **`max_output_bytes` limit threaded through to sandbox** (#934, #1021).
+  Sandbox worker respects the same output-size cap as the in-process tools.
 
 ### Changed
 
-- **`ListBackgroundTasks` / `CancelTask` / `WaitTask` are now
-  meta-tools** (#996, Phase G). Added to `skill_scope::META_TOOLS`
-  alongside `ActivateSkill` / `InvokeAgent` / `AskUser` so a
-  skill-scoped agent can still see, wait on, or cancel its own
-  background work. Skills no longer need to re-list these tools in
-  every `allowed_tools` manifest.
+- **`koda-sandbox` README with threat model + escape hatches** (#934, #1018).
+  Documents accepted risks (credential exfiltration via network), the
+  `koda/db` full-block rationale (API keys in plaintext), and the
+  sandbox escape hatches.
 
-- **Docs updated for the unified bg-task surface**. `docs/src/commands.md`
-  and `DESIGN.md` describe the prefixed-id model, the spawner-scoping
-  rule (LLM tools see only their own work; TUI sees everything), the
-  bare-numeric back-compat path, and the four-layer rollout (#1041 →
-  #1042 → #1043 → Phase F+G).
+- **`InvokeAgent` tool description expanded** (#1003, #1037). Model now
+  receives explicit guidance on the four execution modes and when to use
+  each, reducing misrouted dispatch in practice.
+
+- **Architectural patterns documented** (#1022, #1036). `DESIGN.md` covers
+  the three patterns hardened during the multi-agent execution review:
+  B18 (iteration cap), B20 (fork-history atomicity), B21
+  (workspace-provision short-circuit).
+
+- **Pre-push hook trimmed to fmt-only** (#1040). CI now handles the full
+  lint/test gate; the local hook only runs `cargo fmt --check` for fast
+  feedback. `scripts/preflight.sh` removed entirely.
+
+- **CI split into parallel lint jobs** (#979). `fmt`, `clippy`, `check`,
+  `test`, `doc`, and `audit` run in parallel where possible, cutting
+  median wall-clock time on PRs.
+
+- **docs: unified bg-task surface** (#1044). `docs/src/commands.md` and
+  `DESIGN.md` document the prefixed-id model, spawner-scoping rule,
+  and the four-layer rollout.
+
+### Security
+
+- **`derive_child_trust` uses runtime mode, not stale `parent_config.trust`**
+  (#1022, B19, #1033). Sub-agents previously clamped their trust against the
+  startup `parent_config.trust` value. If the user changed the trust mode
+  mid-session (e.g., `/safe` after starting in Auto), child agents could
+  still inherit the original elevated trust. Now `derive_child_trust` reads
+  the runtime mode from the session state. **This was a real privilege
+  escalation vector — the fix is a release-day security priority.**
+
+- **Auto mode now hard-fails when kernel sandbox is unavailable** (#934,
+  #1013). Previously, if `bwrap` (Linux) or seatbelt (macOS) was absent,
+  Auto mode silently fell back to running without a sandbox. Now it
+  `bail!`s with a clear error. The sandbox is the primary security boundary
+  in Auto; silent fallback was a sharp footgun.
+
+### Fixed
+
+- **Sub-agent lifecycle hardening — 22 fixes (B1–B22)** (#1022, #1025–#1035).
+  Comprehensive pass over the background agent dispatch path. Key fixes:
+  - **B1–B4**: parent trust enforced, cancel token cascade, sandbox policy
+    inheritance, lifecycle state machine.
+  - **B5**: switched `tokio::task::spawn_blocking` → `tokio::spawn` for
+    async sub-agents (eliminates thread-pool starvation).
+  - **B6–B8, B14**: unified dispatch path — cache, nested invoke, `AskUser`,
+    and validation all go through a single path, eliminating drift bugs.
+  - **B9, B15**: background agent visibility in TUI; headless reject signaling.
+  - **B10–B12**: background agent lifecycle state transitions.
+  - **B13**: `can_parallelize` uses tracker-aware classification.
+  - **B16–B17, B22**: P2 robustness cluster (iteration guard, workspace
+    cleanup, parallel dispatch edge cases).
+  - **B18**: sub-agent iteration cap returns a structural `Failure` marker
+    and caches it, preventing runaway retries.
+  - **B20**: `fork` copies parent history in a single database transaction
+    (was row-by-row, causing torn forks under concurrent writes).
+  - **B21**: workspace-provision failure now short-circuits write sub-agents
+    instead of silently dropping them from the parent tool-call tree.
+
+- **Long `AskUser` questions now word-wrap instead of truncating** (#1024,
+  #1039). Questions wider than the terminal width wrap correctly at word
+  boundaries.
+
+- **OSC 8 hyperlink width contained to one cell** (#995, #1038). Ratatui's
+  diff renderer was inflating the cell width of path rows that contained
+  OSC 8 escape sequences, causing trailing characters to be dropped on
+  re-render.
+
+- **`Write` / `Edit` / `Delete` tools now allowed in tempdirs** (#947,
+  #978). The sandbox path-check was blocking writes to `/tmp` and `$TMPDIR`
+  even when the operation was safe. Tempdirs are now explicitly allowed.
+
+- **Context meter no longer exceeds 100%** (#946, #977). Multi-tool-call
+  turns were accumulating token counts across all tool calls in the turn,
+  causing the context percentage display to overflow.
+
+- **`--mode` flag honoured at session creation** (#982, #983). The
+  `--mode` CLI flag was being ignored during session initialisation;
+  the session always started in the default trust mode regardless.
+
+- **Sandbox tests shielded from ambient `HTTPS_PROXY`** (#1008, #1009).
+  Tests that exercised the built-in proxy were failing in corporate
+  environments where `HTTPS_PROXY` is set globally. Tests now
+  explicitly unset proxy env vars before running.
+
+- **`ClonefileProvider` wired on macOS + divergence documented** (#1007).
+  macOS builds now select `ClonefileProvider` over `GitWorktreeProvider`
+  for slot workspaces; the different cost profiles (COW vs. worktree
+  clone) are documented in `koda-sandbox/src/workspace.rs`.
 
 ## [0.2.17] - 2026-04-19
 

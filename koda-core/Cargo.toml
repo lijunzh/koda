@@ -1,6 +1,6 @@
 [package]
 name = "koda-core"
-version = "0.2.17"
+version = "0.2.18"
 edition = "2024"
 description = "Core engine for the Koda AI coding agent (macOS and Linux only)"
 license = "MIT"
@@ -75,7 +75,7 @@ futures-util = "0.3"
 anyhow = { workspace = true }
 
 # MCP client — connect to external MCP servers (#662)
-rmcp = { version = "1.4", default-features = false, features = [
+rmcp = { version = "1.5", default-features = false, features = [
     "client",
     "base64",
     "transport-child-process",
@@ -102,7 +102,7 @@ test-support = []
 [dev-dependencies]
 insta = { workspace = true }
 # MCP HTTP integration test: rmcp server-side HTTP transport + axum
-rmcp = { version = "1.4", features = [
+rmcp = { version = "1.5", features = [
     "server",
     "macros",
     "transport-streamable-http-server",

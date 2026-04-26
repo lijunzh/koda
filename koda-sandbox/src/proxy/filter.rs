@@ -1,6 +1,6 @@
 //! Hostname allowlist with wildcard matching (Phase 3b of #934).
 //!
-//! Used by the built-in HTTP CONNECT proxy ([`super::server`], TODO) to
+//! Used by the built-in HTTP CONNECT proxy ([`super::server`]) to
 //! decide whether an incoming `CONNECT host:port` request should be
 //! tunneled or rejected with `403`.
 //!

@@ -26,6 +26,9 @@ within the project sandbox are auto-approved.
 | `InvokeAgent` | Varies | Delegate a task to a named sub-agent |
 | `ListFiles` | Read-only | List directory contents |
 | `AskUser` | Interactive | Ask the user a clarifying question |
+| `ListBackgroundTasks` | Read-only | Snapshot all background tasks owned by the caller |
+| `CancelTask` | Read-only | Cancel a background agent or shell process |
+| `WaitTask` | Read-only | Block until a background task finishes (max 300 s) |
 
 ## Approval behaviour by trust mode
 
@@ -36,6 +39,7 @@ within the project sandbox are auto-approved.
 | Mutations | Write, Edit, MemoryWrite, TodoWrite | ❌ Deny | ⏸ Prompt | ✅ Auto |
 | Destructive | Delete | ❌ Deny | ⏸ Prompt | ✅ Auto |
 | Agent calls | InvokeAgent | ✅ Auto | ✅ Auto | ✅ Auto |
+| Background tasks | ListBackgroundTasks, CancelTask, WaitTask | ✅ Auto | ✅ Auto | ✅ Auto |
 | User interaction | AskUser | ⏸ Prompt | ⏸ Prompt | ⏸ Prompt |
 | Safe shell | `git status`, `grep`, `cargo test` | ✅ Auto | ✅ Auto | ✅ Auto |
 | Mutating shell | `echo > file`, `gh issue create` | ❌ Deny | ⏸ Prompt | ✅ Auto |

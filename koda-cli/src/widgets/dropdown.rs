@@ -35,16 +35,16 @@ pub trait DropdownItem: Clone {
 
 // ── Built-in item types ────────────────────────────────
 
-/// Simple label+description pair (for static command lists, providers, etc.).
+/// Simple label+description pair used in tests.
+#[cfg(test)]
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Used in Phase 2 (/model, /provider conversions)
 pub struct SimpleItem {
     pub label: String,
     pub description: String,
 }
 
+#[cfg(test)]
 impl SimpleItem {
-    #[allow(dead_code)] // Used in Phase 2
     pub fn new(label: impl Into<String>, desc: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -53,6 +53,7 @@ impl SimpleItem {
     }
 }
 
+#[cfg(test)]
 impl DropdownItem for SimpleItem {
     fn label(&self) -> &str {
         &self.label
@@ -147,7 +148,7 @@ impl<T: DropdownItem> DropdownState<T> {
     }
 
     /// Check if the dropdown has any items to show.
-    #[allow(dead_code)] // Used in Phase 2
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.filtered.is_empty()
     }
