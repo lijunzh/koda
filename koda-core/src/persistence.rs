@@ -192,6 +192,15 @@ pub trait Persistence: Send + Sync {
 
     /// Create a new session, returning its unique ID.
     async fn create_session(&self, agent_name: &str, project_root: &Path) -> Result<String>;
+    /// Returns `true` if a session row with the given ID exists.
+    ///
+    /// Used by sub-agent dispatch (#1054) to validate caller-supplied
+    /// `session_id` arguments before issuing INSERTs that would otherwise
+    /// trip the `messages.session_id → sessions.id` FOREIGN KEY constraint
+    /// and surface a raw SQLite error to the model. Implementations should
+    /// hit the `sessions` table directly — do **not** rely on side effects
+    /// of other queries.
+    async fn session_exists(&self, session_id: &str) -> Result<bool>;
     /// List recent sessions for the given project root.
     async fn list_sessions(&self, limit: i64, project_root: &Path) -> Result<Vec<SessionInfo>>;
     /// Delete a session by ID. Returns `true` if it existed.

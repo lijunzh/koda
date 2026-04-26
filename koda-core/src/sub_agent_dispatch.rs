@@ -513,7 +513,27 @@ pub(crate) fn execute_sub_agent<'a>(
         };
 
         let sub_session = match session_id {
-            Some(id) => id,
+            Some(id) => {
+                // **#1054**: validate caller-supplied `session_id` before any
+                // INSERT against `messages` — the FK
+                // (`messages.session_id → sessions.id`) would otherwise raise
+                // SQLite error 787 and surface as a raw
+                // "FOREIGN KEY constraint failed" string to the model.
+                // Models (especially when fanning out parallel `InvokeAgent`
+                // calls) sometimes hallucinate a UUID, copy one from another
+                // context, or pass an ID for a session that has been purged.
+                // Treat that as a structural failure and return the standard
+                // `[ERROR: sub-agent ...]` marker so the model re-strategizes
+                // the same way it does for an iteration-cap or workspace
+                // failure (see `iteration_cap_marker` /
+                // `workspace_provision_failure_marker`).
+                if !db.session_exists(&id).await? {
+                    let marker = unknown_session_marker(agent_name, &id);
+                    sub_agent_cache.put(agent_name, prompt, &marker);
+                    return Ok(marker);
+                }
+                id
+            }
             None => {
                 let sid = db
                     .create_session(&sub_config.agent_name, project_root)
@@ -1147,6 +1167,26 @@ fn workspace_provision_failure_marker(agent_name: &str, reason: &str) -> String 
     )
 }
 
+/// **#1054**: structural-failure marker returned when the caller supplies
+/// a `session_id` that doesn't exist in the `sessions` table.
+///
+/// Pre-fix the dispatch path passed the unknown ID straight into
+/// `insert_message`, hitting the `messages.session_id → sessions.id` FK and
+/// surfacing SQLite error 787 ("FOREIGN KEY constraint failed") as the
+/// tool-call result — a string the model has no idea what to do with.
+///
+/// Same `[ERROR:` prefix as the other markers in this file so the model
+/// treats it as structural metadata rather than a sub-agent answer, and
+/// includes the bad ID + a concrete remediation hint ("omit `session_id`").
+fn unknown_session_marker(agent_name: &str, session_id: &str) -> String {
+    format!(
+        "[ERROR: sub-agent '{agent_name}' was passed an unknown session_id '{session_id}' that \
+         does not exist. Only pass a session_id returned by a prior InvokeAgent call in this \
+         conversation — never invent one. Omit the `session_id` argument to start a fresh \
+         sub-agent session.]"
+    )
+}
+
 #[cfg(test)]
 mod b18_tests {
     //! **#1022 B18** regression tests for the iteration-cap marker.
@@ -1347,6 +1387,114 @@ mod b21_tests {
     #[test]
     fn marker_is_single_line() {
         let m = workspace_provision_failure_marker("writer", "clonefile: ENOTSUP");
+        assert!(
+            !m.contains('\n'),
+            "marker must be single-line for clean tool-result formatting; got:\n{m}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod issue_1054_tests {
+    //! **#1054** regression tests for the unknown-`session_id` marker.
+    //!
+    //! Pre-fix: when the model passed an `InvokeAgent { session_id: ... }`
+    //! whose ID didn't exist in `sessions` (hallucinated UUID, copy-paste
+    //! from another context, purged session), the dispatch path passed the
+    //! ID straight into `insert_message` and the call surfaced the raw
+    //! SQLite error 787 ("FOREIGN KEY constraint failed") as the tool
+    //! result. The model has no way to recover from that string.
+    //!
+    //! Fix: validate `session_id` via `Persistence::session_exists` before
+    //! the FK-bearing INSERT and return the standard `[ERROR: sub-agent
+    //! ...]` marker so the model re-strategizes the same way it does for
+    //! iteration-cap and workspace-provision failures.
+    //!
+    //! These tests pin the *contract* of the marker (not its exact
+    //! wording):
+    //!
+    //! - `[ERROR:` prefix so the model treats it as structural failure.
+    //! - The agent name appears so multi-agent flows can disambiguate.
+    //! - The bad session_id appears so the parent can see what was
+    //!   rejected (helps debug the hallucination if it recurs).
+    //! - A re-strategize hint that mentions omitting `session_id` — the
+    //!   actually-correct next step in 99% of cases.
+    //! - Single-line so it formats cleanly as a tool result.
+    //!
+    //! End-to-end coverage of the dispatch short-circuit (validate →
+    //! cache → return) requires standing up the full sub-agent harness
+    //! with a mock `Persistence`. The unit-level coverage here plus the
+    //! `Persistence::session_exists` test in the db tests module is the
+    //! regression net; behavioural integration is verified by manual
+    //! repro of the `minimax-m2.7` parallel-fanout case from the issue.
+
+    use super::unknown_session_marker;
+
+    #[test]
+    fn marker_has_error_prefix() {
+        let m = unknown_session_marker("explore", "deadbeef-0000-0000-0000-000000000000");
+        assert!(
+            m.starts_with("[ERROR:"),
+            "marker must start with `[ERROR:` so the model treats it as \
+             structural failure metadata, not a sub-agent answer; got: {m}"
+        );
+    }
+
+    #[test]
+    fn marker_includes_agent_name() {
+        let m = unknown_session_marker("explore", "deadbeef-0000-0000-0000-000000000000");
+        assert!(
+            m.contains("'explore'"),
+            "marker must name the sub-agent so multi-agent fanouts can \
+             disambiguate which call was rejected; got: {m}"
+        );
+    }
+
+    #[test]
+    fn marker_includes_bad_session_id() {
+        // Surfacing the rejected ID makes the failure traceable when
+        // it recurs — e.g. a model keeps inventing the same UUID
+        // across turns.
+        let bad = "deadbeef-0000-0000-0000-000000000000";
+        let m = unknown_session_marker("explore", bad);
+        assert!(
+            m.contains(bad),
+            "marker must include the rejected session_id verbatim so it's \
+             diagnosable; got: {m}"
+        );
+    }
+
+    #[test]
+    fn marker_tells_model_to_omit_session_id() {
+        // The actually-correct fix in nearly every case is "don't pass
+        // session_id at all" — the model rarely has a legitimate prior
+        // sub-agent session to continue. The hint must spell that out.
+        let m = unknown_session_marker("explore", "x");
+        let lower = m.to_lowercase();
+        assert!(
+            lower.contains("omit") && lower.contains("session_id"),
+            "marker must tell the model to omit `session_id` to start a \
+             fresh session; got: {m}"
+        );
+    }
+
+    #[test]
+    fn marker_warns_against_inventing_ids() {
+        // The other failure mode is the model continuing to hallucinate
+        // IDs. Make the "don't invent" rule explicit so the model has
+        // a clear constraint to follow on retry.
+        let m = unknown_session_marker("explore", "x");
+        let lower = m.to_lowercase();
+        assert!(
+            lower.contains("never invent") || lower.contains("do not invent"),
+            "marker must warn against inventing session_ids on retry; \
+             got: {m}"
+        );
+    }
+
+    #[test]
+    fn marker_is_single_line() {
+        let m = unknown_session_marker("explore", "deadbeef-0000-0000-0000-000000000000");
         assert!(
             !m.contains('\n'),
             "marker must be single-line for clean tool-result formatting; got:\n{m}"

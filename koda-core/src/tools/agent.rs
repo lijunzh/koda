@@ -79,7 +79,12 @@ Key rules:
                     },
                     "session_id": {
                         "type": "string",
-                        "description": "Optional session ID to continue a previous sub-agent conversation"
+                        "description": "Optional. Continue a previous sub-agent conversation. \
+                            ONLY pass an ID that was returned by a prior InvokeAgent call in \
+                            this same conversation — never invent, guess, or copy one from \
+                            another context. Omit this argument to start a fresh sub-agent \
+                            session (the common case). Unknown IDs are rejected with an \
+                            [ERROR: sub-agent ...] marker."
                     },
                     "background": {
                         "type": "boolean",

@@ -171,6 +171,19 @@ impl Persistence for Database {
         Ok(id)
     }
 
+    /// #1054: cheap existence check for sub-agent dispatch validation.
+    ///
+    /// `SELECT 1 ... LIMIT 1` over the primary key — a single index probe,
+    /// no row materialisation. Hot path: every `InvokeAgent` call that
+    /// passes a `session_id` runs this once before the FK-bearing INSERT.
+    async fn session_exists(&self, session_id: &str) -> Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM sessions WHERE id = ? LIMIT 1")
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
     /// Insert a message into the conversation log.
     async fn insert_message(
         &self,

@@ -43,6 +43,45 @@ async fn test_create_session() {
     assert!(!id.is_empty());
 }
 
+/// **#1054**: `session_exists` is the cheap pre-INSERT validator the
+/// sub-agent dispatch path uses to reject hallucinated `session_id`
+/// arguments before they trip the `messages.session_id → sessions.id`
+/// FK and surface SQLite error 787 to the model.
+///
+/// Pin the three behaviours we depend on:
+///
+/// 1. Returns `true` for a freshly-created session.
+/// 2. Returns `false` for a syntactically-valid-but-unknown UUID.
+/// 3. Returns `false` for a deleted session (covers the "session was
+///    purged between turns" case from the issue).
+#[tokio::test]
+async fn test_session_exists() {
+    let (db, _tmp) = setup().await;
+
+    // 1. Fresh session is found.
+    let id = db.create_session("default", _tmp.path()).await.unwrap();
+    assert!(
+        db.session_exists(&id).await.unwrap(),
+        "freshly-created session must be found"
+    );
+
+    // 2. Unknown UUID is rejected (the hallucination case).
+    assert!(
+        !db.session_exists("deadbeef-0000-0000-0000-000000000000")
+            .await
+            .unwrap(),
+        "unknown session_id must return false (the FK-error case)"
+    );
+
+    // 3. Deleted session is rejected (the purge case).
+    let deleted = db.create_session("default", _tmp.path()).await.unwrap();
+    assert!(db.delete_session(&deleted).await.unwrap());
+    assert!(
+        !db.session_exists(&deleted).await.unwrap(),
+        "deleted session_id must return false"
+    );
+}
+
 #[tokio::test]
 async fn test_insert_and_load_messages() {
     let (db, _tmp) = setup().await;
