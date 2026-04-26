@@ -77,10 +77,6 @@ Key rules:
                         "type": "string",
                         "description": "The task to delegate to the sub-agent"
                     },
-                    "session_id": {
-                        "type": "string",
-                        "description": "Optional session ID to continue a previous sub-agent conversation"
-                    },
                     "background": {
                         "type": "boolean",
                         "description": "Run in background and return immediately (default: false). \
