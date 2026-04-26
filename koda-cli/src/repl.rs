@@ -56,23 +56,32 @@ pub enum ReplAction {
     Verbose(Option<bool>),
     /// `/agent` — open the sub-agent picker.
     ListAgents,
-    /// `/agents` — list running background sub-agents (#996 Layer 1).
+    /// `/agents` — list running background tasks (#996 Layers 1+F).
     ///
     /// Distinct from [`ListAgents`] (singular `/agent`) which lists
-    /// configured sub-agent **definitions**. This one lists
-    /// currently-**running** background tasks tracked in
-    /// `KodaSession::bg_agents`.
+    /// configured sub-agent **definitions**. This one lists every
+    /// **currently-running** background task: both background
+    /// sub-agents (tracked in `KodaSession::bg_agents`) and background
+    /// shell processes (tracked in `agent.tools.bg_registry`).
     ///
     /// [`ListAgents`]: ReplAction::ListAgents
     ListBackgroundTasks,
-    /// `/cancel <id>` — fire one background sub-agent's cancel token.
+    /// `/cancel <id>` — fire one background task's cancel mechanism.
     ///
-    /// `None` means the user typed `/cancel` with no arg, or a
-    /// non-numeric arg — the handler renders a `Usage:` line.
+    /// Accepts three arg forms (parsed by [`parse_task_id`]):
+    /// - `agent:N` — cancel a bg sub-agent
+    /// - `process:N` — SIGTERM a bg shell process
+    /// - `N` (bare numeric) — treated as `agent:N` for back-compat
+    ///   with the original #1042 single-registry UX
+    ///
+    /// `None` means the user typed `/cancel` with no arg, or an arg
+    /// that didn't parse — the handler renders a `Usage:` line.
     /// We deliberately keep the arg-parse fallible at this layer so
     /// the dispatch table stays a clean `&'static str -> ReplAction`
     /// without an error sum type leaking into the parser.
-    CancelBackgroundTask(Option<u32>),
+    ///
+    /// [`parse_task_id`]: koda_core::tools::bg_task_tools::parse_task_id
+    CancelBackgroundTask(Option<koda_core::tools::bg_task_tools::TaskId>),
     /// `/diff` (no sub-command) — show the pending git diff summary.
     ShowDiff,
     /// `/memory [save|<text>]` — view/append memory files.
@@ -196,19 +205,25 @@ pub async fn handle_command(
         "/agents" => ReplAction::ListBackgroundTasks,
 
         "/cancel" => {
-            // Empty / whitespace-only / non-numeric arg → None.
+            // Empty / whitespace-only / unparseable arg → None.
             // The handler renders a Usage: line in those cases
             // rather than the parser silently dropping the command
             // (which would leave the user wondering what they
             // mistyped). `arg` already had its leading whitespace
             // trimmed by `splitn`, but `"   "` survives that trim,
             // so we re-check `is_empty` after a fresh trim.
+            //
+            // Phase F of #996: parse via the shared
+            // `bg_task_tools::parse_task_id` so the TUI accepts the
+            // same `agent:N` / `process:N` / bare-numeric forms as
+            // the LLM-facing `CancelTask` tool. Bare numeric routes
+            // to `Agent` for back-compat with the original #1042 UX.
             let parsed = arg.and_then(|s| {
                 let s = s.trim();
                 if s.is_empty() {
                     None
                 } else {
-                    s.parse::<u32>().ok()
+                    koda_core::tools::bg_task_tools::parse_task_id(s).ok()
                 }
             });
             ReplAction::CancelBackgroundTask(parsed)
@@ -615,20 +630,39 @@ mod tests {
         assert!(matches!(dispatch("/agent"), ReplAction::ListAgents));
     }
 
-    /// Happy path: `/cancel 7` parses the numeric id. This is the
-    /// flow the user-facing fix depends on — if it ever silently
-    /// returns `None`, `/cancel` is broken end-to-end.
+    /// Happy path: `/cancel 7` parses the bare numeric id as an
+    /// agent task (back-compat with the original #1042 single-
+    /// registry UX). This is the flow the user-facing fix depends
+    /// on — if it ever silently returns `None`, `/cancel` is broken
+    /// end-to-end.
     #[test]
-    fn cancel_with_numeric_id_returns_some() {
+    fn cancel_with_numeric_id_returns_some_agent() {
+        use koda_core::tools::bg_task_tools::TaskId;
         assert!(matches!(
             dispatch("/cancel 7"),
-            ReplAction::CancelBackgroundTask(Some(7))
+            ReplAction::CancelBackgroundTask(Some(TaskId::Agent(7)))
         ));
         // Sanity: u32::MAX still parses (well within bg-agent
         // task_id space, which only ever increments from 1).
         assert!(matches!(
             dispatch("/cancel 4294967295"),
-            ReplAction::CancelBackgroundTask(Some(4_294_967_295))
+            ReplAction::CancelBackgroundTask(Some(TaskId::Agent(4_294_967_295)))
+        ));
+    }
+
+    /// Phase F of #996: prefixed forms route to the correct registry.
+    /// `/cancel agent:N` and `/cancel process:N` are the canonical
+    /// forms going forward; bare numeric stays for back-compat.
+    #[test]
+    fn cancel_with_prefixed_id_routes_correctly() {
+        use koda_core::tools::bg_task_tools::TaskId;
+        assert!(matches!(
+            dispatch("/cancel agent:3"),
+            ReplAction::CancelBackgroundTask(Some(TaskId::Agent(3)))
+        ));
+        assert!(matches!(
+            dispatch("/cancel process:42"),
+            ReplAction::CancelBackgroundTask(Some(TaskId::Process(42)))
         ));
     }
 
@@ -645,25 +679,35 @@ mod tests {
         ));
     }
 
-    /// Non-numeric and whitespace-only args also land on `None`.
-    /// Handler shows `Usage:`. Pinning these cases prevents
-    /// silent regressions if someone refactors the parser into
-    /// `arg.unwrap_or("0").parse()` (which would give `Some(0)`
-    /// for empty input — a very confusing "task 0 not found").
+    /// Non-parseable args also land on `None`. Handler shows
+    /// `Usage:`. Pinning these cases prevents silent regressions
+    /// if someone refactors the parser into
+    /// `arg.unwrap_or("0").parse()` (which would give
+    /// `Some(TaskId::Agent(0))` for empty input — a very confusing
+    /// "task 0 not found").
     #[test]
-    fn cancel_with_non_numeric_arg_returns_none() {
+    fn cancel_with_unparseable_arg_returns_none() {
         assert!(matches!(
             dispatch("/cancel foo"),
             ReplAction::CancelBackgroundTask(None)
         ));
-        // Negative numbers are not valid u32 — `parse::<u32>` rejects.
+        // Negative numbers are not valid u32 — parser rejects.
         assert!(matches!(
             dispatch("/cancel -5"),
             ReplAction::CancelBackgroundTask(None)
         ));
-        // Whitespace-only after the command — don't pass `Some(0)`.
+        // Whitespace-only after the command — don't pass `Some(...)`.
         assert!(matches!(
             dispatch("/cancel    "),
+            ReplAction::CancelBackgroundTask(None)
+        ));
+        // Phase F: malformed prefix forms also land on None.
+        assert!(matches!(
+            dispatch("/cancel agent:abc"),
+            ReplAction::CancelBackgroundTask(None)
+        ));
+        assert!(matches!(
+            dispatch("/cancel process:"),
             ReplAction::CancelBackgroundTask(None)
         ));
     }

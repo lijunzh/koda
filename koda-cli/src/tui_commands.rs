@@ -159,17 +159,25 @@ pub async fn handle_slash_command(
             crate::tui_wizards::handle_list_agents(buffer, project_root);
             SlashAction::Continue
         }
-        // #996 Layer 1 — runtime task surfaces. Both reach into
-        // `session.bg_agents` (set up by `KodaSession::new` per the
-        // PR-1041 wiring) so no new lifetimes thread through here.
+        // #996 Layers 1+F — unified runtime task surface. Both
+        // reach into `session.bg_agents` (set up by `KodaSession::new`
+        // per the PR-1041 wiring) AND `agent.tools.bg_registry` (the
+        // bg-shell-process registry from #1043 Layer 2). The TUI is
+        // the top-level caller, so it sees every task regardless of
+        // spawner.
         ReplAction::ListBackgroundTasks => {
-            crate::tui_bg_agents::handle_list_background_tasks(buffer, &session.bg_agents);
+            crate::tui_bg_tasks::handle_list_background_tasks(
+                buffer,
+                &session.bg_agents,
+                &agent.tools.bg_registry,
+            );
             SlashAction::Continue
         }
         ReplAction::CancelBackgroundTask(task_id) => {
-            crate::tui_bg_agents::handle_cancel_background_task(
+            crate::tui_bg_tasks::handle_cancel_background_task(
                 buffer,
                 &session.bg_agents,
+                &agent.tools.bg_registry,
                 task_id,
             );
             SlashAction::Continue
