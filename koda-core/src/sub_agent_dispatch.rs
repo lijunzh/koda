@@ -136,10 +136,11 @@ async fn run_bg_agent(
     // anyway. Logging would be noise.
     status_tx: tokio::sync::watch::Sender<crate::bg_agent::AgentStatus>,
 ) {
-    // We don't have per-iteration visibility yet — see #1058.
-    // `iter: 0` means "started, no iter info". Once the inference
-    // loop inside `execute_sub_agent` learns to push iter updates,
-    // the field will reflect 1..=20.
+    // Layer 0 placeholder: immediately flip Pending → Running so `/agents`
+    // shows the agent as active before the first LLM call. The loop inside
+    // `execute_sub_agent` updates this to `iter: 1..=20` as it progresses
+    // (Layer 4, #1058). `iter: 0` is intentional here — it signals
+    // "started, first iteration pending".
     let _ = status_tx.send(crate::bg_agent::AgentStatus::Running { iter: 0 });
 
     let (_, mut cmd_rx) = mpsc::channel(1);
@@ -189,6 +190,11 @@ async fn run_bg_agent(
         // invocation id (allocated inside the recursive call). The
         // parent's cascade-cancel covers cross-registry teardown.
         None,
+        // Layer 4 of #996: forward the status sender so the loop can
+        // push live `Running { iter }` updates. Cloned so the terminal
+        // sends below (Completed / Errored / Cancelled) can still use
+        // the original after `execute_sub_agent` returns.
+        Some(status_tx.clone()),
     )
     .await;
 
@@ -267,6 +273,12 @@ pub(crate) fn execute_sub_agent<'a>(
     // child's own `my_invocation_id`, which is allocated below and
     // tags any bg work the child itself spawns.
     parent_spawner: Option<u32>,
+    // Layer 4 of #996: live iteration heartbeat.  Pass the bg-agent's
+    // `watch::Sender` so each loop iteration can push `Running { iter }`
+    // to the registry (and therefore to `/agents` and the status-bar
+    // pill).  Foreground sub-agents pass `None` — they have no status
+    // channel because they're not tracked in the registry at all.
+    status_tx: Option<tokio::sync::watch::Sender<crate::bg_agent::AgentStatus>>,
 ) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
     async move {
         // Phase E of #996: allocate this invocation's id up-front. It
@@ -712,7 +724,16 @@ pub(crate) fn execute_sub_agent<'a>(
             &tools.skill_registry,
         );
 
-        for _ in 0..loop_guard::MAX_SUB_AGENT_ITERATIONS {
+        for iter in 1u8..=loop_guard::MAX_SUB_AGENT_ITERATIONS as u8 {
+            // Layer 4 of #996: push the live iteration counter so `/agents`
+            // and the status-bar pill reflect real progress instead of the
+            // Layer-0 placeholder `iter: 0` that `run_bg_agent` sends on
+            // entry.  `send` failures are ignored for the same reason as
+            // the terminal-status sends above: if the receiver is gone,
+            // the user can't see the update and we don't want noise.
+            if let Some(ref tx) = status_tx {
+                let _ = tx.send(crate::bg_agent::AgentStatus::Running { iter });
+            }
             // Respect parent cancellation (#286)
             if cancel.is_cancelled() {
                 // Release workspace on cancellation (best-effort, no user hint).
