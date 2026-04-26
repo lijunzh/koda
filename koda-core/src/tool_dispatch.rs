@@ -17,7 +17,7 @@
 //! ## Related modules
 //!
 //! - [`crate::tools`] — tool definitions and `ToolRegistry::execute()`
-//! - [`crate::approval`] — approval mode and effect classification
+//! - [`crate::trust`] — approval mode and effect classification
 //! - `sub_agent_dispatch.rs` — `InvokeAgent` handling (needs provider access)
 //! - `approval_flow.rs` — interactive approval UI flow
 //!

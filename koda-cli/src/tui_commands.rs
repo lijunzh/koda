@@ -1,14 +1,13 @@
 //! Slash command handler for the TUI event loop.
 //!
-//! Dispatches `/command` input to the appropriate handler. Most commands
-//! are handled via [`crate::repl::handle_command`] (shared with headless),
-//! then translated into TUI-specific actions here.
+//! Parses and dispatches `/command` input in a single pass — no intermediate
+//! action enum. Each match arm parses its own argument(s) and calls the
+//! appropriate handler directly.
 //!
 //! See [`crate`] module docs for the full command table.
 //!
 //! All output flows through the [`crate::scroll_buffer::ScrollBuffer`] render cache.
 
-use crate::repl::ReplAction;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
 use crate::tui_render::TuiRenderer;
@@ -50,65 +49,191 @@ pub async fn handle_slash_command(
     pending_command: &mut Option<String>,
     menu: &mut crate::tui_types::MenuContent,
 ) -> SlashAction {
-    match crate::repl::handle_command(input, config, provider).await {
-        ReplAction::Quit => SlashAction::Quit,
-        ReplAction::SwitchModel(model) => {
-            // Check if it's an alias first
-            if let Some(resolved) = koda_core::model_alias::resolve(&model) {
-                let ptype = resolved.provider;
-                if ptype.requires_api_key() && !koda_core::runtime_env::is_set(ptype.env_key_name())
-                {
-                    tui_output::err_msg(
-                        buffer,
-                        format!("{} not set. Run /key to configure.", ptype.env_key_name()),
-                    );
-                } else if resolved.needs_auto_detect() {
-                    tui_output::warn_msg(
-                        buffer,
-                        "Use /model to pick local models interactively.".to_string(),
-                    );
+    let parts: Vec<&str> = input.splitn(2, ' ').collect();
+    let cmd = parts[0];
+    let arg = parts.get(1).map(|s| s.trim());
+
+    match cmd {
+        "/exit" => SlashAction::Quit,
+
+        "/model" => match arg {
+            Some(model) => {
+                if let Some(resolved) = koda_core::model_alias::resolve(model) {
+                    let ptype = resolved.provider;
+                    if ptype.requires_api_key()
+                        && !koda_core::runtime_env::is_set(ptype.env_key_name())
+                    {
+                        tui_output::err_msg(
+                            buffer,
+                            format!("{} not set. Run /key to configure.", ptype.env_key_name()),
+                        );
+                    } else if resolved.needs_auto_detect() {
+                        tui_output::warn_msg(
+                            buffer,
+                            "Use /model to pick local models interactively.".to_string(),
+                        );
+                    } else {
+                        config.provider_type = ptype;
+                        config.base_url = ptype.default_base_url().to_string();
+                        config.model = resolved.model_id.to_string();
+                        config.model_settings.model = config.model.clone();
+                        config.recalculate_model_derived();
+                        *provider.write().await = koda_core::providers::create_provider(config);
+                        {
+                            let prov = provider.read().await;
+                            config.query_and_apply_capabilities(prov.as_ref()).await;
+                        }
+                        crate::tui_wizards::save_provider(config, &session.db).await;
+                        tui_output::ok_msg(
+                            buffer,
+                            format!(
+                                "Model: {} ({}, {})",
+                                resolved.alias, resolved.model_id, ptype
+                            ),
+                        );
+                    }
                 } else {
-                    config.provider_type = ptype;
-                    config.base_url = ptype.default_base_url().to_string();
-                    config.model = resolved.model_id.to_string();
-                    config.model_settings.model = config.model.clone();
+                    // Literal model ID — switch on current provider.
+                    config.model = model.to_string();
+                    config.model_settings.model = model.to_string();
                     config.recalculate_model_derived();
-                    *provider.write().await = koda_core::providers::create_provider(config);
                     {
                         let prov = provider.read().await;
                         config.query_and_apply_capabilities(prov.as_ref()).await;
                     }
                     crate::tui_wizards::save_provider(config, &session.db).await;
-                    tui_output::ok_msg(
-                        buffer,
-                        format!(
-                            "Model: {} ({}, {})",
-                            resolved.alias, resolved.model_id, ptype
-                        ),
-                    );
+                    tui_output::ok_msg(buffer, format!("Model set to: {model}"));
                 }
-            } else {
-                // Literal model ID — switch on current provider
-                config.model = model.clone();
-                config.model_settings.model = model.clone();
-                config.recalculate_model_derived();
-                {
-                    let prov = provider.read().await;
-                    config.query_and_apply_capabilities(prov.as_ref()).await;
-                }
-                crate::tui_wizards::save_provider(config, &session.db).await;
-                tui_output::ok_msg(buffer, format!("Model set to: {model}"));
+                SlashAction::Continue
             }
-            SlashAction::Continue
-        }
-        ReplAction::PickModel => SlashAction::Continue,
-        ReplAction::SetupProvider(_ptype, _base_url) => SlashAction::Continue,
-        ReplAction::PickProvider => SlashAction::Continue,
-        ReplAction::ShowHelp => {
+            None => SlashAction::Continue, // opens model picker via TUI context
+        },
+
+        // Provider picker is opened by the TUI context; /provider with or
+        // without an arg just signals Continue and lets the app layer handle it.
+        "/provider" => SlashAction::Continue,
+
+        "/help" => {
             show_help(buffer);
             SlashAction::Continue
         }
-        ReplAction::Undo => {
+
+        "/diff" => {
+            match arg {
+                Some("review") => {
+                    let diff = get_git_diff();
+                    *pending_command = Some(format!(
+                        "Review these uncommitted changes. Point out bugs, \
+                         improvements, and concerns:\n\n```diff\n{diff}\n```"
+                    ));
+                }
+                Some("commit") => {
+                    let diff = get_git_diff();
+                    *pending_command = Some(format!(
+                        "Write a conventional commit message for these changes. \
+                         Use the format: type: description\n\nInclude a body with \
+                         bullet points for each logical change.\n\n```diff\n{diff}\n```"
+                    ));
+                }
+                _ => crate::tui_wizards::handle_diff(buffer),
+            }
+            SlashAction::Continue
+        }
+
+        "/compact" => {
+            crate::tui_wizards::handle_compact(buffer, session, config, provider).await;
+            SlashAction::Continue
+        }
+
+        "/purge" => {
+            crate::tui_wizards::handle_purge(buffer, session, arg, menu).await;
+            SlashAction::Continue
+        }
+
+        "/expand" => {
+            let n: usize = arg.and_then(|s| s.parse().ok()).unwrap_or(1);
+            handle_expand(buffer, renderer, n);
+            SlashAction::Continue
+        }
+
+        "/verbose" => {
+            renderer.verbose = match arg {
+                Some("on") => true,
+                Some("off") => false,
+                _ => !renderer.verbose,
+            };
+            let state = if renderer.verbose { "on" } else { "off" };
+            tui_output::emit_line(
+                buffer,
+                Line::styled(format!("  Verbose tool output: {state}"), CYAN),
+            );
+            SlashAction::Continue
+        }
+
+        "/agent" => {
+            crate::tui_wizards::handle_list_agents(buffer, project_root);
+            SlashAction::Continue
+        }
+
+        // #996 Layers 1+F — unified runtime task surface. `/agents` (plural)
+        // lists running tasks; `/agent` (singular) lists sub-agent definitions.
+        "/agents" => {
+            crate::tui_bg_tasks::handle_list_background_tasks(
+                buffer,
+                &session.bg_agents,
+                &agent.tools.bg_registry,
+            );
+            SlashAction::Continue
+        }
+
+        "/cancel" => {
+            // Accepts: `agent:N`, `process:N`, or bare numeric (→ agent, back-compat).
+            // Empty / whitespace-only / unparseable → None so the handler
+            // can render a Usage: line instead of silently doing nothing.
+            let parsed = arg.and_then(|s| {
+                let s = s.trim();
+                if s.is_empty() {
+                    None
+                } else {
+                    koda_core::tools::bg_task_tools::parse_task_id(s).ok()
+                }
+            });
+            crate::tui_bg_tasks::handle_cancel_background_task(
+                buffer,
+                &session.bg_agents,
+                &agent.tools.bg_registry,
+                parsed,
+            );
+            SlashAction::Continue
+        }
+
+        "/sessions" => {
+            match arg {
+                Some(sub) if sub.starts_with("delete ") => {
+                    let id = sub.strip_prefix("delete ").unwrap().trim().to_string();
+                    handle_delete_session(buffer, session, &id, project_root).await;
+                }
+                Some(sub) if sub.starts_with("resume ") => {
+                    let id = sub.strip_prefix("resume ").unwrap().trim().to_string();
+                    handle_resume_session(buffer, session, &id, project_root, shared_mode).await;
+                }
+                // Bare ID shorthand: /sessions <hex-id>
+                Some(id)
+                    if !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') =>
+                {
+                    handle_resume_session(buffer, session, id, project_root, shared_mode).await;
+                }
+                _ => {} // no-op: session list is opened by the TUI context
+            }
+            SlashAction::Continue
+        }
+
+        "/memory" => {
+            crate::tui_wizards::handle_memory(buffer, arg, project_root);
+            SlashAction::Continue
+        }
+
+        "/undo" => {
             match agent.tools.undo.lock() {
                 Ok(mut undo) => match undo.undo() {
                     Some(summary) => tui_output::ok_msg(buffer, summary),
@@ -118,91 +243,35 @@ pub async fn handle_slash_command(
             }
             SlashAction::Continue
         }
-        ReplAction::ListSessions => SlashAction::Continue,
-        ReplAction::DeleteSession(ref id) => {
-            handle_delete_session(buffer, session, id, project_root).await;
+
+        "/skills" => {
+            crate::tui_wizards::handle_list_skills(buffer, arg, &agent.tools);
             SlashAction::Continue
         }
-        ReplAction::ResumeSession(ref id) => {
-            handle_resume_session(buffer, session, id, project_root, shared_mode).await;
-            SlashAction::Continue
-        }
-        ReplAction::InjectPrompt(prompt) => {
-            *pending_command = Some(prompt);
-            SlashAction::Continue
-        }
-        ReplAction::Compact => {
-            crate::tui_wizards::handle_compact(buffer, session, config, provider).await;
-            SlashAction::Continue
-        }
-        ReplAction::Purge(ref age_filter) => {
-            crate::tui_wizards::handle_purge(buffer, session, age_filter.as_deref(), menu).await;
-            SlashAction::Continue
-        }
-        ReplAction::Expand(n) => {
-            handle_expand(buffer, renderer, n);
-            SlashAction::Continue
-        }
-        ReplAction::Verbose(v) => {
-            renderer.verbose = match v {
-                Some(val) => val,
-                None => !renderer.verbose,
-            };
-            let state = if renderer.verbose { "on" } else { "off" };
-            tui_output::emit_line(
-                buffer,
-                Line::styled(format!("  Verbose tool output: {state}"), CYAN),
-            );
-            SlashAction::Continue
-        }
-        ReplAction::ListAgents => {
-            crate::tui_wizards::handle_list_agents(buffer, project_root);
-            SlashAction::Continue
-        }
-        // #996 Layers 1+F — unified runtime task surface. Both
-        // reach into `session.bg_agents` (set up by `KodaSession::new`
-        // per the PR-1041 wiring) AND `agent.tools.bg_registry` (the
-        // bg-shell-process registry from #1043 Layer 2). The TUI is
-        // the top-level caller, so it sees every task regardless of
-        // spawner.
-        ReplAction::ListBackgroundTasks => {
-            crate::tui_bg_tasks::handle_list_background_tasks(
-                buffer,
-                &session.bg_agents,
-                &agent.tools.bg_registry,
-            );
-            SlashAction::Continue
-        }
-        ReplAction::CancelBackgroundTask(task_id) => {
-            crate::tui_bg_tasks::handle_cancel_background_task(
-                buffer,
-                &session.bg_agents,
-                &agent.tools.bg_registry,
-                task_id,
-            );
-            SlashAction::Continue
-        }
-        ReplAction::ShowDiff => {
-            crate::tui_wizards::handle_diff(buffer);
-            SlashAction::Continue
-        }
-        ReplAction::MemoryCommand(ref arg) => {
-            crate::tui_wizards::handle_memory(buffer, arg.as_deref(), project_root);
-            SlashAction::Continue
-        }
-        ReplAction::ListSkills(ref query) => {
-            crate::tui_wizards::handle_list_skills(buffer, query.as_deref(), &agent.tools);
-            SlashAction::Continue
-        }
-        ReplAction::ManageKeys => {
+
+        "/key" | "/keys" => {
             crate::tui_wizards::handle_keys(buffer);
             SlashAction::OpenKeyMenu
         }
-        ReplAction::CopyResponse(n) => {
+
+        "/copy" => {
+            let n: usize = arg.and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
             handle_copy_response(buffer, session, n).await;
             SlashAction::Continue
         }
-        ReplAction::Export { ref dest, summary } => {
+
+        "/export" => {
+            let (summary, dest) = match arg {
+                Some(s) => {
+                    let parts: Vec<&str> = s.splitn(2, ' ').collect();
+                    if parts.first() == Some(&"--summary") {
+                        (true, parts.get(1).map(|d| d.to_string()))
+                    } else {
+                        (false, Some(s.to_string()))
+                    }
+                }
+                None => (false, None),
+            };
             handle_export(
                 buffer,
                 session,
@@ -214,52 +283,149 @@ pub async fn handle_slash_command(
             .await;
             SlashAction::Continue
         }
-        ReplAction::McpList => {
+
+        "/mcp" => {
+            dispatch_mcp(buffer, session, agent, arg).await;
+            SlashAction::Continue
+        }
+
+        _ => SlashAction::Continue,
+    }
+}
+
+// ── MCP dispatch ────────────────────────────────────────
+
+async fn dispatch_mcp(
+    buffer: &mut ScrollBuffer,
+    session: &koda_core::session::KodaSession,
+    agent: &Arc<koda_core::agent::KodaAgent>,
+    arg: Option<&str>,
+) {
+    let arg = match arg.filter(|s| !s.is_empty()) {
+        Some(a) => a,
+        None => {
             crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
-            SlashAction::Continue
+            return;
         }
-        ReplAction::McpAdd {
-            ref name,
-            ref command,
-            ref args,
-        } => {
-            crate::tui_mcp::handle_mcp_add(
-                buffer,
-                session,
-                agent,
-                name.clone(),
-                command.clone(),
-                args.clone(),
-            )
-            .await;
-            SlashAction::Continue
+    };
+
+    let mut tokens = arg.split_whitespace();
+    let sub = tokens.next().unwrap_or("");
+
+    match sub {
+        "list" | "status" => {
+            crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
         }
-        ReplAction::McpRemove { ref name } => {
-            crate::tui_mcp::handle_mcp_remove(buffer, session, agent, name.clone()).await;
-            SlashAction::Continue
+        "add" => {
+            let name = match tokens.next() {
+                Some(n) => n.to_string(),
+                None => {
+                    crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
+                    return;
+                }
+            };
+            let command = match tokens.next() {
+                Some(c) => c.to_string(),
+                None => {
+                    crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
+                    return;
+                }
+            };
+            let args: Vec<String> = tokens.map(String::from).collect();
+            crate::tui_mcp::handle_mcp_add(buffer, session, agent, name, command, args).await;
         }
-        ReplAction::McpAddHttp {
-            ref name,
-            ref url,
-            ref bearer_token,
-        } => {
-            crate::tui_mcp::handle_mcp_add_http(
-                buffer,
-                session,
-                agent,
-                name.clone(),
-                url.clone(),
-                bearer_token.clone(),
-            )
-            .await;
-            SlashAction::Continue
+        "add-http" | "add_http" => {
+            let name = match tokens.next() {
+                Some(n) => n.to_string(),
+                None => {
+                    crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
+                    return;
+                }
+            };
+            let url = match tokens.next() {
+                Some(u) => u.to_string(),
+                None => {
+                    crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
+                    return;
+                }
+            };
+            let bearer_token = parse_optional_flag(&mut tokens, "--token");
+            crate::tui_mcp::handle_mcp_add_http(buffer, session, agent, name, url, bearer_token)
+                .await;
         }
-        ReplAction::McpReconnect { ref name } => {
-            crate::tui_mcp::handle_mcp_reconnect(buffer, agent, name.clone()).await;
-            SlashAction::Continue
+        "remove" | "rm" | "delete" => match tokens.next() {
+            Some(n) => {
+                crate::tui_mcp::handle_mcp_remove(buffer, session, agent, n.to_string()).await;
+            }
+            None => {
+                crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
+            }
+        },
+        "reconnect" | "retry" | "restart" => match tokens.next() {
+            Some(n) => {
+                crate::tui_mcp::handle_mcp_reconnect(buffer, agent, n.to_string()).await;
+            }
+            None => {
+                crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
+            }
+        },
+        _ => {
+            crate::tui_mcp::handle_mcp_list(buffer, session, agent).await;
         }
-        ReplAction::Handled => SlashAction::Continue,
-        ReplAction::NotACommand => SlashAction::Continue,
+    }
+}
+
+/// Parse `--flag <value>` from remaining tokens. Consumes both if found.
+fn parse_optional_flag(tokens: &mut std::str::SplitWhitespace<'_>, flag: &str) -> Option<String> {
+    let remaining: Vec<&str> = tokens.collect();
+    let mut i = 0;
+    while i < remaining.len() {
+        if remaining[i] == flag && i + 1 < remaining.len() {
+            return Some(remaining[i + 1].to_string());
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Get the full git diff (unstaged + staged), capped for context window safety.
+fn get_git_diff() -> String {
+    const MAX_DIFF_CHARS: usize = 30_000;
+
+    let run = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default()
+    };
+
+    let unstaged = run(&["diff"]);
+    let staged = run(&["diff", "--cached"]);
+
+    let mut diff = unstaged;
+    if !staged.is_empty() {
+        if !diff.is_empty() {
+            diff.push_str("\n# --- Staged changes ---\n\n");
+        }
+        diff.push_str(&staged);
+    }
+
+    if diff.len() > MAX_DIFF_CHARS {
+        let mut end = MAX_DIFF_CHARS;
+        while end > 0 && !diff.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!(
+            "{}\n\n[TRUNCATED: diff was {} chars, showing first {}]",
+            &diff[..end],
+            diff.len(),
+            MAX_DIFF_CHARS,
+        )
+    } else {
+        diff
     }
 }
 

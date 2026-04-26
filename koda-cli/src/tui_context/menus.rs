@@ -4,6 +4,27 @@
 
 use super::*;
 
+/// Available providers for the interactive picker.
+///
+/// Tuple: `(internal_key, display_name)`. Descriptions like "Local, no API key"
+/// are derived from `ProviderType::requires_api_key()` at render time.
+pub(crate) const PROVIDERS: &[(&str, &str)] = &[
+    ("lmstudio", "LM Studio"),
+    ("ollama", "Ollama"),
+    ("openai", "OpenAI"),
+    ("anthropic", "Anthropic"),
+    ("deepseek", "DeepSeek"),
+    ("gemini", "Google Gemini"),
+    ("groq", "Groq"),
+    ("grok", "Grok (xAI)"),
+    ("mistral", "Mistral"),
+    ("minimax", "MiniMax"),
+    ("openrouter", "OpenRouter"),
+    ("together", "Together"),
+    ("fireworks", "Fireworks"),
+    ("vllm", "vLLM"),
+];
+
 // ── History search helpers ────────────────────────────────────────────────────
 
 /// Return up to 6 history entries (newest first) containing `query`
@@ -84,7 +105,7 @@ impl TuiContext {
     }
 
     pub(crate) fn open_provider_picker(&mut self) {
-        let providers = crate::repl::PROVIDERS;
+        let providers = PROVIDERS;
         let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
             .iter()
             .map(|(key, name)| {
@@ -103,7 +124,7 @@ impl TuiContext {
 
     pub(crate) async fn open_key_picker(&mut self) {
         // Only show cloud providers (ones that need API keys)
-        let providers = crate::repl::PROVIDERS;
+        let providers = PROVIDERS;
         let items: Vec<crate::widgets::provider_menu::ProviderItem> = providers
             .iter()
             .filter(|&&(name, _)| {

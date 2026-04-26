@@ -281,25 +281,9 @@ pub enum TurnEndReason {
 /// - `ApprovalResponse` — during tool confirmation flow
 /// - `Interrupt` — during approval waits and inference streaming
 /// - `LoopDecision` — when iteration hard cap is reached
-///
-/// Future (server mode, v0.2.0):
-/// - `UserPrompt`, `SlashCommand`, `Quit` — defined for wire protocol
-///   completeness but currently handled client-side.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineCommand {
-    /// User submitted a prompt.
-    ///
-    /// Currently handled client-side. Will be consumed by the engine
-    /// in server mode (v0.2.0) for prompt queuing.
-    UserPrompt {
-        /// The user's prompt text.
-        text: String,
-        /// Base64-encoded images attached to the prompt.
-        #[serde(default)]
-        images: Vec<ImageAttachment>,
-    },
-
     /// User requested interruption of the current operation.
     ///
     /// Consumed during approval waits. Also triggers `CancellationToken`
@@ -331,16 +315,6 @@ pub enum EngineCommand {
         action: crate::loop_guard::LoopContinuation,
     },
 
-    /// A slash command from the REPL.
-    ///
-    /// Currently handled client-side. Defined for wire protocol completeness.
-    SlashCommand(SlashCommand),
-
-    /// User requested to quit the session.
-    ///
-    /// Currently handled client-side. Defined for wire protocol completeness.
-    Quit,
-
     /// User typed a message during inference and wants it injected into the
     /// **current** turn before the next provider request.
     ///
@@ -353,16 +327,6 @@ pub enum EngineCommand {
         /// The text the user submitted.
         text: String,
     },
-}
-
-/// An image attached to a user prompt.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageAttachment {
-    /// Base64-encoded image data.
-    pub data: String,
-    /// MIME type (e.g., "image/png").
-    pub mime_type: String,
 }
 
 /// The user's decision on an approval request.
@@ -393,52 +357,6 @@ pub enum ApprovalDecision {
     RejectAuto {
         /// Why the action was auto-rejected (surfaced to the model).
         reason: String,
-    },
-}
-
-/// Slash commands that the client can send to the engine.
-/// Not yet consumed outside the engine module — wired in v0.2.0 server mode.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case")]
-pub enum SlashCommand {
-    /// Compact the conversation by summarizing history.
-    Compact,
-    /// Switch to a specific model by name.
-    SwitchModel {
-        /// Model identifier.
-        model: String,
-    },
-    /// Switch to a specific provider.
-    SwitchProvider {
-        /// Provider name.
-        provider: String,
-    },
-    /// List recent sessions.
-    ListSessions,
-    /// Delete a session by ID.
-    DeleteSession {
-        /// Session ID to delete.
-        id: String,
-    },
-    /// Set the approval/trust mode.
-    SetTrust {
-        /// Approval mode name.
-        mode: String,
-    },
-    /// Show token usage for this session.
-    Cost,
-    /// View or save memory.
-    Memory {
-        /// Optional action (`"save"`, `"show"`, etc.).
-        action: Option<String>,
-    },
-    /// Show help / command list.
-    Help,
-    /// Inject a prompt as if the user typed it (used by /diff review, etc.).
-    InjectPrompt {
-        /// Prompt text to inject.
-        text: String,
     },
 }
 
@@ -565,21 +483,6 @@ mod tests {
     }
 
     #[test]
-    fn test_engine_command_user_prompt_roundtrip() {
-        let cmd = EngineCommand::UserPrompt {
-            text: "fix the bug".into(),
-            images: vec![],
-        };
-        let json = serde_json::to_string(&cmd).unwrap();
-        assert!(json.contains("\"type\":\"user_prompt\""));
-        let deserialized: EngineCommand = serde_json::from_str(&json).unwrap();
-        assert!(matches!(
-            deserialized,
-            EngineCommand::UserPrompt { text, .. } if text == "fix the bug"
-        ));
-    }
-
-    #[test]
     fn test_engine_command_approval_roundtrip() {
         let cmd = EngineCommand::ApprovalResponse {
             id: "approval_1".into(),
@@ -596,27 +499,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn test_engine_command_slash_commands_roundtrip() {
-        let commands = vec![
-            EngineCommand::SlashCommand(SlashCommand::Compact),
-            EngineCommand::SlashCommand(SlashCommand::SwitchModel {
-                model: "gpt-4".into(),
-            }),
-            EngineCommand::SlashCommand(SlashCommand::Cost),
-            EngineCommand::SlashCommand(SlashCommand::SetTrust {
-                mode: "yolo".into(),
-            }),
-            EngineCommand::SlashCommand(SlashCommand::Help),
-            EngineCommand::Interrupt,
-            EngineCommand::Quit,
-        ];
-        for cmd in commands {
-            let json = serde_json::to_string(&cmd).unwrap();
-            let _: EngineCommand = serde_json::from_str(&json).unwrap();
-        }
     }
 
     #[test]
@@ -655,17 +537,6 @@ mod tests {
             json.contains("\"decision\":\"reject_auto\""),
             "expected snake_case tag, got: {json}"
         );
-    }
-
-    #[test]
-    fn test_image_attachment_roundtrip() {
-        let img = ImageAttachment {
-            data: "base64data==".into(),
-            mime_type: "image/png".into(),
-        };
-        let json = serde_json::to_string(&img).unwrap();
-        let deserialized: ImageAttachment = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.mime_type, "image/png");
     }
 
     #[test]
