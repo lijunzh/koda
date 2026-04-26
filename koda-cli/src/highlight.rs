@@ -28,10 +28,10 @@
 //! Fixes silent no-ops for TOML, TypeScript, Kotlin, Swift, Zig, Lua,
 //! Dockerfile, and ~180 other languages that syntect's defaults omit.
 //!
-//! Syntaxes and themes are loaded once at first use via [`once_cell::sync::Lazy`].
+//! Syntaxes and themes are loaded once at first use via [`std::sync::LazyLock`].
 //! Theme: `base16-ocean.dark` (matches popular terminal palettes).
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
@@ -44,8 +44,8 @@ use syntect::util::as_24_bit_terminal_escaped;
 /// TypeScript, Kotlin, Swift, Zig, Lua, Dockerfile, Protocol Buffers, and
 /// everything else syntect's slim default set omits. Same grammar pack used
 /// by `bat` and `codex`. Loaded once; cloning the SyntaxSet is not needed.
-static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(two_face::syntax::extra_newlines);
-static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
+static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 
 /// Resolve a language hint to a syntect `SyntaxReference`.
 ///

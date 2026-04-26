@@ -3,6 +3,13 @@ members = ["koda-core", "koda-cli", "koda-test-utils", "koda-sandbox"]
 resolver = "3"
 default-members = ["koda-cli"]
 
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/lijunzh/koda"
+homepage = "https://github.com/lijunzh/koda"
+authors = ["Lijun Zhu"]
+
 # Shared dependency versions — single source of truth (DRY).
 # Per-crate feature sets are layered via `features = [...]` at the
 # consumer site. Add a dep here once it's used by 3+ crates; before

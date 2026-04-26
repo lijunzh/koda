@@ -62,6 +62,18 @@ jobs:
             --lcov --output-path lcov-core.info \
             -- --test-threads=1
 
+      - name: koda-sandbox coverage (informational — threshold TBD, see #1051)
+        id: sandbox
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          # koda-sandbox is the security boundary; tracking coverage here
+          # so we can establish a baseline and set a gate in a follow-up.
+          # No --fail-under-lines yet — numbers collected only.
+          cargo llvm-cov \
+            --lib -p koda-sandbox \
+            --lcov --output-path lcov-sandbox.info
+
       # Drop a marker so the report job can distinguish "tooling broken,
       # never measured coverage" from "actually measured, dropped below
       # threshold". Without this, a CDN flake on either platform would
@@ -110,7 +122,8 @@ jobs:
           fi
           fail=0
           for crate_outcome in \
-              "core=${{ steps.core.outcome }}"; do
+              "core=${{ steps.core.outcome }}" \
+              "sandbox=${{ steps.sandbox.outcome }}"; do
             name="${crate_outcome%%=*}"
             outcome="${crate_outcome#*=}"
             if [ "$outcome" != "success" ]; then
@@ -140,7 +153,7 @@ jobs:
         run: |
           cd reports
           # Merge each crate's reports across platforms.
-          for crate in core; do
+          for crate in core sandbox; do
             files=$(ls lcov-${crate}.info 2>/dev/null || true)
             if [ -n "$files" ]; then
               # If multiple files exist (from matrix), merge them.

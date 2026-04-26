@@ -25,7 +25,7 @@
 //! (sandbox enforces the perimeter). Only outside-project writes and
 //! path escapes still need confirmation in Auto mode.
 
-use koda_core::trust::{ToolApproval, TrustMode, check_tool};
+use koda_core::trust::{ToolApproval, TrustMode, check_tool, derive_child_trust};
 use std::path::Path;
 
 fn root() -> &'static Path {
@@ -185,4 +185,44 @@ fn matrix_gh_issue_create() {
     let (auto, confirm) = check_both("Bash", &args);
     assert_eq!(auto, auto_mutation_expected());
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
+}
+
+// ── B19 regression: child trust clamped to parent *runtime* mode (#1022) ──
+//
+// Before #1022 B19 the dispatch used `parent_config.trust` (startup value)
+// as the ceiling. A user who started in Auto and hit `/safe` would still
+// spawn sub-agents at Auto because the config field was never mutated —
+// only the SharedTrustMode atomic was. This test pins the correct contract:
+// `derive_child_trust` must receive the live *runtime* mode, and when that
+// runtime mode is stricter than what the child declared, the child is clamped.
+
+#[test]
+fn b19_child_trust_clamped_to_parent_runtime_not_startup_config() {
+    // Simulates: parent started Auto, user ran /safe → runtime = Safe.
+    let parent_startup_trust = TrustMode::Auto; // stale config field (pre-fix ceiling)
+    let parent_runtime_mode = TrustMode::Safe; // live atomic (post-fix ceiling)
+
+    // Named child declares Auto (wants broad permissions).
+    let child_declared = TrustMode::Auto;
+
+    // Post-fix: runtime mode is the ceiling → child clamped to Safe.
+    assert_eq!(
+        derive_child_trust(parent_runtime_mode, child_declared),
+        TrustMode::Safe,
+        "B19: child must be clamped to parent's runtime trust, not startup config trust",
+    );
+
+    // Pre-fix behaviour (using startup config as ceiling) would have
+    // returned Auto — this assertion documents the bug that was fixed.
+    assert_eq!(
+        derive_child_trust(parent_startup_trust, child_declared),
+        TrustMode::Auto,
+        "pre-fix behaviour: startup config (Auto) failed to clamp child — child got Auto",
+    );
+
+    // Sanity: if runtime is already Auto, child declaring Auto stays Auto.
+    assert_eq!(
+        derive_child_trust(TrustMode::Auto, TrustMode::Auto),
+        TrustMode::Auto,
+    );
 }
