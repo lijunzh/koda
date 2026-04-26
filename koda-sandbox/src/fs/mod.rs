@@ -202,3 +202,95 @@ impl From<std::io::Error> for FsError {
         FsError::Io(e)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error as _; // for .source()
+
+    // ── Display ──────────────────────────────────────────────────────────
+    // Pin the exact wire strings so a message change during refactor
+    // gets caught here rather than silently reaching the LLM.
+
+    #[test]
+    fn display_io() {
+        let e = FsError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "nope"));
+        assert_eq!(e.to_string(), "io error: nope");
+    }
+
+    #[test]
+    fn display_policy_denied() {
+        let e = FsError::PolicyDenied {
+            message: "outside write root".into(),
+        };
+        assert_eq!(e.to_string(), "policy denied: outside write root");
+    }
+
+    #[test]
+    fn display_edit_not_found() {
+        let e = FsError::EditNotFound {
+            path: PathBuf::from("/tmp/foo.rs"),
+        };
+        assert_eq!(e.to_string(), "old_string not found in /tmp/foo.rs");
+    }
+
+    #[test]
+    fn display_invalid_pattern() {
+        let e = FsError::InvalidPattern {
+            message: "unclosed bracket".into(),
+        };
+        assert_eq!(e.to_string(), "invalid pattern: unclosed bracket");
+    }
+
+    #[test]
+    fn display_transport() {
+        let e = FsError::Transport {
+            message: "broken pipe".into(),
+        };
+        assert_eq!(e.to_string(), "fs worker transport: broken pipe");
+    }
+
+    // ── source() ─────────────────────────────────────────────────────────
+    // Only the Io variant chains to an underlying cause; all others are
+    // leaf errors.
+
+    #[test]
+    fn source_io_returns_some() {
+        let inner = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let e = FsError::Io(inner);
+        assert!(e.source().is_some());
+    }
+
+    #[test]
+    fn source_non_io_variants_return_none() {
+        let variants: &[FsError] = &[
+            FsError::PolicyDenied {
+                message: "x".into(),
+            },
+            FsError::EditNotFound {
+                path: PathBuf::from("/x"),
+            },
+            FsError::InvalidPattern {
+                message: "x".into(),
+            },
+            FsError::Transport {
+                message: "x".into(),
+            },
+        ];
+        for v in variants {
+            assert!(v.source().is_none(), "{v} should have no source");
+        }
+    }
+
+    // ── From<io::Error> ──────────────────────────────────────────────────
+
+    #[test]
+    fn from_io_error_wraps_in_io_variant() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out");
+        let fs_err: FsError = io_err.into();
+        // Display must chain through — if the variant is wrong, the
+        // message won't contain the io error text.
+        assert!(fs_err.to_string().contains("timed out"), "got: {fs_err}");
+        assert!(fs_err.source().is_some(), "Io variant must chain source");
+    }
+}
