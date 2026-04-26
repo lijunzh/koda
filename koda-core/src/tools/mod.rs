@@ -26,6 +26,9 @@
 //! | **AskUser** | `ask_user` | ReadOnly | Ask the user a question |
 //! | **ActivateSkill** | `skills` | ReadOnly | Load a skill's instructions |
 //! | **ListSkills** | `skills` | ReadOnly | List available skills |
+//! | **ListBackgroundTasks** | `bg_task_tools` | ReadOnly | Snapshot background tasks owned by the caller |
+//! | **CancelTask** | `bg_task_tools` | ReadOnly | Cancel a background agent or process |
+//! | **WaitTask** | `bg_task_tools` | ReadOnly | Block until a background task finishes (max 300 s) |
 //!
 //! ## Safety model
 //!
