@@ -19,11 +19,13 @@
 //! ## Meta-tools
 //!
 //! These tools are always available regardless of scope, so the model
-//! can switch skills or delegate:
+//! can switch skills, delegate, ask the user for help, or manage its
+//! own background work even when scoped to a restricted tool set:
 //!
 //! - `ActivateSkill`, `ListSkills`
 //! - `ListAgents`, `InvokeAgent`
 //! - `AskUser`
+//! - `ListBackgroundTasks`, `CancelTask`, `WaitTask` (#996 Phase G)
 //!
 //! ## Lifecycle
 //!
@@ -36,14 +38,29 @@ use crate::skills::SkillRegistry;
 
 /// Tools that are always available regardless of skill scope.
 ///
-/// These let the model switch skills, delegate, or ask the user for help
-/// even when scoped to a restricted tool set.
+/// These let the model switch skills, delegate, ask the user for
+/// help, or manage its own background work even when scoped to a
+/// restricted tool set.
+///
+/// The bg-task management tools (`ListBackgroundTasks`, `CancelTask`,
+/// `WaitTask`) are meta because background work outlives any single
+/// `ActivateSkill` boundary: a skill that scopes to e.g. `["Read",
+/// "Grep"]` would otherwise lose the ability to wait on or cancel a
+/// shell process the agent kicked off before activation. Excluding
+/// them would force callers to either (a) re-list the bg-task tools
+/// in every skill manifest, or (b) leak background work the agent
+/// can no longer manage — both worse than allowlisting them globally.
 const META_TOOLS: &[&str] = &[
     "ActivateSkill",
     "ListSkills",
     "ListAgents",
     "InvokeAgent",
     "AskUser",
+    // #996 Phase G — bg-task management always-available so a
+    // skill-scoped agent can still see / wait / cancel its own work.
+    "ListBackgroundTasks",
+    "CancelTask",
+    "WaitTask",
 ];
 
 /// Tracks the active skill's tool scope during an inference loop.
@@ -247,6 +264,12 @@ mod tests {
         assert!(scope.check_tool_call("Grep").is_none());
         assert!(scope.check_tool_call("ActivateSkill").is_none()); // meta
         assert!(scope.check_tool_call("AskUser").is_none()); // meta
+        // #996 Phase G — the bg-task management trio is meta so a
+        // skill-scoped agent can still see / wait / cancel its own
+        // background work. Pin them all to prevent regression.
+        assert!(scope.check_tool_call("ListBackgroundTasks").is_none());
+        assert!(scope.check_tool_call("CancelTask").is_none());
+        assert!(scope.check_tool_call("WaitTask").is_none());
 
         let err = scope.check_tool_call("Write");
         assert!(err.is_some());

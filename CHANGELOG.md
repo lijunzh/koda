@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`/agents` and `/cancel` now cover background processes too** (#996,
+  Phase F). The slash commands shipped in #1042 only saw background
+  sub-agents; they now render a unified table of *all* background
+  tasks (sub-agents + shell processes) with prefixed ids
+  (`agent:N` / `process:N`). `/cancel` accepts the same prefixed
+  forms as the LLM-facing `CancelTask` tool and routes to the right
+  registry; bare numeric (`/cancel 7`) stays as `agent:7` for
+  back-compat. Process status spans get their own palette
+  (`Running` / `Killed` / `Exited (code)`). The TUI sees every task
+  regardless of spawner because the user is the top-level caller.
+
+### Changed
+
+- **`ListBackgroundTasks` / `CancelTask` / `WaitTask` are now
+  meta-tools** (#996, Phase G). Added to `skill_scope::META_TOOLS`
+  alongside `ActivateSkill` / `InvokeAgent` / `AskUser` so a
+  skill-scoped agent can still see, wait on, or cancel its own
+  background work. Skills no longer need to re-list these tools in
+  every `allowed_tools` manifest.
+
+- **Docs updated for the unified bg-task surface**. `docs/src/commands.md`
+  and `DESIGN.md` describe the prefixed-id model, the spawner-scoping
+  rule (LLM tools see only their own work; TUI sees everything), the
+  bare-numeric back-compat path, and the four-layer rollout (#1041 →
+  #1042 → #1043 → Phase F+G).
+
 ## [0.2.17] - 2026-04-19
 
 Safety release. Closes five active classifier-bypass bugs in the bash command
