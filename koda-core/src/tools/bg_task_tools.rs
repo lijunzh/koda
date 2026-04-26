@@ -771,6 +771,46 @@ mod tests {
         assert_eq!(agents.snapshot().len(), 1);
     }
 
+    /// `WaitTask` returns `status:cancelled` when the cancellation token
+    /// fires and the status channel reflects `AgentStatus::Cancelled`.
+    ///
+    /// The three terminal states are `completed`, `timed_out`, and
+    /// `cancelled`. The first two have existing tests; this is the
+    /// third path — the one that was missing (#1048).
+    #[tokio::test]
+    async fn execute_wait_returns_cancelled_when_token_fires() {
+        let (agents, processes) = fresh_registries();
+        let (id, tx, status_tx, observer) = agents.register_test_with_status("slow", "x", None);
+
+        // Fire the cancellation token and push the terminal status so
+        // `wait_for_terminal_status` unblocks immediately.
+        observer.cancel();
+        status_tx.send(AgentStatus::Cancelled).unwrap();
+        // Drop the result sender so `entry.rx.await` inside
+        // `wait_for_completion` resolves immediately as `Err` rather
+        // than waiting out the 50 ms inner timeout.
+        drop(tx);
+
+        let r = execute(
+            "WaitTask",
+            &json!({ "task_id": format!("agent:{id}"), "timeout_secs": 5 }).to_string(),
+            &agents,
+            &processes,
+            None,
+        )
+        .await;
+        assert!(
+            r.success,
+            "WaitTask on a cancelled task must still succeed: {}",
+            r.output
+        );
+        let payload: Value = serde_json::from_str(&r.output).unwrap();
+        assert_eq!(payload["status"], "cancelled");
+        assert_eq!(payload["task_id"], format!("agent:{id}"));
+        // Consumed — entry removed from registry.
+        assert_eq!(agents.snapshot().len(), 0);
+    }
+
     #[tokio::test]
     async fn execute_unknown_tool_name_returns_error() {
         let (agents, processes) = fresh_registries();
