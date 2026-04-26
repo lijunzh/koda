@@ -280,7 +280,6 @@ pub(crate) fn execute_sub_agent<'a>(
         let prompt = args["prompt"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'prompt'"))?;
-        let session_id = args["session_id"].as_str().map(|s| s.to_string());
         let is_fork = agent_name == "fork";
         let background = args["background"].as_bool().unwrap_or(false);
 
@@ -392,11 +391,9 @@ pub(crate) fn execute_sub_agent<'a>(
             bg: bg_agents,
             invocation_id: my_invocation_id,
         };
-        // Check result cache (only for stateless calls without a session_id,
-        // since session continuations need fresh execution).
-        if session_id.is_none()
-            && let Some(cached) = sub_agent_cache.get(agent_name, prompt)
-        {
+        // Check result cache — identical (agent_name, prompt) pairs hit
+        // a cache and skip the LLM call. Cheap to retry idempotent tasks.
+        if let Some(cached) = sub_agent_cache.get(agent_name, prompt) {
             sink.emit(EngineEvent::Info {
                 message: format!("  \u{26a1} {agent_name}: cache hit, skipping LLM call"),
             });
@@ -512,27 +509,24 @@ pub(crate) fn execute_sub_agent<'a>(
             cfg
         };
 
-        let sub_session = match session_id {
-            Some(id) => id,
-            None => {
-                let sid = db
-                    .create_session(&sub_config.agent_name, project_root)
-                    .await?;
-                // Fork: copy parent conversation history into the new session.
-                //
-                // **#1022 B20**: was a per-row loop — N×(`insert_message`
-                // + `mark_message_complete` for assistant rows), each
-                // call its own fsync, on the synchronous fork hot path.
-                // For a 200-message parent that's ~600 round-trips and
-                // hundreds of ms of disk wait. Now a single transaction
-                // via `copy_messages_into_session` (one fsync at COMMIT,
-                // `completed_at` written inline for assistant rows).
-                if is_fork {
-                    let parent_history = db.load_context(parent_session_id).await?;
-                    db.copy_messages_into_session(&sid, &parent_history).await?;
-                }
-                sid
+        let sub_session = {
+            let sid = db
+                .create_session(&sub_config.agent_name, project_root)
+                .await?;
+            // Fork: copy parent conversation history into the new session.
+            //
+            // **#1022 B20**: was a per-row loop — N×(`insert_message`
+            // + `mark_message_complete` for assistant rows), each
+            // call its own fsync, on the synchronous fork hot path.
+            // For a 200-message parent that's ~600 round-trips and
+            // hundreds of ms of disk wait. Now a single transaction
+            // via `copy_messages_into_session` (one fsync at COMMIT,
+            // `completed_at` written inline for assistant rows).
+            if is_fork {
+                let parent_history = db.load_context(parent_session_id).await?;
+                db.copy_messages_into_session(&sid, &parent_history).await?
             }
+            sid
         };
 
         db.insert_message(&sub_session, &Role::User, Some(prompt), None, None, None)
