@@ -357,10 +357,14 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
 
     // The background task is registered in env.bg_agents before
     // before spawn), so it should appear in the snapshot immediately.
-    // Poll with a 5-second deadline in case the runtime hasn’t scheduled
-    // the spawned task yet.
+    // Poll with a generous deadline because macOS CI runners under load
+    // have been observed to take >5s to schedule the spawned task
+    // (intermittent flake on the v0.2.21 release post-merge CI; see PR
+    // #1087 thread). 15s is empirically beyond the worst observed jitter
+    // and still bounded enough to fail loudly on a real registration bug.
     let task_id = {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        const REGISTRATION_BUDGET: Duration = Duration::from_secs(15);
+        let deadline = tokio::time::Instant::now() + REGISTRATION_BUDGET;
         loop {
             let snap = env.bg_agents.snapshot();
             if let Some(task) = snap.first() {
@@ -368,7 +372,7 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "background agent was never registered in the registry within 5s"
+                "background agent was never registered in the registry within {REGISTRATION_BUDGET:?}"
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
