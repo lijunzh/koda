@@ -402,43 +402,88 @@ make snake_case unreachable in new sessions. The dual-case list protects
 legacy DB rows from before normalization existed. Acceptable redundancy;
 delete after a full schema migration if/when one happens.
 
-### Progress Tracking: Model-Driven Only (P3)
+### Progress Tracking: Model-Owned, History-Persisted, Engine-Surfaced (P3-corollary)
 
-Koda tracks "what's been done this session" through a single mechanism: the
-**`TodoWrite` tool** (model-driven, schema copied from Claude Code), backed
-by `FileTracker` for typed file-ownership state used by the auto-approve-delete
-gate.
+**Principle.** The model owns the task list. The conversation history
+persists it (because the `TodoWrite` tool calls are themselves in the
+message stream). The engine's only job is to surface each transition
+as a structured `EngineEvent` so non-TUI clients can render. The
+engine **does not re-inject the list into the system prompt** and
+**does not scrape progress from other tools' output text** — both
+are instances of the P3 anti-pattern ("don't scaffold around model
+weakness"). Compaction preserves outstanding tasks via the summarizer
+prompt, not via parallel state.
 
-**Field survey** (none of the reference projects do engine-side progress
-extraction):
+This is the same shape as the bg-task event routing (#1076 / #1078):
+state transitions flow through `EngineEvent`, the engine doesn't
+second-guess what the model has already seen.
 
-| Project | Engine extracts progress from tool output? | Model-driven todo tool? |
+**Field survey.** All four reference projects converge on the same
+design — model writes, history persists, engine surfaces, no
+re-injection, no auto-extraction. Citations are real source files
+in sibling checkouts, not vibes:
+
+| Project | Tool | Engine state | Re-inject into prompt? | Auto-extract from other tools? | Source |
+|---|---|---|---|---|---|
+| Claude Code | `TodoWrite` | App-state map keyed by `agentId ?? sessionId` | No (reminder rides on tool result) | No | `src/tools/TodoWriteTool/TodoWriteTool.ts` |
+| Codex | `update_plan` | **None** — just emits `EventMsg::PlanUpdate` | No | No | `codex-rs/core/src/tools/handlers/plan.rs` |
+| Zed | `update_plan` | **None** — just emits `event_stream.update_plan(…)`; `replay()` reconstructs from history | No | No | `crates/agent/src/tools/update_plan_tool.rs` |
+| Gemini CLI | `WriteTodos` | **None** — UI scans message history backwards every render | No | No | `packages/core/src/tools/write-todos.ts` + `packages/cli/src/ui/components/messages/Todo.tsx` |
+
+The Codex handler's own doc comment is the canonical statement of
+this design:
+
+> *"This function doesn't do anything useful. However, it gives the
+> model a structured way to record its plan that clients can read
+> and render. So it's the inputs to this function that are useful
+> to clients, not the outputs."*
+> — `codex-rs/core/src/tools/handlers/plan.rs`
+
+**Where the field disagrees** (and what koda picks):
+
+| Decision | Field | Koda |
 |---|---|---|
-| Claude Code | No | `TodoWrite` |
-| Codex (OpenAI) | No | `update_plan` |
-| Gemini CLI | No | None (model handles natively) |
-| Zed agent | No | `update_plan`-style |
+| Persist latest list in engine? | Split: CC yes, Codex/Zed/Gemini no | **Yes** — keyed by `session_id`, for ACP clients reconnecting mid-session. Persistence ≠ re-injection. |
+| Validate "max 1 in_progress" in tool? | Only Gemini does | **Yes** — small, deterministic, removes one class of model mistake |
+| Diff-in-tool-result for UI animation? | Only Claude Code | **Yes** — return `{added, changed, removed}` so UI can highlight transitions; model still gets a plain reminder string |
+| `FileTracker` summarized into prompt? | None do this | **No** — same anti-pattern as `progress.rs`. `FileTracker` stays scoped to trust / auto-approve-delete only. |
 
-Koda used to have a third mechanism — `progress.rs`, an engine-side string-
-matcher that scraped `"Created"`/`"Wrote"`/`"Applied"`/`"edited"` patterns
-from tool result text and re-injected a synthesized "done list" into the
-system prompt. It was an exact instance of the P3 anti-pattern
-("don't scaffold around model weakness") and produced two parallel "done"
-lists in the prompt because `TodoWrite` already covered the same ground
-better.
+**Current reality (pre-fix).** Koda today has **four** mechanisms
+fighting over the same concern, which is the racing condition #1077
+is really about — not just `progress.rs`:
 
-**The replacement** (tracked in #1077):
+| # | Mechanism | Source of truth | Surfaced via | Status |
+|---|---|---|---|---|
+| 1 | `progress.rs` | string-matched tool output text (`"Created"`/`"Wrote"`/…) | system prompt | **Delete** |
+| 2 | `TodoWrite` + `get_todo_section` | model writes, DB persists | system prompt + tool result | **Drop the system-prompt injection**; keep DB persistence + tool-result reminder |
+| 3 | `FileTracker` | typed dispatch outcome | trust / auto-approve-delete only | **Keep as-is** (scope is correct, never promote to prompt) |
+| 4 | `BgAgentRegistry` snapshot vs. event-queue | dual fan-out via `BgStatusEmitter` | UI panel + `EngineEvent::BgTaskUpdate` | **Already fixed** in #1078 — same pattern this principle generalizes |
 
-1. Improve `compact.rs` summarization prompt to explicitly preserve file
-   paths created/modified and outstanding tasks (~20 LOC).
-2. Add `FileTracker::summary_for_prompt()` and inject it into `prompt.rs`
-   so "files touched this session" comes from the typed dispatch outcome,
-   not from pattern-matched output text (~30 LOC).
-3. Delete `progress.rs` (~365 LOC removed).
+**Replacement plan** (tracked in #1077, to land in phased PRs):
 
-Net: ~315 LOC removed, three mechanisms collapse to two (model-owned task
-list + engine-typed file ownership), P3 restored, no string-matching of
-tool output.
+1. **`compact.rs` summarizer prompt** — explicitly preserve outstanding
+   tasks and file paths created/modified across the compacted range
+   (~20 LOC). Compaction becomes the sole mechanism that defends
+   plan continuity across context-window pressure.
+2. **`EngineEvent::TodoUpdate { items, diff }`** — emitted on every
+   `TodoWrite` call. `diff: { added, changed, removed }` is computed
+   server-side from the previous persisted list so every client
+   gets the same structured transition (~80 LOC).
+3. **Engine-enforced "max 1 in_progress"** — `TodoWrite` returns an
+   error to the model if the input violates the constraint, instead
+   of relying on prompt discipline (~10 LOC).
+4. **Drop `get_todo_section` system-prompt injection** — remove the
+   call site in `prompt.rs` and the helper itself. The DB row stays
+   (it's how reconnecting ACP clients get the snapshot), but it no
+   longer rides into the system prompt every turn (~40 LOC removed).
+5. **Delete `progress.rs`** and its call sites in `tool_dispatch.rs`
+   and `inference.rs` (~365 LOC removed).
+
+**Net: roughly −450 LOC.** Four mechanisms collapse to two (model-owned
+task list with event surface + engine-typed file ownership scoped to
+trust). Prompt-injection of "done" state goes from two parallel paths
+to zero. Compaction's summarizer prompt is the single durable defense
+against context-window forgetting.
 
 ### Sub-Agent Model Routing (P1, P3)
 
