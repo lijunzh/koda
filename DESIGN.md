@@ -66,7 +66,18 @@ and a recompile.
   time, it must be. Flags that select an execution scenario are fine (`-p`
   for headless, `server --stdio` for ACP) — flags that alter behavior within
   a scenario are not (`--autonomy`, `--model-tier`). If something needs to
-  change, change the code
+  change, change the code.
+  
+  *Documented exceptions* (each justified by a non-interactive scenario):
+  - `--mode safe|auto` (`KODA_MODE`) — trust mode for headless runs where
+    `/safe` and `/auto` slash commands aren't reachable mid-session.
+  - `--max-tokens` / `--temperature` / `--thinking-budget` /
+    `--reasoning-effort` — model-call parameters needed when scripting
+    headless against a model whose defaults don't fit the task. Interactive
+    sessions ignore these in favor of agent JSON config.
+  
+  Any new flag that doesn't map to one of these scenario carve-outs is a
+  P1 violation and should be rejected at PR review.
 - **Build only what we need.** Code that isn't written has zero bugs.
   Features that were built but aren't used should be deleted — git preserves
   history
@@ -163,16 +174,30 @@ Studied four projects:
 in the same binary, server mode optional. But Koda goes one step further than
 Zed — `koda-core` has zero IO, all output goes through `EngineSink`, all
 input arrives via `EngineCommand` over `mpsc::Receiver`, and `EngineEvent` is
-`Serialize`. The proof is the ACP server in `koda-cli/src/server.rs` (~430 LOC)
-vs. Zed's equivalent in `zed/crates/agent_servers/src/acp.rs` (~3,467 LOC) —
-Koda's smaller because the engine boundary is a serializable enum, not a
-bridge between gpui's `Entity`/`Task` world and the wire protocol.
+`Serialize`. The proof is the ACP surface in `koda-cli/src/server.rs` (~500
+LOC for JSON-RPC framing + session lifecycle) plus `koda-cli/src/acp_adapter.rs`
+(~550 LOC for the `EngineSink` impl that translates `EngineEvent` → ACP
+notifications) — ~1,050 LOC total, vs. Zed's equivalent in
+`zed/crates/agent_servers/src/acp.rs` (~3,467 LOC). Koda's smaller because
+the engine boundary is a serializable enum, not a bridge between gpui's
+`Entity`/`Task` world and the wire protocol.
 
 **Concrete consequence**: `KodaAgent` (immutable, `Arc`-shared) is separated
 from `KodaSession` (per-conversation, mutable). Zed conflates these into
 `Thread`. The split is what makes parallel sub-agents safe: each sub-agent
 shares the agent definition by `Arc` and has its own session for state. No
 `Arc<RwLock<>>` everywhere.
+
+**Known leak: background sub-agent status** (tracked in #1076). The boundary
+claim above — "all engine output flows through `EngineSink`" — is true for
+inference output but not for `BgAgentRegistry` status. The TUI today reads
+bg-task state by calling `BgAgentRegistry::snapshot()` directly through a
+shared `Arc` it grabs out of `KodaSession`. There is no `BgTaskUpdate`
+variant in `EngineEvent`, so ACP clients and headless mode cannot surface
+live bg-task status even though the engine has the data. Fix is to add
+`EngineEvent::BgTaskUpdate { id, status, … }` and have the registry push
+to the sink on transitions (~50–100 LOC). Until then this is a documented
+carve-out, not a permanent design choice.
 
 ### ACP (Agent Client Protocol) (P3)
 
@@ -302,6 +327,31 @@ on the ToolRegistry, set via `.with_session()`. No sentinel strings.
 locations per tool (definitions, match arm, module import) is a bottleneck,
 convert to a `Tool` trait + `ToolContext`. Do both together, not piecemeal.
 
+### Tool Name Normalization (P2, documented exception to P3)
+
+`tool_normalize.rs` maps lowercase / snake_case / camelCase tool names
+emitted by some models (`list_files`, `read`, `webSearch`) to the canonical
+PascalCase forms (`List`, `Read`, `WebSearch`) at exactly one boundary point
+in `inference.rs` — before dispatch, approval, persistence, or loop guard
+see them.
+
+**This is a documented exception to P3** ("frontier models, standard APIs —
+if a model emits malformed output, the fix belongs upstream"). The exception
+is justified because:
+
+- Tool name casing is a *cosmetic protocol detail*, not a model capability
+  question. Every model knows what `Read` does; some just spell it `read`.
+- The fix lives at one file and one call site (~300 LOC, single boundary
+  application). It does not bleed into dispatch, approval, or storage.
+- Aliases are added only when *unambiguous* — ambiguous variants like
+  `"search"` (Grep? Glob?) are intentionally omitted so the dispatcher
+  surfaces a clear `Unknown tool` error rather than silently misrouting.
+
+**What we DON'T do**: argument-shape repair, model-specific JSON quirks,
+output format coercion. Those would be the actual P3 violations — they
+cross from "name canonicalization" into "behavior compensation." If a model
+emits structurally wrong tool calls, the fix is upstream or switch models.
+
 ### Context Window Auto-Detection (P1, P3)
 
 Context windows are queried from the **provider API** at startup. The
@@ -323,6 +373,68 @@ Exponential backoff retry for 429/rate-limit errors. Up to 5 attempts with
 delays of 2, 4, 8, 16, 32 seconds. Long sessions with Opus hit rate limits
 regularly. Previously, a 429 killed the session. Now the user sees a
 countdown and the request automatically retries.
+
+### Compaction: Two Layers (P2, P3)
+
+Koda has two distinct context-reclaim mechanisms that fire at different
+thresholds and have different costs:
+
+| Layer | Trigger | Cost | Mechanism |
+|---|---|---|---|
+| **Microcompact** (`microcompact.rs`) | Time gap since last assistant msg > 5min, AND old tool results exist | Zero LLM tokens — SQL `UPDATE` only | Replaces stale tool result bodies with `[Old tool result content cleared]` stub. Reversible by `RecallContext`. |
+| **Full compact** (`compact.rs`) | Context usage > ~80% (auto), or `/compact` (manual) | One LLM call to a Standard-tier model | Summarizes all prior messages into a single synthesis message; archives originals in DB. |
+
+Both are inspired by Claude Code's identically-named layers. We adopt the
+two-layer approach because:
+
+- **Microcompact alone is insufficient**: clearing tool results doesn't
+  reclaim the *messages* themselves; long sessions still blow the budget.
+- **Full compact alone is too expensive**: every long pause would trigger
+  an LLM round-trip just to age out a `Bash` output.
+
+**`COMPACTABLE_TOOLS` lists both PascalCase and snake_case** (`"Read", "read",
+"Bash", "bash"`) as defense-in-depth even though `tool_normalize.rs` should
+make snake_case unreachable in new sessions. The dual-case list protects
+legacy DB rows from before normalization existed. Acceptable redundancy;
+delete after a full schema migration if/when one happens.
+
+### Progress Tracking: Model-Driven Only (P3)
+
+Koda tracks "what's been done this session" through a single mechanism: the
+**`TodoWrite` tool** (model-driven, schema copied from Claude Code), backed
+by `FileTracker` for typed file-ownership state used by the auto-approve-delete
+gate.
+
+**Field survey** (none of the reference projects do engine-side progress
+extraction):
+
+| Project | Engine extracts progress from tool output? | Model-driven todo tool? |
+|---|---|---|
+| Claude Code | No | `TodoWrite` |
+| Codex (OpenAI) | No | `update_plan` |
+| Gemini CLI | No | None (model handles natively) |
+| Zed agent | No | `update_plan`-style |
+
+Koda used to have a third mechanism — `progress.rs`, an engine-side string-
+matcher that scraped `"Created"`/`"Wrote"`/`"Applied"`/`"edited"` patterns
+from tool result text and re-injected a synthesized "done list" into the
+system prompt. It was an exact instance of the P3 anti-pattern
+("don't scaffold around model weakness") and produced two parallel "done"
+lists in the prompt because `TodoWrite` already covered the same ground
+better.
+
+**The replacement** (tracked in #1077):
+
+1. Improve `compact.rs` summarization prompt to explicitly preserve file
+   paths created/modified and outstanding tasks (~20 LOC).
+2. Add `FileTracker::summary_for_prompt()` and inject it into `prompt.rs`
+   so "files touched this session" comes from the typed dispatch outcome,
+   not from pattern-matched output text (~30 LOC).
+3. Delete `progress.rs` (~365 LOC removed).
+
+Net: ~315 LOC removed, three mechanisms collapse to two (model-owned task
+list + engine-typed file ownership), P3 restored, no string-matching of
+tool output.
 
 ### Sub-Agent Model Routing (P1, P3)
 
@@ -569,8 +681,9 @@ agent can no longer manage.
   `close_agent`/`resume_agent`, persistent ThreadId-addressed agents,
   inter-agent mailboxes). ~3,000 LOC for a workflow that's rare in personal
   use. P2 says no. The `background: true` + drain-on-next-iter pattern
-  covers the same ground in 200 LOC. If the model wants more work it just
-  calls `InvokeAgent` again.
+  covers the same ground in a single registry (`bg_agent.rs`, ~830 production
+  LOC — grew from ~200 as concurrency invariants got hardened in #1022).
+  If the model wants more work it just calls `InvokeAgent` again.
 - **Codex's `agent_max_depth` + `agent_max_threads` atomic CAS reservations**.
   Koda hardcodes "sub-agents cannot spawn sub-agents" (depth = exactly 1
   for any worker) and adds a per-agent iteration cap. Removes the entire
@@ -590,7 +703,7 @@ agent can no longer manage.
   (`local_bash | local_agent | remote_agent | in_process_teammate | ...`).
   Exactly the "feature surface for many users" P1 rejects. `BgAgentRegistry`
   + `BgRegistry` (for bash) cover the "long-running thing with a result"
-  case in 200 lines. Don't grow a `trait Task`.
+  case as two cohesive registries. Don't grow a `trait Task`.
 - **Gemini CLI's LLM-based loop detection** (asks the model "are you stuck?"
   every 10–15 turns at extra token cost). Apex form of the anti-pattern P3
   warns about — "don't scaffold around weakness". Frontier models won't need
