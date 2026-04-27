@@ -136,6 +136,40 @@ pub fn engine_event_to_acp(
             ))
         }
 
+        // #1076: surface bg-task lifecycle as plain text chunks. ACP
+        // doesn't have a typed bg-task notification today, so we render
+        // a short `[bg task N] kind` line that ACP-aware IDEs can
+        // either show inline or filter on the `[bg task N]` prefix.
+        // The full structured payload is still on the wire for any
+        // future typed mapping — see `EngineEvent::BgTaskUpdate`.
+        EngineEvent::BgTaskUpdate {
+            task_id, status, ..
+        } => {
+            let summary = match status {
+                koda_core::bg_agent::AgentStatus::Pending => "pending".to_string(),
+                koda_core::bg_agent::AgentStatus::Running { iter } => {
+                    if *iter == 0 {
+                        "running (starting)".to_string()
+                    } else {
+                        format!("running (iter {iter})")
+                    }
+                }
+                koda_core::bg_agent::AgentStatus::Cancelled => "cancelled".to_string(),
+                koda_core::bg_agent::AgentStatus::Completed { .. } => "completed".to_string(),
+                koda_core::bg_agent::AgentStatus::Errored { error } => {
+                    let snippet: String = error.chars().take(80).collect();
+                    format!("errored: {snippet}")
+                }
+            };
+            let cb = acp::ContentBlock::Text(acp::TextContent::new(format!(
+                "[bg task {task_id}] {summary}"
+            )));
+            Some(acp::SessionNotification::new(
+                session_id.to_string(),
+                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(cb)),
+            ))
+        }
+
         // Handled specially by AcpSink (bidirectional permission flow)
         EngineEvent::ApprovalRequest { .. } => None,
         // AskUser not yet implemented in ACP protocol; filtered here.
@@ -425,6 +459,91 @@ mod tests {
                 assert_eq!(tc.kind, acp::ToolKind::Other);
             }
             _ => panic!("Expected ToolCall"),
+        }
+    }
+
+    // #1076: bg-task lifecycle must reach ACP clients as session
+    // notifications.  Pre-fix the TUI was the only client that saw
+    // bg status because it polled the registry directly; now every
+    // transition flows through `EngineEvent::BgTaskUpdate` and lands
+    // here as a text chunk an ACP-aware IDE can render or filter.
+    #[test]
+    fn test_bg_task_update_running_iter_zero_renders_starting() {
+        let event = EngineEvent::BgTaskUpdate {
+            task_id: 5,
+            spawner: None,
+            status: koda_core::bg_agent::AgentStatus::Running { iter: 0 },
+        };
+        let notif = engine_event_to_acp(&event, "s1").expect("must produce notification");
+        match notif.update {
+            acp::SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
+                acp::ContentBlock::Text(t) => {
+                    assert!(t.text.contains("[bg task 5]"), "got: {}", t.text);
+                    assert!(t.text.contains("running (starting)"), "got: {}", t.text);
+                }
+                other => panic!("expected text content, got {other:?}"),
+            },
+            other => panic!("expected AgentMessageChunk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_bg_task_update_renders_iter_count() {
+        let event = EngineEvent::BgTaskUpdate {
+            task_id: 12,
+            spawner: Some(7),
+            status: koda_core::bg_agent::AgentStatus::Running { iter: 4 },
+        };
+        let notif = engine_event_to_acp(&event, "s1").unwrap();
+        let acp::SessionUpdate::AgentMessageChunk(chunk) = notif.update else {
+            panic!("expected chunk");
+        };
+        let acp::ContentBlock::Text(t) = chunk.content else {
+            panic!("expected text");
+        };
+        assert!(t.text.contains("running (iter 4)"), "got: {}", t.text);
+    }
+
+    #[test]
+    fn test_bg_task_update_terminal_states_are_distinguishable() {
+        // The four terminal-ish kinds must each render to a unique
+        // string so an ACP client (or grep) can distinguish them.
+        // Pending is included because it's the initial reservation
+        // state — some clients may want to show "queued".
+        let cases = [
+            (koda_core::bg_agent::AgentStatus::Pending, "pending"),
+            (koda_core::bg_agent::AgentStatus::Cancelled, "cancelled"),
+            (
+                koda_core::bg_agent::AgentStatus::Completed {
+                    summary: "all good".into(),
+                },
+                "completed",
+            ),
+            (
+                koda_core::bg_agent::AgentStatus::Errored {
+                    error: "boom".into(),
+                },
+                "errored",
+            ),
+        ];
+        for (status, marker) in cases {
+            let event = EngineEvent::BgTaskUpdate {
+                task_id: 1,
+                spawner: None,
+                status,
+            };
+            let notif = engine_event_to_acp(&event, "s1").unwrap();
+            let acp::SessionUpdate::AgentMessageChunk(chunk) = notif.update else {
+                panic!("expected chunk");
+            };
+            let acp::ContentBlock::Text(t) = chunk.content else {
+                panic!("expected text");
+            };
+            assert!(
+                t.text.contains(marker),
+                "status missing {marker:?} marker, got: {}",
+                t.text
+            );
         }
     }
 

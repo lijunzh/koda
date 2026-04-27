@@ -188,16 +188,20 @@ from `KodaSession` (per-conversation, mutable). Zed conflates these into
 shares the agent definition by `Arc` and has its own session for state. No
 `Arc<RwLock<>>` everywhere.
 
-**Known leak: background sub-agent status** (tracked in #1076). The boundary
-claim above — "all engine output flows through `EngineSink`" — is true for
-inference output but not for `BgAgentRegistry` status. The TUI today reads
-bg-task state by calling `BgAgentRegistry::snapshot()` directly through a
-shared `Arc` it grabs out of `KodaSession`. There is no `BgTaskUpdate`
-variant in `EngineEvent`, so ACP clients and headless mode cannot surface
-live bg-task status even though the engine has the data. Fix is to add
-`EngineEvent::BgTaskUpdate { id, status, … }` and have the registry push
-to the sink on transitions (~50–100 LOC). Until then this is a documented
-carve-out, not a permanent design choice.
+**Background-task status routing** (#1076, fixed). Bg-task lifecycle
+transitions (`Pending` → `Running { iter }` → terminal) flow through
+`EngineEvent::BgTaskUpdate` like every other engine output. The
+fan-out helper [`BgStatusEmitter`] writes each transition to two
+places: the per-task `watch::Sender<AgentStatus>` (read by
+`/agents` snapshots and the status-bar pill) AND the registry's
+status-event queue (drained by the inference loop alongside
+[`BgAgentRegistry::drain_completed`] and forwarded to the active
+`EngineSink`). Same drain, same FIFO ordering, same sink — the
+TUI, headless mode, and ACP clients see identical event streams.
+The TUI's bg-task panel still uses `snapshot()` for its primary
+render, but that is now a presentational choice (snapshot is
+cheaper for a panel that re-renders every frame), not the
+documented carve-out it used to be.
 
 ### ACP (Agent Client Protocol) (P3)
 

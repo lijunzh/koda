@@ -310,9 +310,10 @@ pub(crate) async fn execute_one_tool(
             // and allocates a fresh `my_invocation_id` internally for
             // its own bg-task scoping.
             caller_spawner,
-            // Layer 4 of #996: foreground sub-agents are not tracked in
-            // the bg-agent registry, so there is no status channel to
-            // update. Pass `None` to skip the per-iteration send.
+            // Layer 4 of #996 + #1076: foreground sub-agents are not
+            // tracked in the bg-agent registry, so there is no
+            // `BgStatusEmitter` to fan out per-iteration heartbeats
+            // to. Pass `None` to skip the per-iteration emit.
             None,
         );
         match Box::pin(fut).await {

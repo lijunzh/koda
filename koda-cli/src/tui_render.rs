@@ -283,8 +283,13 @@ impl TuiRenderer {
             | EngineEvent::ContextUsage { .. }
             | EngineEvent::TurnStart { .. }
             | EngineEvent::TurnEnd { .. }
-            | EngineEvent::LoopCapReached { .. } => {
+            | EngineEvent::LoopCapReached { .. }
+            | EngineEvent::BgTaskUpdate { .. } => {
                 // Handled by the event loop, not the renderer.
+                // (#1076) BgTaskUpdate is routed to the bg-task panel,
+                // which still reads from the registry snapshot for its
+                // primary render. Future cleanup may have it consume
+                // the event stream directly and drop the polling.
             }
             EngineEvent::ActionBlocked {
                 tool_name: _,

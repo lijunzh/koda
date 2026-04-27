@@ -45,9 +45,12 @@ use std::time::{Duration, Instant};
 // We deliberately keep this *sync* (not `tokio::sync::Mutex`) because
 // the critical sections are short HashMap ops with no awaits inside.
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
+
+use crate::engine::EngineEvent;
 
 // ── Layer 0 of #996 ──────────────────────────────────────────────────────
 //
@@ -70,7 +73,8 @@ use tokio_util::task::AbortOnDropHandle;
 /// `Running.iter` reflects the current inference iteration (1..=20).
 /// Background agents emit live updates via Layer 4 (#1058); `0` is
 /// the entry-point placeholder before the first iteration fires.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentStatus {
     /// Reserved but the spawned future hasn't started yet.
     Pending,
@@ -212,6 +216,104 @@ struct BgAgentEntry {
 pub struct BgAgentRegistry {
     pending: Mutex<HashMap<u32, BgAgentEntry>>,
     next_id: Mutex<u32>,
+    /// Queue of `EngineEvent::BgTaskUpdate` events produced by
+    /// [`BgStatusEmitter::send`]. Drained by the inference loop
+    /// alongside [`Self::drain_completed`] and forwarded to the
+    /// active `EngineSink`.
+    ///
+    /// **#1076**: closes the engine/UI boundary leak — prior to this
+    /// queue, bg-task status only reached the TUI by the TUI grabbing
+    /// `Arc<BgAgentRegistry>` directly out of `KodaSession` and
+    /// polling `snapshot()`. ACP / headless clients saw nothing.
+    /// Routing through `EngineEvent` puts every client surface on
+    /// the same channel.
+    ///
+    /// `VecDeque` not `Vec` because we drain FIFO (transition order
+    /// matters: `Pending` → `Running` → terminal must arrive in that
+    /// order even if the inference loop drains in batches).
+    events: Mutex<std::collections::VecDeque<EngineEvent>>,
+}
+
+/// Fan-out helper for bg-agent status transitions.
+///
+/// Bundles the per-task `watch::Sender<AgentStatus>` (read by
+/// `/agents` and the status-bar pill via the registry's snapshot
+/// API) with a back-reference to the registry's event queue (drained
+/// by the inference loop and forwarded to the engine sink — which is
+/// what closes the #1076 boundary leak).
+///
+/// `Clone` is intentional so Layer 4 (`#1058`, live `iter` heartbeat)
+/// can hold its own copy inside `execute_sub_agent` while
+/// `run_bg_agent` keeps another for the entry / terminal transitions.
+/// Both clones share the same `watch::Sender` and `Arc<registry>`,
+/// so every `.send()` reaches both fan-out targets.
+#[derive(Clone)]
+pub struct BgStatusEmitter {
+    task_id: u32,
+    spawner: Option<u32>,
+    status_tx: watch::Sender<AgentStatus>,
+    registry: Arc<BgAgentRegistry>,
+}
+
+impl BgStatusEmitter {
+    /// Construct from the parts handed back by [`BgAgentRegistry::reserve`].
+    ///
+    /// The registry `Arc` is held for the lifetime of the bg agent,
+    /// which is fine: the inference loop already keeps an `Arc` on
+    /// the same registry, and registry drop is what aborts every
+    /// in-flight bg task (B3 of #1022) — so an emitter outliving its
+    /// registry is impossible by construction.
+    pub fn new(
+        task_id: u32,
+        spawner: Option<u32>,
+        status_tx: watch::Sender<AgentStatus>,
+        registry: Arc<BgAgentRegistry>,
+    ) -> Self {
+        Self {
+            task_id,
+            spawner,
+            status_tx,
+            registry,
+        }
+    }
+
+    /// Drive a status transition.
+    ///
+    /// Fans out to:
+    /// 1. The per-task `watch::Sender` (so `snapshot()` / `/agents`
+    ///    see the new state on the next read — no behavior change).
+    /// 2. The registry's event queue, drained by the inference loop
+    ///    and forwarded to the active `EngineSink` (so the TUI / ACP
+    ///    / headless clients all see the same `BgTaskUpdate` event).
+    ///
+    /// `watch::Sender::send` only fails if every receiver was dropped,
+    /// which means the registry entry is gone — in that case the queue
+    /// push is harmless (it'll be drained and ignored by clients that
+    /// don't recognize the task id). We deliberately don't gate the
+    /// queue push on the watch send result so a racing reap doesn't
+    /// swallow the terminal `BgTaskUpdate`.
+    pub fn send(&self, status: AgentStatus) {
+        let _ = self.status_tx.send(status.clone());
+        self.registry.push_status_event(EngineEvent::BgTaskUpdate {
+            task_id: self.task_id,
+            spawner: self.spawner,
+            status,
+        });
+    }
+
+    /// Current status (read from the watch channel). Useful for
+    /// terminal-disambiguation logic (e.g. "was this a cancel or a
+    /// real error?") without taking the registry lock.
+    pub fn current(&self) -> AgentStatus {
+        self.status_tx.borrow().clone()
+    }
+
+    /// Test helper: peek the underlying watch sender. Production
+    /// code should always go through [`Self::send`].
+    #[cfg(test)]
+    pub fn status_sender(&self) -> watch::Sender<AgentStatus> {
+        self.status_tx.clone()
+    }
 }
 
 /// Reservation slot returned by [`BgAgentRegistry::reserve`].
@@ -259,7 +361,27 @@ impl BgAgentRegistry {
         Self {
             pending: Mutex::new(HashMap::new()),
             next_id: Mutex::new(1),
+            events: Mutex::new(std::collections::VecDeque::new()),
         }
+    }
+
+    /// Push an event onto the status queue. Called by
+    /// [`BgStatusEmitter::send`]; not part of the public API.
+    pub(crate) fn push_status_event(&self, event: EngineEvent) {
+        self.events.lock().push_back(event);
+    }
+
+    /// Drain queued status events for forwarding to the active
+    /// `EngineSink`. Called by the inference loop alongside
+    /// [`Self::drain_completed`].
+    ///
+    /// Returns events in FIFO order (transition order); empty if
+    /// nothing changed since the last drain. Cheap: a single mutex
+    /// acquisition + `VecDeque::drain`. The vast majority of turns
+    /// will see 0–1 events.
+    pub fn drain_status_events(&self) -> Vec<EngineEvent> {
+        let mut q = self.events.lock();
+        q.drain(..).collect()
     }
 
     /// Reserve a task ID and produce a oneshot sender + child cancel
@@ -1451,5 +1573,195 @@ mod tests {
             }
             other => panic!("expected Completed, got {other:?}"),
         }
+    }
+
+    // ── #1076: BgStatusEmitter → sink fan-out ───────────────────────────────
+
+    /// Helper: build an emitter wired to the given registry, mirroring
+    /// the production construction in `sub_agent_dispatch::execute_sub_agent`.
+    fn emitter_for(
+        reg: &Arc<BgAgentRegistry>,
+        task_id: u32,
+        spawner: Option<u32>,
+    ) -> BgStatusEmitter {
+        let (tx, _rx) = watch::channel(AgentStatus::Pending);
+        BgStatusEmitter::new(task_id, spawner, tx, reg.clone())
+    }
+
+    fn extract(event: &EngineEvent) -> (u32, Option<u32>, &AgentStatus) {
+        match event {
+            EngineEvent::BgTaskUpdate {
+                task_id,
+                spawner,
+                status,
+            } => (*task_id, *spawner, status),
+            other => panic!("expected BgTaskUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emitter_send_queues_engine_event_on_registry() {
+        let reg = Arc::new(BgAgentRegistry::new());
+        let emitter = emitter_for(&reg, 7, Some(42));
+
+        // Initial: queue is empty.
+        assert!(
+            reg.drain_status_events().is_empty(),
+            "fresh registry must have an empty event queue"
+        );
+
+        emitter.send(AgentStatus::Running { iter: 0 });
+        let drained = reg.drain_status_events();
+        assert_eq!(drained.len(), 1, "single send must produce one event");
+        let (id, spawner, status) = extract(&drained[0]);
+        assert_eq!(id, 7);
+        assert_eq!(spawner, Some(42));
+        assert!(matches!(status, AgentStatus::Running { iter: 0 }));
+    }
+
+    #[test]
+    fn emitter_drain_is_fifo_and_clears_queue() {
+        let reg = Arc::new(BgAgentRegistry::new());
+        let emitter = emitter_for(&reg, 1, None);
+
+        emitter.send(AgentStatus::Running { iter: 0 });
+        emitter.send(AgentStatus::Running { iter: 1 });
+        emitter.send(AgentStatus::Running { iter: 2 });
+        emitter.send(AgentStatus::Completed {
+            summary: "done".into(),
+        });
+
+        let drained = reg.drain_status_events();
+        assert_eq!(drained.len(), 4, "all four sends must surface");
+
+        // FIFO: transition order is preserved across batches.  This
+        // matters for clients that render "iter N" progress — a
+        // reorder would show the count moving backwards.
+        let iters: Vec<_> = drained
+            .iter()
+            .filter_map(|e| match e {
+                EngineEvent::BgTaskUpdate {
+                    status: AgentStatus::Running { iter },
+                    ..
+                } => Some(*iter),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(iters, vec![0, 1, 2]);
+
+        // Last event is the terminal Completed.
+        assert!(matches!(
+            extract(&drained[3]).2,
+            AgentStatus::Completed { .. }
+        ));
+
+        // Drain consumes — second drain is empty.
+        assert!(
+            reg.drain_status_events().is_empty(),
+            "drain must clear the queue"
+        );
+    }
+
+    #[test]
+    fn emitter_send_also_updates_watch_channel() {
+        // The watch fan-out is what `/agents` and `snapshot()` read.
+        // Sink fan-out (queue) is for the inference-loop → EngineSink
+        // path.  Both targets must see every transition or `/agents`
+        // and the TUI/ACP/headless clients will disagree on state.
+        let reg = Arc::new(BgAgentRegistry::new());
+        let (tx, mut rx) = watch::channel(AgentStatus::Pending);
+        let emitter = BgStatusEmitter::new(3, None, tx, reg.clone());
+
+        emitter.send(AgentStatus::Running { iter: 5 });
+
+        // Watch channel observed.
+        assert!(matches!(
+            *rx.borrow_and_update(),
+            AgentStatus::Running { iter: 5 }
+        ));
+        // Queue observed.
+        let drained = reg.drain_status_events();
+        assert_eq!(drained.len(), 1);
+        assert!(matches!(
+            extract(&drained[0]).2,
+            AgentStatus::Running { iter: 5 }
+        ));
+    }
+
+    #[test]
+    fn emitter_clones_share_queue_and_watch() {
+        // Layer 4 holds one clone for live `iter` heartbeats;
+        // `run_bg_agent` keeps another for entry / terminal sends.
+        // Both clones must funnel into the same registry queue and
+        // the same per-task watch channel — otherwise terminal
+        // states could land on a different queue than the heartbeats
+        // and clients would see Running forever.
+        let reg = Arc::new(BgAgentRegistry::new());
+        let (tx, _rx) = watch::channel(AgentStatus::Pending);
+        let a = BgStatusEmitter::new(11, Some(2), tx, reg.clone());
+        let b = a.clone();
+
+        a.send(AgentStatus::Running { iter: 1 });
+        b.send(AgentStatus::Completed {
+            summary: "ok".into(),
+        });
+
+        let drained = reg.drain_status_events();
+        assert_eq!(drained.len(), 2, "clones must share the registry queue");
+        // Watch channel reflects the LATEST send, regardless of which
+        // clone made it (watch is overwriting by design).
+        assert!(matches!(a.current(), AgentStatus::Completed { .. }));
+    }
+
+    #[test]
+    fn agent_status_round_trips_through_serde() {
+        // `EngineEvent::BgTaskUpdate` is the wire format for ACP /
+        // headless / future transports.  All `AgentStatus` variants
+        // must survive a serde round-trip or the boundary leak fix
+        // creates a new boundary leak (engine emits, transport drops
+        // it on the floor).
+        for status in [
+            AgentStatus::Pending,
+            AgentStatus::Running { iter: 0 },
+            AgentStatus::Running { iter: 17 },
+            AgentStatus::Cancelled,
+            AgentStatus::Completed {
+                summary: "hello".into(),
+            },
+            AgentStatus::Errored {
+                error: "boom".into(),
+            },
+        ] {
+            let event = EngineEvent::BgTaskUpdate {
+                task_id: 1,
+                spawner: Some(2),
+                status: status.clone(),
+            };
+            let json = serde_json::to_string(&event).expect("serialize");
+            let back: EngineEvent = serde_json::from_str(&json).expect("deserialize");
+            match back {
+                EngineEvent::BgTaskUpdate {
+                    task_id,
+                    spawner,
+                    status: round_tripped,
+                } => {
+                    assert_eq!(task_id, 1);
+                    assert_eq!(spawner, Some(2));
+                    assert_eq!(round_tripped, status, "json round-trip lost data: {json}");
+                }
+                other => panic!("round-trip changed variant: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn drain_status_events_is_empty_on_fresh_registry() {
+        // The inference loop calls `drain_status_events` every
+        // iteration; the no-bg-task case must be cheap and yield
+        // an empty Vec without any allocations forced by mistakes
+        // in the queue type (e.g. `Some(VecDeque::new())`).
+        let reg = BgAgentRegistry::new();
+        let drained = reg.drain_status_events();
+        assert!(drained.is_empty());
     }
 }

@@ -124,24 +124,27 @@ async fn run_bg_agent(
     // The recursive `execute_sub_agent` composes the child policy
     // onto this so the bg agent inherits any parent narrowing.
     parent_sandbox_policy: koda_sandbox::SandboxPolicy,
-    // Layer 0 of #996: status channel — we own the writer end.
-    // Pending → Running on entry; one of Completed/Errored/Cancelled
-    // before the future returns. The registry's matching
-    // `watch::Receiver` is what `/agents` and the (future) status-bar
-    // pill read. `send` failures are deliberately ignored: the
-    // receiver lives on the entry inside the registry, and the only
-    // way `send` returns `Err` is if every receiver was dropped —
-    // which means the registry itself was dropped, in which case our
-    // result oneshot below is also doomed and the user can't see us
-    // anyway. Logging would be noise.
-    status_tx: tokio::sync::watch::Sender<crate::bg_agent::AgentStatus>,
+    // Layer 0 of #996 + #1076: status fan-out helper. Drives the
+    // per-task `watch::Sender<AgentStatus>` (read by `/agents` and
+    // the status-bar pill via `snapshot()`) AND queues an
+    // `EngineEvent::BgTaskUpdate` on the registry so the inference
+    // loop can forward it to the active `EngineSink`. Pre-#1076 this
+    // was a raw `watch::Sender` and only the TUI (which polled the
+    // registry directly) saw transitions; now every client surface
+    // (TUI / headless / ACP) gets the same event stream.
+    //
+    // `send` failures on the underlying watch are silently absorbed
+    // by the emitter — the only way that fails is if the registry
+    // entry was reaped, in which case the queued `BgTaskUpdate` is
+    // harmless extra signal that clients can ignore.
+    emitter: crate::bg_agent::BgStatusEmitter,
 ) {
     // Layer 0 placeholder: immediately flip Pending → Running so `/agents`
     // shows the agent as active before the first LLM call. The loop inside
     // `execute_sub_agent` updates this to `iter: 1..=20` as it progresses
     // (Layer 4, #1058). `iter: 0` is intentional here — it signals
     // "started, first iteration pending".
-    let _ = status_tx.send(crate::bg_agent::AgentStatus::Running { iter: 0 });
+    emitter.send(crate::bg_agent::AgentStatus::Running { iter: 0 });
 
     let (_, mut cmd_rx) = mpsc::channel(1);
     // #1022 B9: bg agents used to run with `NullSink`, so every
@@ -190,11 +193,14 @@ async fn run_bg_agent(
         // invocation id (allocated inside the recursive call). The
         // parent's cascade-cancel covers cross-registry teardown.
         None,
-        // Layer 4 of #996: forward the status sender so the loop can
-        // push live `Running { iter }` updates. Cloned so the terminal
-        // sends below (Completed / Errored / Cancelled) can still use
-        // the original after `execute_sub_agent` returns.
-        Some(status_tx.clone()),
+        // Layer 4 of #996 + #1076: forward the status emitter so the
+        // loop can push live `Running { iter }` updates that fan out
+        // to BOTH the watch channel (for `/agents` snapshots) and
+        // the registry's event queue (for the inference-loop → sink
+        // path that ACP / headless / TUI all read from). Cloned so
+        // the terminal sends below still have access after
+        // `execute_sub_agent` returns.
+        Some(emitter.clone()),
     )
     .await;
 
@@ -209,7 +215,7 @@ async fn run_bg_agent(
     // drained sees the terminal state, not stale `Running`.
     match &result {
         Ok(output) => {
-            let _ = status_tx.send(crate::bg_agent::AgentStatus::Completed {
+            emitter.send(crate::bg_agent::AgentStatus::Completed {
                 // `summary` is currently the full output — truncation
                 // is the display layer's job (Codex pattern: see
                 // `COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES`).
@@ -228,7 +234,7 @@ async fn run_bg_agent(
                     error: e.to_string(),
                 }
             };
-            let _ = status_tx.send(status);
+            emitter.send(status);
         }
     }
 
@@ -273,12 +279,14 @@ pub(crate) fn execute_sub_agent<'a>(
     // child's own `my_invocation_id`, which is allocated below and
     // tags any bg work the child itself spawns.
     parent_spawner: Option<u32>,
-    // Layer 4 of #996: live iteration heartbeat.  Pass the bg-agent's
-    // `watch::Sender` so each loop iteration can push `Running { iter }`
-    // to the registry (and therefore to `/agents` and the status-bar
-    // pill).  Foreground sub-agents pass `None` — they have no status
-    // channel because they're not tracked in the registry at all.
-    status_tx: Option<tokio::sync::watch::Sender<crate::bg_agent::AgentStatus>>,
+    // Layer 4 of #996 + #1076: live iteration heartbeat.  Pass the
+    // bg-agent's `BgStatusEmitter` so each loop iteration can push
+    // `Running { iter }` to BOTH the registry's per-task watch
+    // channel (`/agents`, status-bar pill) AND the engine event
+    // queue (`EngineSink` → TUI / ACP / headless).  Foreground
+    // sub-agents pass `None` — they have no status channel because
+    // they're not tracked in the registry at all.
+    emitter: Option<crate::bg_agent::BgStatusEmitter>,
 ) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
     async move {
         // Phase E of #996: allocate this invocation's id up-front. It
@@ -338,11 +346,22 @@ pub(crate) fn execute_sub_agent<'a>(
             let bg_tx = reservation.tx;
             let bg_rx = reservation.rx;
             let entry_cancel = reservation.cancel;
-            // Layer 0 of #996: status sender goes to the spawned
-            // future (sole writer); receiver stays on the registry
-            // entry so `snapshot()` / `/agents` can read it without
-            // touching the spawn site.
-            let bg_status_tx = reservation.status_tx;
+            // Layer 0 of #996 + #1076: bundle the watch sender, the
+            // task id, the spawner id, and an `Arc` on the registry
+            // into a `BgStatusEmitter`.  The emitter fans out every
+            // `.send(...)` to BOTH the per-task watch channel (read
+            // by `snapshot()` / `/agents`) AND the registry's event
+            // queue (drained by the inference loop and forwarded to
+            // the active `EngineSink`).  This is what closes the
+            // engine/UI boundary leak: the TUI no longer needs to
+            // poll the registry directly to render live status, and
+            // ACP / headless gain visibility for free.
+            let emitter = crate::bg_agent::BgStatusEmitter::new(
+                task_id,
+                parent_spawner,
+                reservation.status_tx,
+                bg_agents.clone(),
+            );
             let entry_status_rx = reservation.status_rx;
 
             let project_root_owned = project_root.to_path_buf();
@@ -373,7 +392,7 @@ pub(crate) fn execute_sub_agent<'a>(
                 bg_cancel,
                 bg_trust,
                 bg_policy,
-                bg_status_tx,
+                emitter,
             ));
 
             bg_agents.attach(
@@ -725,14 +744,16 @@ pub(crate) fn execute_sub_agent<'a>(
         );
 
         for iter in 1u8..=loop_guard::MAX_SUB_AGENT_ITERATIONS as u8 {
-            // Layer 4 of #996: push the live iteration counter so `/agents`
-            // and the status-bar pill reflect real progress instead of the
-            // Layer-0 placeholder `iter: 0` that `run_bg_agent` sends on
-            // entry.  `send` failures are ignored for the same reason as
-            // the terminal-status sends above: if the receiver is gone,
-            // the user can't see the update and we don't want noise.
-            if let Some(ref tx) = status_tx {
-                let _ = tx.send(crate::bg_agent::AgentStatus::Running { iter });
+            // Layer 4 of #996 + #1076: push the live iteration counter
+            // so `/agents`, the status-bar pill, AND ACP / headless /
+            // TUI clients all reflect real progress instead of the
+            // Layer-0 placeholder `iter: 0` that `run_bg_agent` sends
+            // on entry.  Fan-out failures inside the emitter are
+            // silently absorbed for the same reason as the terminal
+            // sends: if the receiver is gone, the user can't see the
+            // update and we don't want noise.
+            if let Some(ref e) = emitter {
+                e.send(crate::bg_agent::AgentStatus::Running { iter });
             }
             // Respect parent cancellation (#286)
             if cancel.is_cancelled() {

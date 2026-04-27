@@ -651,6 +651,18 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     }
 
     loop {
+        // #1076: forward queued bg-task status transitions to the sink
+        // before processing anything else. Drained from the same
+        // `Arc<BgAgentRegistry>` that owns `drain_completed`, so the
+        // ordering is: status transitions first (so clients see
+        // `Running { iter: N }` heartbeats), then completed-result
+        // injection (so the model gets the final output as a user
+        // message). FIFO inside the queue preserves transition
+        // order across batches.
+        for ev in bg_agents.drain_status_events() {
+            sink.emit(ev);
+        }
+
         // Inject completed background agent results as user messages
         for bg_result in bg_agents.drain_completed() {
             let status = if bg_result.success {

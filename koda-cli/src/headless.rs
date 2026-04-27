@@ -269,6 +269,32 @@ impl EngineSink for HeadlessSink {
             EngineEvent::ContextUsage { .. } => {}
             EngineEvent::TurnStart { .. } => {}
             EngineEvent::TurnEnd { .. } => {}
+            // (#1076) Bg-task lifecycle in headless: render as a short
+            // status line so a script tailing stdout sees "task 7
+            // running (iter 3)" instead of nothing. The full result
+            // payload is still injected at completion via the
+            // `drain_completed` path — this is just live progress.
+            EngineEvent::BgTaskUpdate {
+                task_id, status, ..
+            } => {
+                let summary = match status {
+                    koda_core::bg_agent::AgentStatus::Pending => "pending".to_string(),
+                    koda_core::bg_agent::AgentStatus::Running { iter } => {
+                        if iter == 0 {
+                            "running (starting)".to_string()
+                        } else {
+                            format!("running (iter {iter})")
+                        }
+                    }
+                    koda_core::bg_agent::AgentStatus::Cancelled => "cancelled".to_string(),
+                    koda_core::bg_agent::AgentStatus::Completed { .. } => "completed".to_string(),
+                    koda_core::bg_agent::AgentStatus::Errored { error } => {
+                        let snippet: String = error.chars().take(80).collect();
+                        format!("errored: {snippet}")
+                    }
+                };
+                eprintln!("\x1b[2m  [bg task {task_id}] {summary}\x1b[0m");
+            }
             EngineEvent::Footer {
                 completion_tokens,
                 total_chars,
