@@ -101,9 +101,9 @@ pub mod output_caps;
 pub mod persistence;
 /// Diff preview generation for file mutations.
 pub mod preview;
-/// Progress reporting helpers for long operations.
 /// System prompt construction.
 pub mod prompt;
+/// Static provider catalog: `ProviderType` + `ProviderMeta` lookup tables.
 pub mod provider_catalog;
 /// LLM provider abstraction — Anthropic, Gemini, OpenAI-compatible.
 pub mod providers;
