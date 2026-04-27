@@ -6,6 +6,90 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.21] - 2026-04-27
+
+### Security
+
+- **SEC-001 — git-deny rules now actually win SBPL resolution** (#1086).
+  PR #1073 emitted `deny file-write*` rules for `.git/config` and
+  `.git/hooks/` BEFORE the policy overlay's `allow file-write* (subpath ROOT)`.
+  Because SBPL is last-match-wins, the cascade `allow → deny → allow`
+  silently re-permitted writes — the protection in #1073 was dead code.
+  Fix seeds `policy.fs.deny_write_within_allow` so the denies are emitted
+  AFTER `allow_write` in both backends (Seatbelt and bwrap), making the
+  protection enforce as documented. Caught during release audit.
+- **Sandbox: closed git-config + git-hooks escape vectors** (#1073, #1086).
+  When `allow_git_config = false` (the default), writes to `.git/config`
+  (blocks `git config core.fsmonitor <cmd>`) and `.git/hooks/*` (blocks
+  direct hook placement) are now denied across both Seatbelt (macOS) and
+  bwrap (Linux) backends.
+
+### Added
+
+- **`EngineEvent::TodoUpdate { items, diff }`** (#1080). The engine now
+  emits a structured event whenever the session task list changes,
+  carrying both the full list and the per-task diff. Replaces the
+  previous system-prompt injection mechanism.
+- **`EngineEvent::BgTaskUpdate { task_id, spawner, status }`** (#1078).
+  Background sub-agent status changes now flow through the engine's
+  event stream instead of a separate side channel.
+- **`koda_core::provider_catalog` module** (#1084). Static lookup tables
+  for `ProviderType` and `ProviderMeta` extracted from `config.rs` for
+  better cohesion.
+- **`koda_core::bg_agent::BgStatusEmitter`** (#1078). Public type for
+  routing background task status updates through the engine.
+- **`koda_core::tools::todo::{TodoChange, TodoDiff, TodoWriteOutcome}`**
+  (#1080). New public types describing structured `TodoWrite` results.
+- **Max-1-in-progress validation for TodoWrite** (#1080). The tool now
+  rejects task lists with more than one in-progress item, enforcing the
+  single-focus invariant promised by the user-facing prompt.
+
+### Changed
+
+- **`koda_core::tools::todo::todo_write` return type**
+  `Result<String>` → `Result<TodoWriteOutcome>` (#1080). Direct callers
+  of `koda-core` need to update their call sites; the CLI consumes via
+  the engine and is unaffected.
+- **Progress tracking is now event-driven, not prompt-injected** (#1080,
+  #1081). `TodoWrite` is the canonical mechanism for task tracking;
+  the engine emits `TodoUpdate` events to interested observers (the
+  TUI, sub-agent callers). System prompt no longer carries progress
+  text, which made compaction smarter and removed a class of subtle
+  drift bugs.
+
+### Removed
+
+- **`koda_core::progress` module** (#1081). The pre-#1077 architecture
+  injected progress summaries directly into the system prompt; this is
+  now handled via `EngineEvent::TodoUpdate`. The module and its
+  `track_progress` / `get_progress_summary` helpers are gone.
+- **`koda_core::tools::todo::get_todo_section`** (#1080). No longer
+  needed; consumers receive todo state via `TodoUpdate` events.
+- **`insta` dev-dependency** (#1071). Snapshot tests rewritten as
+  `assert_eq!` to drop a heavyweight dev dep; the `similar` crate is
+  unified at 3.x across the workspace.
+
+### Fixed
+
+- **`List` tool results were never being microcompacted** (#1085). The
+  `COMPACTABLE_TOOLS` constant carried both PascalCase and snake_case
+  spellings, but lookups happened against canonicalized names that had
+  already been normalized to PascalCase — so the snake_case entries
+  were dead and the PascalCase `List` happened to be missing. Fix
+  canonicalizes at lookup and drops the dual-case anti-pattern; adds a
+  drift guard test to prevent recurrence.
+- **P3 polish bundle for #1045** (#1070). Doc-test comments,
+  `bg_agent.subscribe` correctness, QA-001 iteration test.
+
+### CI / Internal
+
+- **Fail-fast release test matrix** (#1069). macOS test job is
+  cancelled when the Ubuntu job fails first, cutting feedback latency
+  on broken PRs from ~25min to ~10min.
+- **Architecture audit reflected in DESIGN.md** (#1075, #1079).
+  Documentation rewritten to match the actual implementation post-#1077;
+  no behavioral change.
+
 ## [0.2.20] - 2026-04-26
 
 ### Added
