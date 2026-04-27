@@ -212,8 +212,6 @@ pub fn build(
 /// retune. We change values once we have data; we change *where the
 /// values live* now so the change is one-line later.
 pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> SandboxPolicy {
-    // `project_root` reserved for PR-4+ (seeding fs.allow_write).
-    let _ = project_root;
     let mut policy = SandboxPolicy::strict_default();
     policy.limits.wall_time_secs = Some(match trust {
         crate::trust::TrustMode::Plan
@@ -235,6 +233,26 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
         crate::trust::TrustMode::Safe => 5,  // user gate exists, balanced
         crate::trust::TrustMode::Auto => 10, // no human gate — max paranoia
     };
+    // Gap 3 of #1072 (PR-4 of #934): seed allow_write with the canonical
+    // project root so the composition lattice accurately reflects what the
+    // kernel baseline already grants.  Without this, compose()'s intersection
+    // rule for allow_write is vacuously correct but has no observable effect:
+    // intersect([], []) == [] regardless of what the baseline sandbox does.
+    //
+    // Canonicalize so symlink-based project roots don't produce a different
+    // key than their realpath counterpart.  Falls back to the raw path on
+    // non-existent roots — sub-agent dispatch can build policy before its
+    // workspace is materialized (the test "does not panic on nonexistent
+    // project root" pins this contract).
+    //
+    // Plan mode is intentionally included: reads dominate in Plan but writes
+    // ARE permitted within the project (e.g. writing scratch files).  The
+    // higher-layer tool registry is what enforces read-only semantics for
+    // Plan, not the kernel sandbox write-allow list.
+    let canonical_root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    policy.fs.allow_write = vec![canonical_root.into()];
     policy
 }
 
@@ -1177,18 +1195,97 @@ mod tests {
 
     #[test]
     fn compose_child_policy_with_strict_default_parent_is_just_child_policy() {
-        // Identity case: when there's no meaningful parent (top-level
-        // invocation, bg-spawned agent), `strict_default()` is the
-        // algebraic identity. The composed policy should equal what
+        // Identity case for *most* fields: when there's no meaningful parent
+        // (top-level invocation, bg-spawned agent), `strict_default()` acts
+        // as the algebraic identity — the composed output matches what
         // `policy_for_agent` would have returned alone.
+        //
+        // Exception — `allow_write`: compose uses parent-wins semantics
+        // ("allows narrow toward parent"), and `strict_default()`'s empty
+        // allow list wins over the child's `[project_root]`.  This is
+        // intentional: a zero-opinion parent shouldn’t grant write permissions
+        // that the parent never explicitly approved.  In practice, top-level
+        // agents never go through `compose_child_policy`; they use
+        // `policy_for_agent` directly.  Sub-agents that DO go through compose
+        // will have a real parent whose `allow_write: [parent_root]` gives
+        // the child's root access via the parent-wins rule, provided the
+        // parent and child share the same project root (the common case).
         let dir = tempfile::tempdir().unwrap();
         let parent = SandboxPolicy::strict_default();
         let composed = compose_child_policy(&parent, crate::trust::TrustMode::Safe, dir.path());
         let child_alone = policy_for_agent(crate::trust::TrustMode::Safe, dir.path());
+        // All fields other than allow_write must match the child's policy.
+        assert_eq!(composed.fs.deny_read, child_alone.fs.deny_read);
         assert_eq!(
-            composed, child_alone,
-            "strict_default parent must be the identity for compose"
+            composed.fs.mandatory_deny_search_depth,
+            child_alone.fs.mandatory_deny_search_depth
         );
+        assert_eq!(
+            composed.fs.allow_git_config,
+            child_alone.fs.allow_git_config
+        );
+        assert_eq!(composed.limits, child_alone.limits);
+        assert_eq!(composed.trust, child_alone.trust);
+        // allow_write: parent-wins on the empty strict_default list — result is
+        // empty regardless of what the child wanted.  Document as the known
+        // non-identity exception, not a bug.
+        assert!(
+            composed.fs.allow_write.is_empty(),
+            "parent-wins: strict_default's empty allow_write beats child's [root]; \
+             top-level agents should NOT go through compose (use policy_for_agent \
+             directly) — #1072 Gap 3 comment"
+        );
+    }
+
+    // ── Gap 3 of #1072: policy_for_agent seeds allow_write ───────────────
+
+    #[test]
+    fn policy_for_agent_seeds_allow_write_with_canonical_root() {
+        // Verifies #1072 Gap 3: the composition lattice only makes sense
+        // if allow_write reflects what the kernel baseline actually grants.
+        // Before this fix, allow_write was always [], making
+        // compose()'s intersection vacuously correct but meaningless.
+        let dir = tempfile::tempdir().unwrap();
+        for mode in [
+            crate::trust::TrustMode::Plan,
+            crate::trust::TrustMode::Safe,
+            crate::trust::TrustMode::Auto,
+        ] {
+            let policy = policy_for_agent(mode, dir.path());
+            assert_eq!(
+                policy.fs.allow_write.len(),
+                1,
+                "policy_for_agent must seed allow_write with the project root \
+                 (one entry) for all trust modes, got {} entries for {mode:?}",
+                policy.fs.allow_write.len()
+            );
+            let want = dir.path().canonicalize().unwrap();
+            assert_eq!(
+                policy.fs.allow_write[0].as_path(),
+                want.as_path(),
+                "seeded allow_write path must be the canonicalized project root"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_for_agent_allow_write_survives_nonexistent_root() {
+        // Regression guard: sub-agent dispatch calls policy_for_agent
+        // before the workspace is materialized on disk.  canonicalize()
+        // fails on missing paths; the fallback to raw path must not panic.
+        let path = std::path::Path::new("/nonexistent/project/root/xyz");
+        for mode in [
+            crate::trust::TrustMode::Plan,
+            crate::trust::TrustMode::Safe,
+            crate::trust::TrustMode::Auto,
+        ] {
+            let policy = policy_for_agent(mode, path);
+            assert_eq!(
+                policy.fs.allow_write.len(),
+                1,
+                "even with a missing root, allow_write must have one entry"
+            );
+        }
     }
 
     #[test]

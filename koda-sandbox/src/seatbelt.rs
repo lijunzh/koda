@@ -146,6 +146,15 @@ fn build_command_inner(
         };
         profile.push_str(&protected_subdir_deny_rules(&root));
         profile.push_str(&credential_deny_rules(home));
+        // Gap 1 of #1072: enforce git hook + config write restrictions
+        // when allow_git_config is false (the default). Emitted after
+        // credential denies and before the caller-supplied policy overlay
+        // so any future explicit allow_read_within_deny entries for git
+        // paths still win. The flag is part of the cache key, so misses
+        // are safe and hits are correct.
+        if !k.policy.fs.allow_git_config {
+            profile.push_str(&git_config_deny_rules(&root));
+        }
         profile.push_str(&overlay);
         profile
     });
@@ -400,6 +409,43 @@ pub(crate) fn credential_deny_rules(home: &str) -> String {
         ));
     }
 
+    rules
+}
+
+/// Deny writes to `.git/config` and `.git/hooks/` when
+/// `policy.fs.allow_git_config` is `false` (the default).
+///
+/// These two paths are the primary vectors for git-based sandbox escape:
+///
+/// - `.git/config` — `git config core.fsmonitor <cmd>` or
+///   `core.hookspath` register arbitrary executables that run on the
+///   next porcelain command.  Preventing writes here blocks the
+///   registration step.
+/// - `.git/hooks/` — direct creation / replacement of hook scripts
+///   (`post-checkout`, `pre-commit`, etc.) achieves the same outcome
+///   without touching `config`.
+///
+/// Seatbelt's last-match-wins semantics let this deny override the
+/// broad `(allow file-write* (subpath "{root}"))` emitted earlier.
+/// Called only when git config writes are restricted — the flag is
+/// part of the seatbelt-cache key, so profiles diverge correctly.
+///
+/// Injection safety: `root` was already validated by
+/// [`validate_seatbelt_path`] at the call site; appending well-known
+/// ASCII subpaths (`.git/hooks`, `.git/config`) introduces no new
+/// S-expression metacharacters.
+pub(crate) fn git_config_deny_rules(root: &str) -> String {
+    let mut rules = String::from(
+        "; ── deny git hook+config writes (allow_git_config = false, #1072 Gap 1) ──\n",
+    );
+    // Deny ALL writes inside .git/hooks — prevents direct hook placement.
+    rules.push_str(&format!(
+        "(deny file-write* (subpath \"{root}/.git/hooks\"))\n"
+    ));
+    // Deny writes to .git/config — blocks `git config core.fsmonitor …`.
+    rules.push_str(&format!(
+        "(deny file-write* (literal \"{root}/.git/config\"))\n"
+    ));
     rules
 }
 
@@ -713,6 +759,75 @@ mod tests {
         assert!(
             credential_pos < overlay_pos,
             "policy overlay must come after credential rules"
+        );
+    }
+
+    // ── Gap 1 of #1072: allow_git_config deny rules ──────────────────
+
+    #[test]
+    fn git_config_deny_rules_cover_hooks_and_config() {
+        let rules = git_config_deny_rules("/work/myproject");
+        assert!(
+            rules.contains("(deny file-write* (subpath \"/work/myproject/.git/hooks\"))"),
+            "hooks subpath must be denied: {rules}"
+        );
+        assert!(
+            rules.contains("(deny file-write* (literal \"/work/myproject/.git/config\"))"),
+            "git/config literal must be denied: {rules}"
+        );
+    }
+
+    #[test]
+    fn git_config_deny_rules_deny_only_writes_not_reads() {
+        // Git commands need to READ hooks and config (e.g. `git status`
+        // reads core.hooksPath). We must deny writes, not reads.
+        let rules = git_config_deny_rules("/work");
+        assert!(
+            !rules.contains("deny file-read*"),
+            "git config deny must not block reads (breaks git porcelain): {rules}"
+        );
+    }
+
+    #[test]
+    fn build_command_includes_git_deny_rules_when_not_allowed() {
+        // End-to-end: policy with allow_git_config=false (the default)
+        // must include the deny rules in the compiled profile.
+        let policy = SandboxPolicy::strict_default(); // allow_git_config is false
+        let cmd = build_command("true", Path::new("/tmp"), &policy).unwrap();
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let profile = &args[1]; // args: ["-p", "<profile>", "sh", "-c", "true"]
+        assert!(
+            profile.contains(".git/hooks"),
+            "profile must contain git hooks deny when allow_git_config=false"
+        );
+        assert!(
+            profile.contains(".git/config"),
+            "profile must contain git config deny when allow_git_config=false"
+        );
+    }
+
+    #[test]
+    fn build_command_omits_git_deny_rules_when_explicitly_allowed() {
+        // Callers that set allow_git_config=true (e.g. a dedicated
+        // git-workflow agent) must not get the deny rules — they'd break
+        // hook-based workflows that the caller explicitly approved.
+        let mut policy = SandboxPolicy::strict_default();
+        policy.fs.allow_git_config = true;
+        let cmd = build_command("true", Path::new("/tmp"), &policy).unwrap();
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let profile = &args[1];
+        // The git deny block header must be absent.
+        assert!(
+            !profile.contains("allow_git_config = false, #1072"),
+            "profile must not include git deny rules when allow_git_config=true"
         );
     }
 

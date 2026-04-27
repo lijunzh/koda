@@ -82,6 +82,11 @@ pub fn build_command(
 
     let (mut cmd, home) = base_cmd(project_root);
     apply_credential_denies(&mut cmd, &home);
+    // Gap 1 of #1072: protect git hooks + config when allow_git_config=false.
+    if !policy.fs.allow_git_config {
+        let root = project_root.to_string_lossy();
+        apply_git_config_deny(&mut cmd, &root);
+    }
     apply_policy_overlay(&mut cmd, policy)?;
     cmd.args(["--", "sh", "-c", command])
         .current_dir(project_root);
@@ -121,6 +126,11 @@ pub fn build_command_with_proxy(
 
     let (mut cmd, home) = base_cmd(project_root);
     apply_credential_denies(&mut cmd, &home);
+    // Gap 1 of #1072: protect git hooks + config when allow_git_config=false.
+    if !policy.fs.allow_git_config {
+        let root = project_root.to_string_lossy();
+        apply_git_config_deny(&mut cmd, &root);
+    }
     apply_policy_overlay(&mut cmd, policy)?;
 
     // Network isolation. The fresh netns has no routes anywhere
@@ -167,6 +177,46 @@ fn apply_credential_denies(cmd: &mut Command, home: &str) {
         if Path::new(&p).exists() {
             cmd.args(["--tmpfs", &p]);
         }
+    }
+}
+
+/// Protect `.git/hooks/` and `.git/config` when `allow_git_config` is
+/// false (the default, Gap 1 of #1072).
+///
+/// Strategy mirrors `PROTECTED_PROJECT_SUBDIRS` in [`base_cmd`]:
+///
+/// 1. `pre-create` the hooks directory so bwrap has a mountpoint even
+///    on repos that have never had hooks (avoids the "source doesn't
+///    exist" error that would make `--ro-bind` fail).  Pre-creating
+///    an empty directory is safe — it only matters once `.git` itself
+///    exists, and `create_dir_all` is idempotent.
+/// 2. Bind-mount `.git/hooks/` read-only — sandboxed commands can
+///    see hook names (e.g. for `git log --decorate`) but cannot
+///    create or overwrite them.
+/// 3. `.git/config` is a file so we can't bind-mount it unless it
+///    already exists; when it does, bind it read-only.  When it
+///    doesn't yet exist, there is nothing to protect — a sandboxed
+///    command that runs `git init` will create it, but any subsequent
+///    sandbox invocation will pick up the protection on that next call
+///    since this check re-runs per command.  The window is one
+///    invocation; the seatbelt backend closes it fully via SBPL
+///    (deny rules apply even to paths that don't exist yet).
+///
+/// Only called when `.git/` itself exists — skip entirely on plain
+/// directories that have never been initialised as a repo.
+fn apply_git_config_deny(cmd: &mut Command, root: &str) {
+    let git_dir = format!("{root}/.git");
+    if !Path::new(&git_dir).exists() {
+        return;
+    }
+    // Hooks directory: pre-create + read-only bind.
+    let hooks = format!("{git_dir}/hooks");
+    let _ = std::fs::create_dir_all(&hooks);
+    cmd.args(["--ro-bind", &hooks, &hooks]);
+    // Config file: read-only bind only when present.
+    let config = format!("{git_dir}/config");
+    if Path::new(&config).exists() {
+        cmd.args(["--ro-bind", &config, &config]);
     }
 }
 
@@ -533,5 +583,84 @@ mod tests {
                 None => std::env::remove_var(STAGE2_BIN_ENV_KEY),
             }
         }
+    }
+
+    // ── Gap 1 of #1072: apply_git_config_deny ──────────────────────
+
+    /// `apply_git_config_deny` is a no-op on plain (non-git) directories.
+    #[test]
+    fn git_config_deny_skips_non_git_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cmd = Command::new("true");
+        let args_before: Vec<_> = cmd.as_std().get_args().collect();
+        let root = dir.path().to_string_lossy();
+        apply_git_config_deny(&mut cmd, &root);
+        let args_after: Vec<_> = cmd.as_std().get_args().collect();
+        assert_eq!(
+            args_before.len(),
+            args_after.len(),
+            "no args should be added for a directory with no .git/"
+        );
+    }
+
+    /// Once `.git/` exists, the hooks directory is pre-created and
+    /// bound read-only, and the config file (when present) is also
+    /// bound read-only.
+    #[test]
+    fn git_config_deny_adds_ro_bind_for_existing_git_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = dir.path().join(".git");
+        std::fs::create_dir_all(git.join("hooks")).unwrap();
+        std::fs::write(git.join("config"), b"[core]\n").unwrap();
+
+        let mut cmd = Command::new("true");
+        let root = dir.path().to_string_lossy();
+        apply_git_config_deny(&mut cmd, &root);
+
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        // Should see --ro-bind for hooks and --ro-bind for config.
+        assert!(
+            args.windows(3)
+                .any(|w| { w[0] == "--ro-bind" && w[1].ends_with("/.git/hooks") }),
+            "hooks directory must be ro-bound: {args:?}"
+        );
+        assert!(
+            args.windows(3)
+                .any(|w| { w[0] == "--ro-bind" && w[1].ends_with("/.git/config") }),
+            "git config file must be ro-bound when it exists: {args:?}"
+        );
+    }
+
+    /// When `allow_git_config` is explicitly set, `build_command`
+    /// must NOT add the ro-bind mounts.
+    #[test]
+    fn build_command_skips_git_deny_when_allowed() {
+        if !is_available() {
+            eprintln!("bwrap not available; skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        // Create a .git dir so `apply_git_config_deny` would fire if
+        // incorrectly called.
+        std::fs::create_dir_all(dir.path().join(".git/hooks")).unwrap();
+        let mut policy = SandboxPolicy::strict_default();
+        policy.fs.allow_git_config = true;
+        let cmd = build_command("true", dir.path(), &policy).unwrap();
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let has_hooks_ro_bind = args
+            .windows(3)
+            .any(|w| w[0] == "--ro-bind" && w[1].ends_with("/.git/hooks"));
+        assert!(
+            !has_hooks_ro_bind,
+            "allow_git_config=true must not add ro-bind for .git/hooks"
+        );
     }
 }
