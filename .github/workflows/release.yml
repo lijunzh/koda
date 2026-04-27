@@ -80,7 +80,7 @@ jobs:
     needs: [verify-version, audit]
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
+      fail-fast: true   # release needs all platforms green — no point continuing if one fails
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
