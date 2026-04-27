@@ -831,6 +831,117 @@ mod tests {
         );
     }
 
+    // ── SEC-001 (v0.2.21 release audit): resolution-aware tests ──────
+    //
+    // SBPL is last-match-wins. The pre-#1085 tests above only assert that
+    // deny strings APPEAR in the profile, not that they WIN resolution.
+    // SEC-001 was a real escape: deny rules were emitted but immediately
+    // overridden by the policy overlay's `allow file-write* (subpath ROOT)`.
+    // These tests model rule resolution and would have caught the bug.
+
+    /// Walk the SBPL profile and return the index (line offset) of the
+    /// LAST rule that grants/denies `file-write*` for `path`.
+    /// Returns `("allow" | "deny", line_idx)` of the winning rule, or
+    /// `None` if no rule mentions the path.
+    ///
+    /// A rule "matches" `path` if the path equals its `literal` arg or
+    /// is equal-to-or-a-descendant-of its `subpath` arg. This mirrors
+    /// macOS sandbox's actual resolution semantics for the rule shapes
+    /// we emit.
+    fn last_write_rule_for(profile: &str, path: &str) -> Option<(&'static str, usize)> {
+        let mut winner: Option<(&'static str, usize)> = None;
+        for (idx, line) in profile.lines().enumerate() {
+            let trimmed = line.trim_start();
+            let kind = if trimmed.starts_with("(allow file-write*") {
+                "allow"
+            } else if trimmed.starts_with("(deny file-write*") {
+                "deny"
+            } else {
+                continue;
+            };
+            // Extract the quoted argument: ...(literal "X")) or ...(subpath "X"))
+            let Some(q1) = line.find('"') else { continue };
+            let Some(q2) = line[q1 + 1..].find('"') else {
+                continue;
+            };
+            let arg = &line[q1 + 1..q1 + 1 + q2];
+            let matches = if line[..q1].contains("(literal") {
+                arg == path
+            } else if line[..q1].contains("(subpath") {
+                path == arg || path.starts_with(&format!("{arg}/"))
+            } else {
+                false
+            };
+            if matches {
+                winner = Some((kind, idx));
+            }
+        }
+        winner
+    }
+
+    #[test]
+    fn sec_001_git_config_write_is_denied_in_resolved_profile() {
+        // Mirror what policy_for_agent (in koda-core) seeds: the project
+        // root in allow_write AND the git deny pair in
+        // deny_write_within_allow. Without the deny_write_within_allow
+        // seed, this test fails (allow at line N wins after deny at line
+        // M, where M < N) — which is exactly SEC-001.
+        let mut policy = SandboxPolicy::strict_default();
+        policy.fs.allow_write = vec!["/work".into()];
+        policy.fs.deny_write_within_allow =
+            vec!["/work/.git/hooks".into(), "/work/.git/config".into()];
+        let cmd = build_command("true", Path::new("/work"), &policy).unwrap();
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let profile = &args[1];
+
+        let (kind, _idx) = last_write_rule_for(profile, "/work/.git/config")
+            .expect("some rule must mention /work/.git/config");
+        assert_eq!(
+            kind, "deny",
+            "SEC-001 regression: last matching write rule for /work/.git/config must be `deny`. \
+             Profile:\n{profile}"
+        );
+
+        let (kind, _idx) = last_write_rule_for(profile, "/work/.git/hooks/post-checkout")
+            .expect("some rule must mention /work/.git/hooks/post-checkout");
+        assert_eq!(
+            kind, "deny",
+            "SEC-001 regression: last matching write rule for a hook script must be `deny`. \
+             Profile:\n{profile}"
+        );
+    }
+
+    #[test]
+    fn sec_001_unrelated_project_path_remains_writable() {
+        // Sanity check on the resolution simulator and the fix: paths that
+        // are NOT under the protected git subpaths must still be writable.
+        // Otherwise the fix would have over-corrected and broken normal
+        // workflows.
+        let mut policy = SandboxPolicy::strict_default();
+        policy.fs.allow_write = vec!["/work".into()];
+        policy.fs.deny_write_within_allow =
+            vec!["/work/.git/hooks".into(), "/work/.git/config".into()];
+        let cmd = build_command("true", Path::new("/work"), &policy).unwrap();
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let profile = &args[1];
+
+        let (kind, _idx) = last_write_rule_for(profile, "/work/src/main.rs")
+            .expect("some rule must mention /work/src/main.rs (via subpath /work)");
+        assert_eq!(
+            kind, "allow",
+            "SEC-001 fix must not over-correct: a normal source file under \
+             the project root must still be writable. Profile:\n{profile}"
+        );
+    }
+
     // ── Phase 3a: proxied network rules ─────────────────────────────
 
     #[test]

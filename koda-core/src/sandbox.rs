@@ -252,7 +252,33 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
     let canonical_root = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
-    policy.fs.allow_write = vec![canonical_root.into()];
+    policy.fs.allow_write = vec![canonical_root.clone().into()];
+
+    // SEC-001 (v0.2.21 release audit): Gap 1 of #1072 was silently
+    // neutralized on Seatbelt because the pre-overlay
+    // `git_config_deny_rules` were emitted BEFORE the policy overlay's
+    // `allow_write (subpath ROOT)`, and SBPL is last-match-wins. So the
+    // canonical resolution for `{ROOT}/.git/config` was
+    // `allow → deny → allow` → write permitted.
+    //
+    // Fix: seed `deny_write_within_allow` with the same git paths.
+    // Both backends emit `deny_write_within_allow` AFTER `allow_write`
+    // in their overlay (seatbelt: policy_overlay_rules, bwrap: Layer 4),
+    // so these denies WIN the last-match resolution and actually enforce
+    // the protection claimed by #1073.
+    //
+    // The pre-overlay `git_config_deny_rules` / `apply_git_config_deny`
+    // calls are now redundant on the deny side but kept because the bwrap
+    // variant has a side effect (pre-creating `.git/hooks` to close the
+    // SEC-002 TOCTOU window). Cleanup of the redundant deny emission is a
+    // separate refactor — security fix stays minimal.
+    if !policy.fs.allow_git_config {
+        policy.fs.deny_write_within_allow = vec![
+            canonical_root.join(".git/hooks").into(),
+            canonical_root.join(".git/config").into(),
+        ];
+    }
+
     policy
 }
 
@@ -1284,6 +1310,44 @@ mod tests {
                 policy.fs.allow_write.len(),
                 1,
                 "even with a missing root, allow_write must have one entry"
+            );
+        }
+    }
+
+    // ── SEC-001 (v0.2.21 release audit) ──────────────────────────
+
+    #[test]
+    fn policy_for_agent_seeds_git_deny_when_allow_git_config_is_false() {
+        // SEC-001: without this seed, the pre-overlay git denies in
+        // build_command_inner are last-match-overridden by the overlay's
+        // allow_write, neutralizing the entire #1073 protection.
+        // strict_default() sets allow_git_config = false, so every trust
+        // mode must seed the deny pair.
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dir.path().canonicalize().unwrap();
+        for mode in [
+            crate::trust::TrustMode::Plan,
+            crate::trust::TrustMode::Safe,
+            crate::trust::TrustMode::Auto,
+        ] {
+            let policy = policy_for_agent(mode, dir.path());
+            assert!(
+                !policy.fs.allow_git_config,
+                "strict_default precondition: allow_git_config must be false"
+            );
+            let denies: Vec<&std::path::Path> = policy
+                .fs
+                .deny_write_within_allow
+                .iter()
+                .map(|p| p.as_path())
+                .collect();
+            assert!(
+                denies.contains(&canonical.join(".git/hooks").as_path()),
+                "{mode:?}: deny_write_within_allow must contain .git/hooks, got {denies:?}"
+            );
+            assert!(
+                denies.contains(&canonical.join(".git/config").as_path()),
+                "{mode:?}: deny_write_within_allow must contain .git/config, got {denies:?}"
             );
         }
     }
