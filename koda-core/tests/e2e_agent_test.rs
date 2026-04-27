@@ -322,7 +322,7 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
 // iteration and `Completed` is only emitted after the loop exits.
 
 #[cfg(feature = "test-support")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn bg_agent_iter_counter_advances_via_status_channel() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -355,12 +355,7 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
 
     env.run_inference(&provider).await;
 
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::remove_var("KODA_MOCK_RESPONSES");
-    }
-
-    // The background task is registered (reserve+attach are synchronous
+    // The background task is registered in env.bg_agents before
     // before spawn), so it should appear in the snapshot immediately.
     // Poll with a 5-second deadline in case the runtime hasn’t scheduled
     // the spawned task yet.
@@ -420,5 +415,11 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
         AgentStatus::Errored { error } => panic!("bg agent errored: {error}"),
         AgentStatus::Cancelled => panic!("bg agent was unexpectedly cancelled"),
         _ => unreachable!("loop only breaks on terminal states"),
+    }
+
+    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
+    // Removed only after the bg task has finished reading it.
+    unsafe {
+        std::env::remove_var("KODA_MOCK_RESPONSES");
     }
 }
