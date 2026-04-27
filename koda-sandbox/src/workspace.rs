@@ -339,10 +339,17 @@ impl GitWorktreeProvider {
 ///
 /// ## Why the clones live OUTSIDE the project root
 ///
-/// `clonefile(2)` is recursive. If clones lived under `<project>/.koda/clones/`,
-/// every slot's clone would *contain* every previous slot's clone (matryoshka).
-/// Putting them under `~/.koda/clones/<project-hash>/` keeps the source tree
-/// pristine and the clone footprint flat.
+/// `clonefile(2)` is recursive AND returns `EPERM` if the destination
+/// is a descendant of the source. If clones lived under
+/// `<project>/.koda/clones/`, every slot's clone would *contain* every
+/// previous slot's clone (matryoshka) AND the very first clone would
+/// fail outright. Putting them under `~/.koda/clones/<project-hash>/`
+/// keeps the source tree pristine and the clone footprint flat.
+///
+/// **Edge case (#1093):** when `project_root == $HOME`, the default
+/// `~/.koda/clones/...` IS still inside the project root. `new()`
+/// detects this and falls back to `$TMPDIR/koda-clones/<hash>/`; see
+/// [`ClonefileProvider::new`] for the full fallback chain.
 ///
 /// `<project-hash>` is a SHA-256 of the canonical project root path,
 /// truncated to 16 hex chars. It collides only across projects with the
@@ -383,6 +390,26 @@ impl ClonefileProvider {
     /// Returns `Err` if `$HOME` is unset or the project path can't be
     /// canonicalized — both indicate a setup problem the caller must
     /// surface, not silently work around.
+    ///
+    /// ## `project_root == $HOME` recursion guard (#1093)
+    ///
+    /// `clonefile(2)` returns `EPERM` when the destination is a
+    /// descendant of the source. The default `clones_root` lives at
+    /// `$HOME/.koda/clones/<hash>/`, which IS a descendant of
+    /// `$HOME` — so when a user runs koda with `project_root ==
+    /// $HOME`, every `provision()` would fail. Pre-#1093 the
+    /// constructor still returned `Ok`, so `pick_write_provider`
+    /// never fell back to `GitWorktreeProvider` and sub-agents with
+    /// write tools could not be dispatched at all.
+    ///
+    /// We now detect this up front via [`choose_clones_root`] and
+    /// fall back to `$TMPDIR/koda-clones/<hash>/`. macOS's default
+    /// `$TMPDIR` (`/var/folders/...`) is never inside `$HOME`, so
+    /// the fallback always works on stock installs. If both
+    /// candidates would land inside `project_root` (a configuration
+    /// so degenerate it requires a hand-rolled `$TMPDIR`), we return
+    /// `Err` so `pick_write_provider` falls back to
+    /// `GitWorktreeProvider`.
     pub fn new(project_root: impl Into<PathBuf>) -> Result<Self> {
         let project_root = project_root.into();
         let canonical = project_root
@@ -391,27 +418,85 @@ impl ClonefileProvider {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .context("$HOME not set; cannot derive ClonefileProvider clones_root")?;
-        let hash = Self::project_hash(&canonical);
-        let clones_root = home.join(".koda").join("clones").join(hash);
+        let tmpdir = std::env::var_os("TMPDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        let clones_root = Self::choose_clones_root(&canonical, &home, &tmpdir)?;
         Ok(Self {
             project_root: canonical,
             clones_root,
         })
     }
 
+    /// Pure helper that picks a `clones_root` guaranteed not to be a
+    /// descendant of `canonical_project`. Extracted from [`new`] so
+    /// the recursion logic is unit-testable without manipulating
+    /// process-wide `$HOME` / `$TMPDIR`.
+    ///
+    /// Strategy: prefer `<home>/.koda/clones/<hash>/` (the historical
+    /// location, kept for cross-session resume + flat per-project
+    /// layout). If that would recurse, fall back to
+    /// `<tmpdir>/koda-clones/<hash>/`. If both would recurse, return
+    /// `Err` — callers (i.e. `pick_write_provider`) treat that as
+    /// "this provider can't work here" and fall back to a different
+    /// provider entirely.
+    fn choose_clones_root(canonical_project: &Path, home: &Path, tmpdir: &Path) -> Result<PathBuf> {
+        let hash = Self::project_hash(canonical_project);
+        let primary = home.join(".koda").join("clones").join(&hash);
+        if !Self::is_inside(&primary, canonical_project) {
+            return Ok(primary);
+        }
+        // Primary would recurse — try the tmpdir fallback. The
+        // `koda-clones` (vs `.koda/clones`) name is deliberate: a
+        // visible top-level dir under `$TMPDIR` is easier to spot
+        // and clean up than a hidden one, and there's no
+        // cross-session-resume motivation in `$TMPDIR` since macOS
+        // periodically purges it.
+        let fallback = tmpdir.join("koda-clones").join(&hash);
+        if !Self::is_inside(&fallback, canonical_project) {
+            return Ok(fallback);
+        }
+        anyhow::bail!(
+            "ClonefileProvider cannot derive a clones_root outside project_root {}: \
+             both primary ({}) and tmpdir fallback ({}) would recurse into the source. \
+             $TMPDIR={} — set it to a directory outside the project root or use \
+             GitWorktreeProvider.",
+            canonical_project.display(),
+            primary.display(),
+            fallback.display(),
+            tmpdir.display(),
+        );
+    }
+
     /// Test/advanced constructor: explicit `clones_root`. Lets tests
     /// point at a tempdir without mutating `$HOME`.
+    ///
+    /// Rejects `clones_root` paths that are descendants of
+    /// `project_root` (#1093 defense in depth) — such a configuration
+    /// would cause `clonefile(2)` to return `EPERM` at every
+    /// `provision()` call, which is better surfaced as a constructor
+    /// error than a confusing runtime failure.
     pub fn with_clones_root(
         project_root: impl Into<PathBuf>,
         clones_root: impl Into<PathBuf>,
     ) -> Result<Self> {
         let project_root = project_root.into();
+        let clones_root = clones_root.into();
         let canonical = project_root
             .canonicalize()
             .with_context(|| format!("canonicalize project_root {}", project_root.display()))?;
+        if Self::is_inside(&clones_root, &canonical) {
+            anyhow::bail!(
+                "clones_root {} is a descendant of project_root {} — \
+                 clonefile(2) would return EPERM at every provision; \
+                 choose a clones_root outside the project tree",
+                clones_root.display(),
+                canonical.display(),
+            );
+        }
         Ok(Self {
             project_root: canonical,
-            clones_root: clones_root.into(),
+            clones_root,
         })
     }
 
@@ -439,6 +524,40 @@ impl ClonefileProvider {
             hash = hash.wrapping_mul(FNV_PRIME);
         }
         format!("{hash:016x}")
+    }
+
+    /// Returns true iff `candidate` would resolve to a path inside
+    /// `canonical_root`. Compares using the deepest existing ancestor
+    /// of `candidate` (canonicalized) so that symlinks like macOS
+    /// `/var → /private/var` don't produce false negatives.
+    ///
+    /// `candidate` typically does not yet exist (we're about to
+    /// create it), so we cannot canonicalize it directly. But its
+    /// deepest existing ancestor IS canonicalizable, and that's
+    /// enough to make `starts_with` symlink-safe.
+    fn is_inside(candidate: &Path, canonical_root: &Path) -> bool {
+        let mut probe: PathBuf = candidate.to_path_buf();
+        let mut tail: Vec<std::ffi::OsString> = Vec::new();
+        loop {
+            if let Ok(canonical) = probe.canonicalize() {
+                let mut resolved = canonical;
+                for component in tail.iter().rev() {
+                    resolved.push(component);
+                }
+                return resolved.starts_with(canonical_root);
+            }
+            match (probe.parent(), probe.file_name()) {
+                (Some(parent), Some(name)) => {
+                    tail.push(name.to_os_string());
+                    probe = parent.to_path_buf();
+                }
+                _ => {
+                    // Reached root without canonicalizing — fall
+                    // back to a literal comparison. Conservative.
+                    return candidate.starts_with(canonical_root);
+                }
+            }
+        }
     }
 
     /// Internal: actually invoke `clonefile(2)`. Synchronous; callers
@@ -796,6 +915,127 @@ mod tests {
             std::fs::write(project.join("hello.txt"), "world").unwrap();
             let p = ClonefileProvider::with_clones_root(&project, &clones).unwrap();
             (project, clones, p)
+        }
+
+        // ── #1093: project_root == $HOME recursion guard ──────────
+        //
+        // These tests are pure-logic over `choose_clones_root` and
+        // `with_clones_root` — they never call `clonefile(2)` so they
+        // run on any macOS host regardless of tempdir filesystem.
+
+        /// Regression for #1093: when `project_root == $HOME`, the
+        /// default `$HOME/.koda/clones/<hash>` would be a descendant
+        /// of `project_root`. The helper must fall back to
+        /// `$TMPDIR/koda-clones/<hash>` instead, so `new()` returns
+        /// `Ok` with a clones_root that is NOT inside the project.
+        #[test]
+        fn choose_clones_root_falls_back_when_home_equals_project() {
+            let tmp = tempfile::tempdir().unwrap();
+            // Simulate "home is the project root" by passing the same
+            // canonical path as both `project` and `home`.
+            let home = tmp.path().canonicalize().unwrap();
+            let project = home.clone();
+            // A tmpdir that is NOT inside `project` — like the real
+            // macOS `/var/folders/...` is never inside `$HOME`.
+            let tmpdir = std::env::temp_dir();
+            assert!(
+                !tmpdir.starts_with(&project),
+                "test precondition: system tempdir must not be inside the synthetic home"
+            );
+
+            let chosen = ClonefileProvider::choose_clones_root(&project, &home, &tmpdir)
+                .expect("fallback to tmpdir must succeed when primary recurses");
+            assert!(
+                !chosen.starts_with(&project),
+                "chosen clones_root {} must not be inside project_root {}",
+                chosen.display(),
+                project.display(),
+            );
+            assert!(
+                chosen.starts_with(&tmpdir) && chosen.to_string_lossy().contains("koda-clones"),
+                "fallback must land under <tmpdir>/koda-clones, got {}",
+                chosen.display(),
+            );
+        }
+
+        /// When `project_root` is NOT `$HOME` (the common case), the
+        /// helper must return the primary path unchanged — we do not
+        /// want to perturb the historical layout for users who weren't
+        /// hitting the bug.
+        #[test]
+        fn choose_clones_root_keeps_primary_in_common_case() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().canonicalize().unwrap();
+            let project = home.join("some-project");
+            std::fs::create_dir_all(&project).unwrap();
+            let project = project.canonicalize().unwrap();
+            let tmpdir = std::env::temp_dir();
+
+            let chosen = ClonefileProvider::choose_clones_root(&project, &home, &tmpdir).unwrap();
+            let expected_prefix = home.join(".koda").join("clones");
+            assert!(
+                chosen.starts_with(&expected_prefix),
+                "common case must preserve $HOME/.koda/clones/ layout, got {}",
+                chosen.display(),
+            );
+        }
+
+        /// Degenerate case: both primary AND fallback are inside the
+        /// project root (e.g. user set `$TMPDIR` to a path inside
+        /// their home, and home == project). Helper must `Err` so
+        /// `pick_write_provider` falls back to `GitWorktreeProvider`
+        /// instead of returning a provider that will EPERM at every
+        /// `provision()`.
+        #[test]
+        fn choose_clones_root_errors_when_both_candidates_recurse() {
+            let tmp = tempfile::tempdir().unwrap();
+            let project = tmp.path().canonicalize().unwrap();
+            let home = project.clone();
+            // Force tmpdir inside project as well (extreme but legal).
+            let tmpdir_inside = project.join("tmp");
+            std::fs::create_dir_all(&tmpdir_inside).unwrap();
+
+            let err = ClonefileProvider::choose_clones_root(&project, &home, &tmpdir_inside)
+                .expect_err("must error when no candidate escapes project_root");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("GitWorktreeProvider"),
+                "error message must point users at the fallback provider, got: {msg}",
+            );
+        }
+
+        /// Defense in depth: `with_clones_root` must reject a
+        /// caller-supplied clones_root that's inside project_root,
+        /// rather than returning a provider that will EPERM at runtime.
+        #[test]
+        fn with_clones_root_rejects_inside_project() {
+            let tmp = tempfile::tempdir().unwrap();
+            let project = tmp.path().join("project");
+            std::fs::create_dir_all(&project).unwrap();
+            // clones_root explicitly INSIDE project — the historical
+            // foot-gun.
+            let clones = project.join(".koda").join("clones");
+
+            let err = ClonefileProvider::with_clones_root(&project, &clones)
+                .expect_err("must reject clones_root inside project_root");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("EPERM"),
+                "error message must explain why (EPERM at provision), got: {msg}",
+            );
+        }
+
+        /// `with_clones_root` must still accept the common case (clones
+        /// as a sibling of project) — this is what every existing test
+        /// using `make_provider` relies on.
+        #[test]
+        fn with_clones_root_accepts_sibling() {
+            let tmp = tempfile::tempdir().unwrap();
+            let project = tmp.path().join("project");
+            let clones = tmp.path().join("clones");
+            std::fs::create_dir_all(&project).unwrap();
+            ClonefileProvider::with_clones_root(&project, &clones)
+                .expect("sibling clones_root must be accepted");
         }
 
         #[tokio::test]
