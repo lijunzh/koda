@@ -85,7 +85,14 @@ pub(crate) async fn record_tool_result(
         )
         .await?;
     }
-    crate::progress::track_progress(db, session_id, &tc.function_name, &tc.arguments, result).await;
+    // (#1077 Phase B) `crate::progress::track_progress` was here. It
+    // scraped tool outputs to maintain a parallel "engine sees what
+    // the model just did" log that then re-injected into the system
+    // prompt next turn. Removed alongside the system-prompt injection
+    // it fed — the model owns its plan via `TodoWrite`, the
+    // conversation history persists it, the engine surfaces
+    // transitions via `EngineEvent::TodoUpdate`. See
+    // `DESIGN.md § Progress Tracking`.
     let parsed_args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
     track_file_lifecycle(
         &tc.function_name,
