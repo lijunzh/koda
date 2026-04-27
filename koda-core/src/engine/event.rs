@@ -103,6 +103,33 @@ pub enum EngineEvent {
 
     /// A sub-agent finished.
 
+    // ── Background sub-agent lifecycle ────────────────────────────────
+    /// A background sub-agent's status changed.
+    ///
+    /// Emitted on every transition through [`crate::bg_agent::AgentStatus`]
+    /// (`Pending` → `Running { iter }` → terminal). Drained from the
+    /// registry's status queue inside the inference loop alongside
+    /// [`crate::bg_agent::BgAgentRegistry::drain_completed`], so any sink
+    /// (CLI / TUI / headless / ACP) sees the same event stream without
+    /// having to poll the registry directly.
+    ///
+    /// Closes the engine/UI boundary leak documented in #1076 — prior to
+    /// this variant the TUI was the only client that could see live bg
+    /// status because it shared the process and grabbed
+    /// `Arc<BgAgentRegistry>` straight out of `KodaSession`.
+    BgTaskUpdate {
+        /// Monotonic id assigned at `reserve()` time, stable for the
+        /// lifetime of the task.
+        task_id: u32,
+        /// Sub-agent invocation id of the spawner, or `None` if the
+        /// task was launched from the top-level loop. See
+        /// [`crate::bg_agent::BgTaskSnapshot::spawner`].
+        spawner: Option<u32>,
+        /// New status. Includes `Running { iter }` heartbeats so
+        /// clients can render iteration progress without polling.
+        status: crate::bg_agent::AgentStatus,
+    },
+
     // ── Approval flow ─────────────────────────────────────────────────
     /// The engine needs user approval before executing a tool.
     ///
