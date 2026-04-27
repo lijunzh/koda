@@ -39,6 +39,7 @@ pub enum AcpOutgoing {
 /// # Examples
 ///
 /// ```ignore
+/// // pub(crate): acp_adapter is not importable from a doc-test binary; illustrative only.
 /// use agent_client_protocol_schema::ToolKind;
 /// use koda_cli::acp_adapter::map_tool_kind;
 ///

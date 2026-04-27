@@ -532,6 +532,17 @@ impl BgAgentRegistry {
             .collect()
     }
 
+    /// Clone the status receiver for a task so callers can await
+    /// [`watch::Receiver::changed`] without holding the lock.
+    ///
+    /// Returns `None` if the task has already been drained from the registry.
+    /// Primarily used by tests to observe live iteration-counter updates
+    /// without polling `snapshot()` in a tight loop.
+    pub fn subscribe(&self, task_id: u32) -> Option<watch::Receiver<AgentStatus>> {
+        let guard = self.pending.lock();
+        guard.get(&task_id).map(|e| e.status_rx.clone())
+    }
+
     // ── Layer 2 of #996 ───────────────────────────────────────────────
     //
     // Scoped cancel + cleanup-on-exit + WaitTask machinery.

@@ -5,6 +5,7 @@
 
 use koda_core::persistence::Persistence;
 use koda_core::{
+    bg_agent::BgAgentRegistry,
     config::{KodaConfig, ProviderType},
     db::{Database, Role},
     engine::{EngineCommand, EngineEvent, sink::TestSink},
@@ -13,7 +14,7 @@ use koda_core::{
     tools::ToolRegistry,
     trust::TrustMode,
 };
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -41,6 +42,12 @@ pub struct Env {
     pub tools: ToolRegistry,
     /// Trust mode used by the inference loop (default: `Auto`).
     pub trust: TrustMode,
+    /// Background agent registry shared across inference calls.
+    ///
+    /// Tests that spawn background sub-agents can poll this for
+    /// live status snapshots, or call [`BgAgentRegistry::subscribe`]
+    /// to get a watch receiver for a specific task.
+    pub bg_agents: Arc<BgAgentRegistry>,
 }
 
 /// Builder for [`Env`] — customise provider, context window, agent name, etc.
@@ -118,6 +125,7 @@ impl EnvBuilder {
             config,
             tools,
             trust: self.trust,
+            bg_agents: koda_core::bg_agent::new_shared(),
         }
     }
 }
@@ -200,10 +208,11 @@ impl Env {
         let tool_defs = self.tool_defs();
         let mut file_tracker =
             koda_core::file_tracker::FileTracker::new(&self.session_id, self.db.clone()).await;
-        // #1022 B12: registry + cache live on the session in production.
-        // Tests construct fresh per-call versions — same observable
-        // contract for single-turn tests.
-        let bg_agents = koda_core::bg_agent::new_shared();
+        // #1022 B12: registry lives on the session in production.
+        // Env now holds one shared registry per test so background
+        // agents spawned during inference remain visible after
+        // run_inference returns (enables QA-001 iteration-counter test).
+        let bg_agents = Arc::clone(&self.bg_agents);
         let sub_agent_cache = koda_core::sub_agent_cache::SubAgentCache::new();
 
         let result = inference::inference_loop(InferenceContext {

@@ -211,6 +211,7 @@ impl InputCompleter {
 /// # Examples
 ///
 /// ```ignore
+/// // pub(crate): completer is not importable from a doc-test binary; illustrative only.
 /// use koda_cli::completer::find_last_at_token;
 ///
 /// // Leading @ at position 0

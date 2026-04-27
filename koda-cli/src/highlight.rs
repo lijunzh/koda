@@ -264,6 +264,7 @@ mod inline_tests {
 /// # Example
 ///
 /// ```ignore
+/// // pub(crate): highlight is not importable from a doc-test binary; illustrative only.
 /// use koda_cli::highlight::pre_highlight;
 ///
 /// // Two Rust lines → two span vecs

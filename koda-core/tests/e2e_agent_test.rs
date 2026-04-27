@@ -1,7 +1,8 @@
 //! E2E tests: sub-agent invocation and caching.
 
-use koda_core::{engine::EngineEvent, persistence::Persistence};
+use koda_core::{bg_agent::AgentStatus, engine::EngineEvent, persistence::Persistence};
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
+use std::time::Duration;
 
 #[tokio::test]
 async fn test_sub_agent_invocation_e2e() {
@@ -309,4 +310,115 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
         last.contains("parent done"),
         "parent must complete after sub-agent refusal cycle; got: {last}"
     );
+}
+
+// ── QA-001: background agent iter-counter status advances (#1045) ───────────
+//
+// Verifies that when InvokeAgent dispatches with `background: true`,
+// the status channel progresses through at least one full inference
+// iteration.  `Completed` is the only terminal state that proves the
+// loop actually ran; reaching it implies `iter ≥ 1` was sent because
+// `run_bg_agent` sends `Running { iter: n }` at the top of each
+// iteration and `Completed` is only emitted after the loop exits.
+
+#[cfg(feature = "test-support")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bg_agent_iter_counter_advances_via_status_channel() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::new().await;
+
+    write_agent_config(&env, "bg-counter-agent", /* skip_memory */ true);
+
+    // Give the background agent's mock provider a single text response.
+    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
+    unsafe {
+        std::env::set_var(
+            "KODA_MOCK_RESPONSES",
+            r#"[{"text": "background work done"}]"#,
+        );
+    }
+
+    env.insert_user_message("launch background agent").await;
+
+    // Parent calls InvokeAgent with background:true, then returns immediately.
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({
+                "agent_name": "bg-counter-agent",
+                "prompt": "do some work",
+                "background": true
+            }),
+        ),
+        MockResponse::Text("parent done".into()),
+    ]);
+
+    env.run_inference(&provider).await;
+
+    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
+    unsafe {
+        std::env::remove_var("KODA_MOCK_RESPONSES");
+    }
+
+    // The background task is registered (reserve+attach are synchronous
+    // before spawn), so it should appear in the snapshot immediately.
+    // Poll with a 5-second deadline in case the runtime hasn’t scheduled
+    // the spawned task yet.
+    let task_id = {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let snap = env.bg_agents.snapshot();
+            if let Some(task) = snap.first() {
+                break task.task_id;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "background agent was never registered in the registry within 5s"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+
+    // Subscribe gives us the last-sent status value plus change
+    // notifications going forward.
+    let mut rx = env
+        .bg_agents
+        .subscribe(task_id)
+        .expect("task_id must be in registry: snapshot confirmed it above");
+
+    // Drive the receiver to a terminal state.
+    // `Completed` proves the loop ran ≥ 1 full iteration (QA-001 core).
+    let final_status = loop {
+        let status = rx.borrow_and_update().clone();
+        if matches!(
+            status,
+            AgentStatus::Completed { .. } | AgentStatus::Errored { .. } | AgentStatus::Cancelled
+        ) {
+            break status;
+        }
+
+        match tokio::time::timeout(Duration::from_secs(10), rx.changed()).await {
+            Ok(Ok(())) => continue, // new value available; loop to inspect it
+            Ok(Err(_closed)) => {
+                // Sender dropped — final value is buffered; pick it up.
+                break rx.borrow().clone();
+            }
+            Err(_elapsed) => {
+                panic!("bg agent did not reach a terminal state within 10s");
+            }
+        }
+    };
+
+    match &final_status {
+        AgentStatus::Completed { summary } => {
+            assert!(
+                !summary.is_empty(),
+                "bg agent completed with empty summary — \
+                 execute_sub_agent output was not captured"
+            );
+        }
+        AgentStatus::Errored { error } => panic!("bg agent errored: {error}"),
+        AgentStatus::Cancelled => panic!("bg agent was unexpectedly cancelled"),
+        _ => unreachable!("loop only breaks on terminal states"),
+    }
 }
