@@ -185,39 +185,54 @@ fn apply_credential_denies(cmd: &mut Command, home: &str) {
 ///
 /// Strategy mirrors `PROTECTED_PROJECT_SUBDIRS` in [`base_cmd`]:
 ///
-/// 1. `pre-create` the hooks directory so bwrap has a mountpoint even
-///    on repos that have never had hooks (avoids the "source doesn't
-///    exist" error that would make `--ro-bind` fail).  Pre-creating
-///    an empty directory is safe — it only matters once `.git` itself
-///    exists, and `create_dir_all` is idempotent.
+/// 1. **Pre-create** `.git/hooks/` and `.git/config` (idempotent on
+///    existing repos, creates the structure on plain directories).
+///    This is what closes the SEC-002 TOCTOU window (#1088): on a
+///    pre-#1088 build, a sandbox call on a non-git directory could
+///    `git init && git config core.fsmonitor 'evil'` mid-call,
+///    persisting a poisoned config because the early-return path
+///    skipped the bind-mounts entirely.
 /// 2. Bind-mount `.git/hooks/` read-only — sandboxed commands can
 ///    see hook names (e.g. for `git log --decorate`) but cannot
 ///    create or overwrite them.
-/// 3. `.git/config` is a file so we can't bind-mount it unless it
-///    already exists; when it does, bind it read-only.  When it
-///    doesn't yet exist, there is nothing to protect — a sandboxed
-///    command that runs `git init` will create it, but any subsequent
-///    sandbox invocation will pick up the protection on that next call
-///    since this check re-runs per command.  The window is one
-///    invocation; the seatbelt backend closes it fully via SBPL
-///    (deny rules apply even to paths that don't exist yet).
+/// 3. Bind-mount `.git/config` read-only — `git config` writes from
+///    inside the sandbox fail with EACCES regardless of whether the
+///    repo existed at sandbox start.
 ///
-/// Only called when `.git/` itself exists — skip entirely on plain
-/// directories that have never been initialised as a repo.
+/// **Trade-off**: `git init` inside the sandbox will fail when it
+/// tries to write its initial `[core]` block to the read-only
+/// `.git/config`. Callers that legitimately need to initialise a
+/// repo inside the sandbox should set `policy.fs.allow_git_config =
+/// true`, which skips this entire function. The seatbelt backend
+/// achieves the same end-state via SBPL deny rules without the
+/// pre-create dance (deny rules apply even to paths that don't
+/// exist yet).
 fn apply_git_config_deny(cmd: &mut Command, root: &str) {
     let git_dir = format!("{root}/.git");
-    if !Path::new(&git_dir).exists() {
-        return;
-    }
-    // Hooks directory: pre-create + read-only bind.
     let hooks = format!("{git_dir}/hooks");
-    let _ = std::fs::create_dir_all(&hooks);
-    cmd.args(["--ro-bind", &hooks, &hooks]);
-    // Config file: read-only bind only when present.
     let config = format!("{git_dir}/config");
-    if Path::new(&config).exists() {
-        cmd.args(["--ro-bind", &config, &config]);
+
+    // Pre-create the hooks dir (this also creates `.git/` if missing).
+    // `create_dir_all` is idempotent and never truncates existing
+    // contents, so a real repo's hooks directory is preserved as-is.
+    let _ = std::fs::create_dir_all(&hooks);
+
+    // Pre-create `.git/config` only if it doesn't exist. We use the
+    // explicit existence check rather than `OpenOptions::create(true)`
+    // so that on a real repo we never accidentally touch the file's
+    // mtime — some tools (e.g. `git status`'s mtime-based caches)
+    // care. An empty file is a valid git config; git treats it as
+    // "no overrides, use defaults".
+    if !Path::new(&config).exists() {
+        let _ = std::fs::File::create(&config);
     }
+
+    // If the create_dir_all above failed (e.g. parent unwritable),
+    // both `hooks` and `config` may be absent and bwrap will fail at
+    // launch with a clear "source doesn't exist" error — better than
+    // silently leaving the TOCTOU window open by skipping the binds.
+    cmd.args(["--ro-bind", &hooks, &hooks]);
+    cmd.args(["--ro-bind", &config, &config]);
 }
 
 /// Apply the policy overlay (layer 3). Shared between the proxied and
@@ -585,22 +600,57 @@ mod tests {
         }
     }
 
-    // ── Gap 1 of #1072: apply_git_config_deny ──────────────────────
+    // ── Gap 1 of #1072: apply_git_config_deny ──────────────
 
-    /// `apply_git_config_deny` is a no-op on plain (non-git) directories.
+    /// SEC-002 / #1088: even on plain (non-git) directories, the
+    /// function pre-creates `.git/hooks/` and `.git/config` and binds
+    /// them read-only. This closes the TOCTOU window where a sandbox
+    /// call could `git init && git config core.fsmonitor 'evil'` and
+    /// persist a poisoned config in a single invocation.
     #[test]
-    fn git_config_deny_skips_non_git_dir() {
+    fn git_config_deny_pre_creates_for_non_git_dir_to_close_toctou() {
         let dir = tempfile::tempdir().unwrap();
+        // Confirm the precondition: no .git/ initially.
+        assert!(
+            !dir.path().join(".git").exists(),
+            "precondition: tempdir should not be a git repo"
+        );
+
         let mut cmd = Command::new("true");
-        // Count before mutably borrowing cmd — collecting &OsStr refs would
-        // keep an immutable borrow alive across the &mut call (E0502).
-        let count_before = cmd.as_std().get_args().count();
         let root = dir.path().to_string_lossy();
         apply_git_config_deny(&mut cmd, &root);
-        let count_after = cmd.as_std().get_args().count();
+
+        // Side effect: .git/hooks/ and .git/config now exist on disk
+        // (pre-creation is required so the ro-bind has a source).
+        assert!(
+            dir.path().join(".git/hooks").is_dir(),
+            "hooks dir must be pre-created to give the bind-mount a source"
+        );
+        assert!(
+            dir.path().join(".git/config").is_file(),
+            "config file must be pre-created (empty) to close SEC-002"
+        );
         assert_eq!(
-            count_before, count_after,
-            "no args should be added for a directory with no .git/"
+            std::fs::read(dir.path().join(".git/config")).unwrap().len(),
+            0,
+            "pre-created config must be empty (a valid git config = use defaults)"
+        );
+
+        // The bind-mount args must reference both .git/hooks and .git/config.
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.windows(3)
+                .any(|w| { w[0] == "--ro-bind" && w[1].ends_with("/.git/hooks") }),
+            "hooks ro-bind must be present even on a fresh dir: {args:?}"
+        );
+        assert!(
+            args.windows(3)
+                .any(|w| { w[0] == "--ro-bind" && w[1].ends_with("/.git/config") }),
+            "config ro-bind must be present even on a fresh dir: {args:?}"
         );
     }
 
@@ -617,6 +667,13 @@ mod tests {
         let mut cmd = Command::new("true");
         let root = dir.path().to_string_lossy();
         apply_git_config_deny(&mut cmd, &root);
+
+        // Existing config must NOT be truncated.
+        assert_eq!(
+            std::fs::read(dir.path().join(".git/config")).unwrap(),
+            b"[core]\n",
+            "pre-existing config contents must be preserved"
+        );
 
         let args: Vec<String> = cmd
             .as_std()
