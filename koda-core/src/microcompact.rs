@@ -21,21 +21,33 @@ use std::collections::HashMap;
 pub const CLEARED_MESSAGE: &str = "[Old tool result content cleared]";
 
 /// Tools whose results can be safely cleared (output is re-obtainable).
+///
+/// **Canonical names only.**  `is_compactable` normalizes input through
+/// `tool_normalize::normalize_tool_name` before lookup, so any spelling
+/// the model emits — PascalCase, snake_case, camelCase, or any registered
+/// alias — routes to the same canonical entry here.  This means:
+///
+/// 1. **No dual-case redundancy.**  Adding `"read"` next to `"Read"` is
+///    pointless; the lookup canonicalizes first.
+/// 2. **Spellings must match `tool_normalize::CANONICAL`** exactly.
+///    For example, the canonical name for the file-listing tool is
+///    `"List"`, not `"ListFiles"`.  The `compactable_tools_are_canonical`
+///    test enforces this at test time — if an entry here ever drifts
+///    out of sync with `CANONICAL`, the test breaks loudly.
+///
+/// History: this constant used to list both PascalCase and snake_case
+/// variants of every entry, which (a) was redundant after #1075 wired
+/// `normalize_tool_calls` into `inference.rs` before persistence, and
+/// (b) hid a latent bug — `"ListFiles"` is not the canonical name, so
+/// `List` results were never compacted.  Fixed in #1083.
 const COMPACTABLE_TOOLS: &[&str] = &[
     "Read",
-    "read",
     "Bash",
-    "bash",
     "Grep",
-    "grep",
     "Glob",
-    "glob",
-    "ListFiles",
-    "list_files",
+    "List",
     "WebSearch",
-    "web_search",
     "WebFetch",
-    "web_fetch",
 ];
 
 /// Number of most-recent compactable tool results to keep intact.
@@ -182,7 +194,13 @@ struct CompactableResult {
 }
 
 fn is_compactable(tool_name: &str) -> bool {
-    COMPACTABLE_TOOLS.contains(&tool_name)
+    // Canonicalize the spelling first so PascalCase / snake_case /
+    // camelCase / any registered alias all hit the same entry.  See the
+    // doc comment on `COMPACTABLE_TOOLS` for the rationale.  Cheap:
+    // `normalize_tool_name` is a single `HashMap::get` on a lowercased
+    // input, falling back to pass-through for unknown names.
+    let canonical = crate::tool_normalize::normalize_tool_name(tool_name);
+    COMPACTABLE_TOOLS.contains(&canonical.as_str())
 }
 
 fn estimate_tokens(content: &str) -> usize {
@@ -249,11 +267,64 @@ mod tests {
         assert!(is_compactable("Bash"));
         assert!(is_compactable("Grep"));
         assert!(is_compactable("Glob"));
+        assert!(is_compactable("List"));
         assert!(is_compactable("WebSearch"));
         assert!(is_compactable("WebFetch"));
         assert!(!is_compactable("InvokeAgent"));
         assert!(!is_compactable("TodoWrite"));
         assert!(!is_compactable("AskUser"));
+    }
+
+    /// Regression for the latent bug discovered in #1083: post-#1075,
+    /// every `list_files` / `ListFiles` call is normalized to `"List"`
+    /// before persistence, so the old `COMPACTABLE_TOOLS` entries
+    /// (`"ListFiles"`, `"list_files"`) were dead code and `List`
+    /// results were never compacted.
+    #[test]
+    fn test_is_compactable_list_canonical_name() {
+        assert!(
+            is_compactable("List"),
+            "canonical name 'List' must be compactable \
+             (regression for the #1083 latent bug)"
+        );
+    }
+
+    /// Belt-and-suspenders: legacy DB rows from before #1075 may still
+    /// carry snake_case or alternate PascalCase spellings.  Defensive
+    /// normalization at the lookup site means any registered alias
+    /// hits the same canonical entry, so old sessions stay compactable
+    /// without a DB migration.
+    #[test]
+    fn test_is_compactable_accepts_aliases_for_legacy_rows() {
+        // snake_case (legacy pre-#1075 spelling)
+        assert!(is_compactable("list_files"));
+        assert!(is_compactable("read_file"));
+        assert!(is_compactable("web_fetch"));
+        assert!(is_compactable("web_search"));
+        assert!(is_compactable("grep_search"));
+        // alternate PascalCase that the audit's old constant listed
+        assert!(is_compactable("ListFiles"));
+        // single-letter aliases
+        assert!(is_compactable("ls"));
+        assert!(is_compactable("rg"));
+    }
+
+    /// Compile-time-ish drift guard: every entry in `COMPACTABLE_TOOLS`
+    /// must already be its own canonical form, otherwise the lookup is
+    /// dead code (the input gets normalized before comparison).  Catches
+    /// the exact class of bug #1083 fixed: an entry like `"ListFiles"`
+    /// that doesn't match `tool_normalize::CANONICAL`.
+    #[test]
+    fn test_compactable_tools_are_canonical() {
+        for &name in COMPACTABLE_TOOLS {
+            let canonical = crate::tool_normalize::normalize_tool_name(name);
+            assert_eq!(
+                canonical, name,
+                "COMPACTABLE_TOOLS entry {name:?} is not canonical — \
+                 it normalizes to {canonical:?}.  Either add it to \
+                 `tool_normalize::CANONICAL` or use the canonical spelling."
+            );
+        }
     }
 
     #[test]
