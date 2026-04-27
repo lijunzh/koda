@@ -768,15 +768,24 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
             hard_cap += extra;
         }
 
-        // Build system prompt with progress + todo + git context
-        let progress = crate::progress::get_progress_summary(db, session_id)
-            .await
-            .unwrap_or_default();
-        let todo_section = crate::tools::todo::get_todo_section(db, session_id).await;
+        // Build system prompt with git context.
+        //
+        // (#1077 Phase B) Progress and todo sections are no longer
+        // injected here. Per `DESIGN.md § Progress Tracking:
+        // Model-Owned, History-Persisted, Engine-Surfaced`, the model
+        // owns its own plan via `TodoWrite`, the conversation history
+        // persists it (the tool calls are themselves in the message
+        // stream), and the engine surfaces transitions via
+        // `EngineEvent::TodoUpdate`. Re-injecting either was the
+        // anti-pattern this issue removes — every reference project
+        // (claude_code_src / codex / zed / gemini-cli) abstains.
+        // Compaction (`compact.rs`) preserves outstanding tasks and
+        // file paths verbatim, which is the durable defense against
+        // context-window forgetting.
         let git_line = crate::git::git_context(project_root)
             .map(|ctx| format!("\n{ctx}"))
             .unwrap_or_default();
-        let system_prompt_full = format!("{base_system_prompt}{progress}{todo_section}{git_line}");
+        let system_prompt_full = format!("{base_system_prompt}{git_line}");
         let system_message = ChatMessage::text("system", &system_prompt_full);
 
         // Apply skill-scoped tool filtering: when a skill with `allowed_tools`

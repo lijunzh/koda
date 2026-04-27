@@ -102,7 +102,6 @@ pub mod persistence;
 /// Diff preview generation for file mutations.
 pub mod preview;
 /// Progress reporting helpers for long operations.
-pub mod progress;
 /// System prompt construction.
 pub mod prompt;
 /// LLM provider abstraction — Anthropic, Gemini, OpenAI-compatible.

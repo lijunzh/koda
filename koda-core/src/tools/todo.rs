@@ -371,37 +371,6 @@ pub async fn todo_write(db: &Database, session_id: &str, args: &Value) -> Result
     })
 }
 
-/// Load the todo section for injection into the system prompt.
-///
-/// Returns an empty string when no todos are stored (zero cost).
-pub async fn get_todo_section(db: &Database, session_id: &str) -> String {
-    let Ok(Some(raw)) = db.get_todo(session_id).await else {
-        return String::new();
-    };
-    let Ok(todos) = serde_json::from_str::<Vec<TodoItem>>(&raw) else {
-        return String::new();
-    };
-    if todos.is_empty() {
-        return String::new();
-    }
-
-    // Only surface non-completed tasks in the prompt (completed ones are noise).
-    let active: Vec<&TodoItem> = todos
-        .iter()
-        .filter(|t| t.status != TodoStatus::Completed)
-        .collect();
-
-    if active.is_empty() {
-        return String::new();
-    }
-
-    let mut out = "\n## Current Tasks\n".to_string();
-    for t in &active {
-        out.push_str(&format!("{}{}\n", format_item(t), t.priority.suffix(),));
-    }
-    out
-}
-
 // ── Formatting ──────────────────────────────────────────────────────────────
 
 /// Format a single todo item: `[x] Task description`
@@ -456,39 +425,15 @@ mod tests {
         assert!(out.message.contains("[ ] Add tests"));
         assert!(out.message.contains("[→] Write docs"));
 
-        let section = get_todo_section(&db, &sid).await;
-        assert!(section.contains("Add tests"));
-        assert!(section.contains("Write docs"));
-    }
-
-    #[tokio::test]
-    async fn completed_tasks_hidden_from_section() {
-        let (db, _dir, sid) = test_db().await;
-        let args = json!({
-            "todos": [
-                {"content": "Done task", "status": "completed", "priority": "low"},
-                {"content": "Active task", "status": "pending", "priority": "high"},
-            ]
-        });
-        todo_write(&db, &sid, &args).await.unwrap();
-        let section = get_todo_section(&db, &sid).await;
-        assert!(
-            !section.contains("Done task"),
-            "completed tasks should be hidden"
-        );
-        assert!(section.contains("Active task"));
-    }
-
-    #[tokio::test]
-    async fn all_completed_returns_empty_section() {
-        let (db, _dir, sid) = test_db().await;
-        let args = json!({
-            "todos": [
-                {"content": "Done", "status": "completed", "priority": "medium"}
-            ]
-        });
-        todo_write(&db, &sid, &args).await.unwrap();
-        assert!(get_todo_section(&db, &sid).await.is_empty());
+        // (#1077 Phase B) Persistence verified through the public DB
+        // accessor instead of the deleted `get_todo_section` helper.
+        // Clients now mirror state from `EngineEvent::TodoUpdate`;
+        // the DB row stays as the source-of-truth for ACP
+        // reconnects but is no longer read into the system prompt.
+        use crate::persistence::Persistence;
+        let raw = db.get_todo(&sid).await.unwrap().expect("row persisted");
+        assert!(raw.contains("Add tests"));
+        assert!(raw.contains("Write docs"));
     }
 
     #[tokio::test]
@@ -503,7 +448,11 @@ mod tests {
         let clear = json!({ "todos": [] });
         let out = todo_write(&db, &sid, &clear).await.unwrap();
         assert!(out.message.contains("cleared"));
-        assert!(get_todo_section(&db, &sid).await.is_empty());
+        // Persisted row is the empty list (not deleted) — same
+        // observable behaviour as before, just verified directly.
+        use crate::persistence::Persistence;
+        let raw = db.get_todo(&sid).await.unwrap().expect("row persisted");
+        assert_eq!(raw, "[]");
     }
 
     #[tokio::test]
