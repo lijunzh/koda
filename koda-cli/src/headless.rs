@@ -295,6 +295,22 @@ impl EngineSink for HeadlessSink {
                 };
                 eprintln!("\x1b[2m  [bg task {task_id}] {summary}\x1b[0m");
             }
+            // (#1077 Phase A) TodoWrite lifecycle in headless: render a
+            // dim one-liner with diff counts so a script tailing stdout
+            // sees "todos: +2 ~1 -0 (5 total)" on every accepted change.
+            // The full per-item list still rides on the next tool result
+            // (which the headless `print_tool_result` path renders) —
+            // this is just the structured transition for scripts that
+            // want to grep "added" without parsing the formatted list.
+            EngineEvent::TodoUpdate { items, diff } => {
+                eprintln!(
+                    "\x1b[2m  [todos] +{} ~{} -{} ({} total)\x1b[0m",
+                    diff.added.len(),
+                    diff.changed.len(),
+                    diff.removed.len(),
+                    items.len(),
+                );
+            }
             EngineEvent::Footer {
                 completion_tokens,
                 total_chars,

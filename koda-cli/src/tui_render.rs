@@ -284,12 +284,18 @@ impl TuiRenderer {
             | EngineEvent::TurnStart { .. }
             | EngineEvent::TurnEnd { .. }
             | EngineEvent::LoopCapReached { .. }
-            | EngineEvent::BgTaskUpdate { .. } => {
+            | EngineEvent::BgTaskUpdate { .. }
+            | EngineEvent::TodoUpdate { .. } => {
                 // Handled by the event loop, not the renderer.
                 // (#1076) BgTaskUpdate is routed to the bg-task panel,
                 // which still reads from the registry snapshot for its
                 // primary render. Future cleanup may have it consume
                 // the event stream directly and drop the polling.
+                // (#1077 Phase A) TodoUpdate is rendered by the TUI's
+                // todo-list panel from the tool-result message stream;
+                // the structured event is for ACP / headless clients
+                // that want diff-driven animation. Same future-cleanup
+                // path as BgTaskUpdate.
             }
             EngineEvent::ActionBlocked {
                 tool_name: _,

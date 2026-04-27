@@ -170,6 +170,31 @@ pub fn engine_event_to_acp(
             ))
         }
 
+        // (#1077 Phase A) TodoWrite lifecycle. Surfaces every accepted
+        // change so ACP IDEs can render a checklist (with diff-driven
+        // animation if they care). The diff (added / changed /
+        // removed) and the full new list are both in the structured
+        // payload, but ACP's `session/update` notifications carry text
+        // chunks today — so we render a compact human-readable line
+        // here. IDEs that want richer rendering can scan the
+        // tool-result stream for `TodoWrite` outputs (the formatted
+        // list lives there); the goal of this notification is parity
+        // with `BgTaskUpdate` ("a transition happened, here's the
+        // gist"), not to be the sole source of render data.
+        EngineEvent::TodoUpdate { items, diff } => {
+            let cb = acp::ContentBlock::Text(acp::TextContent::new(format!(
+                "[todos] +{} ~{} -{} ({} total)",
+                diff.added.len(),
+                diff.changed.len(),
+                diff.removed.len(),
+                items.len(),
+            )));
+            Some(acp::SessionNotification::new(
+                session_id.to_string(),
+                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(cb)),
+            ))
+        }
+
         // Handled specially by AcpSink (bidirectional permission flow)
         EngineEvent::ApprovalRequest { .. } => None,
         // AskUser not yet implemented in ACP protocol; filtered here.
@@ -545,6 +570,122 @@ mod tests {
                 t.text
             );
         }
+    }
+
+    // #1077 Phase A: TodoWrite lifecycle reaches ACP clients as a
+    // session/update notification with a compact diff summary. Three
+    // tests covering the dimensions a future ACP IDE renderer cares
+    // about: counts, diff direction (added vs. removed vs. changed),
+    // and the empty-diff suppression contract (which is enforced at
+    // the dispatch layer in tools/mod.rs — see corresponding test
+    // there). The tests below verify the *mapping* assuming the
+    // dispatch layer has already chosen to emit.
+
+    fn sample_todo(content: &str, status_str: &str) -> koda_core::tools::todo::TodoItem {
+        use koda_core::tools::todo::{TodoItem, TodoPriority, TodoStatus};
+        let status = match status_str {
+            "pending" => TodoStatus::Pending,
+            "in_progress" => TodoStatus::InProgress,
+            "completed" => TodoStatus::Completed,
+            other => panic!("unknown status {other}"),
+        };
+        TodoItem {
+            content: content.into(),
+            status,
+            priority: TodoPriority::Medium,
+        }
+    }
+
+    #[test]
+    fn test_todo_update_first_write_renders_added_count() {
+        use koda_core::tools::todo::TodoDiff;
+        let items = vec![sample_todo("A", "pending"), sample_todo("B", "in_progress")];
+        let diff = TodoDiff {
+            added: items.clone(),
+            ..Default::default()
+        };
+        let event = EngineEvent::TodoUpdate { items, diff };
+        let notif = engine_event_to_acp(&event, "s1").expect("must produce notification");
+        match notif.update {
+            acp::SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
+                acp::ContentBlock::Text(t) => {
+                    assert!(t.text.contains("[todos]"), "got: {}", t.text);
+                    assert!(t.text.contains("+2"), "expected +2 added, got: {}", t.text);
+                    assert!(
+                        t.text.contains("~0"),
+                        "expected ~0 changed, got: {}",
+                        t.text
+                    );
+                    assert!(
+                        t.text.contains("-0"),
+                        "expected -0 removed, got: {}",
+                        t.text
+                    );
+                    assert!(t.text.contains("(2 total)"), "got: {}", t.text);
+                }
+                other => panic!("expected text content, got {other:?}"),
+            },
+            other => panic!("expected AgentMessageChunk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_todo_update_status_change_renders_changed_count() {
+        use koda_core::tools::todo::{TodoChange, TodoDiff};
+        let before = sample_todo("A", "pending");
+        let after = sample_todo("A", "in_progress");
+        let items = vec![after.clone()];
+        let diff = TodoDiff {
+            changed: vec![TodoChange { before, after }],
+            ..Default::default()
+        };
+        let event = EngineEvent::TodoUpdate { items, diff };
+        let notif = engine_event_to_acp(&event, "s1").unwrap();
+        let acp::SessionUpdate::AgentMessageChunk(chunk) = notif.update else {
+            panic!("expected chunk");
+        };
+        let acp::ContentBlock::Text(t) = chunk.content else {
+            panic!("expected text");
+        };
+        assert!(t.text.contains("+0"), "expected +0 added, got: {}", t.text);
+        assert!(
+            t.text.contains("~1"),
+            "expected ~1 changed, got: {}",
+            t.text
+        );
+        assert!(
+            t.text.contains("-0"),
+            "expected -0 removed, got: {}",
+            t.text
+        );
+        assert!(t.text.contains("(1 total)"), "got: {}", t.text);
+    }
+
+    #[test]
+    fn test_todo_update_clear_renders_removed_count() {
+        use koda_core::tools::todo::TodoDiff;
+        let removed = vec![sample_todo("A", "completed"), sample_todo("B", "completed")];
+        let diff = TodoDiff {
+            removed,
+            ..Default::default()
+        };
+        let event = EngineEvent::TodoUpdate {
+            items: Vec::new(),
+            diff,
+        };
+        let notif = engine_event_to_acp(&event, "s1").unwrap();
+        let acp::SessionUpdate::AgentMessageChunk(chunk) = notif.update else {
+            panic!("expected chunk");
+        };
+        let acp::ContentBlock::Text(t) = chunk.content else {
+            panic!("expected text");
+        };
+        assert!(
+            t.text.contains("-2"),
+            "expected -2 removed, got: {}",
+            t.text
+        );
+        assert!(t.text.contains("(0 total)"), "got: {}", t.text);
     }
 
     #[test]

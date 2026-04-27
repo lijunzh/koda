@@ -103,6 +103,31 @@ pub enum EngineEvent {
 
     /// A sub-agent finished.
 
+    // ── Todo list lifecycle (#1077 Phase A) ───────────────────────
+    /// The model called `TodoWrite` and the engine accepted the new
+    /// list. Emitted exactly once per accepted call (skipped when the
+    /// new list is byte-identical to the previous one — the
+    /// dedup-nudge path returns the "unchanged" message to the model
+    /// without surfacing a transition to clients).
+    ///
+    /// Carries the full new list AND a server-computed diff against
+    /// the previously persisted list so every client renders the
+    /// same animation primitives (added / changed / removed) without
+    /// having to maintain its own previous-list snapshot.
+    ///
+    /// Establishes the principle from `DESIGN.md § Progress Tracking:
+    /// Model-Owned, History-Persisted, Engine-Surfaced` — the engine
+    /// surfaces transitions, the conversation history persists the
+    /// list, the system prompt does not re-inject it.
+    TodoUpdate {
+        /// The full todo list as written by the model on this call.
+        items: Vec<crate::tools::todo::TodoItem>,
+        /// Server-computed diff against the previously persisted list
+        /// (matched by `content` string). On the first write of a
+        /// session, every item shows up in `added`.
+        diff: crate::tools::todo::TodoDiff,
+    },
+
     // ── Background sub-agent lifecycle ────────────────────────────────
     /// A background sub-agent's status changed.
     ///

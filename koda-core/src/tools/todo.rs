@@ -94,6 +94,123 @@ pub struct TodoItem {
     pub priority: TodoPriority,
 }
 
+// ── Diff types ───────────────────────────────────────────
+
+/// Before/after pair for a todo whose `status` and/or `priority` changed
+/// while keeping the same `content` string.
+///
+/// Computed server-side by [`todo_write`] so every client (TUI / ACP /
+/// headless / future) gets the same animation primitives without
+/// having to maintain its own previous-list snapshot. Surfaces on
+/// [`crate::engine::EngineEvent::TodoUpdate`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoChange {
+    /// State on the previously persisted list.
+    pub before: TodoItem,
+    /// State on the newly written list.
+    pub after: TodoItem,
+}
+
+/// Server-computed delta between the previously persisted todo list
+/// and the one the model just wrote.
+///
+/// **Matching key is `content`.** If the model renames a task the
+/// rename surfaces as one entry in `removed` plus one in `added`,
+/// which is the right semantic — a renamed task is conceptually a
+/// different task to the user even if the underlying intent is the
+/// same.
+///
+/// On the very first `TodoWrite` of a session, every item lands in
+/// `added`. On a clear (`todos: []`), every previously persisted
+/// item lands in `removed`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TodoDiff {
+    /// Items present on the new list whose `content` is not on the old list.
+    pub added: Vec<TodoItem>,
+    /// Items present on the old list whose `content` is not on the new list.
+    pub removed: Vec<TodoItem>,
+    /// Items present on both lists by `content` whose `status` or
+    /// `priority` changed.
+    pub changed: Vec<TodoChange>,
+}
+
+impl TodoDiff {
+    /// `true` when there are no additions, removals, or changes.
+    /// Used to suppress the `TodoUpdate` event on no-op writes — the
+    /// dedup-nudge path returns the "unchanged" message to the model
+    /// without surfacing a transition to clients.
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.changed.is_empty()
+    }
+
+    /// Compute the diff between an old list and a new list.
+    ///
+    /// O(n*m) but n and m are bounded by typical todo-list size (low
+    /// dozens at the absolute outside) so a HashMap would be more
+    /// code than savings.
+    fn compute(old: &[TodoItem], new: &[TodoItem]) -> Self {
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
+        let mut changed = Vec::new();
+
+        // Pass 1: walk new list. Each item is either added, changed, or
+        // unchanged-equal-to-old.
+        for n in new {
+            match old.iter().find(|o| o.content == n.content) {
+                None => added.push(n.clone()),
+                Some(o) if o != n => changed.push(TodoChange {
+                    before: o.clone(),
+                    after: n.clone(),
+                }),
+                Some(_) => { /* identical — no diff entry */ }
+            }
+        }
+
+        // Pass 2: walk old list. Anything whose content is missing from
+        // new is a removal.
+        for o in old {
+            if !new.iter().any(|n| n.content == o.content) {
+                removed.push(o.clone());
+            }
+        }
+
+        Self {
+            added,
+            removed,
+            changed,
+        }
+    }
+}
+
+// ── Outcome ───────────────────────────────────────────────
+
+/// What [`todo_write`] returns to the dispatch layer.
+///
+/// The dispatch layer:
+/// 1. forwards `message` to the model as the tool result string;
+/// 2. when `diff.is_empty()` is `false`, emits
+///    [`crate::engine::EngineEvent::TodoUpdate`] with `items` and
+///    `diff` so every client sees the transition.
+///
+/// Splitting `message` (model-facing) from `items + diff` (client-
+/// facing) is the same separation Claude Code's `TodoWriteTool` uses
+/// (`mapToolResultToToolResultBlockParam` returns a plain string
+/// while the structured diff goes to the UI). It keeps the model's
+/// tool-result clean and the UI's render data rich.
+#[derive(Debug, Clone)]
+pub struct TodoWriteOutcome {
+    /// String returned to the model as the tool result.
+    pub message: String,
+    /// Full new list, after dedup short-circuit but always populated
+    /// (even on the unchanged path) so callers that want to mirror
+    /// the latest list don't have to re-read from the DB.
+    pub items: Vec<TodoItem>,
+    /// Server-computed diff against the previously persisted list.
+    /// `is_empty()` on the unchanged path; `added` is non-empty on
+    /// the first write of a session.
+    pub diff: TodoDiff,
+}
+
 // ── Tool definition ─────────────────────────────────────────────────────────
 
 /// Return the tool definition for the LLM.
@@ -140,15 +257,32 @@ pub fn definitions() -> Vec<ToolDefinition> {
     }]
 }
 
-// ── Handler ─────────────────────────────────────────────────────────────────
+// ── Handler ───────────────────────────────────────────────
 
 /// Write the full todo list for this session.
 ///
-/// **Content-aware dedup**: if the incoming list is identical to what's
-/// already stored, we skip the write and return a short "unchanged"
-/// message. This prevents the model from burning tool calls (and
-/// triggering loop detection) by re-emitting the same plan.
-pub async fn todo_write(db: &Database, session_id: &str, args: &Value) -> Result<String> {
+/// Returns a [`TodoWriteOutcome`] with both the model-facing message
+/// and structured `items + diff` for the dispatch layer to surface
+/// via [`crate::engine::EngineEvent::TodoUpdate`].
+///
+/// **Validation** (rejected before any DB write):
+/// - `todos` must be an array.
+/// - Each item needs a non-empty `content`, a valid `status`, and a
+///   valid `priority`.
+/// - At most one item may have `status == InProgress`. Stolen from
+///   Gemini CLI (`packages/core/src/tools/write-todos.ts`); the
+///   only one of the four reference projects that enforces it
+///   server-side instead of via prompt discipline. Small,
+///   deterministic, removes one class of model failure mode.
+///
+/// **Content-aware dedup**: if the parsed list is byte-equal to
+/// what's already stored, we skip the write and return a short
+/// "unchanged" message. The returned `diff` is empty and the
+/// dispatch layer suppresses the `TodoUpdate` event — this prevents
+/// the model from burning tool calls (and triggering loop detection)
+/// by re-emitting the same plan, while also not spamming clients
+/// with no-op transitions.
+pub async fn todo_write(db: &Database, session_id: &str, args: &Value) -> Result<TodoWriteOutcome> {
     let raw = args
         .get("todos")
         .and_then(|v| v.as_array())
@@ -188,25 +322,53 @@ pub async fn todo_write(db: &Database, session_id: &str, args: &Value) -> Result
         });
     }
 
-    // ── Content-aware dedup ──────────────────────────────────────────
-    // Compare with what's already stored. If identical, skip the write
-    // and tell the model explicitly so it stops re-emitting the same plan.
-    if let Ok(Some(existing_json)) = db.get_todo(session_id).await
-        && let Ok(existing) = serde_json::from_str::<Vec<TodoItem>>(&existing_json)
-        && existing == todos
-    {
-        return Ok(format!(
-            "Todo list unchanged ({} task{}). \
-             Do not call TodoWrite again unless you are changing a task's status or content.",
-            todos.len(),
-            if todos.len() == 1 { "" } else { "s" }
-        ));
+    // ── Single-in-progress invariant (#1077 Phase A) ────────────
+    // Reject before reading the previous list — this is a structural
+    // input error, not a state-dependent one.
+    let in_progress = todos
+        .iter()
+        .filter(|t| t.status == TodoStatus::InProgress)
+        .count();
+    if in_progress > 1 {
+        anyhow::bail!(
+            "Invalid todo list: {in_progress} tasks marked 'in_progress'. \
+             Only one task may be 'in_progress' at a time — mark all but one as \
+             'pending' or 'completed' and call TodoWrite again."
+        );
     }
+
+    // ── Load the previous list once (for both dedup and diff) ─────
+    let old: Vec<TodoItem> = match db.get_todo(session_id).await {
+        Ok(Some(raw)) => serde_json::from_str(&raw).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    // ── Content-aware dedup ─────────────────────────────
+    // Byte-equal previous list short-circuits the write AND the event
+    // emission. `TodoDiff::default()` (empty) signals "no transition".
+    if old == todos {
+        return Ok(TodoWriteOutcome {
+            message: format!(
+                "Todo list unchanged ({} task{}). \
+                 Do not call TodoWrite again unless you are changing a task's status or content.",
+                todos.len(),
+                if todos.len() == 1 { "" } else { "s" }
+            ),
+            items: todos,
+            diff: TodoDiff::default(),
+        });
+    }
+
+    let diff = TodoDiff::compute(&old, &todos);
 
     let json = serde_json::to_string(&todos)?;
     db.set_todo(session_id, &json).await?;
 
-    Ok(format_todo_list(&todos))
+    Ok(TodoWriteOutcome {
+        message: format_todo_list(&todos),
+        items: todos,
+        diff,
+    })
 }
 
 /// Load the todo section for injection into the system prompt.
@@ -290,9 +452,9 @@ mod tests {
             ]
         });
         let out = todo_write(&db, &sid, &args).await.unwrap();
-        assert!(out.contains("0/2 done"));
-        assert!(out.contains("[ ] Add tests"));
-        assert!(out.contains("[→] Write docs"));
+        assert!(out.message.contains("0/2 done"));
+        assert!(out.message.contains("[ ] Add tests"));
+        assert!(out.message.contains("[→] Write docs"));
 
         let section = get_todo_section(&db, &sid).await;
         assert!(section.contains("Add tests"));
@@ -340,7 +502,7 @@ mod tests {
         // Then clear it
         let clear = json!({ "todos": [] });
         let out = todo_write(&db, &sid, &clear).await.unwrap();
-        assert!(out.contains("cleared"));
+        assert!(out.message.contains("cleared"));
         assert!(get_todo_section(&db, &sid).await.is_empty());
     }
 
@@ -435,17 +597,23 @@ mod tests {
         });
         // First write — should persist and return full list
         let out1 = todo_write(&db, &sid, &args).await.unwrap();
-        assert!(out1.contains("0/2 done"));
+        assert!(out1.message.contains("0/2 done"));
 
         // Second write with identical content — should short-circuit
         let out2 = todo_write(&db, &sid, &args).await.unwrap();
         assert!(
-            out2.contains("unchanged"),
-            "identical call should return 'unchanged', got: {out2}"
+            out2.message.contains("unchanged"),
+            "identical call should return 'unchanged', got: {}",
+            out2.message
         );
         assert!(
-            out2.contains("Do not call TodoWrite again"),
+            out2.message.contains("Do not call TodoWrite again"),
             "should tell model to stop calling"
+        );
+        assert!(
+            out2.diff.is_empty(),
+            "unchanged write must yield an empty diff so the dispatch \
+             layer suppresses the TodoUpdate event"
         );
     }
 
@@ -467,9 +635,226 @@ mod tests {
         });
         let out = todo_write(&db, &sid, &args2).await.unwrap();
         assert!(
-            out.contains("1/1 done"),
-            "status change should write normally, got: {out}"
+            out.message.contains("1/1 done"),
+            "status change should write normally, got: {}",
+            out.message
         );
-        assert!(out.contains("[x] Task A"));
+        assert!(out.message.contains("[x] Task A"));
+    }
+
+    // ── #1077 Phase A: validation ───────────────────────────
+
+    /// Two `in_progress` items must be rejected up front. Stolen
+    /// from Gemini CLI; the only one of the four reference projects
+    /// that enforces single-in-progress server-side. Without this,
+    /// the model can silently keep two tasks active and clients
+    /// render a contradictory checklist.
+    #[tokio::test]
+    async fn rejects_two_in_progress_items() {
+        let (db, _dir, sid) = test_db().await;
+        let args = json!({
+            "todos": [
+                {"content": "A", "status": "in_progress", "priority": "high"},
+                {"content": "B", "status": "in_progress", "priority": "medium"},
+            ]
+        });
+        let err = todo_write(&db, &sid, &args).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Only one task"), "got: {msg}");
+        assert!(msg.contains("in_progress"), "got: {msg}");
+        // Must reject BEFORE writing — the DB should still be empty.
+        use crate::persistence::Persistence;
+        assert!(
+            db.get_todo(&sid).await.unwrap().is_none(),
+            "failed validation must not touch the DB"
+        );
+    }
+
+    /// Single `in_progress` is the happy path; many `pending`
+    /// alongside is fine.
+    #[tokio::test]
+    async fn accepts_single_in_progress() {
+        let (db, _dir, sid) = test_db().await;
+        let args = json!({
+            "todos": [
+                {"content": "A", "status": "in_progress", "priority": "high"},
+                {"content": "B", "status": "pending", "priority": "medium"},
+                {"content": "C", "status": "pending", "priority": "low"},
+            ]
+        });
+        let out = todo_write(&db, &sid, &args).await.unwrap();
+        assert!(out.message.contains("0/3 done"));
+    }
+
+    /// Zero `in_progress` (all pending or all completed) is
+    /// permitted — the rule is at-most-one, not exactly-one.
+    #[tokio::test]
+    async fn accepts_zero_in_progress() {
+        let (db, _dir, sid) = test_db().await;
+        let args = json!({
+            "todos": [
+                {"content": "A", "status": "pending", "priority": "high"},
+                {"content": "B", "status": "pending", "priority": "medium"},
+            ]
+        });
+        let out = todo_write(&db, &sid, &args).await.unwrap();
+        assert!(out.message.contains("0/2 done"));
+    }
+
+    // ── #1077 Phase A: diff computation ───────────────────────
+
+    fn item(content: &str, status: TodoStatus, priority: TodoPriority) -> TodoItem {
+        TodoItem {
+            content: content.into(),
+            status,
+            priority,
+        }
+    }
+
+    #[test]
+    fn diff_first_write_lands_everything_in_added() {
+        // First write of a session: previous list is empty so every
+        // item must show up in `added` — nothing in `changed` or
+        // `removed`. This is what enables clients to do a one-shot
+        // "populate from empty" render on session start.
+        let new = vec![
+            item("A", TodoStatus::Pending, TodoPriority::High),
+            item("B", TodoStatus::InProgress, TodoPriority::Medium),
+        ];
+        let diff = TodoDiff::compute(&[], &new);
+        assert_eq!(diff.added.len(), 2);
+        assert!(diff.changed.is_empty());
+        assert!(diff.removed.is_empty());
+        assert!(!diff.is_empty());
+    }
+
+    #[test]
+    fn diff_clear_lands_everything_in_removed() {
+        let old = vec![
+            item("A", TodoStatus::Pending, TodoPriority::High),
+            item("B", TodoStatus::Completed, TodoPriority::Medium),
+        ];
+        let diff = TodoDiff::compute(&old, &[]);
+        assert!(diff.added.is_empty());
+        assert!(diff.changed.is_empty());
+        assert_eq!(diff.removed.len(), 2);
+    }
+
+    #[test]
+    fn diff_status_change_lands_in_changed() {
+        // Same content, status flipped — surfaces as a single
+        // `TodoChange`, not as removed+added. Clients can render
+        // an in-place state transition (animate the checkbox) vs. a
+        // wholesale list rewrite.
+        let old = vec![item("A", TodoStatus::Pending, TodoPriority::High)];
+        let new = vec![item("A", TodoStatus::InProgress, TodoPriority::High)];
+        let diff = TodoDiff::compute(&old, &new);
+        assert!(diff.added.is_empty());
+        assert!(diff.removed.is_empty());
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].before.status, TodoStatus::Pending);
+        assert_eq!(diff.changed[0].after.status, TodoStatus::InProgress);
+    }
+
+    #[test]
+    fn diff_rename_lands_as_remove_plus_add() {
+        // Rename = different `content` string, so by design the diff
+        // surfaces it as removal + addition rather than a
+        // `TodoChange`. Documented behaviour on `TodoDiff` — if a
+        // future product decision wants rename detection, that's a
+        // schema change (need a stable id), not a diff-algorithm
+        // tweak. Lock this in with a test so the trade-off doesn't
+        // silently flip.
+        let old = vec![item("old name", TodoStatus::Pending, TodoPriority::High)];
+        let new = vec![item("new name", TodoStatus::Pending, TodoPriority::High)];
+        let diff = TodoDiff::compute(&old, &new);
+        assert_eq!(diff.added.len(), 1);
+        assert_eq!(diff.removed.len(), 1);
+        assert!(diff.changed.is_empty());
+    }
+
+    #[test]
+    fn diff_unchanged_item_does_not_surface() {
+        // An item identical on both sides must NOT appear in any
+        // bucket. This is what lets clients render "only what
+        // changed" without filtering noise.
+        let old = vec![
+            item("A", TodoStatus::Pending, TodoPriority::High),
+            item("B", TodoStatus::InProgress, TodoPriority::Medium),
+        ];
+        let new = vec![
+            item("A", TodoStatus::Pending, TodoPriority::High), // unchanged
+            item("B", TodoStatus::Completed, TodoPriority::Medium), // status flipped
+        ];
+        let diff = TodoDiff::compute(&old, &new);
+        assert!(diff.added.is_empty());
+        assert!(diff.removed.is_empty());
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].after.content, "B");
+    }
+
+    #[test]
+    fn diff_priority_only_change_lands_in_changed() {
+        // Edge case: priority changed but status unchanged. The
+        // matching key is `content`; the change predicate is
+        // `before != after`, which uses derived `PartialEq` on the
+        // whole struct including priority. So priority bumps DO
+        // surface as `changed`. Important for clients that render
+        // priority badges — they need to know to re-render.
+        let old = vec![item("A", TodoStatus::Pending, TodoPriority::Low)];
+        let new = vec![item("A", TodoStatus::Pending, TodoPriority::High)];
+        let diff = TodoDiff::compute(&old, &new);
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].before.priority, TodoPriority::Low);
+        assert_eq!(diff.changed[0].after.priority, TodoPriority::High);
+    }
+
+    #[test]
+    fn diff_empty_when_lists_identical() {
+        let old = vec![item("A", TodoStatus::Pending, TodoPriority::High)];
+        let new = old.clone();
+        let diff = TodoDiff::compute(&old, &new);
+        assert!(diff.is_empty(), "identical lists must produce no diff");
+    }
+
+    // ── #1077 Phase A: outcome shape ────────────────────────
+
+    /// `TodoWriteOutcome.items` must always carry the full list,
+    /// even on the dedup-nudge path. This is what lets clients
+    /// (e.g. ACP IDEs) mirror the latest state without re-reading
+    /// from the DB on every event.
+    #[tokio::test]
+    async fn outcome_items_populated_on_dedup_path() {
+        let (db, _dir, sid) = test_db().await;
+        let args = json!({
+            "todos": [
+                {"content": "A", "status": "pending", "priority": "high"},
+            ]
+        });
+        todo_write(&db, &sid, &args).await.unwrap();
+        let out2 = todo_write(&db, &sid, &args).await.unwrap();
+        assert!(out2.diff.is_empty(), "dedup must yield empty diff");
+        assert_eq!(out2.items.len(), 1, "dedup must still populate items");
+        assert_eq!(out2.items[0].content, "A");
+    }
+
+    /// First-ever write must produce a non-empty diff with the
+    /// initial items in `added`. This is the event the dispatch
+    /// layer surfaces as `EngineEvent::TodoUpdate`.
+    #[tokio::test]
+    async fn outcome_first_write_yields_added_diff() {
+        let (db, _dir, sid) = test_db().await;
+        let args = json!({
+            "todos": [
+                {"content": "A", "status": "pending", "priority": "high"},
+                {"content": "B", "status": "in_progress", "priority": "medium"},
+            ]
+        });
+        let out = todo_write(&db, &sid, &args).await.unwrap();
+        assert!(!out.diff.is_empty());
+        assert_eq!(out.diff.added.len(), 2);
+        assert!(out.diff.removed.is_empty());
+        assert!(out.diff.changed.is_empty());
+        assert_eq!(out.items.len(), 2);
     }
 }
