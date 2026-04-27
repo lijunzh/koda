@@ -188,6 +188,17 @@ from `KodaSession` (per-conversation, mutable). Zed conflates these into
 shares the agent definition by `Arc` and has its own session for state. No
 `Arc<RwLock<>>` everywhere.
 
+**Known leak: background sub-agent status** (tracked in #1076). The boundary
+claim above — "all engine output flows through `EngineSink`" — is true for
+inference output but not for `BgAgentRegistry` status. The TUI today reads
+bg-task state by calling `BgAgentRegistry::snapshot()` directly through a
+shared `Arc` it grabs out of `KodaSession`. There is no `BgTaskUpdate`
+variant in `EngineEvent`, so ACP clients and headless mode cannot surface
+live bg-task status even though the engine has the data. Fix is to add
+`EngineEvent::BgTaskUpdate { id, status, … }` and have the registry push
+to the sink on transitions (~50–100 LOC). Until then this is a documented
+carve-out, not a permanent design choice.
+
 ### ACP (Agent Client Protocol) (P3)
 
 Koda's server mode will speak ACP. Both Zed and Goose independently converged
@@ -387,29 +398,43 @@ make snake_case unreachable in new sessions. The dual-case list protects
 legacy DB rows from before normalization existed. Acceptable redundancy;
 delete after a full schema migration if/when one happens.
 
-### Engine-Tracked Progress vs. Model-Tracked Todos (open tension)
+### Progress Tracking: Model-Driven Only (P3)
 
-`progress.rs` (engine-side) auto-extracts "files created/edited/deleted" and
-"tests run with exit codes" from tool results, persists them in the DB, and
-re-injects them into the system prompt so the model retains a "done list"
-across compaction.
+Koda tracks "what's been done this session" through a single mechanism: the
+**`TodoWrite` tool** (model-driven, schema copied from Claude Code), backed
+by `FileTracker` for typed file-ownership state used by the auto-approve-delete
+gate.
 
-`TodoWrite` (model-side tool) lets the model write a structured todo list
-to the same DB.
+**Field survey** (none of the reference projects do engine-side progress
+extraction):
 
-**These overlap**. P3 ("let the model drive") argues `TodoWrite` is the
-canonical mechanism and `progress.rs` reimplements verification in the
-engine. The counter-argument: `progress.rs` is *automatic* and survives
-model forgetfulness after compaction, where `TodoWrite` requires the model
-to remember to call it.
+| Project | Engine extracts progress from tool output? | Model-driven todo tool? |
+|---|---|---|
+| Claude Code | No | `TodoWrite` |
+| Codex (OpenAI) | No | `update_plan` |
+| Gemini CLI | No | None (model handles natively) |
+| Zed agent | No | `update_plan`-style |
 
-**Status**: kept for now because models *do* skip `TodoWrite` calls under
-compaction pressure, but flagged for review. Resolution path:
+Koda used to have a third mechanism — `progress.rs`, an engine-side string-
+matcher that scraped `"Created"`/`"Wrote"`/`"Applied"`/`"edited"` patterns
+from tool result text and re-injected a synthesized "done list" into the
+system prompt. It was an exact instance of the P3 anti-pattern
+("don't scaffold around model weakness") and produced two parallel "done"
+lists in the prompt because `TodoWrite` already covered the same ground
+better.
 
-1. Measure how often `TodoWrite` is actually called in long sessions
-2. If frequent enough, delete `progress.rs` (~365 LOC) and rely on the model
-3. If not, keep `progress.rs` but rename it `auto_progress.rs` and document
-   it as a documented engine-side compensator (like `tool_normalize.rs`)
+**The replacement** (tracked in #1077):
+
+1. Improve `compact.rs` summarization prompt to explicitly preserve file
+   paths created/modified and outstanding tasks (~20 LOC).
+2. Add `FileTracker::summary_for_prompt()` and inject it into `prompt.rs`
+   so "files touched this session" comes from the typed dispatch outcome,
+   not from pattern-matched output text (~30 LOC).
+3. Delete `progress.rs` (~365 LOC removed).
+
+Net: ~315 LOC removed, three mechanisms collapse to two (model-owned task
+list + engine-typed file ownership), P3 restored, no string-matching of
+tool output.
 
 ### Sub-Agent Model Routing (P1, P3)
 
