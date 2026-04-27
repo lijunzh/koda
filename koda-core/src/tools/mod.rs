@@ -720,7 +720,27 @@ impl ToolRegistry {
                 let db_opt = self.db.read().ok().and_then(|g| g.clone());
                 let sid_opt = self.session_id.read().ok().and_then(|g| g.clone());
                 match (db_opt, sid_opt) {
-                    (Some(db), Some(sid)) => todo::todo_write(&db, &sid, &args).await,
+                    (Some(db), Some(sid)) => match todo::todo_write(&db, &sid, &args).await {
+                        Ok(outcome) => {
+                            // #1077 Phase A: surface the transition to
+                            // every client (TUI / ACP / headless) via
+                            // EngineEvent::TodoUpdate. The dedup-nudge
+                            // path returns an empty diff so we suppress
+                            // the event there — unchanged-list writes
+                            // are a no-op for clients, only a reminder
+                            // for the model.
+                            if !outcome.diff.is_empty()
+                                && let Some((sink, _call_id)) = sink_for_streaming
+                            {
+                                sink.emit(crate::engine::EngineEvent::TodoUpdate {
+                                    items: outcome.items.clone(),
+                                    diff: outcome.diff.clone(),
+                                });
+                            }
+                            Ok(outcome.message)
+                        }
+                        Err(e) => Err(e),
+                    },
                     _ => Ok("TodoWrite requires an active session.".to_string()),
                 }
             }
@@ -1234,6 +1254,146 @@ mod tests {
         // /tmp/foo/../bar cleans to /tmp/bar — still in /tmp, still allowed.
         let p = safe_resolve_path(&root(), "/tmp/foo/../bar").unwrap();
         assert_eq!(p, PathBuf::from("/tmp/bar"));
+    }
+
+    // ── #1077 Phase A: TodoWrite event-emission contract ─────────
+    //
+    // The dispatch arm in `execute()` must:
+    // 1. emit `EngineEvent::TodoUpdate` with structured items+diff on
+    //    accepted writes that change the persisted list;
+    // 2. emit nothing on the dedup-nudge path (empty diff);
+    // 3. always return the model-facing message string regardless.
+    //
+    // These are the contract a future TUI / ACP renderer will rely on.
+    // If you find yourself loosening any of them, revisit `DESIGN.md
+    // § Progress Tracking: Model-Owned, History-Persisted,
+    // Engine-Surfaced` first — the suppression rule in particular is
+    // load-bearing for not spamming clients on idempotent rewrites.
+
+    async fn registry_with_session() -> (
+        ToolRegistry,
+        tempfile::TempDir,
+        std::sync::Arc<crate::db::Database>,
+        String,
+    ) {
+        use crate::persistence::Persistence;
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = std::sync::Arc::new(
+            crate::db::Database::open(&dir.path().join("test.db"))
+                .await
+                .unwrap(),
+        );
+        let sid = db.create_session("koda", dir.path()).await.unwrap();
+        let registry = ToolRegistry::new(dir.path().to_path_buf(), 100_000);
+        // Wire DB + session id the same way KodaSession::new does.
+        *registry.db.write().unwrap() = Some(db.clone());
+        *registry.session_id.write().unwrap() = Some(sid.clone());
+        (registry, dir, db, sid)
+    }
+
+    #[tokio::test]
+    async fn todo_write_emits_todo_update_event_on_first_write() {
+        let (registry, _dir, _db, _sid) = registry_with_session().await;
+        let sink = crate::engine::sink::TestSink::new();
+        let result = registry
+            .execute(
+                "TodoWrite",
+                r#"{"todos":[{"content":"Add tests","status":"pending","priority":"high"}]}"#,
+                Some((&sink, "call-1")),
+                None,
+            )
+            .await;
+        assert!(result.success, "first write must succeed: {result:?}");
+        assert_eq!(sink.len(), 1, "first write must emit exactly one event");
+        match &sink.events()[0] {
+            crate::engine::EngineEvent::TodoUpdate { items, diff } => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].content, "Add tests");
+                assert_eq!(diff.added.len(), 1, "first write → everything in added");
+                assert!(diff.changed.is_empty());
+                assert!(diff.removed.is_empty());
+            }
+            other => panic!("expected TodoUpdate, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn todo_write_suppresses_event_on_unchanged_rewrite() {
+        let (registry, _dir, _db, _sid) = registry_with_session().await;
+        let payload = r#"{"todos":[{"content":"A","status":"pending","priority":"high"}]}"#;
+
+        // First write: should emit.
+        let sink1 = crate::engine::sink::TestSink::new();
+        registry
+            .execute("TodoWrite", payload, Some((&sink1, "c1")), None)
+            .await;
+        assert_eq!(sink1.len(), 1);
+
+        // Identical second write: must NOT emit. The dedup-nudge
+        // message goes back to the model, but clients see nothing.
+        let sink2 = crate::engine::sink::TestSink::new();
+        let result2 = registry
+            .execute("TodoWrite", payload, Some((&sink2, "c2")), None)
+            .await;
+        assert!(result2.success);
+        assert!(
+            result2.output.contains("unchanged"),
+            "model-facing message must still nudge: {}",
+            result2.output
+        );
+        assert_eq!(
+            sink2.len(),
+            0,
+            "unchanged rewrite must NOT emit a TodoUpdate event"
+        );
+    }
+
+    #[tokio::test]
+    async fn todo_write_returns_model_message_even_without_sink() {
+        // Production paths sometimes call `execute` with `None` for
+        // the sink (top-level tool runs that aren't streaming). Must
+        // still succeed and return the formatted message.
+        let (registry, _dir, _db, _sid) = registry_with_session().await;
+        let result = registry
+            .execute(
+                "TodoWrite",
+                r#"{"todos":[{"content":"X","status":"pending","priority":"low"}]}"#,
+                None,
+                None,
+            )
+            .await;
+        assert!(result.success);
+        assert!(result.output.contains("0/1 done"));
+    }
+
+    #[tokio::test]
+    async fn todo_write_rejects_two_in_progress_at_dispatch() {
+        // Engine-enforced single-in-progress: must surface as a
+        // failed ToolResult, not a successful one with a warning.
+        // Models notice failures more reliably than warnings.
+        let (registry, _dir, _db, _sid) = registry_with_session().await;
+        let sink = crate::engine::sink::TestSink::new();
+        let result = registry
+            .execute(
+                "TodoWrite",
+                r#"{"todos":[
+                    {"content":"A","status":"in_progress","priority":"high"},
+                    {"content":"B","status":"in_progress","priority":"medium"}
+                ]}"#,
+                Some((&sink, "c1")),
+                None,
+            )
+            .await;
+        assert!(
+            !result.success,
+            "two in_progress must produce a failed ToolResult"
+        );
+        assert!(
+            result.output.contains("Only one task"),
+            "failure message must explain the rule: {}",
+            result.output
+        );
+        assert_eq!(sink.len(), 0, "failed validation must not emit an event");
     }
 }
 

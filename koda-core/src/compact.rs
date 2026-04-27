@@ -267,11 +267,19 @@ fn build_summary_prompt(conversation_text: &str) -> String {
          2. **Key Technical Concepts**: List all important technologies and frameworks discussed.\n\
          3. **Files and Code Sections**: Enumerate specific files examined, modified, or created. \n\
             Include code snippets where applicable and a summary of why each file matters.\n\
+            **Be exhaustive about file paths** — once compaction runs, the only record of\n\
+            files touched in the compacted range is this summary, so missing a path means\n\
+            losing it for the rest of the session. Group as: created / modified / deleted.\n\
          4. **Errors and Fixes**: List all errors and how they were resolved. Note user feedback.\n\
          5. **Problem Solving**: Document problems solved and ongoing troubleshooting.\n\
          6. **All User Messages**: List ALL user messages (not tool results). Critical for \n\
             preserving feedback and changing intent.\n\
          7. **Pending Tasks**: Outline anything unfinished or deferred.\n\
+            **Preserve every outstanding TodoWrite item verbatim** with its current status\n\
+            (pending / in_progress). Compaction is the only mechanism that defends plan\n\
+            continuity across context-window pressure (`DESIGN.md § Progress Tracking:\n\
+            Model-Owned, History-Persisted, Engine-Surfaced`) — the system prompt does NOT\n\
+            re-inject the todo list, so anything dropped here is gone.\n\
          8. **Current Work**: Describe precisely what was being worked on immediately before \n\
             this summary. Include file names and code snippets.\n\
          9. **Optional Next Step**: Only if directly in line with the user's most recent \n\
