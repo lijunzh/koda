@@ -14,7 +14,6 @@ path = "src/lib.rs"
 async-trait = { workspace = true }
 koda-core = { path = "../koda-core", features = ["test-support"] }
 serde = { workspace = true }
-insta = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-util = { workspace = true }
 tempfile = { workspace = true }

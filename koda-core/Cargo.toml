@@ -100,7 +100,6 @@ tokio-util = { workspace = true }
 test-support = []
 
 [dev-dependencies]
-insta = { workspace = true }
 # MCP HTTP integration test: rmcp server-side HTTP transport + axum
 rmcp = { version = "1.5", features = [
     "server",

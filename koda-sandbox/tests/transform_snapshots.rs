@@ -1,9 +1,9 @@
-//! Phase 0 acceptance: snapshot tests on `transform()` output.
+//! Phase 0 acceptance: regression tests on `transform()` output.
 //!
 //! These assert that `(cmd, policy) → SandboxExecRequest` produces a
-//! deterministic, hash-stable spawn invocation. Insta snapshots make
-//! drift visible: if a future PR accidentally changes the seatbelt
-//! profile or bwrap arg vector, the diff shows up here loudly.
+//! deterministic, hash-stable spawn invocation. Originally used `insta`
+//! snapshots; replaced with plain `assert_eq!` to remove the `similar 2.x`
+//! transitive dependency. The assertions are identical to the old snapshots.
 
 use koda_sandbox::{SandboxPolicy, SandboxRuntime, SandboxTransformRequest, UnsandboxedRuntime};
 use std::path::Path;
@@ -34,7 +34,9 @@ fn unsandboxed_runtime_snapshot() {
     let result = UnsandboxedRuntime.transform(req).unwrap();
     let (program, args, cwd) = deconstruct(result.command.as_std());
 
-    insta::assert_yaml_snapshot!("unsandboxed_echo", (program, args, cwd));
+    assert_eq!(program, "sh");
+    assert_eq!(args, vec!["-c", "echo hi"]);
+    assert_eq!(cwd.as_deref(), Some("/tmp/snapshot-project"));
 }
 
 // ── macOS Seatbelt snapshots ────────────────────────────────────────────────
@@ -56,13 +58,15 @@ fn seatbelt_runtime_command_snapshot() {
     let result = SeatbeltRuntime.transform(req).unwrap();
     let (program, args, _cwd) = deconstruct(result.command.as_std());
 
-    // Profile string (args[1]) varies by $HOME and tempdir path; snapshot
+    // Profile string (args[1]) varies by $HOME and tempdir path; assert
     // only the structurally stable parts: program + arg count + the
     // command-shape tail (last 3 args = "sh" "-c" "true").
     let arg_count = args.len();
     let tail: Vec<String> = args.iter().rev().take(3).rev().cloned().collect();
 
-    insta::assert_yaml_snapshot!("seatbelt_runtime_command_shape", (program, arg_count, tail));
+    assert_eq!(program, "sandbox-exec");
+    assert_eq!(arg_count, 5, "seatbelt arg count");
+    assert_eq!(tail, vec!["sh", "-c", "true"]);
 }
 
 #[cfg(target_os = "macos")]
@@ -136,15 +140,14 @@ fn bwrap_runtime_command_snapshot() {
     let (program, args, _cwd) = deconstruct(result.command.as_std());
 
     // Last 4 args are the terminator: "--" "sh" "-c" "true". Stable shape.
-    // arg_count itself is *not* in the snapshot — it varies with the test
+    // arg_count itself is *not* asserted — it varies with the test
     // host (presence of /var/tmp, ~/.cargo, ~/.npm, ~/.cache shifts the
     // count by 3 each), and a brittle count just causes flaky CI without
-    // catching real regressions. The first/last few args + the existing
-    // `bwrap_command_starts_with_ro_bind_root` test are what actually
-    // protects against accidental reordering.
+    // catching real regressions.
     let tail: Vec<String> = args.iter().rev().take(4).rev().cloned().collect();
 
-    insta::assert_yaml_snapshot!("bwrap_runtime_command_shape", (program, tail));
+    assert_eq!(program, "bwrap");
+    assert_eq!(tail, vec!["--", "sh", "-c", "true"]);
 }
 
 #[cfg(target_os = "linux")]
