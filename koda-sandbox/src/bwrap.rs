@@ -592,13 +592,14 @@ mod tests {
     fn git_config_deny_skips_non_git_dir() {
         let dir = tempfile::tempdir().unwrap();
         let mut cmd = Command::new("true");
-        let args_before: Vec<_> = cmd.as_std().get_args().collect();
+        // Count before mutably borrowing cmd — collecting &OsStr refs would
+        // keep an immutable borrow alive across the &mut call (E0502).
+        let count_before = cmd.as_std().get_args().count();
         let root = dir.path().to_string_lossy();
         apply_git_config_deny(&mut cmd, &root);
-        let args_after: Vec<_> = cmd.as_std().get_args().collect();
+        let count_after = cmd.as_std().get_args().count();
         assert_eq!(
-            args_before.len(),
-            args_after.len(),
+            count_before, count_after,
             "no args should be added for a directory with no .git/"
         );
     }
