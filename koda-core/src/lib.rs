@@ -104,6 +104,7 @@ pub mod preview;
 /// Progress reporting helpers for long operations.
 /// System prompt construction.
 pub mod prompt;
+pub mod provider_catalog;
 /// LLM provider abstraction — Anthropic, Gemini, OpenAI-compatible.
 pub mod providers;
 /// Thread-safe runtime environment — replaces `std::env::set_var`.
