@@ -320,9 +320,22 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
 // loop actually ran; reaching it implies `iter ≥ 1` was sent because
 // `run_bg_agent` sends `Running { iter: n }` at the top of each
 // iteration and `Completed` is only emitted after the loop exits.
+//
+// **Runtime flavor**: the production code path uses `tokio::spawn` for
+// background sub-agents (see `sub_agent_dispatch::run_bg_agent` and the
+// B5 comment block). On `current_thread` runtimes (the `#[tokio::test]`
+// default) `tokio::spawn` queues the future but it can ONLY make
+// progress when the test task explicitly yields. The dispatch path
+// itself is fully synchronous between `reserve()` and `attach()`, but
+// the spawned future's first poll happens lazily — and on macOS CI
+// runners we observed cases where the test's polling loop spun on a
+// snapshot that never updated, suggesting the dispatch future itself
+// hadn't completed before the test resumed. Pinning to `multi_thread`
+// matches production semantics and gives the spawned task a dedicated
+// worker, eliminating the scheduling pathology. See #1090.
 
 #[cfg(feature = "test-support")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bg_agent_iter_counter_advances_via_status_channel() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -353,23 +366,31 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
         MockResponse::Text("parent done".into()),
     ]);
 
-    env.run_inference(&provider).await;
+    let events = env.run_inference(&provider).await;
 
-    // The background task is registered in env.bg_agents before
-    // before spawn), so it should appear in the snapshot immediately.
-    // Poll with a 5-second deadline in case the runtime hasn’t scheduled
-    // the spawned task yet.
+    // Diagnostic: the dispatch path between `reserve()` and `attach()`
+    // is fully synchronous (no `.await` points), so the entry MUST be
+    // in the registry by the time inference returns.  If we ever fail
+    // the snapshot poll below, dump the events vector — it will tell
+    // us whether `InvokeAgent` even dispatched, whether the background
+    // branch was taken, and whether the parent reached "parent done".
     let task_id = {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        const REGISTRATION_BUDGET: Duration = Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + REGISTRATION_BUDGET;
         loop {
             let snap = env.bg_agents.snapshot();
             if let Some(task) = snap.first() {
                 break task.task_id;
             }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "background agent was never registered in the registry within 5s"
-            );
+            if tokio::time::Instant::now() >= deadline {
+                panic!(
+                    "background agent was never registered in the registry within {REGISTRATION_BUDGET:?}.\n\
+                     events from inference_loop ({} total): {events:#?}\n\
+                     final snapshot: {:#?}",
+                    events.len(),
+                    env.bg_agents.snapshot()
+                );
+            }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     };
