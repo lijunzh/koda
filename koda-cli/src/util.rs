@@ -21,6 +21,7 @@ use time::OffsetDateTime;
 /// Callers format the components they need:
 ///
 /// ```ignore
+/// // pub(crate): utc_now is not importable from a doc-test binary; illustrative only.
 /// let dt = utc_now();
 /// // transcript header:  "2026-04-11 14:30 UTC"
 /// format!("{:04}-{:02}-{:02} {:02}:{:02} UTC",

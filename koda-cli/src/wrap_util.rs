@@ -19,6 +19,7 @@ use unicode_width::UnicodeWidthChar;
 /// # Examples
 ///
 /// ```ignore
+/// // pub(crate): wrap_util is not importable from a doc-test binary; illustrative only.
 /// use koda_cli::wrap_util::visual_line_count;
 ///
 /// // Short line — fits in one row
