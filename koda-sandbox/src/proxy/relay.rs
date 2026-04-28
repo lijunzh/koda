@@ -164,7 +164,7 @@ mod tests {
         (addr, l)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn relays_bytes_in_both_directions_until_eof() {
         // Topology:
         //   client ──┐         ┌── server (echo)
@@ -207,7 +207,7 @@ mod tests {
         server_task.await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn idle_timeout_fires_when_both_sides_silent() {
         // Neither side ever writes after handshake. The idle timeout
         // is the only thing keeping us from hanging forever.
@@ -247,7 +247,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn total_timeout_fires_even_when_traffic_is_active() {
         // Server keeps trickling bytes forever — idle timeout never
         // fires because something is always arriving. Only the total
@@ -303,7 +303,7 @@ mod tests {
         let _ = drain.await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn clean_half_close_propagates_without_idle_fire() {
         // Client closes its write half but still wants to read replies.
         // copy_one_direction client→server returns Ok(0); server→client

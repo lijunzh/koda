@@ -4,7 +4,7 @@ use koda_core::{bg_agent::AgentStatus, engine::EngineEvent, persistence::Persist
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 use std::time::Duration;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_sub_agent_invocation_e2e() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -103,7 +103,7 @@ async fn test_sub_agent_invocation_e2e() {
 /// on repeated tool calls and never reach the text reply — OR the DB
 /// will end up with assistant rows where `completed_at IS NULL`.
 /// Either failure is asserted below.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -194,7 +194,7 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_sub_agent_cache_hit_skips_llm() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -287,7 +287,7 @@ async fn invoke_agent_and_take_calls(
 }
 
 #[cfg(feature = "test-support")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skip_memory_excludes_project_memory_from_sub_agent() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -315,7 +315,7 @@ async fn skip_memory_excludes_project_memory_from_sub_agent() {
 }
 
 #[cfg(feature = "test-support")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn without_skip_memory_project_memory_reaches_sub_agent() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -355,7 +355,7 @@ async fn without_skip_memory_project_memory_reaches_sub_agent() {
 /// `"InvokeAgent is handled by the inference loop."` — and for the
 /// stack-overflow risk that allowing real recursion would have created.
 #[cfg(feature = "test-support")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -404,7 +404,7 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
 //
 // **Runtime flavor**: the production code path uses `tokio::spawn` for
 // background sub-agents (see `sub_agent_dispatch::run_bg_agent` and the
-// B5 comment block). On `current_thread` runtimes (the `#[tokio::test]`
+// B5 comment block). On `current_thread` runtimes (the `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`
 // default) `tokio::spawn` queues the future but it can ONLY make
 // progress when the test task explicitly yields. The dispatch path
 // itself is fully synchronous between `reserve()` and `attach()`, but

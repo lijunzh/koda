@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Mutex to serialize tests that share process-global env vars
-/// (KODA_MOCK_RESPONSES).  `#[tokio::test]` runs tests concurrently
+/// (KODA_MOCK_RESPONSES).  `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]` runs tests concurrently
 /// within the same process, so unsynchronized set_var/remove_var
 /// on the same env var is a data race.
 pub static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

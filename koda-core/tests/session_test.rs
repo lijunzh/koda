@@ -71,7 +71,7 @@ async fn make_session(
 
 /// `run_turn()` must emit `TurnStart` as the first event and
 /// `TurnEnd { reason: Complete }` as the last event after a successful turn.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_run_turn_emits_turn_start_and_end() {
     let env = Env::new().await;
     env.insert_user_message("say hello").await;
@@ -136,7 +136,7 @@ async fn session_run_turn_emits_turn_start_and_end() {
 }
 
 /// Cancelling the token during inference causes `TurnEnd` to carry reason `Cancelled`.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_cancellation_produces_turn_end_cancelled() {
     let env = Env::new().await;
     env.insert_user_message("hello").await;
@@ -221,7 +221,7 @@ async fn session_cancellation_produces_turn_end_cancelled() {
 
 /// Messages from two separate `run_turn()` calls on the same session must
 /// both appear in the DB afterward.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_persists_messages_across_two_turns() {
     let env = Env::new().await;
 

@@ -315,7 +315,7 @@ mod tests {
         assert_eq!(rewrite_proxy_url_port("http://", 9999), None);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn uds_bridge_forwards_bytes_to_tcp_listener() {
         // End-to-end: spin up a TCP listener, spawn the bridge, write
         // through the UDS, expect the bytes to arrive at the TCP side.
@@ -348,7 +348,7 @@ mod tests {
         cleanup_uds_path(&uds_path);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn uds_bridge_removes_stale_socket_file() {
         // Pre-create a stale file at the UDS path; the bridge must
         // unlink-and-rebind rather than failing with EADDRINUSE.

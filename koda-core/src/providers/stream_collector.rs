@@ -193,7 +193,7 @@ mod tests {
         chunks
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_basic_sse_parsing() {
         let sse = "data: hello\ndata: world\n";
         let chunks = drive_parser(Box::new(EchoParser::new()), sse).await;
@@ -204,7 +204,7 @@ mod tests {
         assert!(matches!(&chunks[2], StreamChunk::Done(u) if u.completion_tokens == 2));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_done_sentinel_triggers_early_finish() {
         let sse = "data: first\ndata: [DONE]\ndata: should-not-appear\n";
         let chunks = drive_parser(Box::new(EchoParser::new()), sse).await;
@@ -214,7 +214,7 @@ mod tests {
         assert!(matches!(&chunks[1], StreamChunk::Done(u) if u.completion_tokens == 1));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_non_data_lines_are_ignored() {
         let sse = "event: message_start\ndata: payload\n: comment\nretry: 5000\n";
         let chunks = drive_parser(Box::new(EchoParser::new()), sse).await;
@@ -224,7 +224,7 @@ mod tests {
     }
 
     /// SSE spec allows `data:` without a trailing space.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_data_without_space_parsed() {
         let sse = "data:hello\ndata:world\n";
         let chunks = drive_parser(Box::new(EchoParser::new()), sse).await;
@@ -235,7 +235,7 @@ mod tests {
     }
 
     /// Mixed `data: ` and `data:` lines should both be parsed.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_data_mixed_space_variants() {
         let sse = "data: with-space\ndata:no-space\n";
         let chunks = drive_parser(Box::new(EchoParser::new()), sse).await;
@@ -249,7 +249,7 @@ mod tests {
 
     use crate::providers::anthropic::AnthropicChunkParser;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_anthropic_text_stream() {
         let sse = r#"data: {"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":50}}}
 data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
@@ -274,7 +274,7 @@ data: {"type":"message_stop"}
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_anthropic_thinking_stream() {
         let sse = r#"data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
 data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
@@ -290,7 +290,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input
         assert!(matches!(&chunks[2], StreamChunk::Done(_)));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_anthropic_tool_use_stream() {
         let sse = r#"data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
 data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tc_1","name":"read_file","input":{}}}
@@ -316,7 +316,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input
 
     use crate::providers::gemini::GeminiChunkParser;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_gemini_text_stream() {
         let sse = r#"data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]},"finishReason":null}],"usageMetadata":{"promptTokenCount":50,"candidatesTokenCount":5,"cachedContentTokenCount":0,"thoughtsTokenCount":0}}
 data: {"candidates":[{"content":{"parts":[{"text":" world"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":50,"candidatesTokenCount":10,"cachedContentTokenCount":0,"thoughtsTokenCount":0}}
@@ -335,7 +335,7 @@ data: {"candidates":[{"content":{"parts":[{"text":" world"}]},"finishReason":"ST
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_gemini_thinking_stream() {
         let sse = r#"data: {"candidates":[{"content":{"parts":[{"text":"Reasoning...","thought":true}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"cachedContentTokenCount":0,"thoughtsTokenCount":5}}
 data: {"candidates":[{"content":{"parts":[{"text":"Answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":10,"cachedContentTokenCount":0,"thoughtsTokenCount":5}}
@@ -352,7 +352,7 @@ data: {"candidates":[{"content":{"parts":[{"text":"Answer"}]},"finishReason":"ST
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_gemini_tool_call_stream() {
         let sse = r#"data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"list_files","args":{"dir":"."}}},{"functionCall":{"name":"read_file","args":{"path":"x"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"cachedContentTokenCount":0,"thoughtsTokenCount":0}}
 "#;
@@ -372,7 +372,7 @@ data: {"candidates":[{"content":{"parts":[{"text":"Answer"}]},"finishReason":"ST
 
     use crate::providers::openai_compat::OpenAiChunkParser;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_openai_text_stream() {
         // Note: StreamTagFilter holds back up to MAX_TAG_LEN (16) bytes to detect
         // <think> tags spanning chunks. Short deltas get buffered until flush.
@@ -405,7 +405,7 @@ data: {"candidates":[{"content":{"parts":[{"text":"Answer"}]},"finishReason":"ST
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_openai_reasoning_stream() {
         let sse = r#"data: {"choices":[{"delta":{"reasoning_content":"Let me think..."},"finish_reason":null}],"usage":null}
 data: {"choices":[{"delta":{"content":"Answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"completion_tokens_details":{"reasoning_tokens":3}}}
@@ -423,7 +423,7 @@ data: [DONE]
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_openai_tool_call_stream() {
         let sse = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":""}}]},"finish_reason":null}],"usage":null}
 data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"f\":\"a\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}
@@ -443,7 +443,7 @@ data: [DONE]
         assert!(matches!(&chunks[1], StreamChunk::Done(u) if u.stop_reason == "tool_calls"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_openai_length_normalized_to_max_tokens() {
         let sse = r#"data: {"choices":[{"delta":{"content":"x"},"finish_reason":"length"}],"usage":null}
 data: [DONE]

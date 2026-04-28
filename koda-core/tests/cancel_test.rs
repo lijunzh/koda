@@ -57,7 +57,7 @@ impl LlmProvider for SlowProvider {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_cancel_during_chat_stream_returns_immediately() {
     let tmp = tempfile::tempdir().unwrap();
     let db = Database::init(tmp.path()).await.unwrap();

@@ -1295,7 +1295,7 @@ mod tests {
         (registry, dir, db, sid)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn todo_write_emits_todo_update_event_on_first_write() {
         let (registry, _dir, _db, _sid) = registry_with_session().await;
         let sink = crate::engine::sink::TestSink::new();
@@ -1321,7 +1321,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn todo_write_suppresses_event_on_unchanged_rewrite() {
         let (registry, _dir, _db, _sid) = registry_with_session().await;
         let payload = r#"{"todos":[{"content":"A","status":"pending","priority":"high"}]}"#;
@@ -1352,7 +1352,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn todo_write_returns_model_message_even_without_sink() {
         // Production paths sometimes call `execute` with `None` for
         // the sink (top-level tool runs that aren't streaming). Must
@@ -1370,7 +1370,7 @@ mod tests {
         assert!(result.output.contains("0/1 done"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn todo_write_rejects_two_in_progress_at_dispatch() {
         // Engine-enforced single-in-progress: must surface as a
         // failed ToolResult, not a successful one with a warning.

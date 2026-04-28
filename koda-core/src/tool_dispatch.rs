@@ -996,7 +996,7 @@ mod tests {
     /// included a Delete of a file Koda created earlier in the
     /// session — pure perf regression, but the kind of
     /// classification mismatch that compounds.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_can_parallelize_delete_owned_file_uses_tracker() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = crate::db::Database::open(&dir.path().join("test.db"))

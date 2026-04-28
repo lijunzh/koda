@@ -442,7 +442,7 @@ mod tests {
 
     // ── Protocol mechanics (unchanged from 2a) ───────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ping_returns_pong() {
         let (mut host, _join) = spawn_worker();
         write_message(&mut host, &Request::Ping).await.unwrap();
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(resp, Response::Pong);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shutdown_acks_then_worker_exits() {
         let (mut host, join) = spawn_worker();
         write_message(&mut host, &Request::Shutdown).await.unwrap();
@@ -464,7 +464,7 @@ mod tests {
             .expect("worker returned Err");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn peer_eof_exits_loop_cleanly() {
         let (host, join) = spawn_worker();
         drop(host);
@@ -475,7 +475,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn worker_loops_for_multiple_requests() {
         let (mut host, _join) = spawn_worker();
         for _ in 0..5 {
@@ -487,7 +487,7 @@ mod tests {
 
     // ── FS handlers ──────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn read_handler_returns_file_contents() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("hello.txt");
@@ -512,7 +512,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_handler_creates_file() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("out.txt");
@@ -532,7 +532,7 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"written");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_handler_replaces_string() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("e.txt");
@@ -554,7 +554,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo BAR baz");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stat_handler_reports_file_metadata() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("s.txt");
@@ -575,7 +575,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn read_missing_file_returns_io_error() {
         let dir = TempDir::new().unwrap();
         let (mut host, _join) = spawn_worker();
@@ -611,7 +611,7 @@ mod tests {
         (host, join)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_inside_root_is_allowed() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("allowed.txt");
@@ -633,7 +633,7 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"ok");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_outside_root_is_denied() {
         let root = TempDir::new().unwrap();
         let outside = TempDir::new().unwrap();
@@ -661,7 +661,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dangerous_system_path_always_denied() {
         let dir = TempDir::new().unwrap();
         // Even though root is set, /etc directly is always blocked.
@@ -689,7 +689,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn symlink_escape_is_denied() {
         let root = TempDir::new().unwrap();
         let outside = TempDir::new().unwrap();

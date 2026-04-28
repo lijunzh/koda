@@ -142,7 +142,7 @@ async fn spawn_echo_server() -> (String, CancellationToken, CapturedHeaders) {
 // McpClient SSRF guard (which correctly blocks loopback in production).
 
 /// Connect + tool discovery: the echo tool must appear in tools/list.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transport_connect_discovers_echo_tool() {
     let (url, ct, _captured) = spawn_echo_server().await;
 
@@ -171,7 +171,7 @@ async fn transport_connect_discovers_echo_tool() {
 }
 
 /// Bearer token forwarding: every POST must carry `Authorization: Bearer <t>`.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transport_bearer_token_forwarded_on_every_request() {
     let (url, ct, captured) = spawn_echo_server().await;
     let token = "super-secret-test-token-xyz";
@@ -207,7 +207,7 @@ async fn transport_bearer_token_forwarded_on_every_request() {
 
 /// No token: when no bearer_token is configured the Authorization header must
 /// be absent from every request.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn transport_no_token_omits_auth_header() {
     let (url, ct, captured) = spawn_echo_server().await;
 
@@ -254,7 +254,7 @@ fn loopback_config(port: u16, bearer: Option<String>) -> McpServerConfig {
 
 /// McpClient::connect() must fail with an SSRF error for loopback URLs,
 /// even when a real MCP server is listening on that port.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_client_connect_rejects_loopback_ssrf() {
     let (url, ct, _) = spawn_echo_server().await;
     // Extract the port from the URL to build a loopback config.
@@ -287,7 +287,7 @@ async fn mcp_client_connect_rejects_loopback_ssrf() {
 }
 
 /// Connecting to a metadata endpoint must also be rejected.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_client_connect_rejects_metadata_endpoint() {
     let config = McpServerConfig {
         transport: McpTransport::Http {

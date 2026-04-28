@@ -353,7 +353,7 @@ mod tests {
     // [`MockProvider::from_json_str`] is the pure parser; lib tests
     // call it directly without touching any global.
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_text_response() {
         let provider = MockProvider::new(vec![MockResponse::Text("hello".into())]);
         let collector = provider
@@ -374,7 +374,7 @@ mod tests {
         assert!(chunks.iter().any(|c| matches!(c, StreamChunk::Done(_))));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_tool_call_response() {
         let provider = MockProvider::new(vec![MockResponse::tool_call(
             "Bash",
@@ -397,7 +397,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_error_response() {
         let provider = MockProvider::new(vec![MockResponse::Error("boom".into())]);
         let result = provider
@@ -511,7 +511,7 @@ mod tests {
         assert_eq!(p.provider_name(), "mock");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_list_models_returns_mock_model() {
         let p = MockProvider::new(vec![]);
         let models = p.list_models().await.unwrap();
@@ -521,7 +521,7 @@ mod tests {
 
     // ── non-streaming chat ───────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_text_response() {
         let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::Text("hi there".into())]);
@@ -530,7 +530,7 @@ mod tests {
         assert!(resp.tool_calls.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_empty_queue_returns_empty_text() {
         let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![]);
@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(resp.content.as_deref(), Some(""));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_rate_limit_is_error() {
         let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::RateLimit]);
@@ -554,7 +554,7 @@ mod tests {
 
     // ── remaining chat() variants ───────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_tool_calls_response() {
         let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::tool_call(
@@ -567,7 +567,7 @@ mod tests {
         assert_eq!(resp.tool_calls[0].function_name, "Bash");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_text_max_tokens_stop_reason() {
         let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
         let provider =
@@ -577,7 +577,7 @@ mod tests {
         assert_eq!(resp.usage.stop_reason, "max_tokens");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_context_overflow_is_error() {
         let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::ContextOverflow]);
@@ -589,7 +589,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_chat_network_error() {
         let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::NetworkError {
@@ -602,7 +602,7 @@ mod tests {
 
     // ── chat_stream() remaining variants ────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stream_text_max_tokens() {
         let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::TextMaxTokens("hi there".into())]);
@@ -615,7 +615,7 @@ mod tests {
         assert!(done.is_some(), "should emit max_tokens Done chunk");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stream_tool_calls_eager() {
         let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::ToolCallsEager(vec![ToolCall {
@@ -635,7 +635,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stream_network_error() {
         let settings = ModelSettings::defaults_for("mock", &crate::config::ProviderType::LMStudio);
         let provider = MockProvider::new(vec![MockResponse::NetworkError {

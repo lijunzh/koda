@@ -430,7 +430,7 @@ mod tests {
 
     // ── call_tool on disconnected server ───────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn call_tool_on_disconnected_server_returns_err() {
         let mgr = manager_with_mixed_clients();
         let result = mgr
@@ -444,7 +444,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn call_tool_on_nonexistent_server_returns_err() {
         let mgr = McpManager::new();
         let result = mgr.call_tool("ghost__tool", serde_json::json!({})).await;
@@ -453,7 +453,7 @@ mod tests {
         assert!(msg.contains("not found"), "expected 'not found' in: {msg}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn call_tool_with_invalid_name_returns_err() {
         let mgr = McpManager::new();
         let result = mgr.call_tool("no_separator", serde_json::json!({})).await;
@@ -467,7 +467,7 @@ mod tests {
 
     // ── remove_server purges annotation cache ─────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn remove_server_purges_annotations() {
         let mut mgr = McpManager::new();
         let c = McpClient::new("myserver".into(), dummy_config());
@@ -486,7 +486,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn remove_nonexistent_server_returns_false() {
         let mut mgr = McpManager::new();
         assert!(!mgr.remove_server("ghost").await);
@@ -498,7 +498,7 @@ mod tests {
     /// client and its annotations are purged BEFORE the new connect attempt.
     /// Even if the new connect fails (dummy `false` command), the stale
     /// annotations from the previous server must be gone.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn add_server_collision_purges_old_annotations() {
         let mut mgr = McpManager::new();
 
@@ -526,7 +526,7 @@ mod tests {
     /// `reconnect_server` must purge annotations for the given server
     /// before attempting the reconnect.  Even if the reconnect fails
     /// (dummy `false` command), stale entries must be gone.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reconnect_server_purges_stale_annotations() {
         let mut mgr = McpManager::new();
 
@@ -552,7 +552,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reconnect_server_nonexistent_returns_err() {
         let mut mgr = McpManager::new();
         let result = mgr.reconnect_server("ghost").await;
@@ -673,7 +673,7 @@ mod tests {
 
     // ── shutdown ────────────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shutdown_clears_all_annotations() {
         let mut mgr = McpManager::new();
         // Two clients, each contributing tools/annotations.
@@ -693,7 +693,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shutdown_on_empty_manager_is_noop() {
         let mut mgr = McpManager::new();
         // Should not panic; should leave manager empty.
@@ -840,7 +840,7 @@ mod tests {
     /// Removing one server must not touch any *other* server's annotations.
     /// Regression guard against a buggy `retain` predicate that over-purges
     /// (e.g., `starts_with(name)` instead of `parse_mcp_tool_name() == name`).
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn remove_server_does_not_touch_other_servers_annotations() {
         let mut mgr = McpManager::new();
 
@@ -869,7 +869,7 @@ mod tests {
     }
 
     /// Same prefix-isolation guard, but for `add_server` collisions.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn add_server_collision_does_not_touch_prefix_neighbour() {
         let mut mgr = McpManager::new();
 

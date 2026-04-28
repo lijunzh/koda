@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 // ── Core pipeline tests ───────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_text_response_streams_and_persists() {
     let env = Env::new().await;
     env.insert_user_message("say hello").await;
@@ -48,7 +48,7 @@ async fn test_text_response_streams_and_persists() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_tool_call_executes_and_returns() {
     let env = Env::new().await;
     env.insert_user_message("run echo").await;
@@ -87,7 +87,7 @@ async fn test_tool_call_executes_and_returns() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_read_tool_in_sandbox() {
     let env = Env::new().await;
     let test_file = env.root.join("test_data.txt");
@@ -122,7 +122,7 @@ async fn test_read_tool_in_sandbox() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_write_tool_creates_file_in_sandbox() {
     let env = Env::new().await;
     env.insert_user_message("create a file").await;
@@ -145,7 +145,7 @@ async fn test_write_tool_creates_file_in_sandbox() {
     assert_eq!(content, "hello from mock");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_provider_error_emits_error_event() {
     let env = Env::new().await;
     env.insert_user_message("trigger error").await;
@@ -197,7 +197,7 @@ async fn test_provider_error_emits_error_event() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_session_history_persists_across_turns() {
     let env = Env::new().await;
 
@@ -220,7 +220,7 @@ async fn test_session_history_persists_across_turns() {
     assert!(contents.iter().any(|c| c.contains("second answer")));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_cancel_during_streaming() {
     let env = Env::new().await;
     env.insert_user_message("hello").await;

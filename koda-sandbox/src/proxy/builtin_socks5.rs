@@ -86,14 +86,14 @@ mod tests {
         assert!(p.filter.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn spawn_returns_handle_with_assigned_port() {
         let p = BuiltInSocks5Proxy::new(Filter::new(["github.com"]).unwrap());
         let h = p.spawn().await.unwrap();
         assert!(h.port > 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn spawned_proxy_serves_403_equivalent_for_disallowed_host() {
         let p = BuiltInSocks5Proxy::new(Filter::new(["github.com"]).unwrap());
         let h = p.spawn().await.unwrap();
@@ -119,7 +119,7 @@ mod tests {
         assert_eq!(reply[1], 0x02);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropping_handle_stops_accepting() {
         let p = BuiltInSocks5Proxy::new(Filter::new(["github.com"]).unwrap());
         let h = p.spawn().await.unwrap();

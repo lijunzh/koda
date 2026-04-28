@@ -1351,7 +1351,7 @@ mod tests {
 
     // ── Text streaming ───────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn collect_stream_accumulates_text_deltas() {
         let result = run_collect(
             vec![
@@ -1370,7 +1370,7 @@ mod tests {
         assert_eq!(result.char_count, 12);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn collect_stream_empty_stream_returns_empty() {
         let result = run_collect(vec![StreamChunk::Done(TokenUsage::default())], None).await;
 
@@ -1379,7 +1379,7 @@ mod tests {
         assert!(result.tool_calls.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn collect_stream_preserves_usage_from_done() {
         let usage = TokenUsage {
             prompt_tokens: 42,
@@ -1403,7 +1403,7 @@ mod tests {
 
     // ── Thinking blocks ──────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn collect_stream_thinking_then_text() {
         let result = run_collect(
             vec![
@@ -1423,7 +1423,7 @@ mod tests {
 
     // ── Tool calls ───────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn collect_stream_tool_calls_batch() {
         let tc = ToolCall {
             id: "tc_1".into(),
@@ -1445,7 +1445,7 @@ mod tests {
         assert!(result.text.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn collect_stream_eager_executes_read_only_tool() {
         // Read is read-only + auto-approved → should be eagerly executed.
         let tmp = tempfile::tempdir().unwrap();
@@ -1481,7 +1481,7 @@ mod tests {
         assert!(success);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn collect_stream_does_not_eagerly_execute_mutating_tool() {
         // Write is mutating → should NOT be eagerly executed.
         let tc = ToolCall {
@@ -1509,7 +1509,7 @@ mod tests {
 
     // ── Cancellation ─────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn collect_stream_cancellation_sets_interrupted() {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
@@ -1540,7 +1540,7 @@ mod tests {
 
     // ── Network errors ───────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn collect_stream_network_error_preserves_partial() {
         let result = run_collect(
             vec![
@@ -1556,7 +1556,7 @@ mod tests {
         assert_eq!(result.text, "partial response");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn collect_stream_network_error_with_no_text() {
         let result = run_collect(vec![StreamChunk::NetworkError("timeout".into())], None).await;
 

@@ -957,7 +957,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn register_and_complete() {
         let reg = BgAgentRegistry::new();
         let (task_id, tx) = reg.register_test("explore", "find all tests");
@@ -978,7 +978,7 @@ mod tests {
         assert_eq!(reg.pending_count(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn drain_only_completed() {
         let reg = BgAgentRegistry::new();
         let (_id1, tx1) = reg.register_test("task", "build");
@@ -992,7 +992,7 @@ mod tests {
         assert_eq!(reg.pending_count(), 1); // explore still pending
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropped_sender_reports_cancelled() {
         let reg = BgAgentRegistry::new();
         let (_id, tx) = reg.register_test("task", "build");
@@ -1004,7 +1004,7 @@ mod tests {
         assert!(results[0].output.contains("cancelled"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn error_result() {
         let reg = BgAgentRegistry::new();
         let (_id, tx) = reg.register_test("verify", "check");
@@ -1024,7 +1024,7 @@ mod tests {
     /// the user only saw spawn + completion lines. The fix is
     /// useless if the trace gets dropped at any of the three hops,
     /// so this test pins the round-trip end-to-end.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn events_propagate_through_drain_for_success() {
         let reg = BgAgentRegistry::new();
         let (_id, tx) = reg.register_test("explore", "map repo");
@@ -1050,7 +1050,7 @@ mod tests {
     /// — "the agent tried Read, Bash, Edit, then errored" is the
     /// kind of breadcrumb that turns a black-box failure into a
     /// debuggable one.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn events_propagate_through_drain_for_failure() {
         let reg = BgAgentRegistry::new();
         let (_id, tx) = reg.register_test("build", "compile");
@@ -1070,7 +1070,7 @@ mod tests {
     /// #1022 B9 corollary: cancelled / panicked tasks have *no*
     /// trace available (the buffering sink died with the task), and
     /// that's an explicitly-empty Vec rather than uninitialized.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelled_task_has_empty_event_trace() {
         let reg = BgAgentRegistry::new();
         let (_id, tx) = reg.register_test("flaky", "x");
@@ -1090,7 +1090,7 @@ mod tests {
     /// `Drop`), the spawned future would keep running after the
     /// registry — and any worktrees / API tokens / writes it owns —
     /// were dropped. That's the leak we're fixing.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn registry_drop_aborts_pending_tasks() {
         let reg = BgAgentRegistry::new();
         let parent = CancellationToken::new();
@@ -1150,7 +1150,7 @@ mod tests {
     /// Phase 1 of #1022, B2 regression test: cancelling the parent
     /// token must cascade to bg-agent child tokens handed out by
     /// `reserve`.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn parent_cancel_cascades_to_reserved_child() {
         let reg = BgAgentRegistry::new();
         let parent = CancellationToken::new();
@@ -1180,7 +1180,7 @@ mod tests {
     /// This is the hook the future `/cancel <id>` slash command and
     /// `CancelAgent` LLM tool will call. Verifies a known id returns
     /// true *and* the underlying token actually fires.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_known_task_fires_token() {
         let reg = BgAgentRegistry::new();
         let (task_id, _tx, _status_tx, observer) =
@@ -1198,7 +1198,7 @@ mod tests {
     /// `cancel` on an unknown / already-drained id must return false
     /// instead of panicking. The slash command and LLM tool will
     /// surface this to the user as "no such task".
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_unknown_task_returns_false() {
         let reg = BgAgentRegistry::new();
         assert!(
@@ -1211,7 +1211,7 @@ mod tests {
     /// (the underlying [`CancellationToken::cancel`] is itself
     /// idempotent). Both calls return true while the entry is still
     /// in `pending`; a third call after drain returns false.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_is_idempotent_while_pending() {
         let reg = BgAgentRegistry::new();
         let (task_id, _tx, _status_tx, _observer) =
@@ -1227,7 +1227,7 @@ mod tests {
     /// `snapshot()` must return one entry per pending task with
     /// stable ordering by `task_id`. Status defaults to `Pending`
     /// because no spawned future has flipped it yet.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_lists_pending_tasks_in_id_order() {
         let reg = BgAgentRegistry::new();
         let (id_a, _tx_a) = reg.register_test("explore", "map");
@@ -1251,7 +1251,7 @@ mod tests {
     /// or yielding required (`watch::Receiver::borrow` is sync).
     /// This is the contract that lets the status-bar pill (Layer 3)
     /// and live `/agents -v` (Layer 1) reflect transitions immediately.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_reflects_status_writes() {
         let reg = BgAgentRegistry::new();
         let (task_id, _tx, status_tx, _cancel) =
@@ -1286,7 +1286,7 @@ mod tests {
     /// that two successive snapshots show a non-decreasing age and
     /// that the value is non-negative (saturating subtraction
     /// prevents underflow if the system clock jumps backwards).
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_age_is_monotonic() {
         let reg = BgAgentRegistry::new();
         let (_id, _tx) = reg.register_test("explore", "x");
@@ -1303,7 +1303,7 @@ mod tests {
     /// `snapshot()` on an empty registry returns an empty Vec, not a
     /// panic and not None. `/agents` will use this to render "No
     /// background agents."
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_empty_registry_is_empty_vec() {
         let reg = BgAgentRegistry::new();
         assert!(reg.snapshot().is_empty());
@@ -1314,7 +1314,7 @@ mod tests {
     /// contract that `/agents` reflects the *currently-pending* set,
     /// not historical tasks. The Layer 1 "recently-completed lingers
     /// 30 s" UX is implemented at the *display* layer, not here.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_drops_drained_tasks() {
         let reg = BgAgentRegistry::new();
         let (_id, tx) = reg.register_test("explore", "x");
@@ -1334,7 +1334,7 @@ mod tests {
     /// `snapshot_for_caller(None)` returns only top-level tasks;
     /// `snapshot_for_caller(Some(N))` returns only N's tasks. Cross-spawner
     /// visibility is exactly zero — the Model E isolation guarantee.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_for_caller_filters_by_spawner() {
         let reg = BgAgentRegistry::new();
         let (top_id, _tx, _, _) = reg.register_test_with_status("a", "top", None);
@@ -1354,7 +1354,7 @@ mod tests {
     }
 
     /// `cancel_as_caller` enforces the Model E permission rule.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_as_caller_returns_forbidden_for_other_spawner() {
         let reg = BgAgentRegistry::new();
         let (id, _tx, _, observer) = reg.register_test_with_status("x", "y", Some(7));
@@ -1380,7 +1380,7 @@ mod tests {
         assert!(observer.is_cancelled());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_as_caller_returns_not_found_for_unknown_id() {
         let reg = BgAgentRegistry::new();
         assert_eq!(reg.cancel_as_caller(999, None), CancelOutcome::NotFound);
@@ -1388,7 +1388,7 @@ mod tests {
 
     /// `cancel_for_spawner` cleans up exactly one sub-agent's children
     /// and leaves siblings + top-level alone. The cleanup-on-exit hook.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_for_spawner_kills_only_matching_children() {
         let reg = BgAgentRegistry::new();
         let (_top, _, _, top_obs) = reg.register_test_with_status("top", "t", None);
@@ -1413,7 +1413,7 @@ mod tests {
 
     /// `wait_for_completion` returns `Completed` and consumes the entry
     /// (so a subsequent `drain_completed` can't double-inject).
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_completion_consumes_completed_task() {
         let reg = BgAgentRegistry::new();
         let (id, tx, status_tx, _) = reg.register_test_with_status("explore", "map", Some(3));
@@ -1448,7 +1448,7 @@ mod tests {
     /// `wait_for_completion` returns `TimedOut` with a fresh snapshot
     /// when the task hasn't finished yet — and crucially leaves the
     /// entry in the registry so a later drain still works.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_completion_timeout_preserves_entry() {
         let reg = BgAgentRegistry::new();
         let (id, _tx, status_tx, _) = reg.register_test_with_status("slow", "x", None);
@@ -1473,7 +1473,7 @@ mod tests {
 
     /// `wait_for_completion` enforces the same Model E permission rule
     /// as `cancel_as_caller`.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_completion_returns_forbidden_for_other_spawner() {
         let reg = BgAgentRegistry::new();
         let (id, _tx, _, _) = reg.register_test_with_status("x", "y", Some(5));
@@ -1497,7 +1497,7 @@ mod tests {
 
     /// Cancellation between status going terminal and `WaitTask` waking
     /// up surfaces as `Cancelled` (oneshot closed without sending).
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_completion_returns_cancelled_when_sender_dropped() {
         let reg = BgAgentRegistry::new();
         let (id, tx, status_tx, _) = reg.register_test_with_status("x", "y", None);
@@ -1514,7 +1514,7 @@ mod tests {
         assert!(reg.snapshot().is_empty(), "entry must be reaped");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_completion_returns_not_found_for_unknown_id() {
         let reg = BgAgentRegistry::new();
         let outcome = reg
