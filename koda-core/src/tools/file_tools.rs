@@ -566,6 +566,30 @@ fn count_dir_entries(path: &Path) -> usize {
 
 /// List files in a directory, respecting .gitignore.
 /// Entry cap is set by `OutputCaps` (context-scaled).
+///
+/// ## Output format (#1094)
+///
+/// Every output begins with a one-line header naming the directory
+/// that was listed:
+///
+/// ```text
+/// Listing: /Users/lijun/repo (17 entries)
+/// d monitor
+/// d math_puzzles
+///   README.md
+/// ...
+/// ```
+///
+/// The header is essential when the model fires several `List` calls
+/// in parallel: pre-#1094 the outputs were unattributable bare
+/// basenames, and an `(empty directory)` reply could not be matched
+/// to a request. The header costs one extra line per call and makes
+/// every reply self-identifying.
+///
+/// Entries are sorted: directories first, then files, alphabetical
+/// within each group. This is stable across runs and across
+/// filesystems (pre-#1094 the order was whatever the OS returned
+/// from `read_dir`, which differs between APFS, ext4, and tmpfs).
 pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -> Result<String> {
     let path_str = args["file_path"]
         .as_str()
@@ -573,7 +597,12 @@ pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -
         .unwrap_or(".");
     let recursive = args["recursive"].as_bool().unwrap_or(false);
     let resolved = resolve_read_path(project_root, path_str)?;
-    let mut entries: Vec<String> = Vec::new();
+    // (is_dir, display_name) pairs so we can sort directories-first,
+    // alphabetical, before formatting with the "d " / "  " prefix.
+    // Sorting on the formatted strings would put files ("  foo")
+    // before directories ("d foo") because space (0x20) < 'd' (0x64),
+    // which is the opposite of what we want.
+    let mut entries: Vec<(bool, String)> = Vec::new();
     let mut total_count: usize = 0;
 
     if recursive {
@@ -606,8 +635,7 @@ pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -
                 continue;
             }
             let relative = path.strip_prefix(project_root).unwrap_or(path);
-            let prefix = if path.is_dir() { "d " } else { "  " };
-            entries.push(format!("{prefix}{}", relative.display()));
+            entries.push((path.is_dir(), relative.display().to_string()));
             total_count += 1;
             if entries.len() >= max_entries {
                 break;
@@ -617,8 +645,10 @@ pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -
         let mut reader = tokio::fs::read_dir(&resolved).await?;
         while let Some(entry) = reader.next_entry().await? {
             let ft = entry.file_type().await?;
-            let prefix = if ft.is_dir() { "d " } else { "  " };
-            entries.push(format!("{prefix}{}", entry.file_name().to_string_lossy()));
+            entries.push((
+                ft.is_dir(),
+                entry.file_name().to_string_lossy().into_owned(),
+            ));
             total_count += 1;
             if entries.len() >= max_entries {
                 break;
@@ -626,15 +656,33 @@ pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -
         }
     }
 
+    // Sort: directories first (true > false reversed), then alphabetical.
+    // Stable sort preserves insertion order for ties, which doesn't
+    // matter once we sort by name too — every output is fully
+    // determined by the directory contents.
+    entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+
+    let header = format!("Listing: {}", resolved.display());
+
     if entries.is_empty() {
-        Ok("(empty directory)".to_string())
-    } else if total_count >= max_entries {
-        Ok(format!(
-            "{}\n\n... [CAPPED at {max_entries} entries. Use a subdirectory path to narrow results.]",
-            entries.join("\n")
-        ))
+        Ok(format!("{header}\n(empty directory)"))
     } else {
-        Ok(entries.join("\n"))
+        let formatted: Vec<String> = entries
+            .into_iter()
+            .map(|(is_dir, name)| {
+                let prefix = if is_dir { "d " } else { "  " };
+                format!("{prefix}{name}")
+            })
+            .collect();
+        let header = format!("{header} ({total_count} entries)");
+        if total_count >= max_entries {
+            Ok(format!(
+                "{header}\n{}\n\n... [CAPPED at {max_entries} entries. Use a subdirectory path to narrow results.]",
+                formatted.join("\n")
+            ))
+        } else {
+            Ok(format!("{header}\n{}", formatted.join("\n")))
+        }
     }
 }
 
@@ -996,5 +1044,102 @@ mod tests {
         let args = json!({"file_path": "."});
         let result = list_files(tmp.path(), &args, 5).await.unwrap();
         assert!(result.contains("CAPPED"), "expected cap message: {result}");
+    }
+
+    // ── #1094: List output must self-identify the directory ──────────
+
+    /// Regression for #1094: every output must begin with a
+    /// `Listing: <path>` header so parallel `List` calls can be
+    /// attributed back to their requests. Pre-#1094 the output was
+    /// just bare basenames with no parent context.
+    #[tokio::test]
+    async fn list_files_includes_directory_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "").unwrap();
+
+        let args = json!({"directory": "."});
+        let result = list_files(tmp.path(), &args, 200).await.unwrap();
+        let first_line = result.lines().next().unwrap();
+        assert!(
+            first_line.starts_with("Listing: "),
+            "first line must be a `Listing: ...` header, got: {first_line:?}"
+        );
+        assert!(
+            first_line.contains("(1 entries)"),
+            "header must include entry count, got: {first_line:?}"
+        );
+    }
+
+    /// The empty-directory case is the most ambiguous one for parallel
+    /// calls (pre-#1094 it returned just `(empty directory)` with no
+    /// indication of WHICH directory). The header must still appear.
+    #[tokio::test]
+    async fn list_files_empty_directory_still_has_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty = tmp.path().join("empty_subdir");
+        std::fs::create_dir(&empty).unwrap();
+
+        let args = json!({"file_path": "empty_subdir"});
+        let result = list_files(tmp.path(), &args, 200).await.unwrap();
+        let mut lines = result.lines();
+        let header = lines.next().unwrap();
+        assert!(
+            header.starts_with("Listing: ") && header.contains("empty_subdir"),
+            "empty-dir header must name the directory, got: {header:?}"
+        );
+        assert_eq!(lines.next(), Some("(empty directory)"));
+        // No entry count for empty case (would be redundant with
+        // "(empty directory)" on the next line).
+        assert!(
+            !header.contains("entries"),
+            "empty header should omit count, got: {header:?}"
+        );
+    }
+
+    /// Entries must be sorted: directories first, then files,
+    /// alphabetical within each group. Pre-#1094 the order was
+    /// whatever `read_dir` returned, which differs across
+    /// filesystems and made the output unstable across machines.
+    #[tokio::test]
+    async fn list_files_sorts_dirs_first_then_alphabetical() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create in deliberately-scrambled order to make sure we're
+        // not just getting lucky with insertion order.
+        std::fs::write(tmp.path().join("zzz.txt"), "").unwrap();
+        std::fs::create_dir(tmp.path().join("yankee")).unwrap();
+        std::fs::write(tmp.path().join("aaa.txt"), "").unwrap();
+        std::fs::create_dir(tmp.path().join("alpha")).unwrap();
+
+        let args = json!({"directory": "."});
+        let result = list_files(tmp.path(), &args, 200).await.unwrap();
+        let body: Vec<&str> = result.lines().skip(1).collect();
+        assert_eq!(
+            body,
+            vec!["d alpha", "d yankee", "  aaa.txt", "  zzz.txt"],
+            "entries must be sorted dirs-first then alphabetical: {result}"
+        );
+    }
+
+    /// The capped-output path must also carry the header, otherwise
+    /// the model loses attribution exactly when the output is most
+    /// confusing (long lists are the ones that get truncated).
+    #[tokio::test]
+    async fn list_files_capped_output_carries_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..20 {
+            std::fs::write(tmp.path().join(format!("file_{i:02}.txt")), "").unwrap();
+        }
+
+        let args = json!({"file_path": "."});
+        let result = list_files(tmp.path(), &args, 5).await.unwrap();
+        let first_line = result.lines().next().unwrap();
+        assert!(
+            first_line.starts_with("Listing: "),
+            "capped output must still start with header: {first_line:?}"
+        );
+        assert!(
+            result.contains("CAPPED"),
+            "capped output must still include cap message: {result}"
+        );
     }
 }
