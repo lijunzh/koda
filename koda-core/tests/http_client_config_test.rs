@@ -9,13 +9,21 @@
 //! (the reqwest proxy machinery only kicks in on actual `.send()`).
 //! That makes them integration tests, not unit tests.
 //!
-//! ## Test isolation
+//! ## Test isolation (#1109 F1)
 //!
 //! All tests in this file mutate process-wide state in
 //! [`koda_core::runtime_env`] (the runtime env-var map).
 //! [`koda_test_utils::ENV_MUTEX`] serializes them so concurrent test
 //! runners don't trample each other, and [`EnvGuard`] (defined below)
-//! removes any keys this test set when it returns — even on panic.
+//! removes any keys this test set/masked when it returns — even on panic.
+//!
+//! Previously this file used `unsafe { std::env::remove_var(...) }` to
+//! hide a developer's exported `HTTP_PROXY` from the production code
+//! path (which falls back to `std::env::var` when the runtime map has
+//! no entry). That `unsafe` is gone now: [`runtime_env::mask`] makes
+//! [`runtime_env::get`] return `None` for masked keys regardless of
+//! the real process env. No `std::env` mutation, no UB, no snapshot
+//! restore dance.
 //!
 //! Related: #914 covers the missing retry/backoff/timeout layer; once
 //! that lands, retry-on-429 and timeout-on-stall tests can use the
@@ -30,67 +38,66 @@ use koda_test_utils::ENV_MUTEX;
 use koda_test_utils::network::FakeLlmServer;
 use serde_json::{Value, json};
 
-// ── Helpers ───────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────
 
-/// Drops registered runtime-env keys when scope ends. Survives test panics
-/// thanks to RAII, so a failing test cannot leak env state into siblings.
+/// Proxy-related env keys that production reads. Tests need to hide
+/// the developer's real values so the runtime override is what gets
+/// observed.
+const PROXY_ENV_KEYS: &[&str] = &[
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "PROXY_USER",
+    "PROXY_PASS",
+];
+
+/// RAII guard for runtime-env state. Tracks both `set` and `mask`
+/// operations so they're undone on drop — surviving panics so a
+/// failing test cannot leak env state into siblings.
 struct EnvGuard<'a> {
-    keys: Vec<&'a str>,
+    set_keys: Vec<&'a str>,
+    masked_keys: Vec<&'a str>,
 }
 
 impl<'a> EnvGuard<'a> {
     fn new() -> Self {
-        Self { keys: Vec::new() }
+        Self {
+            set_keys: Vec::new(),
+            masked_keys: Vec::new(),
+        }
     }
 
     /// Set the runtime-env var and remember to remove it at drop.
     fn set(&mut self, key: &'a str, value: &str) {
         runtime_env::set(key, value);
-        self.keys.push(key);
+        self.set_keys.push(key);
+    }
+
+    /// Mask the key so [`runtime_env::get`] returns `None` regardless
+    /// of process env. Lifted at drop.
+    fn mask(&mut self, key: &'a str) {
+        runtime_env::mask(key);
+        self.masked_keys.push(key);
+    }
+
+    /// Mask every proxy-related env key. Convenience for the common
+    /// pre-test setup that previously called
+    /// `snapshot_and_clear_process_proxy_env`.
+    fn mask_all_proxy_env(&mut self) {
+        for k in PROXY_ENV_KEYS {
+            self.mask(k);
+        }
     }
 }
 
 impl Drop for EnvGuard<'_> {
     fn drop(&mut self) {
-        for k in &self.keys {
+        for k in &self.set_keys {
             runtime_env::remove(k);
         }
-    }
-}
-
-/// Pre-clear every proxy-related env var in the **process** environment.
-///
-/// We can't use [`runtime_env::remove`] for these because the runtime-env
-/// fallback to `std::env::var` would still surface them.
-/// Returns the original values so [`PROCESS_ENV_GUARD`] can restore them.
-fn snapshot_and_clear_process_proxy_env() -> Vec<(&'static str, Option<String>)> {
-    const KEYS: &[&str] = &[
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "PROXY_USER",
-        "PROXY_PASS",
-    ];
-    let snap: Vec<_> = KEYS.iter().map(|k| (*k, std::env::var(k).ok())).collect();
-    // SAFETY: ENV_MUTEX is held by the caller, so no other thread is reading
-    // these vars concurrently. This block only runs in tests.
-    unsafe {
-        for k in KEYS {
-            std::env::remove_var(k);
-        }
-    }
-    snap
-}
-
-fn restore_process_env(snap: Vec<(&'static str, Option<String>)>) {
-    // SAFETY: ENV_MUTEX still held by the caller.
-    unsafe {
-        for (k, v) in snap {
-            match v {
-                Some(val) => std::env::set_var(k, val),
-                None => std::env::remove_var(k),
-            }
+        for k in &self.masked_keys {
+            runtime_env::unmask(k);
         }
     }
 }
@@ -125,7 +132,6 @@ fn user_msg() -> ChatMessage {
 #[tokio::test]
 async fn http_proxy_routes_remote_requests_through_proxy() {
     let _g = ENV_MUTEX.lock().await;
-    let proc_snap = snapshot_and_clear_process_proxy_env();
 
     // The proxy is a FakeLlmServer — it won't actually forward, just match
     // the path regex on the inbound proxied request and respond 200. That's
@@ -134,6 +140,7 @@ async fn http_proxy_routes_remote_requests_through_proxy() {
     proxy.mount_chat_ok(ok_chat_body()).await;
 
     let mut env = EnvGuard::new();
+    env.mask_all_proxy_env();
     env.set("HTTP_PROXY", &proxy.url());
 
     // Target a non-localhost host so the proxy is consulted (the bypass
@@ -148,14 +155,11 @@ async fn http_proxy_routes_remote_requests_through_proxy() {
     let proxied = proxy.received_requests().await;
     assert_eq!(proxied.len(), 1, "request must be routed through the proxy");
 
-    drop(env);
-    restore_process_env(proc_snap);
 }
 
 #[tokio::test]
 async fn localhost_traffic_bypasses_proxy_even_when_set() {
     let _g = ENV_MUTEX.lock().await;
-    let proc_snap = snapshot_and_clear_process_proxy_env();
 
     // Two servers: a "proxy" we expect to be skipped, an "upstream" we
     // expect to receive the request directly because the URL is localhost.
@@ -165,6 +169,7 @@ async fn localhost_traffic_bypasses_proxy_even_when_set() {
     upstream.mount_chat_ok(ok_chat_body()).await;
 
     let mut env = EnvGuard::new();
+    env.mask_all_proxy_env();
     env.set("HTTP_PROXY", &proxy.url());
 
     let provider = OpenAiCompatProvider::new(&upstream.url(), Some("sk-test".into()));
@@ -184,19 +189,17 @@ async fn localhost_traffic_bypasses_proxy_even_when_set() {
         "upstream must receive the request directly"
     );
 
-    drop(env);
-    restore_process_env(proc_snap);
 }
 
 #[tokio::test]
 async fn proxy_basic_auth_from_env_vars_attaches_proxy_authorization_header() {
     let _g = ENV_MUTEX.lock().await;
-    let proc_snap = snapshot_and_clear_process_proxy_env();
 
     let proxy = FakeLlmServer::spawn().await;
     proxy.mount_chat_ok(ok_chat_body()).await;
 
     let mut env = EnvGuard::new();
+    env.mask_all_proxy_env();
     env.set("HTTP_PROXY", &proxy.url());
     env.set("PROXY_USER", "alice");
     env.set("PROXY_PASS", "s3cret");
@@ -217,14 +220,11 @@ async fn proxy_basic_auth_from_env_vars_attaches_proxy_authorization_header() {
     // Basic alice:s3cret = YWxpY2U6czNjcmV0
     assert_eq!(auth, "Basic YWxpY2U6czNjcmV0");
 
-    drop(env);
-    restore_process_env(proc_snap);
 }
 
 #[tokio::test]
 async fn invalid_proxy_url_degrades_gracefully_to_no_proxy() {
     let _g = ENV_MUTEX.lock().await;
-    let proc_snap = snapshot_and_clear_process_proxy_env();
 
     // Garbage proxy URL: the production code logs a warning and returns a
     // proxy-less client rather than panicking. Verify by making a request
@@ -233,6 +233,7 @@ async fn invalid_proxy_url_degrades_gracefully_to_no_proxy() {
     upstream.mount_chat_ok(ok_chat_body()).await;
 
     let mut env = EnvGuard::new();
+    env.mask_all_proxy_env();
     env.set("HTTP_PROXY", "://this is not a url@@@");
 
     let provider = OpenAiCompatProvider::new(&upstream.url(), Some("sk-test".into()));
@@ -247,8 +248,6 @@ async fn invalid_proxy_url_degrades_gracefully_to_no_proxy() {
         "malformed proxy URL must not block legitimate localhost traffic"
     );
 
-    drop(env);
-    restore_process_env(proc_snap);
 }
 
 #[tokio::test]
@@ -258,7 +257,6 @@ async fn read_timeout_aborts_silent_servers_quickly() {
     // half-open socket a NAT box quietly dropped) would hang the agent
     // forever. Now KODA_READ_TIMEOUT_SECS bounds idle time between reads.
     let _g = ENV_MUTEX.lock().await;
-    let proc_snap = snapshot_and_clear_process_proxy_env();
 
     let upstream = FakeLlmServer::spawn().await;
     // Server takes 3s to start sending; client should give up at ~1s.
@@ -267,6 +265,7 @@ async fn read_timeout_aborts_silent_servers_quickly() {
         .await;
 
     let mut env = EnvGuard::new();
+    env.mask_all_proxy_env();
     env.set("KODA_READ_TIMEOUT_SECS", "1");
 
     let provider = OpenAiCompatProvider::new(&upstream.url(), Some("sk-test".into()));
@@ -293,6 +292,4 @@ async fn read_timeout_aborts_silent_servers_quickly() {
         "error should mention timeout, got: {msg}"
     );
 
-    drop(env);
-    restore_process_env(proc_snap);
 }

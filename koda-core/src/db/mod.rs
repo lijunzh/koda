@@ -44,21 +44,23 @@ pub struct Database {
 }
 
 /// Get the koda config directory (~/.config/koda/).
+///
+/// **#1109 F1**: reads via [`crate::runtime_env::get`] (thread-safe with
+/// `mask`/fallback semantics) instead of `std::env::var`. Tests can now
+/// inject or hide these keys without `unsafe { set_var }`.
 pub fn config_dir() -> Result<std::path::PathBuf> {
-    let base = std::env::var("XDG_CONFIG_HOME")
-        .ok()
+    let base = crate::runtime_env::get("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| {
             // Unix: $HOME/.config  (XDG Base Directory spec fallback)
-            std::env::var("HOME")
-                .ok()
+            crate::runtime_env::get("HOME")
                 .map(|h| std::path::PathBuf::from(h).join(".config"))
         })
         .or({
             // Windows: %APPDATA%  (e.g. C:\Users\Alice\AppData\Roaming)
             #[cfg(windows)]
             {
-                std::env::var("APPDATA").ok().map(std::path::PathBuf::from)
+                crate::runtime_env::get("APPDATA").map(std::path::PathBuf::from)
             }
             #[cfg(not(windows))]
             {

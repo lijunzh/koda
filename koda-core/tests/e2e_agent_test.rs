@@ -1,6 +1,6 @@
 //! E2E tests: sub-agent invocation and caching.
 
-use koda_core::{bg_agent::AgentStatus, engine::EngineEvent, persistence::Persistence};
+use koda_core::{bg_agent::AgentStatus, engine::EngineEvent, persistence::Persistence, runtime_env};
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 use std::time::Duration;
 
@@ -23,14 +23,7 @@ async fn test_sub_agent_invocation_e2e() {
         .to_string(),
     )
     .unwrap();
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var(
-            "KODA_MOCK_RESPONSES",
-            r#"[{"text": "Echo: review the auth module"}]"#,
-        );
-    }
+    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "Echo: review the auth module"}]"#);
 
     env.insert_user_message("delegate to echo-agent").await;
 
@@ -45,11 +38,7 @@ async fn test_sub_agent_invocation_e2e() {
         MockResponse::Text("Sub-agent says: Echo: review the auth module".into()),
     ]);
     let events = env.run_inference(&provider).await;
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::remove_var("KODA_MOCK_RESPONSES");
-    }
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     assert!(
         events.iter().any(
@@ -138,16 +127,10 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     // the sub-agent would reload a context missing the assistant
     // tool-call turn and re-issue the same call — burning the
     // second response on another tool call instead of the text.
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var(
-            "KODA_MOCK_RESPONSES",
-            r#"[
+    runtime_env::set("KODA_MOCK_RESPONSES", r#"[
                 {"tool_calls": [{"id": "tc_1", "name": "ListSkills", "arguments": "{}"}]},
                 {"text": "sub-agent done"}
-            ]"#,
-        );
-    }
+            ]"#);
 
     env.insert_user_message("delegate").await;
 
@@ -162,11 +145,7 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
         MockResponse::Text("parent done".into()),
     ]);
     let _events = env.run_inference(&provider).await;
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::remove_var("KODA_MOCK_RESPONSES");
-    }
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // Find the sub-agent's session. `list_sessions` returns newest-first,
     // so the loop-test-agent session is at the top (created after the
@@ -234,11 +213,7 @@ async fn test_sub_agent_cache_hit_skips_llm() {
         .to_string(),
     )
     .unwrap();
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"text": "cached result"}]"#);
-    }
+    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "cached result"}]"#);
     env.insert_user_message("call the agent twice").await;
 
     let provider = MockProvider::new(vec![
@@ -253,10 +228,7 @@ async fn test_sub_agent_cache_hit_skips_llm() {
         MockResponse::Text("Done with both calls.".into()),
     ]);
     let events = env.run_inference(&provider).await;
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::remove_var("KODA_MOCK_RESPONSES");
-    }
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     let cache_hit = events
         .iter()
@@ -323,13 +295,9 @@ async fn skip_memory_excludes_project_memory_from_sub_agent() {
     // Write a distinctive sentinel to the project memory file.
     std::fs::write(env.root.join("MEMORY.md"), "SENTINEL_XYZ").unwrap();
     write_agent_config(&env, "lean-agent", /* skip_memory */ true);
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
-    }
+    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
     let calls = invoke_agent_and_take_calls(&env, "lean-agent").await;
-    unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     assert!(
         !calls.is_empty(),
@@ -355,13 +323,9 @@ async fn without_skip_memory_project_memory_reaches_sub_agent() {
     // Same sentinel — but this agent does NOT skip memory.
     std::fs::write(env.root.join("MEMORY.md"), "SENTINEL_XYZ").unwrap();
     write_agent_config(&env, "full-agent", /* skip_memory */ false);
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
-    }
+    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
     let calls = invoke_agent_and_take_calls(&env, "full-agent").await;
-    unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     assert!(
         !calls.is_empty(),
@@ -402,13 +366,7 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
     // call `InvokeAgent` (which should be refused), then emits its
     // final text. The refusal must not abort the sub-agent.
     //
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var(
-            "KODA_MOCK_RESPONSES",
-            r#"[{"tool": "InvokeAgent", "args": {"agent_name": "would-recurse", "prompt": "recurse"}}, {"text": "final after refusal"}]"#,
-        );
-    }
+    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"tool": "InvokeAgent", "args": {"agent_name": "would-recurse", "prompt": "recurse"}}, {"text": "final after refusal"}]"#);
 
     env.insert_user_message("delegate").await;
     let provider = MockProvider::new(vec![
@@ -419,11 +377,7 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
         MockResponse::Text("parent done".into()),
     ]);
     let _events = env.run_inference(&provider).await;
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::remove_var("KODA_MOCK_RESPONSES");
-    }
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // The sub-agent's final text reached the parent — i.e. the refusal
     // did not abort the sub-agent loop, and the parent received a
@@ -470,13 +424,7 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
     write_agent_config(&env, "bg-counter-agent", /* skip_memory */ true);
 
     // Give the background agent's mock provider a single text response.
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var(
-            "KODA_MOCK_RESPONSES",
-            r#"[{"text": "background work done"}]"#,
-        );
-    }
+    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "background work done"}]"#);
 
     env.insert_user_message("launch background agent").await;
 
@@ -564,10 +512,6 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
         AgentStatus::Cancelled => panic!("bg agent was unexpectedly cancelled"),
         _ => unreachable!("loop only breaks on terminal states"),
     }
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
     // Removed only after the bg task has finished reading it.
-    unsafe {
-        std::env::remove_var("KODA_MOCK_RESPONSES");
-    }
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 }

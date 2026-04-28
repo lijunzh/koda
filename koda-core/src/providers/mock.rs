@@ -99,13 +99,31 @@ impl MockProvider {
         }
     }
 
-    /// Create from `KODA_MOCK_RESPONSES` env var (JSON array).
+    /// Create from `KODA_MOCK_RESPONSES` runtime env var (JSON array).
     ///
     /// Format: `[{"text":"hello"}, {"tool":"Read","args":{"path":"f.txt"}}, {"error":"boom"}]`
+    ///
+    /// **#1109 F1**: reads via [`crate::runtime_env::get`] (thread-safe
+    /// `RwLock<HashMap>` with fallback to `std::env::var`) instead of
+    /// `std::env::var` directly. This lets in-process tests inject the
+    /// script via [`crate::runtime_env::set`] — no `unsafe { set_var }`,
+    /// no Rust 2024 UB. Sub-process tests (e.g. `koda-cli/tests/smoke_test`)
+    /// continue to work because `runtime_env::get` falls back to the real
+    /// process env when the runtime map has no entry.
     pub fn from_env() -> Self {
-        let json = std::env::var("KODA_MOCK_RESPONSES").unwrap_or_else(|_| "[]".into());
+        let json = crate::runtime_env::get("KODA_MOCK_RESPONSES").unwrap_or_else(|| "[]".into());
+        Self::from_json_str(&json)
+    }
+
+    /// Pure parser — build a provider from a JSON-array string. Extracted
+    /// so lib tests can exercise the parsing logic without touching the
+    /// global env (#1109 F1).
+    ///
+    /// Panics if `json` is not a valid JSON array. Callers feeding
+    /// untrusted input should `serde_json::from_str` themselves first.
+    pub fn from_json_str(json: &str) -> Self {
         let raw: Vec<serde_json::Value> =
-            serde_json::from_str(&json).expect("KODA_MOCK_RESPONSES must be a JSON array");
+            serde_json::from_str(json).expect("KODA_MOCK_RESPONSES must be a JSON array");
         let responses = raw
             .into_iter()
             .map(|v| {
@@ -329,8 +347,11 @@ impl LlmProvider for MockProvider {
 mod tests {
     use super::*;
 
-    /// Serialize env-var mutations across parallel tests.
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // **#1109 F1**: previously this module had its own `ENV_MUTEX` to
+    // serialize tests that mutated `KODA_MOCK_RESPONSES` via
+    // `unsafe { std::env::set_var }`. Both are gone now —
+    // [`MockProvider::from_json_str`] is the pure parser; lib tests
+    // call it directly without touching any global.
 
     #[tokio::test]
     async fn test_text_response() {
@@ -417,79 +438,69 @@ mod tests {
         }
     }
 
-    // ── from_env ─────────────────────────────────────────────────────
+    // ── from_env / from_json_str ───────────────────────────────
+    //
+    // **#1109 F1**: previously each test set `KODA_MOCK_RESPONSES` via
+    // `unsafe { std::env::set_var }` (UB in Rust 2024) and serialized
+    // access via a local `ENV_MUTEX`. Both went away once `from_env`
+    // delegated to a pure parser — the parser is what we actually want
+    // to test, the env-var read is a one-line wrapper.
 
     #[test]
-    fn test_from_env_no_var_gives_empty_provider() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        // SAFETY: serialized via ENV_MUTEX
-        unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
-        let provider = MockProvider::from_env();
+    fn test_from_json_str_empty_array_gives_empty_provider() {
+        let provider = MockProvider::from_json_str("[]");
         let next = provider.next_response();
         assert!(matches!(next, MockResponse::Text(t) if t.is_empty()));
     }
 
     #[test]
-    fn test_from_env_with_text_response() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        unsafe {
-            std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"text": "hello from env"}]"#);
-        }
-        let provider = MockProvider::from_env();
+    fn test_from_env_falls_back_to_empty_when_unset() {
+        // Smoke test for the env-reading wrapper. Uses a key that
+        // production reads (`KODA_MOCK_RESPONSES`) BUT relies on the
+        // runtime-env fallback to an unset process var, so we don't
+        // touch any global state. If a sibling test has already set
+        // the runtime entry, that's still fine — `from_env` just
+        // delegates to `from_json_str`, which we test directly above.
+        // This test exists to pin that the wrapper compiles and the
+        // parse-empty path is reachable.
+        let _ = MockProvider::from_env(); // must not panic
+    }
+
+    #[test]
+    fn test_from_json_str_with_text_response() {
+        let provider = MockProvider::from_json_str(r#"[{"text": "hello from env"}]"#);
         let next = provider.next_response();
         assert!(matches!(next, MockResponse::Text(t) if t == "hello from env"));
-        unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
     }
 
     #[test]
-    fn test_from_env_with_tool_call() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        unsafe {
-            std::env::set_var(
-                "KODA_MOCK_RESPONSES",
-                r#"[{"tool": "Bash", "args": {"command": "ls"}}]"#,
-            );
-        }
-        let provider = MockProvider::from_env();
+    fn test_from_json_str_with_tool_call() {
+        let provider = MockProvider::from_json_str(
+            r#"[{"tool": "Bash", "args": {"command": "ls"}}]"#,
+        );
         let next = provider.next_response();
         assert!(matches!(next, MockResponse::ToolCalls(calls) if calls[0].function_name == "Bash"));
-        unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
     }
 
     #[test]
-    fn test_from_env_with_error() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        unsafe {
-            std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"error": "boom"}]"#);
-        }
-        let provider = MockProvider::from_env();
+    fn test_from_json_str_with_error() {
+        let provider = MockProvider::from_json_str(r#"[{"error": "boom"}]"#);
         let next = provider.next_response();
         assert!(matches!(next, MockResponse::Error(e) if e == "boom"));
-        unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
     }
 
     #[test]
-    fn test_from_env_with_rate_limit() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        unsafe {
-            std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"rate_limit": true}]"#);
-        }
-        let provider = MockProvider::from_env();
+    fn test_from_json_str_with_rate_limit() {
+        let provider = MockProvider::from_json_str(r#"[{"rate_limit": true}]"#);
         let next = provider.next_response();
         assert!(matches!(next, MockResponse::RateLimit));
-        unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
     }
 
     #[test]
-    fn test_from_env_with_context_overflow() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        unsafe {
-            std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"context_overflow": true}]"#);
-        }
-        let provider = MockProvider::from_env();
+    fn test_from_json_str_with_context_overflow() {
+        let provider = MockProvider::from_json_str(r#"[{"context_overflow": true}]"#);
         let next = provider.next_response();
         assert!(matches!(next, MockResponse::ContextOverflow));
-        unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
     }
 
     // ── provider metadata ─────────────────────────────────────────────
