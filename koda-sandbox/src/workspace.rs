@@ -402,7 +402,7 @@ impl ClonefileProvider {
     /// never fell back to `GitWorktreeProvider` and sub-agents with
     /// write tools could not be dispatched at all.
     ///
-    /// We now detect this up front via [`choose_clones_root`] and
+    /// We now detect this up front via `choose_clones_root` and
     /// fall back to `$TMPDIR/koda-clones/<hash>/`. macOS's default
     /// `$TMPDIR` (`/var/folders/...`) is never inside `$HOME`, so
     /// the fallback always works on stock installs. If both

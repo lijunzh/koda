@@ -168,7 +168,7 @@ fn load_agents_from_dir(dir: &Path, source: &'static str, agents: &mut HashMap<S
         // identity — they are NOT sub-agents and must not appear in
         // discovery output (the `/agents` listing, the prompt's
         // `## Available Sub-Agents` section, or `InvokeAgent` dispatch).
-        // Pre-#XXXX, the prompt builder filtered both names locally;
+        // Pre-#1098, the prompt builder filtered both names locally;
         // now that all callers route through `discover_all_agents`,
         // the filter belongs here.
         if agent_name == "default" || agent_name == "koda" {
