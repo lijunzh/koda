@@ -226,6 +226,19 @@ struct GeminiToolConfig {
 struct FunctionDeclaration {
     name: String,
     description: String,
+    /// Tool parameter schema. Sent under the `parametersJsonSchema`
+    /// wire field instead of `parameters` because our schemas use
+    /// JSON Schema features Gemini's strict OpenAPI 3.0 `parameters`
+    /// field rejects (notably `additionalProperties: false`, which
+    /// the bg-task tools use to prevent hallucinated args — and
+    /// which OpenAI structured outputs also require).
+    ///
+    /// The Gemini API exposes both fields side by side: `parameters`
+    /// is OpenAPI 3.0 (strict subset), `parametersJsonSchema` is
+    /// full JSON Schema. The 1st-party gemini-cli uses the
+    /// JSON-Schema field for the same reason. See:
+    /// https://ai.google.dev/api/caching#FunctionDeclaration
+    #[serde(rename = "parametersJsonSchema")]
     parameters: serde_json::Value,
 }
 
@@ -974,6 +987,58 @@ mod tests {
     fn test_build_tools_empty() {
         let tools = GeminiProvider::build_tools(&[]);
         assert!(tools.is_empty());
+    }
+
+    /// Regression for the 400 we'd get sending JSON-Schema features
+    /// (notably `additionalProperties: false`, which the bg-task
+    /// tools use) under Gemini's strict OpenAPI-3.0 `parameters`
+    /// field. Fix is to serialize as `parametersJsonSchema` instead
+    /// — the JSON-Schema-aware sibling field. The 1st-party
+    /// gemini-cli does the same. See:
+    /// https://ai.google.dev/api/caching#FunctionDeclaration
+    ///
+    /// Without this rename the API rejects the request with:
+    ///   Unknown name "additionalProperties" at
+    ///   'tools[0].function_declarations[N].parameters'
+    #[test]
+    fn function_declaration_serializes_under_parameters_json_schema() {
+        let tools = vec![ToolDefinition {
+            name: "CancelTask".into(),
+            description: "cancel a bg task".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string" }
+                },
+                "required": ["task_id"],
+                "additionalProperties": false
+            }),
+        }];
+        let gemini_tools = GeminiProvider::build_tools(&tools);
+        let wire = serde_json::to_value(&gemini_tools[0]).unwrap();
+        let decl = &wire["functionDeclarations"][0];
+
+        // The whole point: schema lives under `parametersJsonSchema`,
+        // NOT `parameters`. Sending under `parameters` triggers the
+        // "Unknown name 'additionalProperties'" 400.
+        assert!(
+            decl.get("parametersJsonSchema").is_some(),
+            "expected `parametersJsonSchema` field in wire payload, got: {wire}"
+        );
+        assert!(
+            decl.get("parameters").is_none(),
+            "`parameters` field must NOT appear (Gemini rejects JSON Schema there): {wire}"
+        );
+
+        // The schema itself must be passed through verbatim — no
+        // sanitization, no field-stripping. additionalProperties:
+        // false is a feature, not a bug: it stops Gemini from
+        // hallucinating extra args, exactly like OpenAI strict mode.
+        assert_eq!(
+            decl["parametersJsonSchema"]["additionalProperties"],
+            serde_json::json!(false),
+            "additionalProperties must survive intact: {wire}"
+        );
     }
 
     #[test]
