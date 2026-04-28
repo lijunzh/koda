@@ -1511,31 +1511,69 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn collect_stream_cancellation_sets_interrupted() {
+        use std::sync::Arc;
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
         let (tx, mut rx) = mpsc::channel(32);
-        let sink = TestSink::new();
+        // **#1109 F3**: Arc the sink so the spawned producer can
+        // observe when the consumer has emitted the partial chunk.
+        // Replaces the old `sleep(50ms)` polling pattern (the only
+        // remaining wall-clock-budget test in this file) with the
+        // signal-based `TestSink::wait_for` primitive added in F3.
+        let sink = Arc::new(TestSink::new());
         let tmp = tempfile::tempdir().unwrap();
         let tools = test_tools(tmp.path());
 
-        // Send one delta, then cancel, then try to send more.
+        let sink_for_producer = Arc::clone(&sink);
         tokio::spawn(async move {
+            // 1. Send the partial chunk.
             let _ = tx.send(StreamChunk::TextDelta("partial".into())).await;
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            // 2. Wait until `collect_stream` has actually consumed it
+            //    (signalled by the TextDelta event reaching the sink).
+            //    Was: sleep(50ms) — fine on a laptop, racy on macOS CI.
+            sink_for_producer
+                .wait_for(std::time::Duration::from_secs(5), |ev| {
+                    matches!(
+                        ev,
+                        crate::engine::EngineEvent::TextDelta { text } if text == "partial"
+                    )
+                })
+                .await
+                .expect("consumer should emit TextDelta within 5s");
+
+            // 3. Now safe to cancel: we know `partial` is in the result.
             cancel_clone.cancel();
-            // This should be ignored after cancel:
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            // 4. Try to send another chunk after cancel — it should
+            //    NOT appear in the final result. No sleep needed: the
+            //    main task's `collect_stream.await` will have returned
+            //    by the time we reach the assertions, so the post-
+            //    cancel send races nothing.
             let _ = tx.send(StreamChunk::TextDelta(" ignored".into())).await;
         });
 
-        let result =
-            collect_stream(&mut rx, &sink, &cancel, &tools, TrustMode::Auto, tmp.path()).await;
+        let result = collect_stream(
+            &mut rx,
+            sink.as_ref(),
+            &cancel,
+            &tools,
+            TrustMode::Auto,
+            tmp.path(),
+        )
+        .await;
 
         assert!(result.interrupted);
         assert!(result.network_error.is_none());
         // Partial text should be captured up to cancellation.
         assert!(result.text.contains("partial"));
+        // Defensive: the post-cancel send must not leak into result.text.
+        assert!(
+            !result.text.contains("ignored"),
+            "post-cancel chunk leaked into result.text: {:?}",
+            result.text
+        );
     }
 
     // ── Network errors ───────────────────────────────────────────
