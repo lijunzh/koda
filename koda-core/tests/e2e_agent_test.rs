@@ -1,6 +1,8 @@
 //! E2E tests: sub-agent invocation and caching.
 
-use koda_core::{bg_agent::AgentStatus, engine::EngineEvent, persistence::Persistence, runtime_env};
+use koda_core::{
+    bg_agent::AgentStatus, engine::EngineEvent, persistence::Persistence, runtime_env,
+};
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 use std::time::Duration;
 
@@ -23,7 +25,10 @@ async fn test_sub_agent_invocation_e2e() {
         .to_string(),
     )
     .unwrap();
-    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "Echo: review the auth module"}]"#);
+    runtime_env::set(
+        "KODA_MOCK_RESPONSES",
+        r#"[{"text": "Echo: review the auth module"}]"#,
+    );
 
     env.insert_user_message("delegate to echo-agent").await;
 
@@ -127,10 +132,13 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     // the sub-agent would reload a context missing the assistant
     // tool-call turn and re-issue the same call — burning the
     // second response on another tool call instead of the text.
-    runtime_env::set("KODA_MOCK_RESPONSES", r#"[
+    runtime_env::set(
+        "KODA_MOCK_RESPONSES",
+        r#"[
                 {"tool_calls": [{"id": "tc_1", "name": "ListSkills", "arguments": "{}"}]},
                 {"text": "sub-agent done"}
-            ]"#);
+            ]"#,
+    );
 
     env.insert_user_message("delegate").await;
 
@@ -366,7 +374,10 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
     // call `InvokeAgent` (which should be refused), then emits its
     // final text. The refusal must not abort the sub-agent.
     //
-    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"tool": "InvokeAgent", "args": {"agent_name": "would-recurse", "prompt": "recurse"}}, {"text": "final after refusal"}]"#);
+    runtime_env::set(
+        "KODA_MOCK_RESPONSES",
+        r#"[{"tool": "InvokeAgent", "args": {"agent_name": "would-recurse", "prompt": "recurse"}}, {"text": "final after refusal"}]"#,
+    );
 
     env.insert_user_message("delegate").await;
     let provider = MockProvider::new(vec![
@@ -424,7 +435,10 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
     write_agent_config(&env, "bg-counter-agent", /* skip_memory */ true);
 
     // Give the background agent's mock provider a single text response.
-    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "background work done"}]"#);
+    runtime_env::set(
+        "KODA_MOCK_RESPONSES",
+        r#"[{"text": "background work done"}]"#,
+    );
 
     env.insert_user_message("launch background agent").await;
 

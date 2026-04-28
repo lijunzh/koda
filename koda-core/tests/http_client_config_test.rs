@@ -154,7 +154,6 @@ async fn http_proxy_routes_remote_requests_through_proxy() {
 
     let proxied = proxy.received_requests().await;
     assert_eq!(proxied.len(), 1, "request must be routed through the proxy");
-
 }
 
 #[tokio::test]
@@ -188,7 +187,6 @@ async fn localhost_traffic_bypasses_proxy_even_when_set() {
         1,
         "upstream must receive the request directly"
     );
-
 }
 
 #[tokio::test]
@@ -219,7 +217,6 @@ async fn proxy_basic_auth_from_env_vars_attaches_proxy_authorization_header() {
         .expect("Proxy-Authorization header must be set when PROXY_USER/PROXY_PASS are present");
     // Basic alice:s3cret = YWxpY2U6czNjcmV0
     assert_eq!(auth, "Basic YWxpY2U6czNjcmV0");
-
 }
 
 #[tokio::test]
@@ -247,7 +244,6 @@ async fn invalid_proxy_url_degrades_gracefully_to_no_proxy() {
         1,
         "malformed proxy URL must not block legitimate localhost traffic"
     );
-
 }
 
 #[tokio::test]
@@ -291,5 +287,4 @@ async fn read_timeout_aborts_silent_servers_quickly() {
         msg.contains("timeout") || msg.contains("timed out") || msg.contains("operation"),
         "error should mention timeout, got: {msg}"
     );
-
 }

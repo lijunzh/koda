@@ -53,8 +53,7 @@ pub fn config_dir() -> Result<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
         .or_else(|| {
             // Unix: $HOME/.config  (XDG Base Directory spec fallback)
-            crate::runtime_env::get("HOME")
-                .map(|h| std::path::PathBuf::from(h).join(".config"))
+            crate::runtime_env::get("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
         })
         .or({
             // Windows: %APPDATA%  (e.g. C:\Users\Alice\AppData\Roaming)

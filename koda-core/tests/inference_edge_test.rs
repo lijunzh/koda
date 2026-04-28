@@ -8,7 +8,6 @@
 
 use koda_core::{engine::EngineEvent, persistence::Persistence};
 use koda_test_utils::{Env, MockProvider, MockResponse};
-use tokio_util::sync::CancellationToken;
 
 // ── Rate limit retry ─────────────────────────────────────────
 

@@ -241,7 +241,8 @@ impl Env {
         provider: &dyn LlmProvider,
         cancel: CancellationToken,
     ) -> (anyhow::Result<()>, Vec<EngineEvent>) {
-        self.run_inference_with_sink(provider, cancel, Arc::new(TestSink::new())).await
+        self.run_inference_with_sink(provider, cancel, Arc::new(TestSink::new()))
+            .await
     }
 
     /// Same as [`run_inference_full`] but lets the caller supply the

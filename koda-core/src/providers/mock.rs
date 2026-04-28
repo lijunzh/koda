@@ -475,9 +475,8 @@ mod tests {
 
     #[test]
     fn test_from_json_str_with_tool_call() {
-        let provider = MockProvider::from_json_str(
-            r#"[{"tool": "Bash", "args": {"command": "ls"}}]"#,
-        );
+        let provider =
+            MockProvider::from_json_str(r#"[{"tool": "Bash", "args": {"command": "ls"}}]"#);
         let next = provider.next_response();
         assert!(matches!(next, MockResponse::ToolCalls(calls) if calls[0].function_name == "Bash"));
     }
