@@ -92,6 +92,43 @@ fn format_utc_now() -> String {
     )
 }
 
+/// Extract `(id, function_name, arguments_json)` from one element of
+/// the parsed `tool_calls` JSON array.
+///
+/// Production code persists tool calls via
+/// `serde_json::to_string(&Vec<ToolCall>)`, which produces the FLAT
+/// shape `{"id":..., "function_name":..., "arguments":...}` (see
+/// `koda_core::providers::ToolCall`). Pre-#1108 the renderer here
+/// looked at the OpenAI-NESTED shape `{"function": {"name":..., }}`,
+/// silently fell through to defaults, and rendered every export as
+/// `### 🔧 **Tool**` with no name.
+///
+/// Read the flat shape first; fall back to nested for any legacy
+/// data or test fixtures still using the OpenAI shape. This mirrors
+/// the established pattern in `microcompact.rs` and
+/// `context_analysis.rs` — those modules read tool_calls JSON the
+/// right way; this one was the lone offender.
+fn extract_tool_call_meta(call: &serde_json::Value) -> (String, String, String) {
+    let id = call
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let name = call
+        .get("function_name")
+        .or_else(|| call.get("function").and_then(|f| f.get("name")))
+        .and_then(|v| v.as_str())
+        .unwrap_or("Tool")
+        .to_string();
+    let args = call
+        .get("arguments")
+        .or_else(|| call.get("function").and_then(|f| f.get("arguments")))
+        .and_then(|v| v.as_str())
+        .unwrap_or("{}")
+        .to_string();
+    (id, name, args)
+}
+
 /// Generate a Markdown transcript from a slice of session messages.
 ///
 /// - `verbose = true` (default): full fidelity — timestamps, token counts,
@@ -120,10 +157,9 @@ pub fn render(messages: &[Message], meta: &SessionMeta, verbose: bool) -> String
             && let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json)
         {
             for call in calls {
-                if let (Some(id), Some(name)) =
-                    (call["id"].as_str(), call["function"]["name"].as_str())
-                {
-                    tool_id_to_name.insert(id.to_string(), name.to_string());
+                let (id, name, _args) = extract_tool_call_meta(&call);
+                if !id.is_empty() && name != "Tool" {
+                    tool_id_to_name.insert(id, name);
                 }
             }
         }
@@ -178,16 +214,15 @@ pub fn render(messages: &[Message], meta: &SessionMeta, verbose: bool) -> String
                     };
                     let link = hyperlinks_enabled();
                     for call in &calls {
-                        let name = call["function"]["name"].as_str().unwrap_or("Tool");
-                        let args_json = call["function"]["arguments"].as_str().unwrap_or("{}");
+                        let (id, name, args_json) = extract_tool_call_meta(call);
                         let detail = tool_detail_markdown(
-                            name,
-                            args_json,
+                            &name,
+                            &args_json,
                             bash_limit,
                             &meta.project_root,
                             link,
                         );
-                        let icon = tool_icon(name);
+                        let icon = tool_icon(&name);
                         out.push_str(&format!("### {icon} **{name}**"));
                         if !detail.is_empty() {
                             // Detail may already contain markdown link
@@ -200,6 +235,13 @@ pub fn render(messages: &[Message], meta: &SessionMeta, verbose: bool) -> String
                             } else {
                                 out.push_str(&format!(" `{detail}`"));
                             }
+                        }
+                        // P1a (#1108): surface tool_call_id so a reader
+                        // can correlate parallel calls with their
+                        // `Output` rows below. Skip for empty ids —
+                        // older sessions may not have them.
+                        if !id.is_empty() {
+                            out.push_str(&format!(" `{id}`"));
                         }
                         out.push('\n');
                     }
@@ -235,7 +277,17 @@ pub fn render(messages: &[Message], meta: &SessionMeta, verbose: bool) -> String
                     let show_content = verbose || effect == ToolEffect::ReadOnly;
 
                     if show_content {
-                        out.push_str("**Output:**\n\n```\n");
+                        // P1a (#1108): include tool_call_id so parallel
+                        // call/result pairs can be matched. The `id`
+                        // appears on the matching call's `### **Tool**`
+                        // header above, so the reader can grep for it.
+                        let header = match msg.tool_call_id.as_deref() {
+                            Some(id) if !id.is_empty() => {
+                                format!("**Output for `{id}`:**\n\n```\n")
+                            }
+                            _ => "**Output:**\n\n```\n".to_string(),
+                        };
+                        out.push_str(&header);
                         let preview_lines: Vec<&str> = content.lines().take(max_lines).collect();
                         out.push_str(&preview_lines.join("\n"));
                         if total_lines > max_lines {
@@ -500,13 +552,11 @@ mod tests {
         result_msg.tool_call_id = Some("call_1".into());
 
         let mut assistant_msg = make_msg(Role::Assistant, "");
-        assistant_msg.tool_calls = Some(
-            serde_json::json!([{
-                "id": "call_1",
-                "function": { "name": "Read", "arguments": r#"{"file_path":"src/main.rs"}"# }
-            }])
-            .to_string(),
-        );
+        assistant_msg.tool_calls = Some(flat_tool_calls_json(&[(
+            "call_1",
+            "Read",
+            r#"{"file_path":"src/main.rs"}"#,
+        )]));
 
         let msgs = vec![assistant_msg, result_msg];
         let out = render(&msgs, &default_meta(), false);
@@ -520,13 +570,11 @@ mod tests {
         result_msg.tool_call_id = Some("call_2".into());
 
         let mut assistant_msg = make_msg(Role::Assistant, "");
-        assistant_msg.tool_calls = Some(
-            serde_json::json!([{
-                "id": "call_2",
-                "function": { "name": "Bash", "arguments": r#"{"command":"ls"}"# }
-            }])
-            .to_string(),
-        );
+        assistant_msg.tool_calls = Some(flat_tool_calls_json(&[(
+            "call_2",
+            "Bash",
+            r#"{"command":"ls"}"#,
+        )]));
 
         let msgs = vec![assistant_msg, result_msg];
         let out = render(&msgs, &default_meta(), false);
@@ -622,13 +670,11 @@ mod tests {
         result_msg.tool_call_id = Some("call_3".into());
 
         let mut assistant_msg = make_msg(Role::Assistant, "");
-        assistant_msg.tool_calls = Some(
-            serde_json::json!([{
-                "id": "call_3",
-                "function": { "name": "Bash", "arguments": r#"{"command":"ls"}"# }
-            }])
-            .to_string(),
-        );
+        assistant_msg.tool_calls = Some(flat_tool_calls_json(&[(
+            "call_3",
+            "Bash",
+            r#"{"command":"ls"}"#,
+        )]));
 
         let msgs = vec![assistant_msg, result_msg];
         let out = render(&msgs, &default_meta(), true);
@@ -637,18 +683,38 @@ mod tests {
         assert!(out.contains("line3"));
     }
 
-    // ── Markdown hyperlink emission ──────────────────────────────────
+    // ── Markdown hyperlink emission ────────────────────────────────
+
+    /// Build a `tool_calls` JSON string the way production code does it:
+    /// `serde_json::to_string(&Vec<ToolCall>)` — the FLAT shape with
+    /// `function_name` and `arguments` at the top level.
+    ///
+    /// Pre-#1108 every transcript test built a *different* (nested OpenAI)
+    /// shape via `json!({"function": {...}})`. Tests passed in CI while
+    /// every real export rendered tool calls as `### 🔧 **Tool**`.
+    /// New fixtures MUST go through this helper so test data matches
+    /// production data and the bug class can't recur.
+    fn flat_tool_calls_json(calls: &[(&str, &str, &str)]) -> String {
+        use koda_core::providers::ToolCall;
+        let toolcalls: Vec<ToolCall> = calls
+            .iter()
+            .map(|(id, name, args)| ToolCall {
+                id: (*id).to_string(),
+                function_name: (*name).to_string(),
+                arguments: (*args).to_string(),
+                thought_signature: None,
+            })
+            .collect();
+        serde_json::to_string(&toolcalls).expect("ToolCall serializes")
+    }
 
     /// Build an assistant message with a single tool call.
+    ///
+    /// Routes through [`flat_tool_calls_json`] so the resulting
+    /// `tool_calls` field matches what production code persists.
     fn assistant_with_call(name: &str, args_json: &str) -> Message {
         let mut m = make_msg(Role::Assistant, "");
-        m.tool_calls = Some(
-            serde_json::json!([{
-                "id": "c1",
-                "function": { "name": name, "arguments": args_json }
-            }])
-            .to_string(),
-        );
+        m.tool_calls = Some(flat_tool_calls_json(&[("c1", name, args_json)]));
         m
     }
 
@@ -772,5 +838,110 @@ mod tests {
         // encode the most common offenders so links survive copy/paste.
         let uri = file_uri("/My Files/[draft].md");
         assert_eq!(uri, "file:///My%20Files/%5Bdraft%5D.md");
+    }
+
+    // ── #1108 P0/P1a: tool name + args + call_id surfacing ────────────
+
+    /// Regression test for #1108 P0: real production tool_calls JSON
+    /// (the flat `function_name` shape from `serde_json::to_string(
+    /// &Vec<ToolCall>)`) MUST surface the tool name in the rendered
+    /// markdown header. Pre-fix this test would have failed with
+    /// `### 🔧 **Tool**` — every export silently lied about which
+    /// tool was called for the entire history of the export feature.
+    #[test]
+    fn production_tool_calls_json_renders_tool_name_in_header() {
+        let mut msg = make_msg(Role::Assistant, "");
+        msg.tool_calls = Some(flat_tool_calls_json(&[(
+            "call_xyz",
+            "InvokeAgent",
+            r#"{"agent_name":"explore","prompt":"map the repo"}"#,
+        )]));
+        let out = render(&[msg], &default_meta(), false);
+        assert!(
+            out.contains("**InvokeAgent**"),
+            "production-shape tool_calls must render the tool NAME in the header. \
+             Pre-#1108 every real export rendered `### 🔧 **Tool**` because the \
+             renderer read the OpenAI-nested shape (`function.name`) while \
+             persistence wrote the flat shape (`function_name`). got:\n{out}"
+        );
+        assert!(
+            !out.contains("**Tool**"),
+            "`**Tool**` is the silent fallback that masked the bug for months. \
+             It should never appear when the call has a real function_name. \
+             got:\n{out}"
+        );
+    }
+
+    /// Companion test: production-shape tool_calls must also expose the
+    /// arguments to the `tool_header::detail_text` formatter. Pre-#1108
+    /// args were silently `"{}"` so detail rendered as `🔧 **Tool**`
+    /// with no path/command suffix.
+    #[test]
+    fn production_tool_calls_json_renders_tool_args_in_header() {
+        let mut msg = make_msg(Role::Assistant, "");
+        msg.tool_calls = Some(flat_tool_calls_json(&[(
+            "call_zzz",
+            "Read",
+            r#"{"file_path":"src/very_distinctive_file.rs"}"#,
+        )]));
+        let out = render(&[msg], &default_meta(), false);
+        assert!(
+            out.contains("very_distinctive_file.rs"),
+            "production-shape tool_calls must surface the arguments. \
+             Pre-#1108 args were swallowed because the renderer read \
+             `function.arguments` (nested) while persistence wrote \
+             `arguments` (flat). got:\n{out}"
+        );
+    }
+
+    /// Regression test for #1108 P1a: every tool call header must
+    /// include the `tool_call_id` so a reader can correlate parallel
+    /// calls (e.g. 3× `InvokeAgent` in one assistant turn) with their
+    /// corresponding `Output` rows. Pre-fix the id only existed
+    /// internally and never reached the export.
+    #[test]
+    fn tool_call_id_appears_in_header_for_correlation() {
+        let mut msg = make_msg(Role::Assistant, "");
+        msg.tool_calls = Some(flat_tool_calls_json(&[
+            (
+                "call_a",
+                "InvokeAgent",
+                r#"{"agent_name":"explore","prompt":"a"}"#,
+            ),
+            (
+                "call_b",
+                "InvokeAgent",
+                r#"{"agent_name":"explore","prompt":"b"}"#,
+            ),
+        ]));
+        let out = render(&[msg], &default_meta(), false);
+        assert!(
+            out.contains("call_a") && out.contains("call_b"),
+            "both tool_call_ids must appear in the header so parallel \
+             InvokeAgent calls can be matched to their Output rows. \
+             got:\n{out}"
+        );
+    }
+
+    /// Regression test for #1108 P1a: when a `Tool` result message
+    /// carries a `tool_call_id`, the `**Output**` header in the
+    /// transcript must include it so it can be matched to its
+    /// originating call.
+    #[test]
+    fn tool_call_id_appears_in_result_output_header() {
+        let mut a = make_msg(Role::Assistant, "");
+        a.tool_calls = Some(flat_tool_calls_json(&[(
+            "call_corr",
+            "Read",
+            r#"{"file_path":"x.rs"}"#,
+        )]));
+        let mut t = make_msg(Role::Tool, "file contents here");
+        t.tool_call_id = Some("call_corr".into());
+        let out = render(&[a, t], &default_meta(), false);
+        assert!(
+            out.contains("call_corr"),
+            "the result row's Output header must mention its tool_call_id \
+             so parallel call/result pairs can be matched. got:\n{out}"
+        );
     }
 }
