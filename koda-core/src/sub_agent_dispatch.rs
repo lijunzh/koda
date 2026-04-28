@@ -790,15 +790,29 @@ pub(crate) fn execute_sub_agent<'a>(
                 Some(serde_json::to_string(&response.tool_calls)?)
             };
 
-            db.insert_message(
-                &sub_session,
-                &Role::Assistant,
-                response.content.as_deref(),
-                tool_calls_json.as_deref(),
-                None,
-                Some(&response.usage),
-            )
-            .await?;
+            // **koda#1101**: capture msg_id and mark the assistant
+            // message complete. Pre-fix this call discarded the row
+            // ID and never marked complete, so `load_context` (which
+            // filters out `(role = 'assistant' AND completed_at IS
+            // NULL)`) dropped every sub-agent assistant turn from
+            // the next iteration's history. The orphan tool-result
+            // rows then got pruned by `prune_mismatched_tool_calls`,
+            // leaving the sub-agent with `[system, user]` only — it
+            // re-issued the same tool call every iteration until the
+            // cap. Mirrors the parent inference loop's pattern at
+            // `inference.rs::mark_message_complete`. The contract is
+            // pinned by `db::tests::load_context_excludes_incomplete_assistant_messages`.
+            let assistant_msg_id = db
+                .insert_message(
+                    &sub_session,
+                    &Role::Assistant,
+                    response.content.as_deref(),
+                    tool_calls_json.as_deref(),
+                    None,
+                    Some(&response.usage),
+                )
+                .await?;
+            db.mark_message_complete(assistant_msg_id).await?;
 
             if response.tool_calls.is_empty() {
                 let result = response
