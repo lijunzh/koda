@@ -22,9 +22,9 @@
 //! |----------------------------|-----------------------------------------------------|
 //! | `Bash`                     | `cmd` syntax-highlighted as bash (single-line)      |
 //! | `Read`/`Write`/`Edit`/`Delete` | `file_path` in [`theme::PATH`] (cyan)            |
-//! | `Grep`                     | `"<pattern>"` in [`theme::MATCH_HIT`] + ` in ` + dir |
-//! | `Glob`                     | `pattern` in [`theme::PATH`]                        |
-//! | `List`                     | `directory` in [`theme::PATH`]                      |
+//! | `Grep`                     | `"<pattern>"` in [`theme::MATCH_HIT`] + ` in ` + `file_path` |
+//! | `Glob`                     | `pattern` in [`theme::PATH`] (+ ` in ` + `file_path` if set)  |
+//! | `List`                     | `file_path` in [`theme::PATH`]                      |
 //! | `WebFetch`                 | `url` in [`theme::PATH`]                            |
 //! | _other_                    | first string arg, dim                               |
 
@@ -141,7 +141,14 @@ fn grep_detail(args: &Value) -> Vec<Span<'static>> {
     if pattern.is_empty() {
         return Vec::new();
     }
-    let dir = first_string(args, &["directory", "path"]).unwrap_or_else(|| ".".to_string());
+    // Key order matches `tools::grep::run`'s arg lookup so the rendered
+    // detail always shows the path the tool actually searched. Pre-fix
+    // we checked obsolete `directory`/`path` keys that never matched
+    // the schema (the param has been `file_path` since day one), so
+    // every Grep header silently rendered "in ." regardless of the
+    // real target. See koda#1099 for the cross-tool repro.
+    let dir =
+        first_string(args, &["file_path", "path", "directory"]).unwrap_or_else(|| ".".to_string());
     vec![
         Span::styled(format!("\"{pattern}\""), theme::MATCH_HIT),
         Span::styled(" in ".to_string(), DIM),
@@ -154,11 +161,24 @@ fn glob_detail(args: &Value) -> Vec<Span<'static>> {
     if pattern.is_empty() {
         return Vec::new();
     }
-    vec![Span::styled(truncate_for_header(&pattern), theme::PATH)]
+    let mut spans = vec![Span::styled(truncate_for_header(&pattern), theme::PATH)];
+    // Glob takes an optional `file_path` base directory. When present,
+    // surface it so the user can tell `Glob '*.toml'` from project
+    // root vs from `koda-cli/`. Hidden when omitted (project root
+    // default) to keep headers tight for the common case.
+    if let Some(base) = first_string(args, &["file_path", "path", "directory"]) {
+        spans.push(Span::styled(" in ".to_string(), DIM));
+        spans.push(Span::styled(truncate_for_header(&base), theme::PATH));
+    }
+    spans
 }
 
 fn list_detail(args: &Value) -> Vec<Span<'static>> {
-    let dir = first_string(args, &["directory", "path"]).unwrap_or_else(|| ".".to_string());
+    // Same key ordering as `tools::file_tools::list_directory` — if
+    // the dispatch reads `file_path` first, the renderer must too,
+    // or the header lies about which directory was actually listed.
+    let dir =
+        first_string(args, &["file_path", "path", "directory"]).unwrap_or_else(|| ".".to_string());
     vec![Span::styled(truncate_for_header(&dir), theme::PATH)]
 }
 
@@ -203,18 +223,28 @@ fn grep_text(args: &Value) -> String {
     if pattern.is_empty() {
         return String::new();
     }
-    let dir = first_string(args, &["directory", "path"]).unwrap_or_else(|| ".".to_string());
+    // Mirror `grep_detail`'s key list so transcript exports show the
+    // same directory the live header surfaced.
+    let dir =
+        first_string(args, &["file_path", "path", "directory"]).unwrap_or_else(|| ".".to_string());
     // Quotes match the TUI rendering (see `grep_detail`) so transcript and
     // live view show the same string for the same args.
     format!("\"{pattern}\" in {dir}")
 }
 
 fn glob_text(args: &Value) -> String {
-    first_string(args, &["pattern"]).unwrap_or_default()
+    let pattern = first_string(args, &["pattern"]).unwrap_or_default();
+    if pattern.is_empty() {
+        return String::new();
+    }
+    match first_string(args, &["file_path", "path", "directory"]) {
+        Some(base) => format!("{pattern} in {base}"),
+        None => pattern,
+    }
 }
 
 fn list_text(args: &Value) -> String {
-    first_string(args, &["directory", "path"]).unwrap_or_else(|| ".".to_string())
+    first_string(args, &["file_path", "path", "directory"]).unwrap_or_else(|| ".".to_string())
 }
 
 fn webfetch_text(args: &Value) -> String {
@@ -343,6 +373,27 @@ mod tests {
         assert_eq!(span_texts(&live), span_texts(&history));
     }
 
+    /// Regression for koda#1099: the renderer used to look for
+    /// `directory`/`path` keys, but every koda built-in tool's schema
+    /// uses `file_path` for the directory parameter. Result: every
+    /// `Grep "X" in src/` rendered as `Grep "X" in .` because the
+    /// renderer never found the actual key, falling back to the
+    /// project-root default. The user's tool trace looked like the
+    /// model was spinning on `.` when it was actually walking
+    /// distinct subdirectories.
+    #[test]
+    fn grep_uses_file_path_key_from_schema() {
+        let spans = detail_spans(
+            "Grep",
+            &json!({"pattern": "TODO", "file_path": "koda-core/src"}),
+        );
+        assert_eq!(
+            span_texts(&spans),
+            vec!["\"TODO\"", " in ", "koda-core/src"],
+            "Grep header must surface `file_path` (the schema's actual key); regression for the silent `in .` rendering"
+        );
+    }
+
     // ── bash_detail ──────────────────────────────────────────────────
 
     #[test]
@@ -378,12 +429,90 @@ mod tests {
         assert_eq!(span_texts(&spans), vec!["**/*.rs"]);
     }
 
-    // ── list_detail ──────────────────────────────────────────────────
+    /// koda#1099: Glob's optional base directory (`file_path`) was
+    /// silently dropped from the header. `Glob '*/.git'` searched
+    /// from project root vs `Glob '*/.git' in koda-core/` looked
+    /// identical to the user.
+    #[test]
+    fn glob_surfaces_file_path_when_present() {
+        let spans = detail_spans(
+            "Glob",
+            &json!({"pattern": "**/*.rs", "file_path": "koda-core"}),
+        );
+        assert_eq!(
+            span_texts(&spans),
+            vec!["**/*.rs", " in ", "koda-core"],
+            "Glob header must show its base directory when set; users can't otherwise tell scoped vs root searches apart"
+        );
+    }
+
+    #[test]
+    fn glob_omits_base_when_default_root() {
+        // No `file_path` => keep the header tight (the common case).
+        let spans = detail_spans("Glob", &json!({"pattern": "*.toml"}));
+        assert_eq!(span_texts(&spans), vec!["*.toml"]);
+    }
+
+    // ── list_detail ─────────────────────────────────────────────
 
     #[test]
     fn list_default_directory_is_dot() {
         let spans = detail_spans("List", &json!({}));
         assert_eq!(span_texts(&spans), vec!["."]);
+    }
+
+    /// koda#1099: the user-facing repro. The model called
+    /// `List { file_path: "src" }`, `List { file_path: "tests" }`,
+    /// `List { file_path: "docs" }`, ... and the TUI rendered
+    /// `● List .` for every single one because the renderer never
+    /// looked at `file_path`. The trace looked like a tight loop on
+    /// the project root.
+    #[test]
+    fn list_uses_file_path_key_from_schema() {
+        let spans = detail_spans("List", &json!({"file_path": "koda-cli/src"}));
+        assert_eq!(
+            span_texts(&spans),
+            vec!["koda-cli/src"],
+            "List header must surface `file_path` (the schema's actual key); regression for the silent `● List .` repetition"
+        );
+    }
+
+    /// Defensive contract test: each path-bearing tool's renderer key
+    /// list must include the same primary key the dispatch reads.
+    /// If anyone renames `file_path` in a tool schema (or adds a new
+    /// path-bearing tool) without also updating `tool_header.rs`,
+    /// the live header silently lies. This pins the contract so
+    /// that drift fails the build instead.
+    #[test]
+    fn path_bearing_tools_render_actual_dispatch_key() {
+        // (tool name, the JSON we'd send, what the rendered detail must contain)
+        let cases: &[(&str, serde_json::Value, &str)] = &[
+            ("List", json!({"file_path": "src"}), "src"),
+            (
+                "Grep",
+                json!({"pattern": "x", "file_path": "tests"}),
+                "tests",
+            ),
+            (
+                "Glob",
+                json!({"pattern": "*.rs", "file_path": "docs"}),
+                "docs",
+            ),
+            ("Read", json!({"file_path": "main.rs"}), "main.rs"),
+            ("Write", json!({"file_path": "out.rs"}), "out.rs"),
+            ("Edit", json!({"file_path": "x.rs"}), "x.rs"),
+            ("Delete", json!({"file_path": "y.rs"}), "y.rs"),
+        ];
+        for (name, args, expected_path) in cases {
+            let concat: String = detail_spans(name, args)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert!(
+                concat.contains(expected_path),
+                "`{name}` header must surface the path the dispatch reads (`file_path`). Got {concat:?}, expected to contain {expected_path:?}"
+            );
+        }
     }
 
     // ── webfetch_detail ──────────────────────────────────────────────
