@@ -5,6 +5,13 @@ default-members = ["koda-cli"]
 
 [workspace.package]
 edition = "2024"
+# Pinned to the actual minimum required by current code (uses
+# `u64::is_multiple_of`, stable since 1.87). Surfacing this gives
+# downstream consumers a clear MSRV signal instead of a late
+# compile error from older toolchains. Bump in lockstep with any
+# new stdlib feature usage; clippy's incompatible_msrv lint will
+# catch the next drift.
+rust-version = "1.87"
 license = "MIT"
 repository = "https://github.com/lijunzh/koda"
 homepage = "https://github.com/lijunzh/koda"

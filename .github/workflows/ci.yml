@@ -111,7 +111,37 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
       - name: Test
-        run: cargo test --workspace --features koda-core/test-support
+        run: cargo test --workspace --features koda-core/test-support 2>&1 | tee test-output.log
+        # `tee` keeps live streaming for the GH log AND captures output
+        # for the assertion step below. We pipe stderr to stdout because
+        # cargo test prints test names to stderr in some configurations.
+      # #1104: regression guard — fail CI if the bwrap SEC-002 / TOCTOU
+      # tests didn't actually run. Without this, a future cfg-gate or
+      # test-binary split could silently exclude them and we'd only
+      # find out by getting hacked. Linux-only: bwrap is gated to
+      # `target_os = "linux"`.
+      - name: Assert bwrap SEC-002 regression tests ran (#1104)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          required_tests=(
+            git_config_deny_pre_creates_for_non_git_dir_to_close_toctou
+            git_config_deny_adds_ro_bind_for_existing_git_dir
+            git_config_deny_skips_worktree_gitdir_pointer
+            git_config_deny_preserves_existing_config_mtime
+          )
+          missing=()
+          for t in "${required_tests[@]}"; do
+            if ! grep -qE "test bwrap::tests::${t} \.\.\. ok" test-output.log; then
+              missing+=("$t")
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Required bwrap regression tests did not run:"
+            printf '  - %s\n' "${missing[@]}"
+            exit 1
+          fi
+          echo "✓ All ${#required_tests[@]} bwrap SEC-002/TOCTOU regression tests ran."
 
   doc:
     name: Docs
