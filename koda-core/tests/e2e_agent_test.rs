@@ -455,22 +455,30 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
         MockResponse::Text("parent done".into()),
     ]);
 
-    // **#1109 macOS-fix**: poll `bg_agents.drain_status_events()`
-    // directly instead of relying on the parent's inference_loop to
-    // forward events to the test sink. Background agents enqueue
-    // `BgTaskUpdate` events on the registry; the parent's loop drains
-    // them at the top of each iteration. After `run_inference`
-    // returns, *no one* drains them — so subscribing to the sink
-    // misses every bg event that fires after parent completes. Going
-    // straight to the registry queue is race-free: events are pushed
-    // there as soon as the bg task emits them. The polling here is
-    // bounded by a 10s budget; on a healthy machine it returns in a
-    // few ms. See PR #1113 diagnostic for the full story.
+    // **#1109 macOS-fix**: BgTaskUpdate events live in TWO places
+    // depending on timing:
+    //
+    //   * If the bg task completed BEFORE `run_inference` returned
+    //     (typical on macOS CI), the parent's `inference_loop` already
+    //     drained the events into the test sink — they're in the
+    //     returned `events` vec, and the registry's queue is empty.
+    //
+    //   * If the bg task completed AFTER `run_inference` returned
+    //     (typical on slower local machines), the parent never got
+    //     a chance to drain them, and they're sitting in the registry
+    //     queue waiting for `drain_status_events()`.
+    //
+    // We collect from BOTH sources to be race-free in either timing
+    // regime. See PR #1113 diagnostic for the full story.
     use koda_core::engine::EngineEvent;
-    let _ = env.run_inference(&provider).await;
+    let events_from_sink = env.run_inference(&provider).await;
+
+    let mut bg_events: Vec<EngineEvent> = events_from_sink
+        .into_iter()
+        .filter(|ev| matches!(ev, EngineEvent::BgTaskUpdate { .. }))
+        .collect();
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    let mut bg_events: Vec<EngineEvent> = Vec::new();
     let saw_terminal = loop {
         for ev in env.bg_agents.drain_status_events() {
             bg_events.push(ev);
