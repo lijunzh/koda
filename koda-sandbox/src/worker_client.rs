@@ -66,17 +66,18 @@ fn unique_socket_path() -> PathBuf {
 
 /// Test-only override for the worker binary path. Set via
 /// [`set_worker_binary_for_tests`] from a test setup helper; takes
-/// precedence over env-var lookup in [`worker_binary`].
+/// precedence over env-var lookup in `worker_binary` (private).
 ///
 /// **#1109 F1**: replaces `unsafe { std::env::set_var }` in test
 /// helpers (UB in Rust 2024 if any other thread reads env
-/// concurrently). [`OnceLock`] gives us "set once at process
-/// startup" semantics without locks or unsafe.
+/// concurrently). [`OnceLock`](std::sync::OnceLock) gives us "set
+/// once at process startup" semantics without locks or unsafe.
 static WORKER_BIN_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// Set the worker binary path used by [`worker_binary`]. Idempotent:
-/// after the first successful call, subsequent calls are silently
-/// ignored (matches the "set once per process" semantics tests need).
+/// Set the worker binary path used internally by `worker_binary`.
+/// Idempotent: after the first successful call, subsequent calls are
+/// silently ignored (matches the "set once per process" semantics
+/// tests need).
 ///
 /// Intended for test setup helpers. Production code uses env-var or
 /// sibling discovery.
