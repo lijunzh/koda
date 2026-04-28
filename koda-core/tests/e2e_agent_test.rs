@@ -88,6 +88,133 @@ async fn test_sub_agent_invocation_e2e() {
     );
 }
 
+/// Regression for koda#1101: the sub-agent dispatch loop forgot to
+/// mark its assistant messages complete via `db.mark_message_complete`.
+/// Because `load_context` filters out
+/// `(role = 'assistant' AND completed_at IS NULL)` rows, every
+/// iteration the sub-agent reloaded a context with **no assistant
+/// turns** — then `prune_mismatched_tool_calls` orphan-pruned the
+/// tool result rows, leaving only `[system, user]`. The sub-agent
+/// re-issued the same tool call forever, hitting the iteration cap.
+///
+/// User-visible symptom (post-#1099 when paths actually rendered):
+///
+/// ```text
+/// ● List /Users/lijun/repo
+/// ● List /Users/lijun/repo
+/// ● List /Users/lijun/repo
+/// ... (repeats until iteration cap or Ctrl+C)
+/// ```
+///
+/// This test scripts the sub-agent's mock provider to:
+///   1. Issue a `ListSkills` tool call (no-arg, no-side-effect tool)
+///   2. Reply with final text
+///
+/// If the bug is present, the sub-agent will burn all `KODA_MOCK_RESPONSES`
+/// on repeated tool calls and never reach the text reply — OR the DB
+/// will end up with assistant rows where `completed_at IS NULL`.
+/// Either failure is asserted below.
+#[tokio::test]
+async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::new().await;
+
+    let agents_dir = env.root.join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("loop-test-agent.json"),
+        serde_json::json!({
+            "name": "loop-test-agent",
+            "system_prompt": "You are a test agent. Call ListSkills then reply done.",
+            "allowed_tools": ["ListSkills"],
+            "provider": "mock",
+            "base_url": "http://localhost:0"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // Sub-agent script: tool call, then final text. With the bug,
+    // the sub-agent would reload a context missing the assistant
+    // tool-call turn and re-issue the same call — burning the
+    // second response on another tool call instead of the text.
+    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
+    unsafe {
+        std::env::set_var(
+            "KODA_MOCK_RESPONSES",
+            r#"[
+                {"tool_calls": [{"id": "tc_1", "name": "ListSkills", "arguments": "{}"}]},
+                {"text": "sub-agent done"}
+            ]"#,
+        );
+    }
+
+    env.insert_user_message("delegate").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({
+                "agent_name": "loop-test-agent",
+                "prompt": "do the thing"
+            }),
+        ),
+        MockResponse::Text("parent done".into()),
+    ]);
+    let _events = env.run_inference(&provider).await;
+
+    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
+    unsafe {
+        std::env::remove_var("KODA_MOCK_RESPONSES");
+    }
+
+    // Find the sub-agent's session. `list_sessions` returns newest-first,
+    // so the loop-test-agent session is at the top (created after the
+    // parent test session, before the parent's final text response).
+    let sessions = env.db.list_sessions(10, &env.root).await.unwrap();
+    let sub_session = sessions
+        .iter()
+        .find(|s| s.agent_name == "loop-test-agent")
+        .unwrap_or_else(|| {
+            panic!(
+                "loop-test-agent session must exist; got: {:?}",
+                sessions.iter().map(|s| &s.agent_name).collect::<Vec<_>>()
+            )
+        });
+
+    // Direct DB-level assertion: load_context applies the same filter
+    // the sub-agent's loop applies. If any assistant row has
+    // `completed_at IS NULL`, it'll be missing here, which is the
+    // exact mechanism that caused the loop spin.
+    let context = env.db.load_context(&sub_session.id).await.unwrap();
+    let assistant_turns = context
+        .iter()
+        .filter(|m| matches!(m.role, koda_core::persistence::Role::Assistant))
+        .count();
+    assert!(
+        assistant_turns >= 1,
+        "sub-agent's load_context must include at least one assistant turn; found {assistant_turns}. \
+         Pre-fix this was zero because mark_message_complete was never called, so every iteration \
+         the sub-agent saw `[system, user]` only and re-issued the same tool call. Context: {context:#?}"
+    );
+
+    // Belt-and-suspenders: load_all_messages bypasses the completed_at
+    // filter, so any drift between the two counts pinpoints incomplete
+    // assistant rows even if `assistant_turns` happens to be ≥1
+    // for some other reason.
+    let all = env.db.load_all_messages(&sub_session.id).await.unwrap();
+    let all_assistant = all
+        .iter()
+        .filter(|m| matches!(m.role, koda_core::persistence::Role::Assistant))
+        .count();
+    assert_eq!(
+        all_assistant, assistant_turns,
+        "every assistant row in the sub-agent session must be visible to load_context; \
+         all={all_assistant}, filtered={assistant_turns}. Drift = some assistant rows have \
+         completed_at IS NULL = the loop-spin bug is back."
+    );
+}
+
 #[tokio::test]
 async fn test_sub_agent_cache_hit_skips_llm() {
     let _lock = ENV_MUTEX.lock().await;
