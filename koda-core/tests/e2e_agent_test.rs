@@ -1,10 +1,12 @@
 //! E2E tests: sub-agent invocation and caching.
 
-use koda_core::{bg_agent::AgentStatus, engine::EngineEvent, persistence::Persistence};
+use koda_core::{
+    bg_agent::AgentStatus, engine::EngineEvent, persistence::Persistence, runtime_env,
+};
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 use std::time::Duration;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_sub_agent_invocation_e2e() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -23,14 +25,10 @@ async fn test_sub_agent_invocation_e2e() {
         .to_string(),
     )
     .unwrap();
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var(
-            "KODA_MOCK_RESPONSES",
-            r#"[{"text": "Echo: review the auth module"}]"#,
-        );
-    }
+    runtime_env::set(
+        "KODA_MOCK_RESPONSES",
+        r#"[{"text": "Echo: review the auth module"}]"#,
+    );
 
     env.insert_user_message("delegate to echo-agent").await;
 
@@ -45,11 +43,7 @@ async fn test_sub_agent_invocation_e2e() {
         MockResponse::Text("Sub-agent says: Echo: review the auth module".into()),
     ]);
     let events = env.run_inference(&provider).await;
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::remove_var("KODA_MOCK_RESPONSES");
-    }
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     assert!(
         events.iter().any(
@@ -114,7 +108,7 @@ async fn test_sub_agent_invocation_e2e() {
 /// on repeated tool calls and never reach the text reply — OR the DB
 /// will end up with assistant rows where `completed_at IS NULL`.
 /// Either failure is asserted below.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -138,16 +132,13 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     // the sub-agent would reload a context missing the assistant
     // tool-call turn and re-issue the same call — burning the
     // second response on another tool call instead of the text.
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var(
-            "KODA_MOCK_RESPONSES",
-            r#"[
+    runtime_env::set(
+        "KODA_MOCK_RESPONSES",
+        r#"[
                 {"tool_calls": [{"id": "tc_1", "name": "ListSkills", "arguments": "{}"}]},
                 {"text": "sub-agent done"}
             ]"#,
-        );
-    }
+    );
 
     env.insert_user_message("delegate").await;
 
@@ -162,11 +153,7 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
         MockResponse::Text("parent done".into()),
     ]);
     let _events = env.run_inference(&provider).await;
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::remove_var("KODA_MOCK_RESPONSES");
-    }
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // Find the sub-agent's session. `list_sessions` returns newest-first,
     // so the loop-test-agent session is at the top (created after the
@@ -215,7 +202,7 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_sub_agent_cache_hit_skips_llm() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -234,11 +221,7 @@ async fn test_sub_agent_cache_hit_skips_llm() {
         .to_string(),
     )
     .unwrap();
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"text": "cached result"}]"#);
-    }
+    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "cached result"}]"#);
     env.insert_user_message("call the agent twice").await;
 
     let provider = MockProvider::new(vec![
@@ -253,10 +236,7 @@ async fn test_sub_agent_cache_hit_skips_llm() {
         MockResponse::Text("Done with both calls.".into()),
     ]);
     let events = env.run_inference(&provider).await;
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::remove_var("KODA_MOCK_RESPONSES");
-    }
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     let cache_hit = events
         .iter()
@@ -315,7 +295,7 @@ async fn invoke_agent_and_take_calls(
 }
 
 #[cfg(feature = "test-support")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skip_memory_excludes_project_memory_from_sub_agent() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -323,13 +303,9 @@ async fn skip_memory_excludes_project_memory_from_sub_agent() {
     // Write a distinctive sentinel to the project memory file.
     std::fs::write(env.root.join("MEMORY.md"), "SENTINEL_XYZ").unwrap();
     write_agent_config(&env, "lean-agent", /* skip_memory */ true);
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
-    }
+    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
     let calls = invoke_agent_and_take_calls(&env, "lean-agent").await;
-    unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     assert!(
         !calls.is_empty(),
@@ -347,7 +323,7 @@ async fn skip_memory_excludes_project_memory_from_sub_agent() {
 }
 
 #[cfg(feature = "test-support")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn without_skip_memory_project_memory_reaches_sub_agent() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -355,13 +331,9 @@ async fn without_skip_memory_project_memory_reaches_sub_agent() {
     // Same sentinel — but this agent does NOT skip memory.
     std::fs::write(env.root.join("MEMORY.md"), "SENTINEL_XYZ").unwrap();
     write_agent_config(&env, "full-agent", /* skip_memory */ false);
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
-    }
+    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "sub done"}]"#);
     let calls = invoke_agent_and_take_calls(&env, "full-agent").await;
-    unsafe { std::env::remove_var("KODA_MOCK_RESPONSES") };
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     assert!(
         !calls.is_empty(),
@@ -391,7 +363,7 @@ async fn without_skip_memory_project_memory_reaches_sub_agent() {
 /// `"InvokeAgent is handled by the inference loop."` — and for the
 /// stack-overflow risk that allowing real recursion would have created.
 #[cfg(feature = "test-support")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::new().await;
@@ -402,13 +374,10 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
     // call `InvokeAgent` (which should be refused), then emits its
     // final text. The refusal must not abort the sub-agent.
     //
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var(
-            "KODA_MOCK_RESPONSES",
-            r#"[{"tool": "InvokeAgent", "args": {"agent_name": "would-recurse", "prompt": "recurse"}}, {"text": "final after refusal"}]"#,
-        );
-    }
+    runtime_env::set(
+        "KODA_MOCK_RESPONSES",
+        r#"[{"tool": "InvokeAgent", "args": {"agent_name": "would-recurse", "prompt": "recurse"}}, {"text": "final after refusal"}]"#,
+    );
 
     env.insert_user_message("delegate").await;
     let provider = MockProvider::new(vec![
@@ -419,11 +388,7 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
         MockResponse::Text("parent done".into()),
     ]);
     let _events = env.run_inference(&provider).await;
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::remove_var("KODA_MOCK_RESPONSES");
-    }
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // The sub-agent's final text reached the parent — i.e. the refusal
     // did not abort the sub-agent loop, and the parent received a
@@ -450,7 +415,7 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
 //
 // **Runtime flavor**: the production code path uses `tokio::spawn` for
 // background sub-agents (see `sub_agent_dispatch::run_bg_agent` and the
-// B5 comment block). On `current_thread` runtimes (the `#[tokio::test]`
+// B5 comment block). On `current_thread` runtimes (the `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`
 // default) `tokio::spawn` queues the future but it can ONLY make
 // progress when the test task explicitly yields. The dispatch path
 // itself is fully synchronous between `reserve()` and `attach()`, but
@@ -470,13 +435,10 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
     write_agent_config(&env, "bg-counter-agent", /* skip_memory */ true);
 
     // Give the background agent's mock provider a single text response.
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
-    unsafe {
-        std::env::set_var(
-            "KODA_MOCK_RESPONSES",
-            r#"[{"text": "background work done"}]"#,
-        );
-    }
+    runtime_env::set(
+        "KODA_MOCK_RESPONSES",
+        r#"[{"text": "background work done"}]"#,
+    );
 
     env.insert_user_message("launch background agent").await;
 
@@ -493,66 +455,71 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
         MockResponse::Text("parent done".into()),
     ]);
 
-    let events = env.run_inference(&provider).await;
+    // Use the `collect_bg_events_after` helper from koda-test-utils
+    // — it merges the events vec from `run_inference` (what the
+    // parent's inference_loop drained into the sink) with the
+    // registry's `drain_status_events()` queue (whatever was emitted
+    // after parent finished). See the helper's docs for the full
+    // race-condition rationale (#1109, PR #1113).
+    use koda_core::engine::EngineEvent;
+    let events_from_sink = env.run_inference(&provider).await;
+    let bg_events = env
+        .collect_bg_events_after(events_from_sink, Duration::from_secs(10))
+        .await
+        .unwrap_or_else(|partial| {
+            panic!(
+                "bg task never reached a terminal state within 10s.\n\
+                 bg_events ({} total): {partial:#?}",
+                partial.len()
+            )
+        });
 
-    // Diagnostic: the dispatch path between `reserve()` and `attach()`
-    // is fully synchronous (no `.await` points), so the entry MUST be
-    // in the registry by the time inference returns.  If we ever fail
-    // the snapshot poll below, dump the events vector — it will tell
-    // us whether `InvokeAgent` even dispatched, whether the background
-    // branch was taken, and whether the parent reached "parent done".
-    let task_id = {
-        const REGISTRATION_BUDGET: Duration = Duration::from_secs(5);
-        let deadline = tokio::time::Instant::now() + REGISTRATION_BUDGET;
-        loop {
-            let snap = env.bg_agents.snapshot();
-            if let Some(task) = snap.first() {
-                break task.task_id;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                panic!(
-                    "background agent was never registered in the registry within {REGISTRATION_BUDGET:?}.\n\
-                     events from inference_loop ({} total): {events:#?}\n\
-                     final snapshot: {:#?}",
-                    events.len(),
-                    env.bg_agents.snapshot()
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    };
+    let bg_updates: Vec<&AgentStatus> = bg_events
+        .iter()
+        .filter_map(|ev| match ev {
+            EngineEvent::BgTaskUpdate { status, .. } => Some(status),
+            _ => None,
+        })
+        .collect();
 
-    // Subscribe gives us the last-sent status value plus change
-    // notifications going forward.
-    let mut rx = env
-        .bg_agents
-        .subscribe(task_id)
-        .expect("task_id must be in registry: snapshot confirmed it above");
+    assert!(
+        !bg_updates.is_empty(),
+        "expected at least one BgTaskUpdate event; bg_events ({} total): {bg_events:#?}",
+        bg_events.len()
+    );
 
-    // Drive the receiver to a terminal state.
-    // `Completed` proves the loop ran ≥ 1 full iteration (QA-001 core).
-    let final_status = loop {
-        let status = rx.borrow_and_update().clone();
-        if matches!(
-            status,
-            AgentStatus::Completed { .. } | AgentStatus::Errored { .. } | AgentStatus::Cancelled
-        ) {
-            break status;
-        }
+    // QA-001 core: the loop ran ≥ 1 full iteration. The engine emits
+    // Running {{ iter }} at the TOP of each iteration, so iter ≥ 1
+    // proves the loop body completed at least once.
+    let max_iter_seen = bg_updates
+        .iter()
+        .filter_map(|s| match s {
+            AgentStatus::Running { iter } => Some(*iter),
+            _ => None,
+        })
+        .max();
+    assert!(
+        matches!(max_iter_seen, Some(n) if n >= 1),
+        "expected Running {{ iter >= 1 }}; saw max iter = {max_iter_seen:?}.\nbg_events: {bg_events:#?}"
+    );
 
-        match tokio::time::timeout(Duration::from_secs(10), rx.changed()).await {
-            Ok(Ok(())) => continue, // new value available; loop to inspect it
-            Ok(Err(_closed)) => {
-                // Sender dropped — final value is buffered; pick it up.
-                break rx.borrow().clone();
-            }
-            Err(_elapsed) => {
-                panic!("bg agent did not reach a terminal state within 10s");
-            }
-        }
-    };
+    let final_status = bg_updates
+        .iter()
+        .rev()
+        .find(|s| {
+            matches!(
+                s,
+                AgentStatus::Completed { .. }
+                    | AgentStatus::Errored { .. }
+                    | AgentStatus::Cancelled
+            )
+        })
+        .copied()
+        .unwrap_or_else(|| {
+            panic!("bg task never reached a terminal state.\nbg_updates: {bg_updates:#?}")
+        });
 
-    match &final_status {
+    match final_status {
         AgentStatus::Completed { summary } => {
             assert!(
                 !summary.is_empty(),
@@ -562,12 +529,8 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
         }
         AgentStatus::Errored { error } => panic!("bg agent errored: {error}"),
         AgentStatus::Cancelled => panic!("bg agent was unexpectedly cancelled"),
-        _ => unreachable!("loop only breaks on terminal states"),
+        _ => unreachable!("filter above only keeps terminal states"),
     }
-
-    // SAFETY: ENV_MUTEX serializes all tests that touch this env var.
     // Removed only after the bg task has finished reading it.
-    unsafe {
-        std::env::remove_var("KODA_MOCK_RESPONSES");
-    }
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 }

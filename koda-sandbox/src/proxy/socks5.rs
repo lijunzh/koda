@@ -449,14 +449,14 @@ mod tests {
         reply
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn greeting_accepts_noauth() {
         let (port, _task) = spawn(Filter::default()).await;
         let mut sock = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         assert_eq!(greet_noauth(&mut sock).await, [0x05, 0x00]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn greeting_rejects_no_acceptable_auth() {
         let (port, _task) = spawn(Filter::default()).await;
         let mut sock = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -467,7 +467,7 @@ mod tests {
         assert_eq!(reply, [0x05, 0xFF]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn connect_domain_blocked_by_filter() {
         let (port, _task) = spawn(Filter::new(["github.com"]).unwrap()).await;
         let mut sock = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -477,7 +477,7 @@ mod tests {
         assert_eq!(reply[1], REP_NOT_ALLOWED);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ipv4_literal_rejected_with_atyp_unsupported() {
         // IP literal bypasses hostname filter, so we hard-refuse.
         let (port, _task) = spawn(Filter::new(["github.com"]).unwrap()).await;
@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(reply[1], REP_ADDRESS_TYPE_NOT_SUPPORTED);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ipv6_literal_rejected_with_atyp_unsupported() {
         let (port, _task) = spawn(Filter::new(["github.com"]).unwrap()).await;
         let mut sock = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -507,7 +507,7 @@ mod tests {
         assert_eq!(reply[1], REP_ADDRESS_TYPE_NOT_SUPPORTED);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn bind_command_refused() {
         let (port, _task) = spawn(Filter::default()).await;
         let mut sock = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -521,7 +521,7 @@ mod tests {
         assert_eq!(reply[1], REP_COMMAND_NOT_SUPPORTED);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn allowed_domain_succeeds_then_relays() {
         // Stand up a tiny upstream that echoes one byte.
         let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();

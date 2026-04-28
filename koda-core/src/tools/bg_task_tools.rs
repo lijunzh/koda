@@ -591,7 +591,7 @@ mod tests {
     }
 
     /// `ListBackgroundTasks` on empty registries returns `[]`, success.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_list_returns_empty_array_when_no_tasks() {
         let (agents, processes) = fresh_registries();
         let r = execute("ListBackgroundTasks", "{}", &agents, &processes, None).await;
@@ -601,7 +601,7 @@ mod tests {
 
     /// `ListBackgroundTasks` shows the caller's agent tasks with the
     /// agreed-upon shape (prefixed task_id, lower-case status).
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_list_includes_caller_agent_tasks() {
         let (agents, processes) = fresh_registries();
         let (id, _tx, _, _) = agents.register_test_with_status("explore", "map repo", None);
@@ -620,7 +620,7 @@ mod tests {
     /// Caller scoping: a sub-agent caller (Some(7)) must not see the
     /// top-level (None) task. Defence-in-depth on top of the
     /// sub_agent_dispatch denylist.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_list_filters_out_other_callers_tasks() {
         let (agents, processes) = fresh_registries();
         agents.register_test_with_status("a", "top", None);
@@ -637,7 +637,7 @@ mod tests {
 
     /// `CancelTask` routes `agent:N` to BgAgentRegistry and reports
     /// success in the structured payload.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_cancel_succeeds_for_owned_agent_task() {
         let (agents, processes) = fresh_registries();
         let (id, _tx, _, observer) = agents.register_test_with_status("x", "y", None);
@@ -657,7 +657,7 @@ mod tests {
         assert_eq!(payload["task_id"], format!("agent:{id}"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_cancel_returns_not_found_for_unknown_id() {
         let (agents, processes) = fresh_registries();
         let r = execute(
@@ -672,7 +672,7 @@ mod tests {
         assert!(r.output.contains("no background task"), "got: {}", r.output);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_cancel_returns_forbidden_for_cross_caller() {
         let (agents, processes) = fresh_registries();
         let (id, _tx, _, observer) = agents.register_test_with_status("x", "y", Some(5));
@@ -695,7 +695,7 @@ mod tests {
         assert!(!observer.is_cancelled(), "forbidden must NOT fire token");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_cancel_rejects_malformed_json() {
         let (agents, processes) = fresh_registries();
         let r = execute("CancelTask", "not-json", &agents, &processes, None).await;
@@ -703,7 +703,7 @@ mod tests {
         assert!(r.output.contains("invalid JSON"), "got: {}", r.output);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_cancel_rejects_missing_task_id() {
         let (agents, processes) = fresh_registries();
         let r = execute("CancelTask", "{}", &agents, &processes, None).await;
@@ -713,7 +713,7 @@ mod tests {
 
     /// `WaitTask` on a completed agent task returns `status:completed`
     /// + the agent's output, and consumes the entry (drain sees nothing).
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_wait_returns_completed_for_finished_agent() {
         let (agents, processes) = fresh_registries();
         let (id, tx, status_tx, _) = agents.register_test_with_status("explore", "map", None);
@@ -744,7 +744,7 @@ mod tests {
 
     /// `WaitTask` timeout returns `status:timed_out` + a snapshot of
     /// the still-running task.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_wait_returns_timed_out_with_snapshot() {
         let (agents, processes) = fresh_registries();
         // Bind ALL four to keep the channels alive — if status_tx
@@ -777,7 +777,7 @@ mod tests {
     /// The three terminal states are `completed`, `timed_out`, and
     /// `cancelled`. The first two have existing tests; this is the
     /// third path — the one that was missing (#1048).
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_wait_returns_cancelled_when_token_fires() {
         let (agents, processes) = fresh_registries();
         let (id, tx, status_tx, observer) = agents.register_test_with_status("slow", "x", None);
@@ -811,7 +811,7 @@ mod tests {
         assert_eq!(agents.snapshot().len(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_unknown_tool_name_returns_error() {
         let (agents, processes) = fresh_registries();
         let r = execute("NotAToolWeKnow", "{}", &agents, &processes, None).await;

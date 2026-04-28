@@ -103,7 +103,7 @@ mod tests {
 
     // ── handle_ask_user ────────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ask_user_returns_answer() {
         let sink = Arc::new(TestSink::new());
         let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(8);
@@ -142,7 +142,7 @@ mod tests {
         assert_eq!(task.await.unwrap(), Some("b".to_string()));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ask_user_emits_request_event_with_question_and_options() {
         let sink = Arc::new(TestSink::new());
         let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(8);
@@ -178,7 +178,7 @@ mod tests {
         drop(cmd_tx);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ask_user_ignores_response_with_wrong_id() {
         let sink = Arc::new(TestSink::new());
         let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(8);
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(task.await.unwrap(), Some("correct".to_string()));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ask_user_returns_none_on_interrupt() {
         let sink = Arc::new(TestSink::new());
         let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(8);
@@ -246,7 +246,7 @@ mod tests {
         assert!(cancel.is_cancelled(), "interrupt should cancel the token");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ask_user_returns_none_when_channel_closes() {
         let sink = Arc::new(TestSink::new());
         let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(8);
@@ -265,7 +265,7 @@ mod tests {
         assert_eq!(task.await.unwrap(), None);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ask_user_returns_none_on_cancellation() {
         let sink = Arc::new(TestSink::new());
         let (_cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(8);
@@ -286,7 +286,7 @@ mod tests {
 
     // ── request_approval ───────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn request_approval_returns_approve() {
         let sink = Arc::new(TestSink::new());
         let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(8);
@@ -332,7 +332,7 @@ mod tests {
         assert_eq!(task.await.unwrap(), Some(ApprovalDecision::Approve));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn request_approval_returns_reject() {
         let sink = Arc::new(TestSink::new());
         let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(8);
@@ -378,7 +378,7 @@ mod tests {
         assert_eq!(task.await.unwrap(), Some(ApprovalDecision::Reject));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn request_approval_emits_event_with_tool_name_and_detail() {
         let sink = Arc::new(TestSink::new());
         let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(8);
@@ -419,7 +419,7 @@ mod tests {
         drop(cmd_tx);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn request_approval_ignores_response_with_wrong_id() {
         let sink = Arc::new(TestSink::new());
         let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(8);
@@ -475,7 +475,7 @@ mod tests {
         assert_eq!(task.await.unwrap(), Some(ApprovalDecision::Approve));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn request_approval_returns_none_on_interrupt() {
         let sink = Arc::new(TestSink::new());
         let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(8);
@@ -503,7 +503,7 @@ mod tests {
         assert!(cancel.is_cancelled());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn request_approval_returns_none_when_channel_closes() {
         let sink = Arc::new(TestSink::new());
         let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(8);
@@ -530,7 +530,7 @@ mod tests {
         assert_eq!(task.await.unwrap(), None);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn request_approval_returns_none_on_cancellation() {
         let sink = Arc::new(TestSink::new());
         let (_cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>(8);

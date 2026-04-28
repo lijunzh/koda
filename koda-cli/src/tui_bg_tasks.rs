@@ -558,7 +558,7 @@ mod tests {
     /// Both registries empty: render the explicit "No background
     /// tasks." line. Without it the user might wonder if `/agents`
     /// is broken.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn list_background_tasks_empty_renders_explicit_message() {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
@@ -575,7 +575,7 @@ mod tests {
     /// **prefixed** id (`agent:N`), agent name, and the Pending
     /// status icon. Pinning the row content keeps the slash command's
     /// contract stable across refactors.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn list_background_tasks_renders_each_pending_agent_with_prefix() {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
@@ -602,7 +602,7 @@ mod tests {
     /// rendered output. This is the contract that lets `/agents`
     /// show live state — if it ever stales, the slash command
     /// becomes useless.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn list_background_tasks_reflects_running_status() {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
@@ -628,7 +628,7 @@ mod tests {
     /// Layer-0 placeholder semantics: `Running { iter: 0 }` means
     /// "started but no per-iter info yet" — don't render a misleading
     /// `"iter 0/20"`. Layer 4 (#1058) populated the field for bg agents.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn list_background_tasks_hides_iter_zero_placeholder() {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
@@ -650,7 +650,7 @@ mod tests {
     /// each with the `process:` prefix. We spawn a real `sleep 60`
     /// so the snapshot reads from a live entry and we can
     /// later kill it in cleanup.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn list_background_tasks_renders_processes_with_prefix() {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
@@ -682,7 +682,7 @@ mod tests {
     /// Phase F: agents and processes share one table. With both
     /// registries populated we should see both prefixes in the
     /// output — neither registry should crowd the other out.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn list_background_tasks_unifies_both_registries() {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
@@ -704,7 +704,7 @@ mod tests {
     /// Happy path for an agent: known `agent:N` → cancel fires,
     /// success message surfaces, and the underlying token observed
     /// the cancel.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_known_agent_id_reports_success_and_fires_token() {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
@@ -728,7 +728,7 @@ mod tests {
     /// and the registry transitions the entry into `Killed`. The
     /// child eventually exits but we don't wait on it here — the
     /// reaper handles that.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_known_process_id_kills_and_reports_success() {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
@@ -751,7 +751,7 @@ mod tests {
     /// Unknown agent id → warn, don't crash. The user should learn
     /// the correct id (or that the task already finished) without us
     /// throwing or silently no-oping.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_unknown_agent_id_reports_helpful_error() {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
@@ -766,7 +766,7 @@ mod tests {
 
     /// Unknown process id → warn, don't crash. Same shape as the
     /// agent equivalent so users get a consistent error story.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_unknown_process_id_reports_helpful_error() {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
@@ -783,7 +783,7 @@ mod tests {
     /// arg) renders Usage — not a panic, and not a misleading "task
     /// 0 not found." The Usage line must mention both prefix forms
     /// so the user learns the new syntax.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_none_id_renders_usage_with_both_prefixes() {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();

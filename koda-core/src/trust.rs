@@ -914,7 +914,7 @@ mod tests {
 
     // ── File lifecycle (#465) tests ──
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_delete_owned_file_auto_approved() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = crate::db::Database::open(&dir.path().join("test.db"))
@@ -933,7 +933,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_delete_unowned_file_needs_confirmation_in_safe() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = crate::db::Database::open(&dir.path().join("test.db"))
@@ -950,7 +950,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_delete_owned_file_safe_mode_auto_approved() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = crate::db::Database::open(&dir.path().join("test.db"))

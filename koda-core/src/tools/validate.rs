@@ -465,7 +465,7 @@ mod tests {
 
     // ── Edit validation ───────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_valid_replacement() {
         let dir = setup();
         let args = json!({
@@ -479,7 +479,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_missing_path() {
         let dir = setup();
         let args = json!({"replacements": [{"old_str": "x", "new_str": "y"}]});
@@ -489,7 +489,7 @@ mod tests {
         assert!(err.contains("path"), "{err}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_file_not_found() {
         let dir = setup();
         let args = json!({
@@ -503,7 +503,7 @@ mod tests {
         assert!(err.contains("Write"), "{err}"); // suggests Write
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_empty_replacements() {
         let dir = setup();
         let args = json!({"path": "hello.txt", "replacements": []});
@@ -513,7 +513,7 @@ mod tests {
         assert!(err.contains("empty"), "{err}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_empty_old_str() {
         let dir = setup();
         let args = json!({
@@ -526,7 +526,7 @@ mod tests {
         assert!(err.contains("empty"), "{err}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_old_str_fuzzy_match_passes_validation() {
         // File has trailing spaces; model sends clean needle — should pass pre-flight.
         let dir = TempDir::new().unwrap();
@@ -547,7 +547,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_old_str_not_found() {
         let dir = setup();
         let args = json!({
@@ -560,7 +560,7 @@ mod tests {
         assert!(err.contains("not found"), "{err}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_missing_new_str() {
         let dir = setup();
         let args = json!({
@@ -575,14 +575,14 @@ mod tests {
 
     // ── Write validation ──────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_new_file_valid() {
         let dir = setup();
         let args = json!({"path": "brand_new.txt", "content": "hello"});
         assert!(validate_write(&args, dir.path()).await.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_existing_without_overwrite() {
         let dir = setup();
         let args = json!({"path": "hello.txt", "content": "replaced"});
@@ -591,14 +591,14 @@ mod tests {
         assert!(err.contains("overwrite=true"), "{err}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_existing_with_overwrite() {
         let dir = setup();
         let args = json!({"path": "hello.txt", "content": "replaced", "overwrite": true});
         assert!(validate_write(&args, dir.path()).await.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_missing_content() {
         let dir = setup();
         let args = json!({"path": "foo.txt"});
@@ -608,14 +608,14 @@ mod tests {
 
     // ── Delete validation ─────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delete_valid_file() {
         let dir = setup();
         let args = json!({"path": "hello.txt"});
         assert!(validate_delete(&args, dir.path()).await.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delete_not_found() {
         let dir = setup();
         let args = json!({"path": "nope.txt"});
@@ -623,7 +623,7 @@ mod tests {
         assert!(err.contains("not found"), "{err}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delete_nonempty_dir_without_recursive() {
         let dir = setup();
         let args = json!({"path": "subdir"});
@@ -631,7 +631,7 @@ mod tests {
         assert!(err.contains("recursive"), "{err}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delete_nonempty_dir_with_recursive() {
         let dir = setup();
         let args = json!({"path": "subdir", "recursive": true});
@@ -640,7 +640,7 @@ mod tests {
 
     // ── file_path alias acceptance ──────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_accepts_file_path_param() {
         let dir = setup();
         let args = json!({
@@ -654,14 +654,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn write_accepts_file_path_param() {
         let dir = setup();
         let args = json!({"file_path": "brand_new.txt", "content": "hello"});
         assert!(validate_write(&args, dir.path()).await.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delete_accepts_file_path_param() {
         let dir = setup();
         let args = json!({"file_path": "hello.txt"});
@@ -703,7 +703,7 @@ mod tests {
         cache
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_stale_file_detected() {
         let dir = setup();
         let file = dir.path().join("hello.txt");
@@ -720,7 +720,7 @@ mod tests {
         assert!(err.contains("Read it again"), "{err}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_fresh_file_no_stale_warning() {
         let dir = setup();
         let file = dir.path().join("hello.txt");
@@ -739,7 +739,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_no_cache_entry_no_stale_warning() {
         // File was never read via Read tool — empty cache, no stale warning.
         let dir = setup();
@@ -758,7 +758,7 @@ mod tests {
 
     // ── Staleness hint messages (#804 item 7) ─────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stale_file_hints_last_writer_tool() {
         let dir = setup();
         let file = dir.path().join("hello.txt");
@@ -782,7 +782,7 @@ mod tests {
         assert!(err.contains("last written by Edit"), "{err}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stale_file_hints_bash_when_no_writer_entry() {
         let dir = setup();
         let file = dir.path().join("hello.txt");
@@ -900,7 +900,7 @@ mod tests {
         assert!(err.contains("actual code"), "{err}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_rejects_omission_in_new_str() {
         let dir = setup();
         let args = json!({
@@ -916,7 +916,7 @@ mod tests {
         assert!(err.contains("omission placeholder"), "{err}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn edit_allows_normal_new_str() {
         let dir = setup();
         let args = json!({

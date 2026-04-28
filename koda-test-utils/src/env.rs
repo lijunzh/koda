@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Mutex to serialize tests that share process-global env vars
-/// (KODA_MOCK_RESPONSES).  `#[tokio::test]` runs tests concurrently
+/// (KODA_MOCK_RESPONSES).  `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]` runs tests concurrently
 /// within the same process, so unsynchronized set_var/remove_var
 /// on the same env var is a data race.
 pub static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -197,13 +197,71 @@ impl Env {
         self.run_inference_full(provider, cancel).await
     }
 
+    /// Run inference and cancel as soon as an event matching `pred` is
+    /// emitted by the engine.
+    ///
+    /// **#1109 F3**: replaces `tokio::spawn(async { sleep(N).await; cancel(); })`
+    /// patterns. Cancellation fires the moment the synchronization
+    /// point of interest (e.g. `ToolCallStart`) is observed, making
+    /// the test deterministic regardless of CI runner speed.
+    pub async fn run_inference_cancel_on_event<F>(
+        &self,
+        provider: &dyn LlmProvider,
+        pred: F,
+    ) -> (anyhow::Result<()>, Vec<EngineEvent>)
+    where
+        F: Fn(&EngineEvent) -> bool + Send + Sync + 'static,
+    {
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        // Build the sink up-front so we can subscribe before inference
+        // starts — otherwise the predicate could miss the event we're
+        // waiting for.
+        let sink = Arc::new(TestSink::new());
+        let mut rx = sink.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) if pred(&ev) => {
+                        cancel_clone.cancel();
+                        break;
+                    }
+                    Ok(_) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        self.run_inference_with_sink(provider, cancel, sink).await
+    }
+
     /// Full inference run with all knobs exposed.
     async fn run_inference_full(
         &self,
         provider: &dyn LlmProvider,
         cancel: CancellationToken,
     ) -> (anyhow::Result<()>, Vec<EngineEvent>) {
-        let sink = TestSink::new();
+        self.run_inference_with_sink(provider, cancel, Arc::new(TestSink::new()))
+            .await
+    }
+
+    /// Same as `run_inference_full` but lets the caller supply the
+    /// sink — used by `run_inference_cancel_on_event` which needs to
+    /// subscribe to the live event stream before inference begins.
+    ///
+    /// **Public so tests for asynchronously-spawned work (e.g.
+    /// background sub-agents) can subscribe to the sink BEFORE
+    /// inference starts and keep reading after it returns** — events
+    /// emitted by tokio::spawn'd tasks may arrive after the parent's
+    /// inference_loop completes, so the static `events()` snapshot at
+    /// return time is not canonical for those tests. See the QA-001
+    /// regression in `e2e_agent_test.rs` for the worked example.
+    pub async fn run_inference_with_sink(
+        &self,
+        provider: &dyn LlmProvider,
+        cancel: CancellationToken,
+        sink: Arc<TestSink>,
+    ) -> (anyhow::Result<()>, Vec<EngineEvent>) {
         let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
         let tool_defs = self.tool_defs();
         let mut file_tracker =
@@ -226,7 +284,7 @@ impl Env {
             tool_defs: &tool_defs,
             pending_images: None,
             mode: self.trust,
-            sink: &sink,
+            sink: sink.as_ref(),
             cancel,
             cmd_rx: &mut cmd_rx,
             file_tracker: &mut file_tracker,
@@ -237,4 +295,108 @@ impl Env {
 
         (result, sink.events())
     }
+
+    /// Collect every `BgTaskUpdate` event a background sub-agent will
+    /// emit, regardless of which side of the parent's `inference_loop`
+    /// drained them.
+    ///
+    /// **Why this helper exists** (#1109, PR #1113):
+    ///
+    /// `BgTaskUpdate` events flow through a single-consumer queue
+    /// inside [`BgAgentRegistry`]. The parent's `inference_loop`
+    /// drains them on every iteration and forwards to the sink. A
+    /// test that asserts on these events is racing the parent for
+    /// the same queue:
+    ///
+    /// * If the bg task **finishes before `run_inference` returns**,
+    ///   the parent drained everything into the sink — the events
+    ///   live in the `events` vec, and the registry queue is empty.
+    /// * If the bg task **finishes after `run_inference` returns**,
+    ///   the parent never got a chance — the events are sitting in
+    ///   the registry queue waiting for `drain_status_events()`.
+    ///
+    /// Which side wins is non-deterministic (depends on tokio worker
+    /// scheduling, OS, CI runner load). This helper merges both
+    /// sources so callers don't have to know.
+    ///
+    /// # Arguments
+    ///
+    /// * `events_from_run_inference` — the `Vec<EngineEvent>`
+    ///   returned by [`Self::run_inference`] (or any of its
+    ///   variants). `BgTaskUpdate` events are filtered out; other
+    ///   event types are ignored.
+    /// * `terminal_timeout` — how long to keep polling
+    ///   [`BgAgentRegistry::drain_status_events`] waiting for a
+    ///   terminal status (`Completed`, `Errored`, `Cancelled`). Use
+    ///   a generous bound (e.g. 10s) — on a healthy machine the
+    ///   helper returns in single-digit milliseconds.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(events)` if a terminal `BgTaskUpdate` was observed within
+    /// `terminal_timeout`, where `events` contains every
+    /// `BgTaskUpdate` from both sources in arrival order (sink-side
+    /// events first, then queue-drained events).
+    ///
+    /// `Err(events)` if the timeout elapsed without a terminal
+    /// status. The partial event list is returned for diagnostics.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let events = env.run_inference(&provider).await;
+    /// let bg_events = env
+    ///     .collect_bg_events_after(events, Duration::from_secs(10))
+    ///     .await
+    ///     .expect("bg task never reached terminal state");
+    /// assert!(bg_events.iter().any(|e| matches!(
+    ///     e, EngineEvent::BgTaskUpdate {
+    ///         status: AgentStatus::Completed { .. }, ..
+    ///     }
+    /// )));
+    /// ```
+    pub async fn collect_bg_events_after(
+        &self,
+        events_from_run_inference: Vec<EngineEvent>,
+        terminal_timeout: std::time::Duration,
+    ) -> Result<Vec<EngineEvent>, Vec<EngineEvent>> {
+        let mut bg_events: Vec<EngineEvent> = events_from_run_inference
+            .into_iter()
+            .filter(|ev| matches!(ev, EngineEvent::BgTaskUpdate { .. }))
+            .collect();
+
+        let deadline = tokio::time::Instant::now() + terminal_timeout;
+        loop {
+            for ev in self.bg_agents.drain_status_events() {
+                bg_events.push(ev);
+            }
+            if bg_events.iter().any(is_terminal_bg_update) {
+                return Ok(bg_events);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(bg_events);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+}
+
+/// Returns `true` if `ev` is a [`EngineEvent::BgTaskUpdate`] in a
+/// terminal status (`Completed`, `Errored`, or `Cancelled`).
+///
+/// Extracted as a free function so [`Env::collect_bg_events_after`]
+/// stays readable; the matcher itself is non-trivial because
+/// `AgentStatus` has additional non-terminal variants we must not
+/// mistakenly treat as final.
+fn is_terminal_bg_update(ev: &EngineEvent) -> bool {
+    use koda_core::bg_agent::AgentStatus;
+    matches!(
+        ev,
+        EngineEvent::BgTaskUpdate {
+            status: AgentStatus::Completed { .. }
+                | AgentStatus::Errored { .. }
+                | AgentStatus::Cancelled,
+            ..
+        }
+    )
 }

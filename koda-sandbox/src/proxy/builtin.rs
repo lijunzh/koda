@@ -152,14 +152,14 @@ mod tests {
         assert!(p.filter.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn spawn_returns_handle_with_assigned_port() {
         let p = BuiltInProxy::new(Filter::new(["github.com"]).unwrap());
         let h = p.spawn().await.unwrap();
         assert!(h.port > 0, "ephemeral port must be non-zero");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn spawned_proxy_serves_403_for_disallowed_host() {
         let p = BuiltInProxy::new(Filter::new(["github.com"]).unwrap());
         let h = p.spawn().await.unwrap();
@@ -167,7 +167,7 @@ mod tests {
         assert!(status.starts_with("HTTP/1.1 403"), "got: {status:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropping_handle_stops_accepting() {
         // Spawn, confirm it accepts, drop, confirm it no longer accepts.
         let p = BuiltInProxy::new(Filter::new(["github.com"]).unwrap());
@@ -209,7 +209,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ca_bundle_is_none_for_builtin() {
         // 3b deliberately ships no MITM. Built-in proxy has no CA to
         // advertise. 3d will swap this to Some(generated_path).
@@ -223,7 +223,7 @@ mod tests {
     /// path has a connectable socket inside the eventual `--unshare-net`
     /// sandbox.
     #[cfg(target_os = "linux")]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn linux_spawn_attaches_uds_bridge() {
         let p = BuiltInProxy::new(Filter::new(["github.com"]).unwrap());
         let h = p.spawn().await.unwrap();
@@ -241,7 +241,7 @@ mod tests {
     /// spawn can re-bind cleanly. Without this, repeated session
     /// creation in the same process would accumulate stale sockets.
     #[cfg(target_os = "linux")]
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn linux_drop_removes_uds_path() {
         let p = BuiltInProxy::new(Filter::new(["github.com"]).unwrap());
         let h = p.spawn().await.unwrap();

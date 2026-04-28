@@ -8,11 +8,10 @@
 
 use koda_core::{engine::EngineEvent, persistence::Persistence};
 use koda_test_utils::{Env, MockProvider, MockResponse};
-use tokio_util::sync::CancellationToken;
 
 // ── Rate limit retry ─────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rate_limit_then_success() {
     let env = Env::new().await;
     env.insert_user_message("hello").await;
@@ -45,7 +44,7 @@ async fn rate_limit_then_success() {
     assert!(last.contains("recovered!"), "DB: {last}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rate_limit_exhausted_returns_error() {
     let env = Env::new().await;
     env.insert_user_message("hello").await;
@@ -70,7 +69,7 @@ async fn rate_limit_exhausted_returns_error() {
 
 // ── Network error mid-stream ─────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn network_error_mid_stream_discards_response() {
     let env = Env::new().await;
     env.insert_user_message("hello").await;
@@ -104,7 +103,7 @@ async fn network_error_mid_stream_discards_response() {
 
 // ── Empty response retry ─────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn empty_response_after_tool_use_retries_once() {
     let env = Env::new().await;
     env.insert_user_message("do something").await;
@@ -137,7 +136,7 @@ async fn empty_response_after_tool_use_retries_once() {
 
 // ── max_tokens truncation ────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn max_tokens_continues_loop() {
     let env = Env::new().await;
     env.insert_user_message("write a long essay").await;
@@ -170,7 +169,7 @@ async fn max_tokens_continues_loop() {
 
 // ── Loop detection ───────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn loop_detection_injects_feedback_then_stops() {
     let env = Env::new().await;
     env.insert_user_message("keep trying").await;
@@ -240,7 +239,7 @@ async fn loop_detection_injects_feedback_then_stops() {
 
 // ── Eager tool execution (ToolCallReady) ─────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn eager_execution_of_read_only_tools() {
     let env = Env::new().await;
     let test_file = env.root.join("eagerly_read.txt");
@@ -281,7 +280,7 @@ async fn eager_execution_of_read_only_tools() {
 
 // ── Multiple tool calls in parallel ──────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multiple_read_only_tools_dispatch() {
     let env = Env::new().await;
     let f1 = env.root.join("file1.txt");
@@ -330,7 +329,7 @@ async fn multiple_read_only_tools_dispatch() {
 
 // ── Cancel during tool execution ─────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_during_tool_execution() {
     let env = Env::new().await;
     env.insert_user_message("run a slow command").await;
@@ -341,14 +340,14 @@ async fn cancel_during_tool_execution() {
         MockResponse::Text("should not reach this".into()),
     ]);
 
-    let cancel = CancellationToken::new();
-    let cancel_clone = cancel.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        cancel_clone.cancel();
-    });
-
-    let (result, _events) = env.run_inference_cancellable(&provider, cancel).await;
+    // **#1109 F3**: was `tokio::spawn(sleep(200ms); cancel())`. Replaced
+    // with event-driven cancel: fire as soon as the engine emits
+    // ToolCallStart for our Bash invocation. Deterministic and faster.
+    let (result, _events) = env
+        .run_inference_cancel_on_event(&provider, |ev| {
+            matches!(ev, koda_core::engine::EngineEvent::ToolCallStart { name, .. } if name == "Bash")
+        })
+        .await;
 
     assert!(result.is_ok(), "cancel should be graceful");
     // Should finish quickly (not wait 10 seconds).
@@ -358,7 +357,7 @@ async fn cancel_during_tool_execution() {
 
 // ── Server error graceful exit ───────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_error_exits_gracefully() {
     let env = Env::new().await;
     env.insert_user_message("hello").await;
@@ -380,7 +379,7 @@ async fn server_error_exits_gracefully() {
 
 // ── Context overflow recovery ────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn context_overflow_attempts_compact_and_retry() {
     let env = Env::new().await;
 
@@ -434,7 +433,7 @@ async fn context_overflow_attempts_compact_and_retry() {
 
 // ── Token usage tracking ─────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn footer_includes_token_usage() {
     let env = Env::new().await;
     env.insert_user_message("hello").await;
@@ -462,7 +461,7 @@ async fn footer_includes_token_usage() {
 
 // ── Multi-turn tool use ──────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_step_tool_chain_persists_all() {
     let env = Env::new().await;
     let target = env.root.join("chained.txt");

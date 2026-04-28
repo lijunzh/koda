@@ -23,7 +23,7 @@ fn all_tool_names() -> Vec<String> {
 /// `tool_dispatch::execute_one_tool` (see the early `if matches!(...)
 /// branch there). Skipping them here keeps the test honest about what
 /// `ToolRegistry::execute()` is responsible for.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_all_tools_routable_in_dispatcher() {
     const HIGHER_LAYER_DISPATCH: &[&str] = &["ListBackgroundTasks", "CancelTask", "WaitTask"];
     let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"), 100_000);
@@ -43,7 +43,7 @@ async fn test_all_tools_routable_in_dispatcher() {
 
 /// Empty/whitespace-only arguments should be treated as `{}`, not error.
 /// Regression test for #513.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_empty_args_default_to_empty_object() {
     let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"), 100_000);
     for input in ["", "  ", "\n", "\t "] {

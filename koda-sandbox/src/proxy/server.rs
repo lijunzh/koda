@@ -313,14 +313,14 @@ mod tests {
         (status_line, rest)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn server_bind_uses_ephemeral_port_when_none() {
         let s = Server::bind(None, Filter::default()).await.unwrap();
         let p = s.port();
         assert!(p > 0, "ephemeral port must be non-zero");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn rejects_non_connect_with_405() {
         let server = Server::bind(None, Filter::new(["github.com"]).unwrap())
             .await
@@ -338,7 +338,7 @@ mod tests {
         assert!(buf.starts_with("HTTP/1.1 405"), "got: {buf:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn rejects_disallowed_host_with_403() {
         let server = Server::bind(None, Filter::new(["github.com"]).unwrap())
             .await
@@ -350,7 +350,7 @@ mod tests {
         assert!(status.starts_with("HTTP/1.1 403"), "got: {status:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn allows_listed_host_and_tunnels_payload() {
         // The payload our fake upstream sends; the test asserts the
         // proxy relays it byte-for-byte to us through the tunnel.
@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(body_str, payload, "tunneled body mismatch");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn returns_502_when_upstream_unreachable() {
         // Allowlist contains the host but the port is dead.
         let server = Server::bind(None, Filter::new(["127.0.0.1"]).unwrap())
@@ -405,7 +405,7 @@ mod tests {
     /// CONNECT must be tunnelled through that proxy rather than dialed
     /// directly. We stand up a fake corp proxy that records the
     /// CONNECT it receives, then chain through it.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn chains_through_upstream_http_proxy() {
         // Real upstream that the corp proxy will dial on our behalf.
         let payload = "PAYLOAD-FROM-REAL-UPSTREAM";
@@ -476,7 +476,7 @@ mod tests {
     /// upstream and back onto the direct path. Critical because
     /// `*.walmart.com` (and friends) are corp-internal and routing
     /// them through Zscaler produces 403s.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn chains_skips_upstream_for_no_proxy_hosts() {
         let payload = "DIRECT-NOT-CHAINED";
         let (real_port, _) = fake_upstream(payload).await;
@@ -526,7 +526,7 @@ mod tests {
     /// required) must surface as 502 to the client — we have no
     /// credentials to retry with, and silently sending the request
     /// direct would defeat the point of the corp policy.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn surfaces_upstream_407_as_502() {
         let corp_listener = StdTcpListener::bind("127.0.0.1:0").await.unwrap();
         let corp_port = corp_listener.local_addr().unwrap().port();

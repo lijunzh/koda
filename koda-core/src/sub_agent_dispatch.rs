@@ -1433,7 +1433,7 @@ mod invocation_cleanup_tests {
     use crate::bg_agent::BgAgentRegistry;
     use std::sync::Arc;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn drop_cancels_entries_tagged_with_matching_spawner() {
         let reg = Arc::new(BgAgentRegistry::new());
         // Tag two bg entries with our invocation id. The 4th tuple
@@ -1463,7 +1463,7 @@ mod invocation_cleanup_tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn drop_leaves_entries_with_different_spawner_alone() {
         let reg = Arc::new(BgAgentRegistry::new());
         // Mix: one tagged with our id, one with a sibling's, one with None.
@@ -1493,7 +1493,7 @@ mod invocation_cleanup_tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn drop_with_no_matching_entries_is_noop() {
         let reg = Arc::new(BgAgentRegistry::new());
         let (_id, _tx, _status_tx, cancel) = reg.register_test_with_status("a", "x", Some(99));

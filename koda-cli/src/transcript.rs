@@ -73,8 +73,10 @@ const VERBOSE_BASH_CHARS: usize = 500;
 const HYPERLINK_KILL_SWITCH: &str = "KODA_TRANSCRIPT_HYPERLINKS";
 
 fn hyperlinks_enabled() -> bool {
+    // **#1109 F1**: read via runtime_env so tests can flip this without
+    // `unsafe { std::env::set_var }`.
     !matches!(
-        std::env::var(HYPERLINK_KILL_SWITCH).ok().as_deref(),
+        koda_core::runtime_env::get(HYPERLINK_KILL_SWITCH).as_deref(),
         Some("off" | "0" | "false" | "no")
     )
 }
@@ -782,23 +784,14 @@ mod tests {
     #[test]
     fn kill_switch_disables_hyperlinks() {
         let _g = HYPERLINK_ENV_LOCK.lock().unwrap();
-        // Save & restore so we don't leak env across tests in this thread.
-        let prev = std::env::var(HYPERLINK_KILL_SWITCH).ok();
-        // SAFETY: tests in this binary run in parallel by default; the
-        // module-level `HYPERLINK_ENV_LOCK` mutex (acquired above)
-        // serializes this writer with every reader test that asserts on
-        // hyperlinks being on, so no parallel reader sees the "off"
-        // value mid-test. See the lock's doc comment for the race this
-        // existed to prevent (PR #1107).
-        unsafe { std::env::set_var(HYPERLINK_KILL_SWITCH, "off") };
+        // **#1109 F1**: was `unsafe { std::env::set_var }` with snapshot/restore.
+        // Now uses [`koda_core::runtime_env`] — thread-safe, no UB, no
+        // `std::env` mutation. The HYPERLINK_ENV_LOCK still serializes us
+        // against parallel reader tests in this binary.
+        koda_core::runtime_env::set(HYPERLINK_KILL_SWITCH, "off");
         let msg = assistant_with_call("Read", r#"{"file_path":"/x.rs"}"#);
         let out = render(&[msg], &default_meta(), false);
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var(HYPERLINK_KILL_SWITCH, v),
-                None => std::env::remove_var(HYPERLINK_KILL_SWITCH),
-            }
-        }
+        koda_core::runtime_env::remove(HYPERLINK_KILL_SWITCH);
         assert!(out.contains("`/x.rs`"), "plain text expected, got:\n{out}");
         assert!(!out.contains("file:///"), "link should be suppressed");
     }

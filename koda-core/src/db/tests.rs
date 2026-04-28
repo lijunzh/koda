@@ -1123,16 +1123,18 @@ async fn test_purge_compacted() {
 
 // ── config_dir ─────────────────────────────────────────────────────────
 
-/// Serialize tests that mutate XDG_CONFIG_HOME.
+/// Serialize tests that mutate XDG_CONFIG_HOME (in the runtime-env map).
 static XDG_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn test_config_dir_with_xdg() {
     let _guard = XDG_MUTEX.lock().unwrap();
-    // SAFETY: serialized via XDG_MUTEX
-    unsafe { std::env::set_var("XDG_CONFIG_HOME", "/tmp/test_xdg_config") };
+    // **#1109 F1**: was `unsafe { std::env::set_var(...) }`. Now uses
+    // the thread-safe runtime-env map; production [`config_dir`] reads
+    // via [`crate::runtime_env::get`] so the override is observed.
+    crate::runtime_env::set("XDG_CONFIG_HOME", "/tmp/test_xdg_config");
     let dir = super::config_dir().unwrap();
-    unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+    crate::runtime_env::remove("XDG_CONFIG_HOME");
     // Always ends with "koda"
     assert!(dir.ends_with("koda"), "got: {dir:?}");
     assert!(
@@ -1144,8 +1146,13 @@ fn test_config_dir_with_xdg() {
 #[test]
 fn test_config_dir_with_home() {
     let _guard = XDG_MUTEX.lock().unwrap();
-    unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+    // **#1109 F1**: mask hides any developer-exported XDG_CONFIG_HOME
+    // from production code so we exercise the HOME fallback branch.
+    // Uses the runtime-env mask facility — no `unsafe`, no std::env mutation.
+    crate::runtime_env::remove("XDG_CONFIG_HOME");
+    crate::runtime_env::mask("XDG_CONFIG_HOME");
     let dir = super::config_dir().unwrap();
+    crate::runtime_env::unmask("XDG_CONFIG_HOME");
     // Should end with koda regardless of base path
     assert!(dir.ends_with("koda"), "got: {dir:?}");
 }

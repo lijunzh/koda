@@ -52,6 +52,13 @@ jobs:
       # No rust-cache — fmt doesn't compile anything. Skipping cache saves
       # the ~10s setup overhead and keeps the job at ~30s end-to-end.
       - run: cargo fmt --all --check
+      # #1109 F2 guard: every #[tokio::test] in modules that touch
+      # tokio::spawn / BgAgentRegistry / sub-agent dispatch / watch /
+      # broadcast must use flavor="multi_thread". Pure text scan, ~1s,
+      # rides the fmt job because it's the cheapest place that already
+      # has Python and a checkout.
+      - name: Check tokio test flavor (#1109 F2)
+        run: python3 scripts/check_tokio_test_flavor.py
 
   clippy:
     name: Clippy

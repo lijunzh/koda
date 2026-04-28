@@ -436,7 +436,7 @@ mod tests {
         assert!(reg.snapshot().is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn insert_records_spawner_and_appears_in_snapshot() {
         let reg = BgRegistry::new();
         let (pid, child) = spawn_sleep_child();
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(snap[0].spawner, Some(7));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_for_caller_filters_by_spawner() {
         let reg = BgRegistry::new();
         let (p1, c1) = spawn_sleep_child();
@@ -472,7 +472,7 @@ mod tests {
         assert!(reg.snapshot_for_caller(Some(42)).is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reap_transitions_finished_children_to_exited() {
         let reg = BgRegistry::new();
         let (pid, child) = spawn_true_child();
@@ -497,7 +497,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn kill_transitions_to_killed_and_returns_true() {
         let reg = BgRegistry::new();
         let (pid, child) = spawn_sleep_child();
@@ -510,7 +510,7 @@ mod tests {
         assert!(!reg.kill(987654));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn kill_as_caller_enforces_spawner_scope() {
         let reg = BgRegistry::new();
         let (pid, child) = spawn_sleep_child();
@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(reg.kill_as_caller(987654, None), CancelOutcome::NotFound);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_exit_returns_exited_when_child_finishes() {
         let reg = BgRegistry::new();
         let (pid, child) = spawn_true_child();
@@ -541,7 +541,7 @@ mod tests {
         assert_eq!(outcome, ProcessWaitOutcome::Exited { code: Some(0) });
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_exit_returns_exited_when_already_killed() {
         let reg = BgRegistry::new();
         let (pid, child) = spawn_sleep_child();
@@ -554,7 +554,7 @@ mod tests {
         assert_eq!(outcome, ProcessWaitOutcome::Exited { code: None });
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_exit_returns_timed_out_with_snapshot() {
         let reg = BgRegistry::new();
         let (pid, child) = spawn_sleep_child();
@@ -578,7 +578,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_exit_enforces_spawner_scope() {
         let reg = BgRegistry::new();
         let (pid, child) = spawn_sleep_child();
@@ -596,7 +596,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_exit_returns_not_found_for_unknown_pid() {
         let reg = BgRegistry::new();
         assert_eq!(
@@ -606,7 +606,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn kill_for_spawner_kills_only_matching_running_children() {
         let reg = BgRegistry::new();
         let (p_top, c_top) = spawn_sleep_child();

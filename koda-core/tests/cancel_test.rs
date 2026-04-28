@@ -18,13 +18,32 @@ use koda_core::{
 };
 use koda_test_utils::{ChatMessage, LlmProvider, TestSink, ToolDefinition};
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-/// A mock provider that sleeps forever in `chat_stream`, simulating
-/// a model that never returns (or takes very long to start streaming).
-struct SlowProvider;
+/// A mock provider that signals when `chat_stream` is entered, then
+/// sleeps forever — simulating a model that hangs on the initial
+/// HTTP request. The signal lets tests cancel deterministically as
+/// soon as inference reaches the provider, rather than guessing a
+/// wall-clock delay (#1109 F3).
+struct SlowProvider {
+    /// Fired exactly once when `chat_stream` is first invoked.
+    entered: Mutex<Option<oneshot::Sender<()>>>,
+}
+
+impl SlowProvider {
+    fn new() -> (Self, oneshot::Receiver<()>) {
+        let (tx, rx) = oneshot::channel();
+        (
+            Self {
+                entered: Mutex::new(Some(tx)),
+            },
+            rx,
+        )
+    }
+}
 
 #[async_trait]
 impl LlmProvider for SlowProvider {
@@ -43,7 +62,13 @@ impl LlmProvider for SlowProvider {
         _tools: &[ToolDefinition],
         _settings: &koda_core::config::ModelSettings,
     ) -> Result<koda_core::providers::stream_collector::SseCollector> {
-        // Simulate a model that hangs on the initial HTTP request
+        // Notify the test that we've reached the provider — the earliest
+        // meaningful cancellation point. Tests subscribe to this signal
+        // instead of guessing a wall-clock delay.
+        if let Some(tx) = self.entered.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+        // Simulate a model that hangs on the initial HTTP request.
         tokio::time::sleep(Duration::from_secs(60)).await;
         unreachable!("should be cancelled before this returns")
     }
@@ -57,7 +82,7 @@ impl LlmProvider for SlowProvider {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_cancel_during_chat_stream_returns_immediately() {
     let tmp = tempfile::tempdir().unwrap();
     let db = Database::init(tmp.path()).await.unwrap();
@@ -69,7 +94,7 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
         .unwrap();
 
     let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
-    let provider = SlowProvider;
+    let (provider, entered_rx) = SlowProvider::new();
     let tools = ToolRegistry::new(PathBuf::from("."), 100_000);
     let tool_defs: Vec<ToolDefinition> = vec![];
     let sink = TestSink::new();
@@ -77,10 +102,12 @@ async fn test_cancel_during_chat_stream_returns_immediately() {
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     let mut file_tracker = koda_core::file_tracker::FileTracker::new(&session_id, db.clone()).await;
 
-    // Cancel after 100ms — well before SlowProvider's 60s sleep
+    // **#1109 F3**: was `sleep(100ms).await` to give inference time to
+    // start. Replaced with a oneshot signal so cancel fires the moment
+    // inference reaches the provider — deterministic, immune to slow CI.
     let cancel_clone = cancel.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = entered_rx.await;
         cancel_clone.cancel();
     });
 
