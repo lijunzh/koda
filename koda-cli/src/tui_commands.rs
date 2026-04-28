@@ -721,7 +721,6 @@ async fn handle_copy_response(
         }
     };
 
-    // Collect assistant messages that have non-empty text content.
     let responses: Vec<&str> = messages
         .iter()
         .filter_map(|m| {
@@ -791,6 +790,17 @@ async fn handle_export(
         }
     };
 
+    // #1108 P1b/P2a: load engine events captured during the session
+    // (top-level info / bg-task transitions, plus folded sub-agent
+    // traces). Treat any DB error as "no events" and continue — the
+    // transcript without events is still useful, and an empty slice
+    // is a no-op for the renderer.
+    let events = session
+        .db
+        .load_session_events(&session.id)
+        .await
+        .unwrap_or_default();
+
     // Try to get the session title and start time for the header.
     let title_storage;
     let started_storage;
@@ -818,7 +828,7 @@ async fn handle_export(
     };
 
     let verbose = !summary;
-    let md = transcript::render(&messages, &meta, verbose);
+    let md = transcript::render(&messages, &events, &meta, verbose);
 
     let path_owned;
     let path: &str = match dest {
@@ -1143,7 +1153,7 @@ mod tests {
             assistant_with_tool_call("", "call_v", "Read"),
             tool_result("call_v", "fn main() { println!(\"hi\"); }"),
         ];
-        let md = transcript::render(&msgs, &meta_for_test(), /*verbose=*/ true);
+        let md = transcript::render(&msgs, &[], &meta_for_test(), /*verbose=*/ true);
 
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("verbose.md");
@@ -1184,7 +1194,7 @@ mod tests {
             },
             tool_result("call_s", "alpha.txt\nbeta.txt\ngamma.txt"),
         ];
-        let md = transcript::render(&msgs, &meta_for_test(), /*verbose=*/ false);
+        let md = transcript::render(&msgs, &[], &meta_for_test(), /*verbose=*/ false);
 
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("summary.md");

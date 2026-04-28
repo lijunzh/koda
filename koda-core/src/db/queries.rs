@@ -8,9 +8,10 @@
 use anyhow::Result;
 use std::path::Path;
 
-use super::{Database, MessageRow, SessionInfoRow};
+use super::{Database, MessageRow, SessionEventRow, SessionInfoRow};
 use crate::persistence::{
-    CompactedStats, InterruptionKind, Message, Persistence, Role, SessionInfo, SessionUsage,
+    CompactedStats, InterruptionKind, Message, Persistence, Role, SessionEvent, SessionInfo,
+    SessionUsage,
 };
 
 // ── Private helpers ─────────────────────────────────────────────────────────
@@ -796,5 +797,42 @@ impl Persistence for Database {
     /// Set the todo list for a session (convenience wrapper).
     async fn set_todo(&self, session_id: &str, content: &str) -> Result<()> {
         self.set_metadata(session_id, "todo", content).await
+    }
+
+    // ── Session events (#1108 P1b/P2a) ─────────────────────────────
+
+    async fn insert_session_event(
+        &self,
+        session_id: &str,
+        kind: &str,
+        payload: &str,
+        parent_tool_call_id: Option<&str>,
+    ) -> Result<i64> {
+        let result = sqlx::query(
+            "INSERT INTO session_events (session_id, kind, payload, parent_tool_call_id) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(session_id)
+        .bind(kind)
+        .bind(payload)
+        .bind(parent_tool_call_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.last_insert_rowid())
+    }
+
+    async fn load_session_events(&self, session_id: &str) -> Result<Vec<SessionEvent>> {
+        // Order by id (auto-increment) gives append order, which is
+        // semantically what we want — created_at has 1-second
+        // resolution and a busy session emits dozens of events per
+        // second. Id is monotonic and gap-free per insert.
+        let rows = sqlx::query_as::<_, SessionEventRow>(
+            "SELECT id, session_id, kind, payload, parent_tool_call_id, created_at \
+             FROM session_events WHERE session_id = ? ORDER BY id ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(SessionEvent::from).collect())
     }
 }

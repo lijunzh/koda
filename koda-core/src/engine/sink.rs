@@ -137,6 +137,133 @@ impl EngineSink for BufferingSink {
     }
 }
 
+// ── PersistingSink (#1108 P1b/P2a) ───────────────────────────────
+
+/// A decorator that persists `Info` and `BgTaskUpdate` events to the
+/// `session_events` table before forwarding to an inner sink.
+///
+/// Pre-#1108 these events were sink-only and never reached the DB,
+/// so the markdown transcript export had no record of:
+/// - bg-agent narrative traces (what each task did during the wait window)
+/// - microcompact / loop-detector / rate-limit messages
+/// - bg-task status transitions (`Pending → Running { iter: N } → …`)
+///
+/// ## Wiring
+///
+/// - **Top-level** (P1b): wrap the user-facing sink (CliSink/AcpSink)
+///   with `parent_tool_call_id = None`.
+/// - **Sub-agent** (P2a): wrap the [`BufferingSink`] with
+///   `parent_tool_call_id = Some(invoke_agent_call_id)` so the
+///   transcript renderer can fold the trace under the parent's
+///   `InvokeAgent` tool result.
+///
+/// ## Failure handling
+///
+/// Inserts run on a fire-and-forget tokio task and **never** propagate
+/// errors back to the inference loop. A DB hiccup must not crash a
+/// session in progress — the worst case is a missing event in the
+/// transcript, not a lost turn.
+pub struct PersistingSink<'a> {
+    inner: &'a dyn EngineSink,
+    db: std::sync::Arc<dyn crate::persistence::Persistence>,
+    session_id: String,
+    /// Set on sub-agent sinks so their events can be folded under the
+    /// parent's `InvokeAgent` tool result. `None` for top-level.
+    parent_tool_call_id: Option<String>,
+}
+
+impl<'a> PersistingSink<'a> {
+    /// Wrap an inner sink. The decorator persists Info/BgTaskUpdate
+    /// events as a side effect; everything else passes through
+    /// untouched.
+    pub fn new(
+        inner: &'a dyn EngineSink,
+        db: std::sync::Arc<dyn crate::persistence::Persistence>,
+        session_id: String,
+        parent_tool_call_id: Option<String>,
+    ) -> Self {
+        Self {
+            inner,
+            db,
+            session_id,
+            parent_tool_call_id,
+        }
+    }
+
+    /// Spawn a fire-and-forget DB insert. Any error is logged via
+    /// `tracing::warn!` and otherwise swallowed (see struct doc).
+    fn persist(&self, kind: &'static str, payload: String) {
+        let db = self.db.clone();
+        let session_id = self.session_id.clone();
+        let parent = self.parent_tool_call_id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = db
+                .insert_session_event(&session_id, kind, &payload, parent.as_deref())
+                .await
+            {
+                tracing::warn!(
+                    error = %e, kind, session_id,
+                    "failed to persist session event"
+                );
+            }
+        });
+    }
+}
+
+impl EngineSink for PersistingSink<'_> {
+    fn emit(&self, event: EngineEvent) {
+        use crate::persistence::session_event_kind as sek;
+        // Branch on whether this is a sub-agent context. Sub-agents
+        // need a richer event set persisted (the inner trace) so the
+        // parent transcript can show what they did. Top-level only
+        // needs Info / BgTaskUpdate — tool calls there are already
+        // in `messages.tool_calls`.
+        if self.parent_tool_call_id.is_some() {
+            // Sub-agent: persist the same set BufferingSink renders
+            // (see [`BufferingSink::emit`]). Use the rendered string
+            // form so the transcript matches the live trace.
+            match &event {
+                EngineEvent::Info { message } => {
+                    self.persist(sek::SUB_AGENT_EVENT, message.clone());
+                }
+                EngineEvent::ToolCallStart { name, .. } => {
+                    self.persist(sek::SUB_AGENT_EVENT, format!("  \u{1f527} {name}"));
+                }
+                EngineEvent::ApprovalRequest { tool_name, .. } => {
+                    self.persist(
+                        sek::SUB_AGENT_EVENT,
+                        format!(
+                            "  \u{2398} approval auto-rejected for {tool_name} (no user channel)"
+                        ),
+                    );
+                }
+                EngineEvent::AskUserRequest { question, .. } => {
+                    let truncated: String = question.chars().take(80).collect();
+                    self.persist(
+                        sek::SUB_AGENT_EVENT,
+                        format!("  \u{2398} ask-user auto-skipped: {truncated}"),
+                    );
+                }
+                _ => {}
+            }
+        } else {
+            // Top-level: only sink-only events not already in messages.
+            match &event {
+                EngineEvent::Info { message } => {
+                    self.persist(sek::INFO, message.clone());
+                }
+                EngineEvent::BgTaskUpdate { .. } => {
+                    if let Ok(json) = serde_json::to_string(&event) {
+                        self.persist(sek::BG_TASK_UPDATE, json);
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.inner.emit(event);
+    }
+}
+
 /// A sink that collects events into a Vec for testing.
 ///
 /// Optionally also broadcasts each event to subscribers (#1109 F3) so

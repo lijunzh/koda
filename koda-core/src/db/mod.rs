@@ -34,11 +34,17 @@ use std::str::FromStr;
 
 /// Re-export persistence types for backward compatibility.
 pub use crate::persistence::{
-    CompactedStats, Message, Persistence, Role, SessionInfo, SessionUsage,
+    CompactedStats, Message, Persistence, Role, SessionEvent, SessionInfo, SessionUsage,
 };
 
 /// Wrapper around the SQLite connection pool.
 #[derive(Debug, Clone)]
+/// Wrapper around the SQLite connection pool.
+///
+/// `Clone` is cheap — `SqlitePool` is internally `Arc`-shared, so a
+/// clone bumps a refcount, not a real connection. This matters for
+/// [`crate::engine::sink::PersistingSink`], which needs an owned
+/// handle to spawn fire-and-forget DB writes from sink emissions.
 pub struct Database {
     pub(crate) pool: SqlitePool,
 }
@@ -230,6 +236,36 @@ impl Database {
         .execute(pool)
         .await?;
 
+        // Session events (#1108 P1b/P2a): non-message engine events that
+        // matter for debugging — `EngineEvent::Info`, `BgTaskUpdate`, and
+        // sub-agent inner-trace lines. Pre-#1108 these were sink-only and
+        // never reached the transcript export, leaving the reader unable
+        // to tell what a bg sub-agent was doing during its wait window.
+        //
+        // `parent_tool_call_id` is set for sub-agent-emitted events so the
+        // renderer can fold them under the parent's `InvokeAgent` tool
+        // result. NULL for top-level events.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS session_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                parent_tool_call_id TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(session_id) REFERENCES sessions(id)
+            );",
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_session_events_session_id \
+             ON session_events(session_id, id);",
+        )
+        .execute(pool)
+        .await?;
+
         Ok(())
     }
 
@@ -400,6 +436,30 @@ impl From<MessageRow> for Message {
             cache_creation_tokens: r.cache_creation_tokens,
             thinking_tokens: r.thinking_tokens,
             thinking_content: r.thinking_content,
+            created_at: r.created_at,
+        }
+    }
+}
+
+/// Internal row type for the `session_events` table (#1108 P1b/P2a).
+#[derive(sqlx::FromRow)]
+pub(crate) struct SessionEventRow {
+    pub id: i64,
+    pub session_id: String,
+    pub kind: String,
+    pub payload: String,
+    pub parent_tool_call_id: Option<String>,
+    pub created_at: Option<String>,
+}
+
+impl From<SessionEventRow> for SessionEvent {
+    fn from(r: SessionEventRow) -> Self {
+        Self {
+            id: r.id,
+            session_id: r.session_id,
+            kind: r.kind,
+            payload: r.payload,
+            parent_tool_call_id: r.parent_tool_call_id,
             created_at: r.created_at,
         }
     }

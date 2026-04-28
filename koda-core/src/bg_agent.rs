@@ -173,6 +173,14 @@ pub struct BgAgentResult {
     /// Empty for the cancelled / panicked case (`output` carries the
     /// failure detail in those paths).
     pub events: Vec<String>,
+    /// **#1108 P2a**: the `tool_call_id` of the parent's `InvokeAgent`
+    /// call that started this bg agent. `Some` for normal spawns,
+    /// `None` only for tests that bypass the dispatch path. Used by
+    /// the inference loop's drain handler to persist `events` to
+    /// `session_events` with this id as `parent_tool_call_id`, so
+    /// the transcript renderer can fold the trace under the parent's
+    /// `InvokeAgent` tool result.
+    pub parent_tool_call_id: Option<String>,
 }
 
 /// Handle returned when a background agent is spawned.
@@ -200,6 +208,10 @@ struct BgAgentEntry {
     /// Sub-agent task that spawned this bg-agent. `None` = top-level.
     /// **#996 Layer 2 / Model D** — see [`BgTaskSnapshot::spawner`].
     spawner: Option<u32>,
+    /// **#1108 P2a**: parent's `InvokeAgent` tool_call_id. Stored at
+    /// reserve time, surfaced via [`BgAgentResult::parent_tool_call_id`]
+    /// at drain time. `None` only for legacy `attach()`-based tests.
+    parent_tool_call_id: Option<String>,
     /// Aborts the spawned task on drop. The bg path uses
     /// `tokio::spawn` on the multi-thread runtime (#1022 B5):
     /// `execute_sub_agent` returns an explicitly `Send`-bounded
@@ -447,6 +459,7 @@ impl BgAgentRegistry {
         cancel: CancellationToken,
         status_rx: watch::Receiver<AgentStatus>,
         spawner: Option<u32>,
+        parent_tool_call_id: Option<String>,
         handle: tokio::task::JoinHandle<()>,
     ) {
         self.pending.lock().insert(
@@ -459,6 +472,7 @@ impl BgAgentRegistry {
                 status_rx,
                 started_at: Instant::now(),
                 spawner,
+                parent_tool_call_id,
                 _handle: AbortOnDropHandle::new(handle),
             },
         );
@@ -518,6 +532,7 @@ impl BgAgentRegistry {
                 status_rx,
                 started_at: Instant::now(),
                 spawner,
+                parent_tool_call_id: None,
                 _handle: AbortOnDropHandle::new(noop),
             },
         );
@@ -541,6 +556,7 @@ impl BgAgentRegistry {
                         output,
                         success: true,
                         events,
+                        parent_tool_call_id: entry.parent_tool_call_id.clone(),
                     });
                 }
                 Ok(Err((err, events))) => {
@@ -551,6 +567,7 @@ impl BgAgentRegistry {
                         output: err,
                         success: false,
                         events,
+                        parent_tool_call_id: entry.parent_tool_call_id.clone(),
                     });
                 }
                 Err(oneshot::error::TryRecvError::Empty) => {
@@ -566,6 +583,7 @@ impl BgAgentRegistry {
                         output: "[background agent task was cancelled]".to_string(),
                         success: false,
                         events: Vec::new(),
+                        parent_tool_call_id: entry.parent_tool_call_id.clone(),
                     });
                 }
             }
@@ -862,6 +880,7 @@ impl BgAgentRegistry {
                 };
                 let agent_name = entry.agent_name;
                 let prompt = entry.prompt;
+                let parent_tool_call_id = entry.parent_tool_call_id;
                 match tokio::time::timeout(Duration::from_millis(50), entry.rx).await {
                     Ok(Ok(Ok((output, events)))) => WaitOutcome::Completed(BgAgentResult {
                         agent_name,
@@ -869,6 +888,7 @@ impl BgAgentRegistry {
                         output,
                         success: true,
                         events,
+                        parent_tool_call_id,
                     }),
                     Ok(Ok(Err((err, events)))) => WaitOutcome::Completed(BgAgentResult {
                         agent_name,
@@ -876,6 +896,7 @@ impl BgAgentRegistry {
                         output: err,
                         success: false,
                         events,
+                        parent_tool_call_id,
                     }),
                     // Sender dropped (panic) or 50ms elapsed without
                     // a value landing — surface as Cancelled. Both
@@ -1127,6 +1148,7 @@ mod tests {
             rx,
             cancel_for_entry,
             status_rx,
+            None,
             None,
             handle,
         );

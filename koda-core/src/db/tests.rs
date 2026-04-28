@@ -1599,3 +1599,91 @@ async fn test_copy_messages_does_not_touch_source_session() {
         "source content must be unchanged"
     );
 }
+
+// ── Session events (#1108 P1b/P2a) ──────────────────────────────────────────
+//
+// Round-trip the new `session_events` table. The schema lives in
+// `db/mod.rs`; the trait methods (`insert_session_event` /
+// `load_session_events`) live in `db/queries.rs`. These tests pin
+// the contract end-to-end: insert order is preserved, parent-link
+// is nullable, and unrelated sessions don't leak into each other.
+
+use crate::persistence::session_event_kind;
+
+#[tokio::test]
+async fn session_events_round_trip_preserves_order_and_parent() {
+    let (db, _tmp) = setup().await;
+    let session = db
+        .create_session("test-agent", std::path::Path::new("/tmp"))
+        .await
+        .unwrap();
+
+    // Three events, two top-level + one parented. Insertion order
+    // should equal load order — `load_session_events` orders by id
+    // (auto-increment), which is monotonic per-insert.
+    db.insert_session_event(&session, session_event_kind::INFO, "first", None)
+        .await
+        .unwrap();
+    db.insert_session_event(
+        &session,
+        session_event_kind::SUB_AGENT_EVENT,
+        "  🔧 Read",
+        Some("call_abc"),
+    )
+    .await
+    .unwrap();
+    db.insert_session_event(
+        &session,
+        session_event_kind::BG_TASK_UPDATE,
+        r#"{"task_id":1,"status":"Pending"}"#,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let events = db.load_session_events(&session).await.unwrap();
+    assert_eq!(events.len(), 3, "all three events must round-trip");
+    assert_eq!(events[0].payload, "first");
+    assert_eq!(events[0].parent_tool_call_id, None);
+    assert_eq!(events[1].kind, session_event_kind::SUB_AGENT_EVENT);
+    assert_eq!(events[1].parent_tool_call_id.as_deref(), Some("call_abc"));
+    assert_eq!(events[2].kind, session_event_kind::BG_TASK_UPDATE);
+}
+
+#[tokio::test]
+async fn session_events_isolated_per_session() {
+    let (db, _tmp) = setup().await;
+    let s1 = db
+        .create_session("agent-1", std::path::Path::new("/tmp"))
+        .await
+        .unwrap();
+    let s2 = db
+        .create_session("agent-2", std::path::Path::new("/tmp"))
+        .await
+        .unwrap();
+
+    db.insert_session_event(&s1, session_event_kind::INFO, "in s1", None)
+        .await
+        .unwrap();
+    db.insert_session_event(&s2, session_event_kind::INFO, "in s2", None)
+        .await
+        .unwrap();
+
+    let s1_events = db.load_session_events(&s1).await.unwrap();
+    let s2_events = db.load_session_events(&s2).await.unwrap();
+    assert_eq!(s1_events.len(), 1);
+    assert_eq!(s2_events.len(), 1);
+    assert_eq!(s1_events[0].payload, "in s1");
+    assert_eq!(s2_events[0].payload, "in s2");
+}
+
+#[tokio::test]
+async fn session_events_empty_when_none_inserted() {
+    let (db, _tmp) = setup().await;
+    let session = db
+        .create_session("test-agent", std::path::Path::new("/tmp"))
+        .await
+        .unwrap();
+    let events = db.load_session_events(&session).await.unwrap();
+    assert!(events.is_empty(), "fresh session must have no events");
+}

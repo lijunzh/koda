@@ -34,7 +34,7 @@
 //! (full tool output shown)
 //! ```
 
-use koda_core::persistence::{Message, Role};
+use koda_core::persistence::{Message, Role, SessionEvent, session_event_kind};
 use koda_core::tools::{ToolEffect, classify_tool};
 use std::collections::HashMap;
 
@@ -137,9 +137,26 @@ fn extract_tool_call_meta(call: &serde_json::Value) -> (String, String, String) 
 ///   all tool output, session metadata header.
 /// - `verbose = false` (`--summary`): concise, human-readable.
 ///
+/// `events` carries non-message engine events persisted to the
+/// `session_events` table (#1108 P1b/P2a). They split into two
+/// rendering buckets:
+/// - **Sub-agent events** (`parent_tool_call_id = Some(id)`) are
+///   folded as a collapsible `<details>` block under the matching
+///   `Tool` result. Pass an empty slice for sessions with no bg
+///   sub-agents.
+/// - **Top-level events** (`parent_tool_call_id = None`) are appended
+///   in a chronological "Background activity" section at the end,
+///   so the reader can correlate microcompact / rate-limit / bg-task
+///   transitions with the conversation above.
+///
 /// Returns the transcript as a `String`. The caller is responsible for
 /// writing it to the clipboard or a file.
-pub fn render(messages: &[Message], meta: &SessionMeta, verbose: bool) -> String {
+pub fn render(
+    messages: &[Message],
+    events: &[SessionEvent],
+    meta: &SessionMeta,
+    verbose: bool,
+) -> String {
     let mut out = String::with_capacity(if verbose { 16384 } else { 4096 });
 
     // Header
@@ -164,6 +181,19 @@ pub fn render(messages: &[Message], meta: &SessionMeta, verbose: bool) -> String
                     tool_id_to_name.insert(id, name);
                 }
             }
+        }
+    }
+
+    // #1108 P2a: bucket sub-agent events by parent tool_call_id so
+    // each Tool result can render its folded trace in O(1). Top-level
+    // events (no parent) accumulate in a separate Vec for the
+    // "Background activity" tail section. Single pass, two buckets.
+    let mut events_by_parent: HashMap<&str, Vec<&SessionEvent>> = HashMap::new();
+    let mut top_level_events: Vec<&SessionEvent> = Vec::new();
+    for ev in events {
+        match ev.parent_tool_call_id.as_deref() {
+            Some(parent) => events_by_parent.entry(parent).or_default().push(ev),
+            None => top_level_events.push(ev),
         }
     }
 
@@ -298,15 +328,105 @@ pub fn render(messages: &[Message], meta: &SessionMeta, verbose: bool) -> String
                         out.push_str("\n```\n\n");
                     } else if total_lines > 0 {
                         out.push_str(&format!(
-                            "> _{total_lines} line(s) of output — run tool to see full result_\n\n"
+                            "> _{total_lines} line(s) of output \u{2014} run tool to see full result_\n\n"
                         ));
                     }
+                }
+
+                // #1108 P2a: fold the bg sub-agent's narrative trace
+                // under its `InvokeAgent` tool result. Pre-#1108 the
+                // trace was sink-only and never made it into the
+                // export. Use a `<details>` block so the trace is
+                // hidden by default in rendered Markdown viewers but
+                // still grep-able for debugging. Skipped silently if
+                // no events match this tool_call_id (the common case
+                // for non-`InvokeAgent` tools).
+                if let Some(call_id) = msg.tool_call_id.as_deref()
+                    && let Some(events) = events_by_parent.get(call_id)
+                    && !events.is_empty()
+                {
+                    out.push_str(&format!(
+                        "<details><summary>\u{1f50d} Sub-agent trace ({} event{})</summary>\n\n",
+                        events.len(),
+                        if events.len() == 1 { "" } else { "s" },
+                    ));
+                    out.push_str("```\n");
+                    for ev in events {
+                        out.push_str(&ev.payload);
+                        out.push('\n');
+                    }
+                    out.push_str("```\n\n</details>\n\n");
                 }
             }
         }
     }
 
+    // #1108 P1b: append top-level engine events as a tail section
+    // (microcompact, rate-limit, bg-task transitions, etc.). These
+    // are the events with no `parent_tool_call_id` — sub-agent ones
+    // already rendered above under their `Tool` results. Skipped if
+    // empty so non-bg sessions stay visually clean.
+    if !top_level_events.is_empty() {
+        render_background_activity(&mut out, &top_level_events);
+    }
+
     out
+}
+
+/// Render the trailing "Background activity" section.
+///
+/// One bullet per event, kind-prefixed so the reader can scan for
+/// task-state transitions vs. info messages without parsing JSON.
+/// Bg-task updates are pretty-printed (`task N: Pending → Running`)
+/// because raw JSON in a transcript is illegible noise.
+fn render_background_activity(out: &mut String, events: &[&SessionEvent]) {
+    out.push_str("---\n\n## \u{1f4ca} Background activity\n\n");
+    out.push_str(
+        "<sub>Engine events captured during the session (info messages, \
+         bg-task state transitions). Pre-#1108 these were sink-only and \
+         not exported.</sub>\n\n",
+    );
+    for ev in events {
+        let ts = ev.created_at.as_deref().unwrap_or("");
+        match ev.kind.as_str() {
+            session_event_kind::INFO => {
+                out.push_str(&format!("- `{ts}` \u{2139}\u{fe0f} {}\n", ev.payload));
+            }
+            session_event_kind::BG_TASK_UPDATE => {
+                // Best-effort pretty print; fall back to raw on parse
+                // failure so we never lose data.
+                let pretty =
+                    pretty_bg_task_update(&ev.payload).unwrap_or_else(|| ev.payload.clone());
+                out.push_str(&format!("- `{ts}` \u{1f680} {pretty}\n"));
+            }
+            other => {
+                out.push_str(&format!("- `{ts}` `{other}` {}\n", ev.payload));
+            }
+        }
+    }
+    out.push('\n');
+}
+
+/// Best-effort pretty-printer for a `BgTaskUpdate` JSON payload.
+///
+/// Returns `None` on any parse failure so the caller falls back to
+/// rendering the raw JSON — strictly better than dropping the row.
+fn pretty_bg_task_update(payload: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let task_id = v.get("task_id")?.as_u64()?;
+    let status = v.get("status")?;
+    // `AgentStatus` serializes as either a string (`"Pending"`) or
+    // an object (`{"Running": {"iter": 3}}`). Handle both.
+    let status_str = match status {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| format!("{k}({v})"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => status.to_string(),
+    };
+    Some(format!("task {task_id}: {status_str}"))
 }
 
 // ── Verbose-mode helpers ─────────────────────────────────────────────
@@ -517,7 +637,7 @@ mod tests {
             title: Some("Test Session".into()),
             ..default_meta()
         };
-        let out = render(&[], &meta, false);
+        let out = render(&[], &[], &meta, false);
         assert!(out.contains("# Test Session"));
         assert!(!out.contains("🧑 User"));
     }
@@ -525,7 +645,7 @@ mod tests {
     #[test]
     fn user_message_renders_correctly() {
         let msgs = vec![make_msg(Role::User, "hello koda")];
-        let out = render(&msgs, &default_meta(), false);
+        let out = render(&msgs, &[], &default_meta(), false);
         assert!(out.contains("🧑 User"));
         assert!(out.contains("hello koda"));
     }
@@ -533,7 +653,7 @@ mod tests {
     #[test]
     fn assistant_message_renders_correctly() {
         let msgs = vec![make_msg(Role::Assistant, "I can help!")];
-        let out = render(&msgs, &default_meta(), false);
+        let out = render(&msgs, &[], &default_meta(), false);
         assert!(out.contains("🤖 Assistant"));
         assert!(out.contains("I can help!"));
     }
@@ -544,7 +664,7 @@ mod tests {
             make_msg(Role::System, "secret prompt"),
             make_msg(Role::User, "hi"),
         ];
-        let out = render(&msgs, &default_meta(), false);
+        let out = render(&msgs, &[], &default_meta(), false);
         assert!(!out.contains("secret prompt"));
     }
 
@@ -561,7 +681,7 @@ mod tests {
         )]));
 
         let msgs = vec![assistant_msg, result_msg];
-        let out = render(&msgs, &default_meta(), false);
+        let out = render(&msgs, &[], &default_meta(), false);
         assert!(out.contains("```"));
         assert!(out.contains("fn main()"));
     }
@@ -579,7 +699,7 @@ mod tests {
         )]));
 
         let msgs = vec![assistant_msg, result_msg];
-        let out = render(&msgs, &default_meta(), false);
+        let out = render(&msgs, &[], &default_meta(), false);
         // Bash is mutating → summarised in summary mode, not shown verbatim
         assert!(!out.contains("line1"));
         assert!(out.contains("3 line(s) of output"));
@@ -593,7 +713,7 @@ mod tests {
         let mut msg = make_msg(Role::Assistant, "The answer is 42.");
         msg.thinking_content = Some("Let me think step by step: 6 x 7 = 42.".into());
 
-        let out = render(&[msg], &default_meta(), false);
+        let out = render(&[msg], &[], &default_meta(), false);
         assert!(
             out.contains("The answer is 42."),
             "response text must appear"
@@ -618,7 +738,7 @@ mod tests {
             provider: "anthropic".into(),
             project_root: "/home/user/project".into(),
         };
-        let out = render(&[], &meta, true);
+        let out = render(&[], &[], &meta, true);
         assert!(out.contains("sess-42"), "session ID in header");
         assert!(out.contains("claude-sonnet-4-20250514"), "model in header");
         assert!(out.contains("anthropic"), "provider in header");
@@ -632,7 +752,7 @@ mod tests {
         msg.completion_tokens = Some(50);
         msg.cache_read_tokens = Some(80);
 
-        let out = render(&[msg], &default_meta(), true);
+        let out = render(&[msg], &[], &default_meta(), true);
         assert!(out.contains("100 prompt"), "prompt tokens shown");
         assert!(out.contains("50 completion"), "completion tokens shown");
         assert!(out.contains("80 cache-read"), "cache-read tokens shown");
@@ -644,7 +764,7 @@ mod tests {
         msg.prompt_tokens = Some(100);
         msg.completion_tokens = Some(50);
 
-        let out = render(&[msg], &default_meta(), false);
+        let out = render(&[msg], &[], &default_meta(), false);
         assert!(!out.contains("100 prompt"));
     }
 
@@ -653,7 +773,7 @@ mod tests {
         let mut msg = make_msg(Role::User, "hello");
         msg.created_at = Some("2026-04-14T09:15:30Z".into());
 
-        let out = render(&[msg], &default_meta(), true);
+        let out = render(&[msg], &[], &default_meta(), true);
         assert!(out.contains("09:15:30"), "timestamp shown in verbose");
     }
 
@@ -662,7 +782,7 @@ mod tests {
         let mut msg = make_msg(Role::User, "hello");
         msg.created_at = Some("2026-04-14T09:15:30Z".into());
 
-        let out = render(&[msg], &default_meta(), false);
+        let out = render(&[msg], &[], &default_meta(), false);
         assert!(!out.contains("09:15:30"), "timestamp hidden in summary");
     }
 
@@ -679,7 +799,7 @@ mod tests {
         )]));
 
         let msgs = vec![assistant_msg, result_msg];
-        let out = render(&msgs, &default_meta(), true);
+        let out = render(&msgs, &[], &default_meta(), true);
         // Verbose mode shows all tool output, including Bash
         assert!(out.contains("line1"));
         assert!(out.contains("line3"));
@@ -728,7 +848,7 @@ mod tests {
             project_root: "/home/user/proj".into(),
             ..default_meta()
         };
-        let out = render(&[msg], &meta, false);
+        let out = render(&[msg], &[], &meta, false);
         assert!(
             out.contains("[src/main.rs](file:///home/user/proj/src/main.rs)"),
             "relative path should resolve under project_root, got:\n{out}"
@@ -743,7 +863,7 @@ mod tests {
             project_root: "/home/user/proj".into(),
             ..default_meta()
         };
-        let out = render(&[msg], &meta, false);
+        let out = render(&[msg], &[], &meta, false);
         assert!(
             out.contains("[/etc/hosts](file:///etc/hosts)"),
             "absolute path should pass through, got:\n{out}"
@@ -754,7 +874,7 @@ mod tests {
     fn webfetch_url_becomes_self_link() {
         let _g = HYPERLINK_ENV_LOCK.lock().unwrap();
         let msg = assistant_with_call("WebFetch", r#"{"url":"https://example.com/x"}"#);
-        let out = render(&[msg], &default_meta(), false);
+        let out = render(&[msg], &[], &default_meta(), false);
         assert!(
             out.contains("[https://example.com/x](https://example.com/x)"),
             "URL should be a markdown self-link, got:\n{out}"
@@ -766,7 +886,7 @@ mod tests {
         // Bash commands aren't paths or URLs — keep them in backticks
         // so monospace formatting (and shell tokens) survive.
         let msg = assistant_with_call("Bash", r#"{"command":"git status"}"#);
-        let out = render(&[msg], &default_meta(), false);
+        let out = render(&[msg], &[], &default_meta(), false);
         assert!(out.contains("`git status`"), "got:\n{out}");
         assert!(
             !out.contains("](git status)"),
@@ -777,7 +897,7 @@ mod tests {
     #[test]
     fn grep_detail_stays_plain_codespan() {
         let msg = assistant_with_call("Grep", r#"{"search_string":"TODO","directory":"src"}"#);
-        let out = render(&[msg], &default_meta(), false);
+        let out = render(&[msg], &[], &default_meta(), false);
         assert!(out.contains("`\"TODO\" in src`"), "got:\n{out}");
     }
 
@@ -790,7 +910,7 @@ mod tests {
         // against parallel reader tests in this binary.
         koda_core::runtime_env::set(HYPERLINK_KILL_SWITCH, "off");
         let msg = assistant_with_call("Read", r#"{"file_path":"/x.rs"}"#);
-        let out = render(&[msg], &default_meta(), false);
+        let out = render(&[msg], &[], &default_meta(), false);
         koda_core::runtime_env::remove(HYPERLINK_KILL_SWITCH);
         assert!(out.contains("`/x.rs`"), "plain text expected, got:\n{out}");
         assert!(!out.contains("file:///"), "link should be suppressed");
@@ -849,7 +969,7 @@ mod tests {
             "InvokeAgent",
             r#"{"agent_name":"explore","prompt":"map the repo"}"#,
         )]));
-        let out = render(&[msg], &default_meta(), false);
+        let out = render(&[msg], &[], &default_meta(), false);
         assert!(
             out.contains("**InvokeAgent**"),
             "production-shape tool_calls must render the tool NAME in the header. \
@@ -877,7 +997,7 @@ mod tests {
             "Read",
             r#"{"file_path":"src/very_distinctive_file.rs"}"#,
         )]));
-        let out = render(&[msg], &default_meta(), false);
+        let out = render(&[msg], &[], &default_meta(), false);
         assert!(
             out.contains("very_distinctive_file.rs"),
             "production-shape tool_calls must surface the arguments. \
@@ -907,7 +1027,7 @@ mod tests {
                 r#"{"agent_name":"explore","prompt":"b"}"#,
             ),
         ]));
-        let out = render(&[msg], &default_meta(), false);
+        let out = render(&[msg], &[], &default_meta(), false);
         assert!(
             out.contains("call_a") && out.contains("call_b"),
             "both tool_call_ids must appear in the header so parallel \
@@ -930,11 +1050,135 @@ mod tests {
         )]));
         let mut t = make_msg(Role::Tool, "file contents here");
         t.tool_call_id = Some("call_corr".into());
-        let out = render(&[a, t], &default_meta(), false);
+        let out = render(&[a, t], &[], &default_meta(), false);
         assert!(
             out.contains("call_corr"),
             "the result row's Output header must mention its tool_call_id \
              so parallel call/result pairs can be matched. got:\n{out}"
+        );
+    }
+
+    // ── #1108 P2a: sub-agent trace folding ────────────────────────────
+
+    /// Helper: build a `SessionEvent` for renderer tests. The DB id
+    /// and timestamp don't matter — the renderer only uses `kind`,
+    /// `payload`, and `parent_tool_call_id`.
+    fn ev(kind: &str, payload: &str, parent: Option<&str>) -> SessionEvent {
+        SessionEvent {
+            id: 0,
+            session_id: "sess".into(),
+            kind: kind.into(),
+            payload: payload.into(),
+            parent_tool_call_id: parent.map(str::to_string),
+            created_at: Some("2026-04-27 06:00:00".into()),
+        }
+    }
+
+    #[test]
+    fn sub_agent_events_fold_under_matching_tool_result() {
+        let mut a = make_msg(Role::Assistant, "");
+        a.tool_calls = Some(flat_tool_calls_json(&[(
+            "call_inv",
+            "InvokeAgent",
+            r#"{"agent_name":"explore","prompt":"go"}"#,
+        )]));
+        let mut t = make_msg(Role::Tool, "sub-agent finished");
+        t.tool_call_id = Some("call_inv".into());
+
+        let events = vec![
+            ev(
+                session_event_kind::SUB_AGENT_EVENT,
+                "  \u{1f527} Read foo.rs",
+                Some("call_inv"),
+            ),
+            ev(
+                session_event_kind::SUB_AGENT_EVENT,
+                "  \u{1f4ad} Looking at imports\u{2026}",
+                Some("call_inv"),
+            ),
+        ];
+
+        let out = render(&[a, t], &events, &default_meta(), true);
+        assert!(
+            out.contains("<details><summary>"),
+            "sub-agent events must be folded in a <details> block. got:\n{out}"
+        );
+        assert!(
+            out.contains("Sub-agent trace (2 events)"),
+            "summary must show the folded event count"
+        );
+        assert!(out.contains("Read foo.rs"));
+        assert!(out.contains("Looking at imports"));
+    }
+
+    #[test]
+    fn sub_agent_events_skipped_when_no_matching_tool_call_id() {
+        // Event has parent "call_X" but no tool result carries that
+        // id — the event must be silently dropped from the per-tool
+        // section (it'll surface in "Background activity" only if it
+        // has no parent at all, which it does here).
+        let mut t = make_msg(Role::Tool, "some output");
+        t.tool_call_id = Some("call_OTHER".into());
+        let events = vec![ev(
+            session_event_kind::SUB_AGENT_EVENT,
+            "orphan trace line",
+            Some("call_X"),
+        )];
+        let out = render(&[t], &events, &default_meta(), true);
+        assert!(
+            !out.contains("orphan trace line"),
+            "orphan parented events must not surface anywhere. got:\n{out}"
+        );
+        assert!(
+            !out.contains("<details>"),
+            "no details block when no events match the tool result"
+        );
+    }
+
+    #[test]
+    fn top_level_events_appear_in_background_activity_section() {
+        let events = vec![
+            ev(session_event_kind::INFO, "context compacted", None),
+            ev(
+                session_event_kind::BG_TASK_UPDATE,
+                r#"{"task_id":7,"status":"Pending"}"#,
+                None,
+            ),
+        ];
+        let out = render(&[], &events, &default_meta(), true);
+        assert!(
+            out.contains("Background activity"),
+            "top-level events must trigger the trailing section. got:\n{out}"
+        );
+        assert!(out.contains("context compacted"));
+        assert!(
+            out.contains("task 7: Pending"),
+            "BgTaskUpdate JSON must be pretty-printed. got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn no_background_activity_section_when_no_top_level_events() {
+        let out = render(&[], &[], &default_meta(), true);
+        assert!(
+            !out.contains("Background activity"),
+            "empty events must not produce a noisy empty section"
+        );
+    }
+
+    #[test]
+    fn pretty_bg_task_update_falls_back_to_raw_on_bad_json() {
+        // Defensive: malformed payloads must round-trip to the
+        // transcript untouched, never silently dropped.
+        let events = vec![ev(
+            session_event_kind::BG_TASK_UPDATE,
+            "not json at all {{{",
+            None,
+        )];
+        let out = render(&[], &events, &default_meta(), true);
+        assert!(
+            out.contains("not json at all {{{"),
+            "unparseable BgTaskUpdate must surface verbatim. got:\n{out}"
         );
     }
 }
