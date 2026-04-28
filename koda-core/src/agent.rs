@@ -85,7 +85,6 @@ impl KodaAgent {
         let system_prompt = crate::prompt::build_system_prompt(
             &config.system_prompt,
             &semantic_memory,
-            &config.agents_dir,
             &env,
             commands,
             &tools.skill_registry,
@@ -117,7 +116,6 @@ impl KodaAgent {
         self.system_prompt = crate::prompt::build_system_prompt(
             &config.system_prompt,
             &semantic_memory,
-            &config.agents_dir,
             &env,
             commands,
             &self.tools.skill_registry,

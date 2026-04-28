@@ -47,7 +47,6 @@ pub struct EnvironmentInfo<'a> {
 pub fn build_system_prompt(
     base_prompt: &str,
     semantic_memory: &str,
-    agents_dir: &Path,
     env: &EnvironmentInfo<'_>,
     commands: &[(&str, &str)],
     skill_registry: &SkillRegistry,
@@ -107,7 +106,17 @@ pub fn build_system_prompt(
     // redundancy. See #925 for the investigation.
 
     // Sub-agents — dynamic listing with descriptions
-    let available_agents = list_available_agents(agents_dir);
+    //
+    // Discovery uses the 3-tier source resolution from
+    // `tools::agent::discover_all_agents` (built-in → user → project),
+    // not just a single directory. Earlier code here read only one
+    // directory (the per-config `agents_dir`), which silently hid
+    // every built-in agent (`explore`, `plan`, `verify`, `task`)
+    // from the model. The model would then see
+    // `Note: No sub-agents are configured. Do not use the InvokeAgent
+    // tool.` and decline to dispatch even when the user explicitly
+    // asked it to ("use explore the repo to ...").
+    let available_agents = list_available_agents(env.project_root);
     if !available_agents.is_empty() {
         prompt.push_str("\n\n## Available Sub-Agents\n\n");
         prompt.push_str(
@@ -243,32 +252,38 @@ pub fn render_mcp_instructions_section(instructions: &[(String, String)]) -> Str
 
 /// Scan the agents/ directory and return available agent names with optional descriptions.
 ///
-/// Returns `(name, Option<description>)` pairs sorted by name.
-/// Descriptions come from the `description` field in the agent's JSON config.
-/// The default/main agent (`koda`, `default`) is excluded — it is not a sub-agent.
-fn list_available_agents(agents_dir: &Path) -> Vec<(String, Option<String>)> {
-    let Ok(entries) = std::fs::read_dir(agents_dir) else {
-        return Vec::new();
-    };
-    let mut agents: Vec<(String, Option<String>)> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            let name = file_name.strip_suffix(".json")?.to_string();
-            // Skip the default agent — it's the main agent, not a sub-agent.
-            if name == "koda" || name == "default" {
-                return None;
-            }
-            let description = std::fs::read_to_string(entry.path()).ok().and_then(|json| {
-                serde_json::from_str::<serde_json::Value>(&json)
-                    .ok()
-                    .and_then(|v| v["description"].as_str().map(str::to_string))
-            });
-            Some((name, description))
+/// Return `(name, Option<description>)` pairs for every sub-agent
+/// the model can dispatch via `InvokeAgent`, in display order.
+///
+/// Discovery delegates to [`crate::tools::agent::discover_all_agents`]
+/// so the prompt's view of "available sub-agents" matches what the
+/// `/agents` slash command and `ListAgents` tool show. That function
+/// implements the 3-tier resolution:
+///
+/// 1. **Built-in agents** (lowest priority) — `explore`, `plan`,
+///    `verify`, `task`. Always available, ship with koda.
+/// 2. **User agents** at `~/.config/koda/agents/` — override built-ins.
+/// 3. **Project agents** at `<project_root>/agents/` — override
+///    user agents.
+///
+/// The `default` / `koda` agent is excluded — it's the main agent,
+/// not a sub-agent.
+///
+/// Empty descriptions are normalized to `None` so the formatter
+/// renders `- name` instead of `- **name** — ` (which would look
+/// like a broken bullet to the model).
+fn list_available_agents(project_root: &Path) -> Vec<(String, Option<String>)> {
+    crate::tools::agent::discover_all_agents(project_root)
+        .into_iter()
+        .map(|a| {
+            let desc = if a.description.is_empty() {
+                None
+            } else {
+                Some(a.description)
+            };
+            (a.name, desc)
         })
-        .collect();
-    agents.sort_by(|a, b| a.0.cmp(&b.0));
-    agents
+        .collect()
 }
 
 #[cfg(test)]
@@ -287,12 +302,22 @@ mod tests {
         }
     }
 
+    /// Build an `EnvironmentInfo` whose `project_root` points at the
+    /// given tempdir. Tests that exercise sub-agent discovery need
+    /// this because `discover_all_agents` walks `<project>/agents/`.
+    fn test_env_with_root(root: &Path) -> EnvironmentInfo<'_> {
+        EnvironmentInfo {
+            project_root: root,
+            model: "test-model",
+            platform: "test-os",
+        }
+    }
+
     #[test]
     fn test_build_system_prompt_no_agents_no_memory() {
-        let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("You are helpful.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("You are helpful.", "", &env, &[], &registry);
         assert!(result.starts_with("You are helpful."));
         assert!(result.contains("Doing Tasks"));
         assert!(result.contains("Koda Quick Reference"));
@@ -301,13 +326,11 @@ mod tests {
 
     #[test]
     fn test_build_system_prompt_with_memory() {
-        let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
         let result = build_system_prompt(
             "You are helpful.",
             "This is a Rust project.",
-            dir.path(),
             &env,
             &[],
             &registry,
@@ -319,15 +342,19 @@ mod tests {
     #[test]
     fn test_build_system_prompt_with_agents() {
         let dir = TempDir::new().unwrap();
-        // Write an agent JSON with a description
+        // Write an agent JSON with a description into the project's
+        // `agents/` subdir — the canonical location
+        // `discover_all_agents` looks for project-level overrides.
+        let agents_dir = dir.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
         std::fs::write(
-            dir.path().join("scout.json"),
+            agents_dir.join("scout.json"),
             r#"{"name":"scout","description":"Scouting agent.","system_prompt":"You scout."}"#,
         )
         .unwrap();
-        let env = test_env();
+        let env = test_env_with_root(dir.path());
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", &env, &[], &registry);
         assert!(result.contains("scout"));
         assert!(result.contains("Scouting agent."));
         assert!(result.contains("Sub-Agents"));
@@ -336,19 +363,21 @@ mod tests {
     #[test]
     fn test_build_system_prompt_skips_koda_agent() {
         let dir = TempDir::new().unwrap();
+        let agents_dir = dir.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
         std::fs::write(
-            dir.path().join("koda.json"),
+            agents_dir.join("koda.json"),
             r#"{"name":"koda","system_prompt":"main"}"#,
         )
         .unwrap();
         std::fs::write(
-            dir.path().join("scout.json"),
+            agents_dir.join("scout.json"),
             r#"{"name":"scout","system_prompt":"scout"}"#,
         )
         .unwrap();
-        let env = test_env();
+        let env = test_env_with_root(dir.path());
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", &env, &[], &registry);
         // koda (the main agent) must not appear in the sub-agents listing.
         // Check the full result: the agent formatter produces "- **name**" (with desc)
         // or "- name" (without). Neither should match "koda".
@@ -365,10 +394,9 @@ mod tests {
 
     #[test]
     fn test_environment_section_present() {
-        let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", &env, &[], &registry);
         assert!(result.contains("## Environment"));
         assert!(result.contains("/test/project"));
         assert!(result.contains("test-model"));
@@ -377,10 +405,9 @@ mod tests {
 
     #[test]
     fn test_instructions_included() {
-        let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", &env, &[], &registry);
         // Spot-check key sections from instructions.md
         assert!(result.contains("## Doing Tasks"));
         assert!(result.contains("## Executing Actions"));
@@ -390,11 +417,10 @@ mod tests {
 
     #[test]
     fn test_commands_generated_from_registry() {
-        let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
         let commands = &[("/help", "Show help"), ("/exit", "Quit")];
-        let result = build_system_prompt("Base.", "", dir.path(), &env, commands, &registry);
+        let result = build_system_prompt("Base.", "", &env, commands, &registry);
         assert!(result.contains("`/help`"));
         assert!(result.contains("Show help"));
         assert!(result.contains("`/exit`"));
@@ -403,26 +429,23 @@ mod tests {
 
     #[test]
     fn test_no_commands_section_for_sub_agents() {
-        let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", &env, &[], &registry);
         assert!(!result.contains("Commands (user types these in the REPL)"));
     }
 
     #[test]
     fn test_skills_section_empty_registry() {
-        let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", &env, &[], &registry);
         assert!(result.contains("## Skills"));
         assert!(result.contains("No skills are currently available"));
     }
 
     #[test]
     fn test_skills_section_lists_skills() {
-        let dir = TempDir::new().unwrap();
         let env = test_env();
         let mut registry = SkillRegistry::default();
         registry.add_builtin(
@@ -431,7 +454,7 @@ mod tests {
             Some("Use when asked to review code or a PR."),
             "# Review\nDo it.",
         );
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", &env, &[], &registry);
         assert!(result.contains("code-review"));
         assert!(result.contains("Senior code review"));
         assert!(result.contains("Use when asked to review code or a PR."));
@@ -441,11 +464,10 @@ mod tests {
 
     #[test]
     fn test_skills_section_no_when_to_use() {
-        let dir = TempDir::new().unwrap();
         let env = test_env();
         let mut registry = SkillRegistry::default();
         registry.add_builtin("plain", "Plain skill", None, "content");
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", &env, &[], &registry);
         assert!(result.contains("**plain**"));
         assert!(result.contains("Plain skill"));
     }
@@ -454,7 +476,6 @@ mod tests {
     fn test_skills_section_shows_metadata() {
         use crate::skills::{Skill, SkillMeta, SkillSource};
 
-        let dir = TempDir::new().unwrap();
         let env = test_env();
         let mut registry = SkillRegistry::default();
         // Inject a skill with all metadata fields populated
@@ -474,7 +495,7 @@ mod tests {
                 content: "scoped content".to_string(),
             },
         );
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", &env, &[], &registry);
         assert!(result.contains("**scoped**"), "skill name");
         assert!(result.contains("Scoped skill"), "description");
         assert!(result.contains("Use for scoped work"), "when_to_use");
@@ -483,22 +504,69 @@ mod tests {
         assert!(result.contains("[model-only]"), "user_invocable=false");
     }
 
+    /// Direct regression for the sub-agent discovery bug: with no
+    /// user-installed and no project-local agents, the built-in
+    /// agents (`explore`, `plan`, `verify`, `task`) MUST still appear
+    /// in the prompt's `## Available Sub-Agents` section.
+    ///
+    /// Pre-fix, the prompt builder called a private `list_available_agents`
+    /// that did `read_dir(agents_dir)` and stopped there — silently
+    /// hiding every built-in agent. The model would then see
+    /// `Note: No sub-agents are configured. Do not use the InvokeAgent
+    /// tool.` and decline to dispatch even when the user explicitly
+    /// asked it to ("use explore the repo to ...").
+    ///
+    /// The fix routes discovery through `discover_all_agents`, the
+    /// same 3-tier resolver `/agents` and `ListAgents` already used.
+    /// We assert on the built-in `explore` specifically because it's
+    /// the agent the user asked for in the original repro session.
+    #[test]
+    fn built_in_agents_appear_in_prompt_with_no_installed_agents() {
+        let dir = TempDir::new().unwrap();
+        // Deliberately do NOT create `<dir>/agents/` — simulates a
+        // fresh install with no user or project agents configured.
+        let env = test_env_with_root(dir.path());
+        let registry = SkillRegistry::default();
+        let result = build_system_prompt("Base.", "", &env, &[], &registry);
+
+        assert!(
+            result.contains("## Available Sub-Agents"),
+            "Sub-Agents section must be present even with no installed agents (built-ins should fill it): {result}"
+        );
+        assert!(
+            result.contains("explore"),
+            "built-in `explore` agent must be listed: {result}"
+        );
+        // The pre-fix bug message must NOT appear — it would lie to
+        // the model about what's available.
+        assert!(
+            !result.contains("No sub-agents are configured"),
+            "prompt must not claim no sub-agents are configured when built-ins exist: {result}"
+        );
+        assert!(
+            !result.contains("Do not use the InvokeAgent tool"),
+            "prompt must not forbid InvokeAgent when built-ins are available: {result}"
+        );
+    }
+
     #[test]
     fn test_agents_sorted_alphabetically() {
         let dir = TempDir::new().unwrap();
+        let agents_dir = dir.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
         std::fs::write(
-            dir.path().join("zebra.json"),
+            agents_dir.join("zebra.json"),
             r#"{"name":"zebra","system_prompt":"z"}"#,
         )
         .unwrap();
         std::fs::write(
-            dir.path().join("alpha.json"),
+            agents_dir.join("alpha.json"),
             r#"{"name":"alpha","system_prompt":"a"}"#,
         )
         .unwrap();
-        let env = test_env();
+        let env = test_env_with_root(dir.path());
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", &env, &[], &registry);
         let alpha_pos = result.find("alpha").unwrap();
         let zebra_pos = result.find("zebra").unwrap();
         assert!(alpha_pos < zebra_pos, "agents should be sorted A→Z");
@@ -589,10 +657,9 @@ mod tests {
         // After #922 redesign, MCP is composed per-turn in session.rs,
         // not baked into the static system prompt. Guard against accidental
         // re-introduction that would re-create the bootstrap-order bug.
-        let dir = TempDir::new().unwrap();
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", "", dir.path(), &env, &[], &registry);
+        let result = build_system_prompt("Base.", "", &env, &[], &registry);
         assert!(
             !result.contains("# MCP Server Instructions"),
             "static system prompt must not contain MCP block (composed per-turn instead)"
@@ -643,7 +710,6 @@ mod tests {
         let prompt = build_system_prompt(
             "You are koda, a helpful coding agent.",
             "",
-            &agents_dir,
             &env,
             commands,
             &registry,

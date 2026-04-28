@@ -737,7 +737,6 @@ pub(crate) fn execute_sub_agent<'a>(
         let system_prompt = build_system_prompt(
             &sub_config.system_prompt,
             &semantic_memory,
-            &sub_config.agents_dir,
             &env,
             &[], // sub-agents have no REPL commands
             &tools.skill_registry,
