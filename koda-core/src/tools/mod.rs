@@ -146,6 +146,10 @@ pub mod recall;
 pub mod shell;
 /// Skill discovery and activation tools (`ListSkills`, `ActivateSkill`).
 pub mod skill_tools;
+/// Renderer-agnostic tool-call display payload (the single source of
+/// truth for "what does a tool call show?"). See [`summary`] for the
+/// drift problem this exists to solve.
+pub mod summary;
 /// Session-scoped task list tool (`TodoWrite`).
 pub mod todo;
 /// Pre-flight validation for tool calls (runs before approval).

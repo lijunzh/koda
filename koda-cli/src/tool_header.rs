@@ -30,6 +30,7 @@
 
 use crate::highlight;
 use crate::theme::{self, BOLD, DIM};
+use koda_core::tools::summary::{ToolCallKind, ToolCallSummary};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
@@ -83,198 +84,142 @@ pub fn build_header_line_from_str(indent: &str, name: &str, args_json: &str) -> 
 ///
 /// Returns an empty vec if the args don't carry a useful detail
 /// (e.g. unknown tool with no string args).
+///
+/// Implementation: parses args once into a [`ToolCallSummary`] (which
+/// owns *all* arg-key conventions, see `koda_core::tools::summary`)
+/// and renders the styled spans by pattern-matching on the resulting
+/// [`ToolCallKind`]. Pre-#1100 each tool had its own inline
+/// `first_string(args, &[...])` lookup duplicated between here and
+/// [`detail_text`]; the duplication caused two drift bugs in two days
+/// (#1094 then #1099) before consolidation.
 pub fn detail_spans(name: &str, args: &Value) -> Vec<Span<'static>> {
-    match name {
-        "Bash" => bash_detail(args),
-        "Read" | "Write" | "Edit" | "Delete" => path_detail(args),
-        "Grep" => grep_detail(args),
-        "Glob" => glob_detail(args),
-        "List" => list_detail(args),
-        "WebFetch" => webfetch_detail(args),
-        _ => generic_detail(args),
-    }
+    summary_spans(&ToolCallSummary::from_call(name, args))
 }
 
 /// Plain-text rendering of a tool call detail (no styling).
 ///
 /// Mirrors [`detail_spans`] but returns a `String` for non-TUI
-/// consumers (clipboard / file export via `transcript.rs`). Per-tool
-/// dispatch is kept identical so the same `(name, args)` pair always
-/// produces the same human-readable summary regardless of output medium.
+/// consumers (clipboard / file export via `transcript.rs`). Both
+/// formatters consume the same [`ToolCallSummary`], so the rendered
+/// string is guaranteed to describe the same `(tool, args)` pair as
+/// the live header.
 ///
 /// `bash_chars` controls Bash command truncation (typically 80 in
 /// summary mode, 500 in verbose). All other tools use
 /// [`MAX_DETAIL_CHARS`] for consistency with TUI rendering.
 pub fn detail_text(name: &str, args: &Value, bash_chars: usize) -> String {
-    match name {
-        "Bash" => bash_text(args, bash_chars),
-        "Read" | "Write" | "Edit" | "Delete" => path_text(args),
-        "Grep" => grep_text(args),
-        "Glob" => glob_text(args),
-        "List" => list_text(args),
-        "WebFetch" => webfetch_text(args),
-        _ => generic_text(args),
-    }
+    summary_text(&ToolCallSummary::from_call(name, args), bash_chars)
 }
 
-// ── Per-tool detail builders ──────────────────────────────────────────
+// ── Renderers ─────────────────────────────────────────────────────────
+//
+// Both renderers pattern-match on the SAME [`ToolCallKind`] so they
+// can't drift on which arg key means "the path" or "the query." If a
+// tool's display shape changes, both surfaces follow from one edit
+// here. If a new tool needs a specialized shape, add a variant in
+// `koda_core::tools::summary` and pattern-match it in BOTH renderers
+// below — the compiler will fail the missing arm and tell you about it.
 
-fn bash_detail(args: &Value) -> Vec<Span<'static>> {
-    let cmd = first_string(args, &["command", "cmd"]).unwrap_or_default();
-    if cmd.is_empty() {
-        return Vec::new();
-    }
-    let truncated = truncate_for_header(&cmd);
-    highlight::highlight_inline(&truncated, "bash")
-}
-
-fn path_detail(args: &Value) -> Vec<Span<'static>> {
-    let path = first_string(args, &["file_path", "path"]).unwrap_or_default();
-    if path.is_empty() {
-        return Vec::new();
-    }
-    vec![Span::styled(truncate_for_header(&path), theme::PATH)]
-}
-
-fn grep_detail(args: &Value) -> Vec<Span<'static>> {
-    let pattern = first_string(args, &["search_string", "pattern"]).unwrap_or_default();
-    if pattern.is_empty() {
-        return Vec::new();
-    }
-    // Key order matches `tools::grep::run`'s arg lookup so the rendered
-    // detail always shows the path the tool actually searched. Pre-fix
-    // we checked obsolete `directory`/`path` keys that never matched
-    // the schema (the param has been `file_path` since day one), so
-    // every Grep header silently rendered "in ." regardless of the
-    // real target. See koda#1099 for the cross-tool repro.
-    let dir =
-        first_string(args, &["file_path", "path", "directory"]).unwrap_or_else(|| ".".to_string());
-    vec![
-        Span::styled(format!("\"{pattern}\""), theme::MATCH_HIT),
-        Span::styled(" in ".to_string(), DIM),
-        Span::styled(truncate_for_header(&dir), theme::PATH),
-    ]
-}
-
-fn glob_detail(args: &Value) -> Vec<Span<'static>> {
-    let pattern = first_string(args, &["pattern"]).unwrap_or_default();
-    if pattern.is_empty() {
-        return Vec::new();
-    }
-    let mut spans = vec![Span::styled(truncate_for_header(&pattern), theme::PATH)];
-    // Glob takes an optional `file_path` base directory. When present,
-    // surface it so the user can tell `Glob '*.toml'` from project
-    // root vs from `koda-cli/`. Hidden when omitted (project root
-    // default) to keep headers tight for the common case.
-    if let Some(base) = first_string(args, &["file_path", "path", "directory"]) {
-        spans.push(Span::styled(" in ".to_string(), DIM));
-        spans.push(Span::styled(truncate_for_header(&base), theme::PATH));
-    }
-    spans
-}
-
-fn list_detail(args: &Value) -> Vec<Span<'static>> {
-    // Same key ordering as `tools::file_tools::list_directory` — if
-    // the dispatch reads `file_path` first, the renderer must too,
-    // or the header lies about which directory was actually listed.
-    let dir =
-        first_string(args, &["file_path", "path", "directory"]).unwrap_or_else(|| ".".to_string());
-    vec![Span::styled(truncate_for_header(&dir), theme::PATH)]
-}
-
-fn webfetch_detail(args: &Value) -> Vec<Span<'static>> {
-    let url = first_string(args, &["url"]).unwrap_or_default();
-    if url.is_empty() {
-        return Vec::new();
-    }
-    vec![Span::styled(truncate_for_header(&url), theme::PATH)]
-}
-
-fn generic_detail(args: &Value) -> Vec<Span<'static>> {
-    let obj = match args.as_object() {
-        Some(o) => o,
-        None => return Vec::new(),
-    };
-    for (_, v) in obj.iter().take(1) {
-        if let Some(s) = v.as_str() {
-            return vec![Span::styled(truncate_for_header(s), DIM)];
-        }
-    }
-    Vec::new()
-}
-
-// ── Per-tool plain-text builders (no styling, for transcripts) ──────────────
-
-fn bash_text(args: &Value, bash_chars: usize) -> String {
-    let cmd = first_string(args, &["command", "cmd"]).unwrap_or_default();
-    if cmd.chars().count() > bash_chars {
-        truncate_chars(&cmd, bash_chars)
-    } else {
-        cmd
-    }
-}
-
-fn path_text(args: &Value) -> String {
-    first_string(args, &["file_path", "path"]).unwrap_or_default()
-}
-
-fn grep_text(args: &Value) -> String {
-    let pattern = first_string(args, &["search_string", "pattern"]).unwrap_or_default();
-    if pattern.is_empty() {
-        return String::new();
-    }
-    // Mirror `grep_detail`'s key list so transcript exports show the
-    // same directory the live header surfaced.
-    let dir =
-        first_string(args, &["file_path", "path", "directory"]).unwrap_or_else(|| ".".to_string());
-    // Quotes match the TUI rendering (see `grep_detail`) so transcript and
-    // live view show the same string for the same args.
-    format!("\"{pattern}\" in {dir}")
-}
-
-fn glob_text(args: &Value) -> String {
-    let pattern = first_string(args, &["pattern"]).unwrap_or_default();
-    if pattern.is_empty() {
-        return String::new();
-    }
-    match first_string(args, &["file_path", "path", "directory"]) {
-        Some(base) => format!("{pattern} in {base}"),
-        None => pattern,
-    }
-}
-
-fn list_text(args: &Value) -> String {
-    first_string(args, &["file_path", "path", "directory"]).unwrap_or_else(|| ".".to_string())
-}
-
-fn webfetch_text(args: &Value) -> String {
-    first_string(args, &["url"]).unwrap_or_default()
-}
-
-fn generic_text(args: &Value) -> String {
-    let obj = match args.as_object() {
-        Some(o) => o,
-        None => return String::new(),
-    };
-    for (_, v) in obj.iter().take(1) {
-        if let Some(s) = v.as_str() {
-            return if s.chars().count() > MAX_DETAIL_CHARS {
-                truncate_chars(s, MAX_DETAIL_CHARS)
+/// Render a [`ToolCallSummary`] as styled TUI spans.
+fn summary_spans(s: &ToolCallSummary) -> Vec<Span<'static>> {
+    match &s.kind {
+        ToolCallKind::Bash { command } => {
+            if command.is_empty() {
+                Vec::new()
             } else {
-                s.to_string()
-            };
+                highlight::highlight_inline(&truncate_for_header(command), "bash")
+            }
         }
+        ToolCallKind::Path { path } => {
+            if path.is_empty() {
+                Vec::new()
+            } else {
+                vec![Span::styled(truncate_for_header(path), theme::PATH)]
+            }
+        }
+        ToolCallKind::Grep { pattern, dir } => {
+            if pattern.is_empty() {
+                Vec::new()
+            } else {
+                vec![
+                    Span::styled(format!("\"{pattern}\""), theme::MATCH_HIT),
+                    Span::styled(" in ".to_string(), DIM),
+                    Span::styled(truncate_for_header(dir), theme::PATH),
+                ]
+            }
+        }
+        ToolCallKind::Glob { pattern, base } => {
+            if pattern.is_empty() {
+                Vec::new()
+            } else {
+                let mut spans = vec![Span::styled(truncate_for_header(pattern), theme::PATH)];
+                if let Some(base) = base {
+                    spans.push(Span::styled(" in ".to_string(), DIM));
+                    spans.push(Span::styled(truncate_for_header(base), theme::PATH));
+                }
+                spans
+            }
+        }
+        ToolCallKind::List { dir } => {
+            // `dir` is never empty — `ToolCallSummary::from_call` defaults
+            // to "." when args omit a path. So no emptiness branch needed.
+            vec![Span::styled(truncate_for_header(dir), theme::PATH)]
+        }
+        ToolCallKind::WebFetch { url } => {
+            if url.is_empty() {
+                Vec::new()
+            } else {
+                vec![Span::styled(truncate_for_header(url), theme::PATH)]
+            }
+        }
+        ToolCallKind::Generic { value } => match value {
+            Some(v) => vec![Span::styled(truncate_for_header(v), DIM)],
+            None => Vec::new(),
+        },
     }
-    String::new()
+}
+
+/// Render a [`ToolCallSummary`] as plain text (transcripts, clipboards).
+fn summary_text(s: &ToolCallSummary, bash_chars: usize) -> String {
+    match &s.kind {
+        ToolCallKind::Bash { command } => {
+            if command.chars().count() > bash_chars {
+                truncate_chars(command, bash_chars)
+            } else {
+                command.clone()
+            }
+        }
+        ToolCallKind::Path { path } => path.clone(),
+        ToolCallKind::Grep { pattern, dir } => {
+            if pattern.is_empty() {
+                String::new()
+            } else {
+                // Quotes match the TUI rendering above so transcript and
+                // live view show the same string for the same args.
+                format!("\"{pattern}\" in {dir}")
+            }
+        }
+        ToolCallKind::Glob { pattern, base } => {
+            if pattern.is_empty() {
+                String::new()
+            } else {
+                match base {
+                    Some(b) => format!("{pattern} in {b}"),
+                    None => pattern.clone(),
+                }
+            }
+        }
+        ToolCallKind::List { dir } => dir.clone(),
+        ToolCallKind::WebFetch { url } => url.clone(),
+        ToolCallKind::Generic { value } => match value {
+            Some(v) if v.chars().count() > MAX_DETAIL_CHARS => truncate_chars(v, MAX_DETAIL_CHARS),
+            Some(v) => v.clone(),
+            None => String::new(),
+        },
+    }
 }
 
 // ── Internals ─────────────────────────────────────────────────────────
-
-/// Return the first present string value among the candidate keys.
-fn first_string(args: &Value, keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .find_map(|k| args.get(k).and_then(|v| v.as_str()).map(|s| s.to_string()))
-}
 
 /// Truncate a header detail to `MAX_DETAIL_BYTES` with an ellipsis.
 ///
@@ -657,6 +602,50 @@ mod tests {
         assert_eq!(out, "");
     }
 
+    /// Meta-test pinning the #1100 consolidation: every variant of
+    /// `ToolCallKind` must produce non-empty output from BOTH
+    /// renderers given a representative non-empty input. If someone
+    /// adds a new variant and forgets to handle it in `summary_spans`
+    /// or `summary_text`, the compiler's exhaustive-match check
+    /// fires *first* (good); but if they handle it with `=> Vec::new()`
+    /// or `=> String::new()` to silence the compiler, this test fires
+    /// next and tells them they shipped an invisible tool. Keeps both
+    /// renderers honest.
+    #[test]
+    fn every_tool_call_kind_renders_in_both_surfaces() {
+        let cases: Vec<(&str, serde_json::Value, &str)> = vec![
+            ("Bash", json!({"command": "ls"}), "Bash"),
+            ("Read", json!({"file_path": "x"}), "Path"),
+            (
+                "Grep",
+                json!({"search_string": "x", "file_path": "y"}),
+                "Grep",
+            ),
+            ("Glob", json!({"pattern": "*.rs"}), "Glob"),
+            ("List", json!({"file_path": "x"}), "List"),
+            (
+                "WebFetch",
+                json!({"url": "https://example.com"}),
+                "WebFetch",
+            ),
+            ("UnknownTool", json!({"k": "v"}), "Generic"),
+        ];
+        for (name, args, kind_label) in cases {
+            let spans = detail_spans(name, &args);
+            let text = detail_text(name, &args, 500);
+            assert!(
+                !spans.is_empty(),
+                "summary_spans returned empty for {kind_label} variant ({name}); \
+                 either the variant lost its renderer arm or the test input is wrong"
+            );
+            assert!(
+                !text.is_empty(),
+                "summary_text returned empty for {kind_label} variant ({name}); \
+                 either the variant lost its renderer arm or the test input is wrong"
+            );
+        }
+    }
+
     // ── cross-layer: dispatch body ↔ TUI header agreement ────────────────
     //
     // koda has multiple independent formatters for tool calls:
@@ -684,8 +673,11 @@ mod tests {
     // `koda_sandbox::fs::FileSystem` impl that koda-cli doesn't depend
     // on); their renderer-vs-dispatch agreement is pinned by
     // `path_bearing_tools_render_actual_dispatch_key` above. The full
-    // structural fix (a single `ToolCallSummary` formatter shared by
-    // all four layers) is tracked separately.
+    // structural fix landed in #1100: both renderers now consume a
+    // single `koda_core::tools::summary::ToolCallSummary` parsed once
+    // from the args, so they cannot drift on which key means "the
+    // path." `every_tool_call_kind_renders_in_both_surfaces` above
+    // pins the consolidation.
 
     #[tokio::test]
     async fn list_call_path_appears_in_both_body_and_header() {
