@@ -656,4 +656,114 @@ mod tests {
         let out = detail_text("MysteryTool", &json!({"count": 42}), 80);
         assert_eq!(out, "");
     }
+
+    // ── cross-layer: dispatch body ↔ TUI header agreement ────────────────
+    //
+    // koda has multiple independent formatters for tool calls:
+    //
+    //   1. The dispatch's response body (what the LLM sees)
+    //   2. The TUI header (what the human sees live)
+    //   3. The transcript export (what the human saves to clipboard)
+    //   4. The history replay (what the human sees on session resume)
+    //
+    // Each was written independently and **none share code**. When the
+    // `List` tool's directory parameter standardized on `file_path`,
+    // only the dispatch was updated. The body formatter got fixed in
+    // PR #1096; the TUI / transcript layers got fixed in PR #1099 —
+    // same root symptom ("can't tell which directory was listed")
+    // reported twice from two different angles, because no test had
+    // pinned the two layers together.
+    //
+    // This test does. For a real `List` call against a tempdir, the
+    // body that ships to the LLM and the header that ships to the
+    // user must both surface the same path. If anyone changes the
+    // dispatch's arg key without touching `tool_header.rs`, this
+    // test fails before the user ever sees a misleading `● List .`.
+    //
+    // Glob and Grep aren't end-to-end-tested here (they need a
+    // `koda_sandbox::fs::FileSystem` impl that koda-cli doesn't depend
+    // on); their renderer-vs-dispatch agreement is pinned by
+    // `path_bearing_tools_render_actual_dispatch_key` above. The full
+    // structural fix (a single `ToolCallSummary` formatter shared by
+    // all four layers) is tracked separately.
+
+    #[tokio::test]
+    async fn list_call_path_appears_in_both_body_and_header() {
+        use std::fs;
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Distinctive name so substring assertions can't accidentally
+        // pass on common tokens like "src" or "tests".
+        let sub = "zeppelin";
+        fs::create_dir(tmp.path().join(sub)).unwrap();
+        fs::write(tmp.path().join(sub).join("hello.txt"), "hi").unwrap();
+
+        let args = json!({ "file_path": sub });
+
+        // Body: what the LLM sees in the tool response.
+        let body = koda_core::tools::file_tools::list_files(tmp.path(), &args, 100)
+            .await
+            .expect("list_files should succeed against a real tempdir");
+
+        // Header: what the user sees on screen.
+        let header: String = detail_spans("List", &args)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+
+        assert!(
+            body.contains(sub),
+            "LLM-facing List body must mention the directory it listed; got: {body:?}"
+        );
+        assert!(
+            header.contains(sub),
+            "User-facing List header must mention the directory it listed; got: {header:?}. \
+             This is the regression class that hit twice (#1094 then #1099) because no \
+             cross-layer test pinned the body and the header together."
+        );
+    }
+
+    #[tokio::test]
+    async fn list_distinct_paths_render_distinct_headers() {
+        // Direct repro of the user-reported symptom: the model called
+        // List on multiple subdirectories and the TUI rendered every
+        // call as `● List .`, making distinct exploration look like
+        // a tight loop on the project root.
+        use std::fs;
+        let tmp = tempfile::TempDir::new().unwrap();
+        for name in ["alpha", "bravo", "charlie"] {
+            fs::create_dir(tmp.path().join(name)).unwrap();
+        }
+
+        let mut headers = Vec::new();
+        let mut bodies = Vec::new();
+        for sub in ["alpha", "bravo", "charlie"] {
+            let args = json!({ "file_path": sub });
+            bodies.push(
+                koda_core::tools::file_tools::list_files(tmp.path(), &args, 100)
+                    .await
+                    .unwrap(),
+            );
+            let header: String = detail_spans("List", &args)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            headers.push(header);
+        }
+
+        // Each header must equal its subdirectory — no `.` fallback.
+        assert_eq!(headers, vec!["alpha", "bravo", "charlie"]);
+        // And no two layers can collide on different inputs.
+        assert!(
+            headers[0] != headers[1] && headers[1] != headers[2] && headers[0] != headers[2],
+            "Distinct List calls must produce distinct headers; got {headers:?}"
+        );
+        // Bodies should each name their own directory too (defense
+        // against a future change that drops the body header).
+        for (sub, body) in ["alpha", "bravo", "charlie"].iter().zip(&bodies) {
+            assert!(
+                body.contains(sub),
+                "List body for {sub:?} must mention the directory; got {body:?}"
+            );
+        }
+    }
 }
