@@ -138,10 +138,17 @@ impl EngineSink for BufferingSink {
 }
 
 /// A sink that collects events into a Vec for testing.
+///
+/// Optionally also broadcasts each event to subscribers (#1109 F3) so
+/// tests can wait deterministically for a specific event (e.g.
+/// `ToolCallStart`) instead of guessing wall-clock delays.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default)]
 pub struct TestSink {
     events: std::sync::Mutex<Vec<EngineEvent>>,
+    /// `Some` after [`subscribe`] is called; broadcasts every emit().
+    /// Lazy so tests that don't need it pay no allocation.
+    broadcaster: std::sync::Mutex<Option<tokio::sync::broadcast::Sender<EngineEvent>>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -165,11 +172,78 @@ impl TestSink {
     pub fn is_empty(&self) -> bool {
         self.events.lock().unwrap().is_empty()
     }
+
+    /// Subscribe to a live broadcast of events as they're emitted.
+    ///
+    /// **#1109 F3**: replaces `loop { sleep; check sink.events() }`
+    /// patterns with `recv().await`. The broadcaster is created lazily
+    /// on first call — emits before subscription are still captured
+    /// in [`events`] but won't appear in the receiver stream.
+    ///
+    /// Channel capacity is 256, more than enough for any test
+    /// scenario; lagging receivers will see
+    /// [`tokio::sync::broadcast::error::RecvError::Lagged`].
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<EngineEvent> {
+        let mut guard = self.broadcaster.lock().unwrap();
+        let sender = guard.get_or_insert_with(|| {
+            let (tx, _) = tokio::sync::broadcast::channel(256);
+            tx
+        });
+        sender.subscribe()
+    }
+
+    /// Wait for the first event matching `pred` or until `timeout`.
+    /// Returns `Ok(event)` on match, `Err` on timeout or channel close.
+    ///
+    /// Convenience wrapper around [`subscribe`]: handles the
+    /// already-emitted-before-subscribe case by scanning [`events`]
+    /// once, then waits on the live channel for fresh events.
+    pub async fn wait_for<F>(
+        &self,
+        timeout: std::time::Duration,
+        pred: F,
+    ) -> Result<EngineEvent, &'static str>
+    where
+        F: Fn(&EngineEvent) -> bool,
+    {
+        // Subscribe BEFORE the historical scan so we don't miss events
+        // emitted between the scan and subscribe (the classic
+        // "check-then-wait" race).
+        let mut rx = self.subscribe();
+        // Scan history first — maybe the event has already fired.
+        if let Some(ev) = self.events().into_iter().find(|e| pred(e)) {
+            return Ok(ev);
+        }
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err("timeout waiting for predicate");
+            }
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Ok(ev)) if pred(&ev) => return Ok(ev),
+                Ok(Ok(_)) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                    return Err("sink closed");
+                }
+                Err(_) => return Err("timeout waiting for predicate"),
+            }
+        }
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
 impl EngineSink for TestSink {
     fn emit(&self, event: EngineEvent) {
+        // Best-effort broadcast first (cheap if no subscribers).
+        // Acquiring the lock briefly is fine because emit is always
+        // called from a tokio task, never from a sync hot loop.
+        if let Some(tx) = self.broadcaster.lock().unwrap().as_ref() {
+            // Ignore the SendError on zero subscribers; storage path
+            // below is still authoritative.
+            let _ = tx.send(event.clone());
+        }
         self.events.lock().unwrap().push(event);
     }
 }

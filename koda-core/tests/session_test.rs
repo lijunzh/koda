@@ -141,8 +141,11 @@ async fn session_cancellation_produces_turn_end_cancelled() {
     let env = Env::new().await;
     env.insert_user_message("hello").await;
 
-    // A provider that hangs forever so that cancellation can be observed.
-    struct HangingProvider;
+    // A provider that signals when entered, then hangs forever so that
+    // cancellation can be observed deterministically (#1109 F3).
+    struct HangingProvider {
+        entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
 
     #[async_trait]
     impl LlmProvider for HangingProvider {
@@ -160,6 +163,9 @@ async fn session_cancellation_produces_turn_end_cancelled() {
             _: &[ToolDefinition],
             _: &koda_core::config::ModelSettings,
         ) -> Result<koda_core::providers::stream_collector::SseCollector> {
+            if let Some(tx) = self.entered.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             unreachable!()
         }
@@ -171,12 +177,17 @@ async fn session_cancellation_produces_turn_end_cancelled() {
         }
     }
 
-    let (mut session, cancel) = make_session(&env, Box::new(HangingProvider)).await;
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let provider = HangingProvider {
+        entered: std::sync::Mutex::new(Some(entered_tx)),
+    };
+    let (mut session, cancel) = make_session(&env, Box::new(provider)).await;
 
-    // Cancel after 100 ms so the test completes quickly.
+    // **#1109 F3**: was `sleep(100ms).await` — replaced with oneshot wait
+    // so cancel fires the moment inference reaches the provider.
     let cancel_clone = cancel.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let _ = entered_rx.await;
         cancel_clone.cancel();
     });
 

@@ -341,14 +341,14 @@ async fn cancel_during_tool_execution() {
         MockResponse::Text("should not reach this".into()),
     ]);
 
-    let cancel = CancellationToken::new();
-    let cancel_clone = cancel.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        cancel_clone.cancel();
-    });
-
-    let (result, _events) = env.run_inference_cancellable(&provider, cancel).await;
+    // **#1109 F3**: was `tokio::spawn(sleep(200ms); cancel())`. Replaced
+    // with event-driven cancel: fire as soon as the engine emits
+    // ToolCallStart for our Bash invocation. Deterministic and faster.
+    let (result, _events) = env
+        .run_inference_cancel_on_event(&provider, |ev| {
+            matches!(ev, koda_core::engine::EngineEvent::ToolCallStart { name, .. } if name == "Bash")
+        })
+        .await;
 
     assert!(result.is_ok(), "cancel should be graceful");
     // Should finish quickly (not wait 10 seconds).

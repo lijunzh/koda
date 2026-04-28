@@ -225,7 +225,9 @@ async fn test_cancel_during_streaming() {
     let env = Env::new().await;
     env.insert_user_message("hello").await;
 
-    struct HangingProvider;
+    struct HangingProvider {
+        entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
 
     #[async_trait]
     impl LlmProvider for HangingProvider {
@@ -243,6 +245,11 @@ async fn test_cancel_during_streaming() {
             _: &[ToolDefinition],
             _: &ModelSettings,
         ) -> Result<koda_core::providers::stream_collector::SseCollector> {
+            // **#1109 F3**: signal entry so the test cancels deterministically
+            // instead of guessing a wall-clock delay.
+            if let Some(tx) = self.entered.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             unreachable!()
         }
@@ -254,6 +261,11 @@ async fn test_cancel_during_streaming() {
         }
     }
 
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let provider = HangingProvider {
+        entered: std::sync::Mutex::new(Some(entered_tx)),
+    };
+
     let sink = koda_core::engine::sink::TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     let tool_defs = env.tool_defs();
@@ -261,9 +273,10 @@ async fn test_cancel_during_streaming() {
     let mut file_tracker =
         koda_core::file_tracker::FileTracker::new(&env.session_id, env.db.clone()).await;
 
+    // **#1109 F3**: was `sleep(100ms).await` — replaced with oneshot wait.
     let cancel_clone = cancel.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let _ = entered_rx.await;
         cancel_clone.cancel();
     });
 
@@ -274,7 +287,7 @@ async fn test_cancel_during_streaming() {
         db: &env.db,
         session_id: &env.session_id,
         system_prompt: "You are a test assistant.",
-        provider: &HangingProvider,
+        provider: &provider,
         tools: &env.tools,
         tool_defs: &tool_defs,
         pending_images: None,

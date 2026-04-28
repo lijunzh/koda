@@ -197,13 +197,62 @@ impl Env {
         self.run_inference_full(provider, cancel).await
     }
 
+    /// Run inference and cancel as soon as an event matching `pred` is
+    /// emitted by the engine.
+    ///
+    /// **#1109 F3**: replaces `tokio::spawn(async { sleep(N).await; cancel(); })`
+    /// patterns. Cancellation fires the moment the synchronization
+    /// point of interest (e.g. `ToolCallStart`) is observed, making
+    /// the test deterministic regardless of CI runner speed.
+    pub async fn run_inference_cancel_on_event<F>(
+        &self,
+        provider: &dyn LlmProvider,
+        pred: F,
+    ) -> (anyhow::Result<()>, Vec<EngineEvent>)
+    where
+        F: Fn(&EngineEvent) -> bool + Send + Sync + 'static,
+    {
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        // Build the sink up-front so we can subscribe before inference
+        // starts — otherwise the predicate could miss the event we're
+        // waiting for.
+        let sink = Arc::new(TestSink::new());
+        let mut rx = sink.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) if pred(&ev) => {
+                        cancel_clone.cancel();
+                        break;
+                    }
+                    Ok(_) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        self.run_inference_with_sink(provider, cancel, sink).await
+    }
+
     /// Full inference run with all knobs exposed.
     async fn run_inference_full(
         &self,
         provider: &dyn LlmProvider,
         cancel: CancellationToken,
     ) -> (anyhow::Result<()>, Vec<EngineEvent>) {
-        let sink = TestSink::new();
+        self.run_inference_with_sink(provider, cancel, Arc::new(TestSink::new())).await
+    }
+
+    /// Same as [`run_inference_full`] but lets the caller supply the
+    /// sink — used by [`run_inference_cancel_on_event`] which needs to
+    /// subscribe to the live event stream before inference begins.
+    async fn run_inference_with_sink(
+        &self,
+        provider: &dyn LlmProvider,
+        cancel: CancellationToken,
+        sink: Arc<TestSink>,
+    ) -> (anyhow::Result<()>, Vec<EngineEvent>) {
         let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
         let tool_defs = self.tool_defs();
         let mut file_tracker =
@@ -226,7 +275,7 @@ impl Env {
             tool_defs: &tool_defs,
             pending_images: None,
             mode: self.trust,
-            sink: &sink,
+            sink: sink.as_ref(),
             cancel,
             cmd_rx: &mut cmd_rx,
             file_tracker: &mut file_tracker,
