@@ -268,12 +268,11 @@ fn ensure_worker_bin() {
         if p.ends_with("debug") || p.ends_with("release") {
             let bin = p.join("koda-fs-worker");
             if bin.exists() {
-                // SAFETY: bench process is single-threaded at this
-                // point (we haven't built the tokio runtime yet) and
-                // we set this exactly once.
-                unsafe {
-                    std::env::set_var("KODA_FS_WORKER_BIN", &bin);
-                }
+                // **#1109 F1**: was `unsafe { std::env::set_var }`
+                // (UB in Rust 2024 if any bench thread reads env). Now
+                // uses the OnceLock-backed override published from the
+                // lib.
+                koda_sandbox::worker_client::set_worker_binary_for_tests(bin);
                 return;
             }
         }

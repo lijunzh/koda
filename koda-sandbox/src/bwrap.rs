@@ -259,11 +259,27 @@ fn apply_policy_overlay(cmd: &mut Command, policy: &SandboxPolicy) -> Result<()>
 ///    `koda-core` e2e suite) find the helper without setting an env
 ///    var.
 pub fn stage2_binary() -> Result<PathBuf> {
-    if let Ok(p) = std::env::var(STAGE2_BIN_ENV_KEY) {
-        return Ok(PathBuf::from(p));
-    }
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_koda-sandbox-stage2") {
-        return Ok(PathBuf::from(p));
+    // Read env once at the boundary; delegate the rest to the pure
+    // resolver below. This keeps the env-binding surface tiny (and
+    // testable independently of the discovery logic).
+    let override_path = std::env::var(STAGE2_BIN_ENV_KEY)
+        .ok()
+        .or_else(|| std::env::var("CARGO_BIN_EXE_koda-sandbox-stage2").ok());
+    stage2_binary_from(override_path.as_deref().map(std::path::Path::new))
+}
+
+/// Pure-logic core of [`stage2_binary`]: given an optional explicit
+/// override path, return it if `Some`; otherwise fall back to the
+/// `current_exe`-sibling / cargo-deps-parent discovery chain.
+///
+/// Extracted in #1109 F1 so tests can exercise the override branch
+/// without `unsafe { std::env::set_var }` (UB in Rust 2024 when other
+/// threads concurrently read env). Tests pass the override path
+/// explicitly; the env-binding wrapper above remains 3 trivial lines
+/// not worth a dedicated test.
+pub fn stage2_binary_from(env_override: Option<&std::path::Path>) -> Result<PathBuf> {
+    if let Some(p) = env_override {
+        return Ok(p.to_path_buf());
     }
     let exe = std::env::current_exe().context("locate koda executable")?;
 
@@ -579,25 +595,18 @@ mod tests {
         }
     }
 
-    /// Pinned: stage 2 binary discovery honors the env override
+    /// Pinned: stage 2 binary discovery honors the override path
     /// before falling back to current_exe sibling lookup. E2E tests
     /// rely on this.
+    ///
+    /// **#1109 F1**: was `unsafe { std::env::set_var(...) }` which
+    /// is UB in Rust 2024 if any other test in the same binary
+    /// reads env concurrently. Now exercises the pure resolver
+    /// directly — no env mutation, no UB risk.
     #[test]
     fn stage2_binary_respects_env_override() {
-        let original = std::env::var(STAGE2_BIN_ENV_KEY).ok();
-        // SAFETY: this test binary is single-threaded; no other thread
-        // can observe the env mutation between set and restore.
-        unsafe { std::env::set_var(STAGE2_BIN_ENV_KEY, "/tmp/fake-stage2") };
-        let p = stage2_binary().unwrap();
+        let p = stage2_binary_from(Some(std::path::Path::new("/tmp/fake-stage2"))).unwrap();
         assert_eq!(p, std::path::PathBuf::from("/tmp/fake-stage2"));
-        // SAFETY: same single-threaded guarantee as above; restoring
-        // to the original value (or removing) is always safe here.
-        unsafe {
-            match original {
-                Some(v) => std::env::set_var(STAGE2_BIN_ENV_KEY, v),
-                None => std::env::remove_var(STAGE2_BIN_ENV_KEY),
-            }
-        }
     }
 
     // ── Gap 1 of #1072: apply_git_config_deny ──────────────

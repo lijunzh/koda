@@ -81,6 +81,12 @@ impl WorkspaceProvider for FailingProvider {
 /// but not for `#[cfg(test)]` modules in the lib crate, so we shell
 /// out to find it the same way `worker_client::worker_binary()` does
 /// for production.
+///
+/// **#1109 F1**: was `unsafe { std::env::set_var(...) }` (UB in
+/// Rust 2024 if any other thread reads env). Now uses
+/// [`crate::worker_client::set_worker_binary_for_tests`] — a
+/// `OnceLock`-backed override that's safe under concurrent test
+/// execution.
 fn ensure_worker_bin() {
     if std::env::var("KODA_FS_WORKER_BIN").is_ok() {
         return;
@@ -95,14 +101,7 @@ fn ensure_worker_bin() {
         if p.ends_with("debug") || p.ends_with("release") {
             let bin = p.join("koda-fs-worker");
             if bin.exists() {
-                // SAFETY: tests here are inherently single-threaded
-                // for env mutation purposes — cargo serializes test
-                // binaries by default and we set this once per
-                // process. Documented in `worker_client::tests` for
-                // the same reason.
-                unsafe {
-                    std::env::set_var("KODA_FS_WORKER_BIN", &bin);
-                }
+                crate::worker_client::set_worker_binary_for_tests(bin);
                 return;
             }
         }
