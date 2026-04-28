@@ -455,66 +455,97 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
         MockResponse::Text("parent done".into()),
     ]);
 
-    let events = env.run_inference(&provider).await;
+    // **#1109 macOS-fix**: poll `bg_agents.drain_status_events()`
+    // directly instead of relying on the parent's inference_loop to
+    // forward events to the test sink. Background agents enqueue
+    // `BgTaskUpdate` events on the registry; the parent's loop drains
+    // them at the top of each iteration. After `run_inference`
+    // returns, *no one* drains them — so subscribing to the sink
+    // misses every bg event that fires after parent completes. Going
+    // straight to the registry queue is race-free: events are pushed
+    // there as soon as the bg task emits them. The polling here is
+    // bounded by a 10s budget; on a healthy machine it returns in a
+    // few ms. See PR #1113 diagnostic for the full story.
+    use koda_core::engine::EngineEvent;
+    let _ = env.run_inference(&provider).await;
 
-    // Diagnostic: the dispatch path between `reserve()` and `attach()`
-    // is fully synchronous (no `.await` points), so the entry MUST be
-    // in the registry by the time inference returns.  If we ever fail
-    // the snapshot poll below, dump the events vector — it will tell
-    // us whether `InvokeAgent` even dispatched, whether the background
-    // branch was taken, and whether the parent reached "parent done".
-    let task_id = {
-        const REGISTRATION_BUDGET: Duration = Duration::from_secs(5);
-        let deadline = tokio::time::Instant::now() + REGISTRATION_BUDGET;
-        loop {
-            let snap = env.bg_agents.snapshot();
-            if let Some(task) = snap.first() {
-                break task.task_id;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                panic!(
-                    "background agent was never registered in the registry within {REGISTRATION_BUDGET:?}.\n\
-                     events from inference_loop ({} total): {events:#?}\n\
-                     final snapshot: {:#?}",
-                    events.len(),
-                    env.bg_agents.snapshot()
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut bg_events: Vec<EngineEvent> = Vec::new();
+    let saw_terminal = loop {
+        for ev in env.bg_agents.drain_status_events() {
+            bg_events.push(ev);
         }
+        let terminal = bg_events.iter().any(|ev| {
+            matches!(
+                ev,
+                EngineEvent::BgTaskUpdate {
+                    status: AgentStatus::Completed { .. }
+                        | AgentStatus::Errored { .. }
+                        | AgentStatus::Cancelled,
+                    ..
+                }
+            )
+        });
+        if terminal {
+            break true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
     };
+    assert!(
+        saw_terminal,
+        "bg task never reached a terminal state within 10s.\nbg_events ({} total): {bg_events:#?}",
+        bg_events.len()
+    );
 
-    // Subscribe gives us the last-sent status value plus change
-    // notifications going forward.
-    let mut rx = env
-        .bg_agents
-        .subscribe(task_id)
-        .expect("task_id must be in registry: snapshot confirmed it above");
+    let bg_updates: Vec<&AgentStatus> = bg_events
+        .iter()
+        .filter_map(|ev| match ev {
+            EngineEvent::BgTaskUpdate { status, .. } => Some(status),
+            _ => None,
+        })
+        .collect();
 
-    // Drive the receiver to a terminal state.
-    // `Completed` proves the loop ran ≥ 1 full iteration (QA-001 core).
-    let final_status = loop {
-        let status = rx.borrow_and_update().clone();
-        if matches!(
-            status,
-            AgentStatus::Completed { .. } | AgentStatus::Errored { .. } | AgentStatus::Cancelled
-        ) {
-            break status;
-        }
+    assert!(
+        !bg_updates.is_empty(),
+        "expected at least one BgTaskUpdate event; bg_events ({} total): {bg_events:#?}",
+        bg_events.len()
+    );
 
-        match tokio::time::timeout(Duration::from_secs(10), rx.changed()).await {
-            Ok(Ok(())) => continue, // new value available; loop to inspect it
-            Ok(Err(_closed)) => {
-                // Sender dropped — final value is buffered; pick it up.
-                break rx.borrow().clone();
-            }
-            Err(_elapsed) => {
-                panic!("bg agent did not reach a terminal state within 10s");
-            }
-        }
-    };
+    // QA-001 core: the loop ran ≥ 1 full iteration. The engine emits
+    // Running {{ iter }} at the TOP of each iteration, so iter ≥ 1
+    // proves the loop body completed at least once.
+    let max_iter_seen = bg_updates
+        .iter()
+        .filter_map(|s| match s {
+            AgentStatus::Running { iter } => Some(*iter),
+            _ => None,
+        })
+        .max();
+    assert!(
+        matches!(max_iter_seen, Some(n) if n >= 1),
+        "expected Running {{ iter >= 1 }}; saw max iter = {max_iter_seen:?}.\nbg_events: {bg_events:#?}"
+    );
 
-    match &final_status {
+    let final_status = bg_updates
+        .iter()
+        .rev()
+        .find(|s| {
+            matches!(
+                s,
+                AgentStatus::Completed { .. }
+                    | AgentStatus::Errored { .. }
+                    | AgentStatus::Cancelled
+            )
+        })
+        .copied()
+        .unwrap_or_else(|| {
+            panic!("bg task never reached a terminal state.\nbg_updates: {bg_updates:#?}")
+        });
+
+    match final_status {
         AgentStatus::Completed { summary } => {
             assert!(
                 !summary.is_empty(),
@@ -524,7 +555,7 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
         }
         AgentStatus::Errored { error } => panic!("bg agent errored: {error}"),
         AgentStatus::Cancelled => panic!("bg agent was unexpectedly cancelled"),
-        _ => unreachable!("loop only breaks on terminal states"),
+        _ => unreachable!("filter above only keeps terminal states"),
     }
     // Removed only after the bg task has finished reading it.
     runtime_env::remove("KODA_MOCK_RESPONSES");

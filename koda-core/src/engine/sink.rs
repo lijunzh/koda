@@ -146,7 +146,7 @@ impl EngineSink for BufferingSink {
 #[derive(Debug, Default)]
 pub struct TestSink {
     events: std::sync::Mutex<Vec<EngineEvent>>,
-    /// `Some` after [`subscribe`] is called; broadcasts every emit().
+    /// `Some` after [`Self::subscribe`] is called; broadcasts every emit().
     /// Lazy so tests that don't need it pay no allocation.
     broadcaster: std::sync::Mutex<Option<tokio::sync::broadcast::Sender<EngineEvent>>>,
 }
@@ -178,7 +178,7 @@ impl TestSink {
     /// **#1109 F3**: replaces `loop { sleep; check sink.events() }`
     /// patterns with `recv().await`. The broadcaster is created lazily
     /// on first call — emits before subscription are still captured
-    /// in [`events`] but won't appear in the receiver stream.
+    /// in [`Self::events`] but won't appear in the receiver stream.
     ///
     /// Channel capacity is 256, more than enough for any test
     /// scenario; lagging receivers will see
@@ -195,8 +195,8 @@ impl TestSink {
     /// Wait for the first event matching `pred` or until `timeout`.
     /// Returns `Ok(event)` on match, `Err` on timeout or channel close.
     ///
-    /// Convenience wrapper around [`subscribe`]: handles the
-    /// already-emitted-before-subscribe case by scanning [`events`]
+    /// Convenience wrapper around [`Self::subscribe`]: handles the
+    /// already-emitted-before-subscribe case by scanning [`Self::events`]
     /// once, then waits on the live channel for fresh events.
     pub async fn wait_for<F>(
         &self,

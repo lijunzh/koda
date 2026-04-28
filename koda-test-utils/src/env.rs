@@ -245,10 +245,18 @@ impl Env {
             .await
     }
 
-    /// Same as [`run_inference_full`] but lets the caller supply the
-    /// sink — used by [`run_inference_cancel_on_event`] which needs to
+    /// Same as `run_inference_full` but lets the caller supply the
+    /// sink — used by `run_inference_cancel_on_event` which needs to
     /// subscribe to the live event stream before inference begins.
-    async fn run_inference_with_sink(
+    ///
+    /// **Public so tests for asynchronously-spawned work (e.g.
+    /// background sub-agents) can subscribe to the sink BEFORE
+    /// inference starts and keep reading after it returns** — events
+    /// emitted by tokio::spawn'd tasks may arrive after the parent's
+    /// inference_loop completes, so the static `events()` snapshot at
+    /// return time is not canonical for those tests. See the QA-001
+    /// regression in `e2e_agent_test.rs` for the worked example.
+    pub async fn run_inference_with_sink(
         &self,
         provider: &dyn LlmProvider,
         cancel: CancellationToken,

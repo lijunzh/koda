@@ -14,8 +14,8 @@
 //!
 //! ## Masking (#1109 F1)
 //!
-//! [`mask`] / [`unmask`] let tests *hide* a process-env var from
-//! [`get`] without mutating `std::env`. Production code reading
+//! `mask` / `unmask` let tests *hide* a process-env var from
+//! `get` without mutating `std::env`. Production code reading
 //! `runtime_env::get("HTTP_PROXY")` will see `None` for masked keys
 //! even if the user's shell exported `HTTP_PROXY`. This is the
 //! `unsafe`-free way to isolate tests that exercise env-driven config
@@ -55,7 +55,7 @@ pub fn set(key: impl Into<String>, value: impl Into<String>) {
 ///
 /// Lookup order:
 /// 1. Runtime map (set via [`set`]).
-/// 2. Mask check — if [`mask`]ed, return `None` immediately.
+/// 2. Mask check — if `mask`ed, return `None` immediately.
 /// 3. Process environment via `std::env::var`.
 pub fn get(key: &str) -> Option<String> {
     if let Some(val) = env_map()
@@ -84,7 +84,7 @@ pub fn is_set(key: &str) -> bool {
 ///
 /// Returns the previous runtime-map value if one was set. After removal
 /// [`get`] will fall back to the process environment as usual (unless the
-/// key is also [`mask`]ed).
+/// key is also `mask`ed).
 ///
 /// Primarily intended for tests that need to leave the runtime map clean
 /// for siblings — production code should rarely need this.
