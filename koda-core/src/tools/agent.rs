@@ -164,7 +164,14 @@ fn load_agents_from_dir(dir: &Path, source: &'static str, agents: &mut HashMap<S
         let Some(agent_name) = name.strip_suffix(".json") else {
             continue;
         };
-        if agent_name == "default" {
+        // `default` and `koda` are reserved names for the main agent
+        // identity — they are NOT sub-agents and must not appear in
+        // discovery output (the `/agents` listing, the prompt's
+        // `## Available Sub-Agents` section, or `InvokeAgent` dispatch).
+        // Pre-#XXXX, the prompt builder filtered both names locally;
+        // now that all callers route through `discover_all_agents`,
+        // the filter belongs here.
+        if agent_name == "default" || agent_name == "koda" {
             continue;
         }
         let Ok(content) = std::fs::read_to_string(entry.path()) else {
@@ -174,11 +181,22 @@ fn load_agents_from_dir(dir: &Path, source: &'static str, agents: &mut HashMap<S
             continue;
         };
         let prompt = config["system_prompt"].as_str().unwrap_or("").to_string();
+        // Prefer the JSON's explicit `description` field over the
+        // heuristic that scrapes the system_prompt. Agent authors
+        // who took the trouble to write an explicit description
+        // (e.g. for sub-agent dispatch hints to the model) deserve
+        // to have it honored. The heuristic is a fallback for agents
+        // that don't supply one.
+        let description = config["description"]
+            .as_str()
+            .map(str::to_string)
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| extract_description(&prompt));
         agents.insert(
             agent_name.to_string(),
             AgentInfo {
                 name: agent_name.to_string(),
-                description: extract_description(&prompt),
+                description,
                 source,
                 system_prompt: prompt,
             },
@@ -420,6 +438,69 @@ mod tests {
         assert!(names.contains(&"explore"));
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"verify"));
+    }
+
+    /// Pin the contract that `task` is THE general-purpose sub-agent.
+    ///
+    /// Multiple code paths depend on this convention:
+    ///
+    /// 1. The `InvokeAgent` tool description tells the model
+    ///    "Omit agent_name to use the 'task' worker" — dispatch
+    ///    code routes a missing `agent_name` to `task`.
+    /// 2. The system prompt's `## Available Sub-Agents` section
+    ///    surfaces `task` so the model knows generic delegation
+    ///    is available.
+    /// 3. The `koda`/`default` slot is the **main agent**, not a
+    ///    sub-agent — a model delegating to itself would be
+    ///    nonsense (and a recursion footgun). They MUST NOT appear
+    ///    in discovery output.
+    ///
+    /// Renaming `task`, removing it, or accidentally letting
+    /// `koda`/`default` leak into the sub-agent listing would each
+    /// silently break a different production path. This test fails
+    /// loudly if any of those four invariants drift.
+    #[test]
+    fn task_is_general_purpose_subagent_and_main_agent_is_hidden() {
+        let dir = TempDir::new().unwrap();
+        let agents = discover_all_agents(dir.path());
+        let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+
+        // (1) `task` exists — the omitted-agent_name dispatch target.
+        assert!(
+            names.contains(&"task"),
+            "`task` must be discoverable — it's the fallback worker for `InvokeAgent {{ prompt: ... }}` calls without an `agent_name`. Discovered: {names:?}"
+        );
+
+        // (2) `task`'s description signals general-purpose intent so
+        // the model picks it for vague delegation.
+        let task = agents.iter().find(|a| a.name == "task").unwrap();
+        assert!(
+            task.description.to_lowercase().contains("general")
+                || task.description.to_lowercase().contains("task worker")
+                || task.description.to_lowercase().contains("focused"),
+            "`task`'s description must signal general-purpose / fallback worker semantics so the model picks it for vague delegation. Got: {:?}",
+            task.description
+        );
+
+        // (3) Main-agent slots must never surface as sub-agents.
+        assert!(
+            !names.contains(&"koda"),
+            "`koda` is the main agent identity, NOT a sub-agent — listing it invites self-delegation footguns. Discovered: {names:?}"
+        );
+        assert!(
+            !names.contains(&"default"),
+            "`default` is the main-agent config slot, NOT a sub-agent. Discovered: {names:?}"
+        );
+
+        // (4) The InvokeAgent tool description still pins `'task'`
+        // as the omitted-agent_name fallback. If someone renames
+        // the agent, the docs and the dispatch behavior must be
+        // updated together — this catches half-migrations.
+        let invoke_desc = &definitions()[0].description;
+        assert!(
+            invoke_desc.contains("'task'"),
+            "InvokeAgent description must reference `'task'` as the omitted-agent_name fallback worker. If you renamed `task`, update the schema and this test together."
+        );
     }
 
     #[test]
