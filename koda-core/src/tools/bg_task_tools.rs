@@ -440,6 +440,11 @@ fn agent_wait_to_tool_result(task_id_str: &str, outcome: WaitOutcome) -> ToolRes
             output,
             success,
             events,
+            // #1108 P2a: only used by the inference loop's drain
+            // handler for transcript persistence. The model-facing
+            // `WaitTask` JSON doesn't need it — the model already
+            // knows which call_id it's awaiting.
+            parent_tool_call_id: _,
         }) => ok(json!({
             "task_id": task_id_str,
             "status": if success { "completed" } else { "errored" },

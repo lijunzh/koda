@@ -201,6 +201,12 @@ async fn run_bg_agent(
         // the terminal sends below still have access after
         // `execute_sub_agent` returns.
         Some(emitter.clone()),
+        // #1108 P2a: nested bg-agent spawns inside this bg agent
+        // have no parent `InvokeAgent` tool call in our session
+        // (their parent is the bg agent itself, whose tool calls
+        // live in the sub-session). Pass `None` — their trace will
+        // be visible only via the bg agent's own surfaced output.
+        None,
     )
     .await;
 
@@ -287,6 +293,14 @@ pub(crate) fn execute_sub_agent<'a>(
     // sub-agents pass `None` — they have no status channel because
     // they're not tracked in the registry at all.
     emitter: Option<crate::bg_agent::BgStatusEmitter>,
+    // **#1108 P2a**: parent's `InvokeAgent` tool_call_id. Recorded on
+    // the bg-agent reservation so the inference loop's drain handler
+    // can persist the bg agent's narrative trace to `session_events`
+    // with this id as `parent_tool_call_id`. The transcript renderer
+    // folds those rows under the parent's `InvokeAgent` tool result.
+    // `None` for foreground sub-agents (their events flow inline
+    // through the parent's `EngineSink` and don't need correlation).
+    parent_tool_call_id: Option<&'a str>,
 ) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
     async move {
         // Phase E of #996: allocate this invocation's id up-front. It
@@ -403,6 +417,7 @@ pub(crate) fn execute_sub_agent<'a>(
                 entry_cancel,
                 entry_status_rx,
                 parent_spawner,
+                parent_tool_call_id.map(str::to_string),
                 handle,
             );
 

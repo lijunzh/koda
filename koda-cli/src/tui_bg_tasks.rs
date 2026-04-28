@@ -440,6 +440,7 @@ mod tests {
             r.cancel,
             r.status_rx,
             None,
+            None,
             noop,
         );
         (task_id, tx, status_tx, observer)

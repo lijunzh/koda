@@ -107,10 +107,48 @@ pub struct Message {
     pub created_at: Option<String>,
 }
 
-/// Detected interruption state for a resumed session.
+/// Kind of [`SessionEvent`] payload.
 ///
-/// Returned by [`detect_interruption`](crate::db::queries::detect_interruption)
-/// after inspecting the tail of the message history.
+/// Stored as a string in the `kind` column — the renderer dispatches
+/// on it and parses `payload` accordingly. Keeping it open-ended (string)
+/// rather than an enum at the DB layer means future event kinds don't
+/// require a schema change.
+pub mod session_event_kind {
+    /// `EngineEvent::Info` — payload is the message text.
+    pub const INFO: &str = "info";
+    /// `EngineEvent::BgTaskUpdate` — payload is JSON
+    /// `{"task_id": u32, "spawner": Option<u32>, "status": AgentStatus}`.
+    pub const BG_TASK_UPDATE: &str = "bg_task_update";
+    /// One line of a sub-agent's `BufferingSink` trace — payload is
+    /// the rendered line. `parent_tool_call_id` correlates back to the
+    /// `InvokeAgent` tool call in the parent session.
+    pub const SUB_AGENT_EVENT: &str = "sub_agent_event";
+}
+
+/// A non-message engine event persisted for transcript debuggability.
+///
+/// See [`session_event_kind`] for the supported kinds. Pre-#1108 these
+/// were sink-only; the transcript export couldn't tell what a bg
+/// sub-agent did during its wait window.
+#[derive(Debug, Clone)]
+pub struct SessionEvent {
+    /// Auto-incremented row id (also acts as a per-session sort key
+    /// since events are appended in emission order).
+    pub id: i64,
+    /// Owning session.
+    pub session_id: String,
+    /// One of the constants in [`session_event_kind`].
+    pub kind: String,
+    /// Kind-specific payload (see [`session_event_kind`] doc).
+    pub payload: String,
+    /// For `SUB_AGENT_EVENT`: the `tool_call_id` of the `InvokeAgent`
+    /// call that spawned the sub-agent. `None` for top-level events.
+    pub parent_tool_call_id: Option<String>,
+    /// ISO 8601 creation timestamp.
+    pub created_at: Option<String>,
+}
+
+/// Detected interruption state for a resumed session.
 ///
 /// ## Design decision: banner, not auto-resume
 ///
@@ -341,6 +379,33 @@ pub trait Persistence: Send + Sync {
     async fn get_todo(&self, session_id: &str) -> Result<Option<String>>;
     /// Set the TODO list for a session.
     async fn set_todo(&self, session_id: &str, content: &str) -> Result<()>;
+
+    // ── Session events (#1108 P1b/P2a) ─────────────────────────────
+
+    /// Append a non-message engine event to the session's debug trail.
+    ///
+    /// `kind` should be one of [`session_event_kind`]. `payload` is
+    /// kind-specific (see those constants). `parent_tool_call_id` is
+    /// `Some(call_id)` only for sub-agent events so the renderer can
+    /// fold them under the parent's `InvokeAgent` tool result.
+    ///
+    /// Hot-path: called from every `EngineEvent::Info`/`BgTaskUpdate`
+    /// emission via [`crate::engine::sink::PersistingSink`]. Failures
+    /// are logged but never propagated — a DB hiccup must not crash
+    /// the inference loop.
+    async fn insert_session_event(
+        &self,
+        session_id: &str,
+        kind: &str,
+        payload: &str,
+        parent_tool_call_id: Option<&str>,
+    ) -> Result<i64>;
+
+    /// Load all session events in append order (by `id`).
+    ///
+    /// Used by the transcript renderer to interleave events with
+    /// messages. Returns an empty Vec for sessions with no events.
+    async fn load_session_events(&self, session_id: &str) -> Result<Vec<SessionEvent>>;
 }
 
 #[cfg(test)]

@@ -613,6 +613,18 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
         sub_agent_cache,
     } = ctx;
 
+    // #1108 P1b: wrap the user-facing sink with `PersistingSink` so
+    // every `Info` / `BgTaskUpdate` event lands in `session_events`
+    // for the markdown transcript export. Pre-#1108 these were
+    // sink-only and disappeared once the user closed the TUI.
+    let _persisting_sink = crate::engine::sink::PersistingSink::new(
+        sink,
+        std::sync::Arc::new(db.clone()) as std::sync::Arc<dyn crate::persistence::Persistence>,
+        session_id.to_string(),
+        None,
+    );
+    let sink: &dyn EngineSink = &_persisting_sink;
+
     // Hard cap is configurable per-agent; user can extend it interactively.
     let mut hard_cap = config.max_iterations;
     let mut iteration = 0u32;
@@ -696,6 +708,35 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 msg.push_str(&bg_result.events.join("\n"));
             }
             sink.emit(EngineEvent::Info { message: msg });
+            // #1108 P2a: persist each captured bg-agent trace line as
+            // a `sub_agent_event` row keyed by the parent's
+            // `InvokeAgent` tool_call_id. Pre-#1108 the trace was
+            // sink-only — the markdown transcript export had no
+            // record of what the bg agent did. With this in place the
+            // transcript renderer can fold the trace under the
+            // parent's `InvokeAgent` tool result.
+            if let Some(parent_call_id) = bg_result.parent_tool_call_id.as_deref() {
+                use crate::persistence::session_event_kind as sek;
+                for line in &bg_result.events {
+                    // Fire-and-forget: a DB hiccup must not crash a
+                    // turn just because we couldn't persist a trace
+                    // line. Same policy as `PersistingSink::persist`.
+                    if let Err(e) = db
+                        .insert_session_event(
+                            session_id,
+                            sek::SUB_AGENT_EVENT,
+                            line,
+                            Some(parent_call_id),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e, session_id, parent_call_id,
+                            "failed to persist bg-agent trace line"
+                        );
+                    }
+                }
+            }
             db.insert_message(session_id, &Role::User, Some(&injection), None, None, None)
                 .await?;
         }

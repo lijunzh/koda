@@ -322,6 +322,13 @@ pub(crate) async fn execute_one_tool(
             // `BgStatusEmitter` to fan out per-iteration heartbeats
             // to. Pass `None` to skip the per-iteration emit.
             None,
+            // #1108 P2a: pass the InvokeAgent tool_call_id so any
+            // bg-sub-agent reservation can record it. The drain
+            // handler in `inference_loop` then persists the bg
+            // agent's narrative trace to `session_events` keyed by
+            // this id, so the transcript renderer can fold it under
+            // the parent's `InvokeAgent` tool result.
+            Some(&tc.id),
         );
         match Box::pin(fut).await {
             Ok(output) => (output, true, None),
