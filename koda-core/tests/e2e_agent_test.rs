@@ -455,58 +455,24 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
         MockResponse::Text("parent done".into()),
     ]);
 
-    // **#1109 macOS-fix**: BgTaskUpdate events live in TWO places
-    // depending on timing:
-    //
-    //   * If the bg task completed BEFORE `run_inference` returned
-    //     (typical on macOS CI), the parent's `inference_loop` already
-    //     drained the events into the test sink — they're in the
-    //     returned `events` vec, and the registry's queue is empty.
-    //
-    //   * If the bg task completed AFTER `run_inference` returned
-    //     (typical on slower local machines), the parent never got
-    //     a chance to drain them, and they're sitting in the registry
-    //     queue waiting for `drain_status_events()`.
-    //
-    // We collect from BOTH sources to be race-free in either timing
-    // regime. See PR #1113 diagnostic for the full story.
+    // Use the `collect_bg_events_after` helper from koda-test-utils
+    // — it merges the events vec from `run_inference` (what the
+    // parent's inference_loop drained into the sink) with the
+    // registry's `drain_status_events()` queue (whatever was emitted
+    // after parent finished). See the helper's docs for the full
+    // race-condition rationale (#1109, PR #1113).
     use koda_core::engine::EngineEvent;
     let events_from_sink = env.run_inference(&provider).await;
-
-    let mut bg_events: Vec<EngineEvent> = events_from_sink
-        .into_iter()
-        .filter(|ev| matches!(ev, EngineEvent::BgTaskUpdate { .. }))
-        .collect();
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    let saw_terminal = loop {
-        for ev in env.bg_agents.drain_status_events() {
-            bg_events.push(ev);
-        }
-        let terminal = bg_events.iter().any(|ev| {
-            matches!(
-                ev,
-                EngineEvent::BgTaskUpdate {
-                    status: AgentStatus::Completed { .. }
-                        | AgentStatus::Errored { .. }
-                        | AgentStatus::Cancelled,
-                    ..
-                }
+    let bg_events = env
+        .collect_bg_events_after(events_from_sink, Duration::from_secs(10))
+        .await
+        .unwrap_or_else(|partial| {
+            panic!(
+                "bg task never reached a terminal state within 10s.\n\
+                 bg_events ({} total): {partial:#?}",
+                partial.len()
             )
         });
-        if terminal {
-            break true;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            break false;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    };
-    assert!(
-        saw_terminal,
-        "bg task never reached a terminal state within 10s.\nbg_events ({} total): {bg_events:#?}",
-        bg_events.len()
-    );
 
     let bg_updates: Vec<&AgentStatus> = bg_events
         .iter()

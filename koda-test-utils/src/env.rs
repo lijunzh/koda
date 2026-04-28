@@ -295,4 +295,108 @@ impl Env {
 
         (result, sink.events())
     }
+
+    /// Collect every `BgTaskUpdate` event a background sub-agent will
+    /// emit, regardless of which side of the parent's `inference_loop`
+    /// drained them.
+    ///
+    /// **Why this helper exists** (#1109, PR #1113):
+    ///
+    /// `BgTaskUpdate` events flow through a single-consumer queue
+    /// inside [`BgAgentRegistry`]. The parent's `inference_loop`
+    /// drains them on every iteration and forwards to the sink. A
+    /// test that asserts on these events is racing the parent for
+    /// the same queue:
+    ///
+    /// * If the bg task **finishes before `run_inference` returns**,
+    ///   the parent drained everything into the sink — the events
+    ///   live in the `events` vec, and the registry queue is empty.
+    /// * If the bg task **finishes after `run_inference` returns**,
+    ///   the parent never got a chance — the events are sitting in
+    ///   the registry queue waiting for `drain_status_events()`.
+    ///
+    /// Which side wins is non-deterministic (depends on tokio worker
+    /// scheduling, OS, CI runner load). This helper merges both
+    /// sources so callers don't have to know.
+    ///
+    /// # Arguments
+    ///
+    /// * `events_from_run_inference` — the `Vec<EngineEvent>`
+    ///   returned by [`Self::run_inference`] (or any of its
+    ///   variants). `BgTaskUpdate` events are filtered out; other
+    ///   event types are ignored.
+    /// * `terminal_timeout` — how long to keep polling
+    ///   [`BgAgentRegistry::drain_status_events`] waiting for a
+    ///   terminal status (`Completed`, `Errored`, `Cancelled`). Use
+    ///   a generous bound (e.g. 10s) — on a healthy machine the
+    ///   helper returns in single-digit milliseconds.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(events)` if a terminal `BgTaskUpdate` was observed within
+    /// `terminal_timeout`, where `events` contains every
+    /// `BgTaskUpdate` from both sources in arrival order (sink-side
+    /// events first, then queue-drained events).
+    ///
+    /// `Err(events)` if the timeout elapsed without a terminal
+    /// status. The partial event list is returned for diagnostics.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let events = env.run_inference(&provider).await;
+    /// let bg_events = env
+    ///     .collect_bg_events_after(events, Duration::from_secs(10))
+    ///     .await
+    ///     .expect("bg task never reached terminal state");
+    /// assert!(bg_events.iter().any(|e| matches!(
+    ///     e, EngineEvent::BgTaskUpdate {
+    ///         status: AgentStatus::Completed { .. }, ..
+    ///     }
+    /// )));
+    /// ```
+    pub async fn collect_bg_events_after(
+        &self,
+        events_from_run_inference: Vec<EngineEvent>,
+        terminal_timeout: std::time::Duration,
+    ) -> Result<Vec<EngineEvent>, Vec<EngineEvent>> {
+        let mut bg_events: Vec<EngineEvent> = events_from_run_inference
+            .into_iter()
+            .filter(|ev| matches!(ev, EngineEvent::BgTaskUpdate { .. }))
+            .collect();
+
+        let deadline = tokio::time::Instant::now() + terminal_timeout;
+        loop {
+            for ev in self.bg_agents.drain_status_events() {
+                bg_events.push(ev);
+            }
+            if bg_events.iter().any(is_terminal_bg_update) {
+                return Ok(bg_events);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(bg_events);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+}
+
+/// Returns `true` if `ev` is a [`EngineEvent::BgTaskUpdate`] in a
+/// terminal status (`Completed`, `Errored`, or `Cancelled`).
+///
+/// Extracted as a free function so [`Env::collect_bg_events_after`]
+/// stays readable; the matcher itself is non-trivial because
+/// `AgentStatus` has additional non-terminal variants we must not
+/// mistakenly treat as final.
+fn is_terminal_bg_update(ev: &EngineEvent) -> bool {
+    use koda_core::bg_agent::AgentStatus;
+    matches!(
+        ev,
+        EngineEvent::BgTaskUpdate {
+            status: AgentStatus::Completed { .. }
+                | AgentStatus::Errored { .. }
+                | AgentStatus::Cancelled,
+            ..
+        }
+    )
 }
