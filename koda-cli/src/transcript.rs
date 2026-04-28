@@ -411,6 +411,22 @@ mod tests {
     use super::*;
     use koda_core::persistence::Message;
 
+    /// Serializes tests that depend on `HYPERLINK_KILL_SWITCH`.
+    ///
+    /// `kill_switch_disables_hyperlinks` mutates the env var while the
+    /// other tests in this module just read it via `hyperlinks_enabled()`.
+    /// Since env vars are process-global and `cargo test` runs tests in
+    /// parallel by default, the writer can flip the var to "off" mid-read
+    /// of any other test that calls `render()` and asserts on hyperlinks.
+    /// On macOS this raced ~50% of the time and blocked PR #1107.
+    ///
+    /// Lock acquisition: every test that depends on the env var's value
+    /// (one writer, three readers) takes this lock for its full duration.
+    /// Other transcript tests don't assert on hyperlinks at all (they
+    /// look at headers, paths, code blocks, etc.) so they don't need the
+    /// lock and can keep running in parallel.
+    static HYPERLINK_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn make_msg(role: Role, content: &str) -> Message {
         Message {
             id: 0,
@@ -638,6 +654,7 @@ mod tests {
 
     #[test]
     fn read_path_emits_markdown_link_with_file_uri() {
+        let _g = HYPERLINK_ENV_LOCK.lock().unwrap();
         let msg = assistant_with_call("Read", r#"{"file_path":"src/main.rs"}"#);
         let meta = SessionMeta {
             project_root: "/home/user/proj".into(),
@@ -652,6 +669,7 @@ mod tests {
 
     #[test]
     fn absolute_read_path_skips_root_join() {
+        let _g = HYPERLINK_ENV_LOCK.lock().unwrap();
         let msg = assistant_with_call("Read", r#"{"file_path":"/etc/hosts"}"#);
         let meta = SessionMeta {
             project_root: "/home/user/proj".into(),
@@ -666,6 +684,7 @@ mod tests {
 
     #[test]
     fn webfetch_url_becomes_self_link() {
+        let _g = HYPERLINK_ENV_LOCK.lock().unwrap();
         let msg = assistant_with_call("WebFetch", r#"{"url":"https://example.com/x"}"#);
         let out = render(&[msg], &default_meta(), false);
         assert!(
@@ -696,12 +715,15 @@ mod tests {
 
     #[test]
     fn kill_switch_disables_hyperlinks() {
+        let _g = HYPERLINK_ENV_LOCK.lock().unwrap();
         // Save & restore so we don't leak env across tests in this thread.
         let prev = std::env::var(HYPERLINK_KILL_SWITCH).ok();
-        // SAFETY: tests in this binary run in parallel by default; this env
-        // var is only read by transcript code, and the only readers in this
-        // file are `kill_switch_*` tests. Running them with `--test-threads=1`
-        // is the official escape hatch if they ever flake.
+        // SAFETY: tests in this binary run in parallel by default; the
+        // module-level `HYPERLINK_ENV_LOCK` mutex (acquired above)
+        // serializes this writer with every reader test that asserts on
+        // hyperlinks being on, so no parallel reader sees the "off"
+        // value mid-test. See the lock's doc comment for the race this
+        // existed to prevent (PR #1107).
         unsafe { std::env::set_var(HYPERLINK_KILL_SWITCH, "off") };
         let msg = assistant_with_call("Read", r#"{"file_path":"/x.rs"}"#);
         let out = render(&[msg], &default_meta(), false);
