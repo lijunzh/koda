@@ -6,6 +6,104 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.22] - 2026-04-28
+
+Patch release. 8 bug-fix commits since v0.2.21, no new features, no public
+API changes. Highlights: a sub-agent loop-spin bug that was burning ~20×
+the LLM calls per multi-turn invocation, the matching TUI rendering bug
+that hid it, a Linux sandbox TOCTOU window on `.git/config`, and four
+smaller correctness fixes (Gemini schema, prompt-builder discovery,
+`List` tool header, ClonefileProvider `$TMPDIR` fallback).
+
+### Security
+
+- **SEC-002 — sandbox now pre-creates `.git/config` to close TOCTOU
+  window** (#1092). On Linux (bwrap backend), `apply_git_config_deny`
+  previously skipped the `--ro-bind` of `.git/config` if the file did
+  not exist at sandbox-build time. A child process inside the sandbox
+  could then race to create the file before the deny took effect, and
+  inject `core.fsmonitor = <cmd>` for later host-side execution. Fix
+  unconditionally pre-creates `.git/hooks/` and `.git/config` (empty
+  file, mtime-preserving on existing repos) before binding them
+  read-only, so the deny applies regardless of repo state. Brings the
+  bwrap backend to parity with Seatbelt's SBPL deny rules (which
+  already covered non-existent paths). Regression test
+  `git_config_deny_pre_creates_for_non_git_dir_to_close_toctou` pins
+  the contract.
+
+### Fixed
+
+- **Sub-agents no longer spin on the same tool call until the
+  iteration cap** (#1102, closes #1101). `sub_agent_dispatch` inserted
+  assistant tool-call rows into the session DB but never called
+  `mark_message_complete`. `load_context` filters
+  `(role = 'assistant' AND completed_at IS NULL)` rows, so every loop
+  iteration the sub-agent's effective context collapsed back to
+  `[system, user]`; `prune_mismatched_tool_calls` then dropped the
+  orphaned tool-result rows. The model re-issued the same tool call
+  every iteration until hitting `MAX_SUB_AGENT_ITERATIONS = 20`,
+  burning ~20× the intended LLM calls. Affected every multi-turn
+  sub-agent (`explore`, `plan`, `verify`, `task`, all user-defined
+  sub-agents, all background `Task` agents). One-line fix mirrors
+  the parent inference loop's pattern at
+  `inference.rs::mark_message_complete`. Regression test
+  `sub_agent_marks_assistant_messages_complete_so_loop_progresses`.
+- **TUI tool headers now show the actual file path, not always `.`**
+  (#1099). The renderer in `koda-cli/src/tool_header.rs` looked up
+  the wrong key in the tool-call args JSON, so `Read`, `List`,
+  `Grep`, `Glob`, and friends always displayed `● List .` regardless
+  of what path the model passed. Made debugging agent behavior
+  effectively impossible — the loop-spin bug fixed in #1102 was
+  invisible behind this for 8 days because every iteration's `List
+  /Users/lijun/repo` rendered identically as `● List .`. Fix maps
+  each tool's actual dispatch key to the header. Regression test
+  `path_bearing_tools_render_actual_dispatch_key`.
+- **Built-in sub-agents now appear in the system prompt** (#1098).
+  The prompt builder called the wrong discovery function, listing
+  user-installed agents but omitting `explore`, `plan`, `verify`,
+  `task`. Result: the model could see them in `/agents` output but
+  refused to call them with "No sub-agents are configured." Fix
+  routes both surfaces through `discover_all_agents`, which also
+  filters reserved names (`koda`, `default`) to prevent
+  self-delegation. Regression tests
+  `built_in_agents_appear_in_prompt_with_no_installed_agents` and
+  `task_is_general_purpose_subagent_and_main_agent_is_hidden`.
+- **Gemini provider sends tool parameters under
+  `parametersJsonSchema`, not `parameters`** (#1097). Gemini's
+  function-declaration schema rejects `additionalProperties` under
+  the `parameters` key but accepts the full JSON Schema vocabulary
+  under `parametersJsonSchema`. Pre-fix: every Gemini tool call
+  returned HTTP 400 `Unknown name "additionalProperties"`. Affected
+  all Gemini-family models. Regression test
+  `function_declaration_serializes_under_parameters_json_schema`.
+- **`List` tool output starts with a `Listing: <path>` header**
+  (#1096, closes #1094). Empty-directory listings previously
+  produced a bare `(empty directory)` string with no path context,
+  and capped listings dropped the header too. Now every `List`
+  result begins with the resolved directory path, matching
+  `Read`/`Grep` behavior. Four regression tests in `file_tools.rs`.
+- **`ClonefileProvider` falls back to `$TMPDIR` when
+  `project_root == $HOME`** (#1095, closes #1093). `clonefile(2)`
+  returns `EPERM` when the destination is a descendant of the
+  source. The default `clones_root` lives at
+  `$HOME/.koda/clones/<hash>/`, so running `koda` from `$HOME`
+  meant every `provision()` failed and sub-agents with write tools
+  could not be dispatched at all. Fix detects the recursion via a
+  new `choose_clones_root` helper and falls back to
+  `$TMPDIR/koda-clones/<hash>/`; if both candidates would land
+  inside `project_root`, returns `Err` so `pick_write_provider`
+  falls back to `GitWorktreeProvider`. Five boundary-class
+  regression tests.
+- **`bg_agent_iter_counter_advances_via_status_channel` test pinned
+  to `multi_thread` runtime** (#1091, closes #1090). The default
+  `current_thread` tokio flavor only progresses spawned tasks when
+  the test task explicitly yields; on macOS CI runners under load
+  this caused the test to time out at 5s polling deadline despite
+  the dispatch path being fully synchronous. Production runs on
+  `multi_thread`; tests now match. Diagnostic panic was added that
+  dumps the events vector + final snapshot on failure, so any
+  future regression in this area is actionable instantly.
+
 ## [0.2.21] - 2026-04-27
 
 ### Security
