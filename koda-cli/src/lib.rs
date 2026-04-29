@@ -28,6 +28,7 @@ pub(crate) mod headless;
 pub(crate) mod highlight;
 pub(crate) mod history_render;
 pub(crate) mod hyperlink;
+pub(crate) mod inline_history;
 pub(crate) mod input;
 pub(crate) mod md_render;
 pub(crate) mod mouse_select;
