@@ -30,6 +30,8 @@ use tokio::sync::mpsc;
 enum SelectArm {
     Crossterm(Event),
     Ui(UiEvent),
+    /// The frame scheduler granted us a draw slot (#1138). Render once.
+    Draw,
     TurnDone(anyhow::Result<()>),
 }
 
@@ -97,53 +99,15 @@ impl TuiContext {
             // from winning N times in a row when both are constantly ready.
             let mut prefer_input = true;
 
+            // Schedule the initial frame so the user sees state immediately
+            // when the turn starts. From here on, every event-handling arm
+            // calls `schedule_frame()` to request the next coalesced redraw
+            // (#1138). The Draw arm of the select is the *only* place that
+            // actually calls `terminal.draw()` — the rate limiter inside the
+            // frame scheduler caps that at ~120 FPS.
+            self.frame_requester.schedule_frame();
+
             loop {
-                // Clamp scroll offset before drawing (resize may have
-                // changed wrapping, making the old offset invalid).
-                // Use the actual history panel height, not the full terminal
-                // height — otherwise max_offset is too small and scrolling
-                // up during inference gets clamped back toward the bottom,
-                // re-engaging sticky_bottom.
-                let (term_w, _) = crossterm::terminal::size()
-                    .map(|(c, r)| (c as usize, r as usize))
-                    .unwrap_or((80, 24));
-                let hist_viewport = (self.history_area_height as usize).max(1);
-                self.scroll_buffer.clamp_offset(term_w, hist_viewport);
-
-                // Redraw viewport
-                let mode = trust::read_trust(&self.shared_mode);
-                let ctx = self.context_pct;
-                let mcp_info = self.agent.mcp_status_bar_info();
-                let queue_total = self.later_queue.len();
-                let queue_preview: Vec<String> = self
-                    .later_queue
-                    .iter()
-                    .take(crate::widgets::queue_preview::MAX_VISIBLE)
-                    .cloned()
-                    .collect();
-                let _ = self.terminal.draw(|f| {
-                    draw_viewport(
-                        f,
-                        &self.textarea,
-                        &self.config.model,
-                        mode,
-                        ctx,
-                        self.tui_state,
-                        &self.prompt_mode,
-                        &queue_preview,
-                        queue_total,
-                        self.inference_start
-                            .map(|s| s.elapsed().as_secs())
-                            .unwrap_or(0),
-                        self.renderer.last_turn_stats.as_ref(),
-                        &self.menu,
-                        &self.scroll_buffer,
-                        self.mouse_selection.as_ref(),
-                        mcp_info,
-                        &self.project_root,
-                    );
-                });
-
                 // Round-robin: alternate which arm is preferred so a flood of
                 // engine events can't starve terminal input (and vice versa).
                 // Combined with the bounded drain below, this guarantees that
@@ -162,10 +126,15 @@ impl TuiContext {
                 // and Ctrl+C took seconds to propagate (#1137).
                 const MAX_DRAIN: usize = 64;
 
+                // The Draw arm is *always* polled first within each iteration.
+                // It only fires when the frame scheduler has emitted a
+                // notification (rate-limited to ~120 FPS), so it cannot
+                // starve the other arms in practice.
                 let select_result = if prefer_input {
                     tokio::select! {
                         biased;
 
+                        Some(()) = self.draw_rx.recv() => SelectArm::Draw,
                         Some(Ok(ev)) = self.crossterm_events.next() => {
                             SelectArm::Crossterm(ev)
                         }
@@ -178,6 +147,7 @@ impl TuiContext {
                     tokio::select! {
                         biased;
 
+                        Some(()) = self.draw_rx.recv() => SelectArm::Draw,
                         Some(ui_event) = ui_rx.recv() => {
                             SelectArm::Ui(ui_event)
                         }
@@ -189,6 +159,52 @@ impl TuiContext {
                 };
 
                 match select_result {
+                    SelectArm::Draw => {
+                        // The actual `terminal.draw()` happens here — nowhere
+                        // else in the inference loop. We can't call
+                        // `self.draw()` directly because `turn` holds a
+                        // `&mut self.session` borrow for its full lifetime,
+                        // so we use disjoint field access just like the old
+                        // synchronous draw block did.
+                        let (term_w, _) = crossterm::terminal::size()
+                            .map(|(c, r)| (c as usize, r as usize))
+                            .unwrap_or((80, 24));
+                        let hist_viewport = (self.history_area_height as usize).max(1);
+                        self.scroll_buffer.clamp_offset(term_w, hist_viewport);
+
+                        let mode = trust::read_trust(&self.shared_mode);
+                        let ctx = self.context_pct;
+                        let mcp_info = self.agent.mcp_status_bar_info();
+                        let queue_total = self.later_queue.len();
+                        let queue_preview: Vec<String> = self
+                            .later_queue
+                            .iter()
+                            .take(crate::widgets::queue_preview::MAX_VISIBLE)
+                            .cloned()
+                            .collect();
+                        let _ = self.terminal.draw(|f| {
+                            draw_viewport(
+                                f,
+                                &self.textarea,
+                                &self.config.model,
+                                mode,
+                                ctx,
+                                self.tui_state,
+                                &self.prompt_mode,
+                                &queue_preview,
+                                queue_total,
+                                self.inference_start
+                                    .map(|s| s.elapsed().as_secs())
+                                    .unwrap_or(0),
+                                self.renderer.last_turn_stats.as_ref(),
+                                &self.menu,
+                                &self.scroll_buffer,
+                                self.mouse_selection.as_ref(),
+                                mcp_info,
+                                &self.project_root,
+                            );
+                        });
+                    }
                     SelectArm::Crossterm(ev) => {
                         handle_crossterm_event_inline(
                             ev,
@@ -209,6 +225,10 @@ impl TuiContext {
                             &db_handle,
                         )
                         .await;
+                        // Request a redraw to reflect the new state. The
+                        // frame scheduler coalesces this with any other
+                        // requests in the same window (#1138).
+                        self.frame_requester.schedule_frame();
                     }
                     SelectArm::Ui(ui_event) => {
                         // Extract context usage before rendering
@@ -249,6 +269,10 @@ impl TuiContext {
                                 &mut self.renderer,
                             );
                         });
+                        // One coalesced redraw per drain batch — not per
+                        // event — keeps redraw cost bounded under streaming
+                        // floods (#1138).
+                        self.frame_requester.schedule_frame();
                     }
                     SelectArm::TurnDone(result) => {
                         if let Err(e) = result {

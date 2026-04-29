@@ -77,6 +77,10 @@ harness = false
 tempfile = { workspace = true }
 koda-core = { path = "../koda-core", version = "0.2.23", features = ["test-support"] }
 serde_json = { workspace = true }
+# tokio's `test-util` feature enables `#[tokio::test(start_paused = true)]` so
+# frame_requester tests can manipulate the clock deterministically without
+# relying on real wall-clock sleeps. Not in `full`, so we opt in here.
+tokio = { workspace = true, features = ["full", "test-util"] }
 # serial_test: forces tests that mutate global state (e.g. the panic hook in
 # the regression test for #1124) to run sequentially. Cargo runs tests in
 # parallel by default; without this, two tests calling `panic::set_hook`

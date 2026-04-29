@@ -23,6 +23,7 @@ pub(crate) mod builtin_skills;
 pub(crate) mod clipboard;
 pub(crate) mod completer;
 pub(crate) mod diff_render;
+pub(crate) mod frame_requester;
 pub(crate) mod headless;
 pub(crate) mod highlight;
 pub(crate) mod history_render;
