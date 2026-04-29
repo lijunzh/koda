@@ -298,11 +298,13 @@ fn agent_status_spans(status: &koda_core::bg_agent::AgentStatus) -> Vec<Span<'st
                 // placeholder for "started but no per-iter info
                 // wired yet." Foreground sub-agents still send 0;
                 // background agents emit live updates (Layer 4, #1058). Don't
-                // render "iter 0/20" — it misleads the user into
+                // render "iter 0" — it misleads the user into
                 // thinking nothing has happened.
                 "\u{25b6} Running".to_string()
             } else {
-                format!("\u{25b6} Running (iter {iter}/20)")
+                // #1110 removed the sub-agent iteration cap, so there's
+                // no denominator to display anymore. Just show the count.
+                format!("\u{25b6} Running (iter {iter})")
             };
             vec![Span::styled(label, CYAN.add_modifier(Modifier::BOLD))]
         }
@@ -621,14 +623,14 @@ mod tests {
         );
         // iter > 0 surfaces the per-iter detail.
         assert!(
-            text.contains("iter 7/20"),
+            text.contains("iter 7"),
             "expected per-iter detail when iter > 0, got: {text}"
         );
     }
 
     /// Layer-0 placeholder semantics: `Running { iter: 0 }` means
     /// "started but no per-iter info yet" — don't render a misleading
-    /// `"iter 0/20"`. Layer 4 (#1058) populated the field for bg agents.
+    /// `"iter 0"`. Layer 4 (#1058) populated the field for bg agents.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn list_background_tasks_hides_iter_zero_placeholder() {
         let mut buf = ScrollBuffer::new(64);
@@ -642,7 +644,7 @@ mod tests {
         let text = buffer_text(&buf);
         assert!(text.contains("Running"));
         assert!(
-            !text.contains("iter 0/20"),
+            !text.contains("iter 0"),
             "iter 0 should not render the per-iter detail (it's a Layer-0 placeholder), got: {text}"
         );
     }

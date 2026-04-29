@@ -52,6 +52,10 @@ Use InvokeAgent when:
 - Work is independent and can run in parallel with your current reasoning
 - A specialist persona adds value (explore for search, plan for architecture, verify for testing)
 
+Agent selection:
+- For read-only exploration / search / analysis, prefer 'explore' (faster, cheaper, no isolated workspace).
+- For implementation that needs file writes, use 'task' (the default; isolated worktree).
+
 Do NOT use InvokeAgent when:
 - A single Read, Grep, or Glob would answer the question (overhead > benefit)
 - The task requires real-time back-and-forth with the user (sub-agents have no way to ask questions; AskUser is filtered from their tool set)
@@ -61,7 +65,7 @@ Key rules:
 - Sub-agent results are NOT shown to the user — you must summarize them in your reply
 - Sub-agents CANNOT spawn other sub-agents. Plan all fan-out at this level; the InvokeAgent tool is filtered from every sub-agent's tool set.
 - Identical (agent_name, prompt) calls hit a cache and skip the LLM call. Cheap to retry idempotent tasks; no need to memoize yourself.
-- A result starting with '[ERROR: sub-agent ...]' is a structural failure (e.g. iteration cap, workspace setup), not a model answer. Re-strategize rather than treat as content.
+- A result starting with '[ERROR: sub-agent ...]' is a structural failure (e.g. workspace setup, isolation issue), not a model answer. Re-strategize rather than treat as content.
 - Always write a clear, self-contained prompt — the sub-agent hasn't seen your conversation
 - Include specific file paths, function names, and success criteria in your prompt
 - Omit agent_name to use the 'task' worker (full write access)"

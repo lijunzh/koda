@@ -70,9 +70,11 @@ use crate::engine::EngineEvent;
 /// when execution actually starts and to one of the terminal variants
 /// (`Completed`, `Errored`, `Cancelled`) when it finishes.
 ///
-/// `Running.iter` reflects the current inference iteration (1..=20).
-/// Background agents emit live updates via Layer 4 (#1058); `0` is
-/// the entry-point placeholder before the first iteration fires.
+/// `Running.iter` reflects the current inference iteration. Background
+/// agents emit live updates via Layer 4 (#1058); `0` is the entry-point
+/// placeholder before the first iteration fires. There is no upper bound
+/// (#1110 removed the sub-agent cap) — the counter widens to `u32` so
+/// long-running agents can't silently wrap.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentStatus {
@@ -81,11 +83,13 @@ pub enum AgentStatus {
     /// Actively executing. `iter` is the current inference iteration
     /// (1..=20); `0` means "started, no iter info yet" (Layer 0 default).
     Running {
-        /// Current inference iteration (1..=20). `0` is the
-        /// entry-point placeholder emitted before the first iteration
-        /// in `run_bg_agent`; background agents update this live
-        /// (Layer 4, #1058).
-        iter: u8,
+        /// Current inference iteration (1..). `0` is the entry-point
+        /// placeholder emitted before the first iteration in
+        /// `run_bg_agent`; background agents update this live
+        /// (Layer 4, #1058). `u32` because #1110 removed the sub-agent
+        /// iteration cap and a meandering weak model could plausibly
+        /// exceed `u8::MAX` before context exhaustion.
+        iter: u32,
     },
     /// User or parent fired the cancel token. Terminal.
     Cancelled,
