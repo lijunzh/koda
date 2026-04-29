@@ -13,7 +13,14 @@ Pure logic with zero terminal dependencies — communicates exclusively through
 - **Inference loop** — streaming tool-use loop with parallel execution
 - **SQLite persistence** — sessions, messages, compaction
 
-**Rust edition:** 2024
+**Rust edition:** 2024 (MSRV 1.88)
+
+> **Stability note:** `koda-core` is published primarily to support the
+> `koda-cli` binary distribution. Its public API is **not** stable
+> pre-1.0 and may change in any release, including patch versions. If
+> you embed `koda-core` directly, pin a specific version and review
+> [`CHANGELOG.md`](https://github.com/lijunzh/koda/blob/main/CHANGELOG.md)
+> before upgrading.
 
 ## Usage
 

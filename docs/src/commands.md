@@ -246,6 +246,13 @@ koda-20260410-143022-refactor-the-auth-module.md
 The transcript includes all user messages, assistant responses, and a
 summary of every tool call. System prompts are excluded.
 
+Sub-agent invocations are folded under the parent `InvokeAgent` tool
+call: the parent's tool-result block contains the full sub-agent trace
+(messages and tool calls) indented as a nested transcript section. The
+folding is driven by `session_events.parent_tool_call_id` in the
+session DB, so re-exporting an old session also reflects the
+hierarchy.
+
 ## `/verbose [on|off]`
 
 Toggles verbose tool output. By default Koda collapses long outputs

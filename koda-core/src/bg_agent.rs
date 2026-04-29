@@ -81,7 +81,8 @@ pub enum AgentStatus {
     /// Reserved but the spawned future hasn't started yet.
     Pending,
     /// Actively executing. `iter` is the current inference iteration
-    /// (1..=20); `0` means "started, no iter info yet" (Layer 0 default).
+    /// (1..); `0` means "started, no iter info yet" (Layer 0 default).
+    /// There is no upper bound — see #1110 / `LoopDetector` for termination.
     Running {
         /// Current inference iteration (1..). `0` is the entry-point
         /// placeholder emitted before the first iteration in

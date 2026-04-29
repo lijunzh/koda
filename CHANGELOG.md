@@ -6,6 +6,122 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.23] - 2026-04-29
+
+Feature + reliability release. 12 commits since v0.2.22 covering: a
+behavioural shift for sub-agents (the 20-iteration safety cap is gone
+— see DESIGN.md P3), two TUI quality-of-life features (persistent cwd
+in the status bar, terminal-restoring panic hook), richer transcript
+exports (sub-agent traces now persist and fold under their parent
+`InvokeAgent` call), an inference reliability fix (longer SSE
+read-timeout plus auto-retry on transient network errors), and a
+dependency cleanup that removes 16 transitive crates and bumps MSRV
+to Rust 1.88.
+
+### Breaking (koda-core internals)
+
+> `koda-core` is an internal crate published to support the `koda-cli`
+> binary; its public API is not stable pre-1.0. See
+> `koda-core/README.md` for the stability statement. The CLI itself
+> (`koda` binary, `/commands`, TUI keybindings, config schema) has no
+> breaking changes in this release.
+
+- **Removed `pub const MAX_SUB_AGENT_ITERATIONS`** from `koda-core`
+  (#1127, closes #1110). The 20-iteration ceiling on sub-agent loops
+  is gone. Termination is now driven by the model (clean stop, no
+  tool calls), `LoopDetector` (consecutive identical calls → feedback
+  → hard stop), parent cancellation, or context exhaustion — the same
+  set of mechanisms Codex and Zed rely on. Per `DESIGN.md` P3 ("Build
+  for the world six months from now"), the cap was redundant
+  scaffolding for a model weakness P3 explicitly says not to
+  compensate for.
+- **`AgentStatus::Running.iter` widened `u8` → `u32`** in
+  `koda-core/src/bg_agent.rs` (#1127). With the cap gone, a
+  meandering weak model could plausibly exceed `u8::MAX` before
+  context exhaustion; silent wraparound would mislead the TUI status
+  bar.
+- **`WAIT_TASK_DEFAULT_TIMEOUT_SECS` bumped 30 → 60** seconds (#1127,
+  closes #1106). Sub-agent inference rounds take real time; the
+  default should mean "I'm willing to wait this long," not "check
+  back quickly."
+- **MSRV bumped Rust 1.87 → 1.88** (#1118). Required by the dependency
+  cleanup; also unblocks `time 0.3.47` (RUSTSEC-2026-0009).
+
+### Added
+
+- **Persistent cwd in the TUI status bar** (#1117, #1105). The status
+  bar now shows the current working directory, with `$HOME`
+  substituted as `~` and the path right-truncated at segment
+  boundaries to fit the available space. Live-updates on terminal
+  resize. New `format_cwd_compact` helper covered by 9 unit tests.
+- **Sub-agent traces persist and fold in transcript exports** (#1112,
+  partial #1108). Engine `SessionEvent`s and sub-agent traces are
+  now persisted to the session DB via the new `PersistingSink`. On
+  `/export`, sub-agent invocations render nested under the parent
+  `InvokeAgent` tool result, so multi-turn delegation is auditable
+  in the exported markdown. Re-exporting an old session also
+  reflects the hierarchy.
+
+### Changed
+
+- **Sub-agents now trust the model** (#1127, closes #1110, #1106).
+  See the Breaking section for the mechanics. The TUI iteration
+  display drops the `/20` denominator. The `LoopDetector` hard-stop
+  message gains a "consider switching to a stronger model" hint —
+  the one place we have a smoking-gun signal that the model (not
+  the task) is the problem. The `InvokeAgent` tool description gains
+  one line steering read-only work to `explore` (faster, cheaper,
+  no isolated workspace) and writes to `task`.
+- **`WaitTask` description nudge** (#1127, closes #1106): prefer
+  120–300 s for sub-agent waits, call sparingly.
+
+### Fixed
+
+- **Inference: longer SSE read-timeout + auto-retry on transient
+  network errors** (#1121). Bumped `reqwest::read_timeout` 180s →
+  300s to accommodate slow reasoning models (Gemini 3.x Pro,
+  MiniMax, etc.) that can silently buffer on a single SSE chunk for
+  minutes. Wrapped the inference call in `try_with_rate_limit` so
+  transient timeouts and connection resets retry up to 5 times with
+  exponential backoff (`is_network_transient_error` predicate covers
+  "operation timed out", "connection reset", "broken pipe", and
+  related substrings). Mutually exclusive with the existing
+  rate-limit / context-overflow / image-rejection retry paths.
+- **TUI restores terminal on panic** (#1120). Installed a custom
+  panic hook (modeled on `codex-rs/tui/src/tui.rs`) that disables
+  raw mode, releases mouse capture, and exits the alternate screen
+  before chaining to the original hook. Crashes no longer leave the
+  shell in an unusable state requiring `reset`.
+- **Transcript export surfaces tool name + args + call\_id** (#1111,
+  partial #1108). Pre-fix, `/export` markdown showed only the
+  tool's text result without identifying which tool was called or
+  with what arguments. Now each tool block is properly headered.
+
+### Internal
+
+- **Refactor `tool_header`**: unify `detail_spans` and `detail_text`
+  via a single `ToolCallSummary` source of truth (#1107). Eliminates
+  the per-tool drift that contributed to #1099. Pure refactor, no
+  behaviour change.
+- **Test infrastructure hardening** (#1109, #1114). 37 files updated
+  to: (a) replace `unsafe { std::env::set_var }` in tests with
+  dependency-injection helpers (`stage2_binary_from`,
+  `set_worker_binary_for_tests`); (b) add `#[tokio::test(flavor =
+  "multi_thread")]` to every test that exercises code containing
+  `tokio::spawn` (the default `current_thread` flavor can deadlock
+  spawned tasks under macOS CI load); (c) eliminate the last
+  polling-sleep in the sandbox tests. Net `unsafe` count in repo
+  went down. New CI lint `scripts/check_tokio_test_flavor.py`
+  prevents regressions.
+- **Bundle v0.2.22 P3 release-polish items** (#1115, closes #1104).
+  Worktree/submodule-aware `.git/config` skip in bwrap (covers a
+  ClonefileProvider edge case); plus four small doc/test polish
+  items.
+- **chore(deps)**: remove 5 dead direct deps (−16 transitive crates)
+  + bump MSRV to 1.88 (#1118). Smaller supply-chain surface.
+- **ci(deps)**: bump `taiki-e/install-action` 2.75.19 → 2.75.25
+  (#1126).
+
 ## [0.2.22] - 2026-04-28
 
 Patch release. 8 bug-fix commits since v0.2.21, no new features, no public

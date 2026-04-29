@@ -30,9 +30,10 @@ Run `koda` with no arguments to open the full-screen TUI.
 - **Queue preview** — shown above the status bar **only when the deferred
   queue has items**. Displays up to 3 rows of pending text with index numbers,
   an overflow count, and keybinding hints. Hidden when the queue is empty.
-- **Status bar** — live view of model, trust mode, context usage bar, MCP
-  server count (when configured), inference time, queue count, and last-turn
-  token/speed stats.
+- **Status bar** — live view of model, trust mode, current working
+  directory (right-truncated to fit, with `~` substitution for `$HOME`),
+  context usage bar, MCP server count (when configured), inference time,
+  queue count, and last-turn token/speed stats.
 
 ## Starting a conversation
 
