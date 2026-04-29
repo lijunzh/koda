@@ -5,13 +5,16 @@ default-members = ["koda-cli"]
 
 [workspace.package]
 edition = "2024"
-# Pinned to the actual minimum required by current code (uses
-# `u64::is_multiple_of`, stable since 1.87). Surfacing this gives
-# downstream consumers a clear MSRV signal instead of a late
-# compile error from older toolchains. Bump in lockstep with any
-# new stdlib feature usage; clippy's incompatible_msrv lint will
-# catch the next drift.
-rust-version = "1.87"
+# Pinned to the actual minimum required to pick up patched crate
+# versions in the current dep graph. Notably, `time >= 0.3.47`
+# (security fix RUSTSEC-2026-0009) requires Rust 1.88. Bumping
+# from 1.87 → 1.88 is low-risk: 1.88 was released 2025-06-26
+# (~10 months stable). Surfacing MSRV gives downstream consumers
+# a clear signal instead of a late compile error from older
+# toolchains. Bump in lockstep with any new stdlib feature usage
+# or held-back security patch; clippy's incompatible_msrv lint
+# catches the next drift.
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/lijunzh/koda"
 homepage = "https://github.com/lijunzh/koda"

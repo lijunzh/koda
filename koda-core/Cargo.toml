@@ -53,9 +53,6 @@ url = "2"
 # Unique IDs
 uuid = { version = "1", features = ["v4"] }
 
-# Base64 encoding (for image support)
-base64 = "0.22"
-
 # SHA-256 content hashing (edit staleness detection — Gemini CLI strategy)
 sha2 = "0.10"
 
@@ -112,7 +109,6 @@ rmcp = { version = "1.5", features = [
     "server-side-http",
 ] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "tower-log"] }
-tower = "0.5"
 koda-test-utils = { path = "../koda-test-utils" }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
