@@ -152,6 +152,61 @@ impl FakeLlmServer {
             .await;
     }
 
+    /// Mount a sequence of two responses for the same SSE endpoint:
+    /// 1. The **first** request gets a response that stays silent for
+    ///    `silent_for` before any bytes arrive (modelling a stalled SSE
+    ///    stream / dead TCP socket).
+    /// 2. **Subsequent** requests get an immediate 200 OK SSE stream
+    ///    framed from `chunks` (modelling the upstream recovering on
+    ///    retry).
+    ///
+    /// Used by the inference-loop retry regression test (#1123) to
+    /// prove that `try_with_rate_limit` actually retries on a transient
+    /// network timeout instead of bubbling "connection broken" up to
+    /// the user. Pair with `KODA_READ_TIMEOUT_SECS` set well below
+    /// `silent_for` so the client gives up on the first attempt.
+    ///
+    /// SSE framing matches [`Self::mount_chat_sse`]: each chunk is
+    /// emitted as `data: <chunk>\n\n`, no automatic `[DONE]` trailer
+    /// (callers include it explicitly).
+    ///
+    /// Wiremock matches mocks in insertion order; `up_to_n_times(1)`
+    /// retires the silent mock after one match so the second mock
+    /// (the success path) takes over for the retry.
+    pub async fn mount_chat_silent_then_resume(&self, silent_for: Duration, chunks: &[&str]) {
+        let path_re = r".*/chat/completions$";
+        let body = chunks
+            .iter()
+            .map(|c| format!("data: {c}\n\n"))
+            .collect::<String>();
+
+        // First mock: stall before any bytes arrive. The body is
+        // irrelevant because the client gives up before the delay
+        // elapses, but wiremock still wants something to template.
+        Mock::given(method("POST"))
+            .and(path_regex(path_re))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body.clone())
+                    .set_delay(silent_for),
+            )
+            .up_to_n_times(1)
+            .mount(&self.server)
+            .await;
+
+        // Second mock: immediate SSE success.
+        Mock::given(method("POST"))
+            .and(path_regex(path_re))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body),
+            )
+            .mount(&self.server)
+            .await;
+    }
+
     // ── OpenAI-compat convenience wrappers ────────────────────────────────
     //
     // These hard-code `POST .*/chat/completions$`. They predate the generic
