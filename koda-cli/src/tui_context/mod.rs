@@ -15,6 +15,7 @@ use crate::sink::UiEvent;
 use crate::tui_commands::{self, SlashAction};
 use crate::tui_render::TuiRenderer;
 use crate::tui_types::{MenuContent, PromptMode, ProviderWizard, Term, TuiState};
+use crate::render_mode::RenderMode;
 use crate::tui_viewport::{draw_viewport, init_terminal, restore_terminal};
 
 use anyhow::Result;
@@ -235,8 +236,9 @@ impl TuiContext {
         };
         let shared_mode = trust::new_shared_trust(initial_mode);
 
-        // Terminal + textarea
-        let terminal = init_terminal()?;
+        // Terminal + textarea — mode comes from KODA_RENDER (epic #1146).
+        let render_mode = RenderMode::from_env();
+        let terminal = init_terminal(render_mode)?;
 
         let mut textarea = TextArea::default();
         textarea.set_cursor_line_style(Style::default());

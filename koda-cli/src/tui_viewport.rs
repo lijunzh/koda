@@ -5,6 +5,7 @@
 //!
 //! See #472 for the fullscreen migration RFC.
 
+use crate::render_mode::RenderMode;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_types::{MenuContent, PromptMode, Term, TuiState};
 use crate::widgets::queue_preview::QueuePreview;
@@ -508,34 +509,66 @@ fn ask_user_menu_height(
 
 // ── Terminal lifecycle ─────────────────────────────────
 
-/// Initialize the terminal in fullscreen mode (alternate screen buffer).
+/// Initialize the terminal in the requested rendering mode.
 ///
-/// No DSR queries, no cursor position tracking. The app owns every pixel.
+/// Two paths:
 ///
-/// Also installs a panic hook that restores the terminal before the panic
-/// propagates — without it, a panic anywhere in the app (provider code, tool
-/// dispatch, ratatui render, tokio task, JSON deserialization, …) leaves the
-/// terminal in raw mode + alternate screen + mouse capture on, which makes
-/// the user's shell unusable until they run `reset` or open a new session.
-pub(crate) fn init_terminal() -> Result<Term> {
+/// - [`RenderMode::Altscreen`]: enter the alternate screen buffer,
+///   capture mouse for our custom selection widget, render into a
+///   `Viewport::Fullscreen`. The historical default; preserves the
+///   user's previous shell state on exit.
+///
+/// - [`RenderMode::Inline`]: stay in the primary screen, do *not*
+///   capture mouse, render into a `Viewport::Inline(N)`. N is the
+///   current terminal height for now (so visual layout matches
+///   altscreen mode); subsequent commits in epic #1146 shrink this
+///   so finalized history can move into native scrollback.
+///
+/// In both modes we install the same panic hook (which best-effort
+/// resets *all* terminal state) and enable bracketed paste. Mouse
+/// capture and alternate-screen entry are gated by the mode.
+pub(crate) fn init_terminal(mode: RenderMode) -> Result<Term> {
     crossterm::terminal::enable_raw_mode()?;
-    crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableBracketedPaste,
-        crossterm::event::EnableMouseCapture,
-    )?;
+
+    // Always enable bracketed paste so multi-line / IDE paste lands
+    // as one event in either mode.
+    crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste,)?;
+
+    if !mode.is_inline() {
+        // Altscreen path: hide scrollback for the duration of the
+        // session, capture mouse for in-app selection.
+        crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture,
+        )?;
+    }
+    // Inline path intentionally skips both: scrollback stays visible
+    // and the user can natively select text in the terminal.
 
     set_panic_hook();
 
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
-    let terminal = Terminal::with_options(
-        backend,
-        TerminalOptions {
-            viewport: Viewport::Fullscreen,
-        },
-    )?;
+    let viewport = match mode {
+        RenderMode::Altscreen => Viewport::Fullscreen,
+        RenderMode::Inline => {
+            // For Phase A, size the inline viewport to the entire
+            // terminal height so the existing `draw_viewport` layout
+            // continues to fit. Phase B+ will introduce a smaller
+            // composer-only viewport and migrate history rendering
+            // out of the viewport into `inline_history::push_history`.
+            //
+            // Falls back to a sensible non-zero default if the size
+            // probe fails (e.g. detached TTY in some test harnesses).
+            let height = crossterm::terminal::size()
+                .map(|(_w, h)| h)
+                .unwrap_or(24)
+                .max(1);
+            Viewport::Inline(height)
+        }
+    };
+    let terminal = Terminal::with_options(backend, TerminalOptions { viewport })?;
 
     Ok(terminal)
 }
@@ -544,6 +577,12 @@ pub(crate) fn init_terminal() -> Result<Term> {
 ///
 /// Writes directly to `stdout()` so it can run from anywhere — including
 /// the panic hook, which has no access to the `Terminal` value.
+///
+/// Defensively emits *all* the disable escapes regardless of the mode
+/// the session ran in. `DisableMouseCapture` and `LeaveAlternateScreen`
+/// are no-ops on terminals that never received the matching enable, so
+/// it's safe (and simpler) to fire them unconditionally rather than
+/// thread the active [`RenderMode`] through every panic path.
 pub(crate) fn restore_terminal_modes() {
     let _ = crossterm::execute!(
         std::io::stdout(),
