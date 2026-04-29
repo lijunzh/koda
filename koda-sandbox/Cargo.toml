@@ -2,6 +2,7 @@
 name = "koda-sandbox"
 version = "0.2.22"
 edition.workspace = true
+rust-version.workspace = true
 description = "Capability-aware sandbox layer for Koda — kernel-enforced FS/net/exec policies (refs #934)"
 license.workspace = true
 repository.workspace = true

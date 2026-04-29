@@ -2,6 +2,7 @@
 name = "koda-cli"
 version = "0.2.22"
 edition.workspace = true
+rust-version.workspace = true
 description = "A high-performance AI coding agent for macOS and Linux"
 license.workspace = true
 repository.workspace = true

@@ -212,19 +212,47 @@ fn apply_git_config_deny(cmd: &mut Command, root: &str) {
     let hooks = format!("{git_dir}/hooks");
     let config = format!("{git_dir}/config");
 
+    // Worktree handling (#1104): when `.git` is a regular file (the
+    // `gitdir: <path>` pointer git uses for worktrees / submodules),
+    // `create_dir_all(".git/hooks")` returns NotADirectory. Detect and
+    // skip the deny dance — surfacing the case via tracing instead of
+    // silently swallowing the error and letting bwrap crash later
+    // with an opaque "source doesn't exist" at launch. The hardening
+    // this layer provides is best-effort (the seatbelt backend covers
+    // the same ground via deny rules); skipping it for the worktree
+    // edge case is the right trade-off versus parsing the gitdir
+    // pointer and chasing the real .git directory.
+    if let Ok(meta) = std::fs::symlink_metadata(&git_dir)
+        && meta.is_file()
+    {
+        tracing::warn!(
+            target: "koda::sandbox",
+            git_dir = %git_dir,
+            "skipping apply_git_config_deny: .git is a file (worktree/submodule); \
+             rely on seatbelt-style policy or set fs.allow_git_config=true"
+        );
+        return;
+    }
+
     // Pre-create the hooks dir (this also creates `.git/` if missing).
     // `create_dir_all` is idempotent and never truncates existing
     // contents, so a real repo's hooks directory is preserved as-is.
     let _ = std::fs::create_dir_all(&hooks);
 
-    // Pre-create `.git/config` only if it doesn't exist. We use the
-    // explicit existence check rather than `OpenOptions::create(true)`
-    // so that on a real repo we never accidentally touch the file's
-    // mtime — some tools (e.g. `git status`'s mtime-based caches)
-    // care. An empty file is a valid git config; git treats it as
-    // "no overrides, use defaults".
-    if !Path::new(&config).exists() {
-        let _ = std::fs::File::create(&config);
+    // Pre-create `.git/config` only if it doesn't exist. Use
+    // `create_new(true)` for an atomic "create-if-absent" — closes the
+    // TOCTOU window between an existence check and the create call
+    // (#1104). On a real repo with an existing config, `create_new`
+    // fails with `AlreadyExists` without modifying the file (no mtime
+    // touch, no truncation), which is exactly what we want. Any other
+    // error we ignore for the same reason as below: the bind below
+    // will surface a clear failure if anything is genuinely wrong.
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&config)
+    {
+        Ok(_) | Err(_) => {} // existing file or transient FS error
     }
 
     // If the create_dir_all above failed (e.g. parent unwritable),
@@ -728,6 +756,77 @@ mod tests {
         assert!(
             !has_hooks_ro_bind,
             "allow_git_config=true must not add ro-bind for .git/hooks"
+        );
+    }
+
+    /// **#1104**: when `.git` is a regular file (the `gitdir: ...`
+    /// pointer used by git worktrees / submodules), the deny dance
+    /// must skip cleanly instead of (a) silently swallowing
+    /// `NotADirectory` and (b) causing bwrap to crash later with
+    /// "source doesn't exist".
+    #[test]
+    fn git_config_deny_skips_worktree_gitdir_pointer() {
+        let dir = tempfile::tempdir().unwrap();
+        // Worktree shape: .git is a file, not a directory.
+        std::fs::write(
+            dir.path().join(".git"),
+            b"gitdir: /some/main/.git/worktrees/my-wt\n",
+        )
+        .unwrap();
+
+        let mut cmd = Command::new("true");
+        let root = dir.path().to_string_lossy();
+        apply_git_config_deny(&mut cmd, &root);
+
+        // The .git file must remain a file (we didn't try to convert
+        // it into a directory or otherwise touch it).
+        assert!(
+            std::fs::symlink_metadata(dir.path().join(".git"))
+                .unwrap()
+                .is_file(),
+            ".git file must remain unchanged"
+        );
+
+        // No --ro-bind for hooks/config should have been added.
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.is_empty(),
+            "worktree case must add zero bind args (got: {args:?})"
+        );
+    }
+
+    /// **#1104**: the TOCTOU fix uses `create_new(true)` which fails
+    /// atomically on existing files — verify the existing config's
+    /// mtime is not bumped (the property the original existence-check
+    /// guard was protecting). Sleep-free: compare snapshots taken
+    /// before/after the call.
+    #[test]
+    fn git_config_deny_preserves_existing_config_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = dir.path().join(".git");
+        std::fs::create_dir_all(git.join("hooks")).unwrap();
+        let config = git.join("config");
+        std::fs::write(&config, b"[core]\nexisting=yes\n").unwrap();
+        let before = std::fs::metadata(&config).unwrap().modified().unwrap();
+
+        let mut cmd = Command::new("true");
+        let root = dir.path().to_string_lossy();
+        apply_git_config_deny(&mut cmd, &root);
+
+        let after = std::fs::metadata(&config).unwrap().modified().unwrap();
+        assert_eq!(
+            before, after,
+            "existing git config mtime must not be touched (TOCTOU fix invariant)"
+        );
+        // And contents must be byte-identical.
+        assert_eq!(
+            std::fs::read(&config).unwrap(),
+            b"[core]\nexisting=yes\n",
+            "contents must be unchanged"
         );
     }
 }

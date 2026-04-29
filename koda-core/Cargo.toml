@@ -2,13 +2,16 @@
 name = "koda-core"
 version = "0.2.22"
 edition.workspace = true
+rust-version.workspace = true
 description = "Core engine for the Koda AI coding agent (macOS and Linux only)"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
 keywords = ["ai", "coding-agent", "llm", "engine", "unix"]
-categories = ["development-tools"]
+# crates.io permits up to 5 categories; surface the async + LLM-API
+# nature so search lands the crate beyond just "development-tools".
+categories = ["development-tools", "asynchronous", "api-bindings"]
 authors.workspace = true
 
 [lib]
