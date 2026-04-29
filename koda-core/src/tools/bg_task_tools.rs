@@ -60,7 +60,11 @@ use crate::tools::bg_process::{
 pub const WAIT_TASK_MAX_TIMEOUT_SECS: u32 = 300;
 
 /// Default `timeout_secs` when the model omits the parameter.
-pub const WAIT_TASK_DEFAULT_TIMEOUT_SECS: u32 = 30;
+///
+/// 60 s suits a sub-agent inference round (multi-iteration thinking + tool
+/// use can easily run 30-60 s) without forcing the model into a busy-poll
+/// loop. Short shell-process waits should pass an explicit smaller value.
+pub const WAIT_TASK_DEFAULT_TIMEOUT_SECS: u32 = 60;
 
 /// Return tool definitions for the LLM.
 pub fn definitions() -> Vec<ToolDefinition> {
@@ -128,7 +132,11 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 "Block until a background task finishes (or timeout fires).\n\n\
                 Returns the task's terminal state and result so you don't have to keep \
                 polling ListBackgroundTasks. Prefer WaitTask over a polling loop — one \
-                tool call instead of many.\n\n\
+                tool call instead of many. Call WaitTask sparingly: only when you need \
+                the result for the next critical-path step. Pick a duration that means \
+                'I'm willing to wait this long', not 'check back quickly' — for sub-agent \
+                tasks (multi-iteration inference) prefer 120-300 s; the default suits \
+                short shell-process waits.\n\n\
                 For sub-agent tasks (\"agent:N\"): on completion, returns the agent's full \
                 output. The result will NOT also appear in the auto-drain on the next \
                 iteration — WaitTask consumes it.\n\n\

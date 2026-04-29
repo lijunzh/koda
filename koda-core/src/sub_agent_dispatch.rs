@@ -9,7 +9,6 @@ use crate::approval_flow::request_approval;
 use crate::config::KodaConfig;
 use crate::db::{Database, Role};
 use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
-use crate::loop_guard;
 use crate::memory;
 use crate::persistence::Persistence;
 use crate::preview;
@@ -54,15 +53,15 @@ pub(crate) fn next_invocation_id() -> u32 {
 /// RAII cleanup hook for #996 Phase E.
 ///
 /// On drop, cancels every bg-agent registry entry tagged with this
-/// sub-agent's invocation id. That covers the two ways a sub-agent
-/// can exit and leave orphans:
+/// sub-agent's invocation id. That covers the way a sub-agent can
+/// exit and leave orphans:
 ///
-///   1. **Iteration cap** (`Ok(iteration_cap_marker(...))`) — the
-///      sub-agent ran out of inference iterations *while* one of its
-///      bg children was still running.
-///   2. **Error return** (`Err(...)` from any `?` inside the loop) —
+///   1. **Error return** (`Err(...)` from any `?` inside the loop) —
 ///      e.g. provider failure, persistence failure, `?`-propagated
 ///      cancellation.
+///   2. **`LoopDetector` hard stop** — model ignored feedback after
+///      consecutive identical tool calls; surfaced via the inference
+///      helpers, not as a marker string here.
 ///
 /// On the cancel-token path we'd reap anyway via the parent's cascade,
 /// but the spawner-scoped cancel is cheap and idempotent so we just
@@ -757,7 +756,13 @@ pub(crate) fn execute_sub_agent<'a>(
             &tools.skill_registry,
         );
 
-        for iter in 1u8..=loop_guard::MAX_SUB_AGENT_ITERATIONS as u8 {
+        for iter in 1u32.. {
+            // #1110: sub-agents have no hardcoded iteration cap. Termination
+            // is driven by the model (clean stop, no tool calls), `LoopDetector`
+            // (consecutive identical calls -> feedback -> hard stop), parent
+            // cancellation, or context exhaustion. Per DESIGN.md P3:
+            // "Let the model drive [...] don't scaffold around weakness."
+            //
             // Layer 4 of #996 + #1076: push the live iteration counter
             // so `/agents`, the status-bar pill, AND ACP / headless /
             // TUI clients all reflect real progress instead of the
@@ -1065,53 +1070,12 @@ pub(crate) fn execute_sub_agent<'a>(
                 .await?;
             }
         }
-
-        sink.emit(EngineEvent::Warn {
-            message: format!(
-                "Sub-agent '{agent_name}' hit its iteration limit ({}). Returning partial result.",
-                loop_guard::MAX_SUB_AGENT_ITERATIONS
-            ),
-        });
-        // Release workspace on iteration limit exit.
-        if let Ok(Some(hint)) = workspace.release(&sub_session, &effective_root).await {
-            sink.emit(EngineEvent::Info {
-                message: format!("  \u{1f335} {agent_name}: {hint}"),
-            });
-        }
-        // **#1022 B18**: pre-fix returned a free-text
-        // `"(sub-agent reached maximum iterations)"` that was visually
-        // success-shaped — indistinguishable from a normal sub-agent
-        // answer. The parent model would treat it as a tool result
-        // and either (a) try to keep working with the meaningless
-        // string, or (b) re-issue the same `InvokeAgent` call,
-        // burning another 20 LLM iterations to fail the same way.
-        //
-        // Two prongs to the fix:
-        //
-        // 1. **Bracketed-marker format** matches the established
-        //    failure-result convention (`[cancelled by parent]`,
-        //    `[cancelled]`, `[Background agent X failed]`). The
-        //    `[ERROR: ...]` prefix is unambiguous to the model:
-        //    "this is not a sub-agent answer, this is structural
-        //    failure metadata." Includes the cap as a number so the
-        //    model can reason about whether the task was decomposable.
-        //    Format extracted to `iteration_cap_marker` so the
-        //    contract can be unit-tested without standing up the
-        //    full sub-agent harness.
-        //
-        // 2. **Cache the result** so a second identical call returns
-        //    the same marker immediately instead of burning another
-        //    20 iterations. Keyed by `(agent_name, prompt_hash)`,
-        //    so a *reformulated* prompt is still attempted (parent
-        //    can adapt). Cache is invalidated on any file mutation
-        //    (see `SubAgentCache::invalidate`) so a write-then-retry
-        //    flow naturally bypasses the marker. This makes the
-        //    iteration-cap behave like every other sub-agent
-        //    result — the cache is the right place to record
-        //    "don't try this again unless something changed."
-        let result = iteration_cap_marker(agent_name, loop_guard::MAX_SUB_AGENT_ITERATIONS);
-        sub_agent_cache.put(agent_name, prompt, &result);
-        Ok(result)
+        // #1110: unreachable in practice. The `for iter in 1u32..` range is
+        // unbounded; the loop only exits via `return Ok(...)` (clean stop or
+        // cancellation), `return Err(...)` (provider/persistence failure), or
+        // `LoopDetector` short-circuit inside the inference helpers. This
+        // sentinel keeps rustc happy about the function's return type.
+        unreachable!("sub-agent loop exits via return; the iteration range is unbounded");
     }
 }
 
@@ -1167,38 +1131,14 @@ fn pick_write_provider(
     Box::new(GitWorktreeProvider::new(project_root, agent_name))
 }
 
-// \u2500\u2500 Iteration-cap marker (#1022 B18) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-
-/// Build the structural-failure marker returned when a sub-agent
-/// exhausts its iteration budget without producing a final answer.
-///
-/// Format follows the established bracketed-marker convention used
-/// throughout the dispatch path (`[cancelled by parent]`,
-/// `[cancelled]`, `[Background agent X failed]`). The `[ERROR:`
-/// prefix is the unambiguous "this is metadata, not content" signal
-/// to the model.
-///
-/// Extracted as a free function so the contract (must contain
-/// `[ERROR:`, the agent name, the cap as a number, and a
-/// re-strategize hint) can be regression-tested without standing up
-/// the full sub-agent harness.
-fn iteration_cap_marker(agent_name: &str, cap: usize) -> String {
-    format!(
-        "[ERROR: sub-agent '{agent_name}' exceeded its iteration cap of {cap} without producing \
-         a final answer. Decompose the task into smaller pieces, or attempt the work \
-         directly without delegating.]"
-    )
-}
-
-/// **#1022 B21**: structural-failure marker returned when an
 /// isolated sub-agent's workspace provider can't provision.
 ///
 /// Replaces the pre-fix silent fallback to `project_root` — which
 /// dropped the sub-agent into the parent's unisolated working
 /// tree and let parallel sub-agents race on the same files.
 ///
-/// Same format / `[ERROR:` prefix as `iteration_cap_marker` so
-/// the model treats it as structural failure metadata rather
+/// Same `[ERROR:` prefix convention as other structural-failure
+/// markers so the model treats it as failure metadata rather
 /// than a sub-agent answer. Includes the failure reason so the
 /// parent can adapt (e.g. switch to a read-only sub-agent if
 /// the underlying issue is non-APFS volume / no git repo).
@@ -1209,106 +1149,6 @@ fn workspace_provision_failure_marker(agent_name: &str, reason: &str) -> String 
          resolve the workspace setup issue, retry without write tools, or attempt the work \
          directly without delegating.]"
     )
-}
-
-#[cfg(test)]
-mod b18_tests {
-    //! **#1022 B18** regression tests for the iteration-cap marker.
-    //!
-    //! These pin the *contract* of the marker string \u2014 not its
-    //! exact wording, but the load-bearing pieces:
-    //!
-    //! - `[ERROR:` prefix so the model treats it as structural
-    //!   failure metadata, not a sub-agent answer (the pre-fix
-    //!   `"(sub-agent reached maximum iterations)"` had no such
-    //!   marker and was indistinguishable from a normal result).
-    //! - The agent name appears so multi-agent flows can identify
-    //!   which sub-agent capped out.
-    //! - The cap appears as a number so the model can reason about
-    //!   decomposability ("did it run out of budget at 20 or 200?").
-    //! - A re-strategize hint appears so the model has a concrete
-    //!   next action instead of just retrying.
-    //!
-    //! The cache integration (`sub_agent_cache.put` two lines above
-    //! the call) is verified by code review \u2014 it's adjacent to the
-    //! marker construction and the call shape is obvious. A full
-    //! e2e cap-and-retry test would require the mock provider to
-    //! issue 21+ tool calls in a row; the cost/value ratio doesn't
-    //! justify it for what's effectively a one-line cache write.
-    use super::iteration_cap_marker;
-    use crate::loop_guard::MAX_SUB_AGENT_ITERATIONS;
-
-    #[test]
-    fn marker_has_error_prefix() {
-        let m = iteration_cap_marker("scout", 20);
-        assert!(
-            m.starts_with("[ERROR:"),
-            "marker must start with `[ERROR:` so the model treats it \
-             as structural failure metadata, not a sub-agent answer; \
-             got: {m}"
-        );
-    }
-
-    #[test]
-    fn marker_includes_agent_name() {
-        let m = iteration_cap_marker("scout", 20);
-        assert!(
-            m.contains("'scout'"),
-            "marker must name the capped sub-agent; got: {m}"
-        );
-    }
-
-    #[test]
-    fn marker_includes_cap_as_number() {
-        let m = iteration_cap_marker("scout", 20);
-        assert!(
-            m.contains("20"),
-            "marker must include the cap as a number so the model can \
-             reason about decomposability; got: {m}"
-        );
-    }
-
-    #[test]
-    fn marker_includes_restrategize_hint() {
-        let m = iteration_cap_marker("scout", 20);
-        // Either of the two suggested actions is fine \u2014 we just
-        // want the model to see that it has options other than
-        // retrying the same call.
-        assert!(
-            m.to_lowercase().contains("decompose")
-                || m.to_lowercase().contains("attempt the work directly"),
-            "marker must give the model a concrete next action; got: {m}"
-        );
-    }
-
-    #[test]
-    fn marker_uses_real_cap_constant() {
-        // Sanity: the call site passes `MAX_SUB_AGENT_ITERATIONS`,
-        // not a magic number. If someone refactors the constant to
-        // a different name and forgets to update the call site, the
-        // test wouldn't catch it directly \u2014 but this at least
-        // documents the wired-in expectation.
-        let m = iteration_cap_marker("agent", MAX_SUB_AGENT_ITERATIONS);
-        assert!(m.contains(&MAX_SUB_AGENT_ITERATIONS.to_string()));
-    }
-
-    #[test]
-    fn marker_is_single_line_for_tool_result_clarity() {
-        // Sub-agent results land in `tool_call_id`-keyed message
-        // content. Multi-line markers would format awkwardly in
-        // the user-facing trace; single-line keeps the failure
-        // visible at a glance. This catches a future "helpful"
-        // refactor that spreads the message across lines.
-        // content. Multi-line markers would format awkwardly in
-        // the user-facing trace; single-line keeps the failure
-        // visible at a glance. This catches a future "helpful"
-        // refactor that spreads the message across lines.
-        let m = iteration_cap_marker("scout", 20);
-        assert!(
-            !m.contains('\n'),
-            "marker must be single-line for clean tool-result formatting; got:\n{m}"
-        );
-    }
 }
 
 #[cfg(test)]

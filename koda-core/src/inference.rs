@@ -1361,6 +1361,8 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 sink.emit(EngineEvent::Warn {
                     message: format!(
                         "Loop guard: {detail} — model ignored feedback, stopping. \
+                         This often means the current model isn't capable enough for the \
+                         task; consider switching to a stronger model. \
                          Send a follow-up message to continue."
                     ),
                 });

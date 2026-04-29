@@ -89,7 +89,10 @@ async fn test_sub_agent_invocation_e2e() {
 /// iteration the sub-agent reloaded a context with **no assistant
 /// turns** — then `prune_mismatched_tool_calls` orphan-pruned the
 /// tool result rows, leaving only `[system, user]`. The sub-agent
-/// re-issued the same tool call forever, hitting the iteration cap.
+/// re-issued the same tool call forever, previously hitting the
+/// (now-removed, see #1110) iteration cap; today the same scenario
+/// would terminate via `LoopDetector` consecutive-identical detection
+/// or context exhaustion.
 ///
 /// User-visible symptom (post-#1099 when paths actually rendered):
 ///
@@ -97,7 +100,7 @@ async fn test_sub_agent_invocation_e2e() {
 /// ● List /Users/lijun/repo
 /// ● List /Users/lijun/repo
 /// ● List /Users/lijun/repo
-/// ... (repeats until iteration cap or Ctrl+C)
+/// ... (repeats until LoopDetector hard-stop or Ctrl+C)
 /// ```
 ///
 /// This test scripts the sub-agent's mock provider to:

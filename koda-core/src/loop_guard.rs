@@ -25,8 +25,11 @@
 //!
 //! 1. **Consecutive identical calls** — same `(tool, args)` called
 //!    `CONSECUTIVE_REPEAT_THRESHOLD` times in a row → inject feedback.
-//! 2. **Hard iteration cap** — absolute ceiling on loop iterations.
-//!    User can extend interactively.
+//! 2. **Hard iteration cap (top-level only)** — absolute ceiling on
+//!    the main inference loop. User can extend interactively.
+//!    Sub-agent loops are **uncapped** as of #1110; they trust the
+//!    model and rely on consecutive-identical detection, provider
+//!    stop reasons, cancellation, and context bounds (P3 in DESIGN.md).
 
 use crate::providers::ToolCall;
 use std::collections::VecDeque;
@@ -34,8 +37,11 @@ use std::collections::VecDeque;
 /// Default hard cap for the main inference loop.
 pub const MAX_ITERATIONS_DEFAULT: u32 = 200;
 
-/// Hard cap for sub-agent loops.
-pub const MAX_SUB_AGENT_ITERATIONS: usize = 20;
+// `MAX_SUB_AGENT_ITERATIONS` deleted in #1110: per `DESIGN.md` P3 ("Build for
+// the world six months from now"), sub-agents trust the model and rely on
+// `LoopDetector`, provider stop reasons, cancellation, and context bounds
+// instead of a hardcoded iteration count. Codex and Zed both ship without
+// any per-sub-agent iteration cap.
 
 /// How many **consecutive** identical tool calls (same name + args) trigger
 /// loop detection. "Consecutive" means the same fingerprint appears this
