@@ -99,6 +99,17 @@ pub(crate) struct TuiContext {
     pub agent: Arc<KodaAgent>,
     pub project_root: PathBuf,
 
+    // ── Render mode ───────────────────────────────────────────
+    /// Selected at process start from `KODA_RENDER`. Drives where
+    /// finalized history lines land:
+    ///
+    /// - `Altscreen`: pushed into [`ScrollBuffer`] for in-app rendering.
+    /// - `Inline`: pushed into the terminal's native scrollback via
+    ///   [`crate::inline_history::push_history`].
+    ///
+    /// See [`Self::emit`] / [`Self::emit_lines`] for the dispatch.
+    pub render_mode: RenderMode,
+
     /// Coalescing draw scheduler (#1138). Replaces the old per-iteration
     /// synchronous `terminal.draw()` calls in the inference hot loop.
     /// `frame_requester` is the producer side; clone freely. `draw_rx` is
@@ -372,6 +383,7 @@ impl TuiContext {
             shared_mode,
             agent,
             project_root,
+            render_mode,
             frame_requester,
             draw_rx,
         })
@@ -443,9 +455,72 @@ impl TuiContext {
         Ok(())
     }
 
-    /// Push a message line into the scroll buffer.
+    /// Push one finalized history line into the appropriate sink for
+    /// the current [`RenderMode`].
+    ///
+    /// - `Altscreen`: appends to [`ScrollBuffer`]; the next draw will
+    ///   render it inside the in-app history panel.
+    /// - `Inline`: forwards to
+    ///   [`crate::inline_history::push_history`], which writes the
+    ///   line directly into the terminal's native scrollback above the
+    ///   inline viewport. Errors are logged and swallowed — a failed
+    ///   scroll-region escape (e.g. a non-VT terminal) shouldn't crash
+    ///   the chat session, and the upstream call would already have
+    ///   left things in a sane state.
+    ///
+    /// Currently dead code: callers still go through
+    /// `self.scroll_buffer.push(...)` directly. The migration to
+    /// route every history-line push through this dispatch happens in
+    /// follow-up commits on the #1146 branch — this commit only
+    /// installs the helper so the diffs there stay small.
+    #[allow(dead_code)]
     pub fn emit(&mut self, line: Line<'static>) {
-        self.scroll_buffer.push(line);
+        match self.render_mode {
+            RenderMode::Altscreen => self.scroll_buffer.push(line),
+            RenderMode::Inline => {
+                if let Err(err) =
+                    crate::inline_history::push_history(&mut self.terminal, vec![line])
+                {
+                    tracing::warn!(
+                        error = %err,
+                        "inline_history::push_history failed; line dropped"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Batched variant of [`Self::emit`].
+    ///
+    /// In `Inline` mode this is meaningfully more efficient than
+    /// looping `emit` because all the lines share a single
+    /// `insert_before` call (one DECSTBM scroll-region transaction
+    /// rather than N). In `Altscreen` mode it just folds into N
+    /// `ScrollBuffer::push` calls; the buffer's internal capacity
+    /// management already handles batches gracefully.
+    ///
+    /// Currently dead code (see note on [`Self::emit`]).
+    #[allow(dead_code)]
+    pub fn emit_lines(&mut self, lines: Vec<Line<'static>>) {
+        if lines.is_empty() {
+            return;
+        }
+        match self.render_mode {
+            RenderMode::Altscreen => {
+                for line in lines {
+                    self.scroll_buffer.push(line);
+                }
+            }
+            RenderMode::Inline => {
+                if let Err(err) = crate::inline_history::push_history(&mut self.terminal, lines)
+                {
+                    tracing::warn!(
+                        error = %err,
+                        "inline_history::push_history failed; lines dropped"
+                    );
+                }
+            }
+        }
     }
 
     /// Clean up terminal and print exit info.
