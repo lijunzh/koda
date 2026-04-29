@@ -166,6 +166,28 @@ impl TuiContext {
                         // `&mut self.session` borrow for its full lifetime,
                         // so we use disjoint field access just like the old
                         // synchronous draw block did.
+                        //
+                        // Inline mode: drain the scroll buffer into native
+                        // scrollback BEFORE the viewport renders, mirroring
+                        // `TuiContext::flush_inline_history`. Inlined here
+                        // because we can't borrow `self` while `turn` is
+                        // alive; the body is short and the duplication is
+                        // localized to two call sites total.
+                        if self.render_mode.is_inline() {
+                            let lines = self.scroll_buffer.drain_pending();
+                            if !lines.is_empty()
+                                && let Err(err) = crate::inline_history::push_history(
+                                    &mut self.terminal,
+                                    lines,
+                                )
+                            {
+                                tracing::warn!(
+                                    error = %err,
+                                    "inline_history flush (inference loop) failed"
+                                );
+                            }
+                        }
+
                         let (term_w, _) = crossterm::terminal::size()
                             .map(|(c, r)| (c as usize, r as usize))
                             .unwrap_or((80, 24));
@@ -182,6 +204,7 @@ impl TuiContext {
                             .take(crate::widgets::queue_preview::MAX_VISIBLE)
                             .cloned()
                             .collect();
+                        let render_mode = self.render_mode;
                         let _ = self.terminal.draw(|f| {
                             draw_viewport(
                                 f,
@@ -202,6 +225,7 @@ impl TuiContext {
                                 self.mouse_selection.as_ref(),
                                 mcp_info,
                                 &self.project_root,
+                                render_mode,
                             );
                         });
                     }

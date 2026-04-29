@@ -46,6 +46,7 @@ pub(crate) fn draw_viewport(
     selection: Option<&crate::mouse_select::Selection>,
     mcp_info: Option<McpStatusBarInfo>,
     project_root: &std::path::Path,
+    render_mode: RenderMode,
 ) -> ratatui::layout::Rect {
     let area = frame.area();
 
@@ -79,6 +80,17 @@ pub(crate) fn draw_viewport(
     let queue_preview_height = QueuePreview::height_for(queue_total);
 
     // Layout: History | Sep | Input | Sep | Queue? | Status | Menu
+    //
+    // In Inline render mode, the history panel collapses to 0 rows:
+    // finalized history lines have already been pushed into the
+    // terminal's native scrollback by `flush_inline_history` (see
+    // `TuiContext::draw`). The viewport just renders composer +
+    // status + menu at the bottom of the screen, with the user's
+    // shell scrollback visible above.
+    let history_constraint = match render_mode {
+        RenderMode::Altscreen => Constraint::Min(1),
+        RenderMode::Inline => Constraint::Length(0),
+    };
     let [
         history_area,
         sep_row,
@@ -88,7 +100,7 @@ pub(crate) fn draw_viewport(
         status_row,
         menu_area,
     ] = Layout::vertical([
-        Constraint::Min(1),                       // history: fill remaining space
+        history_constraint,                       // history (0 when inline)
         Constraint::Length(1),                    // top separator
         Constraint::Length(input_height),         // input textarea
         Constraint::Length(1),                    // bottom separator
@@ -98,8 +110,12 @@ pub(crate) fn draw_viewport(
     ])
     .areas(area);
 
-    // ── History panel (scrollable) ────────────────────
-    render_history(frame, scroll_buffer, history_area, selection, project_root);
+    // ── History panel (scrollable) ────────────────────────
+    // Skipped entirely in inline mode — history lives in the
+    // terminal's native scrollback there.
+    if !render_mode.is_inline() {
+        render_history(frame, scroll_buffer, history_area, selection, project_root);
+    }
 
     // ── Top separator: ──────────── 🐻 ─ ─────────────────────
     let sep_width = sep_row.width.saturating_sub(5) as usize;
@@ -553,18 +569,36 @@ pub(crate) fn init_terminal(mode: RenderMode) -> Result<Term> {
     let viewport = match mode {
         RenderMode::Altscreen => Viewport::Fullscreen,
         RenderMode::Inline => {
-            // For Phase A, size the inline viewport to the entire
-            // terminal height so the existing `draw_viewport` layout
-            // continues to fit. Phase B+ will introduce a smaller
-            // composer-only viewport and migrate history rendering
-            // out of the viewport into `inline_history::push_history`.
+            // Size the inline viewport to be a small bottom-anchored
+            // strip so the rest of the terminal can show native
+            // scrollback (which is where finalized history lines
+            // land via `inline_history::push_history`).
             //
-            // Falls back to a sensible non-zero default if the size
-            // probe fails (e.g. detached TTY in some test harnesses).
-            let height = crossterm::terminal::size()
+            // Heuristic: at most 20 rows (enough for input + status +
+            // a generous menu / approval bar without dominating the
+            // screen), and never larger than `terminal_height - 4`
+            // (so even on tiny terminals there's a few rows of
+            // scrollback above). On terminals smaller than 8 rows
+            // we collapse to half the screen — still usable, just
+            // tight.
+            //
+            // Future commits in #1146 may make this dynamic (resize
+            // the viewport per-draw based on what content actually
+            // needs to fit). For Phase A a fixed cap is good enough
+            // to validate the architecture end-to-end.
+            let term_h = crossterm::terminal::size()
                 .map(|(_w, h)| h)
                 .unwrap_or(24)
-                .max(1);
+                .max(2);
+            const MAX_INLINE_ROWS: u16 = 20;
+            const MIN_SCROLLBACK_ABOVE: u16 = 4;
+            let height = if term_h <= 8 {
+                (term_h / 2).max(1)
+            } else {
+                MAX_INLINE_ROWS
+                    .min(term_h.saturating_sub(MIN_SCROLLBACK_ABOVE))
+                    .max(1)
+            };
             Viewport::Inline(height)
         }
     };

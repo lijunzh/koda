@@ -391,6 +391,14 @@ impl TuiContext {
 
     /// Draw the fullscreen viewport.
     pub fn draw(&mut self) -> Result<()> {
+        // Inline mode: drain any history lines pushed since the last
+        // draw and stream them into native scrollback BEFORE the
+        // viewport renders. This is what makes the existing
+        // `scroll_buffer.push(...)` call sites \"just work\" in inline
+        // mode without per-call-site changes — see
+        // `ScrollBuffer::drain_pending` for the contract.
+        self.flush_inline_history();
+
         // Clamp scroll offset to valid bounds before rendering.
         // Necessary after terminal resize changes wrapping math.
         // Use history panel height, not full terminal height — otherwise
@@ -424,6 +432,7 @@ impl TuiContext {
         let selection = self.mouse_selection.as_ref();
         let mcp_info = self.agent.mcp_status_bar_info();
         let project_root = self.project_root.clone();
+        let render_mode = self.render_mode;
 
         let mut history_rect = None;
         if let Err(e) = self.terminal.draw(|f| {
@@ -444,6 +453,7 @@ impl TuiContext {
                 selection,
                 mcp_info,
                 &project_root,
+                render_mode,
             ));
         }) {
             tracing::debug!("draw skipped: {e}");
@@ -453,6 +463,36 @@ impl TuiContext {
             self.history_area_height = rect.height;
         }
         Ok(())
+    }
+
+    /// Drain any history lines pushed into the scroll buffer since the
+    /// last draw and stream them into the terminal's native scrollback
+    /// (inline mode only). No-op in altscreen mode.
+    ///
+    /// This is the keystone of the migration: every existing call site
+    /// that does `self.scroll_buffer.push(...)` gets rerouted into
+    /// `inline_history::push_history` here, without per-call-site edits.
+    /// The buffer is left empty by render time, so the inline viewport's
+    /// (omitted) history panel renders nothing visible.
+    ///
+    /// Errors from `push_history` are logged at warn and swallowed: a
+    /// failed scroll-region escape on an unusual terminal shouldn't
+    /// crash the chat session, and the buffer has already been drained
+    /// (so the lines aren't double-pushed on the next draw).
+    fn flush_inline_history(&mut self) {
+        if !self.render_mode.is_inline() {
+            return;
+        }
+        let lines = self.scroll_buffer.drain_pending();
+        if lines.is_empty() {
+            return;
+        }
+        if let Err(err) = crate::inline_history::push_history(&mut self.terminal, lines) {
+            tracing::warn!(
+                error = %err,
+                "flush_inline_history: push_history failed; lines dropped"
+            );
+        }
     }
 
     /// Push one finalized history line into the appropriate sink for

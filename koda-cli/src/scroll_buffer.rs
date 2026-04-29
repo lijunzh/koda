@@ -96,6 +96,39 @@ impl ScrollBuffer {
         }
     }
 
+    /// Drain *all* buffered lines and reset scroll state.
+    ///
+    /// This is the bridge that lets `RenderMode::Inline` reuse the
+    /// existing push-into-scroll-buffer call sites: the inline
+    /// rendering path calls `drain_pending` once per draw and forwards
+    /// the result to [`crate::inline_history::push_history`], which
+    /// inserts the lines into the terminal's native scrollback above
+    /// the inline viewport. The buffer ends up empty by the time the
+    /// (history-less) inline viewport actually renders.
+    ///
+    /// Returns lines in oldest-first order — the same order callers
+    /// originally pushed them in — so visual ordering is preserved
+    /// when they hit native scrollback.
+    ///
+    /// **Not used in `Altscreen` mode.** The altscreen path renders
+    /// directly out of the buffer; calling this would erase the
+    /// in-app history panel. The contract is enforced by
+    /// `TuiContext::flush_inline_history`, which is the only caller.
+    ///
+    /// Gutter widths are dropped on the floor: they're metadata for
+    /// the in-app NoSelect copy widget, which is altscreen-only.
+    /// Inline mode delegates selection to the native terminal, where
+    /// the gutter chars (already baked into each `Line`'s spans by
+    /// `diff_render`) become part of the selection — same as any
+    /// other terminal output.
+    pub fn drain_pending(&mut self) -> Vec<Line<'static>> {
+        let lines: Vec<Line<'static>> = self.lines.drain(..).collect();
+        self.gutter_widths.clear();
+        self.scroll_offset = 0;
+        self.sticky_bottom = true;
+        lines
+    }
+
     /// Scroll up by `n` visual lines. Disengages sticky bottom.
     pub fn scroll_up(&mut self, n: usize, term_width: usize, viewport_height: usize) {
         self.cached_term_width = term_width;
@@ -674,5 +707,74 @@ mod tests {
         // First line is now "old1"
         let first = line_text(buf.all_lines().next().unwrap());
         assert_eq!(first, "old1");
+    }
+
+    #[test]
+    fn drain_pending_returns_lines_in_push_order_and_empties_buffer() {
+        // Inline-mode contract: after `drain_pending`, the buffer is
+        // empty (so the inline viewport's history panel renders nothing)
+        // and the returned `Vec` preserves the order callers pushed in
+        // (so visual ordering survives the trip into native scrollback).
+        let mut buf = ScrollBuffer::new(100);
+        buf.push(make_line("first"));
+        buf.push(make_line("second"));
+        buf.push(make_line("third"));
+
+        let drained = buf.drain_pending();
+
+        assert_eq!(drained.len(), 3);
+        assert_eq!(line_text(&drained[0]), "first");
+        assert_eq!(line_text(&drained[1]), "second");
+        assert_eq!(line_text(&drained[2]), "third");
+        assert_eq!(buf.len(), 0, "buffer must be empty after drain");
+    }
+
+    #[test]
+    fn drain_pending_resets_scroll_state_to_sticky_bottom() {
+        // After draining, sticky-bottom must be re-engaged so the next
+        // push doesn't accidentally land mid-scroll. (In inline mode
+        // this state is meaningless because the buffer is always
+        // drained before any render, but the invariant keeps the
+        // module easier to reason about.)
+        let mut buf = ScrollBuffer::new(100);
+        for i in 0..20 {
+            buf.push(make_line(&format!("line {i}")));
+        }
+        buf.scroll_up(5, W, 3); // disengage sticky
+        assert!(!buf.is_sticky());
+        assert_ne!(buf.offset(), 0);
+
+        let _ = buf.drain_pending();
+
+        assert!(buf.is_sticky(), "sticky bottom should be re-engaged");
+        assert_eq!(buf.offset(), 0, "scroll offset should reset");
+    }
+
+    #[test]
+    fn drain_pending_on_empty_buffer_is_a_noop() {
+        // Called every draw in inline mode; cheap path matters.
+        let mut buf = ScrollBuffer::new(100);
+        let drained = buf.drain_pending();
+        assert!(drained.is_empty());
+        assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn drain_pending_drops_gutter_metadata_with_lines() {
+        // Diff lines push via `push_with_gutter`, which records the
+        // gutter width in a parallel deque. After drain, both deques
+        // must be empty; otherwise a future `push_with_gutter` would
+        // mis-align gutters with lines (panic risk in `enforce_capacity`).
+        let mut buf = ScrollBuffer::new(100);
+        buf.push_with_gutter(make_line("+ added"), 4);
+        buf.push_with_gutter(make_line("- removed"), 4);
+        let _ = buf.drain_pending();
+
+        // Push a normal line and inspect via the public iter API —
+        // if gutter_widths weren't drained alongside lines, this
+        // would push to a 1-len lines deque and a 3-len gutter deque,
+        // and `enforce_capacity` would eventually panic.
+        buf.push(make_line("after"));
+        assert_eq!(buf.len(), 1);
     }
 }
