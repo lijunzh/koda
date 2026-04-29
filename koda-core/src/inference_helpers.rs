@@ -175,6 +175,50 @@ pub fn is_rate_limit_error(err: &anyhow::Error) -> bool {
 /// Maximum number of retries for rate-limited requests.
 pub const RATE_LIMIT_MAX_RETRIES: u32 = 5;
 
+/// Detect if an error is a transient network/transport failure that's worth
+/// auto-retrying with backoff.
+///
+/// Covers low-level network conditions that don't surface as HTTP status
+/// codes: idle-read timeouts, dropped half-open sockets, broken pipes,
+/// short-lived DNS / TLS hiccups, etc. These are NOT recoverable via
+/// context compaction (so they don't belong in `is_context_overflow_error`)
+/// and they're NOT rate-limit signals (so they don't belong in
+/// `is_rate_limit_error`), but they ARE worth retrying because the typical
+/// cause is a stale TCP connection or a transiently-flaky network rather
+/// than a permanent failure.
+///
+/// String patterns mirror the `RETRYABLE_NETWORK_CODES` list maintained by
+/// gemini-cli (`packages/core/src/utils/retry.ts`), translated into the
+/// human-readable forms that `reqwest` / `anyhow` emit on the Rust side.
+/// See issue #1119 for the comparative analysis.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::inference_helpers::is_network_transient_error;
+///
+/// assert!(is_network_transient_error(&anyhow::anyhow!("operation timed out")));
+/// assert!(is_network_transient_error(&anyhow::anyhow!("connection reset by peer")));
+/// assert!(is_network_transient_error(&anyhow::anyhow!("broken pipe")));
+/// assert!(!is_network_transient_error(&anyhow::anyhow!("401 Unauthorized")));
+/// ```
+pub fn is_network_transient_error(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}").to_lowercase();
+    msg.contains("operation timed out")
+        || msg.contains("timed out")
+        || msg.contains("connection reset")
+        || msg.contains("connection closed")
+        || msg.contains("connection aborted")
+        || msg.contains("connection refused")
+        || msg.contains("broken pipe")
+        || msg.contains("unexpected end of file")
+        || msg.contains("unexpected eof")
+        || msg.contains("error trying to connect")
+        || msg.contains("dns error")
+        || msg.contains("failed to lookup address")
+        || msg.contains("tls handshake")
+}
+
 /// Compute exponential backoff delay for a retry attempt (1-indexed).
 /// Returns duration in seconds: 2, 4, 8, 16, 32 (capped at 32s).
 ///
@@ -426,6 +470,71 @@ mod tests {
         assert_eq!(rate_limit_backoff(2).as_secs(), 4);
         assert_eq!(rate_limit_backoff(3).as_secs(), 8);
         assert_eq!(rate_limit_backoff(10).as_secs(), 32); // capped
+    }
+
+    #[test]
+    fn test_is_network_transient_error() {
+        // Idle / read timeouts (the original #1119 trigger)
+        assert!(is_network_transient_error(&anyhow::anyhow!(
+            "error sending request: operation timed out"
+        )));
+        assert!(is_network_transient_error(&anyhow::anyhow!(
+            "request timed out after 180s"
+        )));
+
+        // Connection-state failures
+        assert!(is_network_transient_error(&anyhow::anyhow!(
+            "connection reset by peer"
+        )));
+        assert!(is_network_transient_error(&anyhow::anyhow!(
+            "connection closed before message completed"
+        )));
+        assert!(is_network_transient_error(&anyhow::anyhow!(
+            "connection aborted"
+        )));
+        assert!(is_network_transient_error(&anyhow::anyhow!(
+            "connection refused"
+        )));
+        assert!(is_network_transient_error(&anyhow::anyhow!("broken pipe")));
+
+        // Premature stream termination
+        assert!(is_network_transient_error(&anyhow::anyhow!(
+            "unexpected end of file"
+        )));
+        assert!(is_network_transient_error(&anyhow::anyhow!(
+            "unexpected EOF"
+        )));
+
+        // Connect-phase failures (caller may want to retry once before erroring)
+        assert!(is_network_transient_error(&anyhow::anyhow!(
+            "error trying to connect: tcp connect error"
+        )));
+        assert!(is_network_transient_error(&anyhow::anyhow!(
+            "dns error: failed to lookup address information"
+        )));
+        assert!(is_network_transient_error(&anyhow::anyhow!(
+            "failed to lookup address information"
+        )));
+        assert!(is_network_transient_error(&anyhow::anyhow!(
+            "tls handshake eof"
+        )));
+
+        // Should NOT match — these belong to other classifiers
+        assert!(!is_network_transient_error(&anyhow::anyhow!(
+            "401 Unauthorized"
+        )));
+        assert!(!is_network_transient_error(&anyhow::anyhow!(
+            "prompt is too long"
+        )));
+        assert!(!is_network_transient_error(&anyhow::anyhow!(
+            "429 Too Many Requests"
+        )));
+        assert!(!is_network_transient_error(&anyhow::anyhow!(
+            "500 Internal Server Error"
+        )));
+        assert!(!is_network_transient_error(&anyhow::anyhow!(
+            "invalid JSON in response"
+        )));
     }
 
     #[test]
