@@ -511,6 +511,12 @@ fn ask_user_menu_height(
 /// Initialize the terminal in fullscreen mode (alternate screen buffer).
 ///
 /// No DSR queries, no cursor position tracking. The app owns every pixel.
+///
+/// Also installs a panic hook that restores the terminal before the panic
+/// propagates — without it, a panic anywhere in the app (provider code, tool
+/// dispatch, ratatui render, tokio task, JSON deserialization, …) leaves the
+/// terminal in raw mode + alternate screen + mouse capture on, which makes
+/// the user's shell unusable until they run `reset` or open a new session.
 pub(crate) fn init_terminal() -> Result<Term> {
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(
@@ -519,6 +525,8 @@ pub(crate) fn init_terminal() -> Result<Term> {
         crossterm::event::EnableBracketedPaste,
         crossterm::event::EnableMouseCapture,
     )?;
+
+    set_panic_hook();
 
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
@@ -532,15 +540,41 @@ pub(crate) fn init_terminal() -> Result<Term> {
     Ok(terminal)
 }
 
-/// Restore the terminal: exit alternate screen, disable raw mode.
-pub(crate) fn restore_terminal(terminal: &mut Term) {
+/// Disable raw mode + leave alternate screen + drop mouse/paste capture.
+///
+/// Writes directly to `stdout()` so it can run from anywhere — including
+/// the panic hook, which has no access to the `Terminal` value.
+pub(crate) fn restore_terminal_modes() {
     let _ = crossterm::execute!(
-        terminal.backend_mut(),
+        std::io::stdout(),
         crossterm::event::DisableMouseCapture,
         crossterm::event::DisableBracketedPaste,
         crossterm::terminal::LeaveAlternateScreen,
     );
     let _ = crossterm::terminal::disable_raw_mode();
+}
+
+/// Restore the terminal: exit alternate screen, disable raw mode.
+///
+/// Convenience wrapper for the normal-shutdown path that already owns a
+/// `Terminal`. Equivalent to [`restore_terminal_modes`].
+pub(crate) fn restore_terminal(_terminal: &mut Term) {
+    restore_terminal_modes();
+}
+
+/// Install a panic hook that restores the terminal before the original hook
+/// runs (so the panic message + backtrace still surface to the user, but on a
+/// sane TTY rather than a corrupted one).
+///
+/// Pattern lifted from `codex-rs/tui/src/tui.rs`; see issue #1119 for the
+/// comparative analysis.
+fn set_panic_hook() {
+    let original = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Best-effort: ignore errors here, we're already failing.
+        restore_terminal_modes();
+        original(info);
+    }));
 }
 
 #[cfg(test)]
