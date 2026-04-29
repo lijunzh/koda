@@ -1,6 +1,6 @@
 //! Status bar widget for the inline TUI viewport.
 //!
-//! Shows: model name | approval mode | context usage bar | MCP | inference state
+//! Shows: cwd | model name | approval mode | context usage bar | MCP | inference state
 
 use koda_core::mcp::manager::McpStatusBarInfo;
 use ratatui::{
@@ -10,8 +10,21 @@ use ratatui::{
     text::{Line, Span},
     widgets::Widget,
 };
+use std::path::Path;
+
+/// Soft target for the cwd segment width. Anything longer is
+/// progressively shortened by [`format_cwd_compact`]. Chosen so
+/// even on an 80-col terminal the cwd consumes <¼ of the bar,
+/// leaving room for model name + mode + context%.
+const CWD_MAX_LEN: usize = 24;
 
 pub struct StatusBar<'a> {
+    /// Session working directory (typically `project_root`). Rendered
+    /// as the leftmost segment when present — mirrors shell-prompt
+    /// convention so users always know where commands will land
+    /// (#1105). `None` skips the segment for callers that don't have
+    /// a cwd context (e.g. unit-test fixtures).
+    cwd: Option<&'a Path>,
     model: &'a str,
     mode_label: &'a str,
     context_pct: u32,
@@ -42,6 +55,7 @@ pub struct TurnStats {
 impl<'a> StatusBar<'a> {
     pub fn new(model: &'a str, mode_label: &'a str, context_pct: u32) -> Self {
         Self {
+            cwd: None,
             model,
             mode_label,
             context_pct,
@@ -51,6 +65,16 @@ impl<'a> StatusBar<'a> {
             scroll_info: None,
             mcp_info: None,
         }
+    }
+
+    /// Attach a working-directory hint. Rendered as the leftmost
+    /// segment, formatted via [`format_cwd_compact`] (HOME-relative
+    /// and left-truncated to fit). Builder rather than required ctor
+    /// arg so existing call sites keep compiling and tests can omit
+    /// the dependency on a real filesystem path.
+    pub fn with_cwd(mut self, cwd: &'a Path) -> Self {
+        self.cwd = Some(cwd);
+        self
     }
 
     pub fn with_queue(mut self, queue_len: usize) -> Self {
@@ -77,6 +101,60 @@ impl<'a> StatusBar<'a> {
         self.mcp_info = Some(info);
         self
     }
+}
+
+/// Compact display form for a working-directory path.
+///
+/// Behaviour, in order:
+/// 1. If `path` is under `$HOME`, replace the prefix with `~` (shell
+///    convention; gives `~/repo/koda` rather than `/Users/.../koda`).
+/// 2. If the result fits in `max_len` chars (counted in `char`s, not
+///    bytes — multi-byte CJK paths wouldn't otherwise be respected),
+///    it's returned as-is.
+/// 3. Otherwise truncate from the LEFT with a leading `…/`, keeping
+///    the rightmost path segments visible (the part you actually
+///    care about for orientation).
+/// 4. Hard fallback: even the last segment alone exceeds the budget
+///    — return `…/<truncated-last-segment>` so the bar never grows
+///    unboundedly. The terminal column count, not aesthetics, is the
+///    invariant we protect.
+///
+/// Pure function for unit-test ergonomics; takes `&str` for $HOME so
+/// tests can inject any value without touching the real environment.
+fn format_cwd_compact(path: &Path, home: Option<&str>, max_len: usize) -> String {
+    let raw = path.to_string_lossy();
+    let homed: String = match home {
+        Some(h) if !h.is_empty() && raw.starts_with(h) => {
+            let rest = &raw[h.len()..];
+            if rest.is_empty() {
+                "~".to_string()
+            } else if rest.starts_with('/') {
+                format!("~{rest}")
+            } else {
+                // $HOME without trailing slash but path has more chars
+                // not separated by `/` — don't munge, fall back to raw.
+                raw.into_owned()
+            }
+        }
+        _ => raw.into_owned(),
+    };
+
+    if homed.chars().count() <= max_len {
+        return homed;
+    }
+
+    // Step 3: left-truncate with "…/" prefix, keep rightmost segments.
+    // Reserve 2 chars for the "…/" prefix.
+    let budget = max_len.saturating_sub(2);
+    let chars: Vec<char> = homed.chars().collect();
+    let suffix: String = chars.iter().rev().take(budget).rev().collect();
+    // Try to start the suffix at a `/` boundary so we don't show a
+    // half-eaten segment like `koda/widget` → `dgets/status_bar.rs`.
+    let aligned = match suffix.find('/') {
+        Some(idx) if idx + 1 < suffix.len() => &suffix[idx + 1..],
+        _ => suffix.as_str(),
+    };
+    format!("…/{aligned}")
 }
 
 impl Widget for StatusBar<'_> {
@@ -106,7 +184,29 @@ impl Widget for StatusBar<'_> {
             self.model.to_string()
         };
 
-        let mut spans = vec![
+        let mut spans = vec![];
+
+        // CWD segment (#1105) — leftmost, mirrors shell-prompt
+        // convention. Hidden when no cwd was attached.
+        if let Some(cwd) = self.cwd {
+            // Resolve $HOME at render time. We re-read it each render
+            // because the alternative — caching at construction —
+            // would be a hidden state-bag for tests; the call is a
+            // single env lookup with no allocation cost worth caring
+            // about at TUI render frequency.
+            let home = std::env::var("HOME").ok();
+            let cwd_display = format_cwd_compact(cwd, home.as_deref(), CWD_MAX_LEN);
+            spans.push(Span::styled(
+                format!(" {cwd_display} "),
+                Style::default().fg(Color::Rgb(140, 140, 140)),
+            ));
+            spans.push(Span::styled(
+                "\u{2502}",
+                Style::default().fg(Color::Rgb(60, 60, 60)),
+            ));
+        }
+
+        spans.extend([
             Span::styled(
                 format!(" {model_display} "),
                 Style::default().fg(Color::DarkGray),
@@ -126,7 +226,7 @@ impl Widget for StatusBar<'_> {
                 ),
                 Style::default().fg(ctx_color),
             ),
-        ];
+        ]);
 
         // MCP server indicator (hidden when no servers configured)
         if let Some(mcp) = self.mcp_info {
@@ -301,5 +401,103 @@ mod tests {
             total: 2,
         });
         assert_eq!(fg, Color::Red, "all failed → red");
+    }
+
+    // ── #1105: cwd display ALPHA ────────────────────────────
+    // The helper is pure: tests inject `home` directly so they don't
+    // depend on the test runner's actual $HOME (CI vs laptop drift).
+
+    #[test]
+    fn format_cwd_short_path_passes_through_with_home_substitution() {
+        let path = Path::new("/Users/lijun/repo/koda");
+        let out = format_cwd_compact(path, Some("/Users/lijun"), 32);
+        assert_eq!(out, "~/repo/koda");
+    }
+
+    #[test]
+    fn format_cwd_no_home_match_keeps_absolute_path() {
+        let path = Path::new("/srv/koda");
+        let out = format_cwd_compact(path, Some("/Users/lijun"), 32);
+        assert_eq!(out, "/srv/koda");
+    }
+
+    #[test]
+    fn format_cwd_no_home_set_keeps_absolute_path() {
+        let path = Path::new("/srv/koda");
+        let out = format_cwd_compact(path, None, 32);
+        assert_eq!(out, "/srv/koda");
+    }
+
+    #[test]
+    fn format_cwd_home_root_renders_as_tilde() {
+        let path = Path::new("/Users/lijun");
+        let out = format_cwd_compact(path, Some("/Users/lijun"), 32);
+        assert_eq!(out, "~");
+    }
+
+    #[test]
+    fn format_cwd_long_path_truncates_from_left_at_segment_boundary() {
+        let path = Path::new("/Users/lijun/repo/koda/koda-cli/src/widgets/status_bar.rs");
+        let out = format_cwd_compact(path, Some("/Users/lijun"), 24);
+        // Length budget honoured.
+        assert!(
+            out.chars().count() <= 24,
+            "output `{out}` exceeds budget (len {})",
+            out.chars().count()
+        );
+        // Starts with the truncation marker.
+        assert!(out.starts_with("…/"), "missing …/ prefix: {out}");
+        // Should preserve the most recent segment so users still see
+        // "where they are" — status_bar.rs is the file in cwd.
+        assert!(out.contains("status_bar.rs"), "last segment dropped: {out}");
+    }
+
+    #[test]
+    fn format_cwd_truncation_does_not_split_segment_mid_name() {
+        // Construct a path where naive char-wise left-trim would produce
+        // "…/dgets/status_bar.rs" (mid-segment cut). The aligned trim
+        // should re-snap to the next `/` boundary.
+        let path = Path::new("/Users/lijun/repo/koda/widgets/status_bar.rs");
+        let out = format_cwd_compact(path, Some("/Users/lijun"), 22);
+        assert!(
+            !out.contains("dgets"),
+            "truncation cut a segment mid-name: {out}"
+        );
+    }
+
+    #[test]
+    fn cwd_segment_appears_in_rendered_bar_when_set() {
+        // Use SAFE::current_dir-free path; with_cwd takes any &Path.
+        let p = Path::new("/tmp/short");
+        let bar = StatusBar::new("gpt-4", "safe", 50).with_cwd(p);
+        let text = render_bar(bar, 200);
+        assert!(text.contains("/tmp/short"), "cwd missing from bar: {text}");
+    }
+
+    #[test]
+    fn cwd_segment_hidden_when_not_set() {
+        // Default StatusBar::new has no cwd — segment must be absent.
+        let bar = StatusBar::new("gpt-4", "safe", 50);
+        let text = render_bar(bar, 120);
+        // The model name `gpt-4` should appear within the first few
+        // visible chars (after the leading space) — i.e. nothing was
+        // prepended ahead of it.
+        assert!(
+            text.trim_start().starts_with("gpt-4"),
+            "unexpected leading content before model: `{text}`"
+        );
+    }
+
+    #[test]
+    fn cwd_segment_renders_leftmost_before_model() {
+        let p = Path::new("/tmp/koda");
+        let bar = StatusBar::new("gpt-4", "safe", 50).with_cwd(p);
+        let text = render_bar(bar, 200);
+        let cwd_pos = text.find("/tmp/koda").expect("cwd should render: {text}");
+        let model_pos = text.find("gpt-4").expect("model should render");
+        assert!(
+            cwd_pos < model_pos,
+            "cwd ({cwd_pos}) must come before model ({model_pos}) in: {text}"
+        );
     }
 }

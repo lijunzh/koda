@@ -166,8 +166,13 @@ pub(crate) fn draw_viewport(
         );
     }
 
-    // ── Status bar ──────────────────────────────────────
-    let mut sb = StatusBar::new(model, mode.label(), context_pct);
+    // ── Status bar ────────────────────────────────────────────────
+    // CWD displayed as the leftmost segment (#1105) — mirrors
+    // shell-prompt convention so users always know where commands
+    // will land. `project_root` is the canonical session cwd
+    // (canonicalized at startup in app.rs, fixed for the session
+    // since koda has no `/cd`-style mid-session command).
+    let mut sb = StatusBar::new(model, mode.label(), context_pct).with_cwd(project_root);
     if queue_total > 0 {
         sb = sb.with_queue(queue_total);
     }
