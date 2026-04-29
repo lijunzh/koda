@@ -97,6 +97,13 @@ pub(crate) struct TuiContext {
     pub shared_mode: trust::SharedTrustMode,
     pub agent: Arc<KodaAgent>,
     pub project_root: PathBuf,
+
+    /// Coalescing draw scheduler (#1138). Replaces the old per-iteration
+    /// synchronous `terminal.draw()` calls in the inference hot loop.
+    /// `frame_requester` is the producer side; clone freely. `draw_rx` is
+    /// the consumer side and lives on the inference loop's select.
+    pub frame_requester: crate::frame_requester::FrameRequester,
+    pub draw_rx: crate::frame_requester::DrawNotifyRx,
 }
 
 /// Outcome of dispatching a single command.
@@ -312,6 +319,11 @@ impl TuiContext {
             }
         };
 
+        // Spawn the coalescing draw scheduler (#1138). The inference loop's
+        // select consumes from `draw_rx`; everywhere else holds clones of
+        // `frame_requester` to fire-and-forget redraw requests.
+        let (frame_requester, draw_rx) = crate::frame_requester::spawn_frame_scheduler();
+
         Ok(Self {
             terminal,
             textarea,
@@ -358,6 +370,8 @@ impl TuiContext {
             shared_mode,
             agent,
             project_root,
+            frame_requester,
+            draw_rx,
         })
     }
 
