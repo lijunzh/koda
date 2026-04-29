@@ -42,8 +42,8 @@ use crate::engine::{EngineCommand, EngineEvent, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
     AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages,
-    estimate_tokens, is_context_overflow_error, is_image_rejection_error, is_rate_limit_error,
-    is_server_error, rate_limit_backoff,
+    estimate_tokens, is_context_overflow_error, is_image_rejection_error,
+    is_network_transient_error, is_rate_limit_error, is_server_error, rate_limit_backoff,
 };
 use crate::loop_guard::{LoopAction, LoopDetector};
 use crate::persistence::Persistence;
@@ -255,7 +255,14 @@ async fn preflight_compact_if_needed(
     }
 }
 
-/// Attempt to start a chat stream with exponential backoff on rate limits.
+/// Attempt to start a chat stream with exponential backoff on retryable errors.
+///
+/// Retries on:
+/// - Rate-limit / overload signals (`is_rate_limit_error`)
+/// - Transient network failures (`is_network_transient_error`) — idle
+///   read timeouts, connection resets, broken pipes, DNS hiccups, etc.
+///   These are the dominant failure mode on long reasoning turns where the
+///   model server goes silent past `KODA_READ_TIMEOUT_SECS`. See #1119.
 ///
 /// Returns `Ok(Some(rx))` on success, `Ok(None)` if cancelled during retries,
 /// or `Err` for non-retriable failures.
@@ -275,14 +282,28 @@ async fn try_with_rate_limit(
         };
         match result {
             Ok(collector) => return Ok(Some(collector)),
-            Err(e) if is_rate_limit_error(&e) && attempt + 1 < RATE_LIMIT_MAX_RETRIES => {
+            Err(e)
+                if (is_rate_limit_error(&e) || is_network_transient_error(&e))
+                    && attempt + 1 < RATE_LIMIT_MAX_RETRIES =>
+            {
                 let delay = rate_limit_backoff(attempt);
+                let kind = if is_rate_limit_error(&e) {
+                    "Rate limited"
+                } else {
+                    "Network glitch"
+                };
                 sink.emit(EngineEvent::SpinnerStop);
                 sink.emit(EngineEvent::Warn {
-                    message: format!("\u{23f3} Rate limited. Retrying in {}s...", delay.as_secs()),
+                    message: format!(
+                        "\u{23f3} {kind}. Retrying in {}s (attempt {}/{})...",
+                        delay.as_secs(),
+                        attempt + 1,
+                        RATE_LIMIT_MAX_RETRIES
+                    ),
                 });
                 tracing::warn!(
-                    "Rate limit (attempt {}/{}): {e:#}",
+                    "{} (attempt {}/{}): {e:#}",
+                    kind,
                     attempt + 1,
                     RATE_LIMIT_MAX_RETRIES
                 );
@@ -295,7 +316,7 @@ async fn try_with_rate_limit(
             Err(e) => return Err(e),
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Rate limit retries exhausted")))
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Retries exhausted")))
 }
 
 /// Recover from a context overflow error: compact the session, re-assemble

@@ -47,7 +47,7 @@ All providers use a shared HTTP client with the following timeout defaults:
 | Setting | Default | Env override | Description |
 |---------|---------|--------------|-------------|
 | Connect timeout | 30 s | `KODA_CONNECT_TIMEOUT_SECS` | Time allowed to establish the TCP/TLS connection |
-| Read timeout | 180 s | `KODA_READ_TIMEOUT_SECS` | Time allowed between bytes from the server (per-byte, not total) |
+| Read timeout | 300 s (5 min) | `KODA_READ_TIMEOUT_SECS` | Time allowed between bytes from the server (per-byte, not total) |
 
 The read timeout is **per-byte, not total**. A long streaming response is
 fine as long as bytes keep arriving — the timer resets on each chunk.
@@ -60,8 +60,9 @@ but a stalled connection (server hung after last byte) will fail fast.
   60 or 90. Connection-phase timeouts often manifest as "request timed out"
   with no usage data, which is the giveaway.
 - **Long-running model on a flaky link?** Bump `KODA_READ_TIMEOUT_SECS` to
-  300+. Read-phase timeouts manifest as a partial response cut short
-  partway through generation.
+  600+. Read-phase timeouts manifest as a partial response cut short
+  partway through generation. (Note: koda also auto-retries transient
+  network errors up to 5 times with exponential backoff; see `is_network_transient_error`.)
 - **Local provider (Ollama, LM Studio, vLLM) and you want fail-fast?**
   Drop `KODA_READ_TIMEOUT_SECS` to 30 — local models that hang are usually
   truly hung, not slow.

@@ -189,9 +189,14 @@ fn is_localhost_url(url: &str) -> bool {
 /// - Supports separate PROXY_USER / PROXY_PASS env vars
 /// - Bypasses proxy for localhost (LM Studio)
 /// - Applies a connect timeout (default 30s, env: `KODA_CONNECT_TIMEOUT_SECS`)
-///   and a read timeout (default 180s, env: `KODA_READ_TIMEOUT_SECS`).
+///   and a read timeout (default 300s = 5 min, env: `KODA_READ_TIMEOUT_SECS`).
 ///   We deliberately avoid the total-request `.timeout()` because it would
 ///   kill long-running SSE streams during slow tool/agent turns.
+///
+///   The 5-minute default matches `codex-rs/model-provider-info`'s
+///   `DEFAULT_STREAM_IDLE_TIMEOUT_MS` and accommodates reasoning-heavy
+///   models (Gemini 3.x Pro, MiniMax 2.x, etc.) that may silent-think
+///   for several minutes between SSE chunks. See issue #1119.
 pub fn build_http_client(base_url: Option<&str>) -> reqwest::Client {
     let mut builder = reqwest::Client::builder();
 
@@ -211,7 +216,7 @@ pub fn build_http_client(base_url: Option<&str>) -> reqwest::Client {
         .unwrap_or(30);
     let read_timeout = crate::runtime_env::get("KODA_READ_TIMEOUT_SECS")
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(180);
+        .unwrap_or(300);
     builder = builder
         .connect_timeout(std::time::Duration::from_secs(connect_timeout))
         .read_timeout(std::time::Duration::from_secs(read_timeout));
