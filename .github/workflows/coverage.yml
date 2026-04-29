@@ -87,21 +87,35 @@ jobs:
       # threshold". Without this, a CDN flake on either platform would
       # auto-open / auto-close coverage-regression issues falsely.
       #
+      # `always() &&` is load-bearing: GitHub Actions implicitly gates every
+      # step on `success()` of all prior steps, so without it this step
+      # would be SKIPPED when an upstream step (e.g. actions/checkout, the
+      # toolchain install, or rust-cache) fails — exactly the case where
+      # we most need the marker. See #1131 for the false-positive that
+      # motivated this guard: a transient DNS failure on macOS killed
+      # actions/checkout, no marker was uploaded, and the report job
+      # filed a bogus coverage-regression issue against a clean main.
+      #
       # Filename is sanitized to alphanumerics+`_-` so a future runner OS
       # name with whitespace or punctuation (e.g. "Windows Server 2022")
       # cannot mangle the report job's `basename {} .flake` filter. See #937.
-      - name: Mark infra flake (if install failed)
-        if: steps.install.outcome != 'success'
+      - name: Mark infra flake (if install or any earlier step failed)
+        if: always() && steps.install.outcome != 'success'
         run: |
           set -euo pipefail
           safe_os=$(printf '%s' "${{ runner.os }}" | tr -cd '[:alnum:]_-')
           mkdir -p flake-markers
-          echo "taiki-e/install-action failed on ${{ runner.os }} " \
-               "— likely GitHub releases CDN flake. See run logs." \
-               > "flake-markers/${safe_os}.flake"
+          # Distinguish the two scenarios in the marker body so a human
+          # reading the artifact later can tell what actually broke.
+          if [ "${{ steps.install.outcome }}" = "failure" ]; then
+            reason="taiki-e/install-action failed on ${{ runner.os }} — likely GitHub releases CDN flake."
+          else
+            reason="An upstream step (checkout / toolchain / cache) failed on ${{ runner.os }} before cargo-llvm-cov could be installed."
+          fi
+          echo "$reason See run logs." > "flake-markers/${safe_os}.flake"
 
       - name: Upload infra-flake marker
-        if: steps.install.outcome != 'success'
+        if: always() && steps.install.outcome != 'success'
         uses: actions/upload-artifact@v4
         with:
           name: infra-flake-${{ runner.os }}
@@ -244,6 +258,8 @@ jobs:
 
       - name: Detect infra flake
         id: flake
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if compgen -G "flake-markers/*.flake" > /dev/null; then
@@ -258,6 +274,26 @@ jobs:
                  "Skipping regression-issue bookkeeping; will retry on next push."
             cat flake-markers/*.flake
           else
+            # Belt-and-suspenders: if the matrix job failed but NO platform
+            # uploaded lcov reports, the marker step itself never had a
+            # chance to run (runner image broken, mass GitHub Actions
+            # outage, etc). A real coverage regression would always have
+            # produced lcov files — if there are zero, this is infra. See
+            # the second-order failure mode discussed in #1131. Without
+            # this, a fully-broken runner would still file a bogus
+            # regression issue against a clean main.
+            if [ "${{ needs.coverage.result }}" = "failure" ]; then
+              lcov_count=$(gh api \
+                "/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+                --jq '[.artifacts[] | select(.name | startswith("lcov-reports-"))] | length')
+              if [ "$lcov_count" = "0" ]; then
+                echo "detected=true" >> "$GITHUB_OUTPUT"
+                echo "::warning::Coverage matrix failed but no platform " \
+                     "uploaded lcov reports — treating as infra flake " \
+                     "(runner image / Actions service issue). See #1131."
+                exit 0
+              fi
+            fi
             echo "detected=false" >> "$GITHUB_OUTPUT"
           fi
 
