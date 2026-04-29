@@ -569,12 +569,111 @@ pub(crate) fn restore_terminal(_terminal: &mut Term) {
 /// Pattern lifted from `codex-rs/tui/src/tui.rs`; see issue #1119 for the
 /// comparative analysis.
 fn set_panic_hook() {
+    // Production callers always restore the real terminal. The inner
+    // helper takes the restore callback as a parameter so the regression
+    // test in #1124 can substitute a spy without depending on a real TTY.
+    install_panic_hook(restore_terminal_modes);
+}
+
+/// Install a panic hook that calls `restore` (best-effort) before chaining
+/// to whatever hook was previously installed. Extracted from
+/// [`set_panic_hook`] purely so the chain-integrity contract can be
+/// asserted under `#[cfg(test)]` without touching real terminal state.
+fn install_panic_hook(restore: fn()) {
     let original = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         // Best-effort: ignore errors here, we're already failing.
-        restore_terminal_modes();
+        restore();
         original(info);
     }));
+}
+
+#[cfg(test)]
+mod panic_hook_tests {
+    //! Regression tests for the panic hook installed by
+    //! [`super::set_panic_hook`] (issue #1120).
+    //!
+    //! The contract under test:
+    //!
+    //! 1. The injected `restore` callback must run on panic (otherwise
+    //!    the user's terminal stays in raw mode + alternate screen after
+    //!    a crash — the original UX bug from #1119).
+    //! 2. The previously-installed panic hook must still run afterwards
+    //!    (so the panic message + backtrace still surface). A naive
+    //!    refactor that drops the chain via `set_hook(Box::new(...))`
+    //!    without first capturing `take_hook()` would silently break
+    //!    this and we'd never know until the next user crash.
+    //!
+    //! `serial_test` is load-bearing: the panic hook is global mutable
+    //! state and Rust runs tests in parallel by default. Without
+    //! `#[serial]`, two tests calling `panic::set_hook` would race.
+
+    use super::install_panic_hook;
+    use serial_test::serial;
+    use std::panic;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    // The panic-hook closure must be `'static`, so the spy state has to
+    // live in `static`s rather than locals. `#[serial]` keeps these
+    // single-writer-at-a-time across the whole crate's test suite.
+    static RESTORE_CALLED: AtomicBool = AtomicBool::new(false);
+    static ORIGINAL_RAN: AtomicUsize = AtomicUsize::new(0);
+
+    fn spy_restore() {
+        RESTORE_CALLED.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    #[serial]
+    fn panic_hook_restores_terminal_then_chains_to_original() {
+        // Reset spy state from any previous test run.
+        RESTORE_CALLED.store(false, Ordering::SeqCst);
+        ORIGINAL_RAN.store(0, Ordering::SeqCst);
+
+        // Snapshot whatever hook the test harness installed so we can
+        // restore it on the way out and not poison sibling tests.
+        let saved = panic::take_hook();
+
+        // Install a no-op "original" that just records it ran. Using a
+        // silent hook also keeps the panic message out of test output.
+        panic::set_hook(Box::new(|_| {
+            ORIGINAL_RAN.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        // Now layer the chain under test on top.
+        install_panic_hook(spy_restore);
+
+        // Trigger a panic; `catch_unwind` swallows it but the hook still
+        // fires synchronously before the unwind propagates.
+        let result = panic::catch_unwind(|| {
+            panic!("intentional panic for #1124 regression test");
+        });
+        assert!(
+            result.is_err(),
+            "catch_unwind should have caught the deliberate panic"
+        );
+
+        // Contract 1: the restore callback ran.
+        assert!(
+            RESTORE_CALLED.load(Ordering::SeqCst),
+            "spy_restore should have been invoked by the panic hook"
+        );
+
+        // Contract 2: the previously-installed hook ran exactly once.
+        // Two invocations would mean we accidentally double-chained;
+        // zero would mean we clobbered the chain (the actual bug we're
+        // guarding against).
+        assert_eq!(
+            ORIGINAL_RAN.load(Ordering::SeqCst),
+            1,
+            "the previously-installed hook should be invoked exactly once"
+        );
+
+        // Cleanup: drop the chained hook and reinstate the test
+        // harness's hook so we leave global state exactly as we found it.
+        let _ = panic::take_hook();
+        panic::set_hook(saved);
+    }
 }
 
 #[cfg(test)]
