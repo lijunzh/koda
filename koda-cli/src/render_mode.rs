@@ -130,7 +130,13 @@ mod tests {
     fn parse_altscreen_aliases() {
         // We accept several spellings because users will guess.
         // Accepting them is cheap and friendlier than erroring.
-        for value in ["altscreen", "alt-screen", "alt_screen", "fullscreen", "ALTSCREEN"] {
+        for value in [
+            "altscreen",
+            "alt-screen",
+            "alt_screen",
+            "fullscreen",
+            "ALTSCREEN",
+        ] {
             assert_eq!(
                 RenderMode::parse(value),
                 RenderMode::Altscreen,

@@ -10,12 +10,12 @@ mod events;
 mod menus;
 
 use crate::input;
+use crate::render_mode::RenderMode;
 use crate::scroll_buffer::ScrollBuffer;
 use crate::sink::UiEvent;
 use crate::tui_commands::{self, SlashAction};
 use crate::tui_render::TuiRenderer;
 use crate::tui_types::{MenuContent, PromptMode, ProviderWizard, Term, TuiState};
-use crate::render_mode::RenderMode;
 use crate::tui_viewport::{draw_viewport, init_terminal, restore_terminal};
 
 use anyhow::Result;
@@ -552,8 +552,7 @@ impl TuiContext {
                 }
             }
             RenderMode::Inline => {
-                if let Err(err) = crate::inline_history::push_history(&mut self.terminal, lines)
-                {
+                if let Err(err) = crate::inline_history::push_history(&mut self.terminal, lines) {
                     tracing::warn!(
                         error = %err,
                         "inline_history::push_history failed; lines dropped"

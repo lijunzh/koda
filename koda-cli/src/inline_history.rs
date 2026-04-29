@@ -94,10 +94,7 @@ use std::io;
 /// )?;
 /// ```
 #[allow(dead_code)] // wired up in a subsequent commit on the same branch.
-pub fn push_history<B>(
-    terminal: &mut Terminal<B>,
-    lines: Vec<Line<'static>>,
-) -> io::Result<()>
+pub fn push_history<B>(terminal: &mut Terminal<B>, lines: Vec<Line<'static>>) -> io::Result<()>
 where
     B: Backend,
     B::Error: std::error::Error + Send + Sync + 'static,
@@ -151,9 +148,7 @@ mod tests {
 
     use super::*;
     use ratatui::{
-        Terminal, TerminalOptions, Viewport,
-        backend::TestBackend,
-        prelude::Stylize,
+        Terminal, TerminalOptions, Viewport, backend::TestBackend, prelude::Stylize,
         widgets::Paragraph,
     };
 
@@ -316,10 +311,7 @@ mod tests {
         }
         assert_eq!(
             dump_scrollback(&t),
-            vec![
-                "line 0              ",
-                "line 1              ",
-            ]
+            vec!["line 0              ", "line 1              ",]
         );
         assert_eq!(
             dump_buffer(&t),
@@ -389,8 +381,7 @@ mod tests {
         // or write garbage in that mode.
         let backend = TestBackend::new(20, 5);
         let mut t = Terminal::new(backend).expect("fullscreen terminal");
-        push_history(&mut t, vec![Line::from("ignored")])
-            .expect("fullscreen no-op must succeed");
+        push_history(&mut t, vec![Line::from("ignored")]).expect("fullscreen no-op must succeed");
         assert_scrollback_empty(&t);
     }
 
@@ -425,11 +416,7 @@ mod tests {
         paint_viewport(&mut t, "[v]");
         push_history(
             &mut t,
-            vec![
-                Line::from("alpha"),
-                Line::from("beta"),
-                Line::from("gamma"),
-            ],
+            vec![Line::from("alpha"), Line::from("beta"), Line::from("gamma")],
         )
         .expect("multi-line push must succeed");
         assert_eq!(
@@ -462,10 +449,7 @@ mod tests {
         push_history(&mut t, vec![Line::from("sixth")]).unwrap();
         assert_eq!(
             dump_scrollback(&t),
-            vec![
-                "first               ",
-                "second              ",
-            ]
+            vec!["first               ", "second              ",]
         );
     }
 }

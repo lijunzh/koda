@@ -176,10 +176,8 @@ impl TuiContext {
                         if self.render_mode.is_inline() {
                             let lines = self.scroll_buffer.drain_pending();
                             if !lines.is_empty()
-                                && let Err(err) = crate::inline_history::push_history(
-                                    &mut self.terminal,
-                                    lines,
-                                )
+                                && let Err(err) =
+                                    crate::inline_history::push_history(&mut self.terminal, lines)
                             {
                                 tracing::warn!(
                                     error = %err,
