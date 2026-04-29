@@ -20,7 +20,7 @@
 brew tap lijunzh/koda
 brew install koda
 
-# Cargo (requires Rust toolchain)
+# Cargo (requires Rust toolchain — MSRV 1.88)
 cargo install koda-cli
 
 # From source
