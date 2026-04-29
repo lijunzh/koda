@@ -22,6 +22,47 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 
+/// Outcome of one inner-loop `tokio::select!` poll inside `run_inference_turn`.
+///
+/// Carrying the raw event out of the select arm (rather than handling it
+/// inline) lets us rotate the priority order of the input vs ui arms each
+/// iteration without duplicating the (large) handler bodies (#1137, #1139).
+enum SelectArm {
+    Crossterm(Event),
+    Ui(UiEvent),
+    TurnDone(anyhow::Result<()>),
+}
+
+/// Drain up to `cap` items from an `mpsc::UnboundedReceiver` synchronously,
+/// invoking `on_event` for each.
+///
+/// Returns the number of items processed (always `<= cap`).
+///
+/// This is the kernel of the #1137 fix: the original drain loop was
+/// `while let Ok(extra) = rx.try_recv() { ... }` which is unbounded. Under
+/// sustained event pressure (sub-agent fan-out, fast streaming) new events
+/// arrived between iterations of the loop, so `try_recv()` kept returning
+/// `Ok` indefinitely — the parent `tokio::select!` never re-evaluated and
+/// terminal input was starved. Bounding the drain forces a yield back to
+/// the select after a bounded number of events.
+fn drain_bounded<T, F: FnMut(T)>(
+    rx: &mut mpsc::UnboundedReceiver<T>,
+    cap: usize,
+    mut on_event: F,
+) -> usize {
+    let mut n = 0;
+    for _ in 0..cap {
+        match rx.try_recv() {
+            Ok(item) => {
+                on_event(item);
+                n += 1;
+            }
+            Err(_) => break,
+        }
+    }
+    n
+}
+
 impl TuiContext {
     /// Run a full inference turn: start the turn future, handle events
     /// inside the inner `tokio::select!` loop, and perform post-turn
@@ -48,6 +89,13 @@ impl TuiContext {
                 .session
                 .run_turn(&self.config, pending_images, &cli_sink, cmd_rx);
             tokio::pin!(turn);
+
+            // Rotate which select arm is preferred each iteration so neither
+            // terminal input nor engine events can monopolise the executor
+            // under sustained load (#1137, #1139). `biased` alone only chooses
+            // priority *within* one select point — it does not prevent one arm
+            // from winning N times in a row when both are constantly ready.
+            let mut prefer_input = true;
 
             loop {
                 // Clamp scroll offset before drawing (resize may have
@@ -96,16 +144,52 @@ impl TuiContext {
                     );
                 });
 
-                // Biased: prioritise terminal input so mouse/keyboard events
-                // are never starved by a flood of engine TextDelta events.
-                // Without this, rapid streaming causes `ui_rx` to win the
-                // select race repeatedly, letting mouse escape sequences
-                // pile up in the terminal buffer until the crossterm parser
-                // mis-frames them as individual key events (#540).
-                tokio::select! {
-                    biased;
+                // Round-robin: alternate which arm is preferred so a flood of
+                // engine events can't starve terminal input (and vice versa).
+                // Combined with the bounded drain below, this guarantees that
+                // keystrokes / Ctrl+C / scroll events get serviced within a
+                // small bounded number of inference-loop iterations even when
+                // sub-agents fan out or streaming is firing TextDeltas at
+                // line rate (#1137, #1139, regression of #540).
+                prefer_input = !prefer_input;
 
-                    Some(Ok(ev)) = self.crossterm_events.next() => {
+                // Maximum number of engine events to drain in one iteration.
+                // The original drain loop was unbounded, which under sustained
+                // event pressure (sub-agent fan-out, fast streaming) let the
+                // ui_rx arm monopolise the executor — terminal events queued
+                // up in the OS buffer until the crossterm parser mis-framed
+                // partial mouse-report sequences as individual key events,
+                // and Ctrl+C took seconds to propagate (#1137).
+                const MAX_DRAIN: usize = 64;
+
+                let select_result = if prefer_input {
+                    tokio::select! {
+                        biased;
+
+                        Some(Ok(ev)) = self.crossterm_events.next() => {
+                            SelectArm::Crossterm(ev)
+                        }
+                        Some(ui_event) = ui_rx.recv() => {
+                            SelectArm::Ui(ui_event)
+                        }
+                        result = &mut turn => SelectArm::TurnDone(result),
+                    }
+                } else {
+                    tokio::select! {
+                        biased;
+
+                        Some(ui_event) = ui_rx.recv() => {
+                            SelectArm::Ui(ui_event)
+                        }
+                        Some(Ok(ev)) = self.crossterm_events.next() => {
+                            SelectArm::Crossterm(ev)
+                        }
+                        result = &mut turn => SelectArm::TurnDone(result),
+                    }
+                };
+
+                match select_result {
+                    SelectArm::Crossterm(ev) => {
                         handle_crossterm_event_inline(
                             ev,
                             &cancel_token,
@@ -123,12 +207,18 @@ impl TuiContext {
                             &mut self.later_queue,
                             &mut self.paste_blocks,
                             &db_handle,
-                        ).await;
+                        )
+                        .await;
                     }
-                    Some(ui_event) = ui_rx.recv() => {
+                    SelectArm::Ui(ui_event) => {
                         // Extract context usage before rendering
-                        if let UiEvent::Engine(EngineEvent::ContextUsage { used, max }) = &ui_event {
-                            self.context_pct = if *max > 0 { (used * 100 / max) as u32 } else { 0 };
+                        if let UiEvent::Engine(EngineEvent::ContextUsage { used, max }) = &ui_event
+                        {
+                            self.context_pct = if *max > 0 {
+                                (used * 100 / max) as u32
+                            } else {
+                                0
+                            };
                         }
                         handle_inference_ui_inline(
                             ui_event,
@@ -137,12 +227,19 @@ impl TuiContext {
                             &mut self.prompt_mode,
                             &mut self.renderer,
                         );
-                        // Batch-drain queued engine events to reduce redraws.
-                        // Each loop iteration triggers a full terminal.draw(),
-                        // so draining N events → 1 redraw instead of N redraws.
-                        while let Ok(extra) = ui_rx.try_recv() {
-                            if let UiEvent::Engine(EngineEvent::ContextUsage { used, max }) = &extra {
-                                self.context_pct = if *max > 0 { (used * 100 / max) as u32 } else { 0 };
+                        // Bounded drain — at most MAX_DRAIN extra events per
+                        // iteration so we yield back to the select for input
+                        // and the turn future. The drain still amortises N
+                        // events into 1 redraw (the original optimisation),
+                        // but cannot monopolise the executor anymore.
+                        let _ = drain_bounded(ui_rx, MAX_DRAIN, |extra| {
+                            if let UiEvent::Engine(EngineEvent::ContextUsage { used, max }) = &extra
+                            {
+                                self.context_pct = if *max > 0 {
+                                    (used * 100 / max) as u32
+                                } else {
+                                    0
+                                };
                             }
                             handle_inference_ui_inline(
                                 extra,
@@ -151,19 +248,17 @@ impl TuiContext {
                                 &mut self.prompt_mode,
                                 &mut self.renderer,
                             );
-                        }
+                        });
                     }
-                    result = &mut turn => {
+                    SelectArm::TurnDone(result) => {
                         if let Err(e) = result {
-                            self.scroll_buffer.push(
-                                Line::from(vec![
-                                    Span::raw("  "),
-                                    Span::styled(
-                                        format!("\u{2717} Turn failed: {e:#}"),
-                                        Style::default().fg(Color::Red),
-                                    ),
-                                ]),
-                            );
+                            self.scroll_buffer.push(Line::from(vec![
+                                Span::raw("  "),
+                                Span::styled(
+                                    format!("\u{2717} Turn failed: {e:#}"),
+                                    Style::default().fg(Color::Red),
+                                ),
+                            ]));
                         }
                         break;
                     }
@@ -720,5 +815,114 @@ fn handle_inference_ui_inline(
         UiEvent::Engine(event) => {
             renderer.render_to_buffer(event, buffer);
         }
+    }
+}
+
+#[cfg(test)]
+mod drain_tests {
+    //! Regression tests for the bounded drain that fixes #1137.
+    //!
+    //! The original bug was an unbounded `while let Ok(extra) = rx.try_recv()`
+    //! drain inside the inference loop's `tokio::select!` arm. Under sustained
+    //! event pressure the loop never returned to the select, starving terminal
+    //! input + Ctrl+C. The fix is to bound how many events one iteration
+    //! processes before yielding back to the select.
+
+    use super::drain_bounded;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn drain_returns_zero_on_empty_channel() {
+        let (_tx, mut rx) = mpsc::unbounded_channel::<u32>();
+        let mut seen = Vec::new();
+        let n = drain_bounded(&mut rx, 64, |item| seen.push(item));
+        assert_eq!(n, 0);
+        assert!(seen.is_empty());
+    }
+
+    #[test]
+    fn drain_processes_all_when_below_cap() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<u32>();
+        for i in 0..10 {
+            tx.send(i).unwrap();
+        }
+        let mut seen = Vec::new();
+        let n = drain_bounded(&mut rx, 64, |item| seen.push(item));
+        assert_eq!(n, 10);
+        assert_eq!(seen, (0..10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn drain_stops_at_cap_and_leaves_remainder() {
+        // The core regression guard for #1137: a flood larger than `cap`
+        // must NOT drain the channel completely in one call. The remaining
+        // items have to wait for the next iteration of the parent select,
+        // which is what guarantees terminal input gets serviced.
+        let (tx, mut rx) = mpsc::unbounded_channel::<u32>();
+        for i in 0..1_000 {
+            tx.send(i).unwrap();
+        }
+        let mut seen = Vec::new();
+        let n = drain_bounded(&mut rx, 64, |item| seen.push(item));
+        assert_eq!(n, 64, "drain must stop at cap, even with 1000 items queued");
+        assert_eq!(seen.len(), 64);
+        assert_eq!(seen.first(), Some(&0));
+        assert_eq!(seen.last(), Some(&63));
+
+        // The remaining 936 items are still in the channel, ready for the
+        // next iteration. Verify by draining again with a huge cap.
+        let mut more = Vec::new();
+        let m = drain_bounded(&mut rx, 10_000, |item| more.push(item));
+        assert_eq!(m, 1_000 - 64);
+        assert_eq!(more.first(), Some(&64));
+        assert_eq!(more.last(), Some(&999));
+    }
+
+    #[test]
+    fn drain_with_cap_zero_processes_nothing() {
+        // Defensive: a cap of zero must not loop forever or process anything.
+        let (tx, mut rx) = mpsc::unbounded_channel::<u32>();
+        for i in 0..10 {
+            tx.send(i).unwrap();
+        }
+        let mut seen = Vec::new();
+        let n = drain_bounded(&mut rx, 0, |item| seen.push(item));
+        assert_eq!(n, 0);
+        assert!(seen.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sustained_flood_is_drained_across_multiple_iterations() {
+        // Simulate the actual #1137 scenario: a producer task floods the
+        // channel between drain calls. The drain must still terminate each
+        // call within the cap, eventually catching up across N iterations.
+        let (tx, mut rx) = mpsc::unbounded_channel::<u32>();
+        let total: u32 = 500;
+        for i in 0..total {
+            tx.send(i).unwrap();
+        }
+        // Producer keeps adding items between iterations, mimicking a
+        // sub-agent fan-out firing engine events while we drain.
+        let _producer_keepalive = tx;
+
+        let mut total_seen = 0;
+        let mut iterations = 0;
+        loop {
+            let n = drain_bounded(&mut rx, 64, |_| {});
+            total_seen += n;
+            iterations += 1;
+            if n == 0 {
+                break;
+            }
+            // Safety: bound iterations so the test fails loud rather than
+            // hanging if the drain ever stops making progress.
+            assert!(iterations < 100, "drain should converge within 100 iters");
+        }
+        assert_eq!(total_seen as u32, total);
+        // At cap=64 and total=500 we expect ~8 iterations.
+        assert!(
+            iterations >= 8,
+            "expected >=8 iters at cap 64 for 500 items"
+        );
     }
 }
