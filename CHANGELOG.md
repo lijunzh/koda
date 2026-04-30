@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`/debug-bundle` slash command** — writes a self-contained `.tar.gz`
+  to `~/.config/koda/debug-bundles/` capturing everything a debugger
+  (human or LLM) needs to reason about a session: `conversation.md`
+  (rendered via `history_render` — same as the live TUI),
+  `messages.json` (raw DB rows), `metadata.json` (session/runtime
+  context), `env.txt` (allowlist-filtered env vars, credentials
+  length-redacted), and `logs/` (full per-process tracing log + panic
+  log if any). Lives in parallel with `/export`; future PRs unify them
+  per RFC #1167. (#1167 — PR α)
+
 ## [0.2.25] - 2026-04-30
 
 Background-tasks UX release. 5 PRs since v0.2.24 reshape `WaitTask` into

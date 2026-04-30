@@ -45,6 +45,11 @@ unicode-width = "0.2"
 # Clipboard (for Ctrl+Y copy)
 arboard = "3"
 
+# Debug bundle: tar.gz packaging for /debug-bundle slash command (RFC #1167).
+# tar streams the bundle directory; flate2 wraps the tar writer in gzip.
+tar = "0.4"
+flate2 = "1"
+
 # ANSI escape code parsing for tool output
 ansi-to-tui = "8"
 
