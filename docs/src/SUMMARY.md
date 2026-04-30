@@ -37,3 +37,4 @@
 - [Tools reference](./tools.md)
 - [ACP server (editor integration)](./acp.md)
 - [Privacy & data](./privacy.md)
+- [Troubleshooting](./troubleshooting.md)
