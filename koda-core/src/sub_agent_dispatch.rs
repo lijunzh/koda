@@ -446,7 +446,7 @@ pub(crate) fn execute_sub_agent<'a>(
             );
 
             return Ok(format!(
-                "Background agent '{agent_name_owned}' started (task {task_id}). \
+                "Background agent '{agent_name_owned}' started (agent:{task_id}). \
              Results will be injected when complete."
             ));
         }

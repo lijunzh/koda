@@ -362,7 +362,7 @@ impl BgStatusEmitter {
 /// (future per-task `/cancel <id>` UX, #996).
 pub struct BgAgentReservation {
     /// Monotonically-assigned task ID. Surfaces in user-facing
-    /// messages (`Background agent 'foo' started (task 7)`) and
+    /// messages (`Background agent 'foo' started (agent:7)`) and
     /// keys the per-task `/cancel <id>` UX (#996).
     pub task_id: u32,
     /// Sender half of the result oneshot. Move into the spawned
