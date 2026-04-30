@@ -112,7 +112,7 @@ async fn wait_for_events(
 
 /// Top-level `Info` events land in `session_events` with `kind = info`,
 /// `parent_tool_call_id = NULL`, and the message text as payload.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn top_level_info_event_persists_with_null_parent() {
     let (_tmp, db, session_id) = fresh_db().await;
     let inner = TestSink::new();
@@ -143,7 +143,7 @@ async fn top_level_info_event_persists_with_null_parent() {
 /// Top-level `BgTaskUpdate` events persist with `kind = bg_task_update`
 /// and a JSON-encoded payload (so the renderer can deserialize the
 /// `AgentStatus` back into the original variant).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn top_level_bg_task_update_persists_as_json_with_null_parent() {
     use koda_core::bg_agent::AgentStatus;
 
@@ -184,7 +184,7 @@ async fn top_level_bg_task_update_persists_as_json_with_null_parent() {
 /// do NOT create rows in the top-level routing path. If `TextDelta`
 /// started persisting we'd flood the table on every streaming token —
 /// regression guard for that explicit bug shape.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn top_level_passes_through_non_persistable_events_without_db_writes() {
     let (_tmp, db, session_id) = fresh_db().await;
     let inner = TestSink::new();
@@ -222,7 +222,7 @@ async fn top_level_passes_through_non_persistable_events_without_db_writes() {
 /// Sub-agent `Info` events land with `kind = sub_agent_event` (NOT the
 /// top-level `info` kind) and the parent call id stamped on the row.
 /// This is the exact contract that drives `/export` transcript folding.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sub_agent_info_event_persists_with_parent_call_id_and_sub_agent_kind() {
     let (_tmp, db, session_id) = fresh_db().await;
     let inner = TestSink::new();
@@ -259,7 +259,7 @@ async fn sub_agent_info_event_persists_with_parent_call_id_and_sub_agent_kind() 
 /// BufferingSink convention). Top-level `ToolCallStart` is suppressed
 /// (already in `messages.tool_calls`); the asymmetry is the routing
 /// contract this test pins.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sub_agent_tool_call_start_persists_with_tool_name_payload() {
     let (_tmp, db, session_id) = fresh_db().await;
     let inner = TestSink::new();
@@ -291,7 +291,7 @@ async fn sub_agent_tool_call_start_persists_with_tool_name_payload() {
 /// Sub-agents have no user channel; approval requests are auto-rejected
 /// and the rejection must be visible in the persisted trace. Same row
 /// shape as the other sub-agent events (folded under parent on /export).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sub_agent_approval_request_persists_as_auto_reject_marker() {
     let (_tmp, db, session_id) = fresh_db().await;
     let inner = TestSink::new();
@@ -326,7 +326,7 @@ async fn sub_agent_approval_request_persists_as_auto_reject_marker() {
 /// Sub-agent `AskUserRequest` events also persist as auto-skip markers
 /// (sub-agents have no user to ask). Question text is truncated to 80
 /// chars so a runaway 10K-char prompt doesn't bloat the events table.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sub_agent_ask_user_request_persists_truncated() {
     let (_tmp, db, session_id) = fresh_db().await;
     let inner = TestSink::new();
@@ -361,7 +361,7 @@ async fn sub_agent_ask_user_request_persists_truncated() {
 
 /// Sub-agent routing must NOT persist `BgTaskUpdate` (that's a
 /// top-level concept). Tests the negative side of the asymmetry.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sub_agent_does_not_persist_bg_task_update() {
     use koda_core::bg_agent::AgentStatus;
 
@@ -400,7 +400,7 @@ async fn sub_agent_does_not_persist_bg_task_update() {
 /// emission order and all carry the same parent id. This is the
 /// scenario `/export` consumes — a contiguous block of rows the
 /// renderer folds under the parent's tool result.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sub_agent_multi_event_sequence_preserves_order_and_parent_id() {
     let (_tmp, db, session_id) = fresh_db().await;
     let inner = TestSink::new();
@@ -463,7 +463,7 @@ async fn sub_agent_multi_event_sequence_preserves_order_and_parent_id() {
 /// to the inner sink. Locks in the "decorator transparency" contract
 /// — a buggy implementation that early-returned after the routing
 /// branches would silently drop these events.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forwarding_is_unconditional_for_non_persisted_events() {
     let (_tmp, db, session_id) = fresh_db().await;
     let inner = TestSink::new();
