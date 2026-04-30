@@ -6,6 +6,85 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.25] - 2026-04-30
+
+Background-tasks UX release. 5 PRs since v0.2.24 reshape `WaitTask` into
+an atomic multi-task gather (#1161), polish the multi-sub-agent UX with
+a status-bar pill and verbose-export escape hatch (#1160), and fix
+three user-reported rendering regressions where multi-task `WaitTask`
+results dumped raw JSON instead of pretty-printed per-task summaries
+(#1162, #1164, #1165). The shared formatter primitives now live in a
+single `wait_task_format` module so the live TUI, resumed history, and
+`/export` transcript all render identically.
+
+### Behaviour change — `WaitTask` schema is now multi-task
+
+- **`WaitTask` request shape changed** from `{"task_id": "agent:1"}`
+  to `{"task_ids": ["agent:1", "agent:2", ...]}` (#1157, PR #1161).
+  The response shape changed correspondingly to a `{tasks: [...],
+  summary: {...}}` envelope with per-task `status` and error
+  isolation — a failure in one task no longer fails the whole call.
+  This is **breaking for any system prompt, skill, or external
+  agent that hardcoded the v0.2.24 single-task shape**. Single-task
+  waits still work; the array just has length 1. Full schema and
+  migration notes in [tools.md](./docs/src/tools.md#waittask).
+
+### Behaviour change — sub-agent "started" message format
+
+- **Sub-agent started messages now use `agent:N` instead of `task N`**
+  (#1158, PR #1160). The model uses these IDs as-is when constructing
+  `WaitTask({task_ids: ["agent:1"]})` calls, so the prefix matches
+  what `WaitTask` consumes. This is observable in the transcript and
+  in the LLM-facing dispatch result string.
+
+### Added
+
+- **Atomic multi-task `WaitTask`** (#1157, PR #1161). One tool call
+  can now gather results for any number of background tasks in
+  parallel, with per-task timeout, per-task error isolation, and a
+  summary tally (success / failed / timeout / cancelled / forbidden
+  / not_found). Replaces the previous one-task-at-a-time wait pattern
+  that forced the model to round-trip per task.
+- **Multi-sub-agent UX polish** (#1158, PR #1160). New status-bar pill
+  shows live counts of running/waiting background agents at a glance.
+  Per-iteration heartbeat lines (`Running (Nx)`) are now suppressed
+  in `/export` output by default, focusing transcripts on terminal
+  task outcomes. Set `KODA_EXPORT_VERBOSE=1` to restore the old
+  verbose behaviour when debugging heartbeat aggregation — see
+  [configuration.md](./docs/src/configuration.md#display).
+- **`### WaitTask` reference subsection in `tools.md`** documenting
+  the new request/response schema, per-task status values, error
+  isolation semantics, and v0.2.24 → v0.2.25 migration. Promotes
+  what was previously only in the model-facing tool description into
+  the user-facing reference.
+- **Shared `wait_task_format` module** (#1163 follow-up, PR #1165).
+  Three render surfaces (live TUI, resumed history, transcript export)
+  now share a single source of truth for status icons, preview-line
+  extraction, and per-task summary formatting. Future status values
+  added to one place light up everywhere automatically.
+
+### Fixed
+
+- **`WaitTask` multi-task results no longer render as raw JSON**
+  (#1157 follow-up, PR #1162). The transcript exporter previously
+  dumped the entire `{tasks: [...], summary: {...}}` envelope
+  verbatim instead of pretty-printing per-task summaries. Now
+  renders as a structured per-task list with status icons, agent
+  names, and preview lines.
+- **`tool_id_to_name` mapping survives Gemini's per-turn tool ID
+  reuse** (#1164). Gemini reuses the same tool_call_id across
+  multiple turns within a session, which collided with the
+  exporter's id→name map and caused later turns to mis-render the
+  tool name. The map is now built incrementally per-turn rather
+  than session-wide.
+- **Live TUI and resumed history render `WaitTask` identically to
+  `/export`** (#1163 follow-up-2, PR #1165). Two more rendering
+  surfaces had been dumping raw JSON; both now route through the
+  shared `wait_task_format::try_render_wait_task_lines` primitive
+  introduced in this release. The same id-collision fix from
+  #1164 was applied to `history_render` so resumed sessions also
+  benefit.
+
 ## [0.2.24] - 2026-04-29
 
 Reliability + observability release. 10 commits since v0.2.23 covering:

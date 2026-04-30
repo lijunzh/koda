@@ -46,3 +46,58 @@ within the project sandbox are auto-approved.
 | Outside-project write | Write/Edit to paths outside project root | ❌ Deny | ⏸ Prompt | ⏸ Prompt |
 
 See [Trust modes](./approval.md) for the canonical policy matrix.
+
+## WaitTask
+
+`WaitTask` blocks until one or more background tasks (sub-agents or
+shell processes) finish. As of v0.2.25 it is an **atomic multi-task
+gather**: pass an array of task IDs and get back results for all of
+them in a single tool call, with per-task error isolation.
+
+### Request shape
+
+```json
+{
+  "task_ids": ["agent:1", "agent:2", "sh:7"]
+}
+```
+
+- `task_ids` (required): array of strings. Each ID comes from the
+  "started" message printed by `InvokeAgent` (e.g. `agent:1`) or by
+  `Bash` when run in the background (e.g. `sh:7`).
+- One ID per task; duplicates are deduplicated.
+- Per-task budget is **300 seconds** (5 minutes). The budget is
+  per-task, not per-call: gathering 4 tasks does not give you 1200 s.
+
+### Response shape
+
+```json
+{
+  "tasks": [
+    {"task_id": "agent:1", "status": "success", "result": {...}},
+    {"task_id": "agent:2", "status": "failed",  "error": "..."},
+    {"task_id": "sh:7",     "status": "timeout"}
+  ],
+  "summary": {
+    "total": 3, "success": 1, "failed": 1, "timeout": 1,
+    "cancelled": 0, "forbidden": 0, "not_found": 0
+  }
+}
+```
+
+Per-task `status` is one of: `success`, `failed`, `timeout`,
+`cancelled`, `forbidden` (caller does not own the task), or
+`not_found` (typo or already-reaped task).
+
+### Error isolation
+
+A failure in one task does **not** fail the whole call. The model can
+inspect the `summary` block to decide what to retry. This is the
+breaking change from v0.2.24, where `WaitTask` accepted a single
+`task_id` and returned the bare result envelope.
+
+### Migration from v0.2.24
+
+Any prompt or skill that hardcoded `{"task_id": "agent:1"}` must be
+updated to `{"task_ids": ["agent:1"]}`. Single-task waits still work
+— the array just has length 1.

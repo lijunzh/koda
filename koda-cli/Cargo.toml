@@ -1,6 +1,6 @@
 [package]
 name = "koda-cli"
-version = "0.2.24"
+version = "0.2.25"
 edition.workspace = true
 rust-version.workspace = true
 description = "A high-performance AI coding agent for macOS and Linux"
@@ -18,7 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core engine
-koda-core = { path = "../koda-core", version = "0.2.24" }
+koda-core = { path = "../koda-core", version = "0.2.25" }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -75,7 +75,7 @@ harness = false
 
 [dev-dependencies]
 tempfile = { workspace = true }
-koda-core = { path = "../koda-core", version = "0.2.24", features = ["test-support"] }
+koda-core = { path = "../koda-core", version = "0.2.25", features = ["test-support"] }
 serde_json = { workspace = true }
 # tokio's `test-util` feature enables `#[tokio::test(start_paused = true)]` so
 # frame_requester tests can manipulate the clock deterministically without

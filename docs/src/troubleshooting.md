@@ -14,7 +14,7 @@ Each crash appends a delimited block:
 ```
 ======================================================================
 [2026-04-29T20:55:32Z] PANIC
-version:    koda 0.2.24
+version:    koda 0.2.25
 location:   koda-core/src/foo.rs:42:8
 thread:     <unnamed>
 message:    assertion failed: x > 0
