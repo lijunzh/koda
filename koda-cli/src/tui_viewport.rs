@@ -44,6 +44,10 @@ pub(crate) fn draw_viewport(
     scroll_buffer: &ScrollBuffer,
     selection: Option<&crate::mouse_select::Selection>,
     mcp_info: Option<McpStatusBarInfo>,
+    // Background-task counts (running sub-agents, running shell
+    // processes). Drives the status-bar pill added in #1158 (b);
+    // both zero → segment hidden by `StatusBar::with_bg_counts`.
+    bg_counts: (usize, usize),
     project_root: &std::path::Path,
 ) -> ratatui::layout::Rect {
     let area = frame.area();
@@ -188,6 +192,10 @@ pub(crate) fn draw_viewport(
     }
     if let Some(mcp) = mcp_info {
         sb = sb.with_mcp_info(mcp);
+    }
+    let (bg_agents, bg_processes) = bg_counts;
+    if bg_agents > 0 || bg_processes > 0 {
+        sb = sb.with_bg_counts(bg_agents, bg_processes);
     }
     frame.render_widget(sb, status_row);
 

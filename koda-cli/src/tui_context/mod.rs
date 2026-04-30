@@ -410,6 +410,13 @@ impl TuiContext {
         let selection = self.mouse_selection.as_ref();
         let mcp_info = self.agent.mcp_status_bar_info();
         let project_root = self.project_root.clone();
+        // #1158 (b): ambient bg-task pill so users know work is in
+        // flight without running `/bg-tasks`. Both registries are
+        // shared `Arc`s; counts are O(1) hashmap len lookups.
+        let bg_counts = (
+            self.session.bg_agents.pending_count(),
+            self.agent.tools.bg_registry.len(),
+        );
 
         let mut history_rect = None;
         if let Err(e) = self.terminal.draw(|f| {
@@ -429,6 +436,7 @@ impl TuiContext {
                 scroll_buffer,
                 selection,
                 mcp_info,
+                bg_counts,
                 &project_root,
             ));
         }) {
