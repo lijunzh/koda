@@ -6,33 +6,143 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.24] - 2026-04-29
+
+Reliability + observability release. 10 commits since v0.2.23 covering:
+a safety reintroduction for sub-agents (a 30-turn ceiling with a
+gemini-pattern grace turn brings back bounded execution after v0.2.23
+removed the hard cap), a new forensic panic-log feature for crash
+diagnosis, two TUI hot-loop perf improvements (frame coalescing and
+bounded event draining), a startup memory-load fix, security
+hardening on the new panic-log file mode, and continued pre-1.0 API
+hardening on `koda-core/bg_agent` types.
+
+### Behaviour change — sub-agent execution is bounded again
+
+- **Sub-agents now cap at 30 turns with a grace turn** (#1135, PR
+  #1153). v0.2.23 removed `MAX_SUB_AGENT_ITERATIONS` based on the
+  reasoning that modern models terminate cleanly. Real usage showed
+  read-only explorer agents could spin for 100+ seconds on broad
+  prompts before the model decided to stop, with no user feedback in
+  the TUI. The fix matches gemini-cli's pattern: a soft 30-turn cap,
+  then one **grace turn** where the model is told "you've hit the
+  limit, summarize and stop" before the loop is forcibly terminated.
+  Tool calls dropped during the grace turn are reported back to the
+  parent agent (and surfaced in the transcript) via a
+  `[max_turns reached: ...]` marker so the parent can decide whether
+  to retry with a narrower scope. **If you customised sub-agent
+  prompts based on v0.2.23's no-cap messaging, your agents will now
+  be bounded again** — the mechanism differs (soft cap + grace turn
+  vs. hard ceiling), the practical effect is similar.
+
 ### Added
 
-- **`#[non_exhaustive]` on `BgTaskSnapshot` and `BgAgentResult`** (#1130).
-  Future fields (e.g. token usage, parent task id, daemon-side metadata)
-  can be added without it being a breaking change. Both structs are
-  constructed only inside `koda-core`, so the attribute imposes zero
-  friction on consumers — they only read fields. Pre-1.0 hardening
-  ahead of the daemon epic (#1150).
+- **Forensic panic log** (#1122, PR #1152). Panics now write a
+  structured backtrace record to `~/.config/koda/logs/panic.log`,
+  including ISO-8601 timestamp, koda version, panic message, file
+  and line, and the captured backtrace (when `RUST_BACKTRACE=1` or
+  `=full`). The hook is panic-in-panic safe (in-memory buffering
+  before write, all I/O failures swallowed) and rotates at 5 MiB
+  with 3 generations kept. Bounded disk growth even under
+  deterministic crash loops. New `troubleshooting.md` mdBook page
+  documents the location and usage.
+- **`#[non_exhaustive]` on `BgTaskSnapshot` and `BgAgentResult`**
+  (#1130, PR #1155). Future fields (e.g. token usage, parent task
+  id, daemon-side metadata) can be added without it being a
+  breaking change. Both structs are constructed only inside
+  `koda-core`, so the attribute imposes zero friction on consumers
+  — they only read fields. Pre-1.0 hardening ahead of the daemon
+  epic (#1150).
 - **`#[must_use]` on snapshot, result, and outcome types** —
   `BgTaskSnapshot`, `BgAgentResult`, `CancelOutcome`, `WaitOutcome`
-  (#1130). Each carries dispatch-layer-relevant information; silently
-  dropping any of them is almost always a bug. Free safety lint with
-  no behavioural change.
-- **`koda-sandbox` crates.io category `concurrency`** (#1130). The
-  sandbox supervises concurrent tool execution and sub-agent spawn,
-  so the category is a genuine fit. Improves discoverability without
-  category-stuffing.
+  (#1130, PR #1155). Each carries dispatch-layer-relevant
+  information; silently dropping any of them is almost always a
+  bug. Free safety lint with no behavioural change.
+- **`koda-sandbox` crates.io category `concurrency`** (#1130, PR
+  #1155). The sandbox supervises concurrent tool execution and
+  sub-agent spawn, so the category is a genuine fit. Improves
+  discoverability without category-stuffing.
+
+### Fixed
+
+- **`CLAUDE.md` no longer loads twice on startup** (#1136, PR #1151).
+  Previously the agent loaded `CLAUDE.md` once during `KodaAgent::new()`
+  and then again when `rebuild_system_prompt()` ran on first turn,
+  producing duplicate `"Loaded N tokens from CLAUDE.md"` log lines
+  and unnecessary disk I/O. Loaded memory is now cached on the
+  agent and reused.
+
+### Performance
+
+- **Coalesced TUI draws via frame scheduler** (#1138, PR #1143).
+  The inference loop previously called `terminal.draw()` on every
+  ui-event arm, leading to redundant renders when events arrived
+  in bursts. A new `FrameRequester` schedules a single draw per
+  frame interval (60Hz default), measurably reducing CPU on
+  streaming turns without sacrificing responsiveness. Eight
+  `start_paused = true` tokio tests verify the scheduling logic
+  deterministically.
+- **Bounded drain + round-robin select fairness in TUI loop**
+  (#1137 / #1139, PR #1142). Previously the inference loop drained
+  every available event with an unbounded `while let Ok(_) =
+  try_recv()`, which under sustained sub-agent fan-out could
+  starve crossterm input (mouse-escape mis-framing per #540). The
+  drain is now capped at 64 per turn and the `tokio::select!` arm
+  priority rotates each iteration so no producer can monopolise
+  the loop.
+
+### Security
+
+- **`~/.config/koda/logs/` and `panic.log` written with 0o600 / 0o700
+  on Unix** (release-time defense-in-depth from the security
+  audit). Backtraces can transitively contain formatted secrets
+  (e.g. `panic!("auth: {key}")`); the new panic-log feature is now
+  unreadable to other local users on a shared host. Windows
+  inherits ACLs from the parent directory (the desired behaviour).
+  Best-effort — silently no-op on systems that don't support the
+  permission bits.
+
+### Tests / CI
+
+- **`PersistingSink` integration coverage** (#1129, PR #1154). 10
+  multi-thread integration tests covering the full sink-routing
+  contract: tool-call persistence, sub-agent trace folding, error
+  propagation, drop semantics. Closes the test gap from #1112's
+  rapid v0.2.23 landing.
+- **Regression test for `read_timeout` auto-retry on silent SSE**
+  (#1134). Confirms the v0.2.23 timeout fix (#1119) actually
+  retries through `try_with_rate_limit` rather than hard-failing
+  the turn, using a fake server that goes silent and resumes.
+- **Regression test for panic-hook TTY restore + chaining** (#1133).
+  Verifies the v0.2.23 panic hook (#1124) restores terminal state
+  AND chains to the previously-installed hook exactly once,
+  preventing both TTY corruption and double-handling. Refactors
+  `install_panic_hook` to take the restore callback as a parameter
+  for testability.
+- **Coverage workflow treats checkout / runner failures as infra
+  flakes** (#1132). The post-merge coverage job now distinguishes
+  "infrastructure broke" from "coverage actually regressed" — no
+  more bogus issue-filing on transient runner failures.
 
 ### Notes
 
 - **`#[non_exhaustive]` deliberately NOT applied to `AgentStatus`,
-  `CancelOutcome`, `WaitOutcome`** (#1130). The audit's blanket
-  recommendation didn't account for `koda-cli` exhaustively matching
-  these enums in three rendering / dispatch paths — a missed-variant
-  compile error there is a *feature*, not a wart. Attaching
-  `#[non_exhaustive]` would have downgraded those checks to wildcards
-  and silently hidden bugs the next time we add a status variant.
+  `CancelOutcome`, `WaitOutcome`** (#1130, PR #1155). The audit's
+  blanket recommendation didn't account for `koda-cli` exhaustively
+  matching these enums in three rendering / dispatch paths — a
+  missed-variant compile error there is a *feature*, not a wart.
+  Attaching `#[non_exhaustive]` would have downgraded those checks
+  to wildcards and silently hidden bugs the next time we add a
+  status variant.
+- **`KodaAgent` deliberately NOT marked `#[non_exhaustive]`** even
+  though a new `pub semantic_memory` field was added in #1136. The
+  release-time code review flagged this as a P2 consistency item;
+  the cost-benefit analysis was: 3 integration test fixtures
+  construct `KodaAgent` via struct literal (lightweight, no
+  `KodaConfig` plumbing), and `koda-core` is documented as
+  internal-pre-1.0 in `koda-core/README.md`, so the protection
+  has no real consumers today. Revisit when `koda-core` stabilises
+  for external use.
 
 ## [0.2.23] - 2026-04-29
 

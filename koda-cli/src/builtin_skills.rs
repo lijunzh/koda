@@ -25,7 +25,8 @@ pub fn inject_builtin_skills(agent: &mut KodaAgent) {
              configuration, sessions, providers, approval modes, trust modes, \
              sandbox, security, safety, privacy, undo, tools, MCP servers, \
              context management, memory, file attachments, skills, sub-agents, \
-             ACP server, or any other feature documented in the user manual. \
+             ACP server, troubleshooting, panic logs, crash diagnosis, or any \
+             other feature documented in the user manual. \
              Fetch the manual from the URL below with WebFetch.",
         ),
         &format!(
@@ -50,6 +51,7 @@ pub fn inject_builtin_skills(agent: &mut KodaAgent) {
              - {url}memory.html — cross-session memory\n\
              - {url}keybindings.html — full keybinding reference\n\
              - {url}acp.html — ACP server (editor integration)\n\
+             - {url}troubleshooting.html — panic logs, crash diagnosis, common issues\n\
              - {url}introduction.html — overview and getting started",
             url = KODA_DOCS_URL,
         ),
