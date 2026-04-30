@@ -113,7 +113,17 @@ pub enum AgentStatus {
 ///
 /// Cloned out of the registry under the lock so callers can format/display
 /// without holding it. `age` is computed from `started_at` at snapshot time.
+///
+/// `#[non_exhaustive]`: external crates may add fields like `parent_task_id`,
+/// `cancel_token`, or daemon-side metadata in future minor releases without
+/// it being a breaking change. Constructed only inside `koda-core`, so the
+/// attribute imposes zero friction on consumers (they only read fields).
+///
+/// `#[must_use]`: ignoring a snapshot is almost always a bug — the only
+/// reason to call `snapshot()` is to inspect or render the contents.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+#[must_use = "a snapshot is only useful if you read its fields"]
 pub struct BgTaskSnapshot {
     /// Monotonic id assigned at `reserve()` time. Stable for the
     /// lifetime of the task; reused across snapshots.
@@ -159,7 +169,15 @@ pub struct BgTaskSnapshot {
 pub type BgPayload = (String, Vec<String>);
 
 /// A completed background agent result.
+///
+/// `#[non_exhaustive]`: future fields (e.g. token usage, latency, model
+/// version) can be added without a breaking change. Constructed only
+/// inside `koda-core`; external callers only read fields.
+///
+/// `#[must_use]`: an agent result that's never inspected is dead work.
 #[derive(Debug)]
+#[non_exhaustive]
+#[must_use = "the whole point of running a bg agent is to inspect its result"]
 pub struct BgAgentResult {
     /// The agent name that produced this result.
     pub agent_name: String,
@@ -744,7 +762,16 @@ impl BgAgentRegistry {
 ///
 /// Mirrors HTTP-ish status codes so the LLM-tool layer can produce
 /// useful error messages without inspecting registry internals.
+///
+/// `#[must_use]`: silently dropping the outcome of a cancel call is
+/// always a bug — the dispatch layer translates each variant into a
+/// distinct LLM-tool response payload.
+///
+/// Note: deliberately NOT `#[non_exhaustive]`. The `koda-cli` rendering
+/// layer matches every variant exhaustively, and the compiler-driven
+/// missed-variant warning we get from that is a feature, not a wart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "every CancelOutcome maps to a distinct dispatch-layer response"]
 pub enum CancelOutcome {
     /// Task existed, caller owned it, cancel token fired.
     Cancelled,
@@ -760,7 +787,12 @@ pub enum CancelOutcome {
 ///
 /// Encodes the four resolutions of a `WaitTask` call. The LLM-tool
 /// layer translates each into a serialised payload the model receives.
+///
+/// `#[must_use]`: the entire purpose of `wait_for_completion` is its
+/// outcome — discarding it would be a bug. (See `CancelOutcome` for
+/// why this enum is also NOT `#[non_exhaustive]`.)
 #[derive(Debug)]
+#[must_use = "the wait result drives the LLM tool's response payload"]
 pub enum WaitOutcome {
     /// Task reached a terminal `Completed`/`Errored` status before
     /// the timeout fired. Carries the drained [`BgAgentResult`] so
