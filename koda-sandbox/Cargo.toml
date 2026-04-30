@@ -10,7 +10,7 @@ homepage.workspace = true
 authors.workspace = true
 readme = "README.md"
 keywords = ["sandbox", "security", "filesystem", "unix", "ai"]
-categories = ["os", "filesystem"]
+categories = ["os", "filesystem", "concurrency"]
 
 [dependencies]
 anyhow = { workspace = true }

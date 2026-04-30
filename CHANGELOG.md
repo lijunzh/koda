@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`#[non_exhaustive]` on `BgTaskSnapshot` and `BgAgentResult`** (#1130).
+  Future fields (e.g. token usage, parent task id, daemon-side metadata)
+  can be added without it being a breaking change. Both structs are
+  constructed only inside `koda-core`, so the attribute imposes zero
+  friction on consumers — they only read fields. Pre-1.0 hardening
+  ahead of the daemon epic (#1150).
+- **`#[must_use]` on snapshot, result, and outcome types** —
+  `BgTaskSnapshot`, `BgAgentResult`, `CancelOutcome`, `WaitOutcome`
+  (#1130). Each carries dispatch-layer-relevant information; silently
+  dropping any of them is almost always a bug. Free safety lint with
+  no behavioural change.
+- **`koda-sandbox` crates.io category `concurrency`** (#1130). The
+  sandbox supervises concurrent tool execution and sub-agent spawn,
+  so the category is a genuine fit. Improves discoverability without
+  category-stuffing.
+
+### Notes
+
+- **`#[non_exhaustive]` deliberately NOT applied to `AgentStatus`,
+  `CancelOutcome`, `WaitOutcome`** (#1130). The audit's blanket
+  recommendation didn't account for `koda-cli` exhaustively matching
+  these enums in three rendering / dispatch paths — a missed-variant
+  compile error there is a *feature*, not a wart. Attaching
+  `#[non_exhaustive]` would have downgraded those checks to wildcards
+  and silently hidden bugs the next time we add a status variant.
+
 ## [0.2.23] - 2026-04-29
 
 Feature + reliability release. 12 commits since v0.2.22 covering: a
