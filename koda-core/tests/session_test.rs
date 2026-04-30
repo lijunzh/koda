@@ -40,6 +40,7 @@ async fn make_session(
         tool_defs: ToolRegistry::new(env.root.clone(), env.config.max_context_tokens)
             .get_definitions(&[], &[]),
         system_prompt: "You are a test assistant.".to_string(),
+        semantic_memory: String::new(),
     });
 
     // Wire the DB+session into the ToolRegistry so RecallContext works.
