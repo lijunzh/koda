@@ -85,6 +85,15 @@ impl TuiContext {
         self.inference_start = Some(std::time::Instant::now());
         self.renderer.last_turn_stats = None;
 
+        // #1158 (b): clone the bg-task registry handles BEFORE pinning
+        // the turn future. The future borrows `self.session` mutably for
+        // its entire lifetime, so `self.session.bg_agents` becomes
+        // unreachable inside the streaming loop. The agent registry is
+        // an `Arc` (cheap clone); the process registry isn't, so we
+        // clone the enclosing `Arc<KodaAgent>` and reach through it.
+        let bg_agents_for_status = self.session.bg_agents.clone();
+        let agent_for_status = self.agent.clone();
+
         // Run the inference turn as a pinned future
         {
             let turn = self
@@ -175,6 +184,11 @@ impl TuiContext {
                         let mode = trust::read_trust(&self.shared_mode);
                         let ctx = self.context_pct;
                         let mcp_info = self.agent.mcp_status_bar_info();
+                        // #1158 (b): keep status pill alive during streaming turns.
+                        let bg_counts = (
+                            bg_agents_for_status.pending_count(),
+                            agent_for_status.tools.bg_registry.len(),
+                        );
                         let queue_total = self.later_queue.len();
                         let queue_preview: Vec<String> = self
                             .later_queue
@@ -201,6 +215,7 @@ impl TuiContext {
                                 &self.scroll_buffer,
                                 self.mouse_selection.as_ref(),
                                 mcp_info,
+                                bg_counts,
                                 &self.project_root,
                             );
                         });

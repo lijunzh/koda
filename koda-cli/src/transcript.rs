@@ -377,8 +377,16 @@ pub fn render(
 ///
 /// One bullet per event, kind-prefixed so the reader can scan for
 /// task-state transitions vs. info messages without parsing JSON.
-/// Bg-task updates are pretty-printed (`task N: Pending → Running`)
+/// Bg-task updates are pretty-printed (`agent:N: Pending → Running`)
 /// because raw JSON in a transcript is illegible noise.
+///
+/// **Iter-heartbeat aggregation (#1158 d)**: by default, per-iteration
+/// `Running { iter: N>0 }` heartbeats are dropped from the export and
+/// summarised into one trailing line per task (`agent:N: ran 9
+/// iterations → Completed`). The state transitions (Pending,
+/// Running with iter==0, Cancelled, Completed, Errored) and the iter-0
+/// "started" marker are preserved verbatim. Set `KODA_EXPORT_VERBOSE=1`
+/// to disable the filter and re-emit every heartbeat (debugging).
 fn render_background_activity(out: &mut String, events: &[&SessionEvent]) {
     out.push_str("---\n\n## \u{1f4ca} Background activity\n\n");
     out.push_str(
@@ -386,6 +394,12 @@ fn render_background_activity(out: &mut String, events: &[&SessionEvent]) {
          bg-task state transitions). Pre-#1108 these were sink-only and \
          not exported.</sub>\n\n",
     );
+    let verbose = std::env::var("KODA_EXPORT_VERBOSE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    // Per-task heartbeat counters — only used when not verbose. Keyed
+    // by task_id so multi-agent sessions get one summary line each.
+    let mut iter_counts: std::collections::BTreeMap<u64, u32> = std::collections::BTreeMap::new();
     for ev in events {
         let ts = ev.created_at.as_deref().unwrap_or("");
         match ev.kind.as_str() {
@@ -393,8 +407,14 @@ fn render_background_activity(out: &mut String, events: &[&SessionEvent]) {
                 out.push_str(&format!("- `{ts}` \u{2139}\u{fe0f} {}\n", ev.payload));
             }
             session_event_kind::BG_TASK_UPDATE => {
-                // Best-effort pretty print; fall back to raw on parse
-                // failure so we never lose data.
+                if !verbose
+                    && let Some((tid, iter)) = parse_running_iter(&ev.payload)
+                    && iter > 0
+                {
+                    // Drop heartbeat noise; tally for summary.
+                    *iter_counts.entry(tid).or_insert(0) += 1;
+                    continue;
+                }
                 let pretty =
                     pretty_bg_task_update(&ev.payload).unwrap_or_else(|| ev.payload.clone());
                 out.push_str(&format!("- `{ts}` \u{1f680} {pretty}\n"));
@@ -404,7 +424,34 @@ fn render_background_activity(out: &mut String, events: &[&SessionEvent]) {
             }
         }
     }
+    // Append per-task heartbeat summary (only fires when we actually
+    // dropped heartbeats — no-op for verbose mode and for sessions
+    // whose tasks never emitted iter>0).
+    for (tid, count) in iter_counts {
+        out.push_str(&format!(
+            "- \u{1f4ad} agent:{tid}: {count} iteration{plural} aggregated \
+             (set `KODA_EXPORT_VERBOSE=1` to expand)\n",
+            plural = if count == 1 { "" } else { "s" },
+        ));
+    }
     out.push('\n');
+}
+
+/// Extract `(task_id, iter)` from a `BgTaskUpdate` payload whose
+/// status is `Running { iter: N }`. Returns `None` for any other
+/// status (Pending, Cancelled, Completed, Errored) or malformed JSON
+/// — caller falls back to the regular pretty-print path.
+fn parse_running_iter(payload: &str) -> Option<(u64, u32)> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let task_id = v.get("task_id")?.as_u64()?;
+    let iter = v
+        .get("status")?
+        .as_object()?
+        .get("Running")?
+        .as_object()?
+        .get("iter")?
+        .as_u64()?;
+    Some((task_id, iter as u32))
 }
 
 /// Best-effort pretty-printer for a `BgTaskUpdate` JSON payload.
@@ -426,7 +473,7 @@ fn pretty_bg_task_update(payload: &str) -> Option<String> {
             .join(", "),
         _ => status.to_string(),
     };
-    Some(format!("task {task_id}: {status_str}"))
+    Some(format!("agent:{task_id}: {status_str}"))
 }
 
 // ── Verbose-mode helpers ─────────────────────────────────────────────
@@ -1152,8 +1199,110 @@ mod tests {
         );
         assert!(out.contains("context compacted"));
         assert!(
-            out.contains("task 7: Pending"),
-            "BgTaskUpdate JSON must be pretty-printed. got:\n{out}"
+            out.contains("agent:7: Pending"),
+            "BgTaskUpdate JSON must be pretty-printed in canonical agent:N form (#1158 e). got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn iter_heartbeats_aggregated_into_summary_line_by_default() {
+        // #1158 (d): per-iter Running heartbeats are noise in exports.
+        // Default mode should drop them and emit ONE summary line per
+        // task at the bottom. State transitions (Pending, Completed,
+        // iter==0 "started" marker) must remain visible.
+        let events = vec![
+            ev(
+                session_event_kind::BG_TASK_UPDATE,
+                r#"{"task_id":1,"status":"Pending"}"#,
+                None,
+            ),
+            ev(
+                session_event_kind::BG_TASK_UPDATE,
+                r#"{"task_id":1,"status":{"Running":{"iter":0}}}"#,
+                None,
+            ),
+            ev(
+                session_event_kind::BG_TASK_UPDATE,
+                r#"{"task_id":1,"status":{"Running":{"iter":1}}}"#,
+                None,
+            ),
+            ev(
+                session_event_kind::BG_TASK_UPDATE,
+                r#"{"task_id":1,"status":{"Running":{"iter":2}}}"#,
+                None,
+            ),
+            ev(
+                session_event_kind::BG_TASK_UPDATE,
+                r#"{"task_id":1,"status":{"Running":{"iter":3}}}"#,
+                None,
+            ),
+            ev(
+                session_event_kind::BG_TASK_UPDATE,
+                r#"{"task_id":1,"status":{"Completed":{"summary":"done"}}}"#,
+                None,
+            ),
+        ];
+        let out = render(&[], &events, &default_meta(), true);
+        // State transitions must survive.
+        assert!(out.contains("agent:1: Pending"), "missing Pending: {out}");
+        assert!(
+            out.contains("\"iter\":0"),
+            "iter==0 marker must survive (treated as state transition): {out}"
+        );
+        assert!(out.contains("Completed"), "Completed must survive: {out}");
+        // The 3 iter>0 heartbeats must NOT appear individually.
+        assert!(
+            !out.contains("\"iter\":1"),
+            "iter=1 heartbeat should be aggregated, not shown raw: {out}"
+        );
+        assert!(
+            !out.contains("\"iter\":2"),
+            "iter=2 heartbeat should be aggregated: {out}"
+        );
+        // Summary line must show the count of dropped heartbeats.
+        assert!(
+            out.contains("agent:1: 3 iterations aggregated"),
+            "missing per-task summary line: {out}"
+        );
+    }
+
+    #[test]
+    fn verbose_mode_re_emits_every_iter_heartbeat() {
+        // #1158 (d): KODA_EXPORT_VERBOSE=1 disables aggregation so
+        // operators can debug bg-agent loops post-hoc.
+        // SAFETY: tests in this module run sequentially per
+        // `#[cfg(test)]` defaults; we restore the var before returning.
+        // SAFETY (Rust 2024): set_var/remove_var are unsafe because
+        // they mutate process-global env. Documented as fine in
+        // single-threaded test contexts.
+        // SAFETY: tests run sequentially; mutating process env in a
+        // single-threaded test context is the documented use case.
+        unsafe {
+            std::env::set_var("KODA_EXPORT_VERBOSE", "1");
+        }
+        let events = vec![
+            ev(
+                session_event_kind::BG_TASK_UPDATE,
+                r#"{"task_id":1,"status":{"Running":{"iter":1}}}"#,
+                None,
+            ),
+            ev(
+                session_event_kind::BG_TASK_UPDATE,
+                r#"{"task_id":1,"status":{"Running":{"iter":2}}}"#,
+                None,
+            ),
+        ];
+        let out = render(&[], &events, &default_meta(), true);
+        unsafe {
+            std::env::remove_var("KODA_EXPORT_VERBOSE");
+        }
+        assert!(
+            out.contains("\"iter\":1") && out.contains("\"iter\":2"),
+            "verbose mode must preserve all heartbeats: {out}"
+        );
+        assert!(
+            !out.contains("aggregated"),
+            "verbose mode must NOT emit summary line: {out}"
         );
     }
 
