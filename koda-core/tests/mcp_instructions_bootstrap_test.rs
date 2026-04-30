@@ -79,6 +79,7 @@ async fn make_session_with_mcp(
         // `run_turn`, so this test verifies that composition actually
         // happens via the assertion on `recorded_calls()` below.
         system_prompt: "You are a test assistant.".to_string(),
+        semantic_memory: String::new(),
     });
 
     agent

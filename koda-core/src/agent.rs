@@ -56,6 +56,10 @@ pub struct KodaAgent {
     pub tool_defs: Vec<ToolDefinition>,
     /// Assembled system prompt.
     pub system_prompt: String,
+    /// Cached project memory (CLAUDE.md / KODA.md), loaded once in `new()`
+    /// and reused by `rebuild_system_prompt` to avoid duplicate disk I/O
+    /// and duplicate log lines on startup (#1136).
+    pub semantic_memory: String,
 }
 
 impl KodaAgent {
@@ -95,6 +99,7 @@ impl KodaAgent {
             tools,
             tool_defs,
             system_prompt,
+            semantic_memory,
         })
     }
 
@@ -107,7 +112,8 @@ impl KodaAgent {
     /// per-turn in `KodaSession::run_turn` via `render_mcp_instructions_section`,
     /// because MCP servers may attach after this static prompt is built (#922).
     pub fn rebuild_system_prompt(&mut self, config: &KodaConfig, commands: &[(&str, &str)]) {
-        let semantic_memory = memory::load(&self.project_root).unwrap_or_default();
+        // Reuse cached memory loaded in `new()` — avoids duplicate disk read
+        // and duplicate `Loaded project memory from CLAUDE.md` log line (#1136).
         let env = crate::prompt::EnvironmentInfo {
             project_root: &self.project_root,
             model: &config.model,
@@ -115,7 +121,7 @@ impl KodaAgent {
         };
         self.system_prompt = crate::prompt::build_system_prompt(
             &config.system_prompt,
-            &semantic_memory,
+            &self.semantic_memory,
             &env,
             commands,
             &self.tools.skill_registry,
