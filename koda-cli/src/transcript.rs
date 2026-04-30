@@ -502,42 +502,12 @@ fn pretty_bg_task_update(payload: &str) -> Option<String> {
 
 /// Per-task status icon for `WaitTask` pretty-printing. Centralized so
 /// the summary line and per-task headers can't drift.
-fn wait_status_icon(status: &str) -> &'static str {
-    match status {
-        "completed" => "\u{2705}",   // ✅
-        "timed_out" => "\u{23F1}",   // ⏱
-        "cancelled" => "\u{26D4}",   // ⛔
-        "not_found" => "\u{2753}",   // ❓
-        "forbidden" => "\u{1F512}",  // 🔒
-        "parse_error" => "\u{26A0}", // ⚠
-        _ => "\u{2754}",             // ❔
-    }
-}
-
-/// One-line preview of the agent's output for the collapsed `<details>`
-/// summary. Strips markdown noise (headings, blockquotes), collapses
-/// whitespace, truncates with an ellipsis. ~120 chars feels right —
-/// long enough to be informative, short enough not to wrap on most
-/// terminals.
-fn first_meaningful_line(output: &str, max_chars: usize) -> String {
-    for raw in output.lines() {
-        let trimmed = raw
-            .trim()
-            .trim_start_matches('#')
-            .trim_start_matches('>')
-            .trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let collapsed: String = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
-        if collapsed.chars().count() <= max_chars {
-            return collapsed;
-        }
-        let truncated: String = collapsed.chars().take(max_chars).collect();
-        return format!("{truncated}\u{2026}");
-    }
-    String::new()
-}
+///
+/// Re-exported from [`crate::wait_task_format`] so the markdown export,
+/// live TUI ([`crate::tui_render`]), and resumed history
+/// ([`crate::history_render`]) all share one status→glyph table
+/// (#1163-followup-2: pretty WaitTask in the TUI surfaces too).
+use crate::wait_task_format::{first_meaningful_line, wait_status_icon};
 
 /// Pretty-print a `WaitTask` JSON result (#1157) as readable markdown.
 ///
@@ -1738,34 +1708,5 @@ mod tests {
             out.contains("fn main()"),
             "Read result must still render: {out}"
         );
-    }
-
-    #[test]
-    fn first_meaningful_line_strips_markdown_prefixes_and_truncates() {
-        // Unit test for the preview helper — these edge cases would
-        // be tedious to cover via render() integration tests.
-        assert_eq!(
-            first_meaningful_line("### Header\n\nReal content", 50),
-            "Header",
-            "strips markdown heading hashes"
-        );
-        assert_eq!(
-            first_meaningful_line("> blockquote\nbody", 50),
-            "blockquote",
-            "strips blockquote marker"
-        );
-        assert_eq!(
-            first_meaningful_line("   \n\n", 50),
-            "",
-            "all-whitespace input \u{2192} empty preview"
-        );
-        let long = "a".repeat(200);
-        let preview = first_meaningful_line(&long, 50);
-        assert_eq!(
-            preview.chars().count(),
-            51,
-            "truncated preview is max_chars + 1 ellipsis char"
-        );
-        assert!(preview.ends_with('\u{2026}'));
     }
 }

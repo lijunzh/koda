@@ -407,6 +407,20 @@ fn render_tool_output(
         return;
     }
 
+    // WaitTask returns aggregated multi-task JSON (#1157) that's
+    // user-hostile when dumped as a raw escape-soup blob. Pretty-print
+    // it as a per-task summary instead, mirroring the markdown export
+    // (transcript.rs). Falls back to the generic render path on any
+    // parse failure so we never lose the raw content.
+    if name == "WaitTask"
+        && let Some(lines) = crate::wait_task_format::try_render_wait_task_lines(output)
+    {
+        for line in lines {
+            tui_output::emit_line(buffer, line);
+        }
+        return;
+    }
+
     // Collapse consecutive blank lines (3+ → 1) to reduce visual noise,
     // especially from WebFetch HTML-to-text conversion.
     let collapsed = collapse_blank_lines(output);
