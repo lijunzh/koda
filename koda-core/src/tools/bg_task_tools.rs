@@ -9,7 +9,7 @@
 //! |------|---------|
 //! | `ListBackgroundTasks` | Snapshot every running task (no args). |
 //! | `CancelTask`          | Send cancel/SIGTERM by `task_id`. |
-//! | `WaitTask`            | Block until a task finishes, with timeout. |
+//! | `WaitTask`            | Atomically gather one or more tasks (#1157). |
 //!
 //! ## ID format
 //!
@@ -85,7 +85,8 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 - exit_code: present only for exited processes.\n\n\
                 Use this when:\n\
                 - You launched background work and want to check progress before doing more.\n\
-                - You need a task_id to feed CancelTask or WaitTask.\n\n\
+                - You need a task_id to feed CancelTask, or one or more task_ids \
+                to feed WaitTask.\n\n\
                 Do NOT use this when:\n\
                 - You're not sure whether you launched anything (you'd see an empty array — \
                 cheap, but pointless if you didn't intend to background work).\n\n\
@@ -129,48 +130,67 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "WaitTask".to_string(),
             description: format!(
-                "Block until a background task finishes (or timeout fires).\n\n\
-                Returns the task's terminal state and result so you don't have to keep \
-                polling ListBackgroundTasks. Prefer WaitTask over a polling loop — one \
-                tool call instead of many. Call WaitTask sparingly: only when you need \
-                the result for the next critical-path step. Pick a duration that means \
-                'I'm willing to wait this long', not 'check back quickly' — for sub-agent \
-                tasks (multi-iteration inference) prefer 120-300 s; the default suits \
-                short shell-process waits.\n\n\
-                For sub-agent tasks (\"agent:N\"): on completion, returns the agent's full \
-                output. The result will NOT also appear in the auto-drain on the next \
-                iteration — WaitTask consumes it.\n\n\
-                For shell processes (\"process:N\"): on exit, returns the OS exit code. \
-                Process stdout/stderr is NOT captured — if you need the output, redirect \
-                inside the command (e.g. `Bash {{ command: \"cmd > /tmp/out.log 2>&1\", \
-                background: true }}`) and Read the file separately.\n\n\
-                If the task hasn't finished by `timeout_secs`, returns the current status \
-                without consuming the task — you can call again to keep waiting. Default \
-                {default}s, max {max}s. Returns an error if the task_id is unknown or \
-                doesn't belong to you.",
+                "Block until ONE OR MORE background tasks finish (or timeout fires).\n\n\
+                Accepts an array of task ids — wait for one task by passing a single-element \
+                array, or for many tasks atomically by passing the full set. The atomic-gather \
+                shape (#1157) means N parallel sub-agents land in ONE structured response \
+                instead of one tool-result + N-1 synthetic user-message injections.\n\n\
+                Returns a JSON object: `{{tasks: [...], summary: {{...}}}}`. The `tasks` array \
+                contains one entry per requested task_id in input order, each carrying its \
+                terminal state and result. The `summary` object carries counts \
+                (`total`, `completed`, `errored`, `timed_out`, `cancelled`, `exited`, `killed`, \
+                `not_found`, `forbidden`) so you can branch on \"all done\" vs \"some still \
+                running\" without re-iterating the array.\n\n\
+                Per-task entry shape:\n\
+                - For sub-agent tasks (\"agent:N\") that complete: `{{task_id, status: \
+                \"completed\"|\"errored\", agent_name, prompt, output, events}}`. The agent's \
+                full output is in `output`. The result will NOT also appear in the auto-drain \
+                on the next iteration — WaitTask consumes it.\n\
+                - For shell processes (\"process:N\") that exit: `{{task_id, status: \"exited\", \
+                exit_code}}`. Process stdout/stderr is NOT captured — if you need the output, \
+                redirect inside the command (e.g. `Bash {{{{ command: \"cmd > /tmp/out.log 2>&1\", \
+                background: true }}}}`) and Read the file separately.\n\
+                - For tasks still running at deadline: `{{task_id, status: \"timed_out\", \
+                current: <ListBackgroundTasks-style snapshot>}}`. The task remains in the \
+                registry; call again to keep waiting.\n\
+                - For unknown / cancelled tasks: `{{task_id, status: \"cancelled\"|\"not_found\"\
+                |\"forbidden\", error: <message>}}` (status \"forbidden\" only fires for tasks \
+                you didn't spawn — Model E scope).\n\n\
+                Prefer WaitTask over a polling loop. Pick a duration that means 'I'm willing to \
+                wait this long', not 'check back quickly' — for sub-agent tasks (multi-iteration \
+                inference) prefer 120-300 s; the default suits short shell-process waits. The \
+                same `timeout_secs` applies to every task in the request (per-task, not total). \
+                Default {default}s, max {max}s.",
                 default = WAIT_TASK_DEFAULT_TIMEOUT_SECS,
                 max = WAIT_TASK_MAX_TIMEOUT_SECS,
             ),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "task_id": {
-                        "type": "string",
-                        "description": "Prefixed task id: \"agent:N\" or \"process:N\"."
+                    "task_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                        "description": "Prefixed task ids to wait on. Each entry is \
+                                        \"agent:N\" or \"process:N\". Pass a single-element \
+                                        array to wait on one task; pass many to gather \
+                                        N parallel sub-agents atomically."
                     },
                     "timeout_secs": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": WAIT_TASK_MAX_TIMEOUT_SECS,
                         "description": format!(
-                            "Maximum seconds to wait. Default {default}, capped at {max} to \
-                             prevent runaway parks of the inference loop.",
+                            "Per-task max seconds to wait (not total — a 60s timeout with \
+                             4 task_ids waits up to 60s for ALL of them in parallel, not 240s). \
+                             Default {default}, capped at {max} to prevent runaway parks of \
+                             the inference loop.",
                             default = WAIT_TASK_DEFAULT_TIMEOUT_SECS,
                             max = WAIT_TASK_MAX_TIMEOUT_SECS,
                         )
                     }
                 },
-                "required": ["task_id"],
+                "required": ["task_ids"],
                 "additionalProperties": false
             }),
         },
@@ -401,7 +421,7 @@ fn execute_cancel(
 
 async fn execute_wait(
     arguments: &str,
-    bg_agents: &BgAgentRegistry,
+    bg_agents: &Arc<BgAgentRegistry>,
     bg_processes: &BgRegistry,
     caller_spawner: Option<u32>,
 ) -> ToolResult {
@@ -409,13 +429,32 @@ async fn execute_wait(
         Ok(v) => v,
         Err(e) => return err(format!("WaitTask: invalid JSON arguments: {e}")),
     };
-    let task_id_str = match args.get("task_id").and_then(|v| v.as_str()) {
-        Some(s) => s,
-        None => return err("WaitTask: missing required 'task_id' (string)"),
-    };
-    let task_id = match parse_task_id(task_id_str) {
-        Ok(t) => t,
-        Err(e) => return err(format!("WaitTask: {e}")),
+    // #1157: WaitTask now ALWAYS takes an array of task ids and
+    // returns `{tasks: [...], summary: {...}}`. The single-task case
+    // is just a 1-element array — collapses with multi-task atomic
+    // gather under one tool. Eliminates the parallel "WaitAllTasks"
+    // tool that would have duplicated the surface (DRY).
+    let task_ids: Vec<String> = match args.get("task_ids").and_then(|v| v.as_array()) {
+        Some(arr) if !arr.is_empty() => {
+            // Validate every entry is a string before we go further —
+            // a mixed-type array is a model bug we want to surface
+            // loudly, not silently coerce.
+            let mut out = Vec::with_capacity(arr.len());
+            for (i, v) in arr.iter().enumerate() {
+                match v.as_str() {
+                    Some(s) => out.push(s.to_string()),
+                    None => {
+                        return err(format!(
+                            "WaitTask: 'task_ids[{i}]' must be a string, got {}",
+                            v
+                        ));
+                    }
+                }
+            }
+            out
+        }
+        Some(_) => return err("WaitTask: 'task_ids' must be a non-empty array"),
+        None => return err("WaitTask: missing required 'task_ids' (array of strings)"),
     };
     let timeout_secs = clamp_wait_timeout_secs(
         args.get("timeout_secs")
@@ -424,23 +463,77 @@ async fn execute_wait(
     );
     let timeout = Duration::from_secs(timeout_secs as u64);
 
+    // Fan out: one future per requested task. `join_all` polls them
+    // concurrently so the whole call returns as soon as the LAST task
+    // finishes (or times out) — NOT the sum of per-task latencies.
+    // For 4 sub-agents each averaging 30s, this is 30s total wall time,
+    // not 120s.
+    let futures = task_ids
+        .iter()
+        .map(|id| wait_one_task(id.clone(), bg_agents, bg_processes, caller_spawner, timeout));
+    let task_results: Vec<Value> = futures_util::future::join_all(futures).await;
+
+    // Roll up status counts so the model can branch on "all done" /
+    // "some still running" without re-iterang the array. Tally
+    // every status string we emit — missing keys default to 0 in
+    // JSON consumers so we don't bother with a fixed schema.
+    let mut summary = serde_json::Map::new();
+    summary.insert("total".into(), json!(task_results.len()));
+    for entry in &task_results {
+        if let Some(status) = entry.get("status").and_then(|v| v.as_str()) {
+            let counter = summary.entry(status.to_string()).or_insert(json!(0));
+            if let Some(n) = counter.as_u64() {
+                *counter = json!(n + 1);
+            }
+        }
+    }
+
+    ok(json!({
+        "tasks": task_results,
+        "summary": Value::Object(summary),
+    }))
+}
+
+/// Wait on a single task and produce a `Value` describing its
+/// outcome. Used by `execute_wait` under `join_all` to gather N
+/// tasks atomically. Per-task errors (NotFound / Forbidden / parse)
+/// surface as `{task_id, status, error}` entries instead of failing
+/// the whole tool call — that way a typo in one of N task_ids
+/// doesn't blow away the results of the other N-1.
+async fn wait_one_task(
+    task_id_str: String,
+    bg_agents: &Arc<BgAgentRegistry>,
+    bg_processes: &BgRegistry,
+    caller_spawner: Option<u32>,
+    timeout: Duration,
+) -> Value {
+    let task_id = match parse_task_id(&task_id_str) {
+        Ok(t) => t,
+        Err(e) => {
+            return json!({
+                "task_id": task_id_str,
+                "status": "parse_error",
+                "error": e,
+            });
+        }
+    };
     match task_id {
         TaskId::Agent(n) => {
             let outcome = bg_agents
                 .wait_for_completion(n, caller_spawner, timeout)
                 .await;
-            agent_wait_to_tool_result(task_id_str, outcome)
+            agent_wait_to_value(&task_id_str, outcome)
         }
         TaskId::Process(n) => {
             let outcome = bg_processes
                 .wait_for_exit_as_caller(n, caller_spawner, timeout)
                 .await;
-            process_wait_to_tool_result(task_id_str, outcome)
+            process_wait_to_value(&task_id_str, outcome)
         }
     }
 }
 
-fn agent_wait_to_tool_result(task_id_str: &str, outcome: WaitOutcome) -> ToolResult {
+fn agent_wait_to_value(task_id_str: &str, outcome: WaitOutcome) -> Value {
     match outcome {
         WaitOutcome::Completed(BgAgentResult {
             agent_name,
@@ -453,50 +546,58 @@ fn agent_wait_to_tool_result(task_id_str: &str, outcome: WaitOutcome) -> ToolRes
             // `WaitTask` JSON doesn't need it — the model already
             // knows which call_id it's awaiting.
             parent_tool_call_id: _,
-        }) => ok(json!({
+        }) => json!({
             "task_id": task_id_str,
             "status": if success { "completed" } else { "errored" },
             "agent_name": agent_name,
             "prompt": prompt,
             "output": output,
             "events": events,
-        })),
-        WaitOutcome::Cancelled => ok(json!({
+        }),
+        WaitOutcome::Cancelled => json!({
             "task_id": task_id_str,
             "status": "cancelled",
-        })),
-        WaitOutcome::TimedOut(snap) => ok(json!({
+        }),
+        WaitOutcome::TimedOut(snap) => json!({
             "task_id": task_id_str,
             "status": "timed_out",
             "current": agent_snapshot_to_json(&snap),
-        })),
-        WaitOutcome::NotFound => err(format!(
-            "WaitTask: no background task with id '{task_id_str}'"
-        )),
-        WaitOutcome::Forbidden => err(format!(
-            "WaitTask: task '{task_id_str}' is not owned by this caller"
-        )),
+        }),
+        WaitOutcome::NotFound => json!({
+            "task_id": task_id_str,
+            "status": "not_found",
+            "error": format!("no background task with id '{task_id_str}'"),
+        }),
+        WaitOutcome::Forbidden => json!({
+            "task_id": task_id_str,
+            "status": "forbidden",
+            "error": format!("task '{task_id_str}' is not owned by this caller"),
+        }),
     }
 }
 
-fn process_wait_to_tool_result(task_id_str: &str, outcome: ProcessWaitOutcome) -> ToolResult {
+fn process_wait_to_value(task_id_str: &str, outcome: ProcessWaitOutcome) -> Value {
     match outcome {
-        ProcessWaitOutcome::Exited { code } => ok(json!({
+        ProcessWaitOutcome::Exited { code } => json!({
             "task_id": task_id_str,
             "status": "exited",
             "exit_code": code,
-        })),
-        ProcessWaitOutcome::TimedOut(snap) => ok(json!({
+        }),
+        ProcessWaitOutcome::TimedOut(snap) => json!({
             "task_id": task_id_str,
             "status": "timed_out",
             "current": process_snapshot_to_json(&snap),
-        })),
-        ProcessWaitOutcome::NotFound => err(format!(
-            "WaitTask: no background task with id '{task_id_str}'"
-        )),
-        ProcessWaitOutcome::Forbidden => err(format!(
-            "WaitTask: task '{task_id_str}' is not owned by this caller"
-        )),
+        }),
+        ProcessWaitOutcome::NotFound => json!({
+            "task_id": task_id_str,
+            "status": "not_found",
+            "error": format!("no background task with id '{task_id_str}'"),
+        }),
+        ProcessWaitOutcome::Forbidden => json!({
+            "task_id": task_id_str,
+            "status": "forbidden",
+            "error": format!("task '{task_id_str}' is not owned by this caller"),
+        }),
     }
 }
 
@@ -527,16 +628,28 @@ mod tests {
     }
 
     #[test]
-    fn cancel_and_wait_require_task_id() {
+    fn cancel_requires_task_id_and_wait_requires_task_ids() {
+        // CancelTask still single-id (`task_id`); WaitTask is now
+        // multi-id (`task_ids`) per #1157. Verifies both surfaces.
         let defs = definitions();
-        for name in ["CancelTask", "WaitTask"] {
-            let def = defs.iter().find(|d| d.name == name).unwrap();
-            let required = def.parameters["required"].as_array().unwrap();
-            assert!(
-                required.iter().any(|v| v == "task_id"),
-                "{name} must require task_id"
-            );
-        }
+        let cancel = defs.iter().find(|d| d.name == "CancelTask").unwrap();
+        let cancel_req = cancel.parameters["required"].as_array().unwrap();
+        assert!(
+            cancel_req.iter().any(|v| v == "task_id"),
+            "CancelTask must require task_id"
+        );
+        let wait = defs.iter().find(|d| d.name == "WaitTask").unwrap();
+        let wait_req = wait.parameters["required"].as_array().unwrap();
+        assert!(
+            wait_req.iter().any(|v| v == "task_ids"),
+            "WaitTask must require task_ids (array, #1157)"
+        );
+        // The schema must be `array of string`, not just `string`.
+        assert_eq!(wait.parameters["properties"]["task_ids"]["type"], "array");
+        assert_eq!(
+            wait.parameters["properties"]["task_ids"]["items"]["type"],
+            "string"
+        );
     }
 
     #[test]
@@ -726,6 +839,7 @@ mod tests {
 
     /// `WaitTask` on a completed agent task returns `status:completed`
     /// + the agent's output, and consumes the entry (drain sees nothing).
+    /// #1157: now wrapped in `{tasks: [...], summary: {...}}`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_wait_returns_completed_for_finished_agent() {
         let (agents, processes) = fresh_registries();
@@ -740,7 +854,7 @@ mod tests {
 
         let r = execute(
             "WaitTask",
-            &json!({ "task_id": format!("agent:{id}"), "timeout_secs": 1 }).to_string(),
+            &json!({ "task_ids": [format!("agent:{id}")], "timeout_secs": 1 }).to_string(),
             &agents,
             &processes,
             None,
@@ -748,9 +862,13 @@ mod tests {
         .await;
         assert!(r.success, "got: {}", r.output);
         let payload: Value = serde_json::from_str(&r.output).unwrap();
-        assert_eq!(payload["status"], "completed");
-        assert_eq!(payload["output"], "final answer");
-        assert_eq!(payload["events"].as_array().unwrap().len(), 1);
+        let task = &payload["tasks"][0];
+        assert_eq!(task["status"], "completed");
+        assert_eq!(task["output"], "final answer");
+        assert_eq!(task["events"].as_array().unwrap().len(), 1);
+        // Summary aggregates per-status counts.
+        assert_eq!(payload["summary"]["total"], 1);
+        assert_eq!(payload["summary"]["completed"], 1);
         // Consumed — not in registry anymore.
         assert_eq!(agents.snapshot().len(), 0);
     }
@@ -770,7 +888,7 @@ mod tests {
             // Timeout below 1s gets clamped to 1s by clamp_wait_timeout_secs;
             // we still want the test to be fast — 1 s is the minimum the
             // tool surface allows.
-            &json!({ "task_id": format!("agent:{id}"), "timeout_secs": 1 }).to_string(),
+            &json!({ "task_ids": [format!("agent:{id}")], "timeout_secs": 1 }).to_string(),
             &agents,
             &processes,
             None,
@@ -778,8 +896,10 @@ mod tests {
         .await;
         assert!(r.success);
         let payload: Value = serde_json::from_str(&r.output).unwrap();
-        assert_eq!(payload["status"], "timed_out");
-        assert_eq!(payload["current"]["task_id"], format!("agent:{id}"));
+        let task = &payload["tasks"][0];
+        assert_eq!(task["status"], "timed_out");
+        assert_eq!(task["current"]["task_id"], format!("agent:{id}"));
+        assert_eq!(payload["summary"]["timed_out"], 1);
         // Entry preserved.
         assert_eq!(agents.snapshot().len(), 1);
     }
@@ -806,7 +926,7 @@ mod tests {
 
         let r = execute(
             "WaitTask",
-            &json!({ "task_id": format!("agent:{id}"), "timeout_secs": 5 }).to_string(),
+            &json!({ "task_ids": [format!("agent:{id}")], "timeout_secs": 5 }).to_string(),
             &agents,
             &processes,
             None,
@@ -818,10 +938,158 @@ mod tests {
             r.output
         );
         let payload: Value = serde_json::from_str(&r.output).unwrap();
-        assert_eq!(payload["status"], "cancelled");
-        assert_eq!(payload["task_id"], format!("agent:{id}"));
+        let task = &payload["tasks"][0];
+        assert_eq!(task["status"], "cancelled");
+        assert_eq!(task["task_id"], format!("agent:{id}"));
+        assert_eq!(payload["summary"]["cancelled"], 1);
         // Consumed — entry removed from registry.
         assert_eq!(agents.snapshot().len(), 0);
+    }
+
+    /// #1157 — the headline feature: N parallel sub-agents land in
+    /// ONE response. This is the test that justifies the rewrite.
+    /// Spawn 3 agents, complete them, call WaitTask once with all 3
+    /// task ids, assert they ALL come back in input order with
+    /// correct payloads and the summary is right.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn execute_wait_atomically_gathers_multiple_tasks() {
+        let (agents, processes) = fresh_registries();
+        // Register 3 agents and complete each with distinct output
+        // so we can verify ordering is preserved.
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let (id, tx, status_tx, _) =
+                agents.register_test_with_status("explore", &format!("task-{i}"), None);
+            tx.send(Ok((format!("output-{i}"), vec![]))).unwrap();
+            status_tx
+                .send(AgentStatus::Completed {
+                    summary: format!("sum-{i}"),
+                })
+                .unwrap();
+            ids.push(id);
+        }
+
+        let task_ids: Vec<String> = ids.iter().map(|i| format!("agent:{i}")).collect();
+        let r = execute(
+            "WaitTask",
+            &json!({ "task_ids": task_ids, "timeout_secs": 2 }).to_string(),
+            &agents,
+            &processes,
+            None,
+        )
+        .await;
+        assert!(r.success, "got: {}", r.output);
+        let payload: Value = serde_json::from_str(&r.output).unwrap();
+        let tasks = payload["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 3, "all 3 tasks must come back: {payload:#}");
+        // Ordering preserved (input order).
+        for (i, task) in tasks.iter().enumerate() {
+            assert_eq!(task["task_id"], format!("agent:{}", ids[i]));
+            assert_eq!(task["status"], "completed");
+            assert_eq!(task["output"], format!("output-{i}"));
+        }
+        // Summary tallies are accurate.
+        assert_eq!(payload["summary"]["total"], 3);
+        assert_eq!(payload["summary"]["completed"], 3);
+        // All 3 consumed — registry empty.
+        assert_eq!(
+            agents.snapshot().len(),
+            0,
+            "all 3 entries must be consumed atomically"
+        );
+    }
+
+    /// Mixed-outcome multi-task: one completes, one times out, one
+    /// is unknown. The whole call still succeeds (top-level), and
+    /// each per-task entry carries its own status. This is the
+    /// crucial "don't fail-fast" property — a typo in one of N
+    /// task_ids must not nuke the results of the other N-1.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn execute_wait_mixes_outcomes_without_failing_whole_call() {
+        let (agents, processes) = fresh_registries();
+        // Task 1: completes immediately.
+        let (done_id, done_tx, done_status, _done_obs) =
+            agents.register_test_with_status("fast", "a", None);
+        done_tx.send(Ok(("done!".into(), vec![]))).unwrap();
+        done_status
+            .send(AgentStatus::Completed {
+                summary: "s".into(),
+            })
+            .unwrap();
+        // Task 2: stays running so it times out. Hold ALL handles.
+        let (slow_id, _slow_tx, _slow_status, _slow_obs) =
+            agents.register_test_with_status("slow", "b", None);
+
+        let r = execute(
+            "WaitTask",
+            &json!({
+                "task_ids": [
+                    format!("agent:{done_id}"),
+                    format!("agent:{slow_id}"),
+                    "agent:99999",  // unknown id
+                ],
+                "timeout_secs": 1,
+            })
+            .to_string(),
+            &agents,
+            &processes,
+            None,
+        )
+        .await;
+        assert!(r.success, "top-level call must succeed: {}", r.output);
+        let payload: Value = serde_json::from_str(&r.output).unwrap();
+        let tasks = payload["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0]["status"], "completed");
+        assert_eq!(tasks[1]["status"], "timed_out");
+        assert_eq!(tasks[2]["status"], "not_found");
+        assert!(
+            tasks[2]["error"].as_str().unwrap().contains("agent:99999"),
+            "not_found entry must mention the offending id: {payload:#}"
+        );
+        assert_eq!(payload["summary"]["completed"], 1);
+        assert_eq!(payload["summary"]["timed_out"], 1);
+        assert_eq!(payload["summary"]["not_found"], 1);
+    }
+
+    /// Empty array is a model bug — fail loudly, don't silently
+    /// succeed with `tasks:[]` (which would teach the model to call
+    /// WaitTask with no work to do).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execute_wait_rejects_empty_task_ids_array() {
+        let (agents, processes) = fresh_registries();
+        let r = execute(
+            "WaitTask",
+            &json!({ "task_ids": [] }).to_string(),
+            &agents,
+            &processes,
+            None,
+        )
+        .await;
+        assert!(!r.success);
+        assert!(r.output.contains("non-empty array"), "got: {}", r.output);
+    }
+
+    /// A non-string entry in the array must surface a clear error.
+    /// Mixed-type arrays are a model JSON bug; loud failure is the
+    /// right answer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execute_wait_rejects_non_string_task_id_entry() {
+        let (agents, processes) = fresh_registries();
+        let r = execute(
+            "WaitTask",
+            &json!({ "task_ids": ["agent:1", 42] }).to_string(),
+            &agents,
+            &processes,
+            None,
+        )
+        .await;
+        assert!(!r.success);
+        assert!(
+            r.output.contains("task_ids[1]") && r.output.contains("must be a string"),
+            "error must point at the bad index: {}",
+            r.output
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
