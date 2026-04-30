@@ -67,10 +67,33 @@ pub fn write_panic_log(info: &PanicHookInfo<'_>) {
     };
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
+        // Restrict the logs directory to owner-only on Unix. Backtraces can
+        // transitively contain formatted secrets (e.g. `panic!("auth: {key}")`),
+        // so we don't want them readable by other local users on a shared host.
+        // Best-effort — silently swallow on systems that don't support it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
     }
     let _ = rotate_if_needed(&path, MAX_PANIC_LOG_BYTES, ROTATION_GENERATIONS);
 
-    let Ok(mut file) = OpenOptions::new().append(true).create(true).open(&path) else {
+    // Open with 0o600 on Unix (owner read/write only). On Windows the file
+    // inherits ACLs from the parent directory, which is the desired behaviour.
+    #[cfg(unix)]
+    let open_result = {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o600)
+            .open(&path)
+    };
+    #[cfg(not(unix))]
+    let open_result = OpenOptions::new().append(true).create(true).open(&path);
+
+    let Ok(mut file) = open_result else {
         return;
     };
 
