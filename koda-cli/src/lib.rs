@@ -55,6 +55,7 @@ pub(crate) mod tui_types;
 pub(crate) mod tui_viewport;
 pub(crate) mod tui_wizards;
 pub(crate) mod util;
+pub(crate) mod wait_task_format;
 pub(crate) mod widgets;
 pub(crate) mod wrap_input;
 pub(crate) mod wrap_util;

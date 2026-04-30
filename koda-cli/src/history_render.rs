@@ -29,23 +29,21 @@ const TOOL_OUTPUT_PREVIEW_LINES: usize = 3;
 pub fn render_history_messages(messages: &[Message]) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Build a tool_call_id → tool_name map so tool result messages can
-    // look up which tool produced them and pick the right content style.
+    // tool_call_id → tool_name mapping for result correlation, populated
+    // **incrementally during the render walk below** rather than via a
+    // pre-pass over all messages. Same bug class as #1164 fixed in
+    // `transcript.rs`: providers like Gemini emit per-turn tool_call_ids
+    // (`gemini_tc_1`, `gemini_tc_2`, …) that reset every assistant
+    // message, so a global last-write-wins pre-pass would silently
+    // overwrite an earlier turn's `WaitTask` mapping with a later turn's
+    // `Read`, causing the resumed-history WaitTask result to skip the
+    // pretty-printer and dump raw JSON.
+    //
+    // Walking in order and inserting as we go means each Tool message
+    // sees the rolling map state **as of that point in the transcript**,
+    // which always reflects the most-recent prior Assistant tool_calls
+    // block — i.e. the call that actually produced this result.
     let mut tool_id_to_name: HashMap<String, String> = HashMap::new();
-    for msg in messages {
-        if msg.role == Role::Assistant
-            && let Some(ref tc_json) = msg.tool_calls
-            && let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json)
-        {
-            for call in calls {
-                if let (Some(id), Some(name)) =
-                    (call["id"].as_str(), call["function"]["name"].as_str())
-                {
-                    tool_id_to_name.insert(id.to_string(), name.to_string());
-                }
-            }
-        }
-    }
 
     for msg in messages {
         match msg.role {
@@ -56,6 +54,17 @@ pub fn render_history_messages(messages: &[Message]) -> Vec<Line<'static>> {
                 render_user_message(&mut lines, msg);
             }
             Role::Assistant => {
+                if let Some(ref tc_json) = msg.tool_calls
+                    && let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json)
+                {
+                    for call in calls {
+                        if let (Some(id), Some(name)) =
+                            (call["id"].as_str(), call["function"]["name"].as_str())
+                        {
+                            tool_id_to_name.insert(id.to_string(), name.to_string());
+                        }
+                    }
+                }
                 render_assistant_message(&mut lines, msg);
             }
             Role::Tool => {
@@ -182,6 +191,21 @@ fn render_tool_call_headers(lines: &mut Vec<Line<'static>>, tc_json: &str) {
 /// - Mutating tools (Bash, Write, Edit…)        → `WRITE_CONTENT` (dim, less important)
 fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message, tool_name: &str) {
     let content = msg.content.as_deref().unwrap_or("");
+
+    // WaitTask returns aggregated multi-task JSON (#1157) that's
+    // user-hostile when dumped raw. Pretty-print it as a per-task
+    // summary instead, mirroring the live streaming render
+    // (`tui_render::render_tool_output`) and the markdown export
+    // (`transcript::pretty_wait_task_output`). Falls back to the
+    // generic line-by-line path on any parse failure so we never
+    // lose the raw content.
+    if tool_name == "WaitTask"
+        && let Some(rendered) = crate::wait_task_format::try_render_wait_task_lines(content)
+    {
+        lines.extend(rendered);
+        return;
+    }
+
     let total_lines = content.lines().count();
 
     let content_style = match classify_tool(tool_name) {
@@ -359,5 +383,123 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(all_text.contains("session resumed"));
+    }
+
+    /// Helper: build an Assistant message with a synthetic tool_calls
+    /// JSON declaring one tool call. Used by both regression tests below.
+    fn assistant_calling(name: &str, call_id: &str) -> Message {
+        let calls = serde_json::json!([{
+            "id": call_id,
+            "function": {"name": name, "arguments": "{}"}
+        }]);
+        let mut m = msg(Role::Assistant, "");
+        m.tool_calls = Some(calls.to_string());
+        m
+    }
+
+    /// Helper: build a Tool result message tagged with `tool_call_id`.
+    fn tool_result(call_id: &str, content: &str) -> Message {
+        let mut m = msg(Role::Tool, content);
+        m.tool_call_id = Some(call_id.into());
+        m
+    }
+
+    #[test]
+    fn wait_task_result_renders_as_per_task_summary_not_raw_json() {
+        // The bug from session koda-20260430-152051: WaitTask results
+        // dumped raw JSON in the live TUI / resumed history because
+        // neither surface was WaitTask-aware (the pretty-printer existed
+        // only in `transcript.rs`). After this fix, both TUI surfaces
+        // share the same per-task summary via `wait_task_format`.
+        let payload = serde_json::json!({
+            "summary": {"total": 2, "completed": 2},
+            "tasks": [
+                {"task_id": "agent:1", "status": "completed", "agent_name": "explore",
+                 "output": "Scan finished. Found 0 issues."},
+                {"task_id": "agent:2", "status": "completed", "agent_name": "explore",
+                 "output": "All providers verified."},
+            ],
+        });
+        let messages = vec![
+            assistant_calling("WaitTask", "c1"),
+            tool_result("c1", &payload.to_string()),
+        ];
+        let lines = render_history_messages(&messages);
+        let all: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+
+        // Per-task structure must surface, not the raw JSON soup.
+        assert!(
+            all.contains("2 task(s) gathered")
+                && all.contains("agent:1")
+                && all.contains("agent:2"),
+            "per-task summary missing: {all}"
+        );
+        // Critically: the raw JSON envelope keys must NOT appear as
+        // visible text — that's the bug we're fixing.
+        assert!(
+            !all.contains("\"summary\":") && !all.contains("\"tasks\":"),
+            "raw JSON keys leaked into rendered output: {all}"
+        );
+        // The agent's actual content surfaces in the preview.
+        assert!(
+            all.contains("Scan finished"),
+            "task 1 preview missing: {all}"
+        );
+    }
+
+    #[test]
+    fn wait_task_pretty_survives_gemini_style_tool_id_reuse_across_turns() {
+        // Same id-collision bug class fixed in `transcript.rs` via #1164,
+        // applied to the resumed-history path. Gemini emits per-turn
+        // tool_call_ids (`gemini_tc_1`, …) that reset every assistant
+        // message; the old global pre-pass in `render_history_messages`
+        // would let a later `Read` overwrite an earlier `WaitTask`
+        // mapping, causing the WaitTask result to render as raw JSON
+        // even though the pretty-printer was wired in.
+        //
+        // Shape (mirrors the user-reported pattern):
+        //   T1: assistant calls WaitTask  (id=tc_1) → WaitTask JSON result
+        //   T2: assistant calls Read      (id=tc_1, REUSED) → file body
+        let payload = serde_json::json!({
+            "summary": {"total": 1, "completed": 1},
+            "tasks": [{
+                "task_id": "agent:1",
+                "status": "completed",
+                "agent_name": "explore",
+                "output": "All clear.",
+            }],
+        });
+        let messages = vec![
+            assistant_calling("WaitTask", "tc_1"),
+            tool_result("tc_1", &payload.to_string()),
+            assistant_calling("Read", "tc_1"),
+            tool_result("tc_1", "fn main() {}\n"),
+        ];
+        let lines = render_history_messages(&messages);
+        let all: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+
+        // WaitTask must still pretty-print despite the later Read reusing
+        // the same id.
+        assert!(
+            all.contains("task(s) gathered") && all.contains("agent:1"),
+            "WaitTask pretty render missing despite later id reuse: {all}"
+        );
+        assert!(
+            !all.contains("\"summary\":"),
+            "raw JSON leaked — id-collision bug regressed: {all}"
+        );
+        // Sanity: the later Read result still renders normally.
+        assert!(
+            all.contains("fn main()"),
+            "Read result must still render: {all}"
+        );
     }
 }
