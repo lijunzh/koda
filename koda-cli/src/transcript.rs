@@ -309,23 +309,39 @@ pub fn render(
                     let show_content = verbose || effect == ToolEffect::ReadOnly;
 
                     if show_content {
-                        // P1a (#1108): include tool_call_id so parallel
-                        // call/result pairs can be matched. The `id`
-                        // appears on the matching call's `### **Tool**`
-                        // header above, so the reader can grep for it.
-                        let header = match msg.tool_call_id.as_deref() {
-                            Some(id) if !id.is_empty() => {
-                                format!("**Output for `{id}`:**\n\n```\n")
+                        // #1157 follow-up: WaitTask returns aggregated multi-task
+                        // JSON that's actively user-hostile when dumped as a one-line
+                        // code block (escape soup, no readable structure). Detect it
+                        // and pretty-print to markdown if the shape matches; fall back
+                        // to the generic code-block path on any parse failure.
+                        if tool_name == "WaitTask"
+                            && let Some(pretty) =
+                                pretty_wait_task_output(content, msg.tool_call_id.as_deref())
+                        {
+                            out.push_str(&pretty);
+                        } else {
+                            // P1a (#1108): include tool_call_id so parallel
+                            // call/result pairs can be matched. The `id`
+                            // appears on the matching call's `### **Tool**`
+                            // header above, so the reader can grep for it.
+                            let header = match msg.tool_call_id.as_deref() {
+                                Some(id) if !id.is_empty() => {
+                                    format!("**Output for `{id}`:**\n\n```\n")
+                                }
+                                _ => "**Output:**\n\n```\n".to_string(),
+                            };
+                            out.push_str(&header);
+                            let preview_lines: Vec<&str> =
+                                content.lines().take(max_lines).collect();
+                            out.push_str(&preview_lines.join("\n"));
+                            if total_lines > max_lines {
+                                out.push_str(&format!(
+                                    "\n\u{2026} ({} more lines)",
+                                    total_lines - max_lines
+                                ));
                             }
-                            _ => "**Output:**\n\n```\n".to_string(),
-                        };
-                        out.push_str(&header);
-                        let preview_lines: Vec<&str> = content.lines().take(max_lines).collect();
-                        out.push_str(&preview_lines.join("\n"));
-                        if total_lines > max_lines {
-                            out.push_str(&format!("\n… ({} more lines)", total_lines - max_lines));
+                            out.push_str("\n```\n\n");
                         }
-                        out.push_str("\n```\n\n");
                     } else if total_lines > 0 {
                         out.push_str(&format!(
                             "> _{total_lines} line(s) of output \u{2014} run tool to see full result_\n\n"
@@ -474,6 +490,195 @@ fn pretty_bg_task_update(payload: &str) -> Option<String> {
         _ => status.to_string(),
     };
     Some(format!("agent:{task_id}: {status_str}"))
+}
+
+/// Per-task status icon for `WaitTask` pretty-printing. Centralized so
+/// the summary line and per-task headers can't drift.
+fn wait_status_icon(status: &str) -> &'static str {
+    match status {
+        "completed" => "\u{2705}",   // ✅
+        "timed_out" => "\u{23F1}",   // ⏱
+        "cancelled" => "\u{26D4}",   // ⛔
+        "not_found" => "\u{2753}",   // ❓
+        "forbidden" => "\u{1F512}",  // 🔒
+        "parse_error" => "\u{26A0}", // ⚠
+        _ => "\u{2754}",             // ❔
+    }
+}
+
+/// One-line preview of the agent's output for the collapsed `<details>`
+/// summary. Strips markdown noise (headings, blockquotes), collapses
+/// whitespace, truncates with an ellipsis. ~120 chars feels right —
+/// long enough to be informative, short enough not to wrap on most
+/// terminals.
+fn first_meaningful_line(output: &str, max_chars: usize) -> String {
+    for raw in output.lines() {
+        let trimmed = raw
+            .trim()
+            .trim_start_matches('#')
+            .trim_start_matches('>')
+            .trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let collapsed: String = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+        if collapsed.chars().count() <= max_chars {
+            return collapsed;
+        }
+        let truncated: String = collapsed.chars().take(max_chars).collect();
+        return format!("{truncated}\u{2026}");
+    }
+    String::new()
+}
+
+/// Pretty-print a `WaitTask` JSON result (#1157) as readable markdown.
+///
+/// `WaitTask` returns `{tasks: [...], summary: {total, completed, ...}}`
+/// where each task is `{task_id, status, agent_name, prompt, output, events?}`.
+/// Dumping this as a single-line JSON code block (the generic tool-result
+/// path) is actively user-hostile when N agents return multi-paragraph
+/// reports — escape soup, no scannable structure.
+///
+/// Each task collapses into a `<details>` block whose `<summary>` carries
+/// task id + status + a one-line preview, so a 4-agent scan renders as
+/// a 4-row TOC by default and the reader expands the ones they care
+/// about. Inner heading levels (`### Key Files` etc. inside the agent's
+/// output) are isolated from the parent heading hierarchy by the
+/// `<details>` wrapper.
+///
+/// Returns `None` on any parse failure or shape mismatch — the caller
+/// falls back to the generic code-block render. Presentation-only;
+/// the raw JSON remains the source of truth in the DB.
+fn pretty_wait_task_output(payload: &str, tool_call_id: Option<&str>) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let tasks = v.get("tasks")?.as_array()?;
+    if tasks.is_empty() {
+        return None;
+    }
+
+    // Summary tallies. We pull explicitly per status (not iter() over
+    // the map) so the order in the rendered output is stable across
+    // sessions — counters with zero count are simply omitted.
+    let summary = v.get("summary").and_then(|s| s.as_object());
+    let count = |k: &str| -> u64 {
+        summary
+            .and_then(|s| s.get(k))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    };
+    let total = summary
+        .and_then(|s| s.get("total"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(tasks.len() as u64);
+
+    let mut summary_parts: Vec<String> = Vec::new();
+    for (key, label) in [
+        ("completed", "completed"),
+        ("timed_out", "timed out"),
+        ("cancelled", "cancelled"),
+        ("not_found", "not found"),
+        ("forbidden", "forbidden"),
+        ("parse_error", "parse error"),
+    ] {
+        let n = count(key);
+        if n > 0 {
+            summary_parts.push(format!("{} {n} {label}", wait_status_icon(key)));
+        }
+    }
+    let summary_suffix = if summary_parts.is_empty() {
+        String::new()
+    } else {
+        format!(" \u{2014} {}", summary_parts.join(" \u{00B7} "))
+    };
+
+    let mut out = String::new();
+    let header = match tool_call_id {
+        Some(id) if !id.is_empty() => format!(
+            "**Output for `{id}`** \u{2014} `WaitTask` gathered {total} task(s){summary_suffix}\n\n"
+        ),
+        _ => format!("**Output** \u{2014} `WaitTask` gathered {total} task(s){summary_suffix}\n\n"),
+    };
+    out.push_str(&header);
+
+    for task in tasks {
+        let task_id = task.get("task_id").and_then(|v| v.as_str()).unwrap_or("?");
+        let status = task.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+        let icon = wait_status_icon(status);
+        let agent_name = task
+            .get("agent_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let agent_label = if agent_name.is_empty() {
+            String::new()
+        } else {
+            format!(" \u{2014} <code>{agent_name}</code>")
+        };
+        let preview = task
+            .get("output")
+            .and_then(|v| v.as_str())
+            .map(|s| first_meaningful_line(s, 120))
+            .unwrap_or_default();
+        let preview_html = if preview.is_empty() {
+            String::new()
+        } else {
+            // Escape angle brackets so a stray `<` in the agent's first
+            // line doesn't open a phantom HTML tag inside <summary>.
+            let safe = preview
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            format!(" \u{2014} <i>{safe}</i>")
+        };
+
+        out.push_str(&format!(
+            "<details>\n<summary><b>{task_id}</b>{agent_label} {icon} {status}{preview_html}</summary>\n\n"
+        ));
+
+        // Prompt as a single-line blockquote for context. Long prompts
+        // get truncated to ~200 chars; the full version lives in the
+        // raw JSON in the DB if anyone needs to dig.
+        if let Some(prompt) = task.get("prompt").and_then(|v| v.as_str()) {
+            let one_liner = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+            let trimmed = if one_liner.chars().count() > 200 {
+                let head: String = one_liner.chars().take(200).collect();
+                format!("{head}\u{2026}")
+            } else {
+                one_liner
+            };
+            out.push_str(&format!("> _Prompt:_ {trimmed}\n\n"));
+        }
+
+        // Headline content: the agent's output, or a friendly error if
+        // the task didn't complete (timed_out / not_found / forbidden).
+        if let Some(output) = task.get("output").and_then(|v| v.as_str()) {
+            out.push_str(output.trim_end());
+            out.push_str("\n\n");
+        } else if let Some(err) = task.get("error").and_then(|v| v.as_str()) {
+            out.push_str(&format!("> \u{26A0} _{err}_\n\n"));
+        }
+
+        // Tool events as a flat bullet list. Not nested in another
+        // <details> — some Markdown renderers (and many Markdown-to-PDF
+        // pipelines) get squirrelly with nested collapsibles. The
+        // count is already in the parent <summary> so the reader knows
+        // what's coming.
+        if let Some(events) = task.get("events").and_then(|v| v.as_array())
+            && !events.is_empty()
+        {
+            out.push_str(&format!("_Tool calls ({}):_ ", events.len()));
+            let names: Vec<String> = events
+                .iter()
+                .filter_map(|e| e.as_str())
+                .map(|s| format!("`{}`", s.trim()))
+                .collect();
+            out.push_str(&names.join(" \u{00B7} "));
+            out.push_str("\n\n");
+        }
+
+        out.push_str("</details>\n\n");
+    }
+
+    Some(out)
 }
 
 // ── Verbose-mode helpers ─────────────────────────────────────────────
@@ -1329,5 +1534,170 @@ mod tests {
             out.contains("not json at all {{{"),
             "unparseable BgTaskUpdate must surface verbatim. got:\n{out}"
         );
+    }
+
+    // ── #1157 follow-up: WaitTask pretty-printer ────────────────────
+
+    /// Build a tool-result message carrying a WaitTask JSON payload
+    /// (#1157 shape: `{tasks: [...], summary: {...}}`). Helper, not
+    /// a test.
+    fn wait_task_result(call_id: &str, payload: serde_json::Value) -> Message {
+        let mut m = make_msg(Role::Tool, &payload.to_string());
+        m.tool_call_id = Some(call_id.into());
+        m
+    }
+
+    /// The `tool_id_to_name` map is keyed off the assistant message's
+    /// `tool_calls` JSON. We need a matching assistant message that
+    /// declares the WaitTask call so the renderer knows the tool name.
+    fn assistant_calling_wait_task(call_id: &str) -> Message {
+        let calls = serde_json::json!([{
+            "id": call_id,
+            "function": {"name": "WaitTask", "arguments": "{}"}
+        }]);
+        let mut m = make_msg(Role::Assistant, "");
+        m.tool_calls = Some(calls.to_string());
+        m
+    }
+
+    #[test]
+    fn wait_task_result_renders_as_collapsible_per_task_blocks_not_json_blob() {
+        // The bug from the user-reported transcript: 4 sub-agent
+        // results jammed into one escape-soup line of JSON. After
+        // the fix, each task is a <details> block.
+        let payload = serde_json::json!({
+            "summary": {"total": 2, "completed": 2},
+            "tasks": [
+                {
+                    "task_id": "agent:1",
+                    "status": "completed",
+                    "agent_name": "explore",
+                    "prompt": "Scan koda-core/",
+                    "output": "### Key Files\n- foo.rs\n- bar.rs",
+                    "events": ["  \u{1F527} Read", "  \u{1F527} Grep"],
+                },
+                {
+                    "task_id": "agent:2",
+                    "status": "completed",
+                    "agent_name": "explore",
+                    "prompt": "Scan koda-cli/",
+                    "output": "### TUI findings\nLooks fine.",
+                    "events": [],
+                },
+            ],
+        });
+        let msgs = vec![
+            assistant_calling_wait_task("call_xyz"),
+            wait_task_result("call_xyz", payload),
+        ];
+        let out = render(&msgs, &[], &default_meta(), false);
+
+        // Header carries the call id + summary tally.
+        assert!(
+            out.contains("Output for `call_xyz`") && out.contains("gathered 2 task(s)"),
+            "header missing/wrong: {out}"
+        );
+        assert!(out.contains("2 completed"), "summary tally absent: {out}");
+        // One <details> block per task with task id in the summary.
+        assert_eq!(
+            out.matches("<details>").count(),
+            2,
+            "expected 2 collapsible task blocks: {out}"
+        );
+        assert!(out.contains("<b>agent:1</b>") && out.contains("<b>agent:2</b>"));
+        // Agent's markdown headings preserved (not stuffed in a code block).
+        assert!(out.contains("### Key Files"));
+        assert!(out.contains("### TUI findings"));
+        // Tool calls listed for tasks that have any (`agent:1`); no empty
+        // line for tasks with none (`agent:2`).
+        assert!(out.contains("Tool calls (2)"));
+        assert!(
+            !out.contains("Tool calls (0)"),
+            "empty event list shouldn't render a 'Tool calls (0)' line: {out}"
+        );
+        // Crucial: the raw JSON code block (the BUG) MUST NOT appear.
+        assert!(
+            !out.contains("```\n{\"summary\"") && !out.contains("```\n{\"tasks\""),
+            "raw WaitTask JSON must not be rendered as a code block: {out}"
+        );
+    }
+
+    #[test]
+    fn wait_task_pretty_renders_mixed_status_with_per_task_icons() {
+        // Each terminal status gets a distinct icon so a reader can
+        // scan a multi-task block at a glance. This test wires up the
+        // 3 "interesting" statuses (the happy path is covered above).
+        let payload = serde_json::json!({
+            "summary": {"total": 3, "timed_out": 1, "cancelled": 1, "not_found": 1},
+            "tasks": [
+                {"task_id": "agent:5", "status": "timed_out", "current": {}},
+                {"task_id": "agent:6", "status": "cancelled"},
+                {"task_id": "agent:99", "status": "not_found", "error": "unknown task agent:99"},
+            ],
+        });
+        let msgs = vec![
+            assistant_calling_wait_task("c1"),
+            wait_task_result("c1", payload),
+        ];
+        let out = render(&msgs, &[], &default_meta(), false);
+        // Each icon must appear at least once.
+        assert!(out.contains("\u{23F1}"), "timed_out icon missing: {out}");
+        assert!(out.contains("\u{26D4}"), "cancelled icon missing: {out}");
+        assert!(out.contains("\u{2753}"), "not_found icon missing: {out}");
+        // The not_found error message must surface in the task body —
+        // a typo in one of N task_ids needs to be debuggable.
+        assert!(
+            out.contains("unknown task agent:99"),
+            "not_found error must be visible: {out}"
+        );
+    }
+
+    #[test]
+    fn wait_task_pretty_falls_back_to_code_block_on_unparseable_payload() {
+        // Defensive: if WaitTask ever returns malformed JSON (e.g.,
+        // dispatch error wrapped as a plain string), we must NOT lose
+        // the content. The generic code-block path catches it.
+        let mut bad = make_msg(Role::Tool, "{not valid json");
+        bad.tool_call_id = Some("c1".into());
+        let msgs = vec![assistant_calling_wait_task("c1"), bad];
+        let out = render(&msgs, &[], &default_meta(), false);
+        assert!(
+            out.contains("{not valid json"),
+            "unparseable WaitTask payload must surface verbatim: {out}"
+        );
+        // And critically: not as a half-formed pretty render.
+        assert!(
+            !out.contains("<details>"),
+            "pretty path must abort cleanly on parse failure: {out}"
+        );
+    }
+
+    #[test]
+    fn first_meaningful_line_strips_markdown_prefixes_and_truncates() {
+        // Unit test for the preview helper — these edge cases would
+        // be tedious to cover via render() integration tests.
+        assert_eq!(
+            first_meaningful_line("### Header\n\nReal content", 50),
+            "Header",
+            "strips markdown heading hashes"
+        );
+        assert_eq!(
+            first_meaningful_line("> blockquote\nbody", 50),
+            "blockquote",
+            "strips blockquote marker"
+        );
+        assert_eq!(
+            first_meaningful_line("   \n\n", 50),
+            "",
+            "all-whitespace input \u{2192} empty preview"
+        );
+        let long = "a".repeat(200);
+        let preview = first_meaningful_line(&long, 50);
+        assert_eq!(
+            preview.chars().count(),
+            51,
+            "truncated preview is max_chars + 1 ellipsis char"
+        );
+        assert!(preview.ends_with('\u{2026}'));
     }
 }
