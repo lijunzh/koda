@@ -27,7 +27,7 @@ within the project sandbox are auto-approved.
 | `AskUser` | Interactive | Ask the user a clarifying question |
 | `ListBackgroundTasks` | Read-only | Snapshot all background tasks owned by the caller |
 | `CancelTask` | Read-only | Cancel a background agent or shell process |
-| `WaitTask` | Read-only | Block until a background task finishes (max 300 s) |
+| `WaitTask` | Read-only | Block until one or more background tasks finish (max 300 s/task, atomic gather) |
 
 ## Approval behaviour by trust mode
 
