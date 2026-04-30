@@ -45,6 +45,31 @@ use tokio_util::sync::CancellationToken;
 /// ever change.
 static NEXT_INVOCATION_ID: AtomicU32 = AtomicU32::new(1);
 
+/// Default per-sub-agent turn cap when the agent JSON does not set
+/// `max_iterations` explicitly (#1135).
+///
+/// Matches the `DEFAULT_MAX_TURNS = 30` used by `gemini-cli`'s agent
+/// runtime — see `packages/core/src/agents/types.ts:51`. Codex does
+/// not cap sub-agents at all ("trust the model"), which is what koda
+/// did between #1110 and this change. The bug from #1135 (read-only
+/// explorer agents spinning for 100+s on broad prompts) is exactly
+/// the failure mode the no-cap regime can't catch: non-identical but
+/// non-progressing tool calls slip past `LoopDetector` and only stop
+/// when the user gives up and hits Ctrl-C.
+///
+/// 30 turns is enough headroom for any reasonable read-only
+/// exploration on a moderate codebase (the offending session in
+/// #1135 used ~26 calls); long-running write agents that need more
+/// can opt up via `"max_iterations": N` in their JSON. Mirrors
+/// gemini's per-agent overrides (cli-help: 10, generalist: 20,
+/// browser: 50, codebase-investigator: 50).
+///
+/// **NOTE**: this only applies to sub-agents. The top-level koda
+/// agent's cap (currently `KodaConfig::max_iterations = 200` per
+/// `config.rs:247`) is unchanged — that path runs interactively and
+/// already has the `EngineEvent::LoopCapReached` extension UX.
+pub(crate) const DEFAULT_SUB_AGENT_MAX_TURNS: u32 = 30;
+
 /// Allocate a fresh invocation id. See [`NEXT_INVOCATION_ID`].
 pub(crate) fn next_invocation_id() -> u32 {
     NEXT_INVOCATION_ID.fetch_add(1, Ordering::Relaxed)
@@ -466,7 +491,12 @@ pub(crate) fn execute_sub_agent<'a>(
         //   model names are not portable ("gemini-2.0-flash" means nothing on
         //   Anthropic), so if the agent has its own provider we leave the model
         //   resolved from that provider's defaults.
-        let sub_config = if is_fork {
+        // #1135: per-agent turn cap. Computed alongside `sub_config`
+        // because for non-fork agents we need the **raw** JSON to
+        // distinguish "explicit max_iterations" from "defaulted to 200
+        // in `KodaConfig::for_agent_invocation`". A tuple return keeps
+        // both values in scope without a redundant disk read.
+        let (sub_config, max_turns) = if is_fork {
             // Fork inherits the parent config verbatim, *except* for
             // trust — which must come from the **runtime** mode
             // (see `derive_child_trust` doc).
@@ -498,7 +528,12 @@ pub(crate) fn execute_sub_agent<'a>(
                 cfg.trust == mode,
                 "fork must inherit parent's runtime trust mode exactly"
             );
-            cfg
+            // Forks inherit the parent's cap (parent could be top-level
+            // koda at 200 or another sub-agent at 30). We don't impose
+            // the sub-agent default on a fork because the model is
+            // continuing the parent's work, not starting a fresh task.
+            let max_turns = cfg.max_iterations;
+            (cfg, max_turns)
         } else {
             // Load the raw JSON first to see what the agent explicitly set.
             let raw = crate::config::KodaConfig::load_agent_json(project_root, agent_name)
@@ -551,7 +586,15 @@ pub(crate) fn execute_sub_agent<'a>(
                 );
             }
 
-            cfg
+            // #1135: read from the **raw** JSON so we can tell
+            // "explicit `max_iterations: N`" apart from "defaulted
+            // to 200 by `KodaConfig::for_agent_invocation`". Without
+            // this distinction every sub-agent would inherit the
+            // 200 default and the gemini-pattern fix would do
+            // nothing for the agents that triggered #1135 (which
+            // don't set the field).
+            let max_turns = raw.max_iterations.unwrap_or(DEFAULT_SUB_AGENT_MAX_TURNS);
+            (cfg, max_turns)
         };
 
         let sub_session = {
@@ -756,6 +799,20 @@ pub(crate) fn execute_sub_agent<'a>(
             &tools.skill_registry,
         );
 
+        // #1135: gemini-pattern grace turn. When `iter > max_turns` we
+        // append a system reminder to the message list ("you have one
+        // final chance — give your best answer NOW, no more tools")
+        // and run exactly one more turn. Whatever the model returns on
+        // that turn is the final answer (tool calls in the grace
+        // response are ignored, not dispatched). Tracked here rather
+        // than via `iter`-arithmetic alone because the loop body must
+        // know which iteration was "the grace one" to decide whether
+        // to dispatch tools or short-circuit to a return.
+        //
+        // Mirrors gemini-cli's `executeFinalWarningTurn` in
+        // `local-executor.ts:436`.
+        let mut grace_turn_done = false;
+
         for iter in 1u32.. {
             // #1110: sub-agents have no hardcoded iteration cap. Termination
             // is driven by the model (clean stop, no tool calls), `LoopDetector`
@@ -797,8 +854,39 @@ pub(crate) fn execute_sub_agent<'a>(
             }
 
             sink.emit(EngineEvent::SpinnerStart {
-                message: format!("  🦥 {agent_name} thinking..."),
+                message: format!("  \u{1f9a5} {agent_name} thinking..."),
             });
+
+            // #1135: append the grace-turn reminder when this iteration
+            // is the one that exceeded the cap. The reminder is stuffed
+            // into the OUTGOING `messages` only — it is not persisted
+            // to the DB, so a future replay won't see it twice. The
+            // strict "text only, no tools" framing matches gemini's
+            // wording (`local-executor.ts::getFinalWarningMessage`).
+            if iter > max_turns && !grace_turn_done {
+                grace_turn_done = true;
+                let warning = format!(
+                    "You have reached the maximum number of turns ({max_turns}) for this \
+                     sub-agent invocation. You have ONE final chance to complete the task. \
+                     You MUST respond with your best answer NOW as plain text. DO NOT call \
+                     any more tools \u{2014} any tool calls in this response will be ignored. \
+                     Summarize what you found, what you would do next if you had more turns, \
+                     and explain that your investigation was interrupted by the budget."
+                );
+                messages.push(ChatMessage::text("system", &warning));
+                tracing::warn!(
+                    agent = agent_name,
+                    iter,
+                    max_turns,
+                    "sub-agent reached max_turns; running grace turn"
+                );
+                sink.emit(EngineEvent::Info {
+                    message: format!(
+                        "  \u{23f3} {agent_name}: reached max turns ({max_turns}); requesting final summary"
+                    ),
+                });
+            }
+
             let response = provider
                 .chat(&messages, &tool_defs, &sub_config.model_settings)
                 .await?;
@@ -833,6 +921,33 @@ pub(crate) fn execute_sub_agent<'a>(
                 )
                 .await?;
             db.mark_message_complete(assistant_msg_id).await?;
+
+            // #1135: if this iteration was the grace turn, return
+            // immediately regardless of whether the model called tools.
+            // The grace contract is exactly one extra LLM call —
+            // dispatching its tool calls would defeat the budget.
+            // Falls through to the normal empty-tool-calls return path
+            // when the model complied (typical case after the strong
+            // "text only" framing); short-circuits with a marker if the
+            // model defied the instruction and tried to keep tooling.
+            if grace_turn_done {
+                let result = match response.content.as_deref() {
+                    Some(text) if !text.trim().is_empty() => text.to_string(),
+                    _ => format!(
+                        "[max_turns reached: agent exceeded the {max_turns}-turn budget \
+                         and did not produce a final summary on its grace turn. \
+                         {n} pending tool call(s) were dropped.]",
+                        n = response.tool_calls.len(),
+                    ),
+                };
+                sub_agent_cache.put(agent_name, prompt, &result);
+                if let Ok(Some(hint)) = workspace.release(&sub_session, &effective_root).await {
+                    sink.emit(EngineEvent::Info {
+                        message: format!("  \u{1f335} {agent_name}: {hint}"),
+                    });
+                }
+                return Ok(result);
+            }
 
             if response.tool_calls.is_empty() {
                 let result = response
@@ -1070,11 +1185,15 @@ pub(crate) fn execute_sub_agent<'a>(
                 .await?;
             }
         }
-        // #1110: unreachable in practice. The `for iter in 1u32..` range is
-        // unbounded; the loop only exits via `return Ok(...)` (clean stop or
-        // cancellation), `return Err(...)` (provider/persistence failure), or
-        // `LoopDetector` short-circuit inside the inference helpers. This
-        // sentinel keeps rustc happy about the function's return type.
+        // #1110 + #1135: unreachable in practice. The `for iter in 1u32..`
+        // range is unbounded; exits are:
+        //   - `return Ok(content)` on a clean (no-tool-calls) response,
+        //   - `return Ok(grace_summary)` after the #1135 grace turn,
+        //   - `return Ok("[cancelled by parent]")` on parent cancellation,
+        //   - `return Err(...)` on a provider/persistence failure.
+        // The grace-turn path guarantees termination within `max_turns + 1`
+        // iterations even when the model refuses to stop on its own — the
+        // class of bug from #1135.
         unreachable!("sub-agent loop exits via return; the iteration range is unbounded");
     }
 }
