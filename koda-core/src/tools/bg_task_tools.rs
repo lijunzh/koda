@@ -474,7 +474,7 @@ async fn execute_wait(
     let task_results: Vec<Value> = futures_util::future::join_all(futures).await;
 
     // Roll up status counts so the model can branch on "all done" /
-    // "some still running" without re-iterang the array. Tally
+    // "some still running" without re-iterating the array. Tally
     // every status string we emit — missing keys default to 0 in
     // JSON consumers so we don't bother with a fixed schema.
     let mut summary = serde_json::Map::new();

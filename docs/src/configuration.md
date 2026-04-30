@@ -63,6 +63,7 @@ leak escape bytes, etc.).
 |---------|---------|--------------|
 | `KODA_SYNTAX_HIGHLIGHT` | on | `off`, `0`, `false`, or `no` |
 | `KODA_TRANSCRIPT_HYPERLINKS` | on | `off`, `0`, `false`, or `no` |
+| `KODA_EXPORT_VERBOSE` | off | (set to `1`, `true`, `yes`, or `on` to enable) |
 
 - **`KODA_SYNTAX_HIGHLIGHT`** controls TUI syntax highlighting for
   `Read`, `Bash` headers, and inline code. Disable for monochrome
@@ -71,6 +72,11 @@ leak escape bytes, etc.).
 - **`KODA_TRANSCRIPT_HYPERLINKS`** controls markdown-style hyperlinks
   in `/copy` and `/export` output. Disable if you paste transcripts
   into a viewer that mangles `[text](file:///abs/path)` syntax.
+- **`KODA_EXPORT_VERBOSE`** restores per-iteration sub-agent
+  heartbeat lines (`Running (Nx)`) in `/export` output. Off by
+  default (since v0.2.25) so transcripts focus on terminal task
+  outcomes; enable when debugging heartbeat aggregation or
+  long-running sub-agents that never seem to terminate.
 
 Both flags accept the same negative values; everything else (including
 empty string and `on`) keeps the feature enabled.
