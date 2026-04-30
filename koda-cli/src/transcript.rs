@@ -168,21 +168,23 @@ pub fn render(
         render_metadata_table(&mut out, meta);
     }
 
-    // Build tool_call_id → tool_name mapping for result correlation
+    // tool_call_id → tool_name mapping for result correlation, populated
+    // **incrementally during the render walk below** rather than via a
+    // pre-pass over all messages. The pre-pass approach (pre-#1163-followup)
+    // was buggy with providers that reuse tool_call_ids across turns —
+    // notably Gemini, which emits per-turn counters like `gemini_tc_1`,
+    // `gemini_tc_2`, … that reset every assistant message. With a global
+    // pre-pass + last-write-wins, a `WaitTask`-bearing id would get silently
+    // overwritten by a later turn's `Read`, causing the Tool result lookup
+    // at render time to return the wrong tool_name and skip the WaitTask
+    // pretty-printer (#1162) → raw JSON dumped into a code block.
+    //
+    // Walking in order and inserting as we go means each Tool message sees
+    // the rolling map state **as of that point in the transcript**, which
+    // always reflects the most-recent prior Assistant `tool_calls` block —
+    // i.e. the call that actually produced this result. Same map, same
+    // O(N) cost, correct semantics for id-reusing providers.
     let mut tool_id_to_name: HashMap<String, String> = HashMap::new();
-    for msg in messages {
-        if msg.role == Role::Assistant
-            && let Some(ref tc_json) = msg.tool_calls
-            && let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json)
-        {
-            for call in calls {
-                let (id, name, _args) = extract_tool_call_meta(&call);
-                if !id.is_empty() && name != "Tool" {
-                    tool_id_to_name.insert(id, name);
-                }
-            }
-        }
-    }
 
     // #1108 P2a: bucket sub-agent events by parent tool_call_id so
     // each Tool result can render its folded trace in O(1). Top-level
@@ -247,6 +249,12 @@ pub fn render(
                     let link = hyperlinks_enabled();
                     for call in &calls {
                         let (id, name, args_json) = extract_tool_call_meta(call);
+                        // Register the id→name mapping for the matching
+                        // Tool result that will appear later in the walk.
+                        // See the rationale comment at the top of this fn.
+                        if !id.is_empty() && name != "Tool" {
+                            tool_id_to_name.insert(id.clone(), name.clone());
+                        }
                         let detail = tool_detail_markdown(
                             &name,
                             &args_json,
@@ -1669,6 +1677,66 @@ mod tests {
         assert!(
             !out.contains("<details>"),
             "pretty path must abort cleanly on parse failure: {out}"
+        );
+    }
+
+    #[test]
+    fn wait_task_pretty_survives_gemini_style_tool_id_reuse_across_turns() {
+        // Regression for #1163-followup: providers like Gemini emit
+        // per-turn tool_call_ids (`gemini_tc_1`, `gemini_tc_2`, …)
+        // that **reset every assistant message**, so the same id
+        // legitimately means different tools across turns. The old
+        // pre-pass-then-render approach built `tool_id_to_name` with
+        // last-write-wins semantics across the whole transcript, so a
+        // later `Read` call would silently overwrite the WaitTask
+        // mapping — and the WaitTask result rendered as raw JSON.
+        //
+        // Shape (mirrors the user-reported transcript):
+        //   T1: assistant calls WaitTask  (id=tc_1) → result: WaitTask JSON
+        //   T2: assistant calls Read      (id=tc_1, REUSED) → result: file body
+        //
+        // After the fix, T1's WaitTask result must still pretty-print.
+        let payload = serde_json::json!({
+            "summary": {"total": 1, "completed": 1},
+            "tasks": [{
+                "task_id": "agent:1",
+                "status": "completed",
+                "agent_name": "explore",
+                "output": "All clear.",
+            }],
+        });
+
+        let read_call = serde_json::json!([{
+            "id": "tc_1",
+            "function": {"name": "Read", "arguments": "{\"file_path\":\"a.rs\"}"}
+        }]);
+        let mut read_assistant = make_msg(Role::Assistant, "");
+        read_assistant.tool_calls = Some(read_call.to_string());
+        let mut read_result = make_msg(Role::Tool, "fn main() {}\n");
+        read_result.tool_call_id = Some("tc_1".into());
+
+        let msgs = vec![
+            assistant_calling_wait_task("tc_1"),
+            wait_task_result("tc_1", payload),
+            read_assistant,
+            read_result,
+        ];
+        let out = render(&msgs, &[], &default_meta(), false);
+
+        // Must pretty-print the WaitTask result — the per-task block.
+        assert!(
+            out.contains("<details>") && out.contains("agent:1"),
+            "WaitTask must pretty-print despite later id reuse: {out}"
+        );
+        // Must NOT regress to the raw-JSON code block.
+        assert!(
+            !out.contains("```\n{\"summary\"") && !out.contains("```\n{\"tasks\""),
+            "raw WaitTask JSON must never appear: {out}"
+        );
+        // Sanity: the later Read result is unaffected.
+        assert!(
+            out.contains("fn main()"),
+            "Read result must still render: {out}"
         );
     }
 
