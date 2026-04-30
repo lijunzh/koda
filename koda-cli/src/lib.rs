@@ -32,6 +32,7 @@ pub(crate) mod input;
 pub(crate) mod md_render;
 pub(crate) mod mouse_select;
 pub(crate) mod onboarding;
+pub(crate) mod panic_log;
 pub(crate) mod queue_lanes;
 pub(crate) mod scroll_buffer;
 pub(crate) mod server;

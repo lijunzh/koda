@@ -584,6 +584,10 @@ fn install_panic_hook(restore: fn()) {
     std::panic::set_hook(Box::new(move |info| {
         // Best-effort: ignore errors here, we're already failing.
         restore();
+        // Forensic breadcrumb for post-mortem debugging (#1122). Wrapped
+        // in a `let _ =` chain inside the helper so any I/O error here
+        // cannot turn into panic-in-panic-hook.
+        crate::panic_log::write_panic_log(info);
         original(info);
     }));
 }
