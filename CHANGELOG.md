@@ -20,6 +20,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   cross-platform UX. Lives in parallel with `/export`; future PRs
   unify them per RFC #1167. (#1167 — PR α)
 
+### Changed
+
+- **Panic hook now emits a `tracing::error!` breadcrumb** before
+  writing `panic.log`. The breadcrumb — a single-line
+  `thread '<name>' panicked at <location>: <message>` mirroring the
+  rustc default format — lands in the per-process tracing log
+  (`koda-{PID}.log`). When both files end up in a `/debug-bundle`,
+  the panic is now correlatable with the surrounding tracing context
+  via wall-clock timestamp, instead of sitting in `panic.log`
+  isolated from the events leading up to it. (RFC #1167 — PR β)
+
 ## [0.2.25] - 2026-04-30
 
 Background-tasks UX release. 5 PRs since v0.2.24 reshape `WaitTask` into
