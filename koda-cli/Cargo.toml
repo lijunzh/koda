@@ -45,6 +45,14 @@ unicode-width = "0.2"
 # Clipboard (for Ctrl+Y copy)
 arboard = "3"
 
+# Debug bundle: zip packaging for /debug-bundle slash command (RFC #1167).
+# Chosen over tar.gz for random-access reads (LLM debugging workflows poke
+# at one file at a time; zip's central directory makes that O(file) instead
+# of O(bundle)) and broader cross-platform UX (Windows Explorer browses zips
+# natively). `default-features = false` + `deflate` keeps the dep minimal
+# (no aes-crypto, bzip2, zstd, lzma).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
 # ANSI escape code parsing for tool output
 ansi-to-tui = "8"
 
