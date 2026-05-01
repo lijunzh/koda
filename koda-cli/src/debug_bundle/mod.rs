@@ -1,13 +1,13 @@
 //! `/debug-bundle` slash command implementation (RFC #1167).
 //!
-//! Produces a self-contained `.tar.gz` artifact a debugger (human or LLM)
+//! Produces a self-contained `.zip` artifact a debugger (human or LLM)
 //! can use to reason about a koda session without needing access to the
 //! original machine.
 //!
 //! ## Bundle layout (per RFC #1167)
 //!
 //! ```text
-//! koda-debug-{YYYYMMDD-HHMMSS}-{session-slug}.tar.gz
+//! koda-debug-{YYYYMMDD-HHMMSS}-{session-slug}.zip
 //! ├── README.md            ← what's in the bundle, opened first by humans
 //! ├── conversation.md      ← history_render → lines_to_text serializer
 //! ├── messages.json        ← raw DB dump (every Message row)
@@ -17,6 +17,20 @@
 //!     ├── koda-<PID>.log   ← FULL per-process log
 //!     └── panic.log        ← if exists, full file (else absent)
 //! ```
+//!
+//! ## Why `.zip` and not `.tar.gz`
+//!
+//! Both formats produce roughly the same compressed size for our content
+//! (text-heavy, sub-MB total). The difference is **random access**: a zip
+//! has a central directory at the tail, so reading one entry is
+//! O(entry size). `tar.gz` is a stream, so reading one entry requires
+//! decompressing the whole archive up to that point.
+//!
+//! For the consumer profile of a debug bundle (LLM agents poking at one
+//! file at a time during a debugging session, claude.ai/chatgpt UI
+//! attachment uploads, Windows colleagues browsing in Explorer), random
+//! access wins decisively. The compression delta (a few percent on text)
+//! is irrelevant at our archive sizes.
 //!
 //! ## Design choices (and why they're not options)
 //!
@@ -39,11 +53,11 @@ mod readme;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use flate2::Compression;
-use flate2::write::GzEncoder;
 use koda_core::persistence::Message;
 use ratatui::text::Line;
 use serde_json::{Value, json};
+use zip::CompressionMethod;
+use zip::write::{SimpleFileOptions, ZipWriter};
 
 use self::metadata::{Metadata, Totals};
 
@@ -69,13 +83,13 @@ pub struct BundleInput<'a> {
     /// Captured-at ISO 8601 timestamp. Caller-supplied (rather than
     /// `now()`-internal) so tests are deterministic.
     pub captured_at: &'a str,
-    /// Where to write the resulting `.tar.gz`. The directory is
+    /// Where to write the resulting `.zip`. The directory is
     /// created if missing.
     pub output_dir: &'a Path,
 }
 
 /// Write a debug bundle. Returns the absolute path of the resulting
-/// `.tar.gz` on success.
+/// `.zip` on success.
 ///
 /// The function is fully synchronous: a debug bundle is small (typically
 /// <1 MB) and the user is staring at the TUI waiting for it. Async would
@@ -85,50 +99,48 @@ pub fn write_bundle(input: &BundleInput<'_>) -> std::io::Result<PathBuf> {
 
     let bundle_path = input.output_dir.join(bundle_filename(input));
     let file = std::fs::File::create(&bundle_path)?;
-    let gz = GzEncoder::new(file, Compression::default());
-    let mut tar = tar::Builder::new(gz);
+    let mut zip = ZipWriter::new(file);
 
     let meta = build_metadata(input);
 
-    // Each `add_file_to_tar` call produces a single entry. Order is the
-    // order we want a human untarring + `ls`-ing to see — README first.
-    add_file_to_tar(&mut tar, "README.md", readme::render(&meta).as_bytes())?;
-    add_file_to_tar(
-        &mut tar,
+    // Each `add_file_to_zip` call produces a single entry. Order is the
+    // order we want a human unzipping + `ls`-ing to see — README first.
+    add_file_to_zip(&mut zip, "README.md", readme::render(&meta).as_bytes())?;
+    add_file_to_zip(
+        &mut zip,
         "metadata.json",
         serde_json::to_string_pretty(&meta.to_json())
             .unwrap_or_default()
             .as_bytes(),
     )?;
-    add_file_to_tar(
-        &mut tar,
+    add_file_to_zip(
+        &mut zip,
         "conversation.md",
         render_conversation(input.messages).as_bytes(),
     )?;
-    add_file_to_tar(
-        &mut tar,
+    add_file_to_zip(
+        &mut zip,
         "messages.json",
         serde_json::to_string_pretty(&messages_to_json(input.messages))
             .unwrap_or_default()
             .as_bytes(),
     )?;
-    add_file_to_tar(&mut tar, "env.txt", render_env().as_bytes())?;
+    add_file_to_zip(&mut zip, "env.txt", render_env().as_bytes())?;
 
     // Logs: best-effort copy. Missing log file (e.g. headless test
     // harness without tracing init) is not an error — the bundle just
     // has no logs/ directory entry.
-    add_logs_to_tar(&mut tar, input)?;
+    add_logs_to_zip(&mut zip, input)?;
 
-    // tar::Builder::into_inner finishes the tar stream + returns the
-    // GzEncoder; flate2 needs an explicit finish() to write the gzip
-    // trailer. Drop won't do it.
-    let gz = tar.into_inner()?;
-    gz.finish()?;
+    // ZipWriter::finish writes the central directory at the tail.
+    // Without this, the file is truncated and unreadable. Drop alone is
+    // not sufficient — the writer needs to know we're done adding.
+    zip.finish()?;
 
     Ok(bundle_path)
 }
 
-/// Build the bundle filename: `koda-debug-{YYYYMMDD-HHMMSS}-{slug}.tar.gz`.
+/// Build the bundle filename: `koda-debug-{YYYYMMDD-HHMMSS}-{slug}.zip`.
 ///
 /// Slug comes from the session title, falling back to "session" if the
 /// title is empty/missing. Slug is sanitized: lowercase, alphanumerics +
@@ -140,7 +152,7 @@ fn bundle_filename(input: &BundleInput<'_>) -> String {
         .map(slugify)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "session".to_string());
-    format!("koda-debug-{timestamp}-{slug}.tar.gz")
+    format!("koda-debug-{timestamp}-{slug}.zip")
 }
 
 /// Convert ISO 8601 `2026-04-30T22:48:43Z` into `20260430-224843` for use
@@ -176,39 +188,40 @@ fn slugify(s: &str) -> String {
         .collect()
 }
 
-/// Add a single in-memory file to the tar stream.
-fn add_file_to_tar<W: Write>(
-    tar: &mut tar::Builder<W>,
+/// Add a single in-memory file to the zip stream with deflate compression
+/// + Unix 0o644 permissions (so unzippers on Unix produce sane file modes).
+fn add_file_to_zip<W: Write + std::io::Seek>(
+    zip: &mut ZipWriter<W>,
     path: &str,
     contents: &[u8],
 ) -> std::io::Result<()> {
-    let mut header = tar::Header::new_gnu();
-    header.set_path(path)?;
-    header.set_size(contents.len() as u64);
-    header.set_mode(0o644);
-    header.set_cksum();
-    tar.append(&header, contents)
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+    zip.start_file(path, options)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    zip.write_all(contents)
 }
 
-/// Copy log files into the tar. Best-effort: missing files are silently
+/// Copy log files into the zip. Best-effort: missing files are silently
 /// skipped (a debug bundle from a headless test harness without tracing
 /// init is still useful).
-fn add_logs_to_tar<W: Write>(
-    tar: &mut tar::Builder<W>,
+fn add_logs_to_zip<W: Write + std::io::Seek>(
+    zip: &mut ZipWriter<W>,
     input: &BundleInput<'_>,
 ) -> std::io::Result<()> {
     let logs_dir = input.config_dir.join("logs");
     let process_log = logs_dir.join(format!("koda-{}.log", input.current_pid));
     if let Ok(contents) = std::fs::read(&process_log) {
-        add_file_to_tar(
-            tar,
+        add_file_to_zip(
+            zip,
             &format!("logs/koda-{}.log", input.current_pid),
             &contents,
         )?;
     }
     let panic_log = logs_dir.join("panic.log");
     if let Ok(contents) = std::fs::read(&panic_log) {
-        add_file_to_tar(tar, "logs/panic.log", &contents)?;
+        add_file_to_zip(zip, "logs/panic.log", &contents)?;
     }
     Ok(())
 }
@@ -429,7 +442,7 @@ mod tests {
         let name = bundle_filename(&input);
         assert!(name.starts_with("koda-debug-20260430-224843-"));
         assert!(name.contains("fix-the-waittask-bug"));
-        assert!(name.ends_with(".tar.gz"));
+        assert!(name.ends_with(".zip"));
     }
 
     #[test]
@@ -451,7 +464,7 @@ mod tests {
             output_dir: &output_dir,
         };
         let name = bundle_filename(&input);
-        assert!(name.contains("-session.tar.gz"));
+        assert!(name.contains("-session.zip"));
     }
 
     #[test]
@@ -484,11 +497,10 @@ mod tests {
         assert_eq!(arr[0]["prompt_tokens"], 100);
         assert_eq!(arr[0]["completion_tokens"], 50);
     }
-    /// Integration test: produce a real bundle, untar it (in memory),
+    /// Integration test: produce a real bundle, unzip it (in memory),
     /// verify every documented file is present and well-formed.
     #[test]
-    fn write_bundle_produces_complete_tarball() {
-        use flate2::read::GzDecoder;
+    fn write_bundle_produces_complete_zip() {
         use std::io::Read;
 
         let messages = vec![
@@ -526,16 +538,15 @@ mod tests {
 
         let bundle_path = write_bundle(&input).expect("bundle write should succeed");
         assert!(bundle_path.exists(), "bundle file not created");
-        assert!(bundle_path.extension().map(|e| e == "gz").unwrap_or(false));
+        assert!(bundle_path.extension().map(|e| e == "zip").unwrap_or(false));
 
-        // Untar in memory and collect every entry.
+        // Unzip in memory and collect every entry.
         let file = std::fs::File::open(&bundle_path).unwrap();
-        let gz = GzDecoder::new(file);
-        let mut archive = tar::Archive::new(gz);
+        let mut archive = zip::ZipArchive::new(file).expect("valid zip");
         let mut found: std::collections::HashMap<String, Vec<u8>> = Default::default();
-        for entry in archive.entries().unwrap() {
-            let mut entry = entry.unwrap();
-            let path = entry.path().unwrap().display().to_string();
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).unwrap();
+            let path = entry.name().to_string();
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf).unwrap();
             found.insert(path, buf);
@@ -562,6 +573,19 @@ mod tests {
             !found.contains_key("logs/panic.log"),
             "panic.log appeared but no source file was seeded"
         );
+
+        // Random-access sanity check — one of the headline reasons we
+        // chose zip over tar.gz. Read just `metadata.json` by name
+        // without iterating the archive.
+        let file2 = std::fs::File::open(&bundle_path).unwrap();
+        let mut archive2 = zip::ZipArchive::new(file2).expect("valid zip");
+        let mut entry = archive2
+            .by_name("metadata.json")
+            .expect("random-access by name");
+        let mut buf = String::new();
+        entry.read_to_string(&mut buf).unwrap();
+        let direct: Value = serde_json::from_str(&buf).unwrap();
+        assert_eq!(direct["session_id"], "test-session-id");
 
         // Spot-check content well-formedness.
         let metadata: Value =
@@ -591,7 +615,6 @@ mod tests {
 
     #[test]
     fn write_bundle_with_panic_log_includes_it() {
-        use flate2::read::GzDecoder;
         use std::io::Read;
 
         let messages: Vec<Message> = vec![];
@@ -619,22 +642,14 @@ mod tests {
         };
         let path = write_bundle(&input).unwrap();
         let file = std::fs::File::open(&path).unwrap();
-        let gz = GzDecoder::new(file);
-        let mut archive = tar::Archive::new(gz);
-        let mut found_panic = false;
-        for entry in archive.entries().unwrap() {
-            let mut entry = entry.unwrap();
-            let p = entry.path().unwrap().display().to_string();
-            if p == "logs/panic.log" {
-                found_panic = true;
-                let mut buf = String::new();
-                entry.read_to_string(&mut buf).unwrap();
-                assert!(buf.contains("panicked"));
-            }
-        }
-        assert!(found_panic, "panic.log seeded but missing from bundle");
+        let mut archive = zip::ZipArchive::new(file).expect("valid zip");
+        let mut entry = archive
+            .by_name("logs/panic.log")
+            .expect("panic.log seeded but missing from bundle");
+        let mut buf = String::new();
+        entry.read_to_string(&mut buf).unwrap();
+        assert!(buf.contains("panicked"));
     }
-
     #[test]
     fn write_bundle_succeeds_with_no_logs_dir() {
         // Headless / fresh-config-dir case: log copying is best-effort,

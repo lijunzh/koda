@@ -6,7 +6,7 @@ use super::metadata::Metadata;
 ///
 /// Per RFC #1167: "what's in the bundle, opened first by humans" — so
 /// this is intentionally orientation material, not a polished doc.
-/// Optimised for "I just untarred this in 10 seconds, now what?"
+/// Optimised for "I just unzipped this in 10 seconds, now what?"
 pub(super) fn render(meta: &Metadata) -> String {
     let mut out = String::new();
     out.push_str("# Koda debug bundle\n\n");

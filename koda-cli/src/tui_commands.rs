@@ -860,7 +860,7 @@ async fn handle_export(
     }
 }
 
-/// `/debug-bundle` — write a self-contained `.tar.gz` debug artifact to
+/// `/debug-bundle` — write a self-contained `.zip` debug artifact to
 /// `~/.config/koda/debug-bundles/`.
 ///
 /// See [`crate::debug_bundle`] module docs for the bundle layout, design

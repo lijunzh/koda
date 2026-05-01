@@ -34,7 +34,7 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ),
     (
         "/debug-bundle",
-        "Write a self-contained debug .tar.gz to ~/.config/koda/debug-bundles/",
+        "Write a self-contained debug .zip to ~/.config/koda/debug-bundles/",
         None,
     ),
     ("/diff", "Show git diff (review, commit)", None),

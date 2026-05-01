@@ -8,15 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- **`/debug-bundle` slash command** — writes a self-contained `.tar.gz`
+- **`/debug-bundle` slash command** — writes a self-contained `.zip`
   to `~/.config/koda/debug-bundles/` capturing everything a debugger
   (human or LLM) needs to reason about a session: `conversation.md`
   (rendered via `history_render` — same as the live TUI),
   `messages.json` (raw DB rows), `metadata.json` (session/runtime
   context), `env.txt` (allowlist-filtered env vars, credentials
   length-redacted), and `logs/` (full per-process tracing log + panic
-  log if any). Lives in parallel with `/export`; future PRs unify them
-  per RFC #1167. (#1167 — PR α)
+  log if any). Format chosen for random-access reads (LLM debugging
+  poke-one-file workflows are O(file) instead of O(bundle)) and broad
+  cross-platform UX. Lives in parallel with `/export`; future PRs
+  unify them per RFC #1167. (#1167 — PR α)
 
 ## [0.2.25] - 2026-04-30
 

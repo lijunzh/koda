@@ -10,7 +10,7 @@
 use serde_json::{Value, json};
 
 /// Snapshot of session and runtime context. Constructed at bundle-write
-/// time, serialized to `metadata.json` inside the tarball.
+/// time, serialized to `metadata.json` inside the zip.
 ///
 /// Field choices follow RFC #1167:
 ///
