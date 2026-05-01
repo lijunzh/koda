@@ -33,6 +33,7 @@ use crate::tui_output::{BOLD, DIM, TOOL_PREFIX};
 /// added to the engine must land here as well — the catch-all `❔`
 /// makes the omission visible in rendered output rather than failing
 /// silently.
+#[must_use]
 pub fn wait_status_icon(status: &str) -> &'static str {
     match status {
         "completed" => "\u{2705}",   // ✅
@@ -53,6 +54,7 @@ pub fn wait_status_icon(status: &str) -> &'static str {
 /// shorter limits because terminal columns are scarcer than browser
 /// width. Chars (not bytes) so multibyte content isn't truncated mid
 /// codepoint.
+#[must_use]
 pub fn first_meaningful_line(output: &str, max_chars: usize) -> String {
     for raw in output.lines() {
         let trimmed = raw
@@ -98,6 +100,7 @@ const TUI_PREVIEW_CHARS: usize = 80;
 /// `BOLD` for scanability, agent name is `DIM` (it's contextual, not
 /// the headline), preview stays in default text colour so it stands
 /// out from the prefix chrome.
+#[must_use]
 pub fn try_render_wait_task_lines(payload: &str) -> Option<Vec<Line<'static>>> {
     let v: serde_json::Value = serde_json::from_str(payload).ok()?;
     let tasks = v.get("tasks")?.as_array()?;
