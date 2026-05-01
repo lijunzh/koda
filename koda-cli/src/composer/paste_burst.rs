@@ -1,7 +1,13 @@
 //! # Provenance
 //!
 //! Ported verbatim from `codex-rs/tui/src/bottom_pane/paste_burst.rs`
-//! at upstream commit `7e8594fc198615068018b198ab86a9ae0a541dff`.
+//! at upstream commit `d55479488e125ef7a0a8584505d839a22eaf6204`
+//! (codex `main` as of 2026-05-01).
+//!
+//! Verified byte-identical between this SHA and our previous reference
+//! `7e8594fc198615068018b198ab86a9ae0a541dff` (`git diff` returns 0
+//! lines), so the re-stamp is a pure attribution change — no
+//! behavioral diff.
 //!
 //! Original work: Copyright (c) OpenAI / codex contributors,
 //! licensed under the Apache License, Version 2.0.
