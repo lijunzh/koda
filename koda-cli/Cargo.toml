@@ -42,6 +42,15 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm",
 ratatui-textarea = "0.9"
 unicode-width = "0.2"
 
+# Composer port (#1116, #1178): textarea + paste_burst lifted from
+# codex-rs (Apache 2.0). textwrap is used by the ported textarea for
+# soft-wrapping; unicode-segmentation handles grapheme-boundary cursor
+# motion. unicode-segmentation is already transitive (1.13.x); declared
+# direct because we now use it ourselves and transitive contracts are
+# fragile.
+textwrap = "0.16"
+unicode-segmentation = "1.13"
+
 # Terminal-cleanup hardening (#1176): signal handlers + atexit hook so that
 # SIGTERM / SIGINT / SIGHUP / process::exit() restore raw mode + alt-screen +
 # mouse-capture before the process dies. Both are already present transitively
