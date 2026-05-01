@@ -1,34 +1,215 @@
-//! Reduced port of codex's `codex-rs/tui/src/key_hint.rs`.
+//! # Provenance
 //!
-//! ## Provenance
-//!
-//! Selected helpers ported from `codex-rs/tui/src/key_hint.rs` at
-//! upstream commit `7e8594fc198615068018b198ab86a9ae0a541dff`.
+//! Ported verbatim from `codex-rs/tui/src/key_hint.rs` at upstream
+//! commit `d55479488e125ef7a0a8584505d839a22eaf6204` (codex `main`
+//! as of 2026-05-01).
 //!
 //! Original work: Copyright (c) OpenAI / codex contributors,
 //! licensed under the Apache License, Version 2.0.
-//! See `LICENSES/codex-APACHE-2.0` for the full license text.
+//! See `LICENSES/codex-APACHE-2.0` (vendored at the workspace root)
+//! for the full license text.
 //!
-//! ## What was kept vs dropped
+//! # Adaptations for koda
 //!
-//! - **Kept:** [`is_altgr`]. This is the only key-hint helper used by
-//!   the ported [`super::textarea::TextArea`].
-//! - **Dropped:** `KeyBinding`, the modifier-prefix constants, the
-//!   `From<KeyBinding> for Span` impl. Those are part of codex's hint
-//!   rendering surface (footer, key-binding cheat-sheets) which koda
-//!   doesn't currently use. Easy to port later if we adopt codex's
-//!   hint UI.
+//! None. This module is policy-free key-input primitive code:
+//!
+//! - [`KeyBinding`] (data type wrapping `KeyCode` + `KeyModifiers`)
+//! - [`KeyBindingListExt`] trait (matching logic over `[KeyBinding]`)
+//! - Helper constructors ([`plain`], [`alt`], [`shift`], [`ctrl`],
+//!   [`ctrl_alt`])
+//! - [`is_altgr`], [`has_ctrl_or_alt`] modifier helpers
+//! - [`From<KeyBinding> for Span`] rendering for hint UI
+//!
+//! All of this is pure data-structure / algorithm code with no
+//! koda-vs-codex policy decisions to make. Vendored as-is and synced
+//! with codex on the same cadence as [`super::textarea`] and
+//! [`super::paste_burst`].
+//!
+//! # History within koda
+//!
+//! PR #1178 (this PR) initially landed a 75-LoC reduced port that
+//! exposed only [`is_altgr`] (the one helper our reduced textarea port
+//! at codex SHA `7e8594fc` needed). When we pivoted to a HEAD-aligned
+//! port (codex SHA `d55479`), the upstream textarea grew dependencies
+//! on [`KeyBinding`], [`KeyBindingListExt`], and the helper
+//! constructors. Rather than expand our reduced port piecemeal, we
+//! switched to a full verbatim vendor of `key_hint.rs` so future codex
+//! syncs become a single 3-way merge instead of a hand-curated subset.
+//!
+//! # Original module documentation follows
+//!
+//! ---
+//!
+//! Key binding primitives and input matching for the TUI.
+//!
+//! This module provides `KeyBinding`, the runtime representation of a single
+//! keybinding (key code + modifier set), along with matching logic that handles
+//! cross-terminal inconsistencies in how shifted letters are reported.
+//!
+//! It also supplies rendering helpers that convert bindings into styled
+//! `ratatui::text::Span` values for UI hint display.
 
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
+use ratatui::style::Style;
+use ratatui::style::Stylize;
+use ratatui::text::Span;
 
-/// On Windows the AltGr key is delivered as `CONTROL + ALT`. The
-/// textarea uses this to distinguish "user typed an AltGr-composed
-/// character" (a normal text-insert) from "user pressed Ctrl+Alt+key"
-/// (a chord that should be interpreted as a command).
+#[cfg(test)]
+const ALT_PREFIX: &str = "⌥ + ";
+#[cfg(all(not(test), target_os = "macos"))]
+const ALT_PREFIX: &str = "⌥ + ";
+#[cfg(all(not(test), not(target_os = "macos")))]
+const ALT_PREFIX: &str = "alt + ";
+const CTRL_PREFIX: &str = "ctrl + ";
+const SHIFT_PREFIX: &str = "shift + ";
+
+/// One concrete key event that can trigger a TUI action.
 ///
-/// Unconditionally returns `false` on non-Windows platforms because
-/// no other OS encodes AltGr this way; on Linux/macOS the keyboard
-/// driver delivers the composed character directly.
+/// Matching via `is_press` handles both exact equality and a shifted-letter
+/// compatibility fallback for terminals that report uppercase letters without
+/// the SHIFT modifier flag. This means a binding defined as `shift-a` will
+/// match a terminal event of either `Shift+a` or plain `A`.
+///
+/// This does not model multi-key chords or partial matches; callers that need
+/// sequences must keep that state outside this type.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct KeyBinding {
+    key: KeyCode,
+    modifiers: KeyModifiers,
+}
+
+impl KeyBinding {
+    pub(crate) const fn new(key: KeyCode, modifiers: KeyModifiers) -> Self {
+        Self { key, modifiers }
+    }
+
+    pub fn is_press(&self, event: KeyEvent) -> bool {
+        normalize_shifted_ascii_char(self.key, self.modifiers)
+            == normalize_shifted_ascii_char(event.code, event.modifiers)
+            && (event.kind == KeyEventKind::Press || event.kind == KeyEventKind::Repeat)
+    }
+
+    pub(crate) const fn parts(&self) -> (KeyCode, KeyModifiers) {
+        (self.key, self.modifiers)
+    }
+}
+
+fn normalize_shifted_ascii_char(
+    key: KeyCode,
+    mut modifiers: KeyModifiers,
+) -> (KeyCode, KeyModifiers) {
+    let KeyCode::Char(ch) = key else {
+        return (key, modifiers);
+    };
+    if modifiers.is_empty()
+        && let Some(ctrl_char) = c0_control_char_to_ctrl_char(ch)
+    {
+        return (KeyCode::Char(ctrl_char), KeyModifiers::CONTROL | modifiers);
+    }
+    if ch.is_ascii_uppercase() {
+        modifiers.insert(KeyModifiers::SHIFT);
+        return (KeyCode::Char(ch.to_ascii_lowercase()), modifiers);
+    }
+    (key, modifiers)
+}
+
+fn c0_control_char_to_ctrl_char(ch: char) -> Option<char> {
+    match ch {
+        '\u{0002}' => Some('b'),
+        '\u{0006}' => Some('f'),
+        '\u{000e}' => Some('n'),
+        '\u{0010}' => Some('p'),
+        '\u{0012}' => Some('r'),
+        '\u{0013}' => Some('s'),
+        _ => None,
+    }
+}
+
+/// Matching helpers for one action's keybinding set.
+///
+/// Implementations are expected to treat the slice as alternatives for one
+/// action. They should not interpret order as priority for dispatch; order is
+/// reserved for UI hint selection via `primary_binding`.
+pub(crate) trait KeyBindingListExt {
+    /// True when any binding in this set matches `event`.
+    fn is_pressed(&self, event: KeyEvent) -> bool;
+}
+
+impl KeyBindingListExt for [KeyBinding] {
+    fn is_pressed(&self, event: KeyEvent) -> bool {
+        self.iter().any(|binding| binding.is_press(event))
+    }
+}
+
+pub(crate) const fn plain(key: KeyCode) -> KeyBinding {
+    KeyBinding::new(key, KeyModifiers::NONE)
+}
+
+pub(crate) const fn alt(key: KeyCode) -> KeyBinding {
+    KeyBinding::new(key, KeyModifiers::ALT)
+}
+
+pub(crate) const fn shift(key: KeyCode) -> KeyBinding {
+    KeyBinding::new(key, KeyModifiers::SHIFT)
+}
+
+pub(crate) const fn ctrl(key: KeyCode) -> KeyBinding {
+    KeyBinding::new(key, KeyModifiers::CONTROL)
+}
+
+pub(crate) const fn ctrl_alt(key: KeyCode) -> KeyBinding {
+    KeyBinding::new(key, KeyModifiers::CONTROL.union(KeyModifiers::ALT))
+}
+
+fn modifiers_to_string(modifiers: KeyModifiers) -> String {
+    let mut result = String::new();
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        result.push_str(CTRL_PREFIX);
+    }
+    if modifiers.contains(KeyModifiers::SHIFT) {
+        result.push_str(SHIFT_PREFIX);
+    }
+    if modifiers.contains(KeyModifiers::ALT) {
+        result.push_str(ALT_PREFIX);
+    }
+    result
+}
+
+impl From<KeyBinding> for Span<'static> {
+    fn from(binding: KeyBinding) -> Self {
+        (&binding).into()
+    }
+}
+impl From<&KeyBinding> for Span<'static> {
+    fn from(binding: &KeyBinding) -> Self {
+        let KeyBinding { key, modifiers } = binding;
+        let modifiers = modifiers_to_string(*modifiers);
+        let key = match key {
+            KeyCode::Enter => "enter".to_string(),
+            KeyCode::Char(' ') => "space".to_string(),
+            KeyCode::Up => "↑".to_string(),
+            KeyCode::Down => "↓".to_string(),
+            KeyCode::Left => "←".to_string(),
+            KeyCode::Right => "→".to_string(),
+            KeyCode::PageUp => "pgup".to_string(),
+            KeyCode::PageDown => "pgdn".to_string(),
+            _ => format!("{key}").to_ascii_lowercase(),
+        };
+        Span::styled(format!("{modifiers}{key}"), key_hint_style())
+    }
+}
+
+fn key_hint_style() -> Style {
+    Style::default().dim()
+}
+
+pub(crate) fn has_ctrl_or_alt(mods: KeyModifiers) -> bool {
+    (mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::ALT)) && !is_altgr(mods)
+}
+
 #[cfg(windows)]
 #[inline]
 pub(crate) fn is_altgr(mods: KeyModifiers) -> bool {
@@ -46,27 +227,101 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_altgr_is_false_on_non_windows() {
-        // On non-Windows platforms (the CI matrix here), AltGr detection
-        // is a constant `false` regardless of input. Verify the
-        // implementation doesn't accidentally claim true for the
-        // Ctrl+Alt combo, which would break Ctrl+Alt+key chords.
-        #[cfg(not(windows))]
-        {
-            assert!(!is_altgr(KeyModifiers::ALT | KeyModifiers::CONTROL));
-            assert!(!is_altgr(KeyModifiers::NONE));
-            assert!(!is_altgr(KeyModifiers::ALT));
-        }
+    fn is_press_accepts_press_and_repeat_but_rejects_release() {
+        let binding = ctrl(KeyCode::Char('k'));
+        let press = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        let repeat = KeyEvent {
+            kind: KeyEventKind::Repeat,
+            ..press
+        };
+        let release = KeyEvent {
+            kind: KeyEventKind::Release,
+            ..press
+        };
+        let wrong_modifiers = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
 
-        // On Windows, Ctrl+Alt IS the AltGr signal. Verify the
-        // detection returns true so the textarea treats AltGr-composed
-        // characters as text input, not as a chord.
+        assert!(binding.is_press(press));
+        assert!(binding.is_press(repeat));
+        assert!(!binding.is_press(release));
+        assert!(!binding.is_press(wrong_modifiers));
+    }
+
+    #[test]
+    fn keybinding_list_ext_matches_any_binding() {
+        let bindings = [plain(KeyCode::Char('a')), ctrl(KeyCode::Char('b'))];
+
+        assert!(bindings.is_pressed(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)));
+        assert!(bindings.is_pressed(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL)));
+        assert!(!bindings.is_pressed(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)));
+    }
+
+    #[test]
+    fn shifted_letter_binding_matches_uppercase_char_events() {
+        let binding = shift(KeyCode::Char('a'));
+
+        assert!(binding.is_press(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::SHIFT)));
+        assert!(binding.is_press(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE)));
+        assert!(binding.is_press(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT)));
+    }
+
+    #[test]
+    fn shift_letter_binding_preserves_other_modifiers_with_uppercase_compat() {
+        let binding = KeyBinding::new(
+            KeyCode::Char('i'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+
+        assert!(binding.is_press(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::CONTROL)));
+    }
+
+    #[test]
+    fn shift_letter_binding_does_not_match_plain_lowercase_or_other_uppercase() {
+        let binding = shift(KeyCode::Char('o'));
+
+        assert!(!binding.is_press(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)));
+        assert!(!binding.is_press(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::NONE)));
+    }
+
+    #[test]
+    fn ctrl_letter_binding_matches_c0_control_char_events() {
+        let binding = ctrl(KeyCode::Char('p'));
+
+        assert!(binding.is_press(KeyEvent::new(KeyCode::Char('\u{0010}'), KeyModifiers::NONE)));
+        assert!(!binding.is_press(KeyEvent::new(KeyCode::Char('\u{0010}'), KeyModifiers::ALT)));
+    }
+
+    #[test]
+    fn history_search_ctrl_bindings_match_c0_control_char_events() {
+        assert!(
+            ctrl(KeyCode::Char('r'))
+                .is_press(KeyEvent::new(KeyCode::Char('\u{0012}'), KeyModifiers::NONE))
+        );
+        assert!(
+            ctrl(KeyCode::Char('s'))
+                .is_press(KeyEvent::new(KeyCode::Char('\u{0013}'), KeyModifiers::NONE))
+        );
+    }
+
+    #[test]
+    fn ctrl_alt_sets_both_modifiers() {
+        assert_eq!(
+            ctrl_alt(KeyCode::Char('v')).parts(),
+            (
+                KeyCode::Char('v'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT
+            )
+        );
+    }
+
+    #[test]
+    fn has_ctrl_or_alt_checks_supported_modifier_combinations() {
+        assert!(!has_ctrl_or_alt(KeyModifiers::NONE));
+        assert!(has_ctrl_or_alt(KeyModifiers::CONTROL));
+        assert!(has_ctrl_or_alt(KeyModifiers::ALT));
+
         #[cfg(windows)]
-        {
-            assert!(is_altgr(KeyModifiers::ALT | KeyModifiers::CONTROL));
-            assert!(!is_altgr(KeyModifiers::ALT));
-            assert!(!is_altgr(KeyModifiers::CONTROL));
-            assert!(!is_altgr(KeyModifiers::NONE));
-        }
+        assert!(!has_ctrl_or_alt(KeyModifiers::CONTROL | KeyModifiers::ALT));
+        #[cfg(not(windows))]
+        assert!(has_ctrl_or_alt(KeyModifiers::CONTROL | KeyModifiers::ALT));
     }
 }
