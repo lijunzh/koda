@@ -1,23 +1,25 @@
 //! Shared formatting primitives for `WaitTask` aggregated results.
 //!
 //! `WaitTask` (#1157) returns a JSON envelope with N sub-task results
-//! (`{tasks: [...], summary: {total, completed, ...}}`). Three rendering
+//! (`{tasks: [...], summary: {total, completed, ...}}`). Two rendering
 //! surfaces consume this same payload:
 //!
-//!   1. Markdown export ([`crate::transcript`]) — HTML `<details>` blocks
-//!   2. Live TUI streaming ([`crate::tui_render`]) — ratatui `Span`/`Line`
-//!   3. Resumed history TUI ([`crate::history_render`]) — same as #2
+//!   1. Live TUI streaming ([`crate::tui_render`]) — ratatui `Span`/`Line`
+//!   2. Resumed history TUI ([`crate::history_render`]) — same as #1
+//!
+//! (A third surface — markdown export — lived in `transcript.rs`
+//! until RFC #1167 PR δ collapsed `/export` into `/debug-bundle`.
+//! `/debug-bundle` consumes `history_render` directly so this module's
+//! primitives still feed exported text via the TUI → lines_to_text
+//! pipeline.)
 //!
 //! This module owns the JSON-shape parsing and presentation primitives
-//! (icons, previews) shared by all three surfaces. Each surface owns the
-//! styling/markup appropriate to its medium — markdown wraps in
-//! `<details>`, the TUI emits indented `Line`s with status icons.
+//! (icons, previews) shared by both surfaces. Each surface owns the
+//! styling appropriate to its medium.
 //!
 //! Centralising the icon table and preview helper means a status-set
 //! change (e.g. adding `parse_error`) lights up consistently across all
-//! three renderers in one edit. Pre-#1163-followup these helpers were
-//! duplicated inside `transcript.rs`; the TUI surfaces had no
-//! `WaitTask` awareness at all and dumped raw JSON.
+//! renderers in one edit.
 
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -148,8 +150,9 @@ pub fn try_render_wait_task_lines(payload: &str) -> Option<Vec<Line<'static>>> {
     ]));
 
     // One row per task. We cap output preview to TUI_PREVIEW_CHARS;
-    // longer reports stay reachable via `/export` (full markdown) or
-    // by re-asking the model to summarise.
+    // longer reports stay reachable via `/debug-bundle` (full text in
+    // the bundled `conversation.md`) or by re-asking the model to
+    // summarise.
     let dim_italic = Style::default()
         .fg(Color::DarkGray)
         .add_modifier(Modifier::ITALIC);

@@ -37,20 +37,8 @@ use serde_json::Value;
 /// Maximum visible bytes for inline command/detail text in TUI headers.
 ///
 /// Used by [`truncate_for_header`] which slices on byte boundaries
-/// (cheap, ASCII-correct). Matched in value (not unit) by
-/// [`MAX_DETAIL_CHARS`] which serves the char-based path used by
-/// transcript export. The two constants share a number deliberately
-/// — same visible cap from both rendering paths — but each name
-/// matches the unit its caller actually uses.
+/// (cheap, ASCII-correct).
 const MAX_DETAIL_BYTES: usize = 120;
-
-/// Maximum visible chars for transcript-export detail text.
-///
-/// Used by [`generic_text`] which truncates via [`truncate_chars`]
-/// (Unicode-correct, slower). Co-equal to [`MAX_DETAIL_BYTES`] in
-/// value so a single tool-arg renders identically in TUI and
-/// transcript exports for the common ASCII case.
-const MAX_DETAIL_CHARS: usize = 120;
 
 /// Build a complete tool-call header line: dot + name + detail spans.
 ///
@@ -94,21 +82,6 @@ pub fn build_header_line_from_str(indent: &str, name: &str, args_json: &str) -> 
 /// (#1094 then #1099) before consolidation.
 pub fn detail_spans(name: &str, args: &Value) -> Vec<Span<'static>> {
     summary_spans(&ToolCallSummary::from_call(name, args))
-}
-
-/// Plain-text rendering of a tool call detail (no styling).
-///
-/// Mirrors [`detail_spans`] but returns a `String` for non-TUI
-/// consumers (clipboard / file export via `transcript.rs`). Both
-/// formatters consume the same [`ToolCallSummary`], so the rendered
-/// string is guaranteed to describe the same `(tool, args)` pair as
-/// the live header.
-///
-/// `bash_chars` controls Bash command truncation (typically 80 in
-/// summary mode, 500 in verbose). All other tools use
-/// [`MAX_DETAIL_CHARS`] for consistency with TUI rendering.
-pub fn detail_text(name: &str, args: &Value, bash_chars: usize) -> String {
-    summary_text(&ToolCallSummary::from_call(name, args), bash_chars)
 }
 
 // ── Renderers ─────────────────────────────────────────────────────────
@@ -179,46 +152,6 @@ fn summary_spans(s: &ToolCallSummary) -> Vec<Span<'static>> {
     }
 }
 
-/// Render a [`ToolCallSummary`] as plain text (transcripts, clipboards).
-fn summary_text(s: &ToolCallSummary, bash_chars: usize) -> String {
-    match &s.kind {
-        ToolCallKind::Bash { command } => {
-            if command.chars().count() > bash_chars {
-                truncate_chars(command, bash_chars)
-            } else {
-                command.clone()
-            }
-        }
-        ToolCallKind::Path { path } => path.clone(),
-        ToolCallKind::Grep { pattern, dir } => {
-            if pattern.is_empty() {
-                String::new()
-            } else {
-                // Quotes match the TUI rendering above so transcript and
-                // live view show the same string for the same args.
-                format!("\"{pattern}\" in {dir}")
-            }
-        }
-        ToolCallKind::Glob { pattern, base } => {
-            if pattern.is_empty() {
-                String::new()
-            } else {
-                match base {
-                    Some(b) => format!("{pattern} in {b}"),
-                    None => pattern.clone(),
-                }
-            }
-        }
-        ToolCallKind::List { dir } => dir.clone(),
-        ToolCallKind::WebFetch { url } => url.clone(),
-        ToolCallKind::Generic { value } => match value {
-            Some(v) if v.chars().count() > MAX_DETAIL_CHARS => truncate_chars(v, MAX_DETAIL_CHARS),
-            Some(v) => v.clone(),
-            None => String::new(),
-        },
-    }
-}
-
 // ── Internals ─────────────────────────────────────────────────────────
 
 /// Truncate a header detail to `MAX_DETAIL_BYTES` with an ellipsis.
@@ -238,18 +171,6 @@ fn truncate_for_header(s: &str) -> String {
         .map(|(i, c)| i + c.len_utf8())
         .unwrap_or(0);
     format!("{}\u{2026}", &s[..cut])
-}
-
-/// Truncate `s` to at most `max` **chars** (not bytes), appending `…`.
-///
-/// Char-based (not byte-based) so callers can express limits in terms of
-/// what the user actually sees in a transcript / clipboard preview.
-/// Multi-byte safe: never splits a codepoint.
-fn truncate_chars(s: &str, max: usize) -> String {
-    match s.char_indices().nth(max) {
-        Some((idx, _)) => format!("{}\u{2026}", &s[..idx]),
-        None => s.to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -537,113 +458,6 @@ mod tests {
         let line = build_header_line("", "Read", &json!({"file_path": "x.rs"}));
         // First span must not be an empty raw indent.
         assert_ne!(line.spans[0].content.as_ref(), "");
-    }
-
-    // ── detail_text (plain-text mirror of detail_spans) ───────────────────
-
-    #[test]
-    fn detail_text_matches_detail_spans_concat() {
-        // For every supported tool, the plain text must equal the
-        // concatenation of the styled spans — the two functions are
-        // documented as mirrors of one another. Drift between them is
-        // the bug this test exists to catch.
-        let cases: Vec<(&str, serde_json::Value)> = vec![
-            ("Read", json!({"file_path": "a.rs"})),
-            ("Write", json!({"file_path": "b.rs"})),
-            ("Edit", json!({"file_path": "c.rs"})),
-            ("Delete", json!({"file_path": "d.rs"})),
-            ("Grep", json!({"search_string": "TODO", "directory": "src"})),
-            ("Glob", json!({"pattern": "**/*.rs"})),
-            ("List", json!({"directory": "src"})),
-            ("WebFetch", json!({"url": "https://example.com"})),
-        ];
-        for (name, args) in cases {
-            let text = detail_text(name, &args, 500);
-            let spans = detail_spans(name, &args);
-            let concat: String = spans.iter().map(|s| s.content.as_ref()).collect();
-            assert_eq!(
-                text, concat,
-                "detail_text and detail_spans disagree for {name}"
-            );
-        }
-    }
-
-    #[test]
-    fn detail_text_bash_truncates_at_limit() {
-        let cmd = "a".repeat(200);
-        let args = json!({ "command": cmd });
-        let out = detail_text("Bash", &args, 80);
-        // Truncated text holds 80 chars + the ellipsis.
-        assert_eq!(out.chars().count(), 81, "got {out:?}");
-        assert!(out.ends_with('\u{2026}'));
-    }
-
-    #[test]
-    fn detail_text_bash_passes_through_under_limit() {
-        let out = detail_text("Bash", &json!({"command": "ls -la"}), 80);
-        assert_eq!(out, "ls -la");
-    }
-
-    #[test]
-    fn detail_text_grep_uses_dot_when_no_directory() {
-        let out = detail_text("Grep", &json!({"search_string": "x"}), 80);
-        assert_eq!(out, "\"x\" in .");
-    }
-
-    #[test]
-    fn detail_text_unknown_tool_returns_first_string_arg() {
-        let out = detail_text("MysteryTool", &json!({"thing": "hello"}), 80);
-        assert_eq!(out, "hello");
-    }
-
-    #[test]
-    fn detail_text_unknown_tool_with_no_strings_is_empty() {
-        let out = detail_text("MysteryTool", &json!({"count": 42}), 80);
-        assert_eq!(out, "");
-    }
-
-    /// Meta-test pinning the #1100 consolidation: every variant of
-    /// `ToolCallKind` must produce non-empty output from BOTH
-    /// renderers given a representative non-empty input. If someone
-    /// adds a new variant and forgets to handle it in `summary_spans`
-    /// or `summary_text`, the compiler's exhaustive-match check
-    /// fires *first* (good); but if they handle it with `=> Vec::new()`
-    /// or `=> String::new()` to silence the compiler, this test fires
-    /// next and tells them they shipped an invisible tool. Keeps both
-    /// renderers honest.
-    #[test]
-    fn every_tool_call_kind_renders_in_both_surfaces() {
-        let cases: Vec<(&str, serde_json::Value, &str)> = vec![
-            ("Bash", json!({"command": "ls"}), "Bash"),
-            ("Read", json!({"file_path": "x"}), "Path"),
-            (
-                "Grep",
-                json!({"search_string": "x", "file_path": "y"}),
-                "Grep",
-            ),
-            ("Glob", json!({"pattern": "*.rs"}), "Glob"),
-            ("List", json!({"file_path": "x"}), "List"),
-            (
-                "WebFetch",
-                json!({"url": "https://example.com"}),
-                "WebFetch",
-            ),
-            ("UnknownTool", json!({"k": "v"}), "Generic"),
-        ];
-        for (name, args, kind_label) in cases {
-            let spans = detail_spans(name, &args);
-            let text = detail_text(name, &args, 500);
-            assert!(
-                !spans.is_empty(),
-                "summary_spans returned empty for {kind_label} variant ({name}); \
-                 either the variant lost its renderer arm or the test input is wrong"
-            );
-            assert!(
-                !text.is_empty(),
-                "summary_text returned empty for {kind_label} variant ({name}); \
-                 either the variant lost its renderer arm or the test input is wrong"
-            );
-        }
     }
 
     // ── cross-layer: dispatch body ↔ TUI header agreement ────────────────

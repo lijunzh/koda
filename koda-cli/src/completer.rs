@@ -40,11 +40,6 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ("/diff", "Show git diff (review, commit)", None),
     ("/exit", "Quit the session", None),
     ("/expand", "Show full output of last tool call", None),
-    (
-        "/export",
-        "Export session transcript (verbose default, --summary for concise)",
-        Some("[--summary] [file.md]"),
-    ),
     ("/help", "Show commands and shortcuts", None),
     ("/key", "Manage API keys", None),
     (

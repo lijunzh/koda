@@ -31,6 +31,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   via wall-clock timestamp, instead of sitting in `panic.log`
   isolated from the events leading up to it. (RFC #1167 — PR β)
 
+### Removed
+
+- **`/export` slash command and the entire `transcript.rs` module**
+  (RFC #1167 — PR δ). `/debug-bundle` is now the only path for
+  exporting session content. `conversation.md` inside the bundle is
+  rendered via `history_render` — the same pipeline the live TUI
+  uses — eliminating the divergence that motivated the v0.2.21–
+  v0.2.24 audit cycle (#1162, #1164, #1165). Net deletion: ~1700 LoC
+  (`transcript.rs` 1712 lines + handler + helpers + tests − small
+  follow-on additions). The `/debug-bundle` success message now also
+  surfaces `~/.config/koda/logs/latest` for raw-log discoverability
+  (replacing the originally-planned dedicated `/logs` slash command;
+  YAGNI).
+
 ## [0.2.25] - 2026-04-30
 
 Background-tasks UX release. 5 PRs since v0.2.24 reshape `WaitTask` into
