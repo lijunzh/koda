@@ -592,7 +592,16 @@ fn install_panic_hook(restore: fn()) {
     std::panic::set_hook(Box::new(move |info| {
         // Best-effort: ignore errors here, we're already failing.
         restore();
-        // Forensic breadcrumb for post-mortem debugging (#1122). Wrapped
+        // Forensic breadcrumb in the per-process tracing log
+        // (`koda-{PID}.log`). The panic.log written below has the
+        // multi-line record + backtrace; this single line is what
+        // makes the panic correlatable with surrounding tracing
+        // events when both files end up in a /debug-bundle
+        // (RFC #1167 §D3). If the global subscriber isn't installed
+        // (headless tests, very early panics), tracing::error! is a
+        // no-op — safe.
+        tracing::error!("{}", crate::panic_log::panic_breadcrumb(info));
+        // Forensic record for post-mortem debugging (#1122). Wrapped
         // in a `let _ =` chain inside the helper so any I/O error here
         // cannot turn into panic-in-panic-hook.
         crate::panic_log::write_panic_log(info);

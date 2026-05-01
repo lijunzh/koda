@@ -105,24 +105,38 @@ pub fn write_panic_log(info: &PanicHookInfo<'_>) {
     let _ = file.flush();
 }
 
-/// Format a panic record into `writer`. Pure function for unit testing.
+/// Single-line summary fields extracted from a [`PanicHookInfo`].
 ///
-/// Separated from [`write_panic_log`] so the formatting can be exercised
-/// without touching the filesystem or the global panic hook.
-pub(crate) fn write_panic_record<W: Write>(
-    writer: &mut W,
-    info: &PanicHookInfo<'_>,
-    timestamp: &str,
-    version: &str,
-) {
+/// Used in two places:
+///   1. [`write_panic_record`] formats this into the multi-line
+///      `panic.log` record (with backtrace).
+///   2. [`panic_breadcrumb`] formats this into a single line for
+///      `tracing::error!` so the per-process tracing log
+///      (`koda-{PID}.log`) gets a correlatable breadcrumb —
+///      i.e. when something goes wrong, the bundle's `logs/` has
+///      both the surrounding context (tracing log) AND the panic
+///      itself (panic.log) sharing the same wall-clock timestamp.
+///
+/// All fields are owned `String`s so the struct can outlive the
+/// `PanicHookInfo` borrow if a caller needs to defer formatting.
+pub(crate) struct PanicSummary {
+    pub thread: String,
+    pub location: String,
+    pub message: String,
+}
+
+/// Extract the human-readable summary fields from a panic hook payload.
+///
+/// Pure function (no I/O, no logging) so it's safe to call from inside
+/// any panic hook implementation. Conventional payload types (`&str`
+/// from `panic!("...")`, `String` from `panic!("{}", ...)`) are
+/// downcast; anything else degrades to a placeholder.
+pub(crate) fn panic_summary(info: &PanicHookInfo<'_>) -> PanicSummary {
     let location = info
         .location()
         .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
         .unwrap_or_else(|| "(unknown)".to_string());
 
-    // PanicHookInfo::payload() carries the panic argument. The conventional
-    // payload types are &str (from `panic!("...")`) and String (from
-    // `panic!("{}", ...)`). Anything else falls back to a placeholder.
     let message = info
         .payload()
         .downcast_ref::<&str>()
@@ -134,6 +148,40 @@ pub(crate) fn write_panic_record<W: Write>(
         .name()
         .unwrap_or("<unnamed>")
         .to_string();
+
+    PanicSummary {
+        thread,
+        location,
+        message,
+    }
+}
+
+/// Format a panic into a single-line breadcrumb suitable for
+/// `tracing::error!`. Pure function, no allocations beyond the result.
+///
+/// Format: `thread '<name>' panicked at <location>: <message>`
+///
+/// This deliberately mirrors the rustc default panic message so logs
+/// scraped by humans grep the same way they would for a normal panic.
+pub(crate) fn panic_breadcrumb(info: &PanicHookInfo<'_>) -> String {
+    let s = panic_summary(info);
+    format!(
+        "thread '{}' panicked at {}: {}",
+        s.thread, s.location, s.message
+    )
+}
+
+/// Format a panic record into `writer`. Pure function for unit testing.
+///
+/// Separated from [`write_panic_log`] so the formatting can be exercised
+/// without touching the filesystem or the global panic hook.
+pub(crate) fn write_panic_record<W: Write>(
+    writer: &mut W,
+    info: &PanicHookInfo<'_>,
+    timestamp: &str,
+    version: &str,
+) {
+    let summary = panic_summary(info);
 
     // Backtrace is only useful when RUST_BACKTRACE is enabled; otherwise
     // capture() returns an unresolved/disabled marker. Record explicitly
@@ -153,9 +201,9 @@ pub(crate) fn write_panic_record<W: Write>(
     );
     let _ = writeln!(writer, "[{timestamp}] PANIC");
     let _ = writeln!(writer, "version:    koda {version}");
-    let _ = writeln!(writer, "location:   {location}");
-    let _ = writeln!(writer, "thread:     {thread}");
-    let _ = writeln!(writer, "message:    {message}");
+    let _ = writeln!(writer, "location:   {}", summary.location);
+    let _ = writeln!(writer, "thread:     {}", summary.thread);
+    let _ = writeln!(writer, "message:    {}", summary.message);
     let _ = writeln!(writer, "backtrace:");
     for line in backtrace_str.lines() {
         let _ = writeln!(writer, "  {line}");
@@ -282,6 +330,69 @@ mod tests {
         // Buffer ends with a delimiter line (sanity that we're appending
         // a complete record, not a half one).
         assert!(formatted.trim_end().ends_with('='), "trailing delimiter");
+    }
+
+    /// Captured `(thread, location, message)` triple from
+    /// `panic_summary` for the breadcrumb tests below.
+    static CAPTURED_SUMMARY: Mutex<Option<(String, String, String)>> = Mutex::new(None);
+    static CAPTURED_BREADCRUMB: Mutex<Option<String>> = Mutex::new(None);
+
+    #[test]
+    #[serial]
+    fn panic_summary_extracts_thread_location_and_message() {
+        *CAPTURED_SUMMARY.lock().unwrap() = None;
+        let saved = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let s = panic_summary(info);
+            *CAPTURED_SUMMARY.lock().unwrap() = Some((s.thread, s.location, s.message));
+        }));
+        let _ = std::panic::catch_unwind(|| {
+            panic!("summary test panic");
+        });
+        std::panic::set_hook(saved);
+
+        let (thread, location, message) =
+            CAPTURED_SUMMARY.lock().unwrap().clone().expect("hook ran");
+        assert!(!thread.is_empty(), "thread name populated");
+        // Location is `file:line:col` — should mention this very file.
+        assert!(
+            location.contains("panic_log.rs"),
+            "location points at panic site, got: {location}"
+        );
+        assert_eq!(message, "summary test panic");
+    }
+
+    #[test]
+    #[serial]
+    fn panic_breadcrumb_renders_single_line_in_rustc_format() {
+        *CAPTURED_BREADCRUMB.lock().unwrap() = None;
+        let saved = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            *CAPTURED_BREADCRUMB.lock().unwrap() = Some(panic_breadcrumb(info));
+        }));
+        let _ = std::panic::catch_unwind(|| {
+            panic!("breadcrumb test panic");
+        });
+        std::panic::set_hook(saved);
+
+        let line = CAPTURED_BREADCRUMB
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("hook ran");
+        // Single line, no embedded newlines (this is the property that
+        // makes it suitable for tracing::error! — a multi-line message
+        // would break log parsers and grep workflows).
+        assert!(
+            !line.contains('\n'),
+            "breadcrumb must be single line, got: {line:?}"
+        );
+        // Mirrors rustc's default panic message format so humans grep
+        // it the same way.
+        assert!(line.starts_with("thread '"), "got: {line}");
+        assert!(line.contains("' panicked at "), "got: {line}");
+        assert!(line.contains("breadcrumb test panic"), "got: {line}");
+        assert!(line.contains("panic_log.rs"), "got: {line}");
     }
 
     #[test]
