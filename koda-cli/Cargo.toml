@@ -111,4 +111,9 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 # parallel by default; without this, two tests calling `panic::set_hook`
 # would race and produce flaky results.
 serial_test = "3"
+# Better assert_eq! diff output for ported codex tests (#1178). Used
+# inside `composer/paste_burst.rs` test module; small focused dev-only
+# crate. Worth keeping consistent with codex's testing style as we
+# port more of their composer tests in PR 2 / PR 3.
+pretty_assertions = "1"
 
