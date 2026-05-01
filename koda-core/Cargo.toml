@@ -1,6 +1,6 @@
 [package]
 name = "koda-core"
-version = "0.2.25"
+version = "0.2.26"
 edition.workspace = true
 rust-version.workspace = true
 description = "Core engine for the Koda AI coding agent (macOS and Linux only)"
@@ -88,7 +88,7 @@ http = "1"
 # First-party workspace libraries (direct calls)
 
 # Sandbox runtime — kernel-level FS/net/exec policies (#934)
-koda-sandbox = { path = "../koda-sandbox", version = "0.2.25" }
+koda-sandbox = { path = "../koda-sandbox", version = "0.2.26" }
 
 # Async trait support
 async-trait = { workspace = true }

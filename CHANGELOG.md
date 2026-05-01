@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.26] - 2026-04-29
+
+The RFC #1167 release. `/export` is gone; `/debug-bundle` takes its
+place with a richer self-contained `.zip` artifact (conversation,
+raw messages, metadata, allowlist-filtered env, and per-process
+tracing logs). Panic-hook breadcrumbs make the bundled logs
+self-correlating. Net workspace deletion across the three landing
+PRs: **−677 LoC** — the new feature is smaller than the code it
+replaces.
+
+### Behaviour change — `/export` removed, `/debug-bundle` is the export path
+
+- **`/export` and the `transcript.rs` module are gone.** Any user
+  workflow that relied on `/export <file.md>` to dump a session
+  transcript must switch to `/debug-bundle`. The new artifact is a
+  `.zip` (not a `.md`) and contains the conversation rendered via the
+  same `history_render` pipeline as the live TUI — byte-for-byte
+  identical to what was on screen. See
+  [`commands.md#debug-bundle`](./docs/src/commands.md#debug-bundle)
+  for the full bundle layout, env-var redaction policy, and usage
+  examples. (RFC #1167 — PR δ — #1172)
+- **`KODA_TRANSCRIPT_HYPERLINKS` and `KODA_EXPORT_VERBOSE` env vars
+  are gone.** Both controlled `/export` formatting; setting them is
+  now a silent no-op. Remove them from your shell rc files.
+  Documented under `### Removed` below.
+
 ### Added
 
 - **`/debug-bundle` slash command** — writes a self-contained `.zip`
@@ -17,8 +43,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   length-redacted), and `logs/` (full per-process tracing log + panic
   log if any). Format chosen for random-access reads (LLM debugging
   poke-one-file workflows are O(file) instead of O(bundle)) and broad
-  cross-platform UX. Lives in parallel with `/export`; future PRs
-  unify them per RFC #1167. (#1167 — PR α)
+  cross-platform UX. Replaces the legacy `/export` command (see
+  Removed below) per RFC #1167. (#1167 — PR α)
 
 ### Changed
 
@@ -44,6 +70,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   surfaces `~/.config/koda/logs/latest` for raw-log discoverability
   (replacing the originally-planned dedicated `/logs` slash command;
   YAGNI).
+- **Env vars `KODA_TRANSCRIPT_HYPERLINKS` and `KODA_EXPORT_VERBOSE`**
+  removed alongside `/export`. Both controlled formatting of the
+  removed transcript exporter. Setting either is now a silent no-op.
+  Migration: remove from shell rc files; `/debug-bundle` has no
+  equivalent flags because its output is structured (zip + JSON +
+  Markdown) rather than a single concatenated stream.
 
 ## [0.2.25] - 2026-04-30
 
