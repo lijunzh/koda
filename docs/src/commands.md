@@ -224,34 +224,89 @@ Defaults to the most recent response (`n=1`).
 Reads from the full session DB, so compacted (summarised) responses are
 included in the count. A one-line preview is shown in the confirmation.
 
-## `/export [<file.md>]`
+## `/debug-bundle`
 
-Exports the full session transcript as a Markdown document.
-
-```text
-/export                    ← auto-named file in the current directory
-/export notes/session.md   ← write to a specific relative path
-```
-
-Paths must be relative to the current directory. Absolute paths and `..`
-traversal are rejected.
-
-When no path is given, the filename is derived from the first user message
-and the current UTC time:
+Writes a self-contained `.zip` artifact capturing everything a debugger
+(human or LLM) needs to reason about the current session. Replaces the
+`/export` command removed in v0.2.26 (RFC #1167).
 
 ```text
-koda-20260410-143022-refactor-the-auth-module.md
+/debug-bundle
 ```
 
-The transcript includes all user messages, assistant responses, and a
-summary of every tool call. System prompts are excluded.
+The bundle is written to:
 
-Sub-agent invocations are folded under the parent `InvokeAgent` tool
-call: the parent's tool-result block contains the full sub-agent trace
-(messages and tool calls) indented as a nested transcript section. The
-folding is driven by `session_events.parent_tool_call_id` in the
-session DB, so re-exporting an old session also reflects the
-hierarchy.
+```text
+~/.config/koda/debug-bundles/koda-debug-{timestamp}-{slug}.zip
+```
+
+where `{slug}` is derived from the first user message. The success
+message prints the full path and a hint to the raw log directory:
+
+```text
+Wrote debug bundle → /Users/you/.config/koda/debug-bundles/koda-debug-20260429-082303-fix-the-auth-bug.zip
+  raw logs: /Users/you/.config/koda/logs/latest
+```
+
+### Bundle layout
+
+| File | What's in it |
+|---|---|
+| `README.md` | Human-orientation: what each file is, when to share, the env-var redaction caveat |
+| `conversation.md` | Full session rendered via the same `history_render` pipeline as the live TUI — byte-for-byte identical to what you saw on screen |
+| `messages.json` | Raw per-message DB rows (role, content, tool calls, tool results) |
+| `metadata.json` | Session ID, title, started-at, model, provider, current PID, capture timestamp |
+| `env.txt` | Allowlist-filtered environment variables (see below) |
+| `logs/koda-{PID}.log` | Full per-process tracing log captured by the active session |
+| `logs/panic.log` | Present only if the session encountered a panic; mirrors `~/.config/koda/logs/panic.log` |
+
+The `.zip` format was chosen for **random-access reads** — LLM debugging
+workflows that poke at one file at a time pay O(file) instead of
+O(bundle), and the artifact opens cleanly in Finder Quick Look,
+Windows Explorer, and any unzip CLI.
+
+### Environment-variable redaction
+
+`env.txt` is filtered through an **allowlist by default** in
+`koda-cli/src/debug_bundle/env_filter.rs`. The filter has three
+categories:
+
+- **Pass through verbatim**: `KODA_*`, `RUST_*`, `LC_*`, `LANG`,
+  `TERM`, `SHELL`, `PATH`, proxy vars (`HTTP_PROXY` / `HTTPS_PROXY` /
+  `NO_PROXY`).
+- **Length-redact**: known credential vars (`OPENAI_API_KEY`,
+  `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `GEMINI_API_KEY`, etc.) appear
+  as `<redacted, N bytes>` so their *presence* is visible to the
+  debugger but the *value* never leaks.
+- **Drop entirely**: PII (`HOME`, `USER`, `PWD`, `LOGNAME`) and any
+  unknown variable. Defaulting unknown to *drop* protects against
+  unanticipated future credential names.
+
+There is **no runtime opt-in to disable this filter**. Embedding raw
+`std::env::vars()` in a sharable artifact is a foot-gun even with
+opt-in flags; the bundle README also reminds you to re-check `env.txt`
+before sharing externally.
+
+### When to use it
+
+- Reporting a bug to the koda issue tracker — attach the `.zip` so
+  maintainers see your exact session, panic context, and runtime
+  environment.
+- Asking another LLM (Claude, ChatGPT, Gemini) to help debug a koda
+  session — the model can `unzip` and read `conversation.md` directly.
+- Capturing a known-bad state for later analysis (the timestamped
+  filename + slug make bundles trivially sortable).
+
+### Self-correlating logs (v0.2.26)
+
+When a panic occurs, the panic hook now emits a `tracing::error!`
+breadcrumb in rustc's default format (`thread '<name>' panicked at
+<location>: <message>`) **before** writing `panic.log`. The breadcrumb
+lands in the per-process tracing log, so within a `/debug-bundle` the
+`logs/panic.log` and `logs/koda-{PID}.log` are correlatable by
+wall-clock timestamp — no more orphan panic files disconnected from
+the events that led up to them.
+
 
 ## `/verbose [on|off]`
 

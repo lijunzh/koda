@@ -108,7 +108,7 @@ mod completions {
     ];
 
     /// Commands that should NOT appear in completions.
-    const REMOVED_COMMANDS: &[&str] = &["/key", "/transcript"];
+    const REMOVED_COMMANDS: &[&str] = &["/key", "/transcript", "/export"];
 
     #[test]
     fn test_expected_commands_present() {

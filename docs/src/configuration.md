@@ -54,29 +54,26 @@ priority over global config:
 
 ## Display
 
-Koda's TUI ships ANSI-colored syntax highlighting and OSC 8 hyperlinks by
-default — both have one-flag escape hatches for environments where the
-output looks awful (monochrome themes, non-OSC-8-aware terminals that
-leak escape bytes, etc.).
+Koda's TUI ships ANSI-colored syntax highlighting by default. Disable
+with one flag for environments where the output looks awful (monochrome
+themes, non-RGB-aware terminals).
 
 | Env var | Default | Disable with |
 |---------|---------|--------------|
 | `KODA_SYNTAX_HIGHLIGHT` | on | `off`, `0`, `false`, or `no` |
-| `KODA_TRANSCRIPT_HYPERLINKS` | on | `off`, `0`, `false`, or `no` |
-| `KODA_EXPORT_VERBOSE` | off | (set to `1`, `true`, `yes`, or `on` to enable) |
 
 - **`KODA_SYNTAX_HIGHLIGHT`** controls TUI syntax highlighting for
   `Read`, `Bash` headers, and inline code. Disable for monochrome
   terminals or terminals where ANSI-RGB output looks washed out.
   Memoized on first call — restart koda after changing.
-- **`KODA_TRANSCRIPT_HYPERLINKS`** controls markdown-style hyperlinks
-  in `/copy` and `/export` output. Disable if you paste transcripts
-  into a viewer that mangles `[text](file:///abs/path)` syntax.
-- **`KODA_EXPORT_VERBOSE`** restores per-iteration sub-agent
-  heartbeat lines (`Running (Nx)`) in `/export` output. Off by
-  default (since v0.2.25) so transcripts focus on terminal task
-  outcomes; enable when debugging heartbeat aggregation or
-  long-running sub-agents that never seem to terminate.
 
-Both flags accept the same negative values; everything else (including
-empty string and `on`) keeps the feature enabled.
+The negative values above (`off`, `0`, `false`, `no`) are
+case-insensitive; everything else (including empty string and `on`)
+keeps the feature enabled.
+
+> **Removed in v0.2.26**: `KODA_TRANSCRIPT_HYPERLINKS` and
+> `KODA_EXPORT_VERBOSE` previously controlled `/export` output
+> formatting. Both were removed alongside `/export` itself when RFC
+> #1167 collapsed transcript export into [`/debug-bundle`](commands.md#debug-bundle).
+> Setting either var is now a silent no-op; remove them from your
+> shell rc files.
