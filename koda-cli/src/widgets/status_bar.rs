@@ -115,6 +115,7 @@ impl<'a> StatusBar<'a> {
     /// MCP / queue segments. See #1158 item (b): without this pill
     /// users had no ambient hint that bg work was in flight unless
     /// they ran `/bg-tasks` explicitly.
+    #[must_use]
     pub fn with_bg_counts(mut self, agents: usize, processes: usize) -> Self {
         self.bg_agents = agents;
         self.bg_processes = processes;

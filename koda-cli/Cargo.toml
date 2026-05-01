@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
 keywords = ["ai", "coding-agent", "llm", "cli", "unix"]
-categories = ["command-line-utilities", "development-tools"]
+categories = ["command-line-utilities", "development-tools", "asynchronous"]
 authors.workspace = true
 
 [[bin]]
