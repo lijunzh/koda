@@ -42,6 +42,14 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm",
 ratatui-textarea = "0.9"
 unicode-width = "0.2"
 
+# Terminal-cleanup hardening (#1176): signal handlers + atexit hook so that
+# SIGTERM / SIGINT / SIGHUP / process::exit() restore raw mode + alt-screen +
+# mouse-capture before the process dies. Both are already present transitively
+# (via crossterm → signal-hook-mio); declared explicitly here because we use
+# them directly and transitive contracts are fragile.
+signal-hook = "0.3"
+libc = "0.2"
+
 # Clipboard (for Ctrl+Y copy)
 arboard = "3"
 

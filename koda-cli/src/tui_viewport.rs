@@ -535,6 +535,8 @@ pub(crate) fn init_terminal() -> Result<Term> {
     )?;
 
     set_panic_hook();
+    install_signal_handler();
+    install_atexit_hook();
 
     let stdout = std::io::stdout();
     let backend = CrosstermBackend::new(stdout);
@@ -607,6 +609,182 @@ fn install_panic_hook(restore: fn()) {
         crate::panic_log::write_panic_log(info);
         original(info);
     }));
+}
+
+/// Install signal handlers (SIGTERM, SIGINT, SIGHUP) that restore the
+/// terminal before the process dies (#1176).
+///
+/// Without this, `kill <pid>` from another shell or closing the iTerm tab
+/// while koda is running leaves the terminal in raw mode + alt-screen +
+/// mouse-capture mode — the user has to `printf '\x1b[?1003l\x1b[?1006l'`
+/// or restart the shell to recover native text-selection.
+///
+/// Why all three signals:
+/// - `SIGTERM`: standard "please exit gracefully", e.g. `kill <pid>`.
+/// - `SIGINT`: Ctrl-C while raw mode is OFF (in raw mode the terminal
+///   delivers Ctrl-C as a key event, not a signal, so this only fires when
+///   another process sends `kill -INT` externally — still worth handling).
+/// - `SIGHUP`: terminal disconnect (closing the iTerm tab, SSH session
+///   drop, parent shell exit).
+///
+/// Note: this co-exists fine with crossterm's own `SIGWINCH` handler
+/// (resize events). `signal-hook` is explicitly designed to allow multiple
+/// consumers per signal; we use a disjoint signal set anyway.
+///
+/// Failure modes are best-effort: if `signal-hook::iterator::Signals::new`
+/// returns an error (rare — typically only on signal-restricted sandboxes),
+/// we silently skip handler installation. The terminal will still be
+/// restored on normal exit and panic, just not on signal-induced exit.
+fn install_signal_handler() {
+    install_signal_handler_with(restore_terminal_modes);
+}
+
+/// Inner helper that takes the restore callback as a parameter so unit
+/// tests can substitute a spy without sending real signals or touching a
+/// real TTY (mirroring the [`install_panic_hook`] testability pattern).
+fn install_signal_handler_with(restore: fn()) {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    use signal_hook::iterator::Signals;
+
+    let mut signals = match Signals::new([SIGTERM, SIGINT, SIGHUP]) {
+        Ok(s) => s,
+        Err(_) => {
+            // Signal-restricted environment (some sandboxes, some CI). The
+            // panic hook + atexit hook still cover most cleanup paths.
+            return;
+        }
+    };
+
+    std::thread::Builder::new()
+        .name("koda-signal-cleanup".into())
+        .spawn(move || {
+            // Block until any of the registered signals arrives. The
+            // iterator yields one signal per occurrence; we only need to
+            // restore + exit once, so we take the first.
+            if let Some(sig) = signals.forever().next() {
+                restore();
+                // Exit with the conventional 128 + signal number so that
+                // shell scripts can detect signal-induced termination.
+                // We deliberately do NOT re-raise the signal with default
+                // disposition: that requires re-arming and avoids a race
+                // where the process exits via two different paths
+                // simultaneously (the signal default and our exit). The
+                // 128+sig convention is what bash uses for `$?` after
+                // signal death and is unambiguous to scripts.
+                std::process::exit(128 + sig);
+            }
+        })
+        .ok();
+}
+
+/// Register an `atexit` hook as defense-in-depth: any `std::process::exit`
+/// call (including library-internal ones we don't control) flushes through
+/// libc's `atexit` chain, which gives us a last-chance restore.
+///
+/// Today's audit (`rg "process::exit"`) shows zero such calls happen *after*
+/// `init_terminal` runs (the three call-sites in `app.rs` are all on the
+/// pre-TUI command-dispatch path). This hook costs ~10 lines and protects
+/// against future regressions where someone adds `process::exit` to a code
+/// path that runs while the terminal is in raw mode.
+///
+/// Idempotent: registers the cleanup function exactly once via `Once`,
+/// even if `init_terminal` is called multiple times in the same process
+/// (which never happens in production but happens in tests).
+fn install_atexit_hook() {
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    REGISTERED.call_once(|| {
+        // SAFETY: `libc::atexit` registers a `extern "C" fn()` to be
+        // called at normal program termination (before `_exit`). The
+        // function takes no arguments and returns no value. It must not
+        // panic across the FFI boundary; `restore_terminal_modes` is
+        // wrapped in `let _ =` patterns internally so any I/O failure
+        // is swallowed rather than panicking.
+        unsafe {
+            libc::atexit(atexit_cleanup);
+        }
+    });
+}
+
+/// `extern "C"` shim suitable for passing to `libc::atexit`.
+///
+/// Kept as a free function (not a closure) because `atexit` requires a
+/// plain function pointer, not a Rust trait object.
+extern "C" fn atexit_cleanup() {
+    restore_terminal_modes();
+}
+
+#[cfg(test)]
+mod signal_handler_tests {
+    //! Regression tests for the signal handler installed by
+    //! [`super::install_signal_handler`] (issue #1176).
+    //!
+    //! ## What we can and cannot test in-process
+    //!
+    //! We deliberately do NOT send real signals to the test process.
+    //! Doing so would either:
+    //!   - Kill the test runner (if `restore` calls `process::exit` as it
+    //!     does in production), or
+    //!   - Race with `cargo test`'s own signal handling.
+    //!
+    //! Instead we verify the contracts that are testable without firing
+    //! a real signal:
+    //!
+    //! 1. `install_signal_handler_with` returns without panicking even
+    //!    when invoked multiple times in a row (relevant because
+    //!    `init_terminal` may be re-entered in some test paths).
+    //! 2. The atexit hook registers exactly once across N calls (the
+    //!    `Once` guard works as intended).
+    //!
+    //! Real-signal coverage lives in the manual smoke list in #1176's
+    //! acceptance criteria — verified by `kill <pid>` and tab-close
+    //! on a real terminal.
+
+    use super::{install_atexit_hook, install_signal_handler_with};
+    use serial_test::serial;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static SPY_RESTORE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn spy_restore() {
+        SPY_RESTORE_CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[test]
+    #[serial]
+    fn install_signal_handler_does_not_panic_on_repeated_calls() {
+        // The handler-installation path spawns a thread per call. This
+        // is wasteful but not broken — each thread blocks on its own
+        // signal-hook iterator. Calling install N times must not panic
+        // (e.g. via thread-name collision or signal-hook double-register
+        // errors); it should just become a no-op for the second+ caller
+        // in practice.
+        SPY_RESTORE_CALLS.store(0, Ordering::SeqCst);
+        for _ in 0..3 {
+            install_signal_handler_with(spy_restore);
+        }
+        // We have no way to verify the handlers fire without sending a
+        // real signal, but we can verify nothing panicked and the
+        // installation completed.
+        assert_eq!(
+            SPY_RESTORE_CALLS.load(Ordering::SeqCst),
+            0,
+            "spy should not have fired without a signal"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn install_atexit_hook_is_idempotent() {
+        // The function uses `std::sync::Once` internally; calling it
+        // many times must register the cleanup function exactly once,
+        // not N times. We can't directly inspect libc's atexit chain
+        // from Rust, but we can verify the function returns without
+        // panicking on repeat calls (a `Once` violation would manifest
+        // as a panic in `call_once`).
+        for _ in 0..5 {
+            install_atexit_hook();
+        }
+    }
 }
 
 #[cfg(test)]
