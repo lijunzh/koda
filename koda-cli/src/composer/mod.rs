@@ -19,6 +19,7 @@
 //! See #1116 for the full plan.
 
 pub mod key_hint;
+pub mod keymap;
 pub mod paste_burst;
 pub mod text_element;
 // TODO(#1178): pub mod textarea; — added in stage 5d of this PR.
