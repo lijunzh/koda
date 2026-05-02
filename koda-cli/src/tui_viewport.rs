@@ -163,13 +163,14 @@ pub(crate) fn draw_viewport(
     }
     frame.render_widget(textarea, text_area);
 
-    // ── Bottom separator ────────────────────────────────
-    let bot_width = bot_sep_row.width as usize;
+    // ── Bottom row: key hint footer (PR 4 of #1178) ────────────────────
+    // Replaces the previous flat "───" separator with a single dim row
+    // of `key verb` hints (`enter send · shift+enter newline · ...`).
+    // Same height (1 row), but turns dead-space chrome into discoverable
+    // shortcuts. `KeyHints::render` reads `area.width` itself and drops
+    // items from the right on narrow terminals — no width threading needed.
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "\u{2500}".repeat(bot_width),
-            Style::default().fg(Color::Rgb(124, 111, 100)),
-        ))),
+        crate::widgets::key_hints::KeyHints::default_set(),
         bot_sep_row,
     );
 

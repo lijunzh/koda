@@ -55,13 +55,13 @@
 //! It also supplies rendering helpers that convert bindings into styled
 //! `ratatui::text::Span` values for UI hint display.
 
-// PR 2 of #1178 swapped the consumers (chat handlers + viewport) to use this
-// module, but the codex-port surface includes advanced features (vim mode
-// toggle, paste-burst detection, named/highlighted elements, masked render,
-// key hints) that are scoped for PR 3+. The unused-warnings will go away as
-// each follow-up PR wires them up; until then, allow them at the module
-// level so the faithful port can land without piecemeal #[allow] tags.
-#![allow(dead_code)]
+// PR 4 of #1178 wired this module's `KeyBinding`, helper constructors
+// (`plain`/`shift`/`ctrl`), and `From<&KeyBinding> for Span` rendering into
+// the new key-hint footer (`widgets/key_hints.rs`). The remaining surface
+// (`alt`, `ctrl_alt`, `parts`, `has_ctrl_or_alt`) is unused by koda today
+// but preserved verbatim from the codex port so the next sync stays a
+// trivial diff. Per-item `#[allow(dead_code)]` rather than a module-level
+// blanket so newly-dead code becomes a warning we have to acknowledge.
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -105,6 +105,7 @@ impl KeyBinding {
             && (event.kind == KeyEventKind::Press || event.kind == KeyEventKind::Repeat)
     }
 
+    #[allow(dead_code)] // Codex-port surface preserved for sync parity (#1178); not used by koda yet.
     pub(crate) const fn parts(&self) -> (KeyCode, KeyModifiers) {
         (self.key, self.modifiers)
     }
@@ -173,6 +174,7 @@ pub(crate) const fn ctrl(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::CONTROL)
 }
 
+#[allow(dead_code)] // Codex-port surface preserved for sync parity (#1178); not used by koda yet.
 pub(crate) const fn ctrl_alt(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::CONTROL.union(KeyModifiers::ALT))
 }
@@ -219,6 +221,7 @@ fn key_hint_style() -> Style {
     Style::default().dim()
 }
 
+#[allow(dead_code)] // Codex-port surface preserved for sync parity (#1178); not used by koda yet.
 pub(crate) fn has_ctrl_or_alt(mods: KeyModifiers) -> bool {
     (mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::ALT)) && !is_altgr(mods)
 }
