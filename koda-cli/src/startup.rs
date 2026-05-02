@@ -45,12 +45,17 @@ pub fn build_banner_lines(
             Span::raw("  "),
             Span::styled(cwd.to_string(), DIM),
         ]),
-        // Syntax tips line removed (#1194 follow-up): the persistent
-        // footer's `? for shortcuts` hint + the `?`-toggled overlay
-        // (see `widgets::shortcuts_overlay`) are now the single source
-        // of truth for keybinding & syntax discovery. `/` and `@`
-        // remain self-discoverable through the act of typing them —
-        // they pop their respective menus on first keystroke.
+        // Discoverability hint (#1194/#1195 round 4): moved here from
+        // the persistent footer. Field-study convention (codex /
+        // claude-code) keeps this in the footer for mid-session recall,
+        // but our banner is shown on every session start (including
+        // resumes) which covers the discovery case, and the recall
+        // cost — one keystroke to press `?` — is small. Net win: -1
+        // row of persistent footer chrome.
+        Line::from(vec![
+            Span::styled("  ?", WARM_ACCENT),
+            Span::styled(" for shortcuts", DIM),
+        ]),
         Line::default(),
     ]
 }
@@ -275,12 +280,9 @@ mod tests {
     #[test]
     fn banner_is_compact() {
         let lines = build_banner_lines("gpt-4o", "openai", "~/repo", &[]);
-        // Blank top + 3 bear lines + blank trailing line = 5. The
-        // syntax-tips line (`/commands @file ? shortcuts`) was removed
-        // in #1194/#1195 follow-up because the persistent footer's
-        // `? for shortcuts` hint + the `?`-toggled overlay now cover
-        // keybinding & syntax discovery; `/` and `@` are
-        // self-discoverable through typing.
-        assert_eq!(lines.len(), 5);
+        // Blank top + 3 bear lines + hint line + blank trailing line = 6.
+        // The hint line (`? for shortcuts`) was moved here from the
+        // footer in #1194/#1195 round 4 — see `build_banner_lines`.
+        assert_eq!(lines.len(), 6);
     }
 }

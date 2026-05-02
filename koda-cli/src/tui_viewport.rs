@@ -88,7 +88,7 @@ pub(crate) fn draw_viewport(
     // Queue preview height: 0 when idle / queue empty.
     let queue_preview_height = QueuePreview::height_for(queue_total);
 
-    // Layout: History | TopSep | Input | BotSep | Status | Queue? | Hint | Menu
+    // Layout: History | TopSep | Input | BotSep | Status | Queue? | Menu
     //
     // The bottom separator (#1194/#1195) mirrors the top one as a plain
     // horizontal rule — codex creates the same visual grouping with a
@@ -96,14 +96,10 @@ pub(crate) fn draw_viewport(
     // background, so a symmetric rule is what closes the visual region
     // around the prompt and gives it breathing room from the footer.
     //
-    // Row order below the bottom separator (round-3 swap per user
-    // feedback): status bar sits IMMEDIATELY below the separator so
-    // the dynamic info (mode │ model │ context) is the closest thing
-    // to the prompt — that's the data your eye most often jumps from
-    // the input down to. The `? for shortcuts` hint sinks to the
-    // bottom as the lowest-priority chrome (you only read it once);
-    // queue preview keeps its slot between status and hint so it
-    // visually "floats" near the active info cluster.
+    // Round 4 (#1194/#1195): the `? for shortcuts` hint moved to the
+    // banner (shown on every session start). The footer is now just
+    // the status bar + optional queue preview — saves 1 row of
+    // persistent chrome.
     let [
         history_area,
         top_sep_row,
@@ -111,7 +107,6 @@ pub(crate) fn draw_viewport(
         bot_sep_row,
         status_row,
         queue_preview_row,
-        hint_row,
         menu_area,
     ] = Layout::vertical([
         Constraint::Min(1),                       // history: fill remaining space
@@ -120,7 +115,6 @@ pub(crate) fn draw_viewport(
         Constraint::Length(1),                    // bottom separator (─────)
         Constraint::Length(1),                    // status bar
         Constraint::Length(queue_preview_height), // later_queue preview (0 when empty)
-        Constraint::Length(1),                    // key-hint row (`? for shortcuts`)
         Constraint::Length(menu_height),          // dropdown menu (0 when inactive)
     ])
     .areas(area);
@@ -196,33 +190,23 @@ pub(crate) fn draw_viewport(
         frame.render_widget(textarea, text_area);
     }
 
-    // ── Bottom separator + key-hint row (#1194/#1195) ────────────────────
-    // The bottom separator is a plain rule mirroring the top, drawn
-    // ALWAYS (not state-dependent) so the visual frame around the
-    // prompt stays stable regardless of whether the composer is empty
-    // or has draft text. This is what gives the prompt zone its
-    // breathing room from the footer (closes #1195 at the visual
-    // structure level).
+    // ── Bottom separator (#1194/#1195) ────────────────────────────
+    // Plain horizontal rule mirroring the top separator, drawn ALWAYS
+    // (not state-dependent) so the visual frame around the prompt
+    // stays stable regardless of composer state. Codex creates the
+    // same visual grouping with a subtle background tint on the
+    // composer rect; we don't tint, so a symmetric rule does the same
+    // job (closes #1195 at the visual-structure level).
     //
-    // The `? for shortcuts` hint sits BELOW the separator on its own
-    // row, so it clearly belongs to the footer chrome, not the prompt.
-    // We follow the codex `FooterMode::ComposerEmpty` /
-    // `ComposerHasDraft` pattern: hint is suppressed once the user
-    // starts typing, so it doesn't compete with the draft for
-    // attention. The full keybinding cheat-sheet lives in the
-    // `?`-toggled `MenuContent::ShortcutsOverlay` (`widgets::shortcuts_overlay`).
+    // Round 4 (#1194/#1195): the `? for shortcuts` hint that used to
+    // live below this separator moved to the welcome banner. The full
+    // keybinding cheat-sheet still lives in the `?`-toggled
+    // `MenuContent::ShortcutsOverlay` (`widgets::shortcuts_overlay`).
     let bot_separator = Line::from(Span::styled(
         "\u{2500}".repeat(bot_sep_row.width as usize),
         separator_style,
     ));
     frame.render_widget(bot_separator, bot_sep_row);
-
-    let composer_empty = textarea.is_empty();
-    let menu_inactive = menu.is_none() || matches!(menu, MenuContent::ShortcutsOverlay);
-    if composer_empty && menu_inactive {
-        frame.render_widget(crate::widgets::key_hints::KeyHints::minimal(), hint_row);
-    }
-    // else: hint_row stays blank — less visual noise while drafting.
 
     // ── Queue preview (above status bar, hidden when empty) ─────────────
     if queue_preview_height > 0 {
