@@ -6,7 +6,8 @@
 
 use super::queries::prune_mismatched_tool_calls;
 use super::queries::{
-    detect_interruption, prune_null_content_messages, prune_whitespace_only_messages,
+    dedupe_tool_results_by_call_id, detect_interruption, prune_null_content_messages,
+    prune_whitespace_only_messages,
 };
 use crate::db::Database;
 use crate::persistence::{InterruptionKind, Message, Persistence, Role};
@@ -438,6 +439,239 @@ fn test_prune_mismatched_tool_calls_unit() {
     prune_mismatched_tool_calls(&mut msgs);
     assert_eq!(msgs.len(), 3, "complete pair should be preserved");
     assert!(msgs[1].tool_calls.is_some());
+}
+
+// ── #1159: dedupe_tool_results_by_call_id ─────────────────────────────────
+
+/// Helper: build a `Message` with an explicit `id`. Mirrors the helper in
+/// `test_prune_mismatched_tool_calls_unit` but sets `id` so we can
+/// exercise the "latest by id" semantics.
+fn msg_with_id(id: i64, role: &str, content: Option<&str>, tool_call_id: Option<&str>) -> Message {
+    Message {
+        id,
+        session_id: String::new(),
+        role: role.parse().unwrap_or(Role::User),
+        content: content.map(Into::into),
+        full_content: None,
+        tool_calls: None,
+        tool_call_id: tool_call_id.map(Into::into),
+        prompt_tokens: None,
+        completion_tokens: None,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
+        thinking_tokens: None,
+        thinking_content: None,
+        created_at: None,
+    }
+}
+
+#[test]
+fn dedupe_empty_input_is_noop() {
+    let mut msgs: Vec<Message> = vec![];
+    dedupe_tool_results_by_call_id(&mut msgs);
+    assert!(msgs.is_empty());
+}
+
+#[test]
+fn dedupe_no_tool_rows_is_noop() {
+    let mut msgs = vec![
+        msg_with_id(1, "user", Some("hi"), None),
+        msg_with_id(2, "assistant", Some("hello"), None),
+    ];
+    dedupe_tool_results_by_call_id(&mut msgs);
+    assert_eq!(msgs.len(), 2);
+}
+
+#[test]
+fn dedupe_unique_call_ids_preserved() {
+    let mut msgs = vec![
+        msg_with_id(1, "tool", Some("result for tc1"), Some("tc1")),
+        msg_with_id(2, "tool", Some("result for tc2"), Some("tc2")),
+        msg_with_id(3, "tool", Some("result for tc3"), Some("tc3")),
+    ];
+    dedupe_tool_results_by_call_id(&mut msgs);
+    assert_eq!(msgs.len(), 3, "unique call_ids must all survive");
+}
+
+#[test]
+fn dedupe_keeps_latest_for_same_call_id() {
+    // The bg-agent scenario: dispatch-turn stub (id=2) then async
+    // completion (id=5) sharing the parent InvokeAgent's tool_call_id.
+    let mut msgs = vec![
+        msg_with_id(1, "user", Some("please explore"), None),
+        msg_with_id(2, "tool", Some("started (agent:1)"), Some("tc1")),
+        msg_with_id(3, "assistant", Some("working on it"), None),
+        msg_with_id(5, "tool", Some("[completed] Found 3 issues"), Some("tc1")),
+    ];
+    dedupe_tool_results_by_call_id(&mut msgs);
+
+    assert_eq!(msgs.len(), 3, "the dispatch-turn stub must be dropped");
+    let tool = msgs.iter().find(|m| m.role == Role::Tool).unwrap();
+    assert_eq!(
+        tool.id, 5,
+        "only the latest tool_result for tc1 should remain"
+    );
+    assert!(
+        tool.content.as_deref().unwrap().contains("Found 3 issues"),
+        "latest content must be preserved"
+    );
+}
+
+#[test]
+fn dedupe_handles_many_call_ids_independently() {
+    // Mixed: tc1 has 2 writes, tc2 has 3 writes, tc3 has 1 write.
+    let mut msgs = vec![
+        msg_with_id(1, "tool", Some("tc1 stub"), Some("tc1")),
+        msg_with_id(2, "tool", Some("tc2 stub"), Some("tc2")),
+        msg_with_id(3, "tool", Some("tc3 only"), Some("tc3")),
+        msg_with_id(4, "tool", Some("tc1 final"), Some("tc1")),
+        msg_with_id(5, "tool", Some("tc2 mid"), Some("tc2")),
+        msg_with_id(6, "tool", Some("tc2 final"), Some("tc2")),
+    ];
+    dedupe_tool_results_by_call_id(&mut msgs);
+
+    assert_eq!(
+        msgs.len(),
+        3,
+        "one tool_result per unique call_id should remain"
+    );
+    let by_call_id: std::collections::HashMap<&str, &str> = msgs
+        .iter()
+        .filter_map(|m| {
+            Some((
+                m.tool_call_id.as_deref()?,
+                m.content.as_deref().unwrap_or(""),
+            ))
+        })
+        .collect();
+    assert_eq!(by_call_id.get("tc1"), Some(&"tc1 final"));
+    assert_eq!(by_call_id.get("tc2"), Some(&"tc2 final"));
+    assert_eq!(by_call_id.get("tc3"), Some(&"tc3 only"));
+}
+
+#[test]
+fn dedupe_preserves_non_tool_rows_around_dupes() {
+    let mut msgs = vec![
+        msg_with_id(1, "system", Some("sys prompt"), None),
+        msg_with_id(2, "user", Some("do the thing"), None),
+        msg_with_id(3, "tool", Some("stub"), Some("tc1")),
+        msg_with_id(4, "assistant", Some("i delegated"), None),
+        msg_with_id(5, "tool", Some("final"), Some("tc1")),
+        msg_with_id(6, "user", Some("thanks"), None),
+    ];
+    dedupe_tool_results_by_call_id(&mut msgs);
+
+    assert_eq!(msgs.len(), 5, "only the duplicate Tool stub should drop");
+    let roles: Vec<Role> = msgs.iter().map(|m| m.role.clone()).collect();
+    assert_eq!(
+        roles,
+        vec![
+            Role::System,
+            Role::User,
+            Role::Assistant,
+            Role::Tool,
+            Role::User,
+        ]
+    );
+}
+
+#[test]
+fn dedupe_tool_row_without_call_id_is_kept() {
+    // Defensive: a malformed Tool row with no tool_call_id should not be
+    // dropped by this pass (other passes handle malformed rows).
+    let mut msgs = vec![
+        msg_with_id(1, "tool", Some("orphan"), None),
+        msg_with_id(2, "tool", Some("keyed"), Some("tc1")),
+    ];
+    dedupe_tool_results_by_call_id(&mut msgs);
+    assert_eq!(msgs.len(), 2, "orphan Tool row is kept (not our concern)");
+}
+
+/// End-to-end through `load_context`: simulates the real bg-agent flow.
+///
+/// (#1159) Sequence: user prompt → assistant calls InvokeAgent(tc1) →
+/// dispatch-turn stub tool_result(tc1) → assistant works on something else
+/// → async drain writes a second tool_result(tc1) on completion. The
+/// model on its next turn should see ONLY the completion, not the stub.
+#[tokio::test]
+async fn dedupe_via_load_context_keeps_only_latest_bg_completion() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+
+    // Turn 1: user asks, assistant invokes a bg sub-agent.
+    db.insert_message(
+        &session,
+        &Role::User,
+        Some("please explore"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let mid = db
+        .insert_message(
+            &session,
+            &Role::Assistant,
+            Some("I'll spawn an explorer"),
+            Some(r#"[{"id":"tc1","name":"InvokeAgent","arguments":"{}"}]"#),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    db.mark_message_complete(mid).await.unwrap();
+
+    // Synchronous dispatch result: "started (agent:1)" stub keyed on tc1.
+    db.insert_tool_message_with_full(
+        &session,
+        "Background agent 'explore' started (agent:1). Results will be injected when complete.",
+        "tc1",
+        "Background agent 'explore' started (agent:1). Results will be injected when complete.",
+    )
+    .await
+    .unwrap();
+
+    // (Imagine the assistant did other work here.)
+
+    // Async drain: completion writes a SECOND tool_result keyed on tc1.
+    db.insert_tool_message_with_full(
+        &session,
+        "[Background agent 'explore' completed]\nOriginal task: explore\nResult:\nFound 3 issues.",
+        "tc1",
+        "[Background agent 'explore' completed]\nOriginal task: explore\nResult:\nFound 3 issues.",
+    )
+    .await
+    .unwrap();
+
+    let msgs = db.load_context(&session).await.unwrap();
+
+    let tool_rows: Vec<&Message> = msgs.iter().filter(|m| m.role == Role::Tool).collect();
+    assert_eq!(
+        tool_rows.len(),
+        1,
+        "only the latest tool_result for tc1 should reach the provider context, got {tool_rows:#?}"
+    );
+    let surviving = tool_rows[0];
+    assert_eq!(surviving.tool_call_id.as_deref(), Some("tc1"));
+    assert!(
+        surviving.content.as_deref().unwrap().contains("completed"),
+        "the completion content should win, not the stub"
+    );
+    assert!(
+        !surviving.content.as_deref().unwrap().contains("started"),
+        "the dispatch-turn stub must NOT be the surviving row"
+    );
+
+    // The full transcript (load_all_messages) preserves both rows for
+    // debug-bundle / forensic use.
+    let all = db.load_all_messages(&session).await.unwrap();
+    let all_tool_rows: Vec<&Message> = all.iter().filter(|m| m.role == Role::Tool).collect();
+    assert_eq!(
+        all_tool_rows.len(),
+        2,
+        "load_all_messages must preserve full history (both stub and completion)"
+    );
 }
 
 #[tokio::test]
