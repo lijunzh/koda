@@ -102,7 +102,25 @@ jobs:
       - name: Set up Linux sandbox (bubblewrap)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get install -y bubblewrap
+          # Hardened install: Azure Ubuntu mirrors (azure.archive.ubuntu.com)
+          # periodically fail DNS resolution from GH Actions runners, blocking
+          # CI on a transient infra issue unrelated to the change under test.
+          # Retry with exponential backoff up to 5 times (max ~2.5 min) before
+          # giving up. See https://github.com/lijunzh/koda/pull/1179 for the
+          # failure mode that motivated this.
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-get install -y bubblewrap; then
+              echo "bubblewrap installed on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::apt-get install bubblewrap failed after 5 attempts (Azure mirror unreachable?)"
+              exit 1
+            fi
+            delay=$((15 * attempt))
+            echo "::warning::apt-get install attempt $attempt/5 failed; retrying in ${delay}s"
+            sleep $delay
+          done
           # Enable unprivileged user namespaces so bwrap can sandbox.
           # GH Actions runners disable this by default.
           sudo sysctl -w kernel.unprivileged_userns_clone=1
