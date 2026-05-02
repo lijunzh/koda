@@ -2,65 +2,19 @@
 //!
 //! Handles two completion modes:
 //! - **Slash commands**: `/d` → `/diff`, `/diff commit`, `/diff review`
+//!   (data + matching live in [`crate::composer::slash_popup`])
 //! - **@file paths**: `explain @src/m` → `explain @src/main.rs`
+//!
+//! Both modes share the same `InputCompleter` cycling state machine
+//! (matches/idx/token) so Tab cycles through candidates regardless of
+//! mode.
 
 use std::path::{Path, PathBuf};
 
-/// All known slash commands with (command, description, arg_hint).
-/// `arg_hint` is `Some("<placeholder>")` for commands that take an argument,
-/// `None` for self-contained commands and picker-openers.
-/// Single source of truth — used by completer and auto-dropdown.
-pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
-    ("/agent", "Switch to a sub-agent", Some("<name>")),
-    (
-        "/agents",
-        "List running background tasks (sub-agents + processes)",
-        None,
-    ),
-    (
-        "/cancel",
-        "Cancel a background task by id (agent:N or process:N from /agents)",
-        Some("<id>"),
-    ),
-    (
-        "/compact",
-        "Summarize conversation to reclaim context",
-        None,
-    ),
-    (
-        "/copy",
-        "Copy last response to clipboard (/copy 2 for 2nd-last)",
-        Some("[n]"),
-    ),
-    (
-        "/debug-bundle",
-        "Write a self-contained debug .zip to ~/.config/koda/debug-bundles/",
-        None,
-    ),
-    ("/diff", "Show git diff (review, commit)", None),
-    ("/exit", "Quit the session", None),
-    ("/expand", "Show full output of last tool call", None),
-    ("/help", "Show commands and shortcuts", None),
-    ("/key", "Manage API keys", None),
-    (
-        "/mcp",
-        "Manage MCP servers (add, remove, list)",
-        Some("[add|remove|list]"),
-    ),
-    ("/memory", "View/save project & global memory", None),
-    ("/model", "Pick a model (aliases + local)", None),
-    ("/provider", "Browse all models from a provider", None),
-    (
-        "/purge",
-        "Delete archived history (e.g. /purge 90d)",
-        Some("<days>"),
-    ),
-    ("/sessions", "List/resume/delete sessions", None),
-    ("/skills", "List available skills (search with query)", None),
-    ("/undo", "Undo last turn's file changes", None),
-    ("/verbose", "Toggle full tool output", None),
-    ("/vim", "Toggle vim-mode editing in the input", None),
-];
+/// Re-export so existing call sites (and external doc-tests) can keep
+/// referring to `crate::completer::SLASH_COMMANDS`. The canonical
+/// definition moved to [`crate::composer::slash_popup`] in #1187.
+pub use crate::composer::slash_popup::SLASH_COMMANDS;
 
 /// Unified Tab-completion for slash commands and @file paths.
 pub struct InputCompleter {
@@ -130,14 +84,13 @@ impl InputCompleter {
     // ── Slash command completion ─────────────────────────────
 
     fn complete_slash(&mut self, trimmed: &str) -> Option<String> {
-        // Rebuild matches if the token changed
+        // Rebuild matches if the token changed. Matching itself lives in
+        // `composer::slash_popup::matches_for` (#1187) so the slash table
+        // is the single source of truth for both Tab-completion and the
+        // auto-dropdown.
         if trimmed != self.token && !self.matches.iter().any(|m| m == trimmed) {
             self.token = trimmed.to_string();
-            self.matches = SLASH_COMMANDS
-                .iter()
-                .filter(|(cmd, _, _)| cmd.starts_with(trimmed) && *cmd != trimmed)
-                .map(|(cmd, _, _)| cmd.to_string())
-                .collect();
+            self.matches = crate::composer::slash_popup::matches_for(trimmed);
             self.idx = 0;
         }
 

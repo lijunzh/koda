@@ -98,8 +98,8 @@ impl TuiContext {
                 // of scrolling history — matches CC behaviour.
                 if trimmed.starts_with('/')
                     && !trimmed.contains(' ')
-                    && let Some(dd) = crate::widgets::slash_menu::from_input(
-                        crate::completer::SLASH_COMMANDS,
+                    && let Some(dd) = crate::composer::slash_popup::from_input(
+                        crate::composer::slash_popup::SLASH_COMMANDS,
                         trimmed,
                     )
                 {
@@ -344,7 +344,9 @@ impl TuiContext {
     // ── History ────────────────────────────────────────────────
 
     fn history_up(&mut self) {
-        if let Some(idx) = history_up_index(self.history_idx, self.history.len()) {
+        if let Some(idx) =
+            crate::composer::history_nav::history_up_index(self.history_idx, self.history.len())
+        {
             self.history_idx = Some(idx);
             self.textarea.set_text_clearing_elements("");
             self.textarea.insert_str(&self.history[idx]);
@@ -352,7 +354,8 @@ impl TuiContext {
     }
 
     fn history_down(&mut self) {
-        let next = history_down_index(self.history_idx, self.history.len());
+        let next =
+            crate::composer::history_nav::history_down_index(self.history_idx, self.history.len());
         self.history_idx = next;
         self.textarea.set_text_clearing_elements("");
         if let Some(idx) = next {
@@ -367,9 +370,10 @@ impl TuiContext {
         let trimmed = after_input.trim_end();
 
         if trimmed.starts_with('/') && !trimmed.contains(' ') {
-            if let Some(dd) =
-                crate::widgets::slash_menu::from_input(crate::completer::SLASH_COMMANDS, trimmed)
-            {
+            if let Some(dd) = crate::composer::slash_popup::from_input(
+                crate::composer::slash_popup::SLASH_COMMANDS,
+                trimmed,
+            ) {
                 self.menu = MenuContent::Slash(dd);
             } else if matches!(self.menu, MenuContent::Slash(_)) {
                 self.menu = MenuContent::None;
@@ -400,83 +404,17 @@ impl TuiContext {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Pure helper: history index navigation
-// ---------------------------------------------------------------------------
-
-/// Compute the next history index when pressing Up (older).
-///
-/// Returns `None` if the history is empty.
-pub(crate) fn history_up_index(current: Option<usize>, len: usize) -> Option<usize> {
-    if len == 0 {
-        return None;
-    }
-    Some(match current {
-        None => len - 1,
-        Some(i) => i.saturating_sub(1),
-    })
-}
-
-/// Compute the next history index when pressing Down (newer).
-///
-/// Returns `None` when moving past the most recent entry (back to
-/// empty input).
-pub(crate) fn history_down_index(current: Option<usize>, len: usize) -> Option<usize> {
-    match current {
-        Some(i) if i + 1 < len => Some(i + 1),
-        _ => None,
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════
 //  Tests
 // ═══════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    // ── History index navigation ──────────────────────────────
-
-    #[test]
-    fn test_history_up_from_none() {
-        assert_eq!(history_up_index(None, 5), Some(4));
-    }
-
-    #[test]
-    fn test_history_up_from_middle() {
-        assert_eq!(history_up_index(Some(3), 5), Some(2));
-    }
-
-    #[test]
-    fn test_history_up_at_top() {
-        // Saturates at 0
-        assert_eq!(history_up_index(Some(0), 5), Some(0));
-    }
-
-    #[test]
-    fn test_history_up_empty() {
-        assert_eq!(history_up_index(None, 0), None);
-    }
-
-    #[test]
-    fn test_history_down_from_middle() {
-        assert_eq!(history_down_index(Some(2), 5), Some(3));
-    }
-
-    #[test]
-    fn test_history_down_at_bottom() {
-        // Past the last entry → back to empty input
-        assert_eq!(history_down_index(Some(4), 5), None);
-    }
-
-    #[test]
-    fn test_history_down_from_none() {
-        assert_eq!(history_down_index(None, 5), None);
-    }
-
     // ── History DB persistence ────────────────────────────────
+    //
+    // Pure index-math tests live in `crate::composer::history_nav` (#1187).
+    // What stays here is the integration with `koda_core::db::Database`,
+    // which the index helpers don't touch.
 
     #[tokio::test]
     async fn test_history_round_trip() {

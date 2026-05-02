@@ -23,7 +23,7 @@ pub(crate) type Term = Terminal<CrosstermBackend<std::io::Stdout>>;
 // ── Type aliases for dropdown menus ─────────────────────────
 
 pub(crate) type SlashDropdown =
-    crate::widgets::dropdown::DropdownState<crate::widgets::slash_menu::SlashCommand>;
+    crate::widgets::dropdown::DropdownState<crate::composer::slash_popup::SlashCommand>;
 pub(crate) type ModelDropdown =
     crate::widgets::dropdown::DropdownState<crate::widgets::model_menu::ModelItem>;
 pub(crate) type ProviderDropdown =

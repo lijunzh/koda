@@ -295,7 +295,7 @@ fn render_history(
 fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatui::layout::Rect) {
     match menu {
         MenuContent::Slash(dd) => {
-            let lines = crate::widgets::slash_menu::build_menu_lines(dd);
+            let lines = crate::composer::slash_popup::build_menu_lines(dd);
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
         MenuContent::Model(dd) => {
