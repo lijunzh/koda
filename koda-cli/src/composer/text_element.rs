@@ -43,6 +43,16 @@
 // key hints) that are scoped for PR 3+. The unused-warnings will go away as
 // each follow-up PR wires them up; until then, allow them at the module
 // level so the faithful port can land without piecemeal #[allow] tags.
+
+// PR 5 of #1178 wired the textarea's `insert_element` / element-aware
+// rendering into koda's @-mention completion path, which exercises the
+// `TextElement` struct + `ByteRange` type alias from this module via the
+// textarea's internal use of them. The remaining surface
+// (`MAX_USER_INPUT_TEXT_CHARS`, `map_range`, `set_placeholder`,
+// `placeholder`) is preserved verbatim from the codex port for sync
+// parity — the next codex resync stays a trivial diff. Module-level
+// allow rather than per-item because most of the file is sync-parity
+// surface; per-item would add 4+ tags to a 167-line file for no gain.
 #![allow(dead_code)]
 
 use std::ops::Range;

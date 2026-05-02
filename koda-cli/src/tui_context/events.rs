@@ -155,8 +155,39 @@ impl TuiContext {
             (KeyCode::Tab, KeyModifiers::NONE) => {
                 let current = self.textarea.text().to_string();
                 if let Some(completed) = self.completer.complete(&current) {
-                    self.textarea.set_text_clearing_elements("");
-                    self.textarea.insert_str(&completed);
+                    // Detect @-mention completion (PR 5 of #1178). The
+                    // completer's `find_last_at_token` rule matches an `@`
+                    // at start-of-input or after whitespace, and the
+                    // returned text is `"{prefix}@{path}"` with the
+                    // mention always reaching the end (no trailing space).
+                    // When that pattern fires, insert the mention as a
+                    // codex-port named element so:
+                    //   - it renders cyan (textarea.render_lines overlays
+                    //     element ranges automatically),
+                    //   - one Backspace deletes the entire path atomically
+                    //     (textarea.delete_backward snaps to atomic
+                    //     boundaries),
+                    //   - cycling Tab presses re-create the element with
+                    //     the next match (set_text_clearing_elements +
+                    //     insert_element naturally replaces the previous
+                    //     element — no manual cleanup needed).
+                    // Falls back to the plain insert_str path for slash
+                    // commands and `/model <name>` completions.
+                    if let Some(at_pos) = crate::completer::find_last_at_token(&completed) {
+                        let (prefix, mention) = completed.split_at(at_pos);
+                        self.textarea.set_text_clearing_elements(prefix);
+                        // Defensive: place cursor at end of prefix so the
+                        // mention is appended (not inserted at the textarea's
+                        // last cursor position, which `set_text_inner` only
+                        // clamps to text length — it never moves backward to
+                        // the end on its own when the previous cursor was
+                        // already inside the new shorter prefix).
+                        self.textarea.set_cursor(prefix.len());
+                        self.textarea.insert_element(mention);
+                    } else {
+                        self.textarea.set_text_clearing_elements("");
+                        self.textarea.insert_str(&completed);
+                    }
                     self.completer.reset();
                 }
             }
@@ -467,5 +498,99 @@ mod tests {
 
         let loaded = db.history_load().await.unwrap();
         assert!(loaded.is_empty());
+    }
+
+    // ── @-mention named-element wiring (PR 5 of #1178) ───────────────────
+    //
+    // Tests the textarea-side behavior the Tab handler relies on without
+    // spinning up a full `TuiContext`. The handler does:
+    //   if let Some(at_pos) = find_last_at_token(&completed) {
+    //       let (prefix, mention) = completed.split_at(at_pos);
+    //       textarea.set_text_clearing_elements(prefix);
+    //       textarea.insert_element(mention);
+    //   }
+    // Each test exercises a different invariant of that flow.
+
+    use crate::completer::find_last_at_token;
+    use crate::composer::textarea::TextArea;
+
+    /// Simulates the Tab handler's @-mention branch end-to-end, returning
+    /// the resulting textarea so tests can assert on text + element state.
+    fn simulate_at_mention_completion(prefix: &str, mention: &str) -> TextArea {
+        let completed = format!("{prefix}{mention}");
+        let at_pos = find_last_at_token(&completed)
+            .expect("test fixture must include an @-token in the completed text");
+        let (split_prefix, split_mention) = completed.split_at(at_pos);
+        let mut ta = TextArea::new();
+        ta.set_text_clearing_elements(split_prefix);
+        ta.set_cursor(split_prefix.len());
+        ta.insert_element(split_mention);
+        ta
+    }
+
+    /// After Tab on `explain @src/m\t` the textarea text equals the full
+    /// completion AND the `@src/main.rs` portion is registered as exactly
+    /// one named element. This is the core PR 5 invariant.
+    #[test]
+    fn at_mention_completion_creates_one_element_for_the_path() {
+        let ta = simulate_at_mention_completion("explain ", "@src/main.rs");
+        assert_eq!(ta.text(), "explain @src/main.rs");
+        let elements = ta.text_elements();
+        assert_eq!(
+            elements.len(),
+            1,
+            "exactly one element must wrap the @-mention"
+        );
+        let elem = &elements[0];
+        assert_eq!(
+            &ta.text()[elem.byte_range.start..elem.byte_range.end],
+            "@src/main.rs",
+            "element range must cover the full @-mention including the @"
+        );
+    }
+
+    /// Cycling Tab (e.g. `main.rs` → `lib.rs`) replaces the previous
+    /// element rather than accumulating two. The handler clears the
+    /// textarea via `set_text_clearing_elements` before inserting the new
+    /// mention, which by design drops all prior elements.
+    #[test]
+    fn cycling_at_mention_completion_replaces_previous_element() {
+        let mut ta = simulate_at_mention_completion("explain ", "@src/main.rs");
+        // Second Tab cycles to a different file — simulate by re-running the
+        // same handler logic on the fresh "completed" string.
+        let completed = "explain @src/lib.rs";
+        let at_pos = find_last_at_token(completed).unwrap();
+        let (prefix, mention) = completed.split_at(at_pos);
+        ta.set_text_clearing_elements(prefix);
+        ta.set_cursor(prefix.len());
+        ta.insert_element(mention);
+
+        assert_eq!(ta.text(), "explain @src/lib.rs");
+        let elements = ta.text_elements();
+        assert_eq!(elements.len(), 1, "cycling must replace, not accumulate");
+        assert_eq!(
+            &ta.text()[elements[0].byte_range.start..elements[0].byte_range.end],
+            "@src/lib.rs"
+        );
+    }
+
+    /// One Backspace at end-of-element deletes the entire `@path` span
+    /// atomically (the codex-port `delete_backward` snaps to atomic
+    /// boundaries, of which an element start is one). This is the
+    /// user-visible UX win that motivated PR 5: no more 12 backspaces
+    /// to undo a long file path.
+    #[test]
+    fn one_backspace_deletes_entire_at_mention_atomically() {
+        let mut ta = simulate_at_mention_completion("explain ", "@src/main.rs");
+        ta.delete_backward(1);
+        assert_eq!(
+            ta.text(),
+            "explain ",
+            "single backspace must wipe the whole @-mention element"
+        );
+        assert!(
+            ta.text_elements().is_empty(),
+            "deleting the element must also remove it from the element list"
+        );
     }
 }
