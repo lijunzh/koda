@@ -86,6 +86,17 @@ pub(crate) struct TuiContext {
     /// Height of the history area in rows.
     pub history_area_height: u16,
 
+    /// Non-bracketed paste-burst detector (#1186). Buffers fast-typed
+    /// runs that look like a paste from a terminal that doesn't emit
+    /// bracketed-paste sequences (older terminals, some SSH setups,
+    /// tmux without `set -g set-clipboard on`). When the burst flushes
+    /// (via the idle-loop timer in [`TuiContext::run`]), the accumulated
+    /// text is dropped into the textarea as a single insert — cheaper
+    /// than re-rendering after every fast keystroke and avoids paste
+    /// content being interpreted as a sequence of submits when newlines
+    /// are involved.
+    pub paste_burst: crate::composer::paste_burst::PasteBurst,
+
     // ── Session state (shared references) ────────────────────
     // Lock discipline for `provider: Arc<RwLock<_>>`:
     // - Methods that swap the provider (handle_command) acquire write lock.
@@ -373,6 +384,7 @@ impl TuiContext {
             mouse_selection: None,
             history_area_y: 0,
             history_area_height: 0,
+            paste_burst: crate::composer::paste_burst::PasteBurst::default(),
             config,
             provider,
             session,
@@ -505,9 +517,22 @@ impl TuiContext {
             self.draw()?;
 
             // ── Idle: wait for keyboard input ────────────────
+            //
+            // The optional paste-burst flush arm (#1186) only races the
+            // event branch when a non-bracketed paste is currently being
+            // accumulated. The `if` guard makes the branch disabled when
+            // there's no pending burst, so we don't churn timers in the
+            // common case (idle waiting for the user). When a burst IS
+            // active and the user stops typing, the timer fires and we
+            // commit the buffered text into the textarea as one insert.
             tokio::select! {
                 Some(Ok(ev)) = self.crossterm_events.next() => {
                     self.handle_idle_event(ev).await?;
+                }
+                _ = tokio::time::sleep(
+                    crate::composer::paste_burst::PasteBurst::recommended_flush_delay(),
+                ), if self.paste_burst.is_active() => {
+                    self.flush_paste_burst_if_due();
                 }
             }
         }

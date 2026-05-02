@@ -81,6 +81,15 @@ impl TuiContext {
             return Ok(true);
         }
 
+        // Non-bracketed paste-burst integration (#1186). Any modified key
+        // (Ctrl/Alt + something, special keys, etc.) commits whatever's
+        // accumulated so the user's modifier sequence acts on the full
+        // pasted content rather than a stale prefix. Plain `Char` events
+        // are routed through the burst detector by the `_` arm below.
+        if !is_plain_insertable_char(key) {
+            self.flush_paste_burst_before_modified_input();
+        }
+
         match (key.code, key.modifiers) {
             (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
                 self.textarea.insert_str("\n");
@@ -194,7 +203,45 @@ impl TuiContext {
             _ => {
                 self.history_idx = None;
                 self.completer.reset();
-                self.textarea.input(key);
+                if let Some(ch) = plain_char(key) {
+                    // Non-bracketed paste-burst integration (#1186, Phase A).
+                    // For plain typed chars we ask the burst detector to
+                    // either swallow them into a buffer (when a paste-shaped
+                    // burst is in progress) or pass them through unchanged.
+                    // The buffer is committed in one shot by the timer arm
+                    // in [`TuiContext::run`] once the inter-key timeout
+                    // elapses, OR immediately when a non-Char key arrives
+                    // (handled at the top of this function via
+                    // `flush_paste_burst_before_modified_input`).
+                    use crate::composer::paste_burst::CharDecision;
+                    let now = std::time::Instant::now();
+                    match self.paste_burst.on_plain_char_no_hold(now) {
+                        Some(CharDecision::BeginBuffer { retro_chars }) => {
+                            // Retroactively grab the most recent `retro_chars`
+                            // already-inserted bytes from the textarea, hand
+                            // them back to the burst buffer, and start the
+                            // active accumulation with the current char.
+                            self.retro_grab_into_paste_burst(retro_chars, ch, now);
+                        }
+                        Some(CharDecision::BufferAppend) => {
+                            self.paste_burst.append_char_to_buffer(ch, now);
+                        }
+                        // RetainFirstChar / BeginBufferFromPending are only
+                        // returned by `on_plain_char` (the held-first-char
+                        // variant); `on_plain_char_no_hold` never produces
+                        // them. Match exhaustively for clarity.
+                        Some(CharDecision::RetainFirstChar)
+                        | Some(CharDecision::BeginBufferFromPending) => {
+                            self.textarea.input(key);
+                        }
+                        None => {
+                            // Not bursting: insert normally.
+                            self.textarea.input(key);
+                        }
+                    }
+                } else {
+                    self.textarea.input(key);
+                }
                 self.update_reactive_menu();
             }
         }
@@ -398,6 +445,124 @@ impl TuiContext {
             self.menu = MenuContent::None;
         }
     }
+
+    // ── Paste-burst integration (#1186) ─────────────────────────
+
+    /// Drain the paste-burst buffer when its inter-key timeout has elapsed.
+    ///
+    /// Called from the idle-loop's `tokio::select!` timer arm when
+    /// `paste_burst.is_active()` is true. The flushed text is dropped into
+    /// the textarea as one `insert_str` so the user sees the entire paste
+    /// commit at once instead of character-by-character.
+    pub(crate) fn flush_paste_burst_if_due(&mut self) {
+        use crate::composer::paste_burst::FlushResult;
+        let now = std::time::Instant::now();
+        match self.paste_burst.flush_if_due(now) {
+            FlushResult::Paste(s) => {
+                if !s.is_empty() {
+                    self.textarea.insert_str(&s);
+                    self.update_reactive_menu();
+                }
+            }
+            FlushResult::Typed(ch) => {
+                // The detector was holding a single fast first char and no
+                // burst followed before the timeout. Insert it as normal
+                // typed input. (`on_plain_char_no_hold` never produces this
+                // path, but defensive: another path may eventually call the
+                // hold variant and we want the same flush handler to cope.)
+                self.textarea.insert_str(&ch.to_string());
+                self.update_reactive_menu();
+            }
+            FlushResult::None => {}
+        }
+    }
+
+    /// Eagerly drain the paste-burst buffer before a non-Char key event
+    /// (Ctrl-X, Enter, arrow keys, etc.) is dispatched.
+    ///
+    /// Without this, a paste followed immediately by a modifier sequence
+    /// would lose the buffered text or have it inserted *after* the
+    /// modifier action takes effect — both bad. Always commit pending
+    /// burst content first.
+    pub(crate) fn flush_paste_burst_before_modified_input(&mut self) {
+        if let Some(pasted) = self.paste_burst.flush_before_modified_input()
+            && !pasted.is_empty()
+        {
+            self.textarea.insert_str(&pasted);
+            self.update_reactive_menu();
+        }
+    }
+
+    /// Retroactively grab the most recent `retro_chars` already-inserted
+    /// chars from the textarea and seed the paste-burst buffer with them
+    /// (plus the current char `ch`). Mirrors codex's chat_composer.rs
+    /// pattern for the BeginBuffer decision.
+    fn retro_grab_into_paste_burst(&mut self, retro_chars: u16, ch: char, now: std::time::Instant) {
+        let cur = self.textarea.cursor();
+        let txt = self.textarea.text();
+        let safe_cur = clamp_to_char_boundary(txt, cur);
+        let before = &txt[..safe_cur];
+        if let Some(grab) = self
+            .paste_burst
+            .decide_begin_buffer(now, before, retro_chars as usize)
+        {
+            if !grab.grabbed.is_empty() {
+                self.textarea.replace_range(grab.start_byte..safe_cur, "");
+            }
+            // The paste detector is now active. Append the current
+            // char (which never made it into the textarea) to the
+            // buffer so it's part of the eventual paste commit.
+            self.paste_burst.append_char_to_buffer(ch, now);
+        } else {
+            // Detector decided the prefix isn't paste-shaped enough
+            // (no whitespace, < 16 chars). Insert the current char
+            // as normal typed input so we don't lose it.
+            self.textarea.input(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(ch),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+    }
+}
+
+// ── Module-level helpers ───────────────────────────────────
+
+/// Returns true when `key` is a plain insertable character (no Ctrl/Alt
+/// modifiers, just `KeyCode::Char(_)` with at most Shift held). The
+/// paste-burst detector only owns this slice of the keyspace; everything
+/// else (Enter, arrows, Ctrl-X, etc.) flushes the burst eagerly.
+fn is_plain_insertable_char(key: crossterm::event::KeyEvent) -> bool {
+    plain_char(key).is_some()
+}
+
+/// Extract the plain `char` from a `KeyEvent` if it represents typed
+/// text (not a modifier-augmented action). Mirrors `is_plain_insertable_char`
+/// but returns the char itself, since the paste-burst path needs both the
+/// classification and the value.
+fn plain_char(key: crossterm::event::KeyEvent) -> Option<char> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    match (key.code, key.modifiers) {
+        (KeyCode::Char(c), m)
+            if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
+        {
+            Some(c)
+        }
+        _ => None,
+    }
+}
+
+/// Clamp a byte offset down to the nearest char boundary in `s`. UTF-8
+/// safety: `replace_range` panics if either bound is mid-codepoint, so we
+/// always round the cursor down before slicing. Mirrors codex's
+/// `Self::clamp_to_char_boundary` helper.
+fn clamp_to_char_boundary(s: &str, mut idx: usize) -> usize {
+    if idx > s.len() {
+        idx = s.len();
+    }
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
 }
 
 // ---------------------------------------------------------------------------
@@ -592,5 +757,103 @@ mod tests {
             ta.text_elements().is_empty(),
             "deleting the element must also remove it from the element list"
         );
+    }
+
+    // ── Paste-burst integration helpers (#1186) ────────────────────
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn plain_char_extracts_typed_char_with_no_modifiers() {
+        assert_eq!(
+            plain_char(key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            Some('a')
+        );
+        assert_eq!(
+            plain_char(key(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            Some('A')
+        );
+    }
+
+    #[test]
+    fn plain_char_rejects_modified_chars() {
+        // Ctrl-c, Ctrl-d, etc. are session-control bindings; they MUST NOT
+        // route through the paste-burst detector.
+        assert_eq!(
+            plain_char(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(
+            plain_char(key(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            None
+        );
+        assert_eq!(plain_char(key(KeyCode::Char('a'), KeyModifiers::ALT)), None);
+    }
+
+    #[test]
+    fn plain_char_rejects_special_keys() {
+        // Enter, arrows, function keys, etc. are non-Char codes; they
+        // need their own match arms in handle_idle_key, not paste-burst.
+        assert_eq!(plain_char(key(KeyCode::Enter, KeyModifiers::NONE)), None);
+        assert_eq!(plain_char(key(KeyCode::Up, KeyModifiers::NONE)), None);
+        assert_eq!(plain_char(key(KeyCode::Tab, KeyModifiers::NONE)), None);
+        assert_eq!(plain_char(key(KeyCode::Esc, KeyModifiers::NONE)), None);
+    }
+
+    #[test]
+    fn is_plain_insertable_char_agrees_with_plain_char() {
+        // The classifier and the value-extractor must always agree, since
+        // `handle_idle_key` uses the classifier as a guard for the
+        // pre-flush call AND `_` arm uses the extractor for the routing
+        // decision — a divergence would silently desync the two.
+        let cases = [
+            (key(KeyCode::Char('a'), KeyModifiers::NONE), true),
+            (key(KeyCode::Char('A'), KeyModifiers::SHIFT), true),
+            (key(KeyCode::Char('c'), KeyModifiers::CONTROL), false),
+            (key(KeyCode::Enter, KeyModifiers::NONE), false),
+            (key(KeyCode::Up, KeyModifiers::NONE), false),
+        ];
+        for (k, expected) in cases {
+            assert_eq!(
+                is_plain_insertable_char(k),
+                expected,
+                "classifier disagreed with extractor for {:?}",
+                k
+            );
+            assert_eq!(plain_char(k).is_some(), expected);
+        }
+    }
+
+    #[test]
+    fn clamp_to_char_boundary_handles_ascii() {
+        let s = "hello";
+        assert_eq!(clamp_to_char_boundary(s, 0), 0);
+        assert_eq!(clamp_to_char_boundary(s, 3), 3);
+        assert_eq!(clamp_to_char_boundary(s, 5), 5);
+        assert_eq!(
+            clamp_to_char_boundary(s, 99),
+            5,
+            "out-of-bounds must clamp to s.len()"
+        );
+    }
+
+    #[test]
+    fn clamp_to_char_boundary_handles_multibyte() {
+        // 'café' = c (1) + a (1) + f (1) + é (2 bytes) = 5 bytes.
+        let s = "café";
+        assert_eq!(s.len(), 5);
+        // Position 4 is mid-codepoint (between the two bytes of é).
+        // Must round DOWN to 3 (the byte just before é).
+        assert_eq!(
+            clamp_to_char_boundary(s, 4),
+            3,
+            "mid-codepoint cursor must round down to the previous boundary"
+        );
+        // Position 5 is end of string — already a boundary.
+        assert_eq!(clamp_to_char_boundary(s, 5), 5);
     }
 }
