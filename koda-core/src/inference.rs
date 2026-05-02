@@ -758,8 +758,37 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                     }
                 }
             }
-            db.insert_message(session_id, &Role::User, Some(&injection), None, None, None)
+            // #1159: write the completion as a `Role::Tool` row keyed on the
+            // parent's `InvokeAgent` tool_call_id, NOT as a synthetic
+            // `Role::User` message.
+            //
+            // Why the change:
+            //   - Pre-fix, completed bg-agent results landed as fake user
+            //     turns, polluting the parent's context and breaking the
+            //     `tool_use_id` ↔ `tool_result_id` pairing invariant that
+            //     providers (especially Anthropic) prefer.
+            //   - The `InvokeAgent` dispatch already emitted a synchronous
+            //     "started (agent:N)" tool_result on the dispatch turn.
+            //     This second tool_result with the *same* `tool_call_id`
+            //     overwrites that stub at read time via
+            //     `dedupe_tool_results_by_call_id` in `load_context`
+            //     (logical update via append + dedupe).
+            //
+            // Fallback: tests that bypass the dispatch path have no
+            // `parent_tool_call_id` — keep the old user-message shape
+            // for those callers so existing test fixtures don't break.
+            if let Some(parent_call_id) = bg_result.parent_tool_call_id.as_deref() {
+                db.insert_tool_message_with_full(
+                    session_id,
+                    &injection,
+                    parent_call_id,
+                    &injection,
+                )
                 .await?;
+            } else {
+                db.insert_message(session_id, &Role::User, Some(&injection), None, None, None)
+                    .await?;
+            }
         }
 
         // Drain any `QueueNext` inputs the client sent during the previous

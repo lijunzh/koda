@@ -125,6 +125,76 @@ pub(crate) fn prune_whitespace_only_messages(messages: &mut Vec<Message>) {
     });
 }
 
+/// Dedupe `Role::Tool` rows that share a `tool_call_id`, keeping only the
+/// **latest** (highest `id` — our `created_at` proxy since both are
+/// monotonic per session) for each id.
+///
+/// # Why
+///
+/// (#1159) Background sub-agents now emit a `Role::Tool` row at completion
+/// keyed on the parent `InvokeAgent`'s `tool_call_id`. The original
+/// dispatch-turn write (the synchronous "Background agent X started
+/// (agent:N)..." stub returned by `InvokeAgent`) is *also* a `Role::Tool`
+/// row with the same `tool_call_id`. Sending both to a provider violates
+/// the `tool_use_id` ↔ `tool_result_id` 1:1 invariant that Anthropic
+/// enforces (and that OpenAI/Gemini handle via last-write-wins anyway).
+///
+/// This pass is a logical "update via append" — we keep every row in the
+/// DB for transcript fidelity (debug bundles, `/copy`, etc. see the full
+/// history via `load_all_messages`) but the model only sees the latest
+/// status per call when its context is loaded for the next turn.
+///
+/// # Algorithm
+///
+/// O(n) two-pass. Pass 1 collects the max `id` per `tool_call_id` for
+/// `Role::Tool` rows. Pass 2 retains a `Role::Tool` row only if it is the
+/// max-id row for its id (or has no `tool_call_id`, which is impossible
+/// for valid Tool rows but defended against). Non-Tool rows are untouched.
+pub(crate) fn dedupe_tool_results_by_call_id(messages: &mut Vec<Message>) {
+    if messages.is_empty() {
+        return;
+    }
+
+    // Pass 1: max id per tool_call_id, restricted to Role::Tool rows.
+    let mut latest_id_for: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
+    for msg in messages.iter() {
+        if msg.role == Role::Tool
+            && let Some(call_id) = msg.tool_call_id.as_deref()
+        {
+            latest_id_for
+                .entry(call_id.to_string())
+                .and_modify(|cur| {
+                    if msg.id > *cur {
+                        *cur = msg.id;
+                    }
+                })
+                .or_insert(msg.id);
+        }
+    }
+
+    // Early-out: every Role::Tool row was already unique-by-call_id.
+    if latest_id_for.is_empty() {
+        return;
+    }
+
+    // Pass 2: retain non-Tool rows + the latest Tool row per call_id.
+    messages.retain(|msg| {
+        if msg.role != Role::Tool {
+            return true;
+        }
+        let Some(call_id) = msg.tool_call_id.as_deref() else {
+            // Defensive: a Tool row with no tool_call_id is malformed but
+            // we don't drop it here — `prune_mismatched_tool_calls` will
+            // handle it on a subsequent pass if needed.
+            return true;
+        };
+        latest_id_for
+            .get(call_id)
+            .is_none_or(|&max_id| msg.id == max_id)
+    });
+}
+
 // ── Interrupted turn detection (#594) ─────────────────────────────────────
 
 /// Inspect the tail of a message history to detect an interrupted turn.
@@ -355,6 +425,9 @@ impl Persistence for Database {
     /// - Mismatched tool_use / tool_result pairs are pruned (#428)
     /// - Null-content assistant messages with no tool calls are dropped (#594)
     /// - Whitespace-only assistant messages are dropped (#594)
+    /// - Duplicate `Role::Tool` rows sharing a `tool_call_id` are deduped
+    ///   to the latest write (#1159 — background sub-agent completion
+    ///   updates the original `InvokeAgent` tool_result via append).
     async fn load_context(&self, session_id: &str) -> Result<Vec<Message>> {
         let mut messages: Vec<Message> = sqlx::query_as::<_, MessageRow>(
             "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
@@ -377,6 +450,7 @@ impl Persistence for Database {
         prune_mismatched_tool_calls(&mut messages); // (#428)
         prune_null_content_messages(&mut messages); // (#594)
         prune_whitespace_only_messages(&mut messages); // (#594)
+        dedupe_tool_results_by_call_id(&mut messages); // (#1159)
 
         Ok(messages)
     }
