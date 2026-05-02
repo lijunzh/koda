@@ -54,8 +54,7 @@ impl TuiContext {
             selected: 0,
         };
         // Clear the input so the best match can be previewed.
-        self.textarea.select_all();
-        self.textarea.cut();
+        self.textarea.set_text_clearing_elements("");
     }
 
     /// Update the textarea to preview the currently selected match.
@@ -67,8 +66,7 @@ impl TuiContext {
             _ => return,
         };
         let _ = cursor; // suppresses unused warning if selected unused
-        self.textarea.select_all();
-        self.textarea.cut();
+        self.textarea.set_text_clearing_elements("");
         if let Some(t) = text {
             self.textarea.insert_str(&t);
         }
@@ -166,8 +164,7 @@ impl TuiContext {
                 base_url,
                 env_name,
             });
-            self.textarea.select_all();
-            self.textarea.cut();
+            self.textarea.set_text_clearing_elements("");
         } else {
             self.menu = MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
             self.prompt_mode = PromptMode::WizardInput {
@@ -176,8 +173,7 @@ impl TuiContext {
             self.provider_wizard = Some(ProviderWizard::Url {
                 provider_type: ptype,
             });
-            self.textarea.select_all();
-            self.textarea.cut();
+            self.textarea.set_text_clearing_elements("");
             self.textarea.insert_str(&base_url);
         }
     }
@@ -335,8 +331,7 @@ impl TuiContext {
                 // Esc / Ctrl+G → cancel, clear textarea
                 (KeyCode::Esc, _) | (KeyCode::Char('g'), KeyModifiers::CONTROL) => {
                     self.menu = MenuContent::None;
-                    self.textarea.select_all();
-                    self.textarea.cut();
+                    self.textarea.set_text_clearing_elements("");
                     return Some(true);
                 }
                 _ => return Some(true), // consume everything else
@@ -388,8 +383,7 @@ impl TuiContext {
                 if matches!(self.prompt_mode, PromptMode::WizardInput { .. }) {
                     self.prompt_mode = PromptMode::Chat;
                     self.provider_wizard = None;
-                    self.textarea.select_all();
-                    self.textarea.cut();
+                    self.textarea.set_text_clearing_elements("");
                 }
                 return Some(true);
             }
@@ -433,12 +427,11 @@ impl TuiContext {
                 // item.arg_hint are both &'static, so they don't extend it.
                 if let Some((cmd, arg_hint)) = action {
                     self.menu = MenuContent::None;
-                    self.textarea.select_all();
-                    self.textarea.cut();
+                    self.textarea.set_text_clearing_elements("");
                     if arg_hint.is_some() {
                         // Command needs an argument: put "/cmd " in the box
                         // so the user can type the argument and press Enter.
-                        self.textarea.insert_str(format!("{cmd} "));
+                        self.textarea.insert_str(&format!("{cmd} "));
                     } else {
                         // Self-contained / picker-opener: execute immediately.
                         self.dispatch_slash(&cmd).await;
@@ -540,8 +533,7 @@ impl TuiContext {
                     self.menu = MenuContent::WizardTrail(vec![("Key".into(), provider_name)]);
                     self.prompt_mode = PromptMode::WizardInput { label };
                     self.provider_wizard = Some(ProviderWizard::ApiKeyOnly { env_name });
-                    self.textarea.select_all();
-                    self.textarea.cut();
+                    self.textarea.set_text_clearing_elements("");
                 }
                 return;
             }
@@ -585,8 +577,7 @@ impl TuiContext {
             MenuContent::File { dropdown, prefix } => {
                 if let Some(item) = dropdown.selected_item() {
                     let replacement = format!("{}@{}", prefix, item.path);
-                    self.textarea.select_all();
-                    self.textarea.cut();
+                    self.textarea.set_text_clearing_elements("");
                     self.textarea.insert_str(&replacement);
                 }
             }
@@ -604,9 +595,8 @@ impl TuiContext {
     // ── Wizard submit ──────────────────────────────────────────
 
     pub(crate) async fn handle_wizard_submit(&mut self) {
-        let value = self.textarea.lines().join("");
-        self.textarea.select_all();
-        self.textarea.cut();
+        let value = self.textarea.text().to_string();
+        self.textarea.set_text_clearing_elements("");
 
         if let Some(wizard) = self.provider_wizard.take() {
             match wizard {

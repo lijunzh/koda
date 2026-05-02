@@ -29,15 +29,17 @@ use koda_core::providers::LlmProvider;
 use koda_core::session::KodaSession;
 use koda_core::trust::{self, TrustMode};
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
 };
-use ratatui_textarea::TextArea;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
+
+use crate::composer::keymap::RuntimeKeymap;
+use crate::composer::textarea::TextArea;
 
 /// All mutable TUI state, extracted from `run()`'s local variables.
 ///
@@ -46,9 +48,13 @@ use tokio::sync::mpsc;
 /// - **events.rs** — keyboard, mouse, paste, clipboard, history
 /// - **menus.rs** — dropdown pickers, menu navigation, wizards
 pub(crate) struct TuiContext {
-    // ── UI state ─────────────────────────────────────────────
+    // ── UI state ────────────────────────────────────────────
     pub terminal: Term,
-    pub textarea: TextArea<'static>,
+    pub textarea: TextArea,
+    /// Resolved keymap (defaults for now; user-config layer is a follow-up).
+    /// Threaded into input handlers so the textarea's `input_with_keymap` can
+    /// consult `editor` bindings instead of hard-coding key matches inline.
+    pub keymap: RuntimeKeymap,
     pub renderer: TuiRenderer,
     pub scroll_buffer: ScrollBuffer,
     pub crossterm_events: EventStream,
@@ -238,15 +244,16 @@ impl TuiContext {
         // Terminal + textarea
         let terminal = init_terminal()?;
 
-        let mut textarea = TextArea::default();
-        textarea.set_cursor_line_style(Style::default());
-        textarea.set_cursor_style(
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::REVERSED),
-        );
-        textarea.set_placeholder_text("Type a message...");
-        textarea.set_placeholder_style(Style::default().fg(Color::DarkGray));
+        // Composer textarea (codex `bottom_pane::textarea` port; #1178 PR 2).
+        // No cursor/style/placeholder configuration here — codex's textarea
+        // owns its own cursor styling (block in vim normal, bar in insert)
+        // and koda renders the empty-state "Type a message..." hint outside
+        // the textarea in `tui_viewport::draw_viewport` so we don't depend on
+        // ratatui-textarea's placeholder feature (codex doesn't have an
+        // equivalent at the textarea level).
+        let mut textarea = TextArea::new();
+        let keymap = RuntimeKeymap::defaults();
+        textarea.set_keymap_bindings(&keymap);
 
         let mut renderer = TuiRenderer::new();
         renderer.model = config.model.clone();
@@ -327,6 +334,7 @@ impl TuiContext {
         Ok(Self {
             terminal,
             textarea,
+            keymap,
             renderer,
             scroll_buffer: {
                 let mut buf = ScrollBuffer::new(2500);

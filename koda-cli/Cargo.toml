@@ -39,7 +39,6 @@ two-face = { version = "0.5", default-features = false, features = ["syntect-fan
 
 # TUI (inline viewport: input + status bar)
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "scrolling-regions"] }
-ratatui-textarea = "0.9"
 unicode-width = "0.2"
 
 # Composer port (#1116, #1178): textarea + paste_burst lifted from

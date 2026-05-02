@@ -231,6 +231,7 @@ impl TuiContext {
                             &mut self.prompt_mode,
                             &mut self.pending_approval_id,
                             &mut self.textarea,
+                            &self.keymap,
                             &self.shared_mode,
                             &mut self.completer,
                             &mut self.history,
@@ -443,7 +444,8 @@ async fn handle_crossterm_event_inline(
     menu: &mut MenuContent,
     prompt_mode: &mut PromptMode,
     pending_approval_id: &mut Option<String>,
-    textarea: &mut ratatui_textarea::TextArea<'static>,
+    textarea: &mut crate::composer::textarea::TextArea,
+    keymap: &crate::composer::keymap::RuntimeKeymap,
     shared_mode: &koda_core::trust::SharedTrustMode,
     completer: &mut crate::completer::InputCompleter,
     history: &mut Vec<String>,
@@ -492,6 +494,7 @@ async fn handle_crossterm_event_inline(
                 prompt_mode,
                 pending_approval_id,
                 textarea,
+                keymap,
                 shared_mode,
                 completer,
                 history,
@@ -515,7 +518,8 @@ async fn handle_inference_key_inline(
     menu: &mut MenuContent,
     prompt_mode: &mut PromptMode,
     pending_approval_id: &mut Option<String>,
-    textarea: &mut ratatui_textarea::TextArea<'static>,
+    textarea: &mut crate::composer::textarea::TextArea,
+    keymap: &crate::composer::keymap::RuntimeKeymap,
     shared_mode: &koda_core::trust::SharedTrustMode,
     completer: &mut crate::completer::InputCompleter,
     history: &mut Vec<String>,
@@ -542,8 +546,7 @@ async fn handle_inference_key_inline(
                     "Rejected with feedback".into(),
                 )]);
                 *pending_approval_id = Some(approval_id.clone());
-                textarea.select_all();
-                textarea.cut();
+                textarea.set_text_clearing_elements("");
                 None
             }
             KeyCode::Esc => Some(ApprovalDecision::Reject),
@@ -586,12 +589,11 @@ async fn handle_inference_key_inline(
     {
         match (key.code, key.modifiers) {
             (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
-                textarea.insert_newline();
+                textarea.insert_str("\n");
             }
             (KeyCode::Enter, KeyModifiers::NONE) => {
-                let answer = textarea.lines().join("\n");
-                textarea.select_all();
-                textarea.cut();
+                let answer = textarea.text().to_string();
+                textarea.set_text_clearing_elements("");
                 *prompt_mode = PromptMode::Chat;
                 if let MenuContent::AskUser { id, .. } = std::mem::replace(menu, MenuContent::None)
                 {
@@ -601,8 +603,7 @@ async fn handle_inference_key_inline(
                 }
             }
             (KeyCode::Esc, _) => {
-                textarea.select_all();
-                textarea.cut();
+                textarea.set_text_clearing_elements("");
                 *prompt_mode = PromptMode::Chat;
                 if let MenuContent::AskUser { id, .. } = std::mem::replace(menu, MenuContent::None)
                 {
@@ -615,7 +616,7 @@ async fn handle_inference_key_inline(
                 }
             }
             _ => {
-                textarea.input(Event::Key(key));
+                textarea.input_with_keymap(key, &keymap.editor);
             }
         }
         return;
@@ -625,12 +626,11 @@ async fn handle_inference_key_inline(
     if matches!(prompt_mode, PromptMode::WizardInput { .. }) && pending_approval_id.is_some() {
         match (key.code, key.modifiers) {
             (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
-                textarea.insert_newline();
+                textarea.insert_str("\n");
             }
             (KeyCode::Enter, KeyModifiers::NONE) => {
-                let feedback = textarea.lines().join("\n");
-                textarea.select_all();
-                textarea.cut();
+                let feedback = textarea.text().to_string();
+                textarea.set_text_clearing_elements("");
                 *prompt_mode = PromptMode::Chat;
                 *menu = MenuContent::None;
                 if let Some(aid) = pending_approval_id.take() {
@@ -645,8 +645,7 @@ async fn handle_inference_key_inline(
                 }
             }
             (KeyCode::Esc, _) => {
-                textarea.select_all();
-                textarea.cut();
+                textarea.set_text_clearing_elements("");
                 *prompt_mode = PromptMode::Chat;
                 *menu = MenuContent::None;
                 if let Some(aid) = pending_approval_id.take() {
@@ -659,7 +658,7 @@ async fn handle_inference_key_inline(
                 }
             }
             _ => {
-                textarea.input(Event::Key(key));
+                textarea.input_with_keymap(key, &keymap.editor);
             }
         }
         return;
@@ -668,16 +667,15 @@ async fn handle_inference_key_inline(
     // General keys during inference
     match (key.code, key.modifiers) {
         (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
-            textarea.insert_newline();
+            textarea.insert_str("\n");
         }
         // Enter during inference — default lane is "next" (mid-turn steer).
         // The text is sent directly to the engine as QueueNext; it will be
         // injected before the next provider request in the current turn.
         (KeyCode::Enter, KeyModifiers::NONE) => {
-            let text = textarea.lines().join("\n");
+            let text = textarea.text().to_string();
             if !text.trim().is_empty() {
-                textarea.select_all();
-                textarea.cut();
+                textarea.set_text_clearing_elements("");
                 history.push(text.clone());
                 let _ = db.history_push(&text).await;
                 *history_idx = None;
@@ -696,10 +694,9 @@ async fn handle_inference_key_inline(
         // current turn fully completes, then batch with other later items into
         // one new turn.
         (KeyCode::Char('j'), m) if m.contains(KeyModifiers::CONTROL) => {
-            let text = textarea.lines().join("\n");
+            let text = textarea.text().to_string();
             if !text.trim().is_empty() {
-                textarea.select_all();
-                textarea.cut();
+                textarea.set_text_clearing_elements("");
                 history.push(text.clone());
                 let _ = db.history_push(&text).await;
                 *history_idx = None;
@@ -744,8 +741,7 @@ async fn handle_inference_key_inline(
         // Falls back to normal textarea movement when the queue is empty.
         (KeyCode::Up, KeyModifiers::NONE) => {
             if let Some(popped) = crate::queue_lanes::pop_later(later_queue) {
-                textarea.select_all();
-                textarea.cut();
+                textarea.set_text_clearing_elements("");
                 textarea.insert_str(&popped);
                 scroll_buffer.push(Line::from(vec![
                     Span::raw("  "),
@@ -755,20 +751,19 @@ async fn handle_inference_key_inline(
                     ),
                 ]));
             } else {
-                textarea.input(Event::Key(key));
+                textarea.input_with_keymap(key, &keymap.editor);
             }
         }
         (KeyCode::Tab, KeyModifiers::NONE) => {
-            let current = textarea.lines().join("\n");
+            let current = textarea.text().to_string();
             if let Some(completed) = completer.complete(&current) {
-                textarea.select_all();
-                textarea.cut();
+                textarea.set_text_clearing_elements("");
                 textarea.insert_str(&completed);
             }
         }
         _ => {
             completer.reset();
-            textarea.input(Event::Key(key));
+            textarea.input_with_keymap(key, &keymap.editor);
         }
     }
 }

@@ -58,7 +58,6 @@ pub(crate) mod tui_wizards;
 pub(crate) mod util;
 pub(crate) mod wait_task_format;
 pub(crate) mod widgets;
-pub(crate) mod wrap_input;
 pub(crate) mod wrap_util;
 
 /// Binary entry point. The only public symbol the `koda` binary needs.

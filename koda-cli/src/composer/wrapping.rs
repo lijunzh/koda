@@ -1,7 +1,6 @@
 // Foundation work for #1116/#1175 — see the equivalent header note in
 // composer/key_hint.rs for the full rationale. The blanket allow goes away
 // when PR 2 wires up the consumers.
-#![allow(dead_code)]
 
 //! Reduced port of codex's `codex-rs/tui/src/wrapping.rs`.
 //!

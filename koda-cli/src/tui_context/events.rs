@@ -70,7 +70,7 @@ impl TuiContext {
 
         match (key.code, key.modifiers) {
             (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
-                self.textarea.insert_newline();
+                self.textarea.insert_str("\n");
             }
             (KeyCode::Enter, KeyModifiers::NONE) => {
                 return self.handle_idle_enter().await;
@@ -79,7 +79,7 @@ impl TuiContext {
                 self.history_up();
             }
             (KeyCode::Down, KeyModifiers::NONE) | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
-                let input = self.textarea.lines().join("\n");
+                let input = self.textarea.text().to_string();
                 let trimmed = input.trim_end();
                 // ↓ on a bare `/`-prefixed token opens the slash menu instead
                 // of scrolling history — matches CC behaviour.
@@ -96,17 +96,15 @@ impl TuiContext {
                 self.history_down();
             }
             (KeyCode::Esc, _) => {
-                self.textarea.select_all();
-                self.textarea.cut();
+                self.textarea.set_text_clearing_elements("");
                 self.history_idx = None;
             }
             (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-                self.textarea.select_all();
-                self.textarea.cut();
+                self.textarea.set_text_clearing_elements("");
                 self.history_idx = None;
             }
             (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
-                if self.textarea.lines().join("").trim().is_empty() {
+                if self.textarea.text().to_string().trim().is_empty() {
                     self.should_quit = true;
                 }
             }
@@ -142,10 +140,9 @@ impl TuiContext {
                     .await;
             }
             (KeyCode::Tab, KeyModifiers::NONE) => {
-                let current = self.textarea.lines().join("\n");
+                let current = self.textarea.text().to_string();
                 if let Some(completed) = self.completer.complete(&current) {
-                    self.textarea.select_all();
-                    self.textarea.cut();
+                    self.textarea.set_text_clearing_elements("");
                     self.textarea.insert_str(&completed);
                     self.completer.reset();
                 }
@@ -153,7 +150,7 @@ impl TuiContext {
             _ => {
                 self.history_idx = None;
                 self.completer.reset();
-                self.textarea.input(Event::Key(key));
+                self.textarea.input_with_keymap(key, &self.keymap.editor);
                 self.update_reactive_menu();
             }
         }
@@ -166,10 +163,9 @@ impl TuiContext {
             return Ok(true);
         }
 
-        let text = self.textarea.lines().join("\n");
+        let text = self.textarea.text().to_string();
         if !text.trim().is_empty() {
-            self.textarea.select_all();
-            self.textarea.cut();
+            self.textarea.set_text_clearing_elements("");
             self.history.push(text.clone());
             // Persist to DB (fire-and-forget)
             let _ = self.session.db.history_push(&text).await;
@@ -306,8 +302,7 @@ impl TuiContext {
     fn history_up(&mut self) {
         if let Some(idx) = history_up_index(self.history_idx, self.history.len()) {
             self.history_idx = Some(idx);
-            self.textarea.select_all();
-            self.textarea.cut();
+            self.textarea.set_text_clearing_elements("");
             self.textarea.insert_str(&self.history[idx]);
         }
     }
@@ -315,8 +310,7 @@ impl TuiContext {
     fn history_down(&mut self) {
         let next = history_down_index(self.history_idx, self.history.len());
         self.history_idx = next;
-        self.textarea.select_all();
-        self.textarea.cut();
+        self.textarea.set_text_clearing_elements("");
         if let Some(idx) = next {
             self.textarea.insert_str(&self.history[idx]);
         }
@@ -325,7 +319,7 @@ impl TuiContext {
     // ── Reactive menu updates ───────────────────────────────────
 
     fn update_reactive_menu(&mut self) {
-        let after_input = self.textarea.lines().join("\n");
+        let after_input = self.textarea.text().to_string();
         let trimmed = after_input.trim_end();
 
         if trimmed.starts_with('/') && !trimmed.contains(' ') {

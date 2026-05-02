@@ -11,6 +11,7 @@ use crate::widgets::queue_preview::QueuePreview;
 use crate::widgets::status_bar::StatusBar;
 use koda_core::mcp::manager::McpStatusBarInfo;
 
+use crate::composer::textarea::TextArea;
 use anyhow::Result;
 use koda_core::trust::TrustMode;
 use ratatui::{
@@ -21,7 +22,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
 };
-use ratatui_textarea::TextArea;
 
 // ── Three-panel viewport drawing ────────────────────────────
 
@@ -52,10 +52,14 @@ pub(crate) fn draw_viewport(
 ) -> ratatui::layout::Rect {
     let area = frame.area();
 
-    // Compute wrapped input height (word-wrap aware, #517)
+    // Compute wrapped input height. composer::textarea owns its own wrapping;
+    // ask it directly for the desired height at the available width. (Used to
+    // be `crate::wrap_input::wrapped_height` against ratatui-textarea content;
+    // that helper module became redundant once we ported codex's textarea and
+    // was deleted in PR 2 of #1178.)
     let prompt_width_estimate = 4u16; // rough estimate for prompt chars
-    let avail_input_width = area.width.saturating_sub(prompt_width_estimate) as usize;
-    let input_height = crate::wrap_input::wrapped_height(textarea, avail_input_width).max(1) as u16;
+    let avail_input_width = area.width.saturating_sub(prompt_width_estimate);
+    let input_height = textarea.desired_height(avail_input_width).max(1);
 
     // Determine menu height (only when active)
     let menu_height = match menu {
@@ -146,11 +150,18 @@ pub(crate) fn draw_viewport(
         prompt_area,
     );
 
-    // Render input with word-wrapping (#517)
-    let cursor_style = Style::default()
-        .fg(Color::White)
-        .add_modifier(Modifier::REVERSED);
-    crate::wrap_input::render_wrapped_input(textarea, text_area, frame.buffer_mut(), cursor_style);
+    // Render input via composer::textarea's Widget impl. The textarea owns
+    // its cursor styling (block in vim normal, bar in insert) and wrapping
+    // — there's nothing to configure from the outside. The empty-state hint
+    // ("Type a message...") is rendered separately because codex's textarea
+    // has no equivalent of ratatui-textarea's `set_placeholder_text`.
+    if textarea.is_empty() {
+        let placeholder =
+            Paragraph::new("Type a message...").style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(placeholder, text_area);
+        // Still render the textarea on top so the cursor is drawn.
+    }
+    frame.render_widget(textarea, text_area);
 
     // ── Bottom separator ────────────────────────────────
     let bot_width = bot_sep_row.width as usize;
