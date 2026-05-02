@@ -2,7 +2,6 @@
 // composer/key_hint.rs for the full rationale. The blanket allow goes away
 // when PR 2 wires up the consumers (the chat_composer.rs swap from
 // ratatui-textarea to composer::textarea + the popup widgets that orbit it).
-#![allow(dead_code)]
 
 //! # Provenance
 //!
@@ -83,6 +82,14 @@
 //!
 //! This module does not implement an Emacs-style multi-entry kill ring. It keeps only the most
 //! recent killed span.
+
+// PR 2 of #1178 swapped the consumers (chat handlers + viewport) to use this
+// module, but the codex-port surface includes advanced features (vim mode
+// toggle, paste-burst detection, named/highlighted elements, masked render,
+// key hints) that are scoped for PR 3+. The unused-warnings will go away as
+// each follow-up PR wires them up; until then, allow them at the module
+// level so the faithful port can land without piecemeal #[allow] tags.
+#![allow(dead_code)]
 
 use super::key_hint::KeyBindingListExt;
 use super::key_hint::is_altgr;

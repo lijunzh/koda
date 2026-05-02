@@ -1,7 +1,6 @@
 // Foundation work for #1116/#1175 — see the equivalent header note in
 // composer/key_hint.rs for the full rationale. The blanket allow goes away
 // when PR 2 wires up the consumers.
-#![allow(dead_code)]
 
 //! Reduced port of codex's `codex-rs/protocol/src/user_input.rs`.
 //!
@@ -37,6 +36,14 @@
 //! - Removed all `#[derive(Deserialize, Serialize, TS, JsonSchema)]`
 //!   from the ported types.
 //! - Removed the `UserInput` enum entirely (not used by textarea).
+
+// PR 2 of #1178 swapped the consumers (chat handlers + viewport) to use this
+// module, but the codex-port surface includes advanced features (vim mode
+// toggle, paste-burst detection, named/highlighted elements, masked render,
+// key hints) that are scoped for PR 3+. The unused-warnings will go away as
+// each follow-up PR wires them up; until then, allow them at the module
+// level so the faithful port can land without piecemeal #[allow] tags.
+#![allow(dead_code)]
 
 use std::ops::Range;
 

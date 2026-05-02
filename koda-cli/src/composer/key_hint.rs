@@ -3,7 +3,6 @@
 // epic swaps chat_composer.rs from ratatui-textarea to composer::textarea
 // and brings the rest into use. The blanket allow goes away when consumers
 // land.
-#![allow(dead_code)]
 
 //! # Provenance
 //!
@@ -55,6 +54,14 @@
 //!
 //! It also supplies rendering helpers that convert bindings into styled
 //! `ratatui::text::Span` values for UI hint display.
+
+// PR 2 of #1178 swapped the consumers (chat handlers + viewport) to use this
+// module, but the codex-port surface includes advanced features (vim mode
+// toggle, paste-burst detection, named/highlighted elements, masked render,
+// key hints) that are scoped for PR 3+. The unused-warnings will go away as
+// each follow-up PR wires them up; until then, allow them at the module
+// level so the faithful port can land without piecemeal #[allow] tags.
+#![allow(dead_code)]
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
