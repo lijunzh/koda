@@ -158,7 +158,11 @@ impl TuiContext {
                 format!("API key for {}", ptype)
             };
             self.menu = MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
-            self.prompt_mode = PromptMode::WizardInput { label };
+            // PR 6 of #1178: API key entry is the one masked wizard
+            // path. The textarea renders `*` chars instead of the
+            // actual keystrokes so over-the-shoulder onlookers and
+            // screen recordings don't capture the secret.
+            self.prompt_mode = PromptMode::WizardInput { label, mask: true };
             self.provider_wizard = Some(ProviderWizard::ApiKey {
                 provider_type: ptype,
                 base_url,
@@ -169,6 +173,7 @@ impl TuiContext {
             self.menu = MenuContent::WizardTrail(vec![("Provider".into(), provider_name)]);
             self.prompt_mode = PromptMode::WizardInput {
                 label: format!("{} URL", ptype),
+                mask: false,
             };
             self.provider_wizard = Some(ProviderWizard::Url {
                 provider_type: ptype,
@@ -531,7 +536,9 @@ impl TuiContext {
                         format!("API key for {}", provider_name)
                     };
                     self.menu = MenuContent::WizardTrail(vec![("Key".into(), provider_name)]);
-                    self.prompt_mode = PromptMode::WizardInput { label };
+                    // PR 6 of #1178: second API-key entry path (re-enter
+                    // an existing key from the /key picker). Also masked.
+                    self.prompt_mode = PromptMode::WizardInput { label, mask: true };
                     self.provider_wizard = Some(ProviderWizard::ApiKeyOnly { env_name });
                     self.textarea.set_text_clearing_elements("");
                 }
