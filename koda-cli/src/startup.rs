@@ -44,20 +44,17 @@ pub fn build_banner_lines(
             Span::styled(format!(" {}", BEAR[2]), WARM_ACCENT),
             Span::raw("  "),
             Span::styled(cwd.to_string(), DIM),
-        ]),
-        Line::from(vec![
-            Span::styled("  /", WARM_ACCENT),
-            Span::styled("commands", DIM),
-            Span::styled("  @", WARM_ACCENT),
-            Span::styled("file", DIM),
-            Span::styled("  Shift+Tab ", WARM_ACCENT),
-            Span::styled("mode", DIM),
-            Span::styled("  Ctrl+C ", WARM_ACCENT),
-            Span::styled("cancel", DIM),
-            Span::styled("  PgUp/PgDn ", WARM_ACCENT),
-            Span::styled("scroll", DIM),
-            Span::styled("  Ctrl+D ", WARM_ACCENT),
-            Span::styled("quit", DIM),
+            // `·`-separated discoverability hint (#1194/#1195 round 5).
+            // Combined with cwd onto one line so the bear glyph (3 rows)
+            // and info content (3 rows) form a clean rectangle — no
+            // orphan 4th row dangling without a bear neighbor. Same
+            // `WARM_MUTED ` · ` pattern used on the model/provider line
+            // above for visual consistency. Koda project roots tend to
+            // live near the FS root (short paths) so we don't bother
+            // with a width fallback.
+            Span::styled("  \u{00b7} ", WARM_MUTED),
+            Span::styled("?", WARM_ACCENT),
+            Span::styled(" for shortcuts", DIM),
         ]),
         Line::default(),
     ]
@@ -283,7 +280,10 @@ mod tests {
     #[test]
     fn banner_is_compact() {
         let lines = build_banner_lines("gpt-4o", "openai", "~/repo", &[]);
-        // 3 bear lines + blank top + tips + blank bottom = 6
-        assert_eq!(lines.len(), 6);
+        // Blank top + 3 bear lines + blank trailing = 5. The hint
+        // (`? for shortcuts`) shares the cwd line with a `·` separator
+        // so the bear glyph (3 rows) gets a clean 3-row info partner
+        // — no orphan 4th row.
+        assert_eq!(lines.len(), 5);
     }
 }

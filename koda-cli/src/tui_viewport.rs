@@ -80,47 +80,58 @@ pub(crate) fn draw_viewport(
             // 1 header + up to 6 match rows
             (matches.len().min(6) as u16) + 1
         }
+        MenuContent::ShortcutsOverlay => {
+            crate::widgets::shortcuts_overlay::overlay_height(area.width)
+        }
     };
 
     // Queue preview height: 0 when idle / queue empty.
     let queue_preview_height = QueuePreview::height_for(queue_total);
 
-    // Layout: History | Sep | Input | Sep | Queue? | Status | Menu
+    // Layout: History | TopSep | Input | BotSep | Status | Queue? | Menu
+    //
+    // The bottom separator (#1194/#1195) mirrors the top one as a plain
+    // horizontal rule — codex creates the same visual grouping with a
+    // subtle background tint on the composer rect; we don't tint the
+    // background, so a symmetric rule is what closes the visual region
+    // around the prompt and gives it breathing room from the footer.
+    //
+    // Round 4 (#1194/#1195): the `? for shortcuts` hint moved to the
+    // banner (shown on every session start). The footer is now just
+    // the status bar + optional queue preview — saves 1 row of
+    // persistent chrome.
     let [
         history_area,
-        sep_row,
+        top_sep_row,
         input_rows,
         bot_sep_row,
-        queue_preview_row,
         status_row,
+        queue_preview_row,
         menu_area,
     ] = Layout::vertical([
         Constraint::Min(1),                       // history: fill remaining space
-        Constraint::Length(1),                    // top separator
+        Constraint::Length(1),                    // top separator (─────)
         Constraint::Length(input_height),         // input textarea
-        Constraint::Length(1),                    // bottom separator
-        Constraint::Length(queue_preview_height), // later_queue preview (0 when empty)
+        Constraint::Length(1),                    // bottom separator (─────)
         Constraint::Length(1),                    // status bar
+        Constraint::Length(queue_preview_height), // later_queue preview (0 when empty)
         Constraint::Length(menu_height),          // dropdown menu (0 when inactive)
     ])
     .areas(area);
 
-    // ── History panel (scrollable) ────────────────────
+    // ── History panel (scrollable) ──────────────────────
     render_history(frame, scroll_buffer, history_area, selection, project_root);
 
-    // ── Top separator: ──────────── 🐻 ─ ─────────────────────
-    let sep_width = sep_row.width.saturating_sub(5) as usize;
-    let separator = Line::from(vec![
-        Span::styled(
-            "\u{2500}".repeat(sep_width),
-            Style::default().fg(Color::Rgb(124, 111, 100)),
-        ),
-        Span::styled(
-            " \u{1f43b} \u{2500}",
-            Style::default().fg(Color::Rgb(124, 111, 100)),
-        ),
-    ]);
-    frame.render_widget(separator, sep_row);
+    // ── Top separator: plain full-width rule (#1194/#1195 cleanup) ────────────────
+    // The bear emoji was dropped along with the bottom-spacer addition
+    // — symmetry > signature here. If we want branding back we'd add
+    // it as a banner-line element, not a viewport-chrome element.
+    let separator_style = Style::default().fg(Color::Rgb(124, 111, 100));
+    let top_separator = Line::from(Span::styled(
+        "\u{2500}".repeat(top_sep_row.width as usize),
+        separator_style,
+    ));
+    frame.render_widget(top_separator, top_sep_row);
 
     // ── Input textarea ──────────────────────────────────
     let (prompt_text, color) = match prompt_mode {
@@ -179,16 +190,23 @@ pub(crate) fn draw_viewport(
         frame.render_widget(textarea, text_area);
     }
 
-    // ── Bottom row: key hint footer (PR 4 of #1178) ────────────────────
-    // Replaces the previous flat "───" separator with a single dim row
-    // of `key verb` hints (`enter send · shift+enter newline · ...`).
-    // Same height (1 row), but turns dead-space chrome into discoverable
-    // shortcuts. `KeyHints::render` reads `area.width` itself and drops
-    // items from the right on narrow terminals — no width threading needed.
-    frame.render_widget(
-        crate::widgets::key_hints::KeyHints::default_set(),
-        bot_sep_row,
-    );
+    // ── Bottom separator (#1194/#1195) ────────────────────────────
+    // Plain horizontal rule mirroring the top separator, drawn ALWAYS
+    // (not state-dependent) so the visual frame around the prompt
+    // stays stable regardless of composer state. Codex creates the
+    // same visual grouping with a subtle background tint on the
+    // composer rect; we don't tint, so a symmetric rule does the same
+    // job (closes #1195 at the visual-structure level).
+    //
+    // Round 4 (#1194/#1195): the `? for shortcuts` hint that used to
+    // live below this separator moved to the welcome banner. The full
+    // keybinding cheat-sheet still lives in the `?`-toggled
+    // `MenuContent::ShortcutsOverlay` (`widgets::shortcuts_overlay`).
+    let bot_separator = Line::from(Span::styled(
+        "\u{2500}".repeat(bot_sep_row.width as usize),
+        separator_style,
+    ));
+    frame.render_widget(bot_separator, bot_sep_row);
 
     // ── Queue preview (above status bar, hidden when empty) ─────────────
     if queue_preview_height > 0 {
@@ -199,12 +217,11 @@ pub(crate) fn draw_viewport(
     }
 
     // ── Status bar ────────────────────────────────────────────────
-    // CWD displayed as the leftmost segment (#1105) — mirrors
-    // shell-prompt convention so users always know where commands
-    // will land. `project_root` is the canonical session cwd
-    // (canonicalized at startup in app.rs, fixed for the session
-    // since koda has no `/cd`-style mid-session command).
-    let mut sb = StatusBar::new(model, mode.label(), context_pct).with_cwd(project_root);
+    // Status bar (#1194/#1195 follow-up): cwd dropped — banner already
+    // shows it; static info doesn't earn its keep in the persistent
+    // footer. `project_root` is still threaded through `draw_viewport`
+    // because `render_history` uses it to resolve hyperlink paths.
+    let mut sb = StatusBar::new(model, mode.label(), context_pct);
     if queue_total > 0 {
         sb = sb.with_queue(queue_total);
     }
@@ -479,6 +496,10 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
                     Span::styled(snippet, style),
                 ]));
             }
+            frame.render_widget(Paragraph::new(lines), menu_area);
+        }
+        MenuContent::ShortcutsOverlay => {
+            let lines = crate::widgets::shortcuts_overlay::build_overlay_lines(menu_area.width);
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
         MenuContent::None => {}

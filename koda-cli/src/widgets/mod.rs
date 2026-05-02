@@ -6,9 +6,9 @@
 
 pub mod dropdown;
 pub mod file_menu;
-pub mod key_hints;
 pub mod model_menu;
 pub mod provider_menu;
 pub mod queue_preview;
 pub mod session_menu;
+pub mod shortcuts_overlay;
 pub mod status_bar;

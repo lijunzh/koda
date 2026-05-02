@@ -345,6 +345,17 @@ impl TuiContext {
             return Some(true);
         }
 
+        // Shortcuts overlay (#1194 / #1195): the keybinding cheat-sheet
+        // popped up by `?`. Any keypress dismisses it — most usefully
+        // `?` again (toggle), `Esc`, or any movement / typing key. We
+        // consume the keystroke unconditionally so the dismissing key
+        // doesn't ALSO trigger its normal action (e.g. pressing `j` to
+        // close shouldn't insert `j` into the textarea).
+        if matches!(self.menu, MenuContent::ShortcutsOverlay) {
+            self.menu = MenuContent::None;
+            return Some(true);
+        }
+
         // Purge confirmation: only y/n/Esc are meaningful.
         if let MenuContent::PurgeConfirm { min_age_days, .. } = &self.menu {
             let days = *min_age_days;
@@ -417,6 +428,7 @@ impl TuiContext {
             | MenuContent::PurgeConfirm { .. }
             | MenuContent::HistorySearch { .. }
             | MenuContent::WizardTrail(_)
+            | MenuContent::ShortcutsOverlay
             | MenuContent::None => {}
         }
     }
@@ -594,6 +606,7 @@ impl TuiContext {
             | MenuContent::PurgeConfirm { .. }
             | MenuContent::HistorySearch { .. }
             | MenuContent::WizardTrail(_)
+            | MenuContent::ShortcutsOverlay
             | MenuContent::None => {}
         }
         self.menu = MenuContent::None;

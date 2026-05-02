@@ -98,6 +98,11 @@ pub enum MenuContent {
         /// Index into `matches` of the highlighted row.
         selected: usize,
     },
+    /// Multi-line keybinding reference overlay (#1194 / #1195). Opened by
+    /// pressing `?` while the composer is empty and no other menu is
+    /// active; dismissed by `?` again, `Esc`, or any other key.
+    /// Content is built by [`crate::widgets::shortcuts_overlay`].
+    ShortcutsOverlay,
 }
 
 impl MenuContent {
