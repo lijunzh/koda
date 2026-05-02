@@ -84,11 +84,18 @@
 //! recent killed span.
 
 // PR 2 of #1178 swapped the consumers (chat handlers + viewport) to use this
-// module, but the codex-port surface includes advanced features (vim mode
-// toggle, paste-burst detection, named/highlighted elements, masked render,
-// key hints) that are scoped for PR 3+. The unused-warnings will go away as
-// each follow-up PR wires them up; until then, allow them at the module
-// level so the faithful port can land without piecemeal #[allow] tags.
+// module. PR 3 wired up vim-mode (`set_vim_enabled`, `is_vim_enabled`,
+// `vim_mode_label`, `should_handle_vim_insert_escape`) via the `/vim` slash
+// command + status-bar pill + Esc routing.
+//
+// Still unused (will go away as each follow-up PR wires them up):
+//   - paste-burst integration glue (PR 3 scope was deferred — mac/linux dev
+//     focus, niche value for legacy Windows ConHost only)
+//   - named-element APIs (`insert_named_element`, `replace_element_payload`,
+//     etc.) — PR 5 scope (@ -mention completer + image attachments)
+//   - masked / highlighted render paths — PR 6 scope
+//   - several vim_normal_keymap fields (operator-pending edge cases not yet
+//     exercised by `input(key)` dispatch in koda's call sites)
 #![allow(dead_code)]
 
 use super::key_hint::KeyBindingListExt;

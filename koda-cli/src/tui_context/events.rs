@@ -68,6 +68,19 @@ impl TuiContext {
             return Ok(consumed);
         }
 
+        // Vim insert-mode Escape: route to the textarea so it transitions to
+        // NORMAL mode. Without this short-circuit, the bare-Esc match arm
+        // below (or the inference-loop's Esc-cancels-inference handler)
+        // would consume the keystroke and the textarea would stay in INSERT,
+        // making vim mode feel broken. PR 3 of #1178; the textarea owns the
+        // "is this an insert-mode Esc that I should handle?" predicate so
+        // we never need to mirror the vim_enabled/vim_mode state outside
+        // the textarea.
+        if self.textarea.should_handle_vim_insert_escape(key) {
+            self.textarea.input(key);
+            return Ok(true);
+        }
+
         match (key.code, key.modifiers) {
             (KeyCode::Enter, m) if m.contains(KeyModifiers::ALT) => {
                 self.textarea.insert_str("\n");
@@ -150,7 +163,7 @@ impl TuiContext {
             _ => {
                 self.history_idx = None;
                 self.completer.reset();
-                self.textarea.input_with_keymap(key, &self.keymap.editor);
+                self.textarea.input(key);
                 self.update_reactive_menu();
             }
         }

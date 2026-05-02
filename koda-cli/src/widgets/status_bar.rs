@@ -43,6 +43,12 @@ pub struct StatusBar<'a> {
     /// from the launch confirmation.
     bg_agents: usize,
     bg_processes: usize,
+    /// Vim mode label (e.g. "NORMAL", "INSERT", "OPERATOR-PENDING").
+    /// `None` hides the segment entirely (vim editing disabled).
+    /// Sourced from `composer::textarea::TextArea::vim_mode_label()`
+    /// which the status-bar caller passes in via [`with_vim_label`].
+    /// Added in PR 3 of #1178 (vim mode wire-up).
+    vim_label: Option<&'a str>,
 }
 
 /// Stats from the most recent inference turn.
@@ -72,6 +78,7 @@ impl<'a> StatusBar<'a> {
             mcp_info: None,
             bg_agents: 0,
             bg_processes: 0,
+            vim_label: None,
         }
     }
 
@@ -119,6 +126,17 @@ impl<'a> StatusBar<'a> {
     pub fn with_bg_counts(mut self, agents: usize, processes: usize) -> Self {
         self.bg_agents = agents;
         self.bg_processes = processes;
+        self
+    }
+
+    /// Set the active vim-mode label (NORMAL / INSERT / OPERATOR-PENDING).
+    ///
+    /// `None` (or any call site that doesn't invoke this) hides the segment
+    /// entirely — vim editing is opt-in, so users who don't toggle it never
+    /// see VIM clutter in the status bar. PR 3 of #1178; sourced from
+    /// `composer::textarea::TextArea::vim_mode_label()`.
+    pub fn with_vim_label(mut self, label: Option<&'a str>) -> Self {
+        self.vim_label = label;
         self
     }
 }
@@ -247,6 +265,21 @@ impl Widget for StatusBar<'_> {
                 Style::default().fg(ctx_color),
             ),
         ]);
+
+        // Vim mode pill (PR 3 of #1178). Hidden when vim editing is
+        // disabled (the textarea returns `None` from `vim_mode_label()`),
+        // so non-vim users never see this segment. Magenta to make the
+        // mode visually distinct from the trust-mode segment.
+        if let Some(label) = self.vim_label {
+            spans.push(Span::styled(
+                "\u{2502}",
+                Style::default().fg(Color::Rgb(60, 60, 60)),
+            ));
+            spans.push(Span::styled(
+                format!(" VIM:{label} "),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
 
         // MCP server indicator (hidden when no servers configured)
         if let Some(mcp) = self.mcp_info {
@@ -627,6 +660,31 @@ mod tests {
             buf.cell((cell_x, 0)).unwrap().fg,
             Color::Cyan,
             "bg pill must render in cyan (in-flight palette)"
+        );
+    }
+
+    /// Vim segment is hidden when the textarea reports `None`
+    /// (vim editing disabled). PR 3 of #1178.
+    #[test]
+    fn vim_segment_hidden_when_label_is_none() {
+        let bar = StatusBar::new("gpt-4", "safe", 50).with_vim_label(None);
+        let out = render_bar(bar, 200);
+        assert!(
+            !out.contains("VIM"),
+            "vim segment must not render when label is None: {out}"
+        );
+    }
+
+    /// Vim segment renders the label when set. Covers the
+    /// `with_vim_label(Some(...))` happy path used by `tui_viewport`
+    /// when the textarea is in a vim mode.
+    #[test]
+    fn vim_segment_renders_label_when_some() {
+        let bar = StatusBar::new("gpt-4", "safe", 50).with_vim_label(Some("NORMAL"));
+        let out = render_bar(bar, 200);
+        assert!(
+            out.contains("VIM:NORMAL"),
+            "vim pill must render label: {out}"
         );
     }
 }

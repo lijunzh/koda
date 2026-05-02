@@ -51,10 +51,6 @@ pub(crate) struct TuiContext {
     // ── UI state ────────────────────────────────────────────
     pub terminal: Term,
     pub textarea: TextArea,
-    /// Resolved keymap (defaults for now; user-config layer is a follow-up).
-    /// Threaded into input handlers so the textarea's `input_with_keymap` can
-    /// consult `editor` bindings instead of hard-coding key matches inline.
-    pub keymap: RuntimeKeymap,
     pub renderer: TuiRenderer,
     pub scroll_buffer: ScrollBuffer,
     pub crossterm_events: EventStream,
@@ -251,9 +247,15 @@ impl TuiContext {
         // the textarea in `tui_viewport::draw_viewport` so we don't depend on
         // ratatui-textarea's placeholder feature (codex doesn't have an
         // equivalent at the textarea level).
+        //
+        // Keymap (PR 3): construct defaults and hand them to the textarea so
+        // its internal `input(key)` dispatcher routes to the editor / vim /
+        // vim-operator handlers correctly. The textarea owns its own clone of
+        // the keymap from this point on; TuiContext does not need to keep a
+        // copy. Future PRs that need the keymap (e.g. the key-hint footer)
+        // can either ask the textarea for it or rebuild defaults on the fly.
         let mut textarea = TextArea::new();
-        let keymap = RuntimeKeymap::defaults();
-        textarea.set_keymap_bindings(&keymap);
+        textarea.set_keymap_bindings(&RuntimeKeymap::defaults());
 
         let mut renderer = TuiRenderer::new();
         renderer.model = config.model.clone();
@@ -334,7 +336,6 @@ impl TuiContext {
         Ok(Self {
             terminal,
             textarea,
-            keymap,
             renderer,
             scroll_buffer: {
                 let mut buf = ScrollBuffer::new(2500);
@@ -567,6 +568,26 @@ impl TuiContext {
     }
 
     async fn dispatch_slash(&mut self, input: &str) -> CommandOutcome {
+        if input.trim() == "/vim" {
+            // Toggle vim-mode editing on the textarea (PR 3 of #1178).
+            // The textarea owns the mode flag; we just flip it and emit
+            // a confirmation line so the user sees the change in scrollback.
+            // The status-bar `VIM:NORMAL` / `VIM:INSERT` pill (rendered in
+            // `tui_viewport::draw_viewport`) reflects the current mode on
+            // the next frame.
+            let now_on = !self.textarea.is_vim_enabled();
+            self.textarea.set_vim_enabled(now_on);
+            let msg = if now_on {
+                "\u{1f43b} Vim mode: ON \u{2014} Esc \u{2192} NORMAL, i/a/o \u{2192} INSERT."
+            } else {
+                "\u{1f43b} Vim mode: OFF."
+            };
+            self.scroll_buffer.push(Line::from(Span::styled(
+                msg,
+                Style::default().fg(Color::Cyan),
+            )));
+            return CommandOutcome::Handled;
+        }
         if input.trim() == "/model" {
             self.open_model_picker().await;
             return CommandOutcome::Handled;

@@ -59,6 +59,7 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ("/skills", "List available skills (search with query)", None),
     ("/undo", "Undo last turn's file changes", None),
     ("/verbose", "Toggle full tool output", None),
+    ("/vim", "Toggle vim-mode editing in the input", None),
 ];
 
 /// Unified Tab-completion for slash commands and @file paths.
