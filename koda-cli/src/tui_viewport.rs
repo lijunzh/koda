@@ -161,7 +161,23 @@ pub(crate) fn draw_viewport(
         frame.render_widget(placeholder, text_area);
         // Still render the textarea on top so the cursor is drawn.
     }
-    frame.render_widget(textarea, text_area);
+    // PR 6 of #1178: when the active wizard asked for masked input (API
+    // key entry today; future password / token flows tomorrow), use
+    // `render_ref_masked` so glyphs display as `*`. The buffer underneath
+    // is unchanged — read-back via `textarea.text()` still yields the
+    // cleartext secret for the wizard handler to persist.
+    if let PromptMode::WizardInput { mask: true, .. } = prompt_mode {
+        let mut state = crate::composer::textarea::TextAreaState::default();
+        textarea.render_ref_masked(
+            text_area,
+            frame.buffer_mut(),
+            &mut state,
+            '*',
+            Style::default(),
+        );
+    } else {
+        frame.render_widget(textarea, text_area);
+    }
 
     // ── Bottom row: key hint footer (PR 4 of #1178) ────────────────────
     // Replaces the previous flat "───" separator with a single dim row

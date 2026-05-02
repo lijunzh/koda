@@ -547,6 +547,7 @@ async fn handle_inference_key_inline(
             KeyCode::Char('f') | KeyCode::Char('F') => {
                 *prompt_mode = PromptMode::WizardInput {
                     label: "Feedback".into(),
+                    mask: false,
                 };
                 *menu = MenuContent::WizardTrail(vec![(
                     "Action".into(),
@@ -804,6 +805,7 @@ fn handle_inference_ui_inline(
         }) => {
             *prompt_mode = PromptMode::WizardInput {
                 label: "Answer".into(),
+                mask: false,
             };
             *menu = MenuContent::AskUser {
                 id,

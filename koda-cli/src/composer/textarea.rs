@@ -88,7 +88,10 @@
 // `vim_mode_label`, `should_handle_vim_insert_escape`) via the `/vim` slash
 // command + status-bar pill + Esc routing. PR 5 wired up named elements
 // (`insert_element`, element-aware rendering, atomic backspace) via the
-// @-mention completion path in `tui_context::events::handle_key`.
+// @-mention completion path in `tui_context::events::handle_key`. PR 6
+// wired up masked render (`render_ref_masked` + `TextAreaState`) via the
+// `PromptMode::WizardInput { mask: true }` branch in `tui_viewport.rs`,
+// used by the API-key entry wizard.
 //
 // Still unused (will go away as each follow-up PR wires them up):
 //   - paste-burst integration glue (PR 3 scope was deferred — mac/linux dev
@@ -98,7 +101,8 @@
 //     because koda's @-mention flow doesn't need stable IDs for later
 //     replacement (cycling Tab clears + reinserts via
 //     `set_text_clearing_elements`)
-//   - masked / highlighted render paths — PR 6 scope
+//   - render_ref_styled / render_ref_styled_with_highlights — future
+//     syntax-highlighted composer scope (PR 7+)
 //   - several vim_normal_keymap fields (operator-pending edge cases not yet
 //     exercised by `input(key)` dispatch in koda's call sites)
 #![allow(dead_code)]
@@ -3519,5 +3523,62 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── PR 6 of #1178: masked render path ────────────────────────────
+    //
+    // `render_ref_masked` is the display-layer protection for API key
+    // entry. The buffer underneath stays cleartext (the wizard handler
+    // reads it via `text()`); only the rendered glyphs change. These
+    // tests pin both halves of that contract.
+
+    #[test]
+    fn render_ref_masked_replaces_all_visible_chars_with_mask_glyph() {
+        let t = ta_with("sk-secret-api-key-12345");
+        let area = Rect::new(0, 0, 30, 1);
+        let mut state = TextAreaState::default();
+        let mut buf = Buffer::empty(area);
+        t.render_ref_masked(area, &mut buf, &mut state, '*', Style::default());
+
+        // First 23 cells (the secret length) must all be `*`. Cells
+        // beyond the text length stay blank — we only care that NONE
+        // of the original cleartext leaked.
+        let secret_len = "sk-secret-api-key-12345".len();
+        for x in 0..secret_len as u16 {
+            let ch = buf[(area.x + x, area.y)].symbol();
+            assert_eq!(
+                ch, "*",
+                "position {x} leaked the cleartext (got {ch:?}, expected `*`)"
+            );
+        }
+        // Sanity: nothing in the rendered area equals any plaintext char.
+        for x in 0..area.width {
+            let ch = buf[(area.x + x, area.y)].symbol();
+            assert!(
+                ch == "*" || ch == " " || ch.is_empty(),
+                "unexpected glyph {ch:?} at x={x}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_ref_masked_does_not_mutate_underlying_text() {
+        let mut t = ta_with("sk-very-secret");
+        let area = Rect::new(0, 0, 30, 1);
+        let mut state = TextAreaState::default();
+        let mut buf = Buffer::empty(area);
+        t.render_ref_masked(area, &mut buf, &mut state, '*', Style::default());
+        assert_eq!(
+            t.text(),
+            "sk-very-secret",
+            "masked render is display-only; the wizard handler must still\n             read back the cleartext via text()"
+        );
+        // The element list is also untouched (no element is created or
+        // dropped by the render pass).
+        assert!(t.text_elements().is_empty());
+        // And we can still mutate after a masked render — the textarea
+        // remains a fully-functional editable buffer.
+        t.insert_str("-extra");
+        assert_eq!(t.text(), "sk-very-secret-extra");
     }
 }

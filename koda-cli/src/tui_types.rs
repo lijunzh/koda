@@ -114,7 +114,14 @@ pub(crate) enum PromptMode {
     /// Normal chat input: ⚡> █
     Chat,
     /// Wizard text input: label: █
-    WizardInput { label: String },
+    ///
+    /// `mask: true` swaps the textarea render path to
+    /// `render_ref_masked` so the user's keystrokes display as `*` —
+    /// used for API key entry (PR 6 of #1178). The underlying buffer is
+    /// still cleartext (the wizard handler reads it via `textarea.text()`),
+    /// so this is purely a display-layer protection against shoulder-
+    /// surfing / screen recording, not a memory-safety feature.
+    WizardInput { label: String, mask: bool },
 }
 
 /// Provider setup wizard state machine.
