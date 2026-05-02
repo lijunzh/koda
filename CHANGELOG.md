@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Internal — codex textarea port foundation (#1116, #1175, #1178)
+
+Foundation work for swapping `ratatui-textarea` (third-party, MIT) for a
+port of codex's `bottom_pane::textarea` module. **No user-visible change
+in this release** — the new module is wired into the build but no koda
+call site consumes it yet (PR 2 of the staged epic does that swap).
+
+- New `koda-cli/src/composer/` module tree at codex SHA
+  `d55479488e125ef7a0a8584505d839a22eaf6204`:
+  - `key_hint.rs` (verbatim vendor, 285 LoC, 9 tests)
+  - `paste_burst.rs` (verbatim vendor, ~430 LoC, 5 tests)
+  - `text_element.rs` (reduced port, ~155 LoC, 4 tests)
+  - `wrapping.rs` (reduced port, 145 LoC)
+  - `keymap.rs` (koda-OWNED policy layer, ~510 LoC, 4 tests)
+  - `textarea.rs` (verbatim vendor with adaptations, 3,503 LoC, 53 tests)
+- Test gain: +75 tests in the composer suite (cumulative across stages),
+  including +18 vim-mode coverage from the HEAD-aligned re-port.
+- Quality gate: full koda-cli lib suite at **572/572 passing**, full
+  workspace at **2,031/2,031 passing**, zero regressions.
+- Provenance: see file headers for SHA anchor + adaptation lists.
+  Future codex syncs are 3-way merges with d55479 as the upstream base.
+
 ## [0.2.26] - 2026-04-29
 
 The RFC #1167 release. `/export` is gone; `/debug-bundle` takes its
