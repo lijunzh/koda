@@ -45,20 +45,12 @@ pub fn build_banner_lines(
             Span::raw("  "),
             Span::styled(cwd.to_string(), DIM),
         ]),
-        // Syntax tips only — keybindings live in the persistent footer
-        // and the `?`-toggled shortcuts overlay (#1194 / #1195). Field
-        // study (codex / claude-code / gemini-cli) confirmed none of
-        // them put keybindings in the welcome banner; gemini's `Tips`
-        // component is the closest analog and shows conceptual tips,
-        // not chord lists.
-        Line::from(vec![
-            Span::styled("  /", WARM_ACCENT),
-            Span::styled("commands", DIM),
-            Span::styled("  @", WARM_ACCENT),
-            Span::styled("file", DIM),
-            Span::styled("  ?", WARM_ACCENT),
-            Span::styled(" shortcuts", DIM),
-        ]),
+        // Syntax tips line removed (#1194 follow-up): the persistent
+        // footer's `? for shortcuts` hint + the `?`-toggled overlay
+        // (see `widgets::shortcuts_overlay`) are now the single source
+        // of truth for keybinding & syntax discovery. `/` and `@`
+        // remain self-discoverable through the act of typing them —
+        // they pop their respective menus on first keystroke.
         Line::default(),
     ]
 }
@@ -283,7 +275,12 @@ mod tests {
     #[test]
     fn banner_is_compact() {
         let lines = build_banner_lines("gpt-4o", "openai", "~/repo", &[]);
-        // 3 bear lines + blank top + tips + blank bottom = 6
-        assert_eq!(lines.len(), 6);
+        // Blank top + 3 bear lines + blank trailing line = 5. The
+        // syntax-tips line (`/commands @file ? shortcuts`) was removed
+        // in #1194/#1195 follow-up because the persistent footer's
+        // `? for shortcuts` hint + the `?`-toggled overlay now cover
+        // keybinding & syntax discovery; `/` and `@` are
+        // self-discoverable through typing.
+        assert_eq!(lines.len(), 5);
     }
 }
