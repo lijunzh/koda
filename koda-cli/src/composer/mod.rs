@@ -18,9 +18,11 @@
 //!
 //! See #1116 for the full plan.
 
+pub mod history_nav;
 pub mod key_hint;
 pub mod keymap;
 pub mod paste_burst;
+pub mod slash_popup;
 pub mod text_element;
 pub mod textarea;
 pub mod wrapping;

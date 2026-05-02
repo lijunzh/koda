@@ -11,5 +11,4 @@ pub mod model_menu;
 pub mod provider_menu;
 pub mod queue_preview;
 pub mod session_menu;
-pub mod slash_menu;
 pub mod status_bar;
