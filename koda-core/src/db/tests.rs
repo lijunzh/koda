@@ -1921,3 +1921,237 @@ async fn session_events_empty_when_none_inserted() {
     let events = db.load_session_events(&session).await.unwrap();
     assert!(events.is_empty(), "fresh session must have no events");
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// (#1166) Per-session context cache correctness.
+//
+// The cache lives in `db/context_cache.rs`. These tests verify that
+// every mutation path which can affect what `load_context` returns is
+// correctly observed by subsequent `load_context` calls. Each test
+// covers one cache invariant from the module-level docs.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Cache HIT with no new inserts must return byte-identical data to the
+/// uncached path. Sanity floor: the cache must not change semantics.
+#[tokio::test]
+async fn ctx_cache_hit_returns_same_data_as_full_load() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+    db.insert_message(&session, &Role::User, Some("hi"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &session, Some("hello"), None).await;
+
+    let first = db.load_context(&session).await.unwrap();
+    let second = db.load_context(&session).await.unwrap(); // cache hit
+    assert_eq!(first.len(), second.len());
+    for (a, b) in first.iter().zip(second.iter()) {
+        assert_eq!(a.id, b.id);
+        assert_eq!(a.content, b.content);
+        assert_eq!(a.role, b.role);
+    }
+}
+
+/// Cache HIT + new tool-result row → delta-fetch must surface the new
+/// row in the next `load_context` call.
+#[tokio::test]
+async fn ctx_cache_delta_picks_up_new_tool_results() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+    db.insert_message(&session, &Role::User, Some("read foo"), None, None, None)
+        .await
+        .unwrap();
+    let tc_json = r#"[{"id":"tc_1","function_name":"Read","arguments":"{}"}]"#;
+    insert_complete_assistant(&db, &session, None, Some(tc_json)).await;
+
+    // Prime the cache.
+    let before = db.load_context(&session).await.unwrap();
+    // The assistant has a tool_call with no matching tool result, so
+    // `prune_mismatched_tool_calls` strips it. Pre-tool: just the user.
+    assert_eq!(before.len(), 1);
+
+    // Append a tool result. This is the inference loop's hot path.
+    db.insert_message(
+        &session,
+        &Role::Tool,
+        Some("file contents"),
+        None,
+        Some("tc_1"),
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Now the assistant's tool_call has a match — both the assistant
+    // AND the tool row are valid. Delta-fetch picks them up; sanitization
+    // re-runs on the merged vec and stops pruning the assistant.
+    let after = db.load_context(&session).await.unwrap();
+    assert_eq!(after.len(), 3);
+    assert_eq!(after[0].role, Role::User);
+    assert_eq!(after[1].role, Role::Assistant);
+    assert_eq!(after[2].role, Role::Tool);
+    assert_eq!(after[2].content.as_deref(), Some("file contents"));
+}
+
+/// An assistant row inserted as incomplete is filtered out of
+/// `load_context` until `mark_message_complete` runs. The next
+/// `load_context` call must surface the now-complete row via the delta
+/// query (id > max_id_returned), since incomplete rows do NOT
+/// contribute to `max_id_returned`.
+#[tokio::test]
+async fn ctx_cache_delta_picks_up_newly_completed_assistant() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+    db.insert_message(&session, &Role::User, Some("hi"), None, None, None)
+        .await
+        .unwrap();
+    // Insert assistant WITHOUT marking complete (mid-stream state).
+    let asst_id = db
+        .insert_message(
+            &session,
+            &Role::Assistant,
+            Some("partial"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // First load: filters out the incomplete assistant. Cache snapshot
+    // captures only the user row.
+    let first = db.load_context(&session).await.unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].role, Role::User);
+
+    // Stream completes.
+    db.mark_message_complete(asst_id).await.unwrap();
+
+    // Second load: delta query (id > user_row.id) re-evaluates the
+    // assistant — it now passes the filter and is appended.
+    let second = db.load_context(&session).await.unwrap();
+    assert_eq!(second.len(), 2);
+    assert_eq!(second[1].role, Role::Assistant);
+    assert_eq!(second[1].content.as_deref(), Some("partial"));
+}
+
+/// `compact_session` sets `compacted_at` on existing rows — a
+/// retroactive filter change that the cached message vector cannot
+/// observe via delta-fetch. The compaction-gen bump must force a full
+/// reload on the next `load_context`.
+#[tokio::test]
+async fn ctx_cache_compaction_forces_full_reload() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+    // Pad enough rows to give compact_session something to archive.
+    for i in 0..10 {
+        db.insert_message(
+            &session,
+            &Role::User,
+            Some(&format!("msg {i}")),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    let before = db.load_context(&session).await.unwrap();
+    assert_eq!(before.len(), 10);
+
+    // Archive the first 7, keeping the tail of 3. `compact_session`
+    // inserts TWO synthetic rows (summary + continuation hint) AFTER
+    // the kept tail — since rows are ordered by id ASC and the new
+    // rows get the highest ids. Post-compaction load returns 5 rows:
+    // [3 tail user rows, system summary, assistant continuation].
+    let archived = db.compact_session(&session, "summary", 3).await.unwrap();
+    assert_eq!(archived, 7);
+
+    let after = db.load_context(&session).await.unwrap();
+    assert_eq!(after.len(), 5);
+    // Tail of original messages preserved (oldest of these is "msg 7").
+    assert_eq!(after[0].role, Role::User);
+    assert_eq!(after[0].content.as_deref(), Some("msg 7"));
+    // Synthetic summary + continuation appended.
+    assert_eq!(after[3].role, Role::System);
+    assert_eq!(after[3].content.as_deref(), Some("summary"));
+    assert_eq!(after[4].role, Role::Assistant);
+}
+
+/// Microcompact rewrites tool-result content in place via
+/// `clear_message_content`. The cached snapshot holds the pre-clear
+/// content, so the gen bump in `clear_message_content` must invalidate
+/// it.
+#[tokio::test]
+async fn ctx_cache_clear_message_content_forces_full_reload() {
+    let (db, _tmp) = setup().await;
+    let session = db.create_session("default", _tmp.path()).await.unwrap();
+    let tc_json = r#"[{"id":"tc_1","function_name":"Read","arguments":"{}"}]"#;
+    insert_complete_assistant(&db, &session, None, Some(tc_json)).await;
+    let tool_id = db
+        .insert_message(
+            &session,
+            &Role::Tool,
+            Some("LARGE original content"),
+            None,
+            Some("tc_1"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Prime cache with original content.
+    let before = db.load_context(&session).await.unwrap();
+    assert_eq!(
+        before
+            .iter()
+            .find(|m| m.id == tool_id)
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("LARGE original content")
+    );
+
+    // Microcompact stub-rewrite.
+    db.clear_message_content(&[tool_id], "[cleared]")
+        .await
+        .unwrap();
+
+    // Without invalidation, this would return stale content.
+    let after = db.load_context(&session).await.unwrap();
+    assert_eq!(
+        after
+            .iter()
+            .find(|m| m.id == tool_id)
+            .unwrap()
+            .content
+            .as_deref(),
+        Some("[cleared]")
+    );
+}
+
+/// `delete_session` invalidates only the deleted session's cache entry;
+/// other sessions' caches are untouched.
+#[tokio::test]
+async fn ctx_cache_delete_session_invalidates_only_target() {
+    let (db, _tmp) = setup().await;
+    let s1 = db.create_session("default", _tmp.path()).await.unwrap();
+    let s2 = db.create_session("default", _tmp.path()).await.unwrap();
+    db.insert_message(&s1, &Role::User, Some("from s1"), None, None, None)
+        .await
+        .unwrap();
+    db.insert_message(&s2, &Role::User, Some("from s2"), None, None, None)
+        .await
+        .unwrap();
+
+    // Prime both caches.
+    assert_eq!(db.load_context(&s1).await.unwrap().len(), 1);
+    assert_eq!(db.load_context(&s2).await.unwrap().len(), 1);
+
+    db.delete_session(&s1).await.unwrap();
+
+    // s1's session is gone; load returns empty (no cache poisoning).
+    assert_eq!(db.load_context(&s1).await.unwrap().len(), 0);
+    // s2 still works.
+    assert_eq!(db.load_context(&s2).await.unwrap().len(), 1);
+}

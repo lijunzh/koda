@@ -23,9 +23,12 @@
 //! - **mod.rs** — `Database` struct, init/open, schema migrations, row types
 //! - **queries.rs** — `Persistence` trait implementation (all SQL queries)
 
+mod context_cache;
 pub mod queries;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use context_cache::{ContextCache, ContextCacheEntry};
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
@@ -38,15 +41,23 @@ pub use crate::persistence::{
 };
 
 /// Wrapper around the SQLite connection pool.
-#[derive(Debug, Clone)]
-/// Wrapper around the SQLite connection pool.
 ///
 /// `Clone` is cheap — `SqlitePool` is internally `Arc`-shared, so a
 /// clone bumps a refcount, not a real connection. This matters for
 /// [`crate::engine::sink::PersistingSink`], which needs an owned
 /// handle to spawn fire-and-forget DB writes from sink emissions.
+///
+/// `context_cache` and `compaction_gen` are shared via `Arc` so cloned
+/// handles observe the same per-session cache state
+/// (#1166 audit item A).
+#[derive(Debug, Clone)]
 pub struct Database {
     pub(crate) pool: SqlitePool,
+    /// Per-session sanitized-context cache. See `context_cache` module.
+    pub(crate) context_cache: std::sync::Arc<ContextCache>,
+    /// Monotonic counter bumped on every `compact_session` call.
+    /// Snapshot mismatch invalidates a `ContextCacheEntry`.
+    pub(crate) compaction_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Get the koda config directory (~/.config/koda/).
@@ -85,6 +96,17 @@ impl Database {
     /// Access the underlying connection pool (for tests and raw queries).
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Drop the cached `load_context` snapshot for `session_id`, if any.
+    ///
+    /// (#1166) Production code never needs to call this — the cache
+    /// invalidates itself on compaction and session deletion. Tests
+    /// that mutate the `messages` table out-of-band (e.g. raw SQL,
+    /// retroactive completion) can call this to ensure the next
+    /// `load_context` does a full reload.
+    pub fn clear_context_cache_for(&self, session_id: &str) {
+        self.context_cache.invalidate(session_id);
     }
 
     /// Initialize the database, run migrations, and enable WAL mode.
@@ -133,7 +155,11 @@ impl Database {
 
         // Run schema migrations
         Self::migrate(&pool).await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            context_cache: std::sync::Arc::new(ContextCache::new()),
+            compaction_gen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        })
     }
 
     /// Apply the schema (idempotent).

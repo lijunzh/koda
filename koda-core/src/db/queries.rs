@@ -413,6 +413,11 @@ impl Persistence for Database {
             .bind(message_id)
             .execute(&self.pool)
             .await?;
+        // (#1166) Retroactive content mutation — bump gen so any cached
+        // load_context snapshot containing this row's pre-update content
+        // is forced to do a full reload.
+        self.compaction_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
@@ -429,28 +434,92 @@ impl Persistence for Database {
     ///   to the latest write (#1159 — background sub-agent completion
     ///   updates the original `InvokeAgent` tool_result via append).
     async fn load_context(&self, session_id: &str) -> Result<Vec<Message>> {
-        let mut messages: Vec<Message> = sqlx::query_as::<_, MessageRow>(
-            "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
-                    prompt_tokens, completion_tokens,
-                    cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content,
-                    created_at
-             FROM messages
-             WHERE session_id = ? AND compacted_at IS NULL
-               AND (role != 'assistant' OR completed_at IS NOT NULL)
-             ORDER BY id ASC",
-        )
-        .bind(session_id)
-        .fetch_all(&self.pool)
-        .await?
-        .into_iter()
-        .map(|r| r.into())
-        .collect();
+        // (#1166 audit item A) Per-session delta-fetch cache.
+        //
+        // Fast path:
+        //   - Snapshot cache + current compaction_gen.
+        //   - If gen matches: SELECT only `id > max_id_returned` (delta).
+        //     Append to cached messages, re-run sanitization, return.
+        //   - Else: full reload (compaction is the only retroactive
+        //     mutation against rows we may have cached).
+        //
+        // Cost vs. pre-cache:
+        //   - Cache hit, k new rows: ~k SQL row deserializations + O(N)
+        //     sanitization. SQL+deser was 93–96% of the cost at N=1000
+        //     in the bench; this drops to O(k) for the SQL phase.
+        //   - Cache miss / compaction: identical cost to today.
+        //   - Concurrent callers: idempotent (last writer wins on the
+        //     `store`); both compute the same merged result.
+        let current_gen = self
+            .compaction_gen
+            .load(std::sync::atomic::Ordering::Acquire);
+        let snapshot = self.context_cache.snapshot(session_id);
+
+        let (mut messages, full_reload) = match &snapshot {
+            Some(entry) if entry.compaction_gen_snapshot == current_gen => {
+                // Cache hit + no compaction since: delta-fetch.
+                let after_id = entry.max_id_returned.unwrap_or(0);
+                let new_rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
+                    "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
+                            prompt_tokens, completion_tokens,
+                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content,
+                            created_at
+                     FROM messages
+                     WHERE session_id = ? AND id > ? AND compacted_at IS NULL
+                       AND (role != 'assistant' OR completed_at IS NOT NULL)
+                     ORDER BY id ASC",
+                )
+                .bind(session_id)
+                .bind(after_id)
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .map(|r| r.into())
+                .collect();
+
+                let mut merged = entry.messages.clone();
+                merged.extend(new_rows);
+                (merged, false)
+            }
+            _ => {
+                // Cache miss or compaction-induced invalidation: full reload.
+                let rows: Vec<Message> = sqlx::query_as::<_, MessageRow>(
+                    "SELECT id, session_id, role, content, full_content, tool_calls, tool_call_id,
+                            prompt_tokens, completion_tokens,
+                            cache_read_tokens, cache_creation_tokens, thinking_tokens, thinking_content,
+                            created_at
+                     FROM messages
+                     WHERE session_id = ? AND compacted_at IS NULL
+                       AND (role != 'assistant' OR completed_at IS NOT NULL)
+                     ORDER BY id ASC",
+                )
+                .bind(session_id)
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .map(|r| r.into())
+                .collect();
+                (rows, true)
+            }
+        };
+        let _ = full_reload; // currently unused; kept for future tracing/metrics
 
         // Sanitisation passes: run in order, each sees the output of the previous.
         prune_mismatched_tool_calls(&mut messages); // (#428)
         prune_null_content_messages(&mut messages); // (#594)
         prune_whitespace_only_messages(&mut messages); // (#594)
         dedupe_tool_results_by_call_id(&mut messages); // (#1159)
+
+        // Cache the freshly-sanitized snapshot.
+        let max_id_returned = messages.iter().map(|m| m.id).max();
+        self.context_cache.store(
+            session_id,
+            crate::db::ContextCacheEntry {
+                messages: messages.clone(),
+                max_id_returned,
+                compaction_gen_snapshot: current_gen,
+            },
+        );
 
         Ok(messages)
     }
@@ -633,6 +702,12 @@ impl Persistence for Database {
             .execute(&self.pool)
             .await?;
 
+        // (#1166) Drop any cached context for this session so a future
+        // `load_context` call doesn't return stale data if the same
+        // session_id were ever to be re-created (defensive; sessions
+        // ids are UUIDs so collision is improbable).
+        self.context_cache.invalidate(session_id);
+
         Ok(result.rows_affected() > 0)
     }
 
@@ -754,6 +829,21 @@ impl Persistence for Database {
 
         tx.commit().await?;
 
+        // (#1166) Bump the global compaction generation: any cached
+        // context entry whose snapshot predates this bump must do a
+        // full reload on next `load_context`. Compaction is the only
+        // mutation that retroactively changes the row set
+        // (sets `compacted_at` on existing rows), so this is the only
+        // path that needs to invalidate cached merges.
+        //
+        // We bump after `commit` (not before) so that any concurrent
+        // `load_context` call still sees the pre-compaction state
+        // consistently — either it caches with the old gen and gets
+        // invalidated next call, or it caches with the new gen and
+        // re-fetches the post-compaction set. Idempotent either way.
+        self.compaction_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+
         Ok(archived_count)
     }
 
@@ -785,6 +875,11 @@ impl Persistence for Database {
             }
             query.execute(&self.pool).await?;
         }
+        // (#1166) Microcompact path: rewrites tool-result content in
+        // place. Bump gen to invalidate any cached snapshot that holds
+        // the pre-clear content.
+        self.compaction_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
