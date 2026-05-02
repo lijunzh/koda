@@ -41,3 +41,34 @@ These keys appear when the agent asks to execute a tool:
 | `a` | Approve and switch to auto mode (no more confirmations this session) |
 | `f` | Reject and type written feedback explaining why |
 | `Esc` | Reject (same as `n`) |
+
+## Vim mode
+
+Toggle with [`/vim`](./commands.md#vim). Once enabled, the input
+composer behaves like a single-buffer vi.
+
+**Modes:** Insert (default after toggle) ↔ Normal (`Esc`).
+
+| Mode | Keys | Action |
+|------|------|--------|
+| Normal | `i`, `a`, `o`, `O`, `I`, `A` | Re-enter Insert at various positions |
+| Normal | `h j k l` | Move cursor left/down/up/right |
+| Normal | `w`, `b`, `e` | Word forward / back / end-of-word |
+| Normal | `0`, `^`, `$` | Beginning of line / first non-blank / end of line |
+| Normal | `gg`, `G` | Jump to first / last line |
+| Normal | `x`, `dd`, `yy`, `p`, `P` | Delete char / line · yank line · paste after / before |
+| Normal | `cc`, `ci<delim>`, `ca<delim>` | Change line / inside / around delimiter |
+| Normal | `dw`, `db`, `de`, `d$`, `d0` | Delete by motion |
+| Normal | `u`, `Ctrl+R` | Undo · Redo |
+| Normal | `:` | (Reserved — no commands wired yet) |
+
+**Caveat:** Vim mode is per-session and the slash command toggles it
+on/off; it does not persist across koda restarts. The setting also does
+not affect Approval-prompt keys above (those remain `y`/`n`/`a`/`f`/`Esc`).
+
+## Composer key hints
+
+A single-line footer below the input shows context-sensitive key hints
+(e.g. `Enter send · Alt+Enter newline · Tab complete`). The hints update
+based on whether the input is empty, has content, has an active dropdown,
+or is in vim mode. Added in v0.2.27 (#1183).
