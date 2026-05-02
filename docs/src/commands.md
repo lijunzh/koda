@@ -44,6 +44,12 @@ Opens the API key manager. Select a provider, then type or paste your key.
 Keys are stored in the local SQLite keystore (file mode 0600) and injected
 as environment variables at every startup.
 
+As of v0.2.27 (#1185), the input is rendered with each character masked
+as `•` while you type, so a peer glancing at your terminal won't see the
+key itself — useful for screen-sharing or pair-coding sessions. The
+composer still tracks the real characters under the hood; backspace and
+paste behave normally.
+
 Shell env vars always win over stored keys — so `export ANTHROPIC_API_KEY=…`
 in your shell or `.envrc` is always a clean override.
 
@@ -318,6 +324,20 @@ during streaming. Verbose mode shows every line in real time.
 /verbose on   ← enable explicitly
 /verbose off  ← disable explicitly
 ```
+
+## `/vim`
+
+Toggles vim-mode editing in the input composer. When enabled, the
+composer behaves like a single-buffer vi: `Esc` enters Normal mode,
+`i`/`a`/`o` re-enter Insert mode, and the usual `h j k l`, `w b e`,
+`0 $`, `gg G`, `dd yy p`, `x`, `cc`, `ci<delim>`, `ca<delim>`, etc.
+bindings are honored. Useful when you're already living in vim and
+want the same muscle memory in koda's chat input.
+
+Added in v0.2.27 (#1182). The setting is per-session only; relaunching
+koda starts back in plain insert mode.
+
+See also: [Keybindings → Vim mode](./keybindings.md#vim-mode).
 
 ## `/exit`
 

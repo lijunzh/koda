@@ -6,15 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.2.27] - 2026-04-29
+
+**The composer-port release.** v0.2.27 lands the full 6-PR codex `bottom_pane::textarea` epic (#1116, #1175, #1178) — koda now owns its input composer end-to-end, the `ratatui-textarea` third-party dep is gone, and four user-visible features ride along: vim mode, the key-hint footer, atomic `@`-mention deletion, and masked rendering for API key entry. Two non-composer wins also ship: alt-screen mouse-mode cleanup is hardened against signal exits (#1177) and the CI bubblewrap install is no longer flaky on Azure-mirror outages (#1180).
+
+### Added
+
+- **`/vim` slash command** toggles vim-mode editing in the input composer (#1182, PR 3 of #1178). Insert ↔ Normal modes with `Esc`/`i`, full motion set (`h j k l`, `w b e`, `0 $`, `gg G`), edit primitives (`x dd yy p`, `dw db de`, `cc ci<delim> ca<delim>`), and undo/redo. Per-session toggle; documented in [docs/src/keybindings.md → Vim mode](https://github.com/lijunzh/koda/blob/main/docs/src/keybindings.md#vim-mode).
+- **Key-hint footer** below the input composer (#1183, PR 4 of #1178). A single-line context-sensitive footer shows the relevant bindings (e.g. `Enter send · Alt+Enter newline · Tab complete`), updating based on whether the input is empty, has content, has an active dropdown, or is in vim mode.
+- **Atomic `@`-mention named elements** in the composer (#1184, PR 5 of #1178). `@file.rs` now renders as a single cyan-styled element; `Backspace` deletes the whole `@mention` at once instead of character-by-character, matching codex's behavior.
+- **Masked rendering for API key entry** (#1185, PR 6 of #1178). The `/key` flow now renders each character as `•` while you type, so a peer glancing at your terminal during a screen-share won't see the key. Backspace and paste behave normally; the real characters are tracked under the hood.
+
+### Changed
+
+- **Input composer migrated from `ratatui-textarea` to the in-tree codex port.** `koda-cli/src/composer::TextArea` now backs the chat composer, the modal wizards (login, settings, sessions, etc.), and every other input surface. The `ratatui-textarea` v0.9 dependency is dropped from `koda-cli/Cargo.toml` and `Cargo.lock` (#1181, PR 2 of #1178). User-facing behavior is preserved; the swap unlocks the four features above.
+- **Alt-screen mouse-mode cleanup hardened against signal exits** (#1177). A `libc::atexit` hook now restores terminal mouse mode on `SIGTERM`, `SIGHUP`, and unexpected `std::process::exit()` paths, so the terminal no longer stays in mouse-capture mode after a non-graceful koda exit. Native click-and-drag text selection is also no longer broken during a healthy koda session (we now use scoped capture, not `EnableMouseCapture`). Resolves #1176.
+
+### Fixed
+
+- **CI bubblewrap install flakes against the Azure Ubuntu mirror are now retried** (#1180). The sandbox-test job no longer fails the entire build when `apt-get install bubblewrap` hits a transient mirror timeout.
+
 ### Internal — codex textarea port foundation (#1116, #1175, #1178)
 
 Foundation work for swapping `ratatui-textarea` (third-party, MIT) for a
-port of codex's `bottom_pane::textarea` module. **No user-visible change
-in this release** — the new module is wired into the build but no koda
-call site consumes it yet (PR 2 of the staged epic does that swap).
+port of codex's `bottom_pane::textarea` module. PR 1 of 6 in the staged
+epic; the user-visible swap and feature wins above are PRs 2-6.
 
 - New `koda-cli/src/composer/` module tree at codex SHA
-  `d55479488e125ef7a0a8584505d839a22eaf6204`:
+  `d55479488e125ef7a0a8584505d839a22eaf6204` (verified at parity with
+  codex HEAD `35aaa5d9fc` — zero diff across all six ported files):
   - `key_hint.rs` (verbatim vendor, 285 LoC, 9 tests)
   - `paste_burst.rs` (verbatim vendor, ~430 LoC, 5 tests)
   - `text_element.rs` (reduced port, ~155 LoC, 4 tests)
@@ -24,9 +44,17 @@ call site consumes it yet (PR 2 of the staged epic does that swap).
 - Test gain: +75 tests in the composer suite (cumulative across stages),
   including +18 vim-mode coverage from the HEAD-aligned re-port.
 - Quality gate: full koda-cli lib suite at **572/572 passing**, full
-  workspace at **2,031/2,031 passing**, zero regressions.
+  workspace at **2,349/2,349 passing**, zero regressions.
 - Provenance: see file headers for SHA anchor + adaptation lists.
-  Future codex syncs are 3-way merges with d55479 as the upstream base.
+  Future codex syncs are 3-way merges with `d55479488` as the upstream
+  base. Two follow-ups remain (filed as #1186 image paste wiring, #1187
+  composer module extraction).
+
+### Internal — release-time polish (#1174)
+
+- Knocked off 3 of 7 P3 items from the v0.2.25 audit bundle (#1169):
+  no user-visible change, just opportunistic cleanups landing in the
+  release-prep window per the koda-release skill's audit-dust rule.
 
 ## [0.2.26] - 2026-04-29
 
