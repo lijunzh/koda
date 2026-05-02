@@ -1,3 +1,10 @@
+// Foundation work for #1116/#1175. The vendored symbols below are wired into
+// the build but no koda call site consumes them yet — PR 2 of the staged
+// epic swaps chat_composer.rs from ratatui-textarea to composer::textarea
+// and brings the rest into use. The blanket allow goes away when consumers
+// land.
+#![allow(dead_code)]
+
 //! # Provenance
 //!
 //! Ported verbatim from `codex-rs/tui/src/key_hint.rs` at upstream
@@ -54,7 +61,6 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use ratatui::style::Style;
-use ratatui::style::Stylize;
 use ratatui::text::Span;
 
 #[cfg(test)]

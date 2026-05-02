@@ -1,3 +1,8 @@
+// Foundation work for #1116/#1175 — see the equivalent header note in
+// composer/key_hint.rs for the full rationale. The blanket allow goes away
+// when PR 2 wires up the consumers.
+#![allow(dead_code)]
+
 //! koda-owned keymap policy layer (#1178 stage 5c).
 //!
 //! # Status: koda-OWNED, not vendored
@@ -523,8 +528,14 @@ mod tests {
     /// `None` for empty.
     #[test]
     fn primary_binding_returns_first_or_none() {
-        let bindings = vec![key_hint::ctrl(KeyCode::Char('a')), key_hint::ctrl(KeyCode::Char('b'))];
-        assert_eq!(primary_binding(&bindings), Some(key_hint::ctrl(KeyCode::Char('a'))));
+        let bindings = vec![
+            key_hint::ctrl(KeyCode::Char('a')),
+            key_hint::ctrl(KeyCode::Char('b')),
+        ];
+        assert_eq!(
+            primary_binding(&bindings),
+            Some(key_hint::ctrl(KeyCode::Char('a')))
+        );
         assert_eq!(primary_binding(&[]), None);
     }
 }

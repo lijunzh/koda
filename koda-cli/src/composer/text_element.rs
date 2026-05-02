@@ -1,3 +1,8 @@
+// Foundation work for #1116/#1175 — see the equivalent header note in
+// composer/key_hint.rs for the full rationale. The blanket allow goes away
+// when PR 2 wires up the consumers.
+#![allow(dead_code)]
+
 //! Reduced port of codex's `codex-rs/protocol/src/user_input.rs`.
 //!
 //! ## Provenance
@@ -136,20 +141,14 @@ mod tests {
 
     #[test]
     fn text_element_explicit_placeholder_takes_precedence() {
-        let elem = TextElement::new(
-            ByteRange { start: 6, end: 11 },
-            Some("[image]".to_string()),
-        );
+        let elem = TextElement::new(ByteRange { start: 6, end: 11 }, Some("[image]".to_string()));
         let text = "Hello world";
         assert_eq!(elem.placeholder(text), Some("[image]"));
     }
 
     #[test]
     fn text_element_map_range_preserves_placeholder() {
-        let elem = TextElement::new(
-            ByteRange { start: 6, end: 11 },
-            Some("[img]".to_string()),
-        );
+        let elem = TextElement::new(ByteRange { start: 6, end: 11 }, Some("[img]".to_string()));
         let mapped = elem.map_range(|r| ByteRange {
             start: r.start + 10,
             end: r.end + 10,

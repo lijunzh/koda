@@ -1,3 +1,9 @@
+// Foundation work for #1116/#1175 — see the equivalent header note in
+// composer/key_hint.rs for the full rationale. The blanket allow goes away
+// when PR 2 wires up the consumers (the chat_composer.rs swap from
+// ratatui-textarea to composer::textarea + the popup widgets that orbit it).
+#![allow(dead_code)]
+
 //! # Provenance
 //!
 //! Ported from `codex-rs/tui/src/bottom_pane/textarea.rs` at upstream
@@ -3484,12 +3490,7 @@ mod tests {
 
                 // Stateful render should not panic, and updates scroll
                 let mut sbuf = Buffer::empty(area);
-                ratatui::widgets::StatefulWidget::render(
-                    &ta,
-                    area,
-                    &mut sbuf,
-                    &mut state,
-                );
+                ratatui::widgets::StatefulWidget::render(&ta, area, &mut sbuf, &mut state);
 
                 // After wrapping, desired height equals the number of lines we would render without scroll
                 let total_lines = total_lines as usize;
