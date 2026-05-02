@@ -231,7 +231,6 @@ impl TuiContext {
                             &mut self.prompt_mode,
                             &mut self.pending_approval_id,
                             &mut self.textarea,
-                            &self.keymap,
                             &self.shared_mode,
                             &mut self.completer,
                             &mut self.history,
@@ -445,7 +444,6 @@ async fn handle_crossterm_event_inline(
     prompt_mode: &mut PromptMode,
     pending_approval_id: &mut Option<String>,
     textarea: &mut crate::composer::textarea::TextArea,
-    keymap: &crate::composer::keymap::RuntimeKeymap,
     shared_mode: &koda_core::trust::SharedTrustMode,
     completer: &mut crate::completer::InputCompleter,
     history: &mut Vec<String>,
@@ -494,7 +492,6 @@ async fn handle_crossterm_event_inline(
                 prompt_mode,
                 pending_approval_id,
                 textarea,
-                keymap,
                 shared_mode,
                 completer,
                 history,
@@ -519,7 +516,6 @@ async fn handle_inference_key_inline(
     prompt_mode: &mut PromptMode,
     pending_approval_id: &mut Option<String>,
     textarea: &mut crate::composer::textarea::TextArea,
-    keymap: &crate::composer::keymap::RuntimeKeymap,
     shared_mode: &koda_core::trust::SharedTrustMode,
     completer: &mut crate::completer::InputCompleter,
     history: &mut Vec<String>,
@@ -527,6 +523,17 @@ async fn handle_inference_key_inline(
     later_queue: &mut std::collections::VecDeque<String>,
     db: &koda_core::db::Database,
 ) {
+    // Vim insert-mode Escape (PR 3 of #1178). Same rationale as in
+    // `tui_context::events::handle_key`: route bare Esc to the textarea
+    // for the INSERT → NORMAL transition before the inference-loop's
+    // "Esc cancels inference" handler grabs it. The textarea decides via
+    // `should_handle_vim_insert_escape` so this file does not need to
+    // know whether vim is enabled.
+    if textarea.should_handle_vim_insert_escape(key) {
+        textarea.input(key);
+        return;
+    }
+
     // Approval hotkeys
     if let MenuContent::Approval { id, .. } = menu {
         let approval_id = id.clone();
@@ -616,7 +623,7 @@ async fn handle_inference_key_inline(
                 }
             }
             _ => {
-                textarea.input_with_keymap(key, &keymap.editor);
+                textarea.input(key);
             }
         }
         return;
@@ -658,7 +665,7 @@ async fn handle_inference_key_inline(
                 }
             }
             _ => {
-                textarea.input_with_keymap(key, &keymap.editor);
+                textarea.input(key);
             }
         }
         return;
@@ -751,7 +758,7 @@ async fn handle_inference_key_inline(
                     ),
                 ]));
             } else {
-                textarea.input_with_keymap(key, &keymap.editor);
+                textarea.input(key);
             }
         }
         (KeyCode::Tab, KeyModifiers::NONE) => {
@@ -763,7 +770,7 @@ async fn handle_inference_key_inline(
         }
         _ => {
             completer.reset();
-            textarea.input_with_keymap(key, &keymap.editor);
+            textarea.input(key);
         }
     }
 }

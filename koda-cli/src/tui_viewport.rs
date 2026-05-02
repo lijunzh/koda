@@ -208,6 +208,10 @@ pub(crate) fn draw_viewport(
     if bg_agents > 0 || bg_processes > 0 {
         sb = sb.with_bg_counts(bg_agents, bg_processes);
     }
+    // Vim-mode pill (PR 3 of #1178). The textarea returns `None` when
+    // vim editing is disabled, which makes `with_vim_label` a no-op —
+    // non-vim users never see the segment.
+    sb = sb.with_vim_label(textarea.vim_mode_label());
     frame.render_widget(sb, status_row);
 
     // ── Menu overlay (below status bar) ───────────────
