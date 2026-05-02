@@ -2,7 +2,7 @@
 //! status bar. Surfaces the most-used keybindings so first-time users don't
 //! have to read docs to discover Tab-completion, Shift+Enter newlines, etc.
 //!
-//! # Why this exists (PR 4 of #1178)
+//! # Why this exists (PR 4 of #1178, refactored in #1194/#1195)
 //!
 //! Before this widget, the row below the input was a flat
 //! `─────────────────` separator — pure visual chrome with no information
@@ -11,6 +11,16 @@
 //! `lowercase+modifier` token (e.g. `ctrl+c`, `shift+enter`). This widget
 //! pairs each rendered key with a one-word verb and joins them with `·`
 //! separators, replacing the dead-space separator with discoverable hints.
+//!
+//! # Minimal vs full set (#1194 + #1195)
+//!
+//! Field study of codex / claude-code / gemini-cli converged on a
+//! "minimal default footer + on-demand expanded overlay" pattern: the
+//! persistent footer shows ONE hint (`? for shortcuts`), pressing `?`
+//! opens a multi-row [`crate::widgets::shortcuts_overlay`] with the full
+//! set. This module exposes [`KeyHints::minimal`] (the persistent
+//! footer); the full keybinding list lives in `shortcuts_overlay` so
+//! there's exactly one source of truth per surface.
 //!
 //! # Truncation behavior
 //!
@@ -31,7 +41,7 @@
 //!   user-keymap config, this widget should rebuild from that instead of
 //!   hard-coding the bindings.
 
-use crate::composer::key_hint::{KeyBinding, ctrl, plain, shift};
+use crate::composer::key_hint::{KeyBinding, plain};
 use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -57,31 +67,26 @@ impl Hint {
 
 /// Footer widget rendering an ordered list of [`Hint`]s on one row.
 ///
-/// Build with [`KeyHints::default_set`] for the standard koda set, or
-/// `KeyHints { items }` directly for tests / custom callers.
+/// Build with [`KeyHints::minimal`] for the persistent koda footer,
+/// or `KeyHints { items }` directly for tests / custom callers.
 pub struct KeyHints {
     items: Vec<Hint>,
 }
 
 impl KeyHints {
-    /// The standard koda hint set (6 items, ~85-100 visual columns).
+    /// The minimal hint shown in the persistent footer (#1194 / #1195).
+    /// A single `? for shortcuts` pair — user presses `?` (when the
+    /// composer is empty) to open the full
+    /// [`crate::widgets::shortcuts_overlay`].
     ///
-    /// Order is by priority — narrow terminals truncate from the right,
-    /// so the most-essential hints (`enter`, `shift+enter`) live first.
-    /// Bindings mirror `composer::keymap::EditorKeymap::defaults()` for
-    /// the textarea-internal items and koda's own dispatch for the rest
-    /// (`tab` → completer, `esc` → menu cancel, `↑↓` → history, `ctrl+c`
-    /// → quit).
-    pub fn default_set() -> Self {
+    /// Modelled on codex's `FooterMode::ComposerEmpty` left-side line
+    /// (`bottom_pane/footer.rs::SummaryHintKind::Shortcuts`) and
+    /// claude-code's `? for shortcuts` parts entry in
+    /// `PromptInputFooterLeftSide.tsx`. Both reference systems
+    /// converged on the same single-hint default; we follow.
+    pub fn minimal() -> Self {
         Self {
-            items: vec![
-                Hint::new(plain(KeyCode::Enter), "send"),
-                Hint::new(shift(KeyCode::Enter), "newline"),
-                Hint::new(plain(KeyCode::Tab), "complete"),
-                Hint::new(plain(KeyCode::Esc), "menu"),
-                Hint::new(plain(KeyCode::Up), "history"),
-                Hint::new(ctrl(KeyCode::Char('c')), "quit"),
-            ],
+            items: vec![Hint::new(plain(KeyCode::Char('?')), "for shortcuts")],
         }
     }
 }
@@ -137,16 +142,32 @@ fn render_n(items: &[Hint], n: usize) -> Vec<Span<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::composer::key_hint::{ctrl, shift};
 
-    /// Rendered width fits any `max_width >= total_width(default_set)`.
+    /// A six-item synthetic hint list — mirrors the historical
+    /// `default_set()` so the truncation/width tests still exercise a
+    /// realistic multi-item row even though the production footer now
+    /// only renders [`KeyHints::minimal`].
+    fn synthetic_six() -> Vec<Hint> {
+        vec![
+            Hint::new(plain(KeyCode::Enter), "send"),
+            Hint::new(shift(KeyCode::Enter), "newline"),
+            Hint::new(plain(KeyCode::Tab), "complete"),
+            Hint::new(plain(KeyCode::Esc), "menu"),
+            Hint::new(plain(KeyCode::Up), "history"),
+            Hint::new(ctrl(KeyCode::Char('c')), "quit"),
+        ]
+    }
+
+    /// Rendered width fits any `max_width >= total_width(items)`.
     #[test]
-    fn default_set_fits_when_width_is_generous() {
-        let items = KeyHints::default_set().items;
+    fn six_item_set_fits_when_width_is_generous() {
+        let items = synthetic_six();
         let spans = build_hint_spans(&items, 200);
         let width: usize = spans.iter().map(|s| s.width()).sum();
         assert!(
             width <= 200,
-            "default set must fit in 200 cols (got {width})"
+            "six-item set must fit in 200 cols (got {width})"
         );
         assert_eq!(
             spans.iter().filter(|s| s.content == " \u{00b7} ").count(),
@@ -159,7 +180,7 @@ mod tests {
     /// (the highest-priority hint) survives.
     #[test]
     fn narrow_terminal_drops_low_priority_items_first() {
-        let items = KeyHints::default_set().items;
+        let items = synthetic_six();
         let spans = build_hint_spans(&items, 30);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
@@ -175,7 +196,7 @@ mod tests {
     /// Zero width yields no spans (don't crash on degenerate input).
     #[test]
     fn zero_width_returns_empty() {
-        let items = KeyHints::default_set().items;
+        let items = synthetic_six();
         assert!(build_hint_spans(&items, 0).is_empty());
     }
 
@@ -185,13 +206,40 @@ mod tests {
         assert!(build_hint_spans(&[], 200).is_empty());
     }
 
+    /// `minimal()` renders just the `? for shortcuts` hint — the
+    /// persistent-footer state for an empty composer (#1194 / #1195).
+    #[test]
+    fn minimal_set_is_a_single_question_mark_hint() {
+        let items = KeyHints::minimal().items;
+        assert_eq!(items.len(), 1, "minimal() must be exactly one hint");
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        KeyHints::minimal().render(area, &mut buf);
+        let text: String = (0..area.width)
+            .map(|x| buf.cell((x, 0)).map(|c| c.symbol()).unwrap_or(" "))
+            .collect();
+        assert!(
+            text.contains('?'),
+            "minimal hint must render the `?` chord: {text}"
+        );
+        assert!(
+            text.contains("for shortcuts"),
+            "minimal hint must render the verb: {text}"
+        );
+    }
+
     /// End-to-end Widget render path: rendered buffer contains all verbs
-    /// when the area is wide enough.
+    /// when the area is wide enough. Uses the synthetic six-item set so
+    /// the test exercises the multi-item rendering path even though the
+    /// production footer renders [`KeyHints::minimal`].
     #[test]
     fn widget_render_writes_all_verbs_into_buffer() {
         let area = Rect::new(0, 0, 120, 1);
         let mut buf = Buffer::empty(area);
-        KeyHints::default_set().render(area, &mut buf);
+        KeyHints {
+            items: synthetic_six(),
+        }
+        .render(area, &mut buf);
         let text: String = (0..area.width)
             .map(|x| buf.cell((x, 0)).map(|c| c.symbol()).unwrap_or(" "))
             .collect();

@@ -45,19 +45,19 @@ pub fn build_banner_lines(
             Span::raw("  "),
             Span::styled(cwd.to_string(), DIM),
         ]),
+        // Syntax tips only — keybindings live in the persistent footer
+        // and the `?`-toggled shortcuts overlay (#1194 / #1195). Field
+        // study (codex / claude-code / gemini-cli) confirmed none of
+        // them put keybindings in the welcome banner; gemini's `Tips`
+        // component is the closest analog and shows conceptual tips,
+        // not chord lists.
         Line::from(vec![
             Span::styled("  /", WARM_ACCENT),
             Span::styled("commands", DIM),
             Span::styled("  @", WARM_ACCENT),
             Span::styled("file", DIM),
-            Span::styled("  Shift+Tab ", WARM_ACCENT),
-            Span::styled("mode", DIM),
-            Span::styled("  Ctrl+C ", WARM_ACCENT),
-            Span::styled("cancel", DIM),
-            Span::styled("  PgUp/PgDn ", WARM_ACCENT),
-            Span::styled("scroll", DIM),
-            Span::styled("  Ctrl+D ", WARM_ACCENT),
-            Span::styled("quit", DIM),
+            Span::styled("  ?", WARM_ACCENT),
+            Span::styled(" shortcuts", DIM),
         ]),
         Line::default(),
     ]

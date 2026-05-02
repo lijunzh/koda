@@ -138,6 +138,16 @@ impl TuiContext {
                 // Ctrl+R: reverse history search (closes any open menu first)
                 self.open_history_search();
             }
+            // `?` on an empty composer toggles the keybinding overlay
+            // (#1194 / #1195). When the composer has any text, the `_`
+            // arm below routes the `?` through the normal plain-char
+            // path so users can still type `?` literally in their
+            // prompts. Mirrors codex's `FooterMode::ShortcutOverlay`
+            // toggle and claude-code's `?` handling in
+            // `PromptInputFooterLeftSide`.
+            (KeyCode::Char('?'), KeyModifiers::NONE) if self.textarea.text().is_empty() => {
+                self.menu = MenuContent::ShortcutsOverlay;
+            }
             // Scroll keys
             (KeyCode::PageUp, _) => {
                 let (w, h) = self.term_dims();

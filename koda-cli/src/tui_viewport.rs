@@ -80,6 +80,9 @@ pub(crate) fn draw_viewport(
             // 1 header + up to 6 match rows
             (matches.len().min(6) as u16) + 1
         }
+        MenuContent::ShortcutsOverlay => {
+            crate::widgets::shortcuts_overlay::overlay_height(area.width)
+        }
     };
 
     // Queue preview height: 0 when idle / queue empty.
@@ -179,16 +182,26 @@ pub(crate) fn draw_viewport(
         frame.render_widget(textarea, text_area);
     }
 
-    // ── Bottom row: key hint footer (PR 4 of #1178) ────────────────────
-    // Replaces the previous flat "───" separator with a single dim row
-    // of `key verb` hints (`enter send · shift+enter newline · ...`).
-    // Same height (1 row), but turns dead-space chrome into discoverable
-    // shortcuts. `KeyHints::render` reads `area.width` itself and drops
-    // items from the right on narrow terminals — no width threading needed.
-    frame.render_widget(
-        crate::widgets::key_hints::KeyHints::default_set(),
-        bot_sep_row,
-    );
+    // ── Bottom row: key hint footer (PR 4 of #1178; reworked in #1194/#1195) ──────────────────
+    // Field-study (codex `FooterMode::ComposerEmpty`, claude-code
+    // `PromptInputFooterLeftSide`, gemini-cli `Footer`) all converged on:
+    //   • composer empty → a single `? for shortcuts` hint
+    //   • composer has draft → hint suppressed (less noise while typing)
+    //   • `?` opens a multi-line overlay with the full keybinding set
+    //
+    // We mirror that here. The overlay itself rides the existing
+    // `MenuContent::ShortcutsOverlay` slot (rendered below the status bar
+    // by `render_menu`), so this footer row stays a single line in all
+    // states — no spacer needed (#1195's underlying density complaint).
+    let composer_empty = textarea.is_empty();
+    let menu_inactive = menu.is_none() || matches!(menu, MenuContent::ShortcutsOverlay);
+    if composer_empty && menu_inactive {
+        frame.render_widget(crate::widgets::key_hints::KeyHints::minimal(), bot_sep_row);
+    }
+    // else: leave the row blank — a 1-row gap below the input is exactly
+    // the breathing room #1195 asked for, achieved without literal extra
+    // chrome by following the codex/claude-code pattern of suppressing
+    // the hint when it would compete with the user's draft.
 
     // ── Queue preview (above status bar, hidden when empty) ─────────────
     if queue_preview_height > 0 {
@@ -479,6 +492,10 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
                     Span::styled(snippet, style),
                 ]));
             }
+            frame.render_widget(Paragraph::new(lines), menu_area);
+        }
+        MenuContent::ShortcutsOverlay => {
+            let lines = crate::widgets::shortcuts_overlay::build_overlay_lines(menu_area.width);
             frame.render_widget(Paragraph::new(lines), menu_area);
         }
         MenuContent::None => {}
