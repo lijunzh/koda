@@ -88,33 +88,39 @@ pub(crate) fn draw_viewport(
     // Queue preview height: 0 when idle / queue empty.
     let queue_preview_height = QueuePreview::height_for(queue_total);
 
-    // Layout: History | TopSep | Input | BotSep | Hint | Queue? | Status | Menu
+    // Layout: History | TopSep | Input | BotSep | Status | Queue? | Hint | Menu
     //
     // The bottom separator (#1194/#1195) mirrors the top one as a plain
     // horizontal rule — codex creates the same visual grouping with a
     // subtle background tint on the composer rect; we don't tint the
     // background, so a symmetric rule is what closes the visual region
     // around the prompt and gives it breathing room from the footer.
-    // The hint row (`? for shortcuts`) lives BELOW the bottom separator,
-    // so the separator unambiguously belongs to the prompt zone, not
-    // the footer chrome.
+    //
+    // Row order below the bottom separator (round-3 swap per user
+    // feedback): status bar sits IMMEDIATELY below the separator so
+    // the dynamic info (mode │ model │ context) is the closest thing
+    // to the prompt — that's the data your eye most often jumps from
+    // the input down to. The `? for shortcuts` hint sinks to the
+    // bottom as the lowest-priority chrome (you only read it once);
+    // queue preview keeps its slot between status and hint so it
+    // visually "floats" near the active info cluster.
     let [
         history_area,
         top_sep_row,
         input_rows,
         bot_sep_row,
-        hint_row,
-        queue_preview_row,
         status_row,
+        queue_preview_row,
+        hint_row,
         menu_area,
     ] = Layout::vertical([
         Constraint::Min(1),                       // history: fill remaining space
         Constraint::Length(1),                    // top separator (─────)
         Constraint::Length(input_height),         // input textarea
         Constraint::Length(1),                    // bottom separator (─────)
-        Constraint::Length(1),                    // key-hint row (`? for shortcuts`)
-        Constraint::Length(queue_preview_height), // later_queue preview (0 when empty)
         Constraint::Length(1),                    // status bar
+        Constraint::Length(queue_preview_height), // later_queue preview (0 when empty)
+        Constraint::Length(1),                    // key-hint row (`? for shortcuts`)
         Constraint::Length(menu_height),          // dropdown menu (0 when inactive)
     ])
     .areas(area);
