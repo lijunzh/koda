@@ -575,7 +575,14 @@ fn clamp_to_char_boundary(s: &str, mut idx: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    // ── History DB persistence ────────────────────────────────
+    // Bring file-private helpers (`plain_char`, `is_plain_insertable_char`,
+    // `clamp_to_char_boundary`) into scope. Lost in the merge skew between
+    // #1189 (added paste_burst tests using these helpers) and #1190
+    // (composer extraction, which moved the history-nav tests out of
+    // this module — carrying the `use super::*` with them).
+    use super::*;
+
+    // ── History DB persistence ───────────────────────────────────
     //
     // Pure index-math tests live in `crate::composer::history_nav` (#1187).
     // What stays here is the integration with `koda_core::db::Database`,
