@@ -541,7 +541,7 @@ mod cancel_handle_tests {
     use super::SessionCancel;
     use std::time::Duration;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn interrupt_fires_current_root_cascading_to_children() {
         let h = SessionCancel::new();
         let child = h.current().child_token();
@@ -556,7 +556,7 @@ mod cancel_handle_tests {
         assert!(grandchild.is_cancelled(), "grandchild must observe cascade");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn interrupt_swaps_in_fresh_root_so_session_stays_usable() {
         let h = SessionCancel::new();
         let pre = h.current();
@@ -572,7 +572,7 @@ mod cancel_handle_tests {
         assert!(!new_child.is_cancelled());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cloned_handles_share_underlying_arc() {
         let h1 = SessionCancel::new();
         let h2 = h1.clone();
@@ -598,7 +598,7 @@ mod cancel_handle_tests {
         assert!(b.is_cancelled());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn interrupt_unblocks_a_waiter_within_a_few_ms() {
         // Exercises the same race that powers the WaitTask escape
         // hatch: a future awaiting `cancel.cancelled()` must wake up
