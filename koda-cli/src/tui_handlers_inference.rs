@@ -192,10 +192,20 @@ impl TuiContext {
                         let ctx = self.context_pct;
                         let mcp_info = self.agent.mcp_status_bar_info();
                         // #1158 (b): keep status pill alive during streaming turns.
-                        let bg_counts = (
-                            bg_agents_for_status.pending_count(),
-                            agent_for_status.tools.bg_registry.len(),
-                        );
+                        // #1210: snapshot + project bg-activity rows for the
+                        // overlay above the status bar. `bg_agents_for_status`
+                        // and `agent_for_status` are session-lifetime `Arc`
+                        // clones grabbed once at run() entry (see ~line 100),
+                        // so this works inside the turn future's `&mut
+                        // self.session` borrow window.
+                        //
+                        // Replaces the #1158 ambient `bg_counts` status pill:
+                        // the overlay shows what's running, what each task
+                        // is doing right now, and the cancel keybindings.
+                        let agent_snaps = bg_agents_for_status.snapshot();
+                        let process_snaps = agent_for_status.tools.bg_registry.snapshot();
+                        let (bg_activity_rows, bg_activity_total) =
+                            self.bg_activity.build_rows(&agent_snaps, &process_snaps);
                         let queue_total = self.later_queue.len();
                         let queue_preview: Vec<String> = self
                             .later_queue
@@ -222,8 +232,9 @@ impl TuiContext {
                                 &self.scroll_buffer,
                                 self.mouse_selection.as_ref(),
                                 mcp_info,
-                                bg_counts,
                                 &self.project_root,
+                                &bg_activity_rows,
+                                bg_activity_total,
                             );
                         });
                     }
@@ -247,6 +258,7 @@ impl TuiContext {
                             &db_handle,
                             &bg_agents_for_status,
                             &agent_for_status.tools.bg_registry,
+                            &mut self.bg_activity,
                         )
                         .await;
                         // Request a redraw to reflect the new state. The
@@ -270,6 +282,7 @@ impl TuiContext {
                             &mut self.menu,
                             &mut self.prompt_mode,
                             &mut self.renderer,
+                            &mut self.bg_activity,
                         );
                         // Bounded drain — at most MAX_DRAIN extra events per
                         // iteration so we yield back to the select for input
@@ -291,6 +304,7 @@ impl TuiContext {
                                 &mut self.menu,
                                 &mut self.prompt_mode,
                                 &mut self.renderer,
+                                &mut self.bg_activity,
                             );
                         });
                         // One coalesced redraw per drain batch — not per
@@ -368,6 +382,13 @@ impl TuiContext {
                 } else {
                     0
                 };
+            }
+            // Tap activity events into the bg-activity tracker even
+            // during post-turn drain — a fan-out agent emitting a
+            // ToolStart milliseconds before the turn future resolves
+            // would otherwise vanish from the overlay forever (#1210).
+            if let EngineEvent::BgChildActivity { task_id, kind, .. } = &e {
+                self.bg_activity.record_activity(*task_id, kind);
             }
             self.renderer.render_to_buffer(e, &mut self.scroll_buffer);
         }
@@ -476,6 +497,7 @@ async fn handle_crossterm_event_inline(
     db: &koda_core::db::Database,
     bg_agents: &koda_core::bg_agent::BgAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
+    bg_activity: &mut crate::bg_activity::BgActivityTracker,
 ) {
     use crossterm::event::MouseEventKind;
     match ev {
@@ -525,6 +547,7 @@ async fn handle_crossterm_event_inline(
                 db,
                 bg_agents,
                 bg_processes,
+                bg_activity,
             )
             .await;
         }
@@ -551,6 +574,7 @@ async fn handle_inference_key_inline(
     db: &koda_core::db::Database,
     bg_agents: &koda_core::bg_agent::BgAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
+    bg_activity: &mut crate::bg_activity::BgActivityTracker,
 ) {
     // Vim insert-mode Escape (PR 3 of #1178). Same rationale as in
     // `tui_context::events::handle_key`: route bare Esc to the textarea
@@ -758,11 +782,21 @@ async fn handle_inference_key_inline(
             // foreground turn aborts but bg agents/processes keep
             // running in the dark — confusing the user who just
             // asked for everything to stop.
-            crate::tui_bg_tasks::cancel_all_bg_work(scroll_buffer, bg_agents, bg_processes);
+            crate::tui_bg_tasks::cancel_all_bg_work(
+                scroll_buffer,
+                bg_agents,
+                bg_processes,
+                bg_activity,
+            );
         }
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
             cancel_token.cancel();
-            crate::tui_bg_tasks::cancel_all_bg_work(scroll_buffer, bg_agents, bg_processes);
+            crate::tui_bg_tasks::cancel_all_bg_work(
+                scroll_buffer,
+                bg_agents,
+                bg_processes,
+                bg_activity,
+            );
         }
         // Ctrl+U: clear the later_queue (deferred messages) without cancelling inference.
         (KeyCode::Char('u'), m) if m.contains(KeyModifiers::CONTROL) => {
@@ -832,6 +866,7 @@ fn handle_inference_ui_inline(
     menu: &mut MenuContent,
     prompt_mode: &mut PromptMode,
     renderer: &mut crate::tui_render::TuiRenderer,
+    bg_activity: &mut crate::bg_activity::BgActivityTracker,
 ) {
     match ui_event {
         UiEvent::Engine(EngineEvent::AskUserRequest {
@@ -892,6 +927,15 @@ fn handle_inference_ui_inline(
             *menu = MenuContent::LoopCap;
         }
         UiEvent::Engine(event) => {
+            // Tap bg-activity events into the live tracker BEFORE the
+            // renderer no-ops them (#1207 dropped scroll output for
+            // BgChildActivity; #1210 routes them to the activity
+            // overlay instead). Done here so every fall-through engine
+            // event passes through the same tap point — no risk of a
+            // future variant-specific arm bypassing it.
+            if let EngineEvent::BgChildActivity { task_id, kind, .. } = &event {
+                bg_activity.record_activity(*task_id, kind);
+            }
             renderer.render_to_buffer(event, buffer);
         }
     }

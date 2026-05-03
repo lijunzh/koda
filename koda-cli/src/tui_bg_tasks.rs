@@ -64,10 +64,6 @@
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
 use koda_core::tools::bg_task_tools::TaskId;
-use ratatui::style::Modifier;
-use ratatui::text::Span;
-
-use tui_output::{CYAN, DIM};
 
 /// Render `/cancel <id>`. Routes to the right registry based on the
 /// parsed [`TaskId`]:
@@ -91,12 +87,13 @@ pub(crate) fn handle_cancel_background_task(
     buffer: &mut ScrollBuffer,
     bg_agents: &koda_core::bg_agent::BgAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
+    bg_activity: &mut crate::bg_activity::BgActivityTracker,
     task_id: Option<TaskId>,
 ) {
     let Some(id) = task_id else {
         tui_output::warn_msg(
             buffer,
-            "Usage: /cancel <agent:id|process:id>  (run /agents to see ids)".into(),
+            "Usage: /cancel <agent:id|process:id>  (ids are visible in the live bg-activity overlay)".into(),
         );
         return;
     };
@@ -104,6 +101,12 @@ pub(crate) fn handle_cancel_background_task(
     match id {
         TaskId::Agent(n) => {
             if bg_agents.cancel(n) {
+                // Flip the overlay icon to red immediately so the user
+                // sees their cancel landed (#1210). The registry status
+                // doesn't transition to Cancelled until the inference
+                // loop next checks the token — could be a few hundred
+                // ms — and that lag without feedback feels broken.
+                bg_activity.mark_cancelling(n);
                 tui_output::ok_msg(
                     buffer,
                     format!("Cancellation requested for agent:{n}. Result will inject shortly."),
@@ -112,7 +115,7 @@ pub(crate) fn handle_cancel_background_task(
                 tui_output::warn_msg(
                     buffer,
                     format!(
-                        "No background sub-agent with id agent:{n}. Run /agents to see active tasks."
+                        "No background sub-agent with id agent:{n}. Check the bg-activity overlay for active task ids."
                     ),
                 );
             }
@@ -127,7 +130,7 @@ pub(crate) fn handle_cancel_background_task(
                 tui_output::warn_msg(
                     buffer,
                     format!(
-                        "No background process with id process:{n}. Run /agents to see active tasks."
+                        "No background process with id process:{n}. Check the bg-activity overlay for active task ids."
                     ),
                 );
             }
@@ -150,6 +153,7 @@ pub(crate) fn cancel_all_bg_work(
     buffer: &mut ScrollBuffer,
     bg_agents: &koda_core::bg_agent::BgAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
+    bg_activity: &mut crate::bg_activity::BgActivityTracker,
 ) -> (usize, usize) {
     use koda_core::bg_agent::AgentStatus;
 
@@ -174,7 +178,20 @@ pub(crate) fn cancel_all_bg_work(
         .map(|s| s.pid)
         .collect();
 
-    let agents_cancelled = agent_ids.iter().filter(|id| bg_agents.cancel(**id)).count();
+    let agents_cancelled = agent_ids
+        .iter()
+        .filter(|id| {
+            let cancelled = bg_agents.cancel(**id);
+            if cancelled {
+                // Flip the overlay icon red right away so the user gets
+                // immediate feedback (#1210); the registry status
+                // transition to Cancelled lags by an inference
+                // iteration.
+                bg_activity.mark_cancelling(**id);
+            }
+            cancelled
+        })
+        .count();
     let processes_killed = proc_ids
         .iter()
         .filter(|pid| bg_processes.kill(**pid))
@@ -219,165 +236,11 @@ pub(crate) fn active_bg_count(
     active_agents + active_procs
 }
 
-/// Format a `Duration` as a compact age string for the `/agents` table.
-///
-/// - `< 60s`  → `"Ns"` (e.g. `"5s"`)
-/// - `< 60m`  → `"Nm"` (e.g. `"7m"`)
-/// - `< 24h`  → `"Nh"` (e.g. `"3h"`)
-/// - `>= 24h` → `"Nd"` (e.g. `"2d"`)
-///
-/// Bias: round **down**. A task running 119 s reads `"1m"`, not
-/// `"2m"`. Matches user intent ("how many full Xs has it been
-/// running?") better than rounding to nearest, and avoids the
-/// confusing `"60s"` -> `"1m"` jitter at the boundary.
-///
-/// Made `pub(crate)` so the interactive bg-agents panel
-/// (`widgets::bg_agents_panel`, #1191) can reuse the same age format
-/// the flat `/agents` view used to use — visual consistency.
-pub(crate) fn format_age(d: std::time::Duration) -> String {
-    let secs = d.as_secs();
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3_600 {
-        format!("{}m", secs / 60)
-    } else if secs < 86_400 {
-        format!("{}h", secs / 3_600)
-    } else {
-        format!("{}d", secs / 86_400)
-    }
-}
-
-/// Truncate a command string to its head for the NAME column.
-///
-/// Bash commands can be arbitrarily long (`"cargo test --workspace
-/// --features=foo,bar -- --nocapture | tee log.txt"`). For the table
-/// we only want enough to identify the process. We strip everything
-/// after the first 24 chars and append an ellipsis. Whitespace inside
-/// the head is preserved so `cargo test` reads naturally.
-///
-/// Made `pub(crate)` (along with [`command_head`] below) for reuse by
-/// `widgets::bg_agents_panel` (#1191).
-const COMMAND_HEAD_CHARS: usize = 24;
-
-pub(crate) fn command_head(cmd: &str) -> String {
-    let trimmed = cmd.trim();
-    if trimmed.chars().count() <= COMMAND_HEAD_CHARS {
-        trimmed.to_string()
-    } else {
-        let truncated: String = trimmed.chars().take(COMMAND_HEAD_CHARS).collect();
-        format!("{truncated}\u{2026}")
-    }
-}
-
-/// Color-coded status icon + label for bg **agents**, matching Codex's
-/// `multi_agents::status_summary_spans` palette: cyan running, green
-/// completed, red errored, dim cancelled / pending.
-///
-/// Made `pub(crate)` for reuse by `widgets::bg_agents_panel` (#1191) —
-/// the interactive panel and the legacy flat printer must agree on
-/// the icon/color/text vocabulary.
-pub(crate) fn agent_status_spans(status: &koda_core::bg_agent::AgentStatus) -> Vec<Span<'static>> {
-    use koda_core::bg_agent::AgentStatus;
-    match status {
-        AgentStatus::Pending => vec![Span::styled("\u{25d0} Pending", CYAN)],
-        AgentStatus::Running { iter } => {
-            let label = if *iter == 0 {
-                // PR #1041's `Running { iter: 0 }` is a Layer-0
-                // placeholder for "started but no per-iter info
-                // wired yet." Foreground sub-agents still send 0;
-                // background agents emit live updates (Layer 4, #1058). Don't
-                // render "iter 0" — it misleads the user into
-                // thinking nothing has happened.
-                "\u{25b6} Running".to_string()
-            } else {
-                // #1110 removed the sub-agent iteration cap, so there's
-                // no denominator to display anymore. Just show the count.
-                format!("\u{25b6} Running (iter {iter})")
-            };
-            vec![Span::styled(label, CYAN.add_modifier(Modifier::BOLD))]
-        }
-        AgentStatus::Cancelled => vec![Span::styled("\u{2297} Cancelled", DIM)],
-        AgentStatus::Completed { summary } => {
-            let mut spans = vec![Span::styled("\u{2713} Completed", tui_output::GREEN)];
-            let preview = summary_preview(summary);
-            if !preview.is_empty() {
-                spans.push(Span::styled(format!(" \u{2014} {preview}"), DIM));
-            }
-            spans
-        }
-        AgentStatus::Errored { error } => {
-            let mut spans = vec![Span::styled("\u{2717} Errored", tui_output::RED)];
-            let preview = summary_preview(error);
-            if !preview.is_empty() {
-                spans.push(Span::styled(format!(" \u{2014} {preview}"), DIM));
-            }
-            spans
-        }
-    }
-}
-
-/// Color-coded status icon + label for bg **processes**.
-///
-/// Reuses the agent palette for visual consistency:
-/// - `Running` → `▶ Running` (cyan bold)
-/// - `Killed`  → `⊗ Killed` (dim) — we sent SIGTERM but the reaper
-///   hasn't observed exit yet
-/// - `Exited { code: Some(0) }` → `✓ Exited (0)` (green) — clean exit
-/// - `Exited { code: Some(c) }` where c≠0 → `✗ Exited (c)` (red)
-/// - `Exited { code: None }` → `✗ Exited (signal)` (red) — POSIX returns
-///   no code for signal-killed processes
-///
-/// Made `pub(crate)` for reuse by `widgets::bg_agents_panel` (#1191).
-pub(crate) fn process_status_spans(
-    status: &koda_core::tools::bg_process::BgProcessStatus,
-) -> Vec<Span<'static>> {
-    use koda_core::tools::bg_process::BgProcessStatus;
-    match status {
-        BgProcessStatus::Running => vec![Span::styled(
-            "\u{25b6} Running",
-            CYAN.add_modifier(Modifier::BOLD),
-        )],
-        BgProcessStatus::Killed => vec![Span::styled("\u{2297} Killed", DIM)],
-        BgProcessStatus::Exited { code: Some(0) } => {
-            vec![Span::styled("\u{2713} Exited (0)", tui_output::GREEN)]
-        }
-        BgProcessStatus::Exited { code: Some(c) } => vec![Span::styled(
-            format!("\u{2717} Exited ({c})"),
-            tui_output::RED,
-        )],
-        BgProcessStatus::Exited { code: None } => {
-            vec![Span::styled("\u{2717} Exited (signal)", tui_output::RED)]
-        }
-    }
-}
-
-/// Truncate a status summary/error preview to fit on one row of the
-/// `/agents` table. Codex uses 80 graphemes
-/// (`COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES`); we use 60 to keep
-/// rows readable on a 100-col terminal after the ID/NAME/AGE prefix.
-///
-/// Made `pub(crate)` for reuse by `widgets::bg_agents_panel` (#1191).
-const PREVIEW_CHARS: usize = 60;
-
-pub(crate) fn summary_preview(s: &str) -> String {
-    // Collapse all whitespace runs (including newlines and tabs) to
-    // a single space — mirrors Codex's `split_whitespace().join(" ")`.
-    // Without this, embedded newlines wreck the table layout.
-    let collapsed: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() <= PREVIEW_CHARS {
-        collapsed
-    } else {
-        let truncated: String = collapsed.chars().take(PREVIEW_CHARS).collect();
-        format!("{truncated}\u{2026}")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use koda_core::bg_agent::{AgentStatus, BgAgentRegistry, BgPayload};
     use koda_core::tools::bg_process::BgRegistry;
-    use std::time::Duration;
     use tokio::sync::{oneshot, watch};
     use tokio_util::sync::CancellationToken;
 
@@ -458,96 +321,6 @@ mod tests {
         pid
     }
 
-    // ── format_age ─────────────────────────────────────────────────────────────────
-
-    /// Sub-minute durations render in seconds. The 0 boundary is a
-    /// real case for very-recently-started tasks.
-    #[test]
-    fn format_age_seconds_under_one_minute() {
-        assert_eq!(format_age(Duration::from_secs(0)), "0s");
-        assert_eq!(format_age(Duration::from_secs(1)), "1s");
-        assert_eq!(format_age(Duration::from_secs(59)), "59s");
-    }
-
-    /// Sub-hour durations render in minutes, **rounded down** (a
-    /// 119 s task reads `"1m"`, not `"2m"`). Pinning the round-down
-    /// behavior protects against an accidental switch to nearest
-    /// rounding, which would jitter at the boundary.
-    #[test]
-    fn format_age_minutes_round_down() {
-        assert_eq!(format_age(Duration::from_secs(60)), "1m");
-        assert_eq!(format_age(Duration::from_secs(119)), "1m");
-        assert_eq!(format_age(Duration::from_secs(3_599)), "59m");
-    }
-
-    /// Sub-day durations render in hours, also rounded down.
-    #[test]
-    fn format_age_hours_round_down() {
-        assert_eq!(format_age(Duration::from_secs(3_600)), "1h");
-        assert_eq!(format_age(Duration::from_secs(86_399)), "23h");
-    }
-
-    /// 24 h+ durations render in days. A truly long-running bg
-    /// agent is unusual but we shouldn't render `"24h"` indefinitely
-    /// once it crosses the day boundary.
-    #[test]
-    fn format_age_days_round_down() {
-        assert_eq!(format_age(Duration::from_secs(86_400)), "1d");
-        assert_eq!(format_age(Duration::from_secs(172_799)), "1d");
-        assert_eq!(format_age(Duration::from_secs(259_200)), "3d");
-    }
-
-    // ── command_head ───────────────────────────────────────────────────────────────
-
-    /// Short commands pass through (after a trim) — no spurious ellipsis.
-    #[test]
-    fn command_head_short_passes_through() {
-        assert_eq!(command_head("cargo test"), "cargo test");
-        assert_eq!(command_head("  ls -la  "), "ls -la");
-    }
-
-    /// Long commands truncate to `COMMAND_HEAD_CHARS` graphemes plus
-    /// an ellipsis. The exact threshold is what stops table rows from
-    /// wrapping on a 100-col terminal, so we pin it.
-    #[test]
-    fn command_head_long_truncates_with_ellipsis() {
-        let long = "cargo test --workspace --features=foo,bar -- --nocapture | tee log.txt";
-        let head = command_head(long);
-        assert_eq!(head.chars().count(), COMMAND_HEAD_CHARS + 1);
-        assert!(head.ends_with('\u{2026}'));
-        assert!(head.starts_with("cargo test"));
-    }
-
-    // ── summary_preview ────────────────────────────────────────────────────────────
-
-    /// Newlines and tabs in a `Completed.summary` would break our
-    /// single-row table layout. Mirror Codex's whitespace-collapse.
-    #[test]
-    fn summary_preview_collapses_whitespace() {
-        assert_eq!(
-            summary_preview("line one\nline two\tline three"),
-            "line one line two line three"
-        );
-    }
-
-    /// Long previews are truncated with an ellipsis. Threshold is
-    /// `PREVIEW_CHARS` graphemes so multi-byte text is safe.
-    #[test]
-    fn summary_preview_truncates_with_ellipsis() {
-        let long = "a".repeat(PREVIEW_CHARS + 10);
-        let preview = summary_preview(&long);
-        // chars().count() because the trailing ellipsis is
-        // multi-byte and `.len()` would over-count.
-        assert_eq!(preview.chars().count(), PREVIEW_CHARS + 1);
-        assert!(preview.ends_with('\u{2026}'));
-    }
-
-    /// Short previews pass through unchanged — no spurious ellipsis.
-    #[test]
-    fn summary_preview_short_passes_through() {
-        assert_eq!(summary_preview("all good"), "all good");
-    }
-
     // ── handle_cancel_background_task ──────────────────────────────────────────────
 
     /// Happy path for an agent: known `agent:N` → cancel fires,
@@ -560,7 +333,13 @@ mod tests {
         let procs = BgRegistry::new();
         let (task_id, _tx, _status_tx, observer) = register_entry(&reg, "explore", "x");
 
-        handle_cancel_background_task(&mut buf, &reg, &procs, Some(TaskId::Agent(task_id)));
+        handle_cancel_background_task(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+            Some(TaskId::Agent(task_id)),
+        );
 
         let text = buffer_text(&buf);
         assert!(
@@ -584,7 +363,13 @@ mod tests {
         let procs = BgRegistry::new();
         let pid = spawn_sleep_in_registry(&procs);
 
-        handle_cancel_background_task(&mut buf, &reg, &procs, Some(TaskId::Process(pid)));
+        handle_cancel_background_task(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+            Some(TaskId::Process(pid)),
+        );
 
         let text = buffer_text(&buf);
         assert!(
@@ -605,11 +390,17 @@ mod tests {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
         let procs = BgRegistry::new();
-        handle_cancel_background_task(&mut buf, &reg, &procs, Some(TaskId::Agent(999)));
+        handle_cancel_background_task(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+            Some(TaskId::Agent(999)),
+        );
         let text = buffer_text(&buf);
         assert!(
-            text.contains("agent:999") && text.contains("/agents"),
-            "warn should name the missing prefixed id and point to /agents, got: {text}"
+            text.contains("agent:999") && text.contains("bg-activity overlay"),
+            "warn should name the missing prefixed id and point to the bg-activity overlay, got: {text}"
         );
     }
 
@@ -620,11 +411,17 @@ mod tests {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
         let procs = BgRegistry::new();
-        handle_cancel_background_task(&mut buf, &reg, &procs, Some(TaskId::Process(999_999)));
+        handle_cancel_background_task(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+            Some(TaskId::Process(999_999)),
+        );
         let text = buffer_text(&buf);
         assert!(
-            text.contains("process:999999") && text.contains("/agents"),
-            "warn should name the missing prefixed id and point to /agents, got: {text}"
+            text.contains("process:999999") && text.contains("bg-activity overlay"),
+            "warn should name the missing prefixed id and point to the bg-activity overlay, got: {text}"
         );
     }
 
@@ -637,7 +434,13 @@ mod tests {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
         let procs = BgRegistry::new();
-        handle_cancel_background_task(&mut buf, &reg, &procs, None);
+        handle_cancel_background_task(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+            None,
+        );
         let text = buffer_text(&buf);
         assert!(
             text.contains("Usage:") && text.contains("agent:") && text.contains("process:"),
@@ -656,7 +459,12 @@ mod tests {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
         let procs = BgRegistry::new();
-        let (a, p) = cancel_all_bg_work(&mut buf, &reg, &procs);
+        let (a, p) = cancel_all_bg_work(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+        );
         assert_eq!((a, p), (0, 0));
         assert!(
             buffer_text(&buf).is_empty(),
@@ -681,7 +489,12 @@ mod tests {
         status1.send(AgentStatus::Running { iter: 1 }).unwrap();
         status2.send(AgentStatus::Running { iter: 1 }).unwrap();
 
-        let (a, p) = cancel_all_bg_work(&mut buf, &reg, &procs);
+        let (a, p) = cancel_all_bg_work(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+        );
         assert_eq!((a, p), (2, 0));
         assert!(observer1.is_cancelled(), "agent 1 should observe cascade");
         assert!(observer2.is_cancelled(), "agent 2 should observe cascade");
@@ -706,7 +519,12 @@ mod tests {
         status.send(AgentStatus::Running { iter: 1 }).unwrap();
         let _pid = spawn_sleep_in_registry(&procs);
 
-        let (a, p) = cancel_all_bg_work(&mut buf, &reg, &procs);
+        let (a, p) = cancel_all_bg_work(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+        );
         assert_eq!((a, p), (1, 1));
         assert!(observer.is_cancelled());
         let text = buffer_text(&buf);
@@ -735,7 +553,12 @@ mod tests {
         // Send a result so the entry looks fully resolved.
         let _ = tx.send(Ok(("done".to_string(), vec![])));
 
-        let (a, p) = cancel_all_bg_work(&mut buf, &reg, &procs);
+        let (a, p) = cancel_all_bg_work(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+        );
         assert_eq!((a, p), (0, 0));
         assert!(
             !observer.is_cancelled(),

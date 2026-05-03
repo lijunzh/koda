@@ -44,11 +44,13 @@ pub(crate) fn draw_viewport(
     scroll_buffer: &ScrollBuffer,
     selection: Option<&crate::mouse_select::Selection>,
     mcp_info: Option<McpStatusBarInfo>,
-    // Background-task counts (running sub-agents, running shell
-    // processes). Drives the status-bar pill added in #1158 (b);
-    // both zero → segment hidden by `StatusBar::with_bg_counts`.
-    bg_counts: (usize, usize),
     project_root: &std::path::Path,
+    // #1210: pre-built rows for the live bg-activity overlay rendered
+    // above the status bar. Slice is already truncated to MAX_VISIBLE;
+    // `bg_activity_total` is the un-truncated count, used for the
+    // "+ N more" overflow hint.
+    bg_activity_rows: &[crate::widgets::bg_activity_overlay::ActivityRow],
+    bg_activity_total: usize,
 ) -> ratatui::layout::Rect {
     let area = frame.area();
 
@@ -83,11 +85,16 @@ pub(crate) fn draw_viewport(
         MenuContent::ShortcutsOverlay => {
             crate::widgets::shortcuts_overlay::overlay_height(area.width)
         }
-        MenuContent::BgAgentsPanel(state) => crate::widgets::bg_agents_panel::visible_height(state),
     };
 
     // Queue preview height: 0 when idle / queue empty.
     let queue_preview_height = QueuePreview::height_for(queue_total);
+
+    // Bg-activity overlay height (#1210): 0 when no live work; mirrors
+    // QueuePreview's collapse-when-empty pattern so the chrome reflows
+    // automatically as fan-out agents come and go.
+    let bg_activity_height =
+        crate::widgets::bg_activity_overlay::BgActivityOverlay::height_for(bg_activity_total);
 
     // Layout: History | TopSep | Input | BotSep | Status | Queue? | Menu
     //
@@ -106,6 +113,7 @@ pub(crate) fn draw_viewport(
         top_sep_row,
         input_rows,
         bot_sep_row,
+        bg_activity_row,
         status_row,
         queue_preview_row,
         menu_area,
@@ -114,6 +122,7 @@ pub(crate) fn draw_viewport(
         Constraint::Length(1),                    // top separator (─────)
         Constraint::Length(input_height),         // input textarea
         Constraint::Length(1),                    // bottom separator (─────)
+        Constraint::Length(bg_activity_height),   // #1210 live bg-activity overlay (0 when empty)
         Constraint::Length(1),                    // status bar
         Constraint::Length(queue_preview_height), // later_queue preview (0 when empty)
         Constraint::Length(menu_height),          // dropdown menu (0 when inactive)
@@ -209,6 +218,23 @@ pub(crate) fn draw_viewport(
     ));
     frame.render_widget(bot_separator, bot_sep_row);
 
+    // ── Bg-activity overlay (#1210, hidden when no live work) ───────────
+    // Lives between the bottom separator and the status bar so the
+    // user's eye finds it on the same vertical sweep used to read
+    // "⏳" composer state → status. Codex stays silent here; field
+    // study (#1210) showed claude_code/gemini-cli surface the
+    // equivalent in the same band, and that's where users expect
+    // it.
+    if bg_activity_height > 0 {
+        frame.render_widget(
+            crate::widgets::bg_activity_overlay::BgActivityOverlay::new(
+                bg_activity_rows,
+                bg_activity_total,
+            ),
+            bg_activity_row,
+        );
+    }
+
     // ── Queue preview (above status bar, hidden when empty) ─────────────
     if queue_preview_height > 0 {
         frame.render_widget(
@@ -238,10 +264,6 @@ pub(crate) fn draw_viewport(
     }
     if let Some(mcp) = mcp_info {
         sb = sb.with_mcp_info(mcp);
-    }
-    let (bg_agents, bg_processes) = bg_counts;
-    if bg_agents > 0 || bg_processes > 0 {
-        sb = sb.with_bg_counts(bg_agents, bg_processes);
     }
     // Vim-mode pill (PR 3 of #1178). The textarea returns `None` when
     // vim editing is disabled, which makes `with_vim_label` a no-op —
@@ -502,9 +524,6 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
         MenuContent::ShortcutsOverlay => {
             let lines = crate::widgets::shortcuts_overlay::build_overlay_lines(menu_area.width);
             frame.render_widget(Paragraph::new(lines), menu_area);
-        }
-        MenuContent::BgAgentsPanel(state) => {
-            crate::widgets::bg_agents_panel::render(state, menu_area, frame.buffer_mut());
         }
         MenuContent::None => {}
     }

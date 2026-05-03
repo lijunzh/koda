@@ -34,12 +34,6 @@ pub struct StatusBar<'a> {
     scroll_info: Option<(usize, usize)>,
     /// MCP server status (None = no servers configured, hidden).
     mcp_info: Option<McpStatusBarInfo>,
-    /// Background agent + shell-process counts (#1158 item b).
-    /// Both zero → segment hidden. The pill makes it discoverable
-    /// that work is happening even when the user has scrolled away
-    /// from the launch confirmation.
-    bg_agents: usize,
-    bg_processes: usize,
     /// Vim mode label (e.g. "NORMAL", "INSERT", "OPERATOR-PENDING").
     /// `None` hides the segment entirely (vim editing disabled).
     /// Sourced from `composer::textarea::TextArea::vim_mode_label()`
@@ -72,8 +66,6 @@ impl<'a> StatusBar<'a> {
             last_turn: None,
             scroll_info: None,
             mcp_info: None,
-            bg_agents: 0,
-            bg_processes: 0,
             vim_label: None,
         }
     }
@@ -100,18 +92,6 @@ impl<'a> StatusBar<'a> {
 
     pub fn with_mcp_info(mut self, info: McpStatusBarInfo) -> Self {
         self.mcp_info = Some(info);
-        self
-    }
-
-    /// Attach background-task counts (running sub-agents and running
-    /// shell processes). Both `0` → segment hidden, mirroring the
-    /// MCP / queue segments. See #1158 item (b): without this pill
-    /// users had no ambient hint that bg work was in flight unless
-    /// they ran `/bg-tasks` explicitly.
-    #[must_use]
-    pub fn with_bg_counts(mut self, agents: usize, processes: usize) -> Self {
-        self.bg_agents = agents;
-        self.bg_processes = processes;
         self
     }
 
@@ -218,34 +198,11 @@ impl Widget for StatusBar<'_> {
             ));
         }
 
-        // Background activity pill (#1158 item b) — sub-agents and
-        // shell processes share one segment. Cyan matches the
-        // "in-flight" semantics already used for the elapsed-time
-        // hourglass. Only rendered when at least one is nonzero so
-        // the bar stays compact during ordinary chat.
-        if self.bg_agents > 0 || self.bg_processes > 0 {
-            spans.push(Span::styled(
-                "\u{2502}",
-                Style::default().fg(Color::Rgb(60, 60, 60)),
-            ));
-            let mut label = String::from(" ");
-            if self.bg_agents > 0 {
-                // \u{1f916} = 🤖. Agents listed first because they're
-                // the higher-cost / longer-lived workers.
-                label.push_str(&format!("\u{1f916} {}", self.bg_agents));
-            }
-            if self.bg_agents > 0 && self.bg_processes > 0 {
-                label.push(' ');
-            }
-            if self.bg_processes > 0 {
-                // \u{2699} = ⚙ (gear). Variation selector \u{fe0f}
-                // forces emoji presentation on terminals that default
-                // the bare codepoint to monochrome text glyph.
-                label.push_str(&format!("\u{2699}\u{fe0f} {}", self.bg_processes));
-            }
-            label.push(' ');
-            spans.push(Span::styled(label, Style::default().fg(Color::Cyan)));
-        }
+        // (#1158's bg-activity pill was removed in #1210 — the live
+        // bg-activity overlay above the status bar shows "what's
+        // running and what each task is doing", which is strictly
+        // more useful than a count. The pill became redundant the
+        // moment the live surface existed.)
 
         // Elapsed time during inference
         if self.elapsed_secs > 0 {
@@ -421,85 +378,9 @@ mod tests {
         );
     }
 
-    // ── #1158 (b): background-task pill ─────────────────────
-
-    #[test]
-    fn bg_pill_hidden_when_both_counts_zero() {
-        let bar = StatusBar::new("gpt-4", "safe", 50).with_bg_counts(0, 0);
-        let text = render_bar(bar, 200);
-        // Neither emoji should appear.
-        assert!(
-            !text.contains('\u{1f916}'),
-            "🤖 should be hidden when zero agents: {text}"
-        );
-        assert!(
-            !text.contains('\u{2699}'),
-            "⚙ should be hidden when zero processes: {text}"
-        );
-    }
-
-    #[test]
-    fn bg_pill_shows_only_agents_when_processes_zero() {
-        let bar = StatusBar::new("gpt-4", "safe", 50).with_bg_counts(2, 0);
-        let text = render_bar(bar, 200);
-        assert!(
-            text.contains('\u{1f916}') && text.contains('2'),
-            "agents pill missing or wrong count: {text}"
-        );
-        assert!(
-            !text.contains('\u{2699}'),
-            "process gear must NOT render when count=0: {text}"
-        );
-    }
-
-    #[test]
-    fn bg_pill_shows_only_processes_when_agents_zero() {
-        let bar = StatusBar::new("gpt-4", "safe", 50).with_bg_counts(0, 3);
-        let text = render_bar(bar, 200);
-        assert!(
-            text.contains('\u{2699}') && text.contains('3'),
-            "processes pill missing or wrong count: {text}"
-        );
-        assert!(
-            !text.contains('\u{1f916}'),
-            "agent robot must NOT render when count=0: {text}"
-        );
-    }
-
-    #[test]
-    fn bg_pill_shows_both_when_both_nonzero() {
-        let bar = StatusBar::new("gpt-4", "safe", 50).with_bg_counts(2, 5);
-        let text = render_bar(bar, 200);
-        // Agents listed first per the rendering convention
-        // (higher-cost / longer-lived workers come first).
-        let agent_pos = text.find('\u{1f916}').expect("agent emoji missing");
-        let proc_pos = text.find('\u{2699}').expect("process gear missing");
-        assert!(
-            agent_pos < proc_pos,
-            "agents must render before processes: {text}"
-        );
-        assert!(text.contains('2') && text.contains('5'));
-    }
-
-    #[test]
-    fn bg_pill_renders_in_cyan_to_match_inflight_palette() {
-        // Agents pill should render with Color::Cyan to match the
-        // hourglass / elapsed-time "in-flight" semantic. Other colors
-        // would imply different state (yellow=warning, red=error).
-        let bar = StatusBar::new("gpt-4", "safe", 50).with_bg_counts(1, 0);
-        let area = Rect::new(0, 0, 200, 1);
-        let mut buf = Buffer::empty(area);
-        bar.render(area, &mut buf);
-        // Find the cell containing the robot emoji and check its fg color.
-        let cell_x = (0..200u16)
-            .find(|&x| buf.cell((x, 0)).map(|c| c.symbol()) == Some("\u{1f916}"))
-            .expect("🤖 cell missing from rendered buffer");
-        assert_eq!(
-            buf.cell((cell_x, 0)).unwrap().fg,
-            Color::Cyan,
-            "bg pill must render in cyan (in-flight palette)"
-        );
-    }
+    // (#1158's bg-pill tests removed in #1210 along with the pill
+    // itself; the live bg-activity overlay is covered by
+    // `widgets::bg_activity_overlay::tests` and `bg_activity::tests`.)
 
     /// Vim segment is hidden when the textarea reports `None`
     /// (vim editing disabled). PR 3 of #1178.

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Removed
+
+- **Interactive `/agents` panel and `/agents` slash command** (#1210, supersedes #1191). The dedicated bg-task surface (`MenuContent::BgAgentsPanel` from #1199 and the original flat-text `/agents` dump from #996) was redundant once the always-on **bg-activity overlay** above the status bar landed in #1210: the overlay shows every running sub-agent + shell process, what each is doing right now, and the cancel keybindings, with no slash-command needed. `/cancel <id>` and the `ListBackgroundTasks` LLM tool are unchanged. The status-bar bg-task pill (#1158 b) was also dropped for the same reason. Net: −1132 LoC.
+
+### Changed
+
+- **`/cancel <id>` now flips the overlay icon red immediately**, before the registry observes the cancellation (#1210). Previously the user had to wait for the inference loop to notice the cancel token — a few hundred ms of silent staring. The same instant feedback applies to the global Esc / Ctrl+C cancel-all path (#1200).
+
 ## [0.2.27] - 2026-04-29
 
 **The composer-port release.** v0.2.27 lands the full 6-PR codex `bottom_pane::textarea` epic (#1116, #1175, #1178) — koda now owns its input composer end-to-end, the `ratatui-textarea` third-party dep is gone, and four user-visible features ride along: vim mode, the key-hint footer, atomic `@`-mention deletion, and masked rendering for API key entry. Two non-composer wins also ship: alt-screen mouse-mode cleanup is hardened against signal exits (#1177) and the CI bubblewrap install is no longer flaky on Azure-mirror outages (#1180).
