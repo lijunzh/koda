@@ -115,6 +115,11 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         ("WebFetch", ToolEffect::ReadOnly),
         ("WebSearch", ToolEffect::ReadOnly),
         ("InvokeAgent", ToolEffect::ReadOnly),
+        // TodoWrite mutates Koda-owned session state (the in-memory todo
+        // list), not the user's filesystem. From a user-impact view it's
+        // ReadOnly; classifying it as a mutation broke Plan-mode planning
+        // entirely (#1212).
+        ("TodoWrite", ToolEffect::ReadOnly),
         // Background-task management (#996 Layer 2). All three are
         // ReadOnly: List is a pure read; Cancel/Wait signal but don't
         // write files — idempotent control of work the model already
@@ -127,7 +132,6 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         ("Edit", ToolEffect::LocalMutation),
         ("Bash", ToolEffect::LocalMutation),
         ("MemoryWrite", ToolEffect::LocalMutation),
-        ("TodoWrite", ToolEffect::LocalMutation),
         // Destructive
         ("Delete", ToolEffect::Destructive),
     ]

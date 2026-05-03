@@ -637,6 +637,9 @@ mod tests {
         "WebSearch",
         "ListSkills",
         "ActivateSkill",
+        // TodoWrite mutates Koda-owned session state only — no FS impact —
+        // so it must auto-approve in every trust mode (#1212).
+        "TodoWrite",
     ];
 
     #[test]
@@ -654,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_plan_blocks_all_writes() {
-        for tool in ["Write", "Edit", "Delete", "MemoryWrite", "TodoWrite"] {
+        for tool in ["Write", "Edit", "Delete", "MemoryWrite"] {
             assert_eq!(
                 check_tool(tool, &serde_json::json!({}), TrustMode::Plan, None),
                 ToolApproval::Blocked,
@@ -665,7 +668,7 @@ mod tests {
 
     #[test]
     fn test_safe_confirms_writes() {
-        for tool in ["Write", "Edit", "Delete", "MemoryWrite", "TodoWrite"] {
+        for tool in ["Write", "Edit", "Delete", "MemoryWrite"] {
             assert_eq!(
                 check_tool(tool, &serde_json::json!({}), TrustMode::Safe, None),
                 ToolApproval::NeedsConfirmation,
@@ -683,7 +686,7 @@ mod tests {
         } else {
             ToolApproval::NeedsConfirmation
         };
-        for tool in ["Write", "Edit", "TodoWrite"] {
+        for tool in ["Write", "Edit"] {
             assert_eq!(
                 check_tool(tool, &serde_json::json!({}), TrustMode::Auto, None),
                 expected,

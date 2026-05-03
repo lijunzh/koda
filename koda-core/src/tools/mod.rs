@@ -21,7 +21,7 @@
 //! | **ListAgents** | `agent` | ReadOnly | List available sub-agents |
 //! | **MemoryRead** | `memory` | ReadOnly | Read project/global memory |
 //! | **MemoryWrite** | `memory` | LocalMutation | Save facts to memory |
-//! | **TodoWrite** | `todo` | LocalMutation | Update task list |
+//! | **TodoWrite** | `todo` | ReadOnly | Update session task list (no FS impact) |
 //! | **AskUser** | `ask_user` | ReadOnly | Ask the user a question |
 //! | **ActivateSkill** | `skills` | ReadOnly | Load a skill's instructions |
 //! | **ListSkills** | `skills` | ReadOnly | List available skills |
@@ -75,9 +75,13 @@ pub enum ToolEffect {
 /// annotations.
 pub fn classify_tool(name: &str) -> ToolEffect {
     match name {
-        // Pure reads — zero side-effects
+        // Pure reads — zero side-effects.
+        // `TodoWrite` lives here because it only mutates Koda's own session
+        // state (the in-memory todo list), not the user's files or shell. From
+        // a user-impact perspective it's read-only; gating it behind approval
+        // breaks Plan-mode planning entirely (#1212).
         "Read" | "List" | "Grep" | "Glob" | "MemoryRead" | "ListAgents" | "ListSkills"
-        | "ActivateSkill" | "RecallContext" | "AskUser" => ToolEffect::ReadOnly,
+        | "ActivateSkill" | "RecallContext" | "AskUser" | "TodoWrite" => ToolEffect::ReadOnly,
 
         // Remote actions — side-effects on remote services only
         "WebFetch" => ToolEffect::ReadOnly,    // GET-only fetch
@@ -92,7 +96,7 @@ pub fn classify_tool(name: &str) -> ToolEffect {
         "ListBackgroundTasks" | "CancelTask" | "WaitTask" => ToolEffect::ReadOnly,
 
         // Local mutations — write to filesystem or local state
-        "Write" | "Edit" | "MemoryWrite" | "TodoWrite" => ToolEffect::LocalMutation,
+        "Write" | "Edit" | "MemoryWrite" => ToolEffect::LocalMutation,
 
         // Bash — default to LocalMutation; refined by classify_bash_command()
         "Bash" => ToolEffect::LocalMutation,
