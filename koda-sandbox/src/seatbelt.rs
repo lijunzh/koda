@@ -166,6 +166,11 @@ fn build_command_inner(
         .arg("-c")
         .arg(command)
         .current_dir(project_root);
+    // #1228: scrub the LLM-bound shell's env down to the allowlist.
+    // Seatbelt's SBPL profile gates filesystem access but does NOT touch
+    // env vars — without this call, a prompt-injected `env | grep KEY`
+    // exfiltrates OPENAI_API_KEY etc. straight into the LLM transcript.
+    crate::env::scrub(&mut cmd, command);
     Ok(cmd)
 }
 

@@ -90,6 +90,11 @@ pub fn build_command(
     apply_policy_overlay(&mut cmd, policy)?;
     cmd.args(["--", "sh", "-c", command])
         .current_dir(project_root);
+    // #1228: scrub the LLM-bound shell's env down to the allowlist.
+    // bwrap inherits-and-forwards parent env to the inner sh by default,
+    // so without this the inner shell sees OPENAI_API_KEY etc. The kernel
+    // namespaces gate filesystem + network but NOT env.
+    crate::env::scrub(&mut cmd, command);
     Ok(cmd)
 }
 
@@ -132,6 +137,13 @@ pub fn build_command_with_proxy(
         apply_git_config_deny(&mut cmd, &root);
     }
     apply_policy_overlay(&mut cmd, policy)?;
+
+    // #1228: scrub the LLM-bound shell's env down to the allowlist BEFORE
+    // we add the STAGE2_* control vars below — env_clear() inside scrub()
+    // would otherwise wipe stage2's env, breaking the proxy bridge.
+    // Order matters: scrub first, then layer koda's own infrastructure
+    // env on top.
+    crate::env::scrub(&mut cmd, command);
 
     // Network isolation. The fresh netns has no routes anywhere
     // except its own (initially-down) loopback — that's the kernel
