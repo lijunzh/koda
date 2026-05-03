@@ -44,6 +44,10 @@ EXECUTION MODES (pick one per call):
   isolated workspace, so parallel write-agents cannot trample each other.
 - Background (background=true): returns immediately. Results inject as a
   user message on the next iteration. Use for long-running independent work.
+  After spawning, KEEP WORKING — do other useful things and let the result
+  inject naturally. Do NOT immediately call WaitTask; that defeats the
+  point of backgrounding (turns the whole pattern back into a blocking call
+  and silences the parent for the duration).
 - Forked context (agent_name='fork'): inherits your full conversation
   history. Useful when the sub-agent needs everything you've already loaded.
 
@@ -86,8 +90,19 @@ Key rules:
                         "description": "Run in background and return immediately (default: false). \
                             Results are drained and injected as a user message at the start of \
                             the next iteration — NOT mid-iteration. The bg agent inherits the \
-                            parent's trust + sandbox at spawn time and is cancelled on Ctrl+C. \
-                            Use for independent long-running tasks that don't block your current work."
+                            parent's trust + sandbox at spawn time and is cancelled on Ctrl+C.\n\n\
+                            **After spawning, keep working.** The whole point of background \
+                            mode is that you do other useful things (file edits, follow-up \
+                            searches, summarizing progress for the user) while the agent runs. \
+                            Results inject automatically on a future iteration via auto-drain \
+                            — you do NOT need to call `WaitTask` to receive them. Calling \
+                            `WaitTask` immediately after the spawn turns the background dispatch \
+                            back into a blocking call and silences the parent for the duration; \
+                            only do that when you genuinely have no other work to make progress \
+                            on (e.g. the next step strictly depends on this agent's output and \
+                            no parallel work is possible).\n\n\
+                            Use for independent long-running tasks that don't block your \
+                            current work."
                     }
                 },
                 "required": ["prompt"]
@@ -383,6 +398,42 @@ mod tests {
         assert!(
             bg_desc.contains("next iteration"),
             "background param must explain drain-on-next-iteration timing"
+        );
+    }
+
+    /// #1201 A1: nudge the model away from "spawn bg agent → immediately
+    /// WaitTask". That pattern silences the parent for the entire wait
+    /// and turns the non-blocking dispatch back into a blocking call.
+    /// The mode bullet AND the per-param description must both push back.
+    #[test]
+    fn test_invoke_agent_description_discourages_immediate_wait_task() {
+        let defs = definitions();
+        let desc = &defs[0].description;
+        // The top-level Background mode bullet must mention WaitTask
+        // explicitly so the model sees the anti-pattern named.
+        assert!(
+            desc.contains("WaitTask"),
+            "top-level Background mode bullet must reference WaitTask by \
+             name so the model can recognize the anti-pattern (#1201 A1)"
+        );
+        // Per-param description must reinforce the same nudge — the model
+        // tends to look at the parameter doc when deciding *how* to use
+        // a tool, not the broader prose.
+        let bg_desc = defs[0]
+            .parameters
+            .pointer("/properties/background/description")
+            .and_then(|v| v.as_str())
+            .expect("background param must have a description");
+        assert!(
+            bg_desc.contains("WaitTask"),
+            "background param description must reference WaitTask so the \
+             nudge appears next to the parameter the model is setting \
+             (#1201 A1)"
+        );
+        assert!(
+            bg_desc.contains("auto-drain"),
+            "background param description must name the auto-drain path \
+             so the model knows results arrive without WaitTask (#1201 A1)"
         );
     }
 
