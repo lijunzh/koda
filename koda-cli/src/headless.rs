@@ -73,7 +73,7 @@ pub async fn run_headless(
         .await?;
 
     let cli_sink = HeadlessSink::new(cmd_tx);
-    let cancel = session.cancel.clone();
+    let cancel = session.cancel_token();
     let result = tokio::select! {
         r = session.run_turn(
             &config,

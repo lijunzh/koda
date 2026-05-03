@@ -85,7 +85,7 @@ impl TuiContext {
         // cancel-token cascade pointing at a live parent. Cancelling
         // the child fires only the foreground turn; bg agents are
         // explicitly cancelled by the Ctrl+C path further down.
-        let cancel_token = self.session.cancel.child_token();
+        let cancel_token = self.session.cancel_token().child_token();
         let db_handle = self.session.db.clone();
 
         self.tui_state = TuiState::Inferring;

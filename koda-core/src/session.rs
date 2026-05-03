@@ -37,6 +37,7 @@ use anyhow::Result;
 use koda_sandbox::{BuiltInProxy, BuiltInSocks5Proxy, DEFAULT_DEV_ALLOWLIST, Filter, ProxyHandle};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
+use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
 
 /// Cached parse of [`DEFAULT_DEV_ALLOWLIST`].
@@ -75,8 +76,22 @@ pub struct KodaSession {
     pub provider: Box<dyn LlmProvider>,
     /// Current trust mode (Plan / Safe / Auto).
     pub mode: TrustMode,
-    /// Cancellation token for graceful shutdown.
-    pub cancel: CancellationToken,
+    /// Session-lifetime cancellation root (#1216).
+    ///
+    /// Wrapped in [`RwLock`] so an `Esc`/`Ctrl+C` Gemini-style cascade
+    /// can fire the current token (collapsing every per-turn child and
+    /// every bg-agent child) **and** atomically swap in a fresh root
+    /// before the next turn starts. Without the swap, a tokio
+    /// [`CancellationToken`] stays cancelled forever once fired —
+    /// every subsequent `child_token()` would be born already-cancelled
+    /// and the session would be permanently poisoned.
+    ///
+    /// Read via [`Self::cancel_token`] (cheap clone of current root).
+    /// Fired via [`Self::interrupt`] (cascade + swap, single atomic op).
+    /// Direct field access is intentionally private — every external
+    /// site must go through one of those two doors so the swap
+    /// invariant is impossible to violate.
+    cancel: RwLock<CancellationToken>,
     /// File lifecycle tracker — tracks files created by Koda (#465).
     pub file_tracker: FileTracker,
     /// Whether the session title has already been set (first-message guard).
@@ -234,7 +249,7 @@ impl KodaSession {
             db,
             provider,
             mode,
-            cancel: CancellationToken::new(),
+            cancel: RwLock::new(CancellationToken::new()),
             file_tracker,
             title_set: false,
             proxy,
@@ -252,6 +267,35 @@ impl KodaSession {
     /// Emits `TurnStart` and `TurnEnd` lifecycle events. The loop-cap prompt is handled via `EngineEvent::LoopCapReached` / `EngineCommand::LoopDecision`
     /// through the `cmd_rx` channel.
     ///
+    /// Returns a clone of the **current** session-lifetime cancel token (#1216).
+    ///
+    /// Use this anywhere the legacy `self.cancel.clone()` was reached for.
+    /// Hides the [`RwLock`] indirection from callers and keeps the
+    /// swap-on-interrupt invariant invisible at call sites.
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel.read().clone()
+    }
+
+    /// Cascade-cancel everything in this session and arm a fresh root (#1216).
+    ///
+    /// Fires the *current* root token — which propagates to every
+    /// outstanding child: the live per-turn token (#1208), every bg
+    /// agent's per-task token (#1200), nested bg agents, anything
+    /// downstream that derived via [`CancellationToken::child_token`]
+    /// off of [`Self::cancel_token`]. Then atomically swaps in a
+    /// brand-new root so the *next* `run_turn` (and any bg agent it
+    /// later spawns) starts from a clean, un-fired token.
+    ///
+    /// This is the Gemini-style cascade primitive: one call kills the
+    /// whole tree, and the session remains usable for follow-up turns.
+    /// See issue #1216 for the design discussion vs Codex (per-thread)
+    /// and Claude Code (explicit two-tier) alternatives.
+    pub fn interrupt(&self) {
+        let mut guard = self.cancel.write();
+        guard.cancel();
+        *guard = CancellationToken::new();
+    }
+
     /// # Per-turn cancellation (#1208)
     ///
     /// `turn_cancel` lets callers (notably the TUI) wire Ctrl+C / Esc to a
@@ -315,7 +359,7 @@ impl KodaSession {
             // can stop *just this turn* with Ctrl+C without nuking the
             // session-lifetime token bg agents share. Headless / server /
             // tests pass `None` and keep the legacy session-token behaviour.
-            cancel: turn_cancel.unwrap_or_else(|| self.cancel.clone()),
+            cancel: turn_cancel.unwrap_or_else(|| self.cancel_token()),
             cmd_rx,
             file_tracker: &mut self.file_tracker,
             bg_agents: &self.bg_agents,
@@ -324,7 +368,9 @@ impl KodaSession {
         .await;
 
         let reason = match &result {
-            Ok(()) if self.cancel.is_cancelled() => crate::engine::event::TurnEndReason::Cancelled,
+            Ok(()) if self.cancel_token().is_cancelled() => {
+                crate::engine::event::TurnEndReason::Cancelled
+            }
             Ok(()) => crate::engine::event::TurnEndReason::Complete,
             Err(e) => crate::engine::event::TurnEndReason::Error {
                 message: e.to_string(),

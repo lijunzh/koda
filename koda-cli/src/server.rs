@@ -53,13 +53,11 @@ use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
 /// An active prompt session with its running task handle.
 struct ActiveSession {
     session: KodaSession,
     cmd_tx: mpsc::Sender<EngineCommand>,
-    cancel: CancellationToken,
 }
 
 /// Server state shared across the event loop.
@@ -255,7 +253,11 @@ async fn handle_notification(raw: &serde_json::Value, state: &mut ServerState) {
     if let Ok(acp::ClientNotification::CancelNotification(_cancel)) = decoded
         && let Some(ref active) = state.active
     {
-        active.cancel.cancel();
+        // #1216: Gemini-style cascade. `interrupt` fires the current
+        // session-root token (cancels the in-flight turn + every bg
+        // agent + every nested derivative) and atomically swaps in a
+        // fresh root, so the next NewPromptRequest starts clean.
+        active.session.interrupt();
     }
 }
 
@@ -319,7 +321,6 @@ async fn handle_new_session(
     };
 
     let (cmd_tx, _cmd_rx) = mpsc::channel::<EngineCommand>(32);
-    let cancel = CancellationToken::new();
 
     let session = KodaSession::new(
         session_id.clone(),
@@ -333,7 +334,6 @@ async fn handle_new_session(
     state.active = Some(ActiveSession {
         session,
         cmd_tx,
-        cancel,
     });
 
     let response = acp::NewSessionResponse::new(session_id);
@@ -381,9 +381,10 @@ async fn handle_prompt(
         return;
     }
 
-    // Create a fresh cancel token for this prompt
-    active.cancel = CancellationToken::new();
-    active.session.cancel = active.cancel.clone();
+    // #1216: no per-prompt cancel-token swap needed. The session's
+    // own `interrupt()` (called by CancelNotification) does the
+    // cascade-and-swap atomically, so by the time we reach here
+    // `session.cancel_token()` is already a fresh, un-fired root.
 
     // Create new cmd channel for this prompt
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(32);
