@@ -11,7 +11,7 @@
 //!
 //! ## How
 //!
-//! Every sandbox runtime ([`crate::seatbelt`], `crate::bwrap` (Linux),
+//! Every sandbox runtime (`crate::seatbelt` (macOS), `crate::bwrap` (Linux),
 //! [`crate::UnsandboxedRuntime`]) calls [`scrub`] on its constructed
 //! [`Command`] before returning it. `scrub` does:
 //!
