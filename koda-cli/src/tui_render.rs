@@ -978,4 +978,82 @@ mod tests {
              post-completion `✅ ... completed` Info line is the durable record"
         );
     }
+
+    // ── WaitTask / ListBackgroundTasks pretty-render wiring ──────────────────
+    //
+    // The `render_tool_output` dispatch has two opt-in branches that route
+    // these tools through `wait_task_format` instead of the generic
+    // line-by-line dump. The formatter has 9 unit tests; these two tests
+    // cover the *wiring*: that the live TUI path actually invokes the
+    // formatter and surfaces its output to the scroll buffer. Without
+    // them, a one-character typo in the dispatch (e.g. `"WaitTasks"`
+    // vs `"WaitTask"`) would silently fall through to raw-JSON dump and
+    // only get caught visually. Closes the qa-expert finding from #1169.
+
+    #[test]
+    fn wait_task_branch_emits_pretty_lines_not_raw_json() {
+        let payload = json!({
+            "tasks": [{
+                "task_id": "agent:7",
+                "status": "completed",
+                "agent_name": "explore",
+                "output": "Found three call sites.",
+            }],
+            "summary": { "completed": 1, "total": 1 },
+        })
+        .to_string();
+
+        let lines = render_tool("WaitTask", json!({}), &payload);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+
+        // Pretty branch ran: header + completion icon + agent name + preview.
+        assert!(
+            joined.contains("1 task(s) gathered"),
+            "missing pretty header — formatter wiring broken: {joined:?}"
+        );
+        assert!(joined.contains("\u{2705}"), "missing ✅ completion icon");
+        assert!(joined.contains("explore"), "missing agent name");
+        assert!(
+            joined.contains("Found three call sites."),
+            "missing output preview"
+        );
+
+        // Raw JSON keys must NOT leak through — that would mean the
+        // dispatch fell through to the generic line-by-line path.
+        assert!(
+            !joined.contains("\"task_id\":") && !joined.contains("\"agent_name\":"),
+            "raw JSON leaked — pretty branch did not fire: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn list_bg_tasks_branch_emits_pretty_lines_not_raw_json() {
+        let payload = json!([{
+            "task_id": "agent:3",
+            "status": "running",
+            "age_secs": 12,
+            "description": "verify the fix",
+        }])
+        .to_string();
+
+        let lines = render_tool("ListBackgroundTasks", json!({}), &payload);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+
+        assert!(
+            joined.contains("1 background task(s)"),
+            "missing pretty header — formatter wiring broken: {joined:?}"
+        );
+        assert!(joined.contains("verify the fix"), "missing description");
+
+        assert!(
+            !joined.contains("\"task_id\":") && !joined.contains("\"age_secs\":"),
+            "raw JSON leaked — pretty branch did not fire: {joined:?}"
+        );
+    }
 }
