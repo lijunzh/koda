@@ -179,7 +179,18 @@ async fn run_bg_agent(
     // result oneshot and gets surfaced to the user at
     // result-injection time. See `engine::sink::BufferingSink` for
     // the capture rules.
-    let buffering_sink = crate::engine::sink::BufferingSink::new();
+    //
+    // #1201 B: wrap the buffering sink in a `ForwardingBgSink` so
+    // every interesting event is *also* forwarded live as a
+    // `BgChildActivity` to the parent's sink (via the registry's
+    // status-event queue, drained by the inference loop). Pre-this
+    // wrapper a 30-second tool inside a bg agent looked identical
+    // to a 30-second hang — only the post-completion drain showed
+    // what happened.
+    let buffering_sink = crate::engine::sink::ForwardingBgSink::new(
+        crate::engine::sink::BufferingSink::new(),
+        emitter.clone(),
+    );
     let nested_bg = crate::bg_agent::new_shared();
 
     // Override background=false to prevent infinite spawn — a bg agent

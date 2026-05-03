@@ -170,6 +170,32 @@ pub fn engine_event_to_acp(
             ))
         }
 
+        // (#1201 B) Live activity from inside a running bg agent.
+        // ACP doesn't have a typed bg-child-activity notification, so
+        // we fall through to the same `[bg task N] ...` text-chunk
+        // shape used by `BgTaskUpdate` above. The full structured
+        // payload (with `kind: tool_start` / `tool_end` / `info`) is
+        // still on the wire for any future typed mapping.
+        EngineEvent::BgChildActivity { task_id, kind, .. } => {
+            let body = match kind {
+                koda_core::engine::event::BgChildActivityKind::ToolStart { summary, .. } => {
+                    format!("\u{1f527} {summary}")
+                }
+                koda_core::engine::event::BgChildActivityKind::ToolEnd { tool_name, success } => {
+                    let icon = if *success { "\u{2713}" } else { "\u{2717}" };
+                    format!("{icon} {tool_name}")
+                }
+                koda_core::engine::event::BgChildActivityKind::Info { message } => message.clone(),
+            };
+            let cb = acp::ContentBlock::Text(acp::TextContent::new(format!(
+                "[bg task {task_id}] {body}"
+            )));
+            Some(acp::SessionNotification::new(
+                session_id.to_string(),
+                acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(cb)),
+            ))
+        }
+
         // (#1077 Phase A) TodoWrite lifecycle. Surfaces every accepted
         // change so ACP IDEs can render a checklist (with diff-driven
         // animation if they care). The diff (added / changed /

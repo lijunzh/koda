@@ -336,6 +336,30 @@ impl BgStatusEmitter {
         });
     }
 
+    /// Forward a live activity event from inside the bg agent up to
+    /// the parent's sink.
+    ///
+    /// **#1201 B**: paired with [`crate::engine::sink::ForwardingBgSink`],
+    /// which decorates the bg agent's `BufferingSink` and calls this
+    /// method whenever an interesting child event happens (tool
+    /// start/end, info line). The event lands on the same registry
+    /// queue as `BgTaskUpdate`, so the inference loop's existing
+    /// drain in [`crate::inference`] forwards it to whatever sink
+    /// is active (TUI / headless / ACP) without further plumbing.
+    ///
+    /// Cheap: a single mutex acquisition + `VecDeque::push_back`,
+    /// the same cost as [`Self::send`]. The activity feed runs at
+    /// roughly tool-call frequency — not hot enough for any of this
+    /// to register in a profile.
+    pub fn send_activity(&self, kind: crate::engine::event::BgChildActivityKind) {
+        self.registry
+            .push_status_event(EngineEvent::BgChildActivity {
+                task_id: self.task_id,
+                spawner: self.spawner,
+                kind,
+            });
+    }
+
     /// Current status (read from the watch channel). Useful for
     /// terminal-disambiguation logic (e.g. "was this a cancel or a
     /// real error?") without taking the registry lock.
@@ -1822,5 +1846,45 @@ mod tests {
         let reg = BgAgentRegistry::new();
         let drained = reg.drain_status_events();
         assert!(drained.is_empty());
+    }
+
+    /// #1201 B: `BgStatusEmitter::send_activity` must push events
+    /// onto the *same* registry queue that `BgStatusEmitter::send`
+    /// uses, with the emitter's `task_id` and `spawner` baked in.
+    /// This pins the wire-up so the inference loop's existing drain
+    /// in `inference.rs` picks up activity events without any extra
+    /// plumbing.
+    #[tokio::test]
+    async fn send_activity_queues_bg_child_activity_with_task_id() {
+        let registry = new_shared();
+        let (status_tx, _status_rx) = tokio::sync::watch::channel(AgentStatus::Pending);
+        let emitter = BgStatusEmitter::new(42, Some(7), status_tx, registry.clone());
+
+        emitter.send_activity(crate::engine::event::BgChildActivityKind::ToolStart {
+            tool_name: "Read".into(),
+            summary: "Read foo.txt".into(),
+        });
+        emitter.send_activity(crate::engine::event::BgChildActivityKind::Info {
+            message: "\u{26a1} cache hit".into(),
+        });
+
+        let drained = registry.drain_status_events();
+        assert_eq!(drained.len(), 2);
+        assert!(matches!(
+            &drained[0],
+            EngineEvent::BgChildActivity {
+                task_id: 42,
+                spawner: Some(7),
+                kind: crate::engine::event::BgChildActivityKind::ToolStart { tool_name, .. }
+            } if tool_name == "Read"
+        ));
+        assert!(matches!(
+            &drained[1],
+            EngineEvent::BgChildActivity {
+                task_id: 42,
+                spawner: Some(7),
+                kind: crate::engine::event::BgChildActivityKind::Info { message }
+            } if message.contains("cache hit")
+        ));
     }
 }

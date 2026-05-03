@@ -295,6 +295,26 @@ impl EngineSink for HeadlessSink {
                 };
                 eprintln!("\x1b[2m  [bg task {task_id}] {summary}\x1b[0m");
             }
+            // (#1201 B) Live activity from inside a bg agent. Render
+            // dimly indented under the parent feed so a tailing script
+            // sees "  [bg task 7]   \u{1f527} Read src/auth.rs" without
+            // having to wait for the post-completion drain.
+            EngineEvent::BgChildActivity { task_id, kind, .. } => {
+                let line = match kind {
+                    koda_core::engine::event::BgChildActivityKind::ToolStart {
+                        summary, ..
+                    } => format!("\u{1f527} {summary}"),
+                    koda_core::engine::event::BgChildActivityKind::ToolEnd {
+                        tool_name,
+                        success,
+                    } => {
+                        let icon = if success { "\u{2713}" } else { "\u{2717}" };
+                        format!("{icon} {tool_name}")
+                    }
+                    koda_core::engine::event::BgChildActivityKind::Info { message } => message,
+                };
+                eprintln!("\x1b[2m  [bg task {task_id}] {line}\x1b[0m");
+            }
             // (#1077 Phase A) TodoWrite lifecycle in headless: render a
             // dim one-liner with diff counts so a script tailing stdout
             // sees "todos: +2 ~1 -0 (5 total)" on every accepted change.
