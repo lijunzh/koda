@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`TodoWrite` no longer requires approval and is no longer blocked in Plan mode** (#1212). The tool was misclassified as `LocalMutation` alongside `Write`/`Edit`/`MemoryWrite`, which made `koda-core::trust` gate it as `NeedsConfirmation` in Safe and `Blocked` in Plan — breaking the very tool that is supposed to be the canonical planning surface. `TodoWrite` only mutates Koda-owned session state (the in-memory todo list), not the user's files, so it is now classified as `ReadOnly` and auto-approves in every trust mode. Tests in `trust.rs` and `tool_wiring_test.rs`, plus the `tools/mod.rs` doc table and `docs/src/tools.md`, were updated to match.
+
 ### Removed
 
 - **Interactive `/agents` panel and `/agents` slash command** (#1210, supersedes #1191). The dedicated bg-task surface (`MenuContent::BgAgentsPanel` from #1199 and the original flat-text `/agents` dump from #996) was redundant once the always-on **bg-activity overlay** above the status bar landed in #1210: the overlay shows every running sub-agent + shell process, what each is doing right now, and the cancel keybindings, with no slash-command needed. `/cancel <id>` and the `ListBackgroundTasks` LLM tool are unchanged. The status-bar bg-task pill (#1158 b) was also dropped for the same reason. Net: −1132 LoC.
