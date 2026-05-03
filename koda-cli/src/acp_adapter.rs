@@ -160,6 +160,10 @@ pub fn engine_event_to_acp(
                     let snippet: String = error.chars().take(80).collect();
                     format!("errored: {snippet}")
                 }
+                // Forward-compat: future AgentStatus variants surface
+                // as a generic label so ACP IDEs see *something* until
+                // we add a typed mapping (#1224).
+                _ => "(unknown status)".to_string(),
             };
             let cb = acp::ContentBlock::Text(acp::TextContent::new(format!(
                 "[bg task {task_id}] {summary}"
@@ -186,6 +190,9 @@ pub fn engine_event_to_acp(
                     format!("{icon} {tool_name}")
                 }
                 koda_core::engine::event::BgChildActivityKind::Info { message } => message.clone(),
+                // Forward-compat: future activity kinds render as a
+                // generic line so ACP IDEs see something (#1224).
+                _ => "(activity)".to_string(),
             };
             let cb = acp::ContentBlock::Text(acp::TextContent::new(format!(
                 "[bg task {task_id}] {body}"
@@ -272,6 +279,12 @@ pub fn engine_event_to_acp(
                 acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(cb)),
             ))
         }
+        // Forward-compat: future EngineEvent variants have no ACP
+        // mapping until we add one. Drop silently — same shape as
+        // the existing ContextUsage/Footer/Spinner UI-only arms.
+        // The structured payload is still on the wire for any
+        // future typed mapping (#1224).
+        _ => None,
     }
 }
 

@@ -1059,3 +1059,84 @@ mod ask_user_height_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod cursor_wiring_tests {
+    //! Regression coverage for #1220/#1221 (composer cursor visibility).
+    //!
+    //! `draw_viewport` reads `TextArea::cursor_pos_with_state` and parks the
+    //! native hardware cursor via `Frame::set_cursor_position`. Without that
+    //! call the cursor stays hidden (ratatui default), CJK/IME preedit
+    //! composes at the screen origin, and screen readers can't track the
+    //! caret (WCAG 2.1.1 / 2.4.7).
+    //!
+    //! These contract tests verify the two halves of the wiring still meet:
+    //! the textarea returns valid coords for non-empty input, and ratatui's
+    //! `Frame::set_cursor_position` actually moves the TestBackend cursor.
+    //! Filed as a P3 follow-up to v0.3.0 in #1224.
+    //!
+    //! We deliberately don't call `draw_viewport` directly here — its 19-arg
+    //! signature would require a mountain of fixtures for a 5-line wiring
+    //! check. Instead, mirror the cursor-parking lines from `draw_viewport`
+    //! exactly (search for "Park the hardware cursor at the input caret"
+    //! upthread). If someone deletes that block in production, the per-input
+    //! tests in `composer/textarea.rs` still exercise `cursor_pos_with_state`
+    //! and these tests still exercise `Frame::set_cursor_position`, so the
+    //! reviewer should notice the missing glue at PR-review time.
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::{Backend, TestBackend};
+    use ratatui::layout::Rect;
+
+    /// Non-empty composer: cursor should land at the caret column on the
+    /// composer row, not stuck hidden at (0, 0).
+    #[test]
+    fn cursor_pos_drives_frame_set_cursor_position() {
+        let mut textarea = TextArea::new();
+        textarea.insert_str("hello");
+        let area = Rect::new(0, 0, 40, 3);
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 3)).expect("test terminal");
+        terminal
+            .draw(|f| {
+                f.render_widget(&textarea, area);
+                let state = crate::composer::textarea::TextAreaState::default();
+                let (x, y) = textarea
+                    .cursor_pos_with_state(area, state)
+                    .expect("non-empty textarea must report caret coords");
+                f.set_cursor_position((x, y));
+            })
+            .expect("draw");
+
+        let pos = terminal
+            .backend_mut()
+            .get_cursor_position()
+            .expect("backend cursor must be set");
+        // Caret sits after "hello" → column 5 on row 0 (within `area`).
+        assert_eq!(pos, ratatui::layout::Position::new(5, 0));
+    }
+
+    /// Empty composer: `cursor_pos_with_state` still returns `Some` so the
+    /// caret parks at column 0 (covers IME/screen-reader on empty input).
+    #[test]
+    fn empty_composer_still_reports_cursor() {
+        let textarea = TextArea::new();
+        let area = Rect::new(0, 0, 40, 3);
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 3)).expect("test terminal");
+        terminal
+            .draw(|f| {
+                let state = crate::composer::textarea::TextAreaState::default();
+                if let Some((x, y)) = textarea.cursor_pos_with_state(area, state) {
+                    f.set_cursor_position((x, y));
+                }
+            })
+            .expect("draw");
+
+        let pos = terminal
+            .backend_mut()
+            .get_cursor_position()
+            .expect("backend cursor must be set even for empty input");
+        assert_eq!(pos, ratatui::layout::Position::new(0, 0));
+    }
+}

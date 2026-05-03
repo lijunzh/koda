@@ -154,17 +154,15 @@ impl TuiRenderer {
                     );
                 }
             }
-            EngineEvent::ThinkingDone => {
-                if !self.think_buf.is_empty() {
-                    let remaining = std::mem::take(&mut self.think_buf);
-                    tui_output::emit_line(
-                        buffer,
-                        Line::from(vec![
-                            Span::styled("  \u{2502} ", DIM),
-                            Span::styled(remaining, DIM),
-                        ]),
-                    );
-                }
+            EngineEvent::ThinkingDone if !self.think_buf.is_empty() => {
+                let remaining = std::mem::take(&mut self.think_buf);
+                tui_output::emit_line(
+                    buffer,
+                    Line::from(vec![
+                        Span::styled("  \u{2502} ", DIM),
+                        Span::styled(remaining, DIM),
+                    ]),
+                );
             }
             EngineEvent::ResponseStart => {
                 self.response_started = true;
@@ -381,6 +379,10 @@ impl TuiRenderer {
                     ]),
                 );
             }
+            // Forward-compat: future EngineEvent variants are dropped
+            // from scrollback until we wire a render. Same shape as
+            // the SpinnerStart/Stop no-op arms above (#1224).
+            _ => {}
         }
     }
 

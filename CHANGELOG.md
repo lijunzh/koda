@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Behaviour change
+
+- **Public engine enums are now `#[non_exhaustive]`** (#1224 — closes the v0.3.0 P3 bundle). `EngineEvent`, `BgChildActivityKind`, `TurnEndReason`, and `AgentStatus` all gain the marker, which means downstream `match` consumers must add a `_ =>` arm. This is a one-time breaking change — v0.3.0 already burned a minor bump for the `EngineEvent::BgChildActivity` addition (#1206), so we're cashing in on the same minor-version-window to install the marker before the next variant addition forces *another* breaking change. After this lands, future variant additions to these four enums will be additive (non-breaking) for any downstream that handles the wildcard arm. In-tree consumers (`koda-cli/src/{acp_adapter, bg_activity, headless, tui_render}.rs`) gain nine semantically-correct fallback arms (drop-silent for ACP, generic-render for headless/TUI) — audited individually rather than blanket `_ => ()`.
+
+### Internal
+
+- **Composer cursor wiring regression test** (#1224 item 2). Two `TestBackend`-backed contract tests in `tui_viewport::cursor_wiring_tests` assert that `TextArea::cursor_pos_with_state` produces caret coordinates AND that `Frame::set_cursor_position` actually moves the backend cursor. Catches a future regression where someone deletes the cursor-parking block from `draw_viewport` (#1220/#1221).
+- **Stale Windows-only ignored test gated at compile-time** (#1224 item 3). `composer::textarea::tests::altgr_ctrl_alt_char_inserts_literal` was using `#[cfg_attr(not(windows), ignore)]`, which made the test perpetually appear in the `1 ignored` count for every macOS/Linux contributor. Switched to `#[cfg(windows)]` so the test only compiles where it can actually run; the `1 ignored` line is gone from `cargo test -p koda-cli --lib` output.
+
 ## [0.3.0] - 2026-05-03
 
 **The bg-agent observability release.** v0.3.0 converges on “user always knows what's happening, and can always interrupt it.” Headlines: an always-on **bg-activity overlay** above the status bar (no slash command needed), a new **`BgChildActivity` engine event** that powers it (and surfaces in ACP / headless), an **Esc/Ctrl+C cancel cascade overhaul** so a single Esc reliably interrupts the master AND every bg sub-agent it spawned, and a **slash-command guard during inference** that stops `/cancel agent:1` from being silently re-routed to the model as a steer. The legacy modal `/agents` panel and the `/agents` slash command are gone—superseded by the always-on overlay. Behavioural changes are called out below.
