@@ -85,7 +85,15 @@ impl TuiContext {
         // cancel-token cascade pointing at a live parent. Cancelling
         // the child fires only the foreground turn; bg agents are
         // explicitly cancelled by the Ctrl+C path further down.
-        let cancel_token = self.session.cancel.child_token();
+        let cancel_token = self.session.cancel_token().child_token();
+        // #1216: clone the cloneable session-cancel handle BEFORE the
+        // run_turn future borrows `&mut self.session`. The Esc/Ctrl+C
+        // arm of the inference loop's select! needs to call
+        // `session.interrupt()` mid-turn for the Gemini-style cascade,
+        // but it can't reach `self.session` while the turn future
+        // holds a mutable borrow. The handle is internally `Arc`-backed
+        // so this clone is cheap and aliases the same root.
+        let session_cancel = self.session.cancel_handle();
         let db_handle = self.session.db.clone();
 
         self.tui_state = TuiState::Inferring;
@@ -248,7 +256,7 @@ impl TuiContext {
                     SelectArm::Crossterm(ev) => {
                         handle_crossterm_event_inline(
                             ev,
-                            &cancel_token,
+                            &session_cancel,
                             cmd_tx,
                             &mut self.scroll_buffer,
                             self.history_area_height as usize,
@@ -487,7 +495,7 @@ impl TuiContext {
 #[allow(clippy::too_many_arguments)]
 async fn handle_crossterm_event_inline(
     ev: Event,
-    cancel_token: &tokio_util::sync::CancellationToken,
+    session_cancel: &koda_core::session::SessionCancel,
     cmd_tx: &mpsc::Sender<EngineCommand>,
     scroll_buffer: &mut ScrollBuffer,
     hist_h: usize,
@@ -539,7 +547,7 @@ async fn handle_crossterm_event_inline(
         Event::Key(key) => {
             handle_inference_key_inline(
                 key,
-                cancel_token,
+                session_cancel,
                 cmd_tx,
                 scroll_buffer,
                 menu,
@@ -566,7 +574,7 @@ async fn handle_crossterm_event_inline(
 #[allow(clippy::too_many_arguments)]
 async fn handle_inference_key_inline(
     key: crossterm::event::KeyEvent,
-    cancel_token: &tokio_util::sync::CancellationToken,
+    session_cancel: &koda_core::session::SessionCancel,
     cmd_tx: &mpsc::Sender<EngineCommand>,
     scroll_buffer: &mut ScrollBuffer,
     menu: &mut MenuContent,
@@ -783,12 +791,18 @@ async fn handle_inference_key_inline(
             }
         }
         (KeyCode::Esc, _) => {
-            cancel_token.cancel();
-            // #1200: Esc/Ctrl+C during inference also stops any bg
-            // work spawned in this session. Without this, the
-            // foreground turn aborts but bg agents/processes keep
-            // running in the dark — confusing the user who just
-            // asked for everything to stop.
+            // #1216: Gemini-style cascade. `session.interrupt()` fires
+            // the session-lifetime cancel root — collapsing the
+            // per-turn `cancel_token` (it's a child), every bg agent's
+            // per-task cancel (also children), and every nested bg
+            // agent transitively — then atomically swaps in a fresh
+            // root so the next turn isn't born cancelled.
+            //
+            // We still call `cancel_all_bg_work` for its `mark_cancelling`
+            // side effect (flips overlay icons red instantly so the user
+            // gets visual feedback even before the underlying status
+            // transition propagates through the watch channel).
+            session_cancel.interrupt();
             crate::tui_bg_tasks::cancel_all_bg_work(
                 scroll_buffer,
                 bg_agents,
@@ -797,7 +811,11 @@ async fn handle_inference_key_inline(
             );
         }
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-            cancel_token.cancel();
+            // Same cascade as Esc — during inference both keys are
+            // intentional aliases. The asymmetry shows up at idle
+            // (Esc dismisses popups, Ctrl+C arms quit), see the idle
+            // handler in `tui_context::events`.
+            session_cancel.interrupt();
             crate::tui_bg_tasks::cancel_all_bg_work(
                 scroll_buffer,
                 bg_agents,

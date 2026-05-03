@@ -21,7 +21,7 @@ use koda_core::{
         client::{McpClient, McpClientStatus},
         config::{McpServerConfig, McpTransport},
     },
-    session::KodaSession,
+    session::{KodaSession, SessionCancel},
     tools::ToolRegistry,
     trust::TrustMode,
 };
@@ -29,7 +29,6 @@ use koda_test_utils::{ChatMessage, Env, MockProvider, MockResponse, TestSink};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{RwLock, mpsc};
-use tokio_util::sync::CancellationToken;
 
 /// Stub config for tests — transport details don't matter because we use
 /// `set_status_for_test` / `set_instructions_for_test` to bypass the real
@@ -58,10 +57,10 @@ async fn make_session_with_mcp(
     mcp_manager: McpManager,
 ) -> (
     KodaSession,
-    CancellationToken,
+    SessionCancel,
     Arc<Mutex<Vec<Vec<ChatMessage>>>>,
 ) {
-    let cancel = CancellationToken::new();
+    let cancel = SessionCancel::new();
     let tools = ToolRegistry::new(env.root.clone(), env.config.max_context_tokens);
 
     // Attach the MCP manager BEFORE wrapping in Arc — this matches the

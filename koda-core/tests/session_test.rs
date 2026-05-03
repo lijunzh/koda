@@ -9,7 +9,7 @@ use koda_core::{
     engine::{EngineCommand, EngineEvent, event::TurnEndReason},
     persistence::Persistence,
     providers::{LlmResponse, ModelInfo},
-    session::KodaSession,
+    session::{KodaSession, SessionCancel},
     tools::ToolRegistry,
     trust::TrustMode,
 };
@@ -27,11 +27,8 @@ use tokio_util::sync::CancellationToken;
 /// Bypasses `KodaSession::new()` (which calls `create_provider` internally)
 /// so tests can supply a pre-configured MockProvider.  A fresh ToolRegistry
 /// is created each call because ToolRegistry does not implement Clone.
-async fn make_session(
-    env: &Env,
-    provider: Box<dyn LlmProvider>,
-) -> (KodaSession, CancellationToken) {
-    let cancel = CancellationToken::new();
+async fn make_session(env: &Env, provider: Box<dyn LlmProvider>) -> (KodaSession, SessionCancel) {
+    let cancel = SessionCancel::new();
     let tools = ToolRegistry::new(env.root.clone(), env.config.max_context_tokens);
 
     let agent = Arc::new(koda_core::agent::KodaAgent {
@@ -189,7 +186,7 @@ async fn session_cancellation_produces_turn_end_cancelled() {
     let cancel_clone = cancel.clone();
     tokio::spawn(async move {
         let _ = entered_rx.await;
-        cancel_clone.cancel();
+        cancel_clone.interrupt();
     });
 
     let sink = TestSink::new();
@@ -291,7 +288,7 @@ async fn session_turn_cancel_token_stops_inference() {
     // The whole point of #1208: cancel the *per-turn* token, NOT
     // session.cancel — then assert the turn still ends, AND
     // session.cancel is still alive afterwards (so bg agents survive).
-    let turn_cancel = tokio_util::sync::CancellationToken::new();
+    let turn_cancel = CancellationToken::new();
     let turn_cancel_clone = turn_cancel.clone();
     tokio::spawn(async move {
         let _ = entered_rx.await;
@@ -326,7 +323,7 @@ async fn session_turn_cancel_token_stops_inference() {
         "per-turn token should remain in the cancelled state"
     );
     assert!(
-        !session_cancel.is_cancelled(),
+        !session_cancel.current().is_cancelled(),
         "session.cancel must NOT be fired when only the per-turn token cancels \
          (this is the whole #1208 fix — bg agents survive across cancelled turns)"
     );

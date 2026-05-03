@@ -4,6 +4,12 @@
 
 use super::*;
 
+/// #1216: Window after the first idle Ctrl+C in which a second
+/// Ctrl+C confirms exit. Long enough for muscle-memory "oops, I
+/// didn't mean to quit" pauses, short enough that an unrelated
+/// Ctrl+C minutes later won't accidentally exit.
+pub(crate) const QUIT_ARM_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
+
 impl TuiContext {
     pub(crate) async fn handle_idle_event(&mut self, ev: Event) -> anyhow::Result<bool> {
         match ev {
@@ -118,47 +124,86 @@ impl TuiContext {
                 self.history_down();
             }
             (KeyCode::Esc, _) => {
-                // #1200: Esc at idle with no editor content is a
-                // "stop everything" gesture. If bg work exists,
-                // cancel it. Otherwise behave as before (clear editor).
-                if self.textarea.text().trim().is_empty()
-                    && crate::tui_bg_tasks::active_bg_count(
-                        &self.session.bg_agents,
-                        &self.agent.tools.bg_registry,
-                    ) > 0
+                // #1216: Esc is the *contextual* cancel — dismiss
+                // the thing you're in. Popup-Esc is already handled
+                // upstream by `handle_menu_key`, so by the time we
+                // reach this arm there's no popup. Priority order:
+                //
+                //   1. Composer has text → clear it (typical "oops,
+                //      let me start over" gesture).
+                //   2. Bg work is running → session-wide cascade
+                //      (Gemini-style: kill everything below us).
+                //   3. Otherwise → no-op (Esc on a blank composer
+                //      with nothing running is genuinely nothing
+                //      to do; we don't arm quit on Esc — that's
+                //      Ctrl+C's job, see below).
+                //
+                // Any Esc resets the quit-arm because the user is
+                // clearly steering, not asking to exit.
+                self.quit_armed_at = None;
+                if !self.textarea.text().trim().is_empty() {
+                    self.textarea.set_text_clearing_elements("");
+                    self.history_idx = None;
+                } else if crate::tui_bg_tasks::active_bg_count(
+                    &self.session.bg_agents,
+                    &self.agent.tools.bg_registry,
+                ) > 0
                 {
+                    self.session.interrupt();
                     crate::tui_bg_tasks::cancel_all_bg_work(
                         &mut self.scroll_buffer,
                         &self.session.bg_agents,
                         &self.agent.tools.bg_registry,
                         &mut self.bg_activity,
                     );
-                } else {
-                    self.textarea.set_text_clearing_elements("");
-                    self.history_idx = None;
                 }
             }
             (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-                // #1200: same logic as Esc — idle Ctrl+C cancels bg
-                // work when the editor is empty, else clears the editor.
-                // Two-step UX (type, then Ctrl+C) preserves the muscle
-                // memory while giving Ctrl+C a meaningful idle action
-                // when bg agents/processes are running.
-                if self.textarea.text().trim().is_empty()
-                    && crate::tui_bg_tasks::active_bg_count(
-                        &self.session.bg_agents,
-                        &self.agent.tools.bg_registry,
-                    ) > 0
-                {
+                // #1216: Ctrl+C is the *hard interrupt* — the Unix
+                // "abort / get me out" gesture. Priority order:
+                //
+                //   1. Bg work is running → session-wide cascade.
+                //      Reset quit-arm: the user is clearly using
+                //      Ctrl+C as cancel, not as quit-confirm.
+                //   2. Composer has text → clear it. Same reset.
+                //   3. Empty composer + no bg → arm quit on first
+                //      press, confirm on second within QUIT_ARM_WINDOW.
+                //      Matches codex/claude-code/gemini-cli muscle
+                //      memory: a single Ctrl+C never silently exits.
+                let bg_alive = crate::tui_bg_tasks::active_bg_count(
+                    &self.session.bg_agents,
+                    &self.agent.tools.bg_registry,
+                ) > 0;
+                let composer_dirty = !self.textarea.text().trim().is_empty();
+                if bg_alive {
+                    self.quit_armed_at = None;
+                    self.session.interrupt();
                     crate::tui_bg_tasks::cancel_all_bg_work(
                         &mut self.scroll_buffer,
                         &self.session.bg_agents,
                         &self.agent.tools.bg_registry,
                         &mut self.bg_activity,
                     );
-                } else {
+                } else if composer_dirty {
+                    self.quit_armed_at = None;
                     self.textarea.set_text_clearing_elements("");
                     self.history_idx = None;
+                } else {
+                    let now = std::time::Instant::now();
+                    let confirmed = self
+                        .quit_armed_at
+                        .map(|t| now.duration_since(t) <= QUIT_ARM_WINDOW)
+                        .unwrap_or(false);
+                    if confirmed {
+                        self.should_quit = true;
+                    } else {
+                        self.quit_armed_at = Some(now);
+                        crate::tui_output::dim_msg(
+                            &mut self.scroll_buffer,
+                            "\u{26a0}  Press Ctrl+C again within 1.5s to exit (or Ctrl+D)"
+                                .to_string(),
+                        );
+                    }
                 }
             }
             (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {

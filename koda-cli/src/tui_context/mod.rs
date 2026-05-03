@@ -73,6 +73,13 @@ pub(crate) struct TuiContext {
     pub later_queue: VecDeque<String>,
     pub pending_command: Option<String>,
     pub should_quit: bool,
+    /// #1216: Ctrl+C-arm timestamp. When the user presses Ctrl+C at
+    /// idle with nothing to interrupt (empty composer, no bg work),
+    /// we *don't* exit immediately — that's a one-keystroke loss of
+    /// session state, easy to fat-finger. Instead we record the press
+    /// here and show a hint; a second Ctrl+C within
+    /// [`QUIT_ARM_WINDOW`] confirms exit. Reset on any other action.
+    pub quit_armed_at: Option<std::time::Instant>,
     pub silent_compact_deferred: bool,
     pub inference_start: Option<std::time::Instant>,
     /// Context window usage percentage (0-100), updated via EngineEvent::ContextUsage.
@@ -382,6 +389,7 @@ impl TuiContext {
             later_queue: VecDeque::new(),
             pending_command: None,
             should_quit: false,
+            quit_armed_at: None,
             silent_compact_deferred: false,
             inference_start: None,
             context_pct: 0,
