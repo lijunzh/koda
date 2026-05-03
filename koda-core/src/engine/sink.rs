@@ -137,6 +137,175 @@ impl EngineSink for BufferingSink {
     }
 }
 
+// ── ForwardingBgSink (#1201 B) ──────────────────────────
+
+/// A decorator around [`BufferingSink`] that *also* forwards select
+/// events as [`crate::engine::event::EngineEvent::BgChildActivity`]
+/// up to the parent's sink via the bg-task's status emitter.
+///
+/// **#1201 B**: pre-this-decorator the parent's TUI had zero live
+/// signal from inside a running bg agent — only `BgTaskUpdate`
+/// heartbeats (`Running { iter: N }`), which tell you "still going"
+/// but not "doing what". The narrative trace from `BufferingSink`
+/// only surfaced at result-injection time, so a 30-second tool call
+/// inside a bg agent looked identical to a 30-second hang.
+///
+/// `ForwardingBgSink` is the live tap. For each event interesting
+/// enough to surface in the parent's feed, it builds a
+/// [`crate::engine::event::BgChildActivityKind`] and pushes it onto
+/// the registry's status-event queue via
+/// [`crate::bg_agent::BgStatusEmitter::send_activity`]. The
+/// inference loop's existing drain in `inference.rs` forwards the
+/// resulting `BgChildActivity` event to whatever sink is active
+/// (TUI / headless / ACP) without further plumbing.
+///
+/// **The narrative trace is preserved.** Every event that hits this
+/// sink is also forwarded to the inner `BufferingSink`, so the
+/// authoritative post-completion trace (drained at result-injection
+/// time and persisted to the transcript) is unchanged. Live and
+/// post-completion are deliberately two separate channels:
+/// - Live (`BgChildActivity`) is for real-time UX; events are
+///   ephemeral and may be coalesced or dropped by the renderer.
+/// - Post-completion (the `BufferingSink::take_lines` dump) is the
+///   load-bearing record — it's what the model sees in the result
+///   message and what the transcript exporter persists.
+///
+/// ## Sink wrapping order
+///
+/// `PersistingSink` wraps `ForwardingBgSink` wraps `BufferingSink`.
+/// Persistence sees every event first (so the transcript captures
+/// `SubAgentEvent` rows in real time), then forwarding fans out to
+/// the parent's queue, then buffering captures the line for the
+/// post-completion drain.
+pub struct ForwardingBgSink {
+    inner: BufferingSink,
+    emitter: crate::bg_agent::BgStatusEmitter,
+}
+
+impl ForwardingBgSink {
+    /// Wrap a `BufferingSink` and forward live activity through the
+    /// emitter. The emitter is cheap to clone (two `Arc`s and a
+    /// `watch::Sender`); pass a clone and keep the original for the
+    /// terminal-status sends in `run_bg_agent`.
+    pub fn new(inner: BufferingSink, emitter: crate::bg_agent::BgStatusEmitter) -> Self {
+        Self { inner, emitter }
+    }
+
+    /// Drain the inner buffering sink. Same semantics as
+    /// [`BufferingSink::take_lines`] — the buffer is empty after
+    /// this returns. Only the post-completion narrative is drained
+    /// here; live `BgChildActivity` events have already been
+    /// forwarded individually as they happened.
+    pub fn take_lines(&self) -> Vec<String> {
+        self.inner.take_lines()
+    }
+}
+
+impl EngineSink for ForwardingBgSink {
+    fn emit(&self, event: EngineEvent) {
+        // Forward the *live* signal first while we still own the
+        // event by reference. Dropping a delta on the floor here
+        // (e.g. an unknown future variant) is silently fine — the
+        // post-completion trace via the inner BufferingSink remains
+        // authoritative.
+        match &event {
+            EngineEvent::ToolCallStart { name, args, .. } => {
+                self.emitter
+                    .send_activity(crate::engine::event::BgChildActivityKind::ToolStart {
+                        tool_name: name.clone(),
+                        summary: summarize_tool_call(name, args),
+                    });
+            }
+            EngineEvent::ToolCallResult { name, output, .. } => {
+                // Best-effort success classification: tool dispatchers
+                // prefix failed results with "Error:" or "❌". Cheap
+                // string sniff — the live feed only uses this for an
+                // icon hint, not for any control-flow decision.
+                let success = !looks_like_tool_error(output);
+                self.emitter
+                    .send_activity(crate::engine::event::BgChildActivityKind::ToolEnd {
+                        tool_name: name.clone(),
+                        success,
+                    });
+            }
+            EngineEvent::Info { message } => {
+                self.emitter
+                    .send_activity(crate::engine::event::BgChildActivityKind::Info {
+                        message: message.clone(),
+                    });
+            }
+            // Streaming text, thinking, status, approval, etc. are
+            // intentionally not forwarded — too noisy for a feed,
+            // duplicative with the result oneshot, or already covered
+            // by `BgTaskUpdate` heartbeats.
+            _ => {}
+        }
+        // Forward to the inner buffering sink for the post-completion
+        // narrative trace.
+        self.inner.emit(event);
+    }
+}
+
+/// Build a one-line summary of a tool call for the live activity
+/// feed. Output is rendered as-is by clients, so trim hard.
+///
+/// Per-tool special cases live here so every client sees the same
+/// string without having to know each tool's argument schema. New
+/// tools fall through to a generic `"<name> <truncated args>"`.
+fn summarize_tool_call(name: &str, args: &serde_json::Value) -> String {
+    /// Per-line cap. The activity feed is rendered inline under the
+    /// bg-task spawn cell where horizontal real estate is tight.
+    const MAX_LEN: usize = 80;
+
+    let body = match name {
+        "Read" | "Edit" | "Write" | "Delete" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        "Bash" => args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        "Grep" => {
+            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+            Some(format!("{pattern} {path}"))
+        }
+        "InvokeAgent" => args
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        _ => None,
+    };
+
+    let body = body.unwrap_or_default();
+    let combined = if body.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} {body}")
+    };
+
+    if combined.chars().count() <= MAX_LEN {
+        combined
+    } else {
+        // Char-aware truncation — byte slicing would explode on
+        // multi-byte chars in tool args (paths, commit messages, etc.).
+        let truncated: String = combined.chars().take(MAX_LEN.saturating_sub(1)).collect();
+        format!("{truncated}\u{2026}")
+    }
+}
+
+/// Best-effort "did this tool result indicate failure" check.
+///
+/// Tool dispatchers in `tools/` produce result strings, not Result
+/// enums, so this is the only signal available at the sink. Used
+/// purely for a render hint (success vs error icon) — callers must
+/// not depend on this for correctness.
+fn looks_like_tool_error(output: &str) -> bool {
+    let head = output.trim_start();
+    head.starts_with("Error:") || head.starts_with("\u{274c}")
+}
+
 // ── PersistingSink (#1108 P1b/P2a) ───────────────────────────────
 
 /// A decorator that persists `Info` and `BgTaskUpdate` events to the
@@ -509,5 +678,217 @@ mod tests {
     fn buffering_sink_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<BufferingSink>();
+    }
+
+    // ── ForwardingBgSink (#1201 B) ────────────────────
+
+    /// Build a [`crate::bg_agent::BgStatusEmitter`] hooked up to a
+    /// real registry so we can drain forwarded events. The registry
+    /// is the load-bearing piece — it's what the inference loop
+    /// drains in production, so testing through it (rather than
+    /// against a mock emitter) catches wire-up regressions.
+    fn make_test_emitter(
+        task_id: u32,
+    ) -> (
+        std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
+        crate::bg_agent::BgStatusEmitter,
+    ) {
+        let registry = crate::bg_agent::new_shared();
+        let (status_tx, _status_rx) =
+            tokio::sync::watch::channel(crate::bg_agent::AgentStatus::Pending);
+        let emitter =
+            crate::bg_agent::BgStatusEmitter::new(task_id, None, status_tx, registry.clone());
+        (registry, emitter)
+    }
+
+    #[test]
+    fn forwarding_bg_sink_emits_tool_start_and_end_to_registry() {
+        let (registry, emitter) = make_test_emitter(7);
+        let sink = ForwardingBgSink::new(BufferingSink::new(), emitter);
+
+        sink.emit(EngineEvent::ToolCallStart {
+            id: "t1".into(),
+            name: "Read".into(),
+            args: serde_json::json!({"path": "src/auth.rs"}),
+            is_sub_agent: false,
+        });
+        sink.emit(EngineEvent::ToolCallResult {
+            id: "t1".into(),
+            name: "Read".into(),
+            output: "<file contents>".into(),
+        });
+
+        let drained = registry.drain_status_events();
+        assert_eq!(
+            drained.len(),
+            2,
+            "each interesting event should fan out exactly one BgChildActivity"
+        );
+        assert!(matches!(
+            &drained[0],
+            EngineEvent::BgChildActivity {
+                task_id: 7,
+                kind: crate::engine::event::BgChildActivityKind::ToolStart { tool_name, summary },
+                ..
+            } if tool_name == "Read" && summary.contains("src/auth.rs")
+        ));
+        assert!(matches!(
+            &drained[1],
+            EngineEvent::BgChildActivity {
+                kind: crate::engine::event::BgChildActivityKind::ToolEnd { tool_name, success: true },
+                ..
+            } if tool_name == "Read"
+        ));
+    }
+
+    #[test]
+    fn forwarding_bg_sink_classifies_tool_errors() {
+        let (registry, emitter) = make_test_emitter(1);
+        let sink = ForwardingBgSink::new(BufferingSink::new(), emitter);
+
+        sink.emit(EngineEvent::ToolCallResult {
+            id: "t1".into(),
+            name: "Bash".into(),
+            output: "Error: command not found".into(),
+        });
+        let drained = registry.drain_status_events();
+        assert!(matches!(
+            &drained[0],
+            EngineEvent::BgChildActivity {
+                kind: crate::engine::event::BgChildActivityKind::ToolEnd { success: false, .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn forwarding_bg_sink_preserves_buffering_for_post_completion_drain() {
+        // The whole point of the decorator is "live AND buffered" —
+        // dropping the inner buffer would silently break the
+        // model-facing narrative trace. This test pins that.
+        let (_registry, emitter) = make_test_emitter(1);
+        let sink = ForwardingBgSink::new(BufferingSink::new(), emitter);
+
+        sink.emit(EngineEvent::ToolCallStart {
+            id: "t1".into(),
+            name: "Read".into(),
+            args: serde_json::json!({"path": "foo"}),
+            is_sub_agent: false,
+        });
+        sink.emit(EngineEvent::Info {
+            message: "  \u{26a1} cache hit".into(),
+        });
+
+        let lines = sink.take_lines();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("Read"));
+        assert!(lines[1].contains("cache hit"));
+    }
+
+    #[test]
+    fn forwarding_bg_sink_drops_streaming_text() {
+        // Streaming text is forwarded neither live nor to the buffer:
+        // the model's final output already crosses the result oneshot,
+        // so capturing it here would duplicate it AND spam the parent
+        // feed with per-token noise.
+        let (registry, emitter) = make_test_emitter(1);
+        let sink = ForwardingBgSink::new(BufferingSink::new(), emitter);
+
+        sink.emit(EngineEvent::TextDelta {
+            text: "hello".into(),
+        });
+        sink.emit(EngineEvent::ThinkingDelta {
+            text: "reasoning".into(),
+        });
+        sink.emit(EngineEvent::TextDone);
+
+        assert!(registry.drain_status_events().is_empty());
+        assert!(sink.take_lines().is_empty());
+    }
+
+    #[test]
+    fn forwarding_bg_sink_summarizes_known_tool_args() {
+        // Per-tool special cases live inside the sink so every client
+        // renders the same summary string. Pin the contracts the TUI
+        // depends on — if the summary format changes, the activity
+        // feed render needs to update too.
+        let (registry, emitter) = make_test_emitter(1);
+        let sink = ForwardingBgSink::new(BufferingSink::new(), emitter);
+
+        // Bash: command
+        sink.emit(EngineEvent::ToolCallStart {
+            id: "a".into(),
+            name: "Bash".into(),
+            args: serde_json::json!({"command": "cargo test"}),
+            is_sub_agent: false,
+        });
+        // Grep: pattern + path
+        sink.emit(EngineEvent::ToolCallStart {
+            id: "b".into(),
+            name: "Grep".into(),
+            args: serde_json::json!({"pattern": "TODO", "path": "src/"}),
+            is_sub_agent: false,
+        });
+        // InvokeAgent: agent name
+        sink.emit(EngineEvent::ToolCallStart {
+            id: "c".into(),
+            name: "InvokeAgent".into(),
+            args: serde_json::json!({"agent": "reviewer", "prompt": "x"}),
+            is_sub_agent: false,
+        });
+
+        let drained = registry.drain_status_events();
+        let summaries: Vec<String> = drained
+            .iter()
+            .filter_map(|e| match e {
+                EngineEvent::BgChildActivity {
+                    kind: crate::engine::event::BgChildActivityKind::ToolStart { summary, .. },
+                    ..
+                } => Some(summary.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(summaries.len(), 3);
+        assert!(summaries[0].contains("cargo test"), "got: {}", summaries[0]);
+        assert!(
+            summaries[1].contains("TODO") && summaries[1].contains("src/"),
+            "got: {}",
+            summaries[1]
+        );
+        assert!(summaries[2].contains("reviewer"), "got: {}", summaries[2]);
+    }
+
+    #[test]
+    fn forwarding_bg_sink_truncates_long_summaries() {
+        // Summaries land in tight horizontal real estate (inline
+        // under the bg-task spawn cell). A 5KB commit message in the
+        // args must not blow up the feed.
+        let (registry, emitter) = make_test_emitter(1);
+        let sink = ForwardingBgSink::new(BufferingSink::new(), emitter);
+
+        let long_cmd = "x".repeat(500);
+        sink.emit(EngineEvent::ToolCallStart {
+            id: "a".into(),
+            name: "Bash".into(),
+            args: serde_json::json!({"command": long_cmd}),
+            is_sub_agent: false,
+        });
+
+        let drained = registry.drain_status_events();
+        let summary = match &drained[0] {
+            EngineEvent::BgChildActivity {
+                kind: crate::engine::event::BgChildActivityKind::ToolStart { summary, .. },
+                ..
+            } => summary.clone(),
+            _ => panic!("expected ToolStart"),
+        };
+        assert!(summary.chars().count() <= 80);
+        assert!(summary.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn forwarding_bg_sink_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ForwardingBgSink>();
     }
 }

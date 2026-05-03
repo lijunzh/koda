@@ -155,6 +155,38 @@ pub enum EngineEvent {
         status: crate::bg_agent::AgentStatus,
     },
 
+    /// Live activity from inside a running background sub-agent.
+    ///
+    /// **#1201 B**: pre-this-event the parent's TUI had no live signal
+    /// from inside a bg agent — only `BgTaskUpdate` heartbeats
+    /// (`Running { iter: N }`), which tell you "still going" but not
+    /// "doing what". The narrative trace shipped via `BufferingSink`
+    /// only surfaced at result-injection time.
+    ///
+    /// `BgChildActivity` is the live tap: each interesting event
+    /// inside the bg agent (tool start/end, info line) fans out to
+    /// the parent's sink as soon as it happens, so the parent's TUI
+    /// can render a Gemini-style activity feed under the bg-task's
+    /// spawn cell. The post-completion narrative trace via
+    /// `BufferingSink` is still emitted (and is still authoritative
+    /// for the persisted transcript) — this event is purely for
+    /// real-time UX.
+    ///
+    /// Same routing as `BgTaskUpdate`: pushed onto the registry's
+    /// status-event queue by [`crate::bg_agent::BgStatusEmitter::send_activity`]
+    /// and drained by the inference loop, so every client surface
+    /// (TUI / headless / ACP) sees the same stream.
+    BgChildActivity {
+        /// Matches the `task_id` from `BgTaskUpdate` for the same
+        /// running bg task.
+        task_id: u32,
+        /// Sub-agent invocation id of the spawner, or `None` for
+        /// top-level-spawned bg tasks. Mirrors `BgTaskUpdate.spawner`.
+        spawner: Option<u32>,
+        /// What just happened inside the bg agent.
+        kind: BgChildActivityKind,
+    },
+
     // ── Approval flow ─────────────────────────────────────────────────
     /// The engine needs user approval before executing a tool.
     ///
@@ -306,6 +338,58 @@ pub enum EngineEvent {
     /// Error message.
     Error {
         /// The error message.
+        message: String,
+    },
+}
+
+/// What kind of activity happened inside a running background sub-agent.
+///
+/// **#1201 B**: deliberately a small, fixed set rather than "forward
+/// every `EngineEvent`". The parent's TUI is rendering a *summary*
+/// of child activity, not replaying the child's full event stream;
+/// most events (streaming text deltas, thinking deltas, status
+/// updates) would be noise at this granularity.
+///
+/// Wire format is `snake_case` with an internal `kind` tag, matching
+/// the convention for [`TurnEndReason`] and
+/// [`crate::bg_agent::AgentStatus`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BgChildActivityKind {
+    /// The child started a tool call.
+    ///
+    /// `summary` is a pre-truncated one-line description suitable
+    /// for direct render (e.g. `"Read src/auth.rs"`, `"Bash cargo
+    /// test"`). Computed at emit time so every client renders the
+    /// same string without having to know the per-tool argument
+    /// schema.
+    ToolStart {
+        /// Tool name (matches `EngineEvent::ToolCallStart.name`).
+        tool_name: String,
+        /// Pre-truncated one-line summary suitable for direct render.
+        summary: String,
+    },
+    /// The child's tool call completed.
+    ///
+    /// Output is intentionally NOT included — it can be arbitrarily
+    /// large and the parent's TUI is rendering a feed, not a
+    /// transcript. The model's narrative trace via `BufferingSink`
+    /// remains the authoritative record.
+    ToolEnd {
+        /// Tool name (matches `EngineEvent::ToolCallStart.name`).
+        tool_name: String,
+        /// Whether the tool succeeded. Best-effort classification
+        /// at the emit site by inspecting the result string for an
+        /// error-marker prefix; not load-bearing for correctness.
+        success: bool,
+    },
+    /// An informational line from inside the child.
+    ///
+    /// These pass through verbatim from `EngineEvent::Info` so the
+    /// child agent's own status messages (cache hit, microcompact
+    /// fired, etc.) surface in the parent's feed.
+    Info {
+        /// The info line, rendered as-is.
         message: String,
     },
 }
@@ -696,5 +780,74 @@ mod tests {
             let roundtripped: TurnEndReason = serde_json::from_str(&json).unwrap();
             assert_eq!(reason, roundtripped);
         }
+    }
+
+    /// #1201 B: BgChildActivity must roundtrip cleanly so ACP / headless
+    /// clients see the same wire shape as the in-process TUI. Tests all
+    /// three kinds and the `BgChildActivity` envelope.
+    #[test]
+    fn test_bg_child_activity_roundtrip() {
+        let kinds = vec![
+            BgChildActivityKind::ToolStart {
+                tool_name: "Read".into(),
+                summary: "Read src/auth.rs".into(),
+            },
+            BgChildActivityKind::ToolEnd {
+                tool_name: "Bash".into(),
+                success: true,
+            },
+            BgChildActivityKind::ToolEnd {
+                tool_name: "Edit".into(),
+                success: false,
+            },
+            BgChildActivityKind::Info {
+                message: "  \u{26a1} cache hit".into(),
+            },
+        ];
+        for kind in kinds {
+            let json = serde_json::to_string(&kind).unwrap();
+            let roundtripped: BgChildActivityKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(kind, roundtripped);
+        }
+
+        // Envelope event — tests the outer EngineEvent serialization
+        // including the snake_case type tag ("bg_child_activity").
+        let event = EngineEvent::BgChildActivity {
+            task_id: 7,
+            spawner: Some(3),
+            kind: BgChildActivityKind::ToolStart {
+                tool_name: "Grep".into(),
+                summary: "Grep TODO src/".into(),
+            },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            json.contains("\"type\":\"bg_child_activity\""),
+            "envelope must use snake_case type tag for ACP / headless clients"
+        );
+        assert!(
+            json.contains("\"kind\":\"tool_start\""),
+            "inner kind must use snake_case tag"
+        );
+        let deserialized: EngineEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            deserialized,
+            EngineEvent::BgChildActivity {
+                task_id: 7,
+                spawner: Some(3),
+                ..
+            }
+        ));
+
+        // Top-level-spawned bg task — spawner is None.
+        let top_level = EngineEvent::BgChildActivity {
+            task_id: 1,
+            spawner: None,
+            kind: BgChildActivityKind::Info {
+                message: "hello".into(),
+            },
+        };
+        let json = serde_json::to_string(&top_level).unwrap();
+        let _: EngineEvent = serde_json::from_str(&json).unwrap();
     }
 }

@@ -297,6 +297,46 @@ impl TuiRenderer {
                 // that want diff-driven animation. Same future-cleanup
                 // path as BgTaskUpdate.
             }
+            // (#1201 B) Live activity from inside a running bg agent.
+            // Pre-this-arm a 30-second tool inside a bg agent looked
+            // identical to a 30-second hang — only the post-completion
+            // narrative trace surfaced "what it did". This arm renders
+            // each child activity event as a dim inline line in the
+            // scroll buffer, prefixed with the bg task id so the user
+            // can correlate it with the spawn line and the bg-task
+            // panel.
+            //
+            // Phase B2 (follow-up) will replace this with a proper
+            // Gemini-style activity block that collapses on completion;
+            // for now the inline-line render gets us the live signal
+            // without committing to a panel layout.
+            EngineEvent::BgChildActivity { task_id, kind, .. } => {
+                let body = match kind {
+                    koda_core::engine::event::BgChildActivityKind::ToolStart {
+                        summary, ..
+                    } => format!("\u{1f527} {summary}"),
+                    koda_core::engine::event::BgChildActivityKind::ToolEnd {
+                        tool_name,
+                        success,
+                    } => {
+                        let icon = if success { "\u{2713}" } else { "\u{2717}" };
+                        format!("{icon} {tool_name}")
+                    }
+                    koda_core::engine::event::BgChildActivityKind::Info { message } => {
+                        // BufferingSink-style info lines already carry
+                        // their own indentation/emoji — forward as-is
+                        // so visual hierarchy survives.
+                        message
+                    }
+                };
+                tui_output::emit_line(
+                    buffer,
+                    Line::from(vec![
+                        Span::styled(format!("  [bg {task_id}] "), DIM),
+                        Span::styled(body, DIM),
+                    ]),
+                );
+            }
             EngineEvent::ActionBlocked {
                 tool_name: _,
                 detail,
