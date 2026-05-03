@@ -261,6 +261,7 @@ pub(crate) async fn execute_one_tool(
             bg_agents,
             &tools.bg_registry,
             caller_spawner,
+            &cancel,
         )
         .await;
         (r.output, r.success, r.full_output)

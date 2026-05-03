@@ -41,6 +41,7 @@ use crate::providers::ToolDefinition;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 use crate::bg_agent::{
     AgentStatus, BgAgentRegistry, BgAgentResult, BgTaskSnapshot, CancelOutcome, WaitOutcome,
@@ -359,11 +360,12 @@ pub async fn execute(
     bg_agents: &Arc<BgAgentRegistry>,
     bg_processes: &BgRegistry,
     caller_spawner: Option<u32>,
+    cancel: &CancellationToken,
 ) -> ToolResult {
     match tool_name {
         "ListBackgroundTasks" => execute_list(bg_agents, bg_processes, caller_spawner),
         "CancelTask" => execute_cancel(arguments, bg_agents, bg_processes, caller_spawner),
-        "WaitTask" => execute_wait(arguments, bg_agents, bg_processes, caller_spawner).await,
+        "WaitTask" => execute_wait(arguments, bg_agents, bg_processes, caller_spawner, cancel).await,
         other => err(format!(
             "bg_task_tools::execute called with unknown tool '{other}' \
              (router bug — should have matched in tool_dispatch)"
@@ -437,6 +439,7 @@ async fn execute_wait(
     bg_agents: &Arc<BgAgentRegistry>,
     bg_processes: &BgRegistry,
     caller_spawner: Option<u32>,
+    cancel: &CancellationToken,
 ) -> ToolResult {
     let args: Value = match serde_json::from_str(arguments) {
         Ok(v) => v,
@@ -483,7 +486,7 @@ async fn execute_wait(
     // not 120s.
     let futures = task_ids
         .iter()
-        .map(|id| wait_one_task(id.clone(), bg_agents, bg_processes, caller_spawner, timeout));
+        .map(|id| wait_one_task(id.clone(), bg_agents, bg_processes, caller_spawner, timeout, cancel));
     let task_results: Vec<Value> = futures_util::future::join_all(futures).await;
 
     // Roll up status counts so the model can branch on "all done" /
@@ -519,6 +522,7 @@ async fn wait_one_task(
     bg_processes: &BgRegistry,
     caller_spawner: Option<u32>,
     timeout: Duration,
+    cancel: &CancellationToken,
 ) -> Value {
     let task_id = match parse_task_id(&task_id_str) {
         Ok(t) => t,
@@ -530,18 +534,34 @@ async fn wait_one_task(
             });
         }
     };
+    // #1216: race the registry wait against the master cancel token.
+    // Pre-#1216 the master inference would block here for the full
+    // `timeout` (default 5min, max 24h) waiting for a wedged bg agent
+    // to notice its own cancel. Now Esc/Ctrl+C unwinds the master in
+    // microseconds even if the bg agent is itself parked inside an
+    // unresponsive tool call (e.g. a giant Read or a nested WaitTask).
+    // The bg agent's own cancel still fires via the CancellationToken
+    // parent→child cascade fired by `session.interrupt()`; we just
+    // don't wait for it to finish unwinding before reporting back.
     match task_id {
         TaskId::Agent(n) => {
-            let outcome = bg_agents
-                .wait_for_completion(n, caller_spawner, timeout)
-                .await;
-            agent_wait_to_value(&task_id_str, outcome)
+            tokio::select! {
+                outcome = bg_agents.wait_for_completion(n, caller_spawner, timeout) => {
+                    agent_wait_to_value(&task_id_str, outcome)
+                }
+                _ = cancel.cancelled() => agent_wait_to_value(&task_id_str, WaitOutcome::Cancelled),
+            }
         }
         TaskId::Process(n) => {
-            let outcome = bg_processes
-                .wait_for_exit_as_caller(n, caller_spawner, timeout)
-                .await;
-            process_wait_to_value(&task_id_str, outcome)
+            tokio::select! {
+                outcome = bg_processes.wait_for_exit_as_caller(n, caller_spawner, timeout) => {
+                    process_wait_to_value(&task_id_str, outcome)
+                }
+                _ = cancel.cancelled() => json!({
+                    "task_id": task_id_str,
+                    "status": "cancelled",
+                }),
+            }
         }
     }
 }
@@ -617,6 +637,14 @@ fn process_wait_to_value(task_id_str: &str, outcome: ProcessWaitOutcome) -> Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fresh, never-cancelled token for tests that don't care about
+    /// the master cancel path. Returns a value (not a clone) so each
+    /// call site has an independent root — nothing in these tests
+    /// shares cancellation state across cases.
+    fn no_cancel() -> CancellationToken {
+        CancellationToken::new()
+    }
 
     #[test]
     fn definitions_returns_three_tools_with_expected_names() {
@@ -768,7 +796,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_list_returns_empty_array_when_no_tasks() {
         let (agents, processes) = fresh_registries();
-        let r = execute("ListBackgroundTasks", "{}", &agents, &processes, None).await;
+        let r = execute("ListBackgroundTasks", "{}", &agents, &processes, None, &no_cancel()).await;
         assert!(r.success);
         assert_eq!(r.output, "[]");
     }
@@ -780,7 +808,7 @@ mod tests {
         let (agents, processes) = fresh_registries();
         let (id, _tx, _, _) = agents.register_test_with_status("explore", "map repo", None);
 
-        let r = execute("ListBackgroundTasks", "{}", &agents, &processes, None).await;
+        let r = execute("ListBackgroundTasks", "{}", &agents, &processes, None, &no_cancel()).await;
         assert!(r.success);
         let arr: Value = serde_json::from_str(&r.output).unwrap();
         let arr = arr.as_array().unwrap();
@@ -800,11 +828,11 @@ mod tests {
         agents.register_test_with_status("a", "top", None);
         agents.register_test_with_status("b", "sub", Some(7));
 
-        let top = execute("ListBackgroundTasks", "{}", &agents, &processes, None).await;
+        let top = execute("ListBackgroundTasks", "{}", &agents, &processes, None, &no_cancel()).await;
         let arr: Value = serde_json::from_str(&top.output).unwrap();
         assert_eq!(arr.as_array().unwrap().len(), 1, "top sees only its own");
 
-        let sub = execute("ListBackgroundTasks", "{}", &agents, &processes, Some(7)).await;
+        let sub = execute("ListBackgroundTasks", "{}", &agents, &processes, Some(7), &no_cancel()).await;
         let arr: Value = serde_json::from_str(&sub.output).unwrap();
         assert_eq!(arr.as_array().unwrap().len(), 1, "sub sees only its own");
     }
@@ -822,6 +850,7 @@ mod tests {
             &agents,
             &processes,
             None,
+            &no_cancel(),
         )
         .await;
         assert!(r.success, "got: {}", r.output);
@@ -840,6 +869,7 @@ mod tests {
             &agents,
             &processes,
             None,
+            &no_cancel(),
         )
         .await;
         assert!(!r.success);
@@ -858,6 +888,7 @@ mod tests {
             &agents,
             &processes,
             None,
+            &no_cancel(),
         )
         .await;
         assert!(!r.success);
@@ -872,7 +903,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_cancel_rejects_malformed_json() {
         let (agents, processes) = fresh_registries();
-        let r = execute("CancelTask", "not-json", &agents, &processes, None).await;
+        let r = execute("CancelTask", "not-json", &agents, &processes, None, &no_cancel()).await;
         assert!(!r.success);
         assert!(r.output.contains("invalid JSON"), "got: {}", r.output);
     }
@@ -880,7 +911,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_cancel_rejects_missing_task_id() {
         let (agents, processes) = fresh_registries();
-        let r = execute("CancelTask", "{}", &agents, &processes, None).await;
+        let r = execute("CancelTask", "{}", &agents, &processes, None, &no_cancel()).await;
         assert!(!r.success);
         assert!(r.output.contains("missing required"), "got: {}", r.output);
     }
@@ -906,6 +937,7 @@ mod tests {
             &agents,
             &processes,
             None,
+            &no_cancel(),
         )
         .await;
         assert!(r.success, "got: {}", r.output);
@@ -940,6 +972,7 @@ mod tests {
             &agents,
             &processes,
             None,
+            &no_cancel(),
         )
         .await;
         assert!(r.success);
@@ -978,6 +1011,7 @@ mod tests {
             &agents,
             &processes,
             None,
+            &no_cancel(),
         )
         .await;
         assert!(
@@ -992,6 +1026,61 @@ mod tests {
         assert_eq!(payload["summary"]["cancelled"], 1);
         // Consumed — entry removed from registry.
         assert_eq!(agents.snapshot().len(), 0);
+    }
+
+    /// #1216: master-cancel race. Pre-fix, when the bg agent was
+    /// wedged inside its own tool call (no terminal status arriving),
+    /// `WaitTask` blocked the master inference for the full timeout
+    /// (default 5min, max 24h). Esc/Ctrl+C couldn't reach it. The
+    /// fix threads a `cancel: &CancellationToken` through `execute`
+    /// and races it against `wait_for_completion` inside
+    /// `wait_one_task`.
+    ///
+    /// This test simulates that wedge: a registered bg agent that
+    /// NEVER transitions to terminal status. We fire the master
+    /// cancel token mid-wait and assert WaitTask returns within
+    /// well under the requested 5s timeout with `status: cancelled`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn execute_wait_unblocks_immediately_on_master_cancel() {
+        let (agents, processes) = fresh_registries();
+        // Register but do NOT push a terminal status — simulates a
+        // bg agent stuck inside an unresponsive tool call. We hold
+        // `_tx`, `_status_tx`, `_observer` so the registry entry
+        // stays "running" for the entire call.
+        let (id, _tx, _status_tx, _observer) =
+            agents.register_test_with_status("wedged", "x", None);
+
+        let cancel = CancellationToken::new();
+        let cancel_for_fire = cancel.clone();
+
+        // Fire the master cancel after a short delay so we can prove
+        // WaitTask is the one observing the token (not racing into
+        // the timeout path).
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel_for_fire.cancel();
+        });
+
+        let started = std::time::Instant::now();
+        let r = execute(
+            "WaitTask",
+            &json!({ "task_ids": [format!("agent:{id}")], "timeout_secs": 5 }).to_string(),
+            &agents,
+            &processes,
+            None,
+            &cancel,
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "WaitTask must unblock on master cancel, not wait out the 5s timeout (took {elapsed:?})"
+        );
+        assert!(r.success, "WaitTask payload must still parse: {}", r.output);
+        let payload: Value = serde_json::from_str(&r.output).unwrap();
+        assert_eq!(payload["tasks"][0]["status"], "cancelled");
+        assert_eq!(payload["summary"]["cancelled"], 1);
     }
 
     /// #1157 — the headline feature: N parallel sub-agents land in
@@ -1024,6 +1113,7 @@ mod tests {
             &agents,
             &processes,
             None,
+            &no_cancel(),
         )
         .await;
         assert!(r.success, "got: {}", r.output);
@@ -1082,6 +1172,7 @@ mod tests {
             &agents,
             &processes,
             None,
+            &no_cancel(),
         )
         .await;
         assert!(r.success, "top-level call must succeed: {}", r.output);
@@ -1112,6 +1203,7 @@ mod tests {
             &agents,
             &processes,
             None,
+            &no_cancel(),
         )
         .await;
         assert!(!r.success);
@@ -1130,6 +1222,7 @@ mod tests {
             &agents,
             &processes,
             None,
+            &no_cancel(),
         )
         .await;
         assert!(!r.success);
@@ -1143,7 +1236,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_unknown_tool_name_returns_error() {
         let (agents, processes) = fresh_registries();
-        let r = execute("NotAToolWeKnow", "{}", &agents, &processes, None).await;
+        let r = execute("NotAToolWeKnow", "{}", &agents, &processes, None, &no_cancel()).await;
         assert!(!r.success);
         assert!(r.output.contains("unknown tool"));
     }
