@@ -251,12 +251,23 @@ impl KodaSession {
     ///
     /// Emits `TurnStart` and `TurnEnd` lifecycle events. The loop-cap prompt is handled via `EngineEvent::LoopCapReached` / `EngineCommand::LoopDecision`
     /// through the `cmd_rx` channel.
+    ///
+    /// # Per-turn cancellation (#1208)
+    ///
+    /// `turn_cancel` lets callers (notably the TUI) wire Ctrl+C / Esc to a
+    /// **per-turn** child token that, when fired, stops the inference loop
+    /// without cancelling the session-lifetime `self.cancel` (which bg agents
+    /// derive from — see #1200 for why session.cancel must stay stable across
+    /// turns). When `None`, the inference loop falls back to `self.cancel`,
+    /// which preserves the pre-#1208 behaviour every test, the headless
+    /// driver, and the ACP server already rely on.
     pub async fn run_turn(
         &mut self,
         config: &KodaConfig,
         pending_images: Option<Vec<ImageData>>,
         sink: &dyn EngineSink,
         cmd_rx: &mut mpsc::Receiver<EngineCommand>,
+        turn_cancel: Option<CancellationToken>,
     ) -> Result<()> {
         let turn_id = uuid::Uuid::new_v4().to_string();
         sink.emit(crate::engine::EngineEvent::TurnStart {
@@ -300,7 +311,11 @@ impl KodaSession {
             pending_images,
             mode: self.mode,
             sink,
-            cancel: self.cancel.clone(),
+            // #1208: prefer the caller-supplied per-turn cancel so the TUI
+            // can stop *just this turn* with Ctrl+C without nuking the
+            // session-lifetime token bg agents share. Headless / server /
+            // tests pass `None` and keep the legacy session-token behaviour.
+            cancel: turn_cancel.unwrap_or_else(|| self.cancel.clone()),
             cmd_rx,
             file_tracker: &mut self.file_tracker,
             bg_agents: &self.bg_agents,

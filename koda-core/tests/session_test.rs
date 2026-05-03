@@ -86,7 +86,7 @@ async fn session_run_turn_emits_turn_start_and_end() {
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
 
     let result = session
-        .run_turn(&env.config, None, &sink, &mut cmd_rx)
+        .run_turn(&env.config, None, &sink, &mut cmd_rx, None)
         .await;
     assert!(
         result.is_ok(),
@@ -197,7 +197,7 @@ async fn session_cancellation_produces_turn_end_cancelled() {
 
     let start = std::time::Instant::now();
     let result = session
-        .run_turn(&env.config, None, &sink, &mut cmd_rx)
+        .run_turn(&env.config, None, &sink, &mut cmd_rx, None)
         .await;
 
     let elapsed = start.elapsed();
@@ -231,6 +231,107 @@ async fn session_cancellation_produces_turn_end_cancelled() {
     );
 }
 
+/// **#1208 regression.** A per-turn cancel token (the `turn_cancel`
+/// argument added so the TUI can fire Ctrl+C without nuking
+/// `session.cancel`, which bg agents derive from — see #1200) must
+/// stop the inference loop just like the session-token path does.
+///
+/// Without the wiring, firing the per-turn child token left the
+/// inference loop spinning because it was checking `session.cancel`
+/// instead. The bug surfaced as: bg sub-agents stopped, master turn
+/// kept running, model retried by spawning more bg agents.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_turn_cancel_token_stops_inference() {
+    let env = Env::new().await;
+    env.insert_user_message("hello").await;
+
+    // Same hanging-provider trick as `session_cancellation_produces_turn_end_cancelled`:
+    // signal once we're inside the LLM call, then sleep so the test
+    // drives the cancel deterministically.
+    struct HangingProvider {
+        entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    #[async_trait]
+    impl LlmProvider for HangingProvider {
+        async fn chat(
+            &self,
+            _: &[ChatMessage],
+            _: &[ToolDefinition],
+            _: &koda_core::config::ModelSettings,
+        ) -> Result<LlmResponse> {
+            unreachable!()
+        }
+        async fn chat_stream(
+            &self,
+            _: &[ChatMessage],
+            _: &[ToolDefinition],
+            _: &koda_core::config::ModelSettings,
+        ) -> Result<koda_core::providers::stream_collector::SseCollector> {
+            if let Some(tx) = self.entered.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            unreachable!()
+        }
+        async fn list_models(&self) -> Result<Vec<ModelInfo>> {
+            Ok(vec![])
+        }
+        fn provider_name(&self) -> &str {
+            "hanging"
+        }
+    }
+
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let provider = HangingProvider {
+        entered: std::sync::Mutex::new(Some(entered_tx)),
+    };
+    let (mut session, session_cancel) = make_session(&env, Box::new(provider)).await;
+
+    // The whole point of #1208: cancel the *per-turn* token, NOT
+    // session.cancel — then assert the turn still ends, AND
+    // session.cancel is still alive afterwards (so bg agents survive).
+    let turn_cancel = tokio_util::sync::CancellationToken::new();
+    let turn_cancel_clone = turn_cancel.clone();
+    tokio::spawn(async move {
+        let _ = entered_rx.await;
+        turn_cancel_clone.cancel();
+    });
+
+    let sink = TestSink::new();
+    let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
+
+    let start = std::time::Instant::now();
+    let result = session
+        .run_turn(
+            &env.config,
+            None,
+            &sink,
+            &mut cmd_rx,
+            Some(turn_cancel.clone()),
+        )
+        .await;
+    let elapsed = start.elapsed();
+
+    assert!(
+        result.is_ok(),
+        "per-turn cancellation should be graceful, not an error"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "per-turn cancel should unblock inference quickly, took {elapsed:?}"
+    );
+    assert!(
+        turn_cancel.is_cancelled(),
+        "per-turn token should remain in the cancelled state"
+    );
+    assert!(
+        !session_cancel.is_cancelled(),
+        "session.cancel must NOT be fired when only the per-turn token cancels \
+         (this is the whole #1208 fix — bg agents survive across cancelled turns)"
+    );
+}
+
 /// Messages from two separate `run_turn()` calls on the same session must
 /// both appear in the DB afterward.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -247,7 +348,7 @@ async fn session_persists_messages_across_two_turns() {
     let sink1 = TestSink::new();
     let (_, mut cmd_rx1) = mpsc::channel::<EngineCommand>(1);
     session1
-        .run_turn(&env.config, None, &sink1, &mut cmd_rx1)
+        .run_turn(&env.config, None, &sink1, &mut cmd_rx1, None)
         .await
         .expect("turn 1 should succeed");
 
@@ -275,7 +376,7 @@ async fn session_persists_messages_across_two_turns() {
     let sink2 = TestSink::new();
     let (_, mut cmd_rx2) = mpsc::channel::<EngineCommand>(1);
     session2
-        .run_turn(&env.config, None, &sink2, &mut cmd_rx2)
+        .run_turn(&env.config, None, &sink2, &mut cmd_rx2, None)
         .await
         .expect("turn 2 should succeed");
 
