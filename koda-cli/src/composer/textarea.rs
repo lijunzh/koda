@@ -531,7 +531,13 @@ impl TextArea {
         self.wrapped_lines(width).len() as u16
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Compute the on-screen cursor position assuming default scroll state.
+    ///
+    /// Used by the renderer (`tui_viewport::draw_viewport`) to park the
+    /// native terminal cursor at the input caret via
+    /// `Frame::set_cursor_position`. Without that call the cursor is
+    /// invisible, CJK/IME preedit composes at the screen origin, and
+    /// screen readers can't follow the input (#1220).
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         self.cursor_pos_with_state(area, TextAreaState::default())
     }
@@ -3580,5 +3586,67 @@ mod tests {
         // remains a fully-functional editable buffer.
         t.insert_str("-extra");
         assert_eq!(t.text(), "sk-very-secret-extra");
+    }
+
+    // ── #1220: hardware cursor positioning ────────────────────────────
+    //
+    // The renderer (`tui_viewport::draw_viewport`) consumes
+    // `cursor_pos_with_state` and forwards it to
+    // `Frame::set_cursor_position`. Without that wiring the cursor is
+    // hidden, CJK/IME preedit composes at the screen origin, and screen
+    // readers can't track input. These tests pin the contract by driving
+    // a `Terminal<TestBackend>` end-to-end and asserting the backend's
+    // recorded cursor matches our `cursor_pos` math.
+
+    #[test]
+    fn draw_pipeline_parks_terminal_cursor_at_caret() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let backend = TestBackend::new(40, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut ta = ta_with("hello world");
+        ta.set_cursor(5); // caret right after "hello"
+
+        terminal
+            .draw(|f| {
+                let area = Rect::new(2, 1, 30, 1); // offset to catch off-by-one
+                f.render_widget(&ta, area);
+                if let Some((x, y)) = ta.cursor_pos(area) {
+                    f.set_cursor_position((x, y));
+                }
+            })
+            .unwrap();
+
+        let cursor = terminal.get_cursor_position().unwrap();
+        // x = area.x (2) + display width of "hello" (5) = 7
+        // y = area.y (1) + screen row 0 = 1
+        assert_eq!((cursor.x, cursor.y), (7, 1));
+    }
+
+    #[test]
+    fn draw_pipeline_parks_cursor_at_origin_when_empty() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // Empty composer: cursor must still land at the start of the
+        // input area so the user can see where typing will begin
+        // (and IME/screen readers can find it).
+        let backend = TestBackend::new(40, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let ta = TextArea::new();
+
+        terminal
+            .draw(|f| {
+                let area = Rect::new(2, 1, 30, 1);
+                f.render_widget(&ta, area);
+                if let Some((x, y)) = ta.cursor_pos(area) {
+                    f.set_cursor_position((x, y));
+                }
+            })
+            .unwrap();
+
+        let cursor = terminal.get_cursor_position().unwrap();
+        assert_eq!((cursor.x, cursor.y), (2, 1));
     }
 }
