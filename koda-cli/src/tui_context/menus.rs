@@ -356,6 +356,88 @@ impl TuiContext {
             return Some(true);
         }
 
+        // Interactive `/agents` panel (#1191 Candidate 2). Owns its
+        // own state machine (List / Detail / ConfirmCancel) and full
+        // keyboard surface — we consume EVERY keypress while the panel
+        // is open so stray keys don't leak into the textarea behind it.
+        // Cancellation is fired live against the registries; status
+        // does not auto-refresh until the panel is reopened (per the
+        // snapshot-semantics doc on `BgAgentsPanelState`).
+        if let MenuContent::BgAgentsPanel(state) = &mut self.menu {
+            use crate::widgets::bg_agents_panel::{BgPanelMode, BgPanelRow};
+            match (state.mode, key.code) {
+                // ── List mode ──────────────────────────────────────
+                (BgPanelMode::List, KeyCode::Up) => state.up(),
+                (BgPanelMode::List, KeyCode::Down) => state.down(),
+                (BgPanelMode::List, KeyCode::Enter) => state.toggle_detail(),
+                (BgPanelMode::List, KeyCode::Char('c')) => state.request_cancel(),
+                (BgPanelMode::List, KeyCode::Esc | KeyCode::Char('q')) => {
+                    self.menu = MenuContent::None;
+                }
+                // ── Detail mode ────────────────────────────────────
+                (BgPanelMode::Detail, KeyCode::Enter) => state.toggle_detail(),
+                (BgPanelMode::Detail, KeyCode::Char('c')) => state.request_cancel(),
+                (BgPanelMode::Detail, KeyCode::Esc | KeyCode::Char('q')) => {
+                    let _ = state.back();
+                }
+                // ── Confirm-cancel mode ────────────────────────────
+                (BgPanelMode::ConfirmCancel, KeyCode::Char('y' | 'Y')) => {
+                    // Snapshot the selected row to a local before we
+                    // mutate self.menu / self.session — dropping the
+                    // borrow on state lets us call &-taking registry
+                    // methods without a borrow-checker fight.
+                    let target = state.selected().cloned();
+                    let _ = state.back();
+                    if let Some(row) = target {
+                        match row {
+                            BgPanelRow::Agent(snap) => {
+                                if self.session.bg_agents.cancel(snap.task_id) {
+                                    crate::tui_output::ok_msg(
+                                        &mut self.scroll_buffer,
+                                        format!(
+                                            "Cancellation requested for agent:{}. Result will inject shortly.",
+                                            snap.task_id
+                                        ),
+                                    );
+                                } else {
+                                    crate::tui_output::warn_msg(
+                                        &mut self.scroll_buffer,
+                                        format!(
+                                            "agent:{} no longer running (already finished or cancelled).",
+                                            snap.task_id
+                                        ),
+                                    );
+                                }
+                            }
+                            BgPanelRow::Process(snap) => {
+                                if self.agent.tools.bg_registry.kill(snap.pid) {
+                                    crate::tui_output::ok_msg(
+                                        &mut self.scroll_buffer,
+                                        format!(
+                                            "SIGTERM sent to process:{}. It should exit shortly.",
+                                            snap.pid
+                                        ),
+                                    );
+                                } else {
+                                    crate::tui_output::warn_msg(
+                                        &mut self.scroll_buffer,
+                                        format!("process:{} no longer running.", snap.pid),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                (BgPanelMode::ConfirmCancel, KeyCode::Char('n' | 'N') | KeyCode::Esc) => {
+                    let _ = state.back();
+                }
+                // Any other key in any mode: swallow silently so the
+                // textarea behind the panel doesn't pick it up.
+                _ => {}
+            }
+            return Some(true);
+        }
+
         // Purge confirmation: only y/n/Esc are meaningful.
         if let MenuContent::PurgeConfirm { min_age_days, .. } = &self.menu {
             let days = *min_age_days;
@@ -422,6 +504,13 @@ impl TuiContext {
             MenuContent::Key(dd) => nav!(dd),
             MenuContent::Session(dd) => nav!(dd),
             MenuContent::File { dropdown: dd, .. } => nav!(dd),
+            MenuContent::BgAgentsPanel(state) => {
+                if dir < 0 {
+                    state.up()
+                } else {
+                    state.down()
+                }
+            }
             MenuContent::Approval { .. }
             | MenuContent::AskUser { .. }
             | MenuContent::LoopCap
@@ -607,6 +696,7 @@ impl TuiContext {
             | MenuContent::HistorySearch { .. }
             | MenuContent::WizardTrail(_)
             | MenuContent::ShortcutsOverlay
+            | MenuContent::BgAgentsPanel(_)
             | MenuContent::None => {}
         }
         self.menu = MenuContent::None;

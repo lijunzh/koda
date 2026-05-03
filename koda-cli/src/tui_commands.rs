@@ -173,13 +173,22 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
 
-        // #996 Layers 1+F — unified runtime task surface. `/agents` (plural)
-        // lists running tasks; `/agent` (singular) lists sub-agent definitions.
+        // #996 Layers 1+F + #1191 Candidate 2 — unified runtime task
+        // surface. `/agents` (plural) opens an INTERACTIVE panel
+        // (`MenuContent::BgAgentsPanel`); `/agent` (singular) lists
+        // sub-agent definitions inline.
+        //
+        // The panel replaces the legacy flat-text dump from
+        // `tui_bg_tasks::handle_list_background_tasks`. Snapshots are
+        // captured here at open-time — see
+        // `widgets::bg_agents_panel` for the snapshot-semantics
+        // rationale (frozen until reopen, simple > complex per Zen).
         "/agents" => {
-            crate::tui_bg_tasks::handle_list_background_tasks(
-                buffer,
-                &session.bg_agents,
-                &agent.tools.bg_registry,
+            agent.tools.bg_registry.reap();
+            let agents = session.bg_agents.snapshot();
+            let processes = agent.tools.bg_registry.snapshot();
+            *menu = crate::tui_types::MenuContent::BgAgentsPanel(
+                crate::widgets::bg_agents_panel::BgAgentsPanelState::new(agents, processes),
             );
             SlashAction::Continue
         }

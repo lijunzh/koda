@@ -83,6 +83,7 @@ pub(crate) fn draw_viewport(
         MenuContent::ShortcutsOverlay => {
             crate::widgets::shortcuts_overlay::overlay_height(area.width)
         }
+        MenuContent::BgAgentsPanel(state) => crate::widgets::bg_agents_panel::visible_height(state),
     };
 
     // Queue preview height: 0 when idle / queue empty.
@@ -501,6 +502,9 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
         MenuContent::ShortcutsOverlay => {
             let lines = crate::widgets::shortcuts_overlay::build_overlay_lines(menu_area.width);
             frame.render_widget(Paragraph::new(lines), menu_area);
+        }
+        MenuContent::BgAgentsPanel(state) => {
+            crate::widgets::bg_agents_panel::render(state, menu_area, frame.buffer_mut());
         }
         MenuContent::None => {}
     }

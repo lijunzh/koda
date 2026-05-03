@@ -65,116 +65,9 @@ use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
 use koda_core::tools::bg_task_tools::TaskId;
 use ratatui::style::Modifier;
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 
-use tui_output::{BOLD, CYAN, DIM};
-
-/// Render `/agents` — a compact unified table of every currently-pending
-/// background task. Reads
-/// [`koda_core::bg_agent::BgAgentRegistry::snapshot`] and
-/// [`koda_core::tools::bg_process::BgRegistry::snapshot`] (both sync,
-/// no async). Empty registries render an explicit "No background tasks."
-/// line so the user knows the command worked rather than wondering
-/// if `/agents` silently failed.
-///
-/// Process snapshots are taken *after* a [`reap`] call so freshly-exited
-/// processes show their final status instead of stale `Running`.
-///
-/// [`reap`]: koda_core::tools::bg_process::BgRegistry::reap
-pub(crate) fn handle_list_background_tasks(
-    buffer: &mut ScrollBuffer,
-    bg_agents: &koda_core::bg_agent::BgAgentRegistry,
-    bg_processes: &koda_core::tools::bg_process::BgRegistry,
-) {
-    // Refresh process statuses so users see the latest exit codes
-    // rather than stale `Running` entries. Mirrors what the LLM-tool
-    // path does in `bg_task_tools::execute_list`.
-    bg_processes.reap();
-
-    let agent_snaps = bg_agents.snapshot();
-    let process_snaps = bg_processes.snapshot();
-
-    tui_output::blank(buffer);
-    tui_output::emit_line(buffer, Line::styled("  \u{1f43e} Background tasks", BOLD));
-    tui_output::blank(buffer);
-
-    if agent_snaps.is_empty() && process_snaps.is_empty() {
-        tui_output::dim_msg(buffer, "No background tasks.".into());
-        tui_output::blank(buffer);
-        tui_output::dim_msg(
-            buffer,
-            "Ask Koda to launch one with `background: true` in InvokeAgent or Bash.".into(),
-        );
-        return;
-    }
-
-    // ── Column widths ─────────────────────────────────────────────
-    //
-    // ID column holds prefixed ids like `agent:9999` or `process:65535`,
-    // so we size to the longest actual id rather than a fixed 4.
-    // NAME column shows agent name OR process command head; pad to
-    // the longest with a sane minimum of 8.
-    let id_strings: Vec<String> = agent_snaps
-        .iter()
-        .map(|s| format!("agent:{}", s.task_id))
-        .chain(process_snaps.iter().map(|s| format!("process:{}", s.pid)))
-        .collect();
-    let id_col = id_strings.iter().map(|s| s.len()).max().unwrap_or(8).max(8);
-
-    let name_col = agent_snaps
-        .iter()
-        .map(|s| s.agent_name.len())
-        .chain(process_snaps.iter().map(|s| command_head(&s.command).len()))
-        .max()
-        .unwrap_or(8)
-        .max(8);
-
-    // Header.
-    tui_output::emit_line(
-        buffer,
-        Line::from(vec![Span::styled(
-            format!(
-                "  {:<id_col$}  {:<name_col$}  {:<6}  STATUS",
-                "ID", "NAME", "AGE"
-            ),
-            DIM,
-        )]),
-    );
-
-    // Render agent rows first (they're the more common case for now),
-    // then process rows. Ordering inside each group is registry order
-    // (ascending task_id / pid).
-    for snap in &agent_snaps {
-        let id = format!("agent:{}", snap.task_id);
-        let mut spans = vec![Span::raw(format!(
-            "  {:<id_col$}  {:<name_col$}  {:<6}  ",
-            id,
-            snap.agent_name,
-            format_age(snap.age),
-        ))];
-        spans.extend(agent_status_spans(&snap.status));
-        tui_output::emit_line(buffer, Line::from(spans));
-    }
-
-    for snap in &process_snaps {
-        let id = format!("process:{}", snap.pid);
-        let name = command_head(&snap.command);
-        let mut spans = vec![Span::raw(format!(
-            "  {:<id_col$}  {:<name_col$}  {:<6}  ",
-            id,
-            name,
-            format_age(snap.age),
-        ))];
-        spans.extend(process_status_spans(&snap.status));
-        tui_output::emit_line(buffer, Line::from(spans));
-    }
-
-    tui_output::blank(buffer);
-    tui_output::dim_msg(
-        buffer,
-        "Use `/cancel agent:<id>` or `/cancel process:<id>` to stop one.".into(),
-    );
-}
+use tui_output::{CYAN, DIM};
 
 /// Render `/cancel <id>`. Routes to the right registry based on the
 /// parsed [`TaskId`]:
@@ -253,7 +146,11 @@ pub(crate) fn handle_cancel_background_task(
 /// `"2m"`. Matches user intent ("how many full Xs has it been
 /// running?") better than rounding to nearest, and avoids the
 /// confusing `"60s"` -> `"1m"` jitter at the boundary.
-fn format_age(d: std::time::Duration) -> String {
+///
+/// Made `pub(crate)` so the interactive bg-agents panel
+/// (`widgets::bg_agents_panel`, #1191) can reuse the same age format
+/// the flat `/agents` view used to use — visual consistency.
+pub(crate) fn format_age(d: std::time::Duration) -> String {
     let secs = d.as_secs();
     if secs < 60 {
         format!("{secs}s")
@@ -273,9 +170,12 @@ fn format_age(d: std::time::Duration) -> String {
 /// we only want enough to identify the process. We strip everything
 /// after the first 24 chars and append an ellipsis. Whitespace inside
 /// the head is preserved so `cargo test` reads naturally.
+///
+/// Made `pub(crate)` (along with [`command_head`] below) for reuse by
+/// `widgets::bg_agents_panel` (#1191).
 const COMMAND_HEAD_CHARS: usize = 24;
 
-fn command_head(cmd: &str) -> String {
+pub(crate) fn command_head(cmd: &str) -> String {
     let trimmed = cmd.trim();
     if trimmed.chars().count() <= COMMAND_HEAD_CHARS {
         trimmed.to_string()
@@ -288,7 +188,11 @@ fn command_head(cmd: &str) -> String {
 /// Color-coded status icon + label for bg **agents**, matching Codex's
 /// `multi_agents::status_summary_spans` palette: cyan running, green
 /// completed, red errored, dim cancelled / pending.
-fn agent_status_spans(status: &koda_core::bg_agent::AgentStatus) -> Vec<Span<'static>> {
+///
+/// Made `pub(crate)` for reuse by `widgets::bg_agents_panel` (#1191) —
+/// the interactive panel and the legacy flat printer must agree on
+/// the icon/color/text vocabulary.
+pub(crate) fn agent_status_spans(status: &koda_core::bg_agent::AgentStatus) -> Vec<Span<'static>> {
     use koda_core::bg_agent::AgentStatus;
     match status {
         AgentStatus::Pending => vec![Span::styled("\u{25d0} Pending", CYAN)],
@@ -338,7 +242,9 @@ fn agent_status_spans(status: &koda_core::bg_agent::AgentStatus) -> Vec<Span<'st
 /// - `Exited { code: Some(c) }` where c≠0 → `✗ Exited (c)` (red)
 /// - `Exited { code: None }` → `✗ Exited (signal)` (red) — POSIX returns
 ///   no code for signal-killed processes
-fn process_status_spans(
+///
+/// Made `pub(crate)` for reuse by `widgets::bg_agents_panel` (#1191).
+pub(crate) fn process_status_spans(
     status: &koda_core::tools::bg_process::BgProcessStatus,
 ) -> Vec<Span<'static>> {
     use koda_core::tools::bg_process::BgProcessStatus;
@@ -365,9 +271,11 @@ fn process_status_spans(
 /// `/agents` table. Codex uses 80 graphemes
 /// (`COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES`); we use 60 to keep
 /// rows readable on a 100-col terminal after the ID/NAME/AGE prefix.
+///
+/// Made `pub(crate)` for reuse by `widgets::bg_agents_panel` (#1191).
 const PREVIEW_CHARS: usize = 60;
 
-fn summary_preview(s: &str) -> String {
+pub(crate) fn summary_preview(s: &str) -> String {
     // Collapse all whitespace runs (including newlines and tabs) to
     // a single space — mirrors Codex's `split_whitespace().join(" ")`.
     // Without this, embedded newlines wreck the table layout.
@@ -554,152 +462,6 @@ mod tests {
     #[test]
     fn summary_preview_short_passes_through() {
         assert_eq!(summary_preview("all good"), "all good");
-    }
-
-    // ── handle_list_background_tasks ───────────────────────────────────────────────
-
-    /// Both registries empty: render the explicit "No background
-    /// tasks." line. Without it the user might wonder if `/agents`
-    /// is broken.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn list_background_tasks_empty_renders_explicit_message() {
-        let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
-        let procs = BgRegistry::new();
-        handle_list_background_tasks(&mut buf, &reg, &procs);
-        let text = buffer_text(&buf);
-        assert!(
-            text.contains("No background tasks."),
-            "empty registries should render explicit empty-state line, got: {text}"
-        );
-    }
-
-    /// Populated agent registry: every task surfaces with its
-    /// **prefixed** id (`agent:N`), agent name, and the Pending
-    /// status icon. Pinning the row content keeps the slash command's
-    /// contract stable across refactors.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn list_background_tasks_renders_each_pending_agent_with_prefix() {
-        let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
-        let procs = BgRegistry::new();
-        let (id_a, _tx_a, _stx_a, _cancel_a) = register_entry(&reg, "explore", "map repo");
-        let (id_b, _tx_b, _stx_b, _cancel_b) = register_entry(&reg, "verify", "check tests");
-
-        handle_list_background_tasks(&mut buf, &reg, &procs);
-        let text = buffer_text(&buf);
-
-        // Both ids must appear with the `agent:` prefix — bare numerics
-        // would be ambiguous now that processes share the table.
-        assert!(text.contains(&format!("agent:{id_a}")));
-        assert!(text.contains(&format!("agent:{id_b}")));
-        assert!(text.contains("explore"));
-        assert!(text.contains("verify"));
-        assert!(
-            text.contains("Pending"),
-            "Pending status label missing, got: {text}"
-        );
-    }
-
-    /// Status writes via the watch channel are reflected in the
-    /// rendered output. This is the contract that lets `/agents`
-    /// show live state — if it ever stales, the slash command
-    /// becomes useless.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn list_background_tasks_reflects_running_status() {
-        let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
-        let procs = BgRegistry::new();
-        let (_id, _tx, status_tx, _cancel) = register_entry(&reg, "explore", "x");
-
-        // Flip Pending → Running { iter: 7 } before the snapshot.
-        status_tx.send(AgentStatus::Running { iter: 7 }).unwrap();
-
-        handle_list_background_tasks(&mut buf, &reg, &procs);
-        let text = buffer_text(&buf);
-        assert!(
-            text.contains("Running"),
-            "expected 'Running' label, got: {text}"
-        );
-        // iter > 0 surfaces the per-iter detail.
-        assert!(
-            text.contains("iter 7"),
-            "expected per-iter detail when iter > 0, got: {text}"
-        );
-    }
-
-    /// Layer-0 placeholder semantics: `Running { iter: 0 }` means
-    /// "started but no per-iter info yet" — don't render a misleading
-    /// `"iter 0"`. Layer 4 (#1058) populated the field for bg agents.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn list_background_tasks_hides_iter_zero_placeholder() {
-        let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
-        let procs = BgRegistry::new();
-        let (_id, _tx, status_tx, _cancel) = register_entry(&reg, "explore", "x");
-
-        status_tx.send(AgentStatus::Running { iter: 0 }).unwrap();
-
-        handle_list_background_tasks(&mut buf, &reg, &procs);
-        let text = buffer_text(&buf);
-        assert!(text.contains("Running"));
-        assert!(
-            !text.contains("iter 0"),
-            "iter 0 should not render the per-iter detail (it's a Layer-0 placeholder), got: {text}"
-        );
-    }
-
-    /// Phase F: process registry rows surface alongside agent rows,
-    /// each with the `process:` prefix. We spawn a real `sleep 60`
-    /// so the snapshot reads from a live entry and we can
-    /// later kill it in cleanup.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn list_background_tasks_renders_processes_with_prefix() {
-        let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
-        let procs = BgRegistry::new();
-        let pid = spawn_sleep_in_registry(&procs);
-
-        handle_list_background_tasks(&mut buf, &reg, &procs);
-        let text = buffer_text(&buf);
-
-        assert!(
-            text.contains(&format!("process:{pid}")),
-            "process row missing or unprefixed, got: {text}"
-        );
-        // The command head should appear — at least the `sleep` prefix.
-        assert!(
-            text.contains("sleep"),
-            "expected command head 'sleep' in row, got: {text}"
-        );
-        // Status is live: should be Running when we just spawned.
-        assert!(
-            text.contains("Running"),
-            "freshly-spawned process should report Running, got: {text}"
-        );
-
-        // Cleanup so we don't leak a child past the test.
-        procs.kill(pid);
-    }
-
-    /// Phase F: agents and processes share one table. With both
-    /// registries populated we should see both prefixes in the
-    /// output — neither registry should crowd the other out.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn list_background_tasks_unifies_both_registries() {
-        let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
-        let procs = BgRegistry::new();
-        let (agent_id, _tx, _stx, _c) = register_entry(&reg, "explore", "x");
-        let pid = spawn_sleep_in_registry(&procs);
-
-        handle_list_background_tasks(&mut buf, &reg, &procs);
-        let text = buffer_text(&buf);
-
-        assert!(text.contains(&format!("agent:{agent_id}")));
-        assert!(text.contains(&format!("process:{pid}")));
-
-        procs.kill(pid);
     }
 
     // ── handle_cancel_background_task ──────────────────────────────────────────────
