@@ -78,7 +78,14 @@ impl TuiContext {
         cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     ) -> anyhow::Result<()> {
         let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
-        let cancel_token = self.session.cancel.clone();
+        // #1200: derive a per-turn child token instead of cloning the
+        // session-lifetime root. This keeps `session.cancel` stable
+        // across turn boundaries so bg agents (which call
+        // `BgAgentRegistry::reserve(&session.cancel, …)`) keep their
+        // cancel-token cascade pointing at a live parent. Cancelling
+        // the child fires only the foreground turn; bg agents are
+        // explicitly cancelled by the Ctrl+C path further down.
+        let cancel_token = self.session.cancel.child_token();
         let db_handle = self.session.db.clone();
 
         self.tui_state = TuiState::Inferring;
@@ -238,6 +245,8 @@ impl TuiContext {
                             &mut self.later_queue,
                             &mut self.paste_blocks,
                             &db_handle,
+                            &bg_agents_for_status,
+                            &agent_for_status.tools.bg_registry,
                         )
                         .await;
                         // Request a redraw to reflect the new state. The
@@ -306,17 +315,26 @@ impl TuiContext {
         }
 
         // Post-turn cleanup
-        self.post_turn_cleanup(ui_rx).await;
+        self.post_turn_cleanup(ui_rx, &cancel_token).await;
         Ok(())
     }
 
     // ── Post-turn cleanup ──────────────────────────────────────
 
-    async fn post_turn_cleanup(&mut self, ui_rx: &mut mpsc::UnboundedReceiver<UiEvent>) {
+    async fn post_turn_cleanup(
+        &mut self,
+        ui_rx: &mut mpsc::UnboundedReceiver<UiEvent>,
+        turn_cancel: &tokio_util::sync::CancellationToken,
+    ) {
         // If the turn was cancelled, clear the later_queue so deferred
         // messages don’t immediately fire a new turn that may block on a
         // single-slot local server (LM Studio, ollama) (#825).
-        if self.session.cancel.is_cancelled() && !self.later_queue.is_empty() {
+        //
+        // #1200: check the per-turn child token, not `session.cancel`.
+        // The session root is now stable across turn boundaries so bg
+        // agents derived from it keep their cancel cascade live; the
+        // child is the one that actually fires on Ctrl+C.
+        if turn_cancel.is_cancelled() && !self.later_queue.is_empty() {
             let n = self.later_queue.len();
             self.later_queue.clear();
             self.scroll_buffer.push(Line::from(vec![
@@ -330,7 +348,12 @@ impl TuiContext {
 
         self.tui_state = TuiState::Idle;
         self.inference_start = None;
-        self.session.cancel = tokio_util::sync::CancellationToken::new();
+        // #1200: do NOT replace `session.cancel`. The session root is
+        // session-lifetime stable now; per-turn cancellation is on a
+        // child token that's dropped when the turn future ends. This
+        // fixes the cascade-broken-across-turns bug where bg agents
+        // reserved during turn N were orphaned the moment turn N
+        // finished and `session.cancel` was swapped out from under them.
 
         // Commit undo snapshots for this turn
         if let Ok(mut undo) = self.agent.tools.undo.lock() {
@@ -451,6 +474,8 @@ async fn handle_crossterm_event_inline(
     later_queue: &mut std::collections::VecDeque<String>,
     paste_blocks: &mut Vec<input::PasteBlock>,
     db: &koda_core::db::Database,
+    bg_agents: &koda_core::bg_agent::BgAgentRegistry,
+    bg_processes: &koda_core::tools::bg_process::BgRegistry,
 ) {
     use crossterm::event::MouseEventKind;
     match ev {
@@ -498,6 +523,8 @@ async fn handle_crossterm_event_inline(
                 history_idx,
                 later_queue,
                 db,
+                bg_agents,
+                bg_processes,
             )
             .await;
         }
@@ -522,6 +549,8 @@ async fn handle_inference_key_inline(
     history_idx: &mut Option<usize>,
     later_queue: &mut std::collections::VecDeque<String>,
     db: &koda_core::db::Database,
+    bg_agents: &koda_core::bg_agent::BgAgentRegistry,
+    bg_processes: &koda_core::tools::bg_process::BgRegistry,
 ) {
     // Vim insert-mode Escape (PR 3 of #1178). Same rationale as in
     // `tui_context::events::handle_key`: route bare Esc to the textarea
@@ -724,9 +753,16 @@ async fn handle_inference_key_inline(
         }
         (KeyCode::Esc, _) => {
             cancel_token.cancel();
+            // #1200: Esc/Ctrl+C during inference also stops any bg
+            // work spawned in this session. Without this, the
+            // foreground turn aborts but bg agents/processes keep
+            // running in the dark — confusing the user who just
+            // asked for everything to stop.
+            crate::tui_bg_tasks::cancel_all_bg_work(scroll_buffer, bg_agents, bg_processes);
         }
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
             cancel_token.cancel();
+            crate::tui_bg_tasks::cancel_all_bg_work(scroll_buffer, bg_agents, bg_processes);
         }
         // Ctrl+U: clear the later_queue (deferred messages) without cancelling inference.
         (KeyCode::Char('u'), m) if m.contains(KeyModifiers::CONTROL) => {

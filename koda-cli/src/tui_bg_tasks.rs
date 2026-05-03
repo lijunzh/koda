@@ -135,6 +135,90 @@ pub(crate) fn handle_cancel_background_task(
     }
 }
 
+/// Cancel every active background agent and SIGTERM every running
+/// background process. Used by the global Ctrl+C path so users have
+/// a single keystroke to stop *all* background work — see issue #1200.
+///
+/// Counts only entries that are still running/pending; already-finished
+/// snapshots are skipped so we don't spam "Cancelled 0" messages when
+/// the registries are full of completed (not-yet-reaped) entries.
+///
+/// Returns `(agents_cancelled, processes_killed)` so callers can decide
+/// whether to emit a "nothing to do" message or fall through to
+/// alternate Ctrl+C behaviour (e.g. textarea clear at idle).
+pub(crate) fn cancel_all_bg_work(
+    buffer: &mut ScrollBuffer,
+    bg_agents: &koda_core::bg_agent::BgAgentRegistry,
+    bg_processes: &koda_core::tools::bg_process::BgRegistry,
+) -> (usize, usize) {
+    use koda_core::bg_agent::AgentStatus;
+
+    // Collect ids first so we don't hold the registry lock across
+    // `.cancel()` (which itself takes the lock). Snapshot is cheap
+    // — copies are bounded by the small number of bg tasks.
+    let agent_ids: Vec<u32> = bg_agents
+        .snapshot()
+        .into_iter()
+        .filter(|s| matches!(s.status, AgentStatus::Pending | AgentStatus::Running { .. }))
+        .map(|s| s.task_id)
+        .collect();
+    let proc_ids: Vec<u32> = bg_processes
+        .snapshot()
+        .into_iter()
+        .filter(|s| {
+            matches!(
+                s.status,
+                koda_core::tools::bg_process::BgProcessStatus::Running
+            )
+        })
+        .map(|s| s.pid)
+        .collect();
+
+    let agents_cancelled = agent_ids.iter().filter(|id| bg_agents.cancel(**id)).count();
+    let processes_killed = proc_ids
+        .iter()
+        .filter(|pid| bg_processes.kill(**pid))
+        .count();
+
+    if agents_cancelled + processes_killed > 0 {
+        let parts: Vec<String> = [
+            (agents_cancelled > 0).then(|| format!("{agents_cancelled} agent(s)")),
+            (processes_killed > 0).then(|| format!("{processes_killed} process(es)")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        tui_output::warn_msg(
+            buffer,
+            format!("\u{26d4} Cancelled {} background work", parts.join(" + ")),
+        );
+    }
+
+    (agents_cancelled, processes_killed)
+}
+
+/// Snapshot count of *active* bg work (running agents + tracked
+/// processes). Used by the idle Ctrl+C path to decide whether to
+/// cancel bg work or fall back to the textarea-clear behaviour.
+pub(crate) fn active_bg_count(
+    bg_agents: &koda_core::bg_agent::BgAgentRegistry,
+    bg_processes: &koda_core::tools::bg_process::BgRegistry,
+) -> usize {
+    use koda_core::bg_agent::AgentStatus;
+    use koda_core::tools::bg_process::BgProcessStatus;
+    let active_agents = bg_agents
+        .snapshot()
+        .into_iter()
+        .filter(|s| matches!(s.status, AgentStatus::Pending | AgentStatus::Running { .. }))
+        .count();
+    let active_procs = bg_processes
+        .snapshot()
+        .into_iter()
+        .filter(|s| matches!(s.status, BgProcessStatus::Running))
+        .count();
+    active_agents + active_procs
+}
+
 /// Format a `Duration` as a compact age string for the `/agents` table.
 ///
 /// - `< 60s`  → `"Ns"` (e.g. `"5s"`)
@@ -558,6 +642,131 @@ mod tests {
         assert!(
             text.contains("Usage:") && text.contains("agent:") && text.contains("process:"),
             "None id should render a Usage: line with both prefixes, got: {text}"
+        );
+    }
+
+    // ── cancel_all_bg_work / active_bg_count (#1200) ─────────────────
+
+    /// Empty registries: `cancel_all_bg_work` returns (0, 0) and
+    /// emits no message. The buffer must stay clean so the idle
+    /// Ctrl+C path can fall through to its textarea-clear behaviour
+    /// without leaving a phantom "cancelled 0" line in scrollback.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_all_bg_work_empty_is_silent() {
+        let mut buf = ScrollBuffer::new(64);
+        let reg = BgAgentRegistry::new();
+        let procs = BgRegistry::new();
+        let (a, p) = cancel_all_bg_work(&mut buf, &reg, &procs);
+        assert_eq!((a, p), (0, 0));
+        assert!(
+            buffer_text(&buf).is_empty(),
+            "empty registries must not emit a status line"
+        );
+    }
+
+    /// Multiple running agents are all cancelled in one call and
+    /// each `BgAgentReservation::cancel` token observes the cascade.
+    /// This is the in-process equivalent of "user hit Ctrl+C and
+    /// every bg agent should die".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_all_bg_work_cancels_every_running_agent() {
+        let mut buf = ScrollBuffer::new(64);
+        let reg = BgAgentRegistry::new();
+        let procs = BgRegistry::new();
+
+        let (_id1, _tx1, status1, observer1) = register_entry(&reg, "explore", "prompt 1");
+        let (_id2, _tx2, status2, observer2) = register_entry(&reg, "task", "prompt 2");
+        // Bring them out of Pending so they show up as Running in
+        // the snapshot filter.
+        status1.send(AgentStatus::Running { iter: 1 }).unwrap();
+        status2.send(AgentStatus::Running { iter: 1 }).unwrap();
+
+        let (a, p) = cancel_all_bg_work(&mut buf, &reg, &procs);
+        assert_eq!((a, p), (2, 0));
+        assert!(observer1.is_cancelled(), "agent 1 should observe cascade");
+        assert!(observer2.is_cancelled(), "agent 2 should observe cascade");
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("Cancelled") && text.contains("2 agent(s)"),
+            "summary line should report agent count, got: {text}"
+        );
+    }
+
+    /// Mixed registries: agents + processes get cancelled and the
+    /// summary line names both kinds. We use a real `sleep 60`
+    /// child so `BgRegistry::kill` exercises its real SIGTERM path,
+    /// not a stubbed one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_all_bg_work_handles_agents_and_processes() {
+        let mut buf = ScrollBuffer::new(64);
+        let reg = BgAgentRegistry::new();
+        let procs = BgRegistry::new();
+
+        let (_id, _tx, status, observer) = register_entry(&reg, "explore", "hi");
+        status.send(AgentStatus::Running { iter: 1 }).unwrap();
+        let _pid = spawn_sleep_in_registry(&procs);
+
+        let (a, p) = cancel_all_bg_work(&mut buf, &reg, &procs);
+        assert_eq!((a, p), (1, 1));
+        assert!(observer.is_cancelled());
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("1 agent(s)") && text.contains("1 process(es)"),
+            "summary should mention both kinds, got: {text}"
+        );
+    }
+
+    /// Already-completed agents are skipped — we don't want Ctrl+C
+    /// to spam "cancelled" for entries that finished naturally and
+    /// just haven't been reaped yet.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_all_bg_work_skips_completed_entries() {
+        let mut buf = ScrollBuffer::new(64);
+        let reg = BgAgentRegistry::new();
+        let procs = BgRegistry::new();
+
+        let (_id, tx, status, observer) = register_entry(&reg, "explore", "hi");
+        // Drive to Completed terminal state.
+        status
+            .send(AgentStatus::Completed {
+                summary: "done".to_string(),
+            })
+            .unwrap();
+        // Send a result so the entry looks fully resolved.
+        let _ = tx.send(Ok(("done".to_string(), vec![])));
+
+        let (a, p) = cancel_all_bg_work(&mut buf, &reg, &procs);
+        assert_eq!((a, p), (0, 0));
+        assert!(
+            !observer.is_cancelled(),
+            "completed entries must not have their cancel token fired"
+        );
+        assert!(buffer_text(&buf).is_empty());
+    }
+
+    /// `active_bg_count` matches what the idle Ctrl+C handler will
+    /// see when deciding whether to cancel bg work or fall through
+    /// to the textarea-clear path. Counts must exclude completed
+    /// entries (same filter as `cancel_all_bg_work`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn active_bg_count_excludes_completed() {
+        let reg = BgAgentRegistry::new();
+        let procs = BgRegistry::new();
+        assert_eq!(active_bg_count(&reg, &procs), 0);
+
+        let (_id1, _tx1, s1, _obs1) = register_entry(&reg, "a", "p1");
+        s1.send(AgentStatus::Running { iter: 1 }).unwrap();
+        let (_id2, tx2, s2, _obs2) = register_entry(&reg, "b", "p2");
+        s2.send(AgentStatus::Completed {
+            summary: "x".to_string(),
+        })
+        .unwrap();
+        let _ = tx2.send(Ok(("x".to_string(), vec![])));
+
+        assert_eq!(
+            active_bg_count(&reg, &procs),
+            1,
+            "only the running agent should count"
         );
     }
 }
