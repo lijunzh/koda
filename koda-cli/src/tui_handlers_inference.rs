@@ -196,6 +196,17 @@ impl TuiContext {
                             bg_agents_for_status.pending_count(),
                             agent_for_status.tools.bg_registry.len(),
                         );
+                        // #1210: snapshot + project bg-activity rows for the
+                        // overlay above the status bar. `bg_agents_for_status`
+                        // and `agent_for_status` are session-lifetime `Arc`
+                        // clones grabbed once at run() entry (see ~line 100),
+                        // so this works inside the turn future's `&mut
+                        // self.session` borrow window.
+                        let agent_snaps = bg_agents_for_status.snapshot();
+                        let process_snaps = agent_for_status.tools.bg_registry.snapshot();
+                        let (bg_activity_rows, bg_activity_total) = self
+                            .bg_activity
+                            .build_rows(&agent_snaps, &process_snaps);
                         let queue_total = self.later_queue.len();
                         let queue_preview: Vec<String> = self
                             .later_queue
@@ -224,6 +235,8 @@ impl TuiContext {
                                 mcp_info,
                                 bg_counts,
                                 &self.project_root,
+                                &bg_activity_rows,
+                                bg_activity_total,
                             );
                         });
                     }
@@ -270,6 +283,7 @@ impl TuiContext {
                             &mut self.menu,
                             &mut self.prompt_mode,
                             &mut self.renderer,
+                            &mut self.bg_activity,
                         );
                         // Bounded drain — at most MAX_DRAIN extra events per
                         // iteration so we yield back to the select for input
@@ -291,6 +305,7 @@ impl TuiContext {
                                 &mut self.menu,
                                 &mut self.prompt_mode,
                                 &mut self.renderer,
+                                &mut self.bg_activity,
                             );
                         });
                         // One coalesced redraw per drain batch — not per
@@ -368,6 +383,13 @@ impl TuiContext {
                 } else {
                     0
                 };
+            }
+            // Tap activity events into the bg-activity tracker even
+            // during post-turn drain — a fan-out agent emitting a
+            // ToolStart milliseconds before the turn future resolves
+            // would otherwise vanish from the overlay forever (#1210).
+            if let EngineEvent::BgChildActivity { task_id, kind, .. } = &e {
+                self.bg_activity.record_activity(*task_id, kind);
             }
             self.renderer.render_to_buffer(e, &mut self.scroll_buffer);
         }
@@ -832,6 +854,7 @@ fn handle_inference_ui_inline(
     menu: &mut MenuContent,
     prompt_mode: &mut PromptMode,
     renderer: &mut crate::tui_render::TuiRenderer,
+    bg_activity: &mut crate::bg_activity::BgActivityTracker,
 ) {
     match ui_event {
         UiEvent::Engine(EngineEvent::AskUserRequest {
@@ -892,6 +915,15 @@ fn handle_inference_ui_inline(
             *menu = MenuContent::LoopCap;
         }
         UiEvent::Engine(event) => {
+            // Tap bg-activity events into the live tracker BEFORE the
+            // renderer no-ops them (#1207 dropped scroll output for
+            // BgChildActivity; #1210 routes them to the activity
+            // overlay instead). Done here so every fall-through engine
+            // event passes through the same tap point — no risk of a
+            // future variant-specific arm bypassing it.
+            if let EngineEvent::BgChildActivity { task_id, kind, .. } = &event {
+                bg_activity.record_activity(*task_id, kind);
+            }
             renderer.render_to_buffer(event, buffer);
         }
     }

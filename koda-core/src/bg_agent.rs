@@ -154,6 +154,36 @@ pub struct BgTaskSnapshot {
     pub spawner: Option<u32>,
 }
 
+impl BgTaskSnapshot {
+    /// Test-only constructor for downstream crates (e.g. `koda-cli`
+    /// renderer tests). The `#[non_exhaustive]` attribute on the
+    /// struct forbids brace-init from outside this crate; this
+    /// helper preserves that invariant for production code while
+    /// still letting renderer-layer tests build fixtures without
+    /// spinning up a full `BgAgentRegistry` + `tokio::spawn`.
+    ///
+    /// Hidden from rustdoc (`#[doc(hidden)]`) so it doesn't pollute
+    /// the public surface; intentional opt-out of API stability.
+    #[doc(hidden)]
+    pub fn for_testing(
+        task_id: u32,
+        agent_name: String,
+        prompt: String,
+        age: std::time::Duration,
+        status: AgentStatus,
+        spawner: Option<u32>,
+    ) -> Self {
+        Self {
+            task_id,
+            agent_name,
+            prompt,
+            age,
+            status,
+            spawner,
+        }
+    }
+}
+
 /// Payload sent over the bg-agent oneshot.
 ///
 /// Pre-#1022-B9 this was just `String` (the model's final output).

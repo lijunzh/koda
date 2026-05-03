@@ -117,6 +117,13 @@ pub(crate) struct TuiContext {
     /// the consumer side and lives on the inference loop's select.
     pub frame_requester: crate::frame_requester::FrameRequester,
     pub draw_rx: crate::frame_requester::DrawNotifyRx,
+
+    /// Live activity tracker for bg agents + processes (#1210).
+    /// Absorbs `BgChildActivity` / `BgTaskUpdate` events into a per-task
+    /// last-seen map; projected each frame into the
+    /// `widgets::bg_activity_overlay` rendered above the status bar.
+    /// See [`crate::bg_activity::BgActivityTracker`].
+    pub bg_activity: crate::bg_activity::BgActivityTracker,
 }
 
 /// Outcome of dispatching a single command.
@@ -393,6 +400,7 @@ impl TuiContext {
             project_root,
             frame_requester,
             draw_rx,
+            bg_activity: crate::bg_activity::BgActivityTracker::default(),
         })
     }
 
@@ -439,6 +447,19 @@ impl TuiContext {
             self.agent.tools.bg_registry.len(),
         );
 
+        // #1210: project bg-agent + bg-process snapshots through the
+        // activity tracker into renderable rows for the live overlay
+        // above the status bar. Cheap — snapshots are a vec clone
+        // under one short lock; tracker projection is O(n) over the
+        // (always small: bounded by sub-agent fan-out cap) snapshot
+        // size. Done before the terminal.draw closure to satisfy the
+        // borrow checker around `&mut self`.
+        let agent_snaps = self.session.bg_agents.snapshot();
+        let process_snaps = self.agent.tools.bg_registry.snapshot();
+        let (bg_activity_rows, bg_activity_total) = self
+            .bg_activity
+            .build_rows(&agent_snaps, &process_snaps);
+
         let mut history_rect = None;
         if let Err(e) = self.terminal.draw(|f| {
             history_rect = Some(draw_viewport(
@@ -459,6 +480,8 @@ impl TuiContext {
                 mcp_info,
                 bg_counts,
                 &project_root,
+                &bg_activity_rows,
+                bg_activity_total,
             ));
         }) {
             tracing::debug!("draw skipped: {e}");
