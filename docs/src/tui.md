@@ -54,6 +54,12 @@ model sees it immediately — useful for course-correcting mid-task.
   📥 Next: add the missing error handling too
 ```
 
+**Slash commands (`/cancel`, `/clear`, `/model`, …) are not accepted
+mid-inference** (#1211/#1222). Type `/cancel agent:1` while the model is
+thinking and you'll see a transient "slash commands disabled during
+inference — press `Esc` first" hint instead of the text being silently
+steered to the model. Press `Esc` to interrupt, then run the slash.
+
 ### Later lane — queue for the next turn
 
 Press **`Ctrl+J`** during inference. Your text is deferred to the `later`
@@ -64,6 +70,10 @@ as one message.
 ```
   📋 Later (1): also bump the version number
 ```
+
+Slash commands are blocked from this lane too (#1211/#1222) for the same
+reason — a deferred `/clear` would silently wipe history when the next
+turn starts. Press `Esc`, then run the slash.
 
 ### Queue preview widget
 
