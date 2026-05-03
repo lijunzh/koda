@@ -32,6 +32,7 @@ use serde_json::Value;
 /// for its medium (terminal, GUI, JSON stream, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum EngineEvent {
     // ── Streaming LLM output ──────────────────────────────────────────
     /// A chunk of streaming text from the LLM response.
@@ -355,6 +356,7 @@ pub enum EngineEvent {
 /// [`crate::bg_agent::AgentStatus`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum BgChildActivityKind {
     /// The child started a tool call.
     ///
@@ -397,6 +399,7 @@ pub enum BgChildActivityKind {
 /// Why an inference turn ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TurnEndReason {
     /// The LLM produced a final text response (no more tool calls).
     Complete,

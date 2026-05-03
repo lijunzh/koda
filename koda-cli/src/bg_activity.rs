@@ -86,6 +86,10 @@ impl BgActivityTracker {
                 format!("{tool_name} \u{2717}")
             }
             BgChildActivityKind::Info { message } => message.clone(),
+            // Forward-compat: future activity kinds are dropped from
+            // the live overlay until we know how to render them. Same
+            // shape as the success ToolEnd case above (#1224).
+            _ => return,
         };
         self.per_agent.insert(task_id, LastActivity { description });
     }
@@ -160,6 +164,11 @@ impl BgActivityTracker {
                     AgentStatus::Cancelled
                     | AgentStatus::Completed { .. }
                     | AgentStatus::Errored { .. } => return None,
+                    // Forward-compat: an unknown future status is
+                    // treated as terminal so the overlay never
+                    // surfaces a row we can't classify (#1224). Safer
+                    // than guessing Running and getting a stuck row.
+                    _ => return None,
                 };
                 let activity = self
                     .per_agent

@@ -293,6 +293,10 @@ impl EngineSink for HeadlessSink {
                         let snippet: String = error.chars().take(80).collect();
                         format!("errored: {snippet}")
                     }
+                    // Forward-compat: future statuses render as a
+                    // generic label so script tailing stdout sees
+                    // *something* (#1224).
+                    _ => "(unknown status)".to_string(),
                 };
                 eprintln!("\x1b[2m  [bg task {task_id}] {summary}\x1b[0m");
             }
@@ -313,6 +317,9 @@ impl EngineSink for HeadlessSink {
                         format!("{icon} {tool_name}")
                     }
                     koda_core::engine::event::BgChildActivityKind::Info { message } => message,
+                    // Forward-compat: future activity kinds render as
+                    // a generic line (#1224).
+                    _ => "(activity)".to_string(),
                 };
                 eprintln!("\x1b[2m  [bg task {task_id}] {line}\x1b[0m");
             }
@@ -349,6 +356,11 @@ impl EngineSink for HeadlessSink {
                     "\x1b[90m  {tokens} tokens \u{00b7} {secs:.1}s \u{00b7} {rate:.0} t/s\x1b[0m"
                 );
             }
+            // Forward-compat: future EngineEvent variants are silently
+            // dropped from the headless feed until we wire a render
+            // for them. Same shape as the existing ContextUsage /
+            // TurnStart no-op arms (#1224).
+            _ => {}
         }
     }
 }

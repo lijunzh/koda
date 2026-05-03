@@ -77,6 +77,7 @@ use crate::engine::EngineEvent;
 /// long-running agents can't silently wrap.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum AgentStatus {
     /// Reserved but the spawned future hasn't started yet.
     Pending,

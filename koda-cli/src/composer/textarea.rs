@@ -2890,7 +2890,10 @@ mod tests {
         assert_eq!(t.cursor(), 3);
     }
 
-    #[cfg_attr(not(windows), ignore = "AltGr modifier only applies on Windows")]
+    // AltGr is a Windows-only concept; on macOS/Linux this code path is
+    // unreachable so the test would always be ignored. Gate at compile-time
+    // so it doesn't show up in the `0 ignored` line forever (#1224).
+    #[cfg(windows)]
     #[test]
     fn altgr_ctrl_alt_char_inserts_literal() {
         let mut t = ta_with("");
