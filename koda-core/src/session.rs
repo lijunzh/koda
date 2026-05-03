@@ -40,6 +40,43 @@ use tokio::sync::mpsc;
 use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
 
+/// Cloneable, session-detached handle to the session-lifetime cancel root (#1216).
+///
+/// Holds an `Arc<RwLock<CancellationToken>>` alias of the same root
+/// owned by [`KodaSession`] — so a clone can be passed across borrow
+/// boundaries (notably the TUI's `&mut self.session` window held by a
+/// pinned `run_turn` future) and still drive [`Self::interrupt`].
+///
+/// Two operations:
+/// - [`Self::current`]: snapshot of the *current* root token. Use this
+///   anywhere you'd previously called `session.cancel.clone()`.
+/// - [`Self::interrupt`]: fire-and-swap, identical semantics to
+///   [`KodaSession::interrupt`].
+#[derive(Clone)]
+pub struct SessionCancel {
+    inner: Arc<RwLock<CancellationToken>>,
+}
+
+impl SessionCancel {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(CancellationToken::new())),
+        }
+    }
+
+    /// Clone of the current root. See [`KodaSession::cancel_token`].
+    pub fn current(&self) -> CancellationToken {
+        self.inner.read().clone()
+    }
+
+    /// Fire current root + swap in a fresh one. See [`KodaSession::interrupt`].
+    pub fn interrupt(&self) {
+        let mut guard = self.inner.write();
+        guard.cancel();
+        *guard = CancellationToken::new();
+    }
+}
+
 /// Cached parse of [`DEFAULT_DEV_ALLOWLIST`].
 ///
 /// **#1022 B22**: pre-fix, `Filter::new(DEFAULT_DEV_ALLOWLIST).expect(…)`
@@ -91,7 +128,7 @@ pub struct KodaSession {
     /// Direct field access is intentionally private — every external
     /// site must go through one of those two doors so the swap
     /// invariant is impossible to violate.
-    cancel: RwLock<CancellationToken>,
+    cancel: SessionCancel,
     /// File lifecycle tracker — tracks files created by Koda (#465).
     pub file_tracker: FileTracker,
     /// Whether the session title has already been set (first-message guard).
@@ -249,7 +286,7 @@ impl KodaSession {
             db,
             provider,
             mode,
-            cancel: RwLock::new(CancellationToken::new()),
+            cancel: SessionCancel::new(),
             file_tracker,
             title_set: false,
             proxy,
@@ -273,7 +310,19 @@ impl KodaSession {
     /// Hides the [`RwLock`] indirection from callers and keeps the
     /// swap-on-interrupt invariant invisible at call sites.
     pub fn cancel_token(&self) -> CancellationToken {
-        self.cancel.read().clone()
+        self.cancel.current()
+    }
+
+    /// Cloneable handle to the cancel root for cross-borrow use (#1216).
+    ///
+    /// Returns a [`SessionCancel`] backed by the same `Arc` as the
+    /// session's own field. The TUI clones this *before* the
+    /// `run_turn` future borrows `&mut self.session`, so the
+    /// Esc/Ctrl+C key handler can still call
+    /// [`SessionCancel::interrupt`] mid-turn without the borrow
+    /// checker getting in the way.
+    pub fn cancel_handle(&self) -> SessionCancel {
+        self.cancel.clone()
     }
 
     /// Cascade-cancel everything in this session and arm a fresh root (#1216).
@@ -291,9 +340,7 @@ impl KodaSession {
     /// See issue #1216 for the design discussion vs Codex (per-thread)
     /// and Claude Code (explicit two-tier) alternatives.
     pub fn interrupt(&self) {
-        let mut guard = self.cancel.write();
-        guard.cancel();
-        *guard = CancellationToken::new();
+        self.cancel.interrupt();
     }
 
     /// # Per-turn cancellation (#1208)
