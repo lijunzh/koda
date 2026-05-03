@@ -1854,7 +1854,7 @@ mod tests {
     /// This pins the wire-up so the inference loop's existing drain
     /// in `inference.rs` picks up activity events without any extra
     /// plumbing.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn send_activity_queues_bg_child_activity_with_task_id() {
         let registry = new_shared();
         let (status_tx, _status_rx) = tokio::sync::watch::channel(AgentStatus::Pending);
