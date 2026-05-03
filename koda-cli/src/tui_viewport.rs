@@ -172,22 +172,27 @@ pub(crate) fn draw_viewport(
     );
 
     // Render input via composer::textarea's Widget impl. The textarea owns
-    // its cursor styling (block in vim normal, bar in insert) and wrapping
-    // — there's nothing to configure from the outside. The empty-state hint
-    // ("Type a message...") is rendered separately because codex's textarea
-    // has no equivalent of ratatui-textarea's `set_placeholder_text`.
+    // its wrapping; the rendering layer owns the *terminal* cursor —
+    // ratatui's `Frame::set_cursor_position` parks the native hardware
+    // cursor at the input caret after we render. Without this call the
+    // cursor is hidden (ratatui's default), CJK/IME preedit composes at
+    // the screen origin instead of the caret, and screen readers/
+    // magnifiers can't track the input position. The empty-state hint
+    // ("Type a message...") is rendered separately because codex's
+    // textarea has no equivalent of ratatui-textarea's
+    // `set_placeholder_text`.
     if textarea.is_empty() {
         let placeholder =
             Paragraph::new("Type a message...").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(placeholder, text_area);
-        // Still render the textarea on top so the cursor is drawn.
+        // Still position the cursor so the caret sits on the placeholder.
     }
     // PR 6 of #1178: when the active wizard asked for masked input (API
     // key entry today; future password / token flows tomorrow), use
     // `render_ref_masked` so glyphs display as `*`. The buffer underneath
     // is unchanged — read-back via `textarea.text()` still yields the
     // cleartext secret for the wizard handler to persist.
-    if let PromptMode::WizardInput { mask: true, .. } = prompt_mode {
+    let cursor_state = if let PromptMode::WizardInput { mask: true, .. } = prompt_mode {
         let mut state = crate::composer::textarea::TextAreaState::default();
         textarea.render_ref_masked(
             text_area,
@@ -196,8 +201,21 @@ pub(crate) fn draw_viewport(
             '*',
             Style::default(),
         );
+        state
     } else {
+        // Stateless render path uses the default (scroll = 0); pass the
+        // same state to `cursor_pos_with_state` so screen coords match.
         frame.render_widget(textarea, text_area);
+        crate::composer::textarea::TextAreaState::default()
+    };
+
+    // Park the hardware cursor at the input caret (#1220). ratatui hides
+    // the cursor by default; calling `set_cursor_position` shows it at
+    // (x, y). Mirrors codex's pattern in `tui/src/app.rs`. Cursor *style*
+    // (vim block vs. bar) is intentionally out of scope for this PR —
+    // it needs crossterm `SetCursorStyle` plumbing we don't yet have.
+    if let Some((x, y)) = textarea.cursor_pos_with_state(text_area, cursor_state) {
+        frame.set_cursor_position((x, y));
     }
 
     // ── Bottom separator (#1194/#1195) ────────────────────────────
