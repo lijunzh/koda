@@ -118,12 +118,46 @@ impl TuiContext {
                 self.history_down();
             }
             (KeyCode::Esc, _) => {
-                self.textarea.set_text_clearing_elements("");
-                self.history_idx = None;
+                // #1200: Esc at idle with no editor content is a
+                // "stop everything" gesture. If bg work exists,
+                // cancel it. Otherwise behave as before (clear editor).
+                if self.textarea.text().trim().is_empty()
+                    && crate::tui_bg_tasks::active_bg_count(
+                        &self.session.bg_agents,
+                        &self.agent.tools.bg_registry,
+                    ) > 0
+                {
+                    crate::tui_bg_tasks::cancel_all_bg_work(
+                        &mut self.scroll_buffer,
+                        &self.session.bg_agents,
+                        &self.agent.tools.bg_registry,
+                    );
+                } else {
+                    self.textarea.set_text_clearing_elements("");
+                    self.history_idx = None;
+                }
             }
             (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-                self.textarea.set_text_clearing_elements("");
-                self.history_idx = None;
+                // #1200: same logic as Esc — idle Ctrl+C cancels bg
+                // work when the editor is empty, else clears the editor.
+                // Two-step UX (type, then Ctrl+C) preserves the muscle
+                // memory while giving Ctrl+C a meaningful idle action
+                // when bg agents/processes are running.
+                if self.textarea.text().trim().is_empty()
+                    && crate::tui_bg_tasks::active_bg_count(
+                        &self.session.bg_agents,
+                        &self.agent.tools.bg_registry,
+                    ) > 0
+                {
+                    crate::tui_bg_tasks::cancel_all_bg_work(
+                        &mut self.scroll_buffer,
+                        &self.session.bg_agents,
+                        &self.agent.tools.bg_registry,
+                    );
+                } else {
+                    self.textarea.set_text_clearing_elements("");
+                    self.history_idx = None;
+                }
             }
             (KeyCode::Char('d'), m) if m.contains(KeyModifiers::CONTROL) => {
                 if self.textarea.text().to_string().trim().is_empty() {
