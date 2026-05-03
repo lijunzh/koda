@@ -206,6 +206,16 @@ fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message, tool_name: 
         return;
     }
 
+    // ListBackgroundTasks (#1209) — same JSON-soup problem; render
+    // with the same per-task helper so resumed history matches the
+    // live `tui_render` output verbatim.
+    if tool_name == "ListBackgroundTasks"
+        && let Some(rendered) = crate::wait_task_format::try_render_list_bg_tasks_lines(content)
+    {
+        lines.extend(rendered);
+        return;
+    }
+
     let total_lines = content.lines().count();
 
     let content_style = match classify_tool(tool_name) {
