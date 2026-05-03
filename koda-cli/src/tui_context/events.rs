@@ -200,7 +200,8 @@ impl TuiContext {
                         self.quit_armed_at = Some(now);
                         crate::tui_output::dim_msg(
                             &mut self.scroll_buffer,
-                            "\u{26a0}  Press Ctrl+C again within 1.5s to exit (or Ctrl+D)".to_string(),
+                            "\u{26a0}  Press Ctrl+C again within 1.5s to exit (or Ctrl+D)"
+                                .to_string(),
                         );
                     }
                 }

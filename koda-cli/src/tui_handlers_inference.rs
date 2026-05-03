@@ -547,7 +547,7 @@ async fn handle_crossterm_event_inline(
         Event::Key(key) => {
             handle_inference_key_inline(
                 key,
-                &session_cancel,
+                session_cancel,
                 cmd_tx,
                 scroll_buffer,
                 menu,

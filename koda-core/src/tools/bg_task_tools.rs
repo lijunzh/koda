@@ -365,7 +365,9 @@ pub async fn execute(
     match tool_name {
         "ListBackgroundTasks" => execute_list(bg_agents, bg_processes, caller_spawner),
         "CancelTask" => execute_cancel(arguments, bg_agents, bg_processes, caller_spawner),
-        "WaitTask" => execute_wait(arguments, bg_agents, bg_processes, caller_spawner, cancel).await,
+        "WaitTask" => {
+            execute_wait(arguments, bg_agents, bg_processes, caller_spawner, cancel).await
+        }
         other => err(format!(
             "bg_task_tools::execute called with unknown tool '{other}' \
              (router bug — should have matched in tool_dispatch)"
@@ -484,9 +486,16 @@ async fn execute_wait(
     // finishes (or times out) — NOT the sum of per-task latencies.
     // For 4 sub-agents each averaging 30s, this is 30s total wall time,
     // not 120s.
-    let futures = task_ids
-        .iter()
-        .map(|id| wait_one_task(id.clone(), bg_agents, bg_processes, caller_spawner, timeout, cancel));
+    let futures = task_ids.iter().map(|id| {
+        wait_one_task(
+            id.clone(),
+            bg_agents,
+            bg_processes,
+            caller_spawner,
+            timeout,
+            cancel,
+        )
+    });
     let task_results: Vec<Value> = futures_util::future::join_all(futures).await;
 
     // Roll up status counts so the model can branch on "all done" /
@@ -796,7 +805,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_list_returns_empty_array_when_no_tasks() {
         let (agents, processes) = fresh_registries();
-        let r = execute("ListBackgroundTasks", "{}", &agents, &processes, None, &no_cancel()).await;
+        let r = execute(
+            "ListBackgroundTasks",
+            "{}",
+            &agents,
+            &processes,
+            None,
+            &no_cancel(),
+        )
+        .await;
         assert!(r.success);
         assert_eq!(r.output, "[]");
     }
@@ -808,7 +825,15 @@ mod tests {
         let (agents, processes) = fresh_registries();
         let (id, _tx, _, _) = agents.register_test_with_status("explore", "map repo", None);
 
-        let r = execute("ListBackgroundTasks", "{}", &agents, &processes, None, &no_cancel()).await;
+        let r = execute(
+            "ListBackgroundTasks",
+            "{}",
+            &agents,
+            &processes,
+            None,
+            &no_cancel(),
+        )
+        .await;
         assert!(r.success);
         let arr: Value = serde_json::from_str(&r.output).unwrap();
         let arr = arr.as_array().unwrap();
@@ -828,11 +853,27 @@ mod tests {
         agents.register_test_with_status("a", "top", None);
         agents.register_test_with_status("b", "sub", Some(7));
 
-        let top = execute("ListBackgroundTasks", "{}", &agents, &processes, None, &no_cancel()).await;
+        let top = execute(
+            "ListBackgroundTasks",
+            "{}",
+            &agents,
+            &processes,
+            None,
+            &no_cancel(),
+        )
+        .await;
         let arr: Value = serde_json::from_str(&top.output).unwrap();
         assert_eq!(arr.as_array().unwrap().len(), 1, "top sees only its own");
 
-        let sub = execute("ListBackgroundTasks", "{}", &agents, &processes, Some(7), &no_cancel()).await;
+        let sub = execute(
+            "ListBackgroundTasks",
+            "{}",
+            &agents,
+            &processes,
+            Some(7),
+            &no_cancel(),
+        )
+        .await;
         let arr: Value = serde_json::from_str(&sub.output).unwrap();
         assert_eq!(arr.as_array().unwrap().len(), 1, "sub sees only its own");
     }
@@ -903,7 +944,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_cancel_rejects_malformed_json() {
         let (agents, processes) = fresh_registries();
-        let r = execute("CancelTask", "not-json", &agents, &processes, None, &no_cancel()).await;
+        let r = execute(
+            "CancelTask",
+            "not-json",
+            &agents,
+            &processes,
+            None,
+            &no_cancel(),
+        )
+        .await;
         assert!(!r.success);
         assert!(r.output.contains("invalid JSON"), "got: {}", r.output);
     }
@@ -1236,7 +1285,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_unknown_tool_name_returns_error() {
         let (agents, processes) = fresh_registries();
-        let r = execute("NotAToolWeKnow", "{}", &agents, &processes, None, &no_cancel()).await;
+        let r = execute(
+            "NotAToolWeKnow",
+            "{}",
+            &agents,
+            &processes,
+            None,
+            &no_cancel(),
+        )
+        .await;
         assert!(!r.success);
         assert!(r.output.contains("unknown tool"));
     }

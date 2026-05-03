@@ -35,9 +35,9 @@ use crate::trust::TrustMode;
 
 use anyhow::Result;
 use koda_sandbox::{BuiltInProxy, BuiltInSocks5Proxy, DEFAULT_DEV_ALLOWLIST, Filter, ProxyHandle};
+use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
-use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
 
 /// Cloneable, session-detached handle to the session-lifetime cancel root (#1216).
@@ -57,8 +57,20 @@ pub struct SessionCancel {
     inner: Arc<RwLock<CancellationToken>>,
 }
 
+impl Default for SessionCancel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionCancel {
-    fn new() -> Self {
+    /// Construct a fresh, never-cancelled root.
+    ///
+    /// Used by [`KodaSession::new`] for production sessions and by
+    /// integration tests that need to inject a known handle into a
+    /// struct-literal `KodaSession` (so they can drive
+    /// [`Self::interrupt`] from the test harness).
+    pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(CancellationToken::new())),
         }
@@ -128,7 +140,31 @@ pub struct KodaSession {
     /// Direct field access is intentionally private — every external
     /// site must go through one of those two doors so the swap
     /// invariant is impossible to violate.
-    cancel: SessionCancel,
+    /// Session-lifetime cancellation root (#1216).
+    ///
+    /// Wraps an [`Arc<RwLock<CancellationToken>>`] so an `Esc`/`Ctrl+C`
+    /// Gemini-style cascade can fire the current token (collapsing
+    /// every per-turn child and every bg-agent child) **and** atomically
+    /// swap in a fresh root before the next turn starts. Without the
+    /// swap, a tokio [`CancellationToken`] stays cancelled forever once
+    /// fired — every subsequent `child_token()` would be born
+    /// already-cancelled and the session would be permanently poisoned.
+    ///
+    /// The `Arc` indirection lets [`Self::cancel_handle`] hand out a
+    /// cloneable [`SessionCancel`] that survives outside the
+    /// `&mut self` borrow window held by long-lived futures (the TUI
+    /// keeps one across `run_turn` so Esc/Ctrl+C can still call
+    /// [`SessionCancel::interrupt`] mid-turn).
+    ///
+    /// # Invariant (enforced by convention)
+    ///
+    /// Production code reads via [`Self::cancel_token`] and fires via
+    /// [`Self::interrupt`] — never poke at the inner token directly.
+    /// The field is `pub` only because integration tests in
+    /// `koda-core/tests/` need to inject a known root via struct-
+    /// literal construction; bypassing `interrupt()` in non-test code
+    /// breaks the swap invariant and permanently poisons the session.
+    pub cancel: SessionCancel,
     /// File lifecycle tracker — tracks files created by Koda (#465).
     pub file_tracker: FileTracker,
     /// Whether the session title has already been set (first-message guard).
@@ -390,6 +426,17 @@ impl KodaSession {
             format!("{}{mcp_section}", self.agent.system_prompt)
         };
 
+        // #1216: snapshot the effective cancel token *before* handing
+        // it to the inference loop. After the loop finishes we need to
+        // know "did the cancellation that drove this turn happen?" —
+        // but `self.cancel_token()` post-turn returns a *fresh* token
+        // if [`Self::interrupt`] fired during the turn (the swap is
+        // the whole point of #1216). Without snapshotting, every
+        // interrupt-driven cancellation would be misreported as
+        // `TurnEnd::Complete`. Caller-supplied per-turn tokens (#1208)
+        // don't have this problem (they're not swapped) but we capture
+        // uniformly for symmetry.
+        let effective_cancel = turn_cancel.clone().unwrap_or_else(|| self.cancel_token());
         let result = crate::inference::inference_loop(InferenceContext {
             project_root: &self.agent.project_root,
             config,
@@ -406,7 +453,7 @@ impl KodaSession {
             // can stop *just this turn* with Ctrl+C without nuking the
             // session-lifetime token bg agents share. Headless / server /
             // tests pass `None` and keep the legacy session-token behaviour.
-            cancel: turn_cancel.unwrap_or_else(|| self.cancel_token()),
+            cancel: effective_cancel.clone(),
             cmd_rx,
             file_tracker: &mut self.file_tracker,
             bg_agents: &self.bg_agents,
@@ -415,7 +462,7 @@ impl KodaSession {
         .await;
 
         let reason = match &result {
-            Ok(()) if self.cancel_token().is_cancelled() => {
+            Ok(()) if effective_cancel.is_cancelled() => {
                 crate::engine::event::TurnEndReason::Cancelled
             }
             Ok(()) => crate::engine::event::TurnEndReason::Complete,
@@ -475,5 +522,102 @@ mod b22_tests {
         // out `&'static Filter` across threads. Pin it.
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<koda_sandbox::Filter>();
+    }
+}
+
+#[cfg(test)]
+mod cancel_handle_tests {
+    //! #1216 — [`SessionCancel`] regression tests.
+    //!
+    //! These pin the Gemini-style cascade primitive's contract:
+    //!
+    //! 1. `interrupt()` fires the current root (cascade to children).
+    //! 2. `interrupt()` swaps in a fresh root (subsequent `current()`
+    //!    returns an UN-cancelled token — the session is reusable).
+    //! 3. The cloneable handle aliases the same `Arc` so an `interrupt()`
+    //!    on a clone is observed by every other clone (this is what
+    //!    lets the TUI key handler interrupt across the `&mut self.session`
+    //!    borrow held by the `run_turn` future).
+    use super::SessionCancel;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn interrupt_fires_current_root_cascading_to_children() {
+        let h = SessionCancel::new();
+        let child = h.current().child_token();
+        let grandchild = child.child_token();
+        assert!(!child.is_cancelled());
+        assert!(!grandchild.is_cancelled());
+
+        h.interrupt();
+        // tokio::CancellationToken cascade is synchronous on `cancel()`,
+        // so children observe immediately on the next poll.
+        assert!(child.is_cancelled(), "child must observe cascade");
+        assert!(grandchild.is_cancelled(), "grandchild must observe cascade");
+    }
+
+    #[tokio::test]
+    async fn interrupt_swaps_in_fresh_root_so_session_stays_usable() {
+        let h = SessionCancel::new();
+        let pre = h.current();
+        h.interrupt();
+        assert!(pre.is_cancelled(), "old root must be fired");
+        let post = h.current();
+        assert!(
+            !post.is_cancelled(),
+            "new root must be un-cancelled (else next turn is born dead)"
+        );
+        // And further children of the new root are independent of the old.
+        let new_child = post.child_token();
+        assert!(!new_child.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn cloned_handles_share_underlying_arc() {
+        let h1 = SessionCancel::new();
+        let h2 = h1.clone();
+        let child_via_h1 = h1.current().child_token();
+
+        // Interrupt on the *clone* must cascade to children derived
+        // from the original — this is the key invariant that lets
+        // the TUI's detached handle interrupt mid-turn.
+        h2.interrupt();
+        assert!(
+            child_via_h1.is_cancelled(),
+            "clone's interrupt must fire the shared root"
+        );
+
+        // And after the swap, both handles see the same fresh root.
+        let a = h1.current();
+        let b = h2.current();
+        assert!(!a.is_cancelled());
+        assert!(!b.is_cancelled());
+        // Firing through h1 cancels b's snapshot too (same root).
+        h1.interrupt();
+        assert!(a.is_cancelled());
+        assert!(b.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn interrupt_unblocks_a_waiter_within_a_few_ms() {
+        // Exercises the same race that powers the WaitTask escape
+        // hatch: a future awaiting `cancel.cancelled()` must wake up
+        // promptly when interrupt fires from another task.
+        let h = SessionCancel::new();
+        let token = h.current();
+        let h_for_fire = h.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            h_for_fire.interrupt();
+        });
+        let started = std::time::Instant::now();
+        tokio::time::timeout(Duration::from_secs(1), token.cancelled())
+            .await
+            .expect("must wake within 1s");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "must wake promptly, took {elapsed:?}"
+        );
     }
 }

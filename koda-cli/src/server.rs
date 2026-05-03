@@ -331,10 +331,7 @@ async fn handle_new_session(
     )
     .await;
 
-    state.active = Some(ActiveSession {
-        session,
-        cmd_tx,
-    });
+    state.active = Some(ActiveSession { session, cmd_tx });
 
     let response = acp::NewSessionResponse::new(session_id);
     let resp = wrap_response(id, acp::AgentResponse::NewSessionResponse(response));
