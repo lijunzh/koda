@@ -436,6 +436,19 @@ fn render_tool_output(
         return;
     }
 
+    // ListBackgroundTasks (#1209) — same JSON-soup problem as WaitTask;
+    // the model calls this to peek at running bg work and we owe the
+    // user a per-task render with the same icon vocabulary as the
+    // live `bg_activity_overlay` instead of a one-line JSON dump.
+    if name == "ListBackgroundTasks"
+        && let Some(lines) = crate::wait_task_format::try_render_list_bg_tasks_lines(output)
+    {
+        for line in lines {
+            tui_output::emit_line(buffer, line);
+        }
+        return;
+    }
+
     // Collapse consecutive blank lines (3+ → 1) to reduce visual noise,
     // especially from WebFetch HTML-to-text conversion.
     let collapsed = collapse_blank_lines(output);

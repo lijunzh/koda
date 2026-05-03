@@ -33,6 +33,16 @@ use crate::tui_output::{BOLD, DIM, TOOL_PREFIX};
 /// added to the engine must land here as well — the catch-all `❔`
 /// makes the omission visible in rendered output rather than failing
 /// silently.
+///
+/// Covers the union of statuses emitted by **both** `WaitTask` (the
+/// original consumer) and `ListBackgroundTasks` (#1209 added the latter):
+///
+/// - `WaitTask` outcomes: `completed`, `timed_out`, `cancelled`,
+///   `not_found`, `forbidden`, `parse_error`.
+/// - `ListBackgroundTasks` agent statuses: `pending`, `running`,
+///   `completed`, `cancelled`, `errored`.
+/// - `ListBackgroundTasks` process statuses: `running`, `exited`,
+///   `killed`.
 #[must_use]
 pub fn wait_status_icon(status: &str) -> &'static str {
     match status {
@@ -42,7 +52,16 @@ pub fn wait_status_icon(status: &str) -> &'static str {
         "not_found" => "\u{2753}",   // ❓
         "forbidden" => "\u{1F512}",  // 🔒
         "parse_error" => "\u{26A0}", // ⚠
-        _ => "\u{2754}",             // ❔
+        // ListBackgroundTasks-specific statuses (#1209). Glyph choice
+        // matches `bg_activity_overlay`'s status palette so the live
+        // overlay and the tool-result render speak the same icon
+        // vocabulary.
+        "pending" => "\u{25D0}", // ◐ — half-filled circle
+        "running" => "\u{25B6}", // ▶ — play / in-flight
+        "errored" => "\u{2717}", // ✗ — cross
+        "exited" => "\u{2713}",  // ✓ — check (clean exit)
+        "killed" => "\u{26D4}",  // ⛔ — same as cancelled (also user-initiated stop)
+        _ => "\u{2754}",         // ❔ — catch-all (visible omission)
     }
 }
 
@@ -195,6 +214,102 @@ pub fn try_render_wait_task_lines(payload: &str) -> Option<Vec<Line<'static>>> {
     Some(lines)
 }
 
+/// Render a `ListBackgroundTasks` JSON payload (#1209).
+///
+/// Shape contract (see `koda-core::tools::bg_task_tools`):
+///
+/// ```json
+/// [
+///   {
+///     "task_id": "agent:1",
+///     "task_type": "agent" | "process",
+///     "description": "<agent_name>: <prompt>" | "<command>",
+///     "status": "pending"|"running"|"completed"|"cancelled"|"errored"
+///             | "running"|"exited"|"killed",
+///     "age_secs": 12,
+///     "exit_code": 0   // optional, processes only
+///   },
+///   ...
+/// ]
+/// ```
+///
+/// Empty arrays render as a single "no background tasks" line so the
+/// model's tool call still leaves a visible trace in history rather
+/// than vanishing. Any other shape mismatch returns `None` so the
+/// caller falls back to the generic raw render — we never want to
+/// drop content silently.
+///
+/// Output shape (matches the `WaitTask` renderer's per-task style):
+///
+/// ```text
+///   │ 3 background task(s)
+///   │   ▶ agent:1  explore: scan koda-core/src for ToolEffect (running, 12s)
+///   │   ◐ agent:2  verify: confirm render (pending, 3s)
+///   │   ⛔ process:5821  cargo test --workspace (killed, 45s)
+/// ```
+#[must_use]
+pub fn try_render_list_bg_tasks_lines(payload: &str) -> Option<Vec<Line<'static>>> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let tasks = v.as_array()?;
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Header. Empty-array case still emits a header so a `ListBackgroundTasks`
+    // call with zero results is visible in history rather than rendering
+    // as nothing-at-all (which would look like a broken tool).
+    let header = if tasks.is_empty() {
+        "no background tasks".to_string()
+    } else {
+        format!("{} background task(s)", tasks.len())
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  \u{2502} ", TOOL_PREFIX),
+        Span::styled(header, BOLD),
+    ]));
+
+    let dim_italic = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::ITALIC);
+
+    for task in tasks {
+        let task_id = task.get("task_id").and_then(|v| v.as_str()).unwrap_or("?");
+        let status = task.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+        let age_secs = task.get("age_secs").and_then(|v| v.as_u64()).unwrap_or(0);
+        let description = task
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| first_meaningful_line(s, TUI_PREVIEW_CHARS))
+            .unwrap_or_default();
+        let exit_code = task.get("exit_code").and_then(|v| v.as_i64());
+
+        let icon = wait_status_icon(status);
+
+        // Status suffix shows the raw status word (with optional exit
+        // code for processes) plus age. Format mirrors the live
+        // `bg_activity_overlay` so eye sweeps between live + history
+        // see the same tail.
+        let status_tail = match exit_code {
+            Some(code) => format!("({status} {code}, {age_secs}s)"),
+            None => format!("({status}, {age_secs}s)"),
+        };
+
+        let mut spans: Vec<Span<'static>> = vec![
+            Span::styled("  \u{2502} ", TOOL_PREFIX),
+            Span::raw(format!("  {icon} ")),
+            Span::styled(task_id.to_string(), BOLD),
+        ];
+        if !description.is_empty() {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(description, dim_italic));
+        }
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(status_tail, DIM));
+        lines.push(Line::from(spans));
+    }
+
+    Some(lines)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,5 +432,103 @@ mod tests {
         let row: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(!row.contains("\u{2014} "), "no dangling em-dash: {row}");
         assert!(row.contains("agent:1"), "task id still present: {row}");
+    }
+
+    // --- ListBackgroundTasks renderer (#1209) ------------------------------
+
+    fn collect(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn list_bg_tasks_renders_mixed_agent_and_process() {
+        let payload = serde_json::json!([
+            {
+                "task_id": "agent:1",
+                "task_type": "agent",
+                "description": "explore: scan koda-core/src for ToolEffect",
+                "status": "running",
+                "age_secs": 12,
+            },
+            {
+                "task_id": "agent:2",
+                "task_type": "agent",
+                "description": "verify: confirm render",
+                "status": "pending",
+                "age_secs": 3,
+            },
+            {
+                "task_id": "process:5821",
+                "task_type": "process",
+                "description": "cargo test --workspace",
+                "status": "killed",
+                "age_secs": 45,
+            },
+        ]);
+        let lines = try_render_list_bg_tasks_lines(&payload.to_string()).expect("renders");
+        let all = collect(&lines);
+
+        // Header summarises count
+        assert!(
+            all.contains("3 background task(s)"),
+            "header missing: {all}"
+        );
+
+        // Each task id present
+        for id in ["agent:1", "agent:2", "process:5821"] {
+            assert!(all.contains(id), "task id {id} missing: {all}");
+        }
+
+        // Status icons (running, pending, killed)
+        assert!(all.contains("\u{25B6}"), "running icon ▶ missing: {all}");
+        assert!(all.contains("\u{25D0}"), "pending icon ◐ missing: {all}");
+        assert!(all.contains("\u{26D4}"), "killed icon ⛔ missing: {all}");
+
+        // Status tail with age
+        assert!(all.contains("(running, 12s)"), "status tail missing: {all}");
+        assert!(all.contains("(killed, 45s)"), "status tail missing: {all}");
+    }
+
+    #[test]
+    fn list_bg_tasks_includes_exit_code_when_present() {
+        let payload = serde_json::json!([
+            {
+                "task_id": "process:1",
+                "task_type": "process",
+                "description": "cargo build",
+                "status": "exited",
+                "age_secs": 7,
+                "exit_code": 0,
+            },
+        ]);
+        let lines = try_render_list_bg_tasks_lines(&payload.to_string()).expect("renders");
+        let all = collect(&lines);
+        assert!(all.contains("(exited 0, 7s)"), "exit code missing: {all}");
+        assert!(all.contains("\u{2713}"), "exited icon ✓ missing: {all}");
+    }
+
+    #[test]
+    fn list_bg_tasks_renders_empty_array_visibly() {
+        // The model can call this tool when nothing's running.
+        // The user must still see *something* in history rather than
+        // the line silently disappearing.
+        let lines = try_render_list_bg_tasks_lines("[]").expect("renders");
+        let all = collect(&lines);
+        assert!(
+            all.contains("no background tasks"),
+            "empty-state header missing: {all}"
+        );
+        assert_eq!(lines.len(), 1, "empty state is exactly one line");
+    }
+
+    #[test]
+    fn list_bg_tasks_returns_none_for_non_array() {
+        // Non-array payload — fall back to generic render path.
+        assert!(try_render_list_bg_tasks_lines("{}").is_none());
+        assert!(try_render_list_bg_tasks_lines("not json").is_none());
     }
 }
