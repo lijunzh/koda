@@ -136,49 +136,28 @@ system prompt, model, and allowed tools replace the current defaults.
 
 ## `/agents`
 
-Lists currently-running **background tasks** — both background
-sub-agents (the ones the model launched with `background: true` via
-`InvokeAgent`) and background shell processes (spawned with
-`Bash { background: true }`). Foreground sub-agents (the synchronous
-`/agent <name>` switch above) don't appear here because they block
-the conversation and are visible inline.
+Removed in #1210. The flat-text `/agents` dump (and its short-lived
+interactive replacement from #1191) was superseded by the always-on
+**bg-activity overlay** rendered just above the status bar. The
+overlay shows every running background sub-agent and shell process
+in real time — id, name, the last tool call each one fired, and
+elapsed age — with no slash-command needed.
 
 ```text
-  🐾 Background tasks
-
-  ID            NAME              AGE     STATUS
-  agent:1       explore           2m      ▶ Running (iter 8/20)
-  agent:2       verify            45s     ◐ Pending
-  process:5821  cargo test --w…   1m      ▶ Running
-  process:5849  npm run dev       12s     ✓ Exited (0)
+  🤖 agent:1  explore    Read('src/lib.rs')         2m
+  🤖 agent:2  verify     Bash('cargo test')         45s
+  ⚙️ process:5821  cargo test --workspace          1m
+  + 2 more
 ```
 
-- `ID` — stable per-task id, **prefixed** by kind. `agent:N` for
-  background sub-agents (assigned at spawn); `process:N` for
-  background shell processes (the OS pid). Pass either form
-  verbatim to `/cancel`.
-- `NAME` — the sub-agent definition (for `agent:` rows) or a
-  truncated head of the shell command (for `process:` rows).
-- `AGE` — wall-clock time since the task was registered, rounded
-  **down** (`1m` means "between 60 and 119 seconds").
-- `STATUS` — latest value from the task's status channel:
-  - Sub-agents: `Pending`, `Running { iter }`, `Cancelled`,
-    `Completed`, or `Errored`.
-  - Processes: `Running`, `Killed` (we sent SIGTERM but the OS
-    hasn't reaped yet), or `Exited (code)` (`✓` for code 0, `✗`
-    for any other code or signal exit).
-
-The `iter` count comes from inside the inference loop; until that
-wiring lands (Layer 4 of #996), in-progress tasks just show
-`▶ Running` without the `(iter N/20)` suffix.
-
-The LLM-facing equivalent is the `ListBackgroundTasks` tool — the
-model sees the same data when it asks about its own background work.
+The LLM-facing equivalent is still the `ListBackgroundTasks` tool —
+the model sees the same task ids when it asks about its own
+background work.
 
 ## `/cancel <id>`
 
-Requests cancellation of a background task by its `/agents` id.
-Accepts three forms:
+Requests cancellation of a background task by id (visible in the
+bg-activity overlay above the status bar). Accepts three forms:
 
 - `agent:N` — fires the per-task `CancellationToken`, which the
   inference loop checks between iterations. A cancelled sub-agent

@@ -103,11 +103,6 @@ pub enum MenuContent {
     /// active; dismissed by `?` again, `Esc`, or any other key.
     /// Content is built by [`crate::widgets::shortcuts_overlay`].
     ShortcutsOverlay,
-    /// Interactive `/agents` panel (#1191 Candidate 2). Replaces the
-    /// flat-text `/agents` dump with a list/detail/cancel state
-    /// machine. Owns its own row snapshots; the renderer lives in
-    /// [`crate::widgets::bg_agents_panel`].
-    BgAgentsPanel(crate::widgets::bg_agents_panel::BgAgentsPanelState),
 }
 
 impl MenuContent {

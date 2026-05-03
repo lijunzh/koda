@@ -5,7 +5,6 @@
 //! provides shared navigation (up/down/scroll/filter) so menus stay DRY.
 
 pub mod bg_activity_overlay;
-pub mod bg_agents_panel;
 pub mod dropdown;
 pub mod file_menu;
 pub mod model_menu;

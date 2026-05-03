@@ -439,14 +439,6 @@ impl TuiContext {
         let selection = self.mouse_selection.as_ref();
         let mcp_info = self.agent.mcp_status_bar_info();
         let project_root = self.project_root.clone();
-        // #1158 (b): ambient bg-task pill so users know work is in
-        // flight without running `/bg-tasks`. Both registries are
-        // shared `Arc`s; counts are O(1) hashmap len lookups.
-        let bg_counts = (
-            self.session.bg_agents.pending_count(),
-            self.agent.tools.bg_registry.len(),
-        );
-
         // #1210: project bg-agent + bg-process snapshots through the
         // activity tracker into renderable rows for the live overlay
         // above the status bar. Cheap — snapshots are a vec clone
@@ -454,6 +446,11 @@ impl TuiContext {
         // (always small: bounded by sub-agent fan-out cap) snapshot
         // size. Done before the terminal.draw closure to satisfy the
         // borrow checker around `&mut self`.
+        //
+        // Replaces the #1158 ambient `bg_counts` status pill: the
+        // overlay shows what's running, what each task is doing right
+        // now, and the cancel keybindings — the pill's job becomes
+        // redundant the moment the live surface exists (#1210).
         let agent_snaps = self.session.bg_agents.snapshot();
         let process_snaps = self.agent.tools.bg_registry.snapshot();
         let (bg_activity_rows, bg_activity_total) = self
@@ -478,7 +475,6 @@ impl TuiContext {
                 scroll_buffer,
                 selection,
                 mcp_info,
-                bg_counts,
                 &project_root,
                 &bg_activity_rows,
                 bg_activity_total,
@@ -665,6 +661,7 @@ impl TuiContext {
             &self.agent,
             &mut self.pending_command,
             &mut self.menu,
+            &mut self.bg_activity,
         )
         .await;
 

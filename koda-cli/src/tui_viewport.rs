@@ -44,10 +44,6 @@ pub(crate) fn draw_viewport(
     scroll_buffer: &ScrollBuffer,
     selection: Option<&crate::mouse_select::Selection>,
     mcp_info: Option<McpStatusBarInfo>,
-    // Background-task counts (running sub-agents, running shell
-    // processes). Drives the status-bar pill added in #1158 (b);
-    // both zero → segment hidden by `StatusBar::with_bg_counts`.
-    bg_counts: (usize, usize),
     project_root: &std::path::Path,
     // #1210: pre-built rows for the live bg-activity overlay rendered
     // above the status bar. Slice is already truncated to MAX_VISIBLE;
@@ -89,7 +85,6 @@ pub(crate) fn draw_viewport(
         MenuContent::ShortcutsOverlay => {
             crate::widgets::shortcuts_overlay::overlay_height(area.width)
         }
-        MenuContent::BgAgentsPanel(state) => crate::widgets::bg_agents_panel::visible_height(state),
     };
 
     // Queue preview height: 0 when idle / queue empty.
@@ -269,10 +264,6 @@ pub(crate) fn draw_viewport(
     }
     if let Some(mcp) = mcp_info {
         sb = sb.with_mcp_info(mcp);
-    }
-    let (bg_agents, bg_processes) = bg_counts;
-    if bg_agents > 0 || bg_processes > 0 {
-        sb = sb.with_bg_counts(bg_agents, bg_processes);
     }
     // Vim-mode pill (PR 3 of #1178). The textarea returns `None` when
     // vim editing is disabled, which makes `with_vim_label` a no-op —
@@ -533,9 +524,6 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
         MenuContent::ShortcutsOverlay => {
             let lines = crate::widgets::shortcuts_overlay::build_overlay_lines(menu_area.width);
             frame.render_widget(Paragraph::new(lines), menu_area);
-        }
-        MenuContent::BgAgentsPanel(state) => {
-            crate::widgets::bg_agents_panel::render(state, menu_area, frame.buffer_mut());
         }
         MenuContent::None => {}
     }

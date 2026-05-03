@@ -43,13 +43,8 @@ use ratatui::text::Line;
 pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ("/agent", "Switch to a sub-agent", Some("<name>")),
     (
-        "/agents",
-        "List running background tasks (sub-agents + processes)",
-        None,
-    ),
-    (
         "/cancel",
-        "Cancel a background task by id (agent:N or process:N from /agents)",
+        "Cancel a background task by id (agent:N or process:N — visible in the bg-activity overlay)",
         Some("<id>"),
     ),
     (
@@ -241,10 +236,11 @@ mod tests {
 
     #[test]
     fn matches_for_ambiguous_prefix_returns_all_options() {
-        // "/a" should match /agent, /agents, but nothing without the prefix.
+        // "/a" should match /agent (and any future /a* commands), but
+        // nothing without the prefix. Used to also expect /agents,
+        // removed in #1210 along with the slash command itself.
         let m = matches_for("/a");
         assert!(m.iter().any(|s| s == "/agent"));
-        assert!(m.iter().any(|s| s == "/agents"));
         assert!(
             m.iter().all(|s| s.starts_with("/a")),
             "matches must all share the queried prefix"

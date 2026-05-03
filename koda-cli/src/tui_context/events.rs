@@ -131,6 +131,7 @@ impl TuiContext {
                         &mut self.scroll_buffer,
                         &self.session.bg_agents,
                         &self.agent.tools.bg_registry,
+                        &mut self.bg_activity,
                     );
                 } else {
                     self.textarea.set_text_clearing_elements("");
@@ -153,6 +154,7 @@ impl TuiContext {
                         &mut self.scroll_buffer,
                         &self.session.bg_agents,
                         &self.agent.tools.bg_registry,
+                        &mut self.bg_activity,
                     );
                 } else {
                     self.textarea.set_text_clearing_elements("");

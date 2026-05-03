@@ -46,6 +46,7 @@ pub async fn handle_slash_command(
     agent: &Arc<KodaAgent>,
     pending_command: &mut Option<String>,
     menu: &mut crate::tui_types::MenuContent,
+    bg_activity: &mut crate::bg_activity::BgActivityTracker,
 ) -> SlashAction {
     let parts: Vec<&str> = input.splitn(2, ' ').collect();
     let cmd = parts[0];
@@ -173,25 +174,12 @@ pub async fn handle_slash_command(
             SlashAction::Continue
         }
 
-        // #996 Layers 1+F + #1191 Candidate 2 — unified runtime task
-        // surface. `/agents` (plural) opens an INTERACTIVE panel
-        // (`MenuContent::BgAgentsPanel`); `/agent` (singular) lists
-        // sub-agent definitions inline.
-        //
-        // The panel replaces the legacy flat-text dump from
-        // `tui_bg_tasks::handle_list_background_tasks`. Snapshots are
-        // captured here at open-time — see
-        // `widgets::bg_agents_panel` for the snapshot-semantics
-        // rationale (frozen until reopen, simple > complex per Zen).
-        "/agents" => {
-            agent.tools.bg_registry.reap();
-            let agents = session.bg_agents.snapshot();
-            let processes = agent.tools.bg_registry.snapshot();
-            *menu = crate::tui_types::MenuContent::BgAgentsPanel(
-                crate::widgets::bg_agents_panel::BgAgentsPanelState::new(agents, processes),
-            );
-            SlashAction::Continue
-        }
+        // #1210 deleted the legacy `/agents` interactive panel; live
+        // bg-agent + bg-process state now flows through the always-on
+        // `widgets::bg_activity_overlay` rendered above the status bar.
+        // The model-facing `ListBackgroundTasks` tool keeps the same
+        // dump shape for in-context introspection — `/agents` was the
+        // user-facing surface for the same data and is redundant.
 
         "/cancel" => {
             // Accepts: `agent:N`, `process:N`, or bare numeric (→ agent, back-compat).
@@ -209,6 +197,7 @@ pub async fn handle_slash_command(
                 buffer,
                 &session.bg_agents,
                 &agent.tools.bg_registry,
+                bg_activity,
                 parsed,
             );
             SlashAction::Continue
