@@ -80,6 +80,7 @@ pub async fn run_headless(
             pending_images,
             &cli_sink,
             &mut cmd_rx,
+            None,
         ) => r,
         _ = tokio::signal::ctrl_c() => {
             cancel.cancel();

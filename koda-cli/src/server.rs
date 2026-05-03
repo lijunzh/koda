@@ -442,7 +442,7 @@ async fn handle_prompt(
     let config = state.config.clone();
     let result = active
         .session
-        .run_turn(&config, None, &sink, &mut cmd_rx)
+        .run_turn(&config, None, &sink, &mut cmd_rx, None)
         .await;
 
     // Drop the sink so the streaming task finishes

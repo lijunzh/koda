@@ -146,7 +146,7 @@ async fn mcp_instructions_reach_provider_in_live_turn() {
     let sink = TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     session
-        .run_turn(&env.config, None, &sink, &mut cmd_rx)
+        .run_turn(&env.config, None, &sink, &mut cmd_rx, None)
         .await
         .expect("turn should succeed");
 
@@ -190,7 +190,7 @@ async fn no_mcp_manager_means_no_mcp_block_in_prompt() {
     let sink = TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     session
-        .run_turn(&env.config, None, &sink, &mut cmd_rx)
+        .run_turn(&env.config, None, &sink, &mut cmd_rx, None)
         .await
         .expect("turn should succeed");
 
@@ -223,7 +223,7 @@ async fn connected_server_without_instructions_is_omitted() {
     let sink = TestSink::new();
     let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
     session
-        .run_turn(&env.config, None, &sink, &mut cmd_rx)
+        .run_turn(&env.config, None, &sink, &mut cmd_rx, None)
         .await
         .expect("turn should succeed");
 
@@ -265,7 +265,7 @@ async fn server_connected_after_agent_built_still_appears_in_next_turn() {
 
     // Turn 1: no MCP, no block.
     session
-        .run_turn(&env.config, None, &sink, &mut cmd_rx)
+        .run_turn(&env.config, None, &sink, &mut cmd_rx, None)
         .await
         .expect("turn 1 should succeed");
     {
@@ -288,7 +288,7 @@ async fn server_connected_after_agent_built_still_appears_in_next_turn() {
     // Queue a follow-up user message and run turn 2.
     env.insert_user_message("anything new?").await;
     session
-        .run_turn(&env.config, None, &sink, &mut cmd_rx)
+        .run_turn(&env.config, None, &sink, &mut cmd_rx, None)
         .await
         .expect("turn 2 should succeed");
 

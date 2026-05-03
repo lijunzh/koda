@@ -103,9 +103,16 @@ impl TuiContext {
 
         // Run the inference turn as a pinned future
         {
-            let turn = self
-                .session
-                .run_turn(&self.config, pending_images, &cli_sink, cmd_rx);
+            let turn = self.session.run_turn(
+                &self.config,
+                pending_images,
+                &cli_sink,
+                cmd_rx,
+                // #1208: pass the per-turn child token so Ctrl+C / Esc
+                // stops *this* turn without firing session.cancel
+                // (which bg agents derive from — see #1200).
+                Some(cancel_token.clone()),
+            );
             tokio::pin!(turn);
 
             // Rotate which select arm is preferred each iteration so neither
