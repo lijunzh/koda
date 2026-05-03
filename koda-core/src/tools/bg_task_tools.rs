@@ -160,7 +160,20 @@ pub fn definitions() -> Vec<ToolDefinition> {
                 wait this long', not 'check back quickly' — for sub-agent tasks (multi-iteration \
                 inference) prefer 120-300 s; the default suits short shell-process waits. The \
                 same `timeout_secs` applies to every task in the request (per-task, not total). \
-                Default {default}s, max {max}s.",
+                Default {default}s, max {max}s.\n\n\
+                **When NOT to call WaitTask.** Background sub-agents and processes drain \
+                automatically: completed tasks inject as a user message at the start of the \
+                next iteration. So if you've just spawned bg work and have ANY other useful \
+                work to do (more file edits, follow-up searches, summarizing progress for the \
+                user, even \"acknowledge the spawn and stop\"), do that instead and let the \
+                result arrive on its own. Calling WaitTask immediately after a bg spawn turns \
+                the parallel/non-blocking pattern back into a serial blocking call — the \
+                parent's TUI goes silent for the entire duration with no per-tool feedback \
+                from the child. Only call WaitTask when (a) the next step you'd take strictly \
+                depends on this task's result and you cannot make progress without it, (b) \
+                you're at the end of your work and need the result to finalize the user-facing \
+                reply, or (c) you're rendezvousing on N parallel agents you fanned out earlier \
+                and you've already exhausted other work.",
                 default = WAIT_TASK_DEFAULT_TIMEOUT_SECS,
                 max = WAIT_TASK_MAX_TIMEOUT_SECS,
             ),
@@ -624,6 +637,41 @@ mod tests {
         assert!(
             required.is_none() || required.unwrap().as_array().unwrap().is_empty(),
             "ListBackgroundTasks must take no required args"
+        );
+    }
+
+    /// #1201 A1: WaitTask description must actively push back against the
+    /// "spawn bg agent → immediately WaitTask" anti-pattern. Pinning the
+    /// load-bearing concepts so future "tighter wording" passes don't
+    /// silently drop the nudge.
+    #[test]
+    fn wait_task_description_discourages_immediate_post_spawn_call() {
+        let defs = definitions();
+        let wait = defs.iter().find(|d| d.name == "WaitTask").unwrap();
+        let desc = &wait.description;
+        // The auto-drain alternative must be named — the model needs to
+        // know there's a passive way to receive bg results so it can
+        // confidently skip WaitTask.
+        assert!(
+            desc.contains("drain"),
+            "WaitTask description must mention auto-drain so the model knows \
+             results arrive on the next iteration without an explicit wait \
+             (#1201 A1)"
+        );
+        // The anti-pattern must be named explicitly so the model can
+        // recognize it in its own output, not just inferred from prose.
+        assert!(
+            desc.contains("immediately") || desc.contains("immediate"),
+            "WaitTask description must call out the immediate-post-spawn \
+             anti-pattern by name (#1201 A1)"
+        );
+        // The consequence (silent parent / blocking) must be stated so
+        // the model understands WHY this is bad, not just THAT it's bad.
+        assert!(
+            desc.contains("blocking") || desc.contains("silent"),
+            "WaitTask description must explain the cost of immediate \
+             waiting (parent goes silent / blocks) so the model has a \
+             reason to avoid it (#1201 A1)"
         );
     }
 
