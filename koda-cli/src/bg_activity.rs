@@ -87,8 +87,7 @@ impl BgActivityTracker {
             }
             BgChildActivityKind::Info { message } => message.clone(),
         };
-        self.per_agent
-            .insert(task_id, LastActivity { description });
+        self.per_agent.insert(task_id, LastActivity { description });
     }
 
     /// Mark a task as cancelling. Called when the user fires
@@ -130,8 +129,7 @@ impl BgActivityTracker {
         processes: &[BgProcessSnapshot],
     ) -> (Vec<ActivityRow>, usize) {
         // ── Prune stale tracker entries (registry has dropped these tasks) ──
-        let live_ids: std::collections::HashSet<u32> =
-            agents.iter().map(|a| a.task_id).collect();
+        let live_ids: std::collections::HashSet<u32> = agents.iter().map(|a| a.task_id).collect();
         let stale: Vec<u32> = self
             .per_agent
             .keys()

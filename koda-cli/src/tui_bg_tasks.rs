@@ -333,7 +333,13 @@ mod tests {
         let procs = BgRegistry::new();
         let (task_id, _tx, _status_tx, observer) = register_entry(&reg, "explore", "x");
 
-        handle_cancel_background_task(&mut buf, &reg, &procs, &mut crate::bg_activity::BgActivityTracker::default(), Some(TaskId::Agent(task_id)));
+        handle_cancel_background_task(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+            Some(TaskId::Agent(task_id)),
+        );
 
         let text = buffer_text(&buf);
         assert!(
@@ -357,7 +363,13 @@ mod tests {
         let procs = BgRegistry::new();
         let pid = spawn_sleep_in_registry(&procs);
 
-        handle_cancel_background_task(&mut buf, &reg, &procs, &mut crate::bg_activity::BgActivityTracker::default(), Some(TaskId::Process(pid)));
+        handle_cancel_background_task(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+            Some(TaskId::Process(pid)),
+        );
 
         let text = buffer_text(&buf);
         assert!(
@@ -378,7 +390,13 @@ mod tests {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
         let procs = BgRegistry::new();
-        handle_cancel_background_task(&mut buf, &reg, &procs, &mut crate::bg_activity::BgActivityTracker::default(), Some(TaskId::Agent(999)));
+        handle_cancel_background_task(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+            Some(TaskId::Agent(999)),
+        );
         let text = buffer_text(&buf);
         assert!(
             text.contains("agent:999") && text.contains("bg-activity overlay"),
@@ -393,7 +411,13 @@ mod tests {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
         let procs = BgRegistry::new();
-        handle_cancel_background_task(&mut buf, &reg, &procs, &mut crate::bg_activity::BgActivityTracker::default(), Some(TaskId::Process(999_999)));
+        handle_cancel_background_task(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+            Some(TaskId::Process(999_999)),
+        );
         let text = buffer_text(&buf);
         assert!(
             text.contains("process:999999") && text.contains("bg-activity overlay"),
@@ -410,7 +434,13 @@ mod tests {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
         let procs = BgRegistry::new();
-        handle_cancel_background_task(&mut buf, &reg, &procs, &mut crate::bg_activity::BgActivityTracker::default(), None);
+        handle_cancel_background_task(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+            None,
+        );
         let text = buffer_text(&buf);
         assert!(
             text.contains("Usage:") && text.contains("agent:") && text.contains("process:"),
@@ -429,7 +459,12 @@ mod tests {
         let mut buf = ScrollBuffer::new(64);
         let reg = BgAgentRegistry::new();
         let procs = BgRegistry::new();
-        let (a, p) = cancel_all_bg_work(&mut buf, &reg, &procs, &mut crate::bg_activity::BgActivityTracker::default());
+        let (a, p) = cancel_all_bg_work(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+        );
         assert_eq!((a, p), (0, 0));
         assert!(
             buffer_text(&buf).is_empty(),
@@ -454,7 +489,12 @@ mod tests {
         status1.send(AgentStatus::Running { iter: 1 }).unwrap();
         status2.send(AgentStatus::Running { iter: 1 }).unwrap();
 
-        let (a, p) = cancel_all_bg_work(&mut buf, &reg, &procs, &mut crate::bg_activity::BgActivityTracker::default());
+        let (a, p) = cancel_all_bg_work(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+        );
         assert_eq!((a, p), (2, 0));
         assert!(observer1.is_cancelled(), "agent 1 should observe cascade");
         assert!(observer2.is_cancelled(), "agent 2 should observe cascade");
@@ -479,7 +519,12 @@ mod tests {
         status.send(AgentStatus::Running { iter: 1 }).unwrap();
         let _pid = spawn_sleep_in_registry(&procs);
 
-        let (a, p) = cancel_all_bg_work(&mut buf, &reg, &procs, &mut crate::bg_activity::BgActivityTracker::default());
+        let (a, p) = cancel_all_bg_work(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+        );
         assert_eq!((a, p), (1, 1));
         assert!(observer.is_cancelled());
         let text = buffer_text(&buf);
@@ -508,7 +553,12 @@ mod tests {
         // Send a result so the entry looks fully resolved.
         let _ = tx.send(Ok(("done".to_string(), vec![])));
 
-        let (a, p) = cancel_all_bg_work(&mut buf, &reg, &procs, &mut crate::bg_activity::BgActivityTracker::default());
+        let (a, p) = cancel_all_bg_work(
+            &mut buf,
+            &reg,
+            &procs,
+            &mut crate::bg_activity::BgActivityTracker::default(),
+        );
         assert_eq!((a, p), (0, 0));
         assert!(
             !observer.is_cancelled(),

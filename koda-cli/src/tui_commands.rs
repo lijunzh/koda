@@ -180,7 +180,6 @@ pub async fn handle_slash_command(
         // The model-facing `ListBackgroundTasks` tool keeps the same
         // dump shape for in-context introspection — `/agents` was the
         // user-facing surface for the same data and is redundant.
-
         "/cancel" => {
             // Accepts: `agent:N`, `process:N`, or bare numeric (→ agent, back-compat).
             // Empty / whitespace-only / unparseable → None so the handler

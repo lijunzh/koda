@@ -453,9 +453,8 @@ impl TuiContext {
         // redundant the moment the live surface exists (#1210).
         let agent_snaps = self.session.bg_agents.snapshot();
         let process_snaps = self.agent.tools.bg_registry.snapshot();
-        let (bg_activity_rows, bg_activity_total) = self
-            .bg_activity
-            .build_rows(&agent_snaps, &process_snaps);
+        let (bg_activity_rows, bg_activity_total) =
+            self.bg_activity.build_rows(&agent_snaps, &process_snaps);
 
         let mut history_rect = None;
         if let Err(e) = self.terminal.draw(|f| {

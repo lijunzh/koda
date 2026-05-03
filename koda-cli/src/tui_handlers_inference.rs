@@ -204,9 +204,8 @@ impl TuiContext {
                         // is doing right now, and the cancel keybindings.
                         let agent_snaps = bg_agents_for_status.snapshot();
                         let process_snaps = agent_for_status.tools.bg_registry.snapshot();
-                        let (bg_activity_rows, bg_activity_total) = self
-                            .bg_activity
-                            .build_rows(&agent_snaps, &process_snaps);
+                        let (bg_activity_rows, bg_activity_total) =
+                            self.bg_activity.build_rows(&agent_snaps, &process_snaps);
                         let queue_total = self.later_queue.len();
                         let queue_preview: Vec<String> = self
                             .later_queue

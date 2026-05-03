@@ -301,7 +301,11 @@ mod tests {
     fn single_running_row_renders_label_and_activity() {
         let rows = vec![agent_row("explore", "12s", Some("Read src/auth.rs"))];
         let lines = render(&rows, 1, 80);
-        assert!(lines[0].contains("explore"), "row missing label: {:?}", lines[0]);
+        assert!(
+            lines[0].contains("explore"),
+            "row missing label: {:?}",
+            lines[0]
+        );
         assert!(
             lines[0].contains("Read src/auth.rs"),
             "row missing activity: {:?}",
