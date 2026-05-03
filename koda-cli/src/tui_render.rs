@@ -285,7 +285,8 @@ impl TuiRenderer {
             | EngineEvent::TurnEnd { .. }
             | EngineEvent::LoopCapReached { .. }
             | EngineEvent::BgTaskUpdate { .. }
-            | EngineEvent::TodoUpdate { .. } => {
+            | EngineEvent::TodoUpdate { .. }
+            | EngineEvent::BgChildActivity { .. } => {
                 // Handled by the event loop, not the renderer.
                 // (#1076) BgTaskUpdate is routed to the bg-task panel,
                 // which still reads from the registry snapshot for its
@@ -296,46 +297,20 @@ impl TuiRenderer {
                 // the structured event is for ACP / headless clients
                 // that want diff-driven animation. Same future-cleanup
                 // path as BgTaskUpdate.
-            }
-            // (#1201 B) Live activity from inside a running bg agent.
-            // Pre-this-arm a 30-second tool inside a bg agent looked
-            // identical to a 30-second hang — only the post-completion
-            // narrative trace surfaced "what it did". This arm renders
-            // each child activity event as a dim inline line in the
-            // scroll buffer, prefixed with the bg task id so the user
-            // can correlate it with the spawn line and the bg-task
-            // panel.
-            //
-            // Phase B2 (follow-up) will replace this with a proper
-            // Gemini-style activity block that collapses on completion;
-            // for now the inline-line render gets us the live signal
-            // without committing to a panel layout.
-            EngineEvent::BgChildActivity { task_id, kind, .. } => {
-                let body = match kind {
-                    koda_core::engine::event::BgChildActivityKind::ToolStart {
-                        summary, ..
-                    } => format!("\u{1f527} {summary}"),
-                    koda_core::engine::event::BgChildActivityKind::ToolEnd {
-                        tool_name,
-                        success,
-                    } => {
-                        let icon = if success { "\u{2713}" } else { "\u{2717}" };
-                        format!("{icon} {tool_name}")
-                    }
-                    koda_core::engine::event::BgChildActivityKind::Info { message } => {
-                        // BufferingSink-style info lines already carry
-                        // their own indentation/emoji — forward as-is
-                        // so visual hierarchy survives.
-                        message
-                    }
-                };
-                tui_output::emit_line(
-                    buffer,
-                    Line::from(vec![
-                        Span::styled(format!("  [bg {task_id}] "), DIM),
-                        Span::styled(body, DIM),
-                    ]),
-                );
+                // (#1201 B2) BgChildActivity is dropped from TUI
+                // scrollback render. The B1 inline-line render
+                // (`[bg N] 🔧 Read foo.rs` per event) was redundant
+                // with the post-completion `✅ Background agent X
+                // completed\n<bullet trace>` Info line emitted by
+                // `inference.rs` — a 50-tool bg agent surfaced 100
+                // dim lines live + the same trace again at the end.
+                // The Info line is the durable record; the status
+                // pill and `/agents` panel cover "is it still
+                // running". Headless/ACP keep the live lines because
+                // those contexts are tail-friendly. A future Phase
+                // B3 may add a Gemini-style live overlay above the
+                // composer that renders activity from state without
+                // touching scrollback.
             }
             EngineEvent::ActionBlocked {
                 tool_name: _,
@@ -938,5 +913,56 @@ mod tests {
     #[test]
     fn test_collapse_all_blank() {
         assert_eq!(collapse_blank_lines("\n\n\n\n"), "\n");
+    }
+
+    // ── #1201 B2: BgChildActivity is a TUI no-op ────────────────────────────
+    //
+    // The B1 PR rendered each child activity event as a dim inline
+    // line in the scroll buffer. That turned out redundant with the
+    // `✅ Background agent X completed\n<bullet trace>` Info line
+    // emitted by `inference.rs` after `drain_completed()` — a 50-tool
+    // bg agent surfaced 100 dim lines live + the same trace again at
+    // the end. B2 drops the live render in TUI scrollback while
+    // leaving headless/ACP untouched (those tail-friendly contexts
+    // benefit from per-line streaming).
+    //
+    // This test pins that decision so a future refactor doesn't
+    // accidentally re-introduce the noise.
+    #[test]
+    fn bg_child_activity_does_not_push_lines_to_scroll_buffer() {
+        use koda_core::engine::event::{BgChildActivityKind, EngineEvent};
+
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(2500);
+
+        for kind in [
+            BgChildActivityKind::ToolStart {
+                tool_name: "Read".into(),
+                summary: "src/main.rs".into(),
+            },
+            BgChildActivityKind::ToolEnd {
+                tool_name: "Read".into(),
+                success: true,
+            },
+            BgChildActivityKind::Info {
+                message: "  \u{1f4cc} note".into(),
+            },
+        ] {
+            renderer.render_to_buffer(
+                EngineEvent::BgChildActivity {
+                    task_id: 7,
+                    spawner: None,
+                    kind,
+                },
+                &mut buffer,
+            );
+        }
+
+        assert_eq!(
+            buffer.len(),
+            0,
+            "BgChildActivity must not push to scrollback (#1201 B2); \
+             post-completion `✅ ... completed` Info line is the durable record"
+        );
     }
 }
