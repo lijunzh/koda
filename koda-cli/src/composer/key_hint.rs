@@ -57,7 +57,7 @@
 
 // PR 4 of #1178 wired this module's `KeyBinding`, helper constructors
 // (`plain`/`shift`/`ctrl`), and `From<&KeyBinding> for Span` rendering into
-// the new key-hint footer (`widgets/key_hints.rs`). The remaining surface
+// the composer's key-hint footer. The remaining surface
 // (`alt`, `ctrl_alt`, `parts`, `has_ctrl_or_alt`) is unused by koda today
 // but preserved verbatim from the codex port so the next sync stays a
 // trivial diff. Per-item `#[allow(dead_code)]` rather than a module-level

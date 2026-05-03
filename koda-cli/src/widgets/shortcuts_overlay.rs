@@ -53,9 +53,9 @@ use ratatui::text::{Line, Span};
 /// One labelled keybinding row in the overlay grid.
 struct ShortcutItem {
     /// Key chord text — rendered in the accent colour (matches the
-    /// `KeyBinding → Span` styling used by `key_hints::Hint`).
+    /// `KeyBinding → Span` styling used by the composer key-hint footer).
     key: &'static str,
-    /// Plaiaction verb — rendered dim.
+    /// Plain action verb — rendered dim.
     verb: &'static str,
 }
 

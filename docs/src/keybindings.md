@@ -4,8 +4,8 @@
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Send message (or queue as **next** during inference) |
-| `Ctrl+J` | Queue message as **later** during inference (deferred turn) |
+| `Enter` | Send message (or queue as **next** during inference; slash commands rejected mid-inference — press `Esc` first) |
+| `Ctrl+J` | Queue message as **later** during inference (slash commands rejected mid-inference — press `Esc` first) |
 | `Alt+Enter` | Insert newline (multi-line input) |
 | `Tab` | Autocomplete slash commands and `@file` paths |
 | `Shift+Tab` | Cycle trust mode (Safe ↔ Auto) |
