@@ -751,6 +751,23 @@ async fn handle_inference_key_inline(
         (KeyCode::Enter, KeyModifiers::NONE) => {
             let text = textarea.text().to_string();
             if !text.trim().is_empty() {
+                // #1211: reject slash-command attempts before they
+                // silently steer. `/cancel`, `/clear` etc. only run
+                // through `dispatch_command` at idle; during inference
+                // the queue-as-text path would inject them as raw user
+                // input. Surface a visible warning so the user can
+                // either Esc-interrupt or strip the leading slash to
+                // queue as a real steer message.
+                if is_slash_command_attempt(&text) {
+                    textarea.set_text_clearing_elements("");
+                    crate::tui_output::warn_msg(
+                        scroll_buffer,
+                        "Slash commands are disabled during inference. \
+                         Press Esc to interrupt, then run the command at idle."
+                            .into(),
+                    );
+                    return;
+                }
                 textarea.set_text_clearing_elements("");
                 history.push(text.clone());
                 let _ = db.history_push(&text).await;
@@ -772,6 +789,20 @@ async fn handle_inference_key_inline(
         (KeyCode::Char('j'), m) if m.contains(KeyModifiers::CONTROL) => {
             let text = textarea.text().to_string();
             if !text.trim().is_empty() {
+                // #1211: same slash guard as the QueueNext path. A
+                // slash command queued for "later" would still arrive
+                // at the model as raw text — same silent-steer footgun,
+                // same fix.
+                if is_slash_command_attempt(&text) {
+                    textarea.set_text_clearing_elements("");
+                    crate::tui_output::warn_msg(
+                        scroll_buffer,
+                        "Slash commands are disabled during inference. \
+                         Press Esc to interrupt, then run the command at idle."
+                            .into(),
+                    );
+                    return;
+                }
                 textarea.set_text_clearing_elements("");
                 history.push(text.clone());
                 let _ = db.history_push(&text).await;
@@ -871,6 +902,23 @@ async fn handle_inference_key_inline(
     }
 }
 
+/// Detect a slash-command attempt typed during inference (#1211).
+///
+/// Slash commands (`/cancel`, `/clear`, `/model`, …) are routed through
+/// `dispatch_command` only at idle. During inference the Enter handler
+/// would otherwise silently queue the text as a steer message — the
+/// model would receive raw `/cancel agent:1` as user input and the
+/// command would never actually run. Trim leading whitespace so a
+/// stray space doesn't mask the slash; trailing content is irrelevant
+/// (a real word starting with `/` like a path `/etc/hosts` is still
+/// rare enough mid-inference that the false positive is acceptable —
+/// the warning tells the user how to recover).
+fn is_slash_command_attempt(text: &str) -> bool {
+    text.trim_start().starts_with('/')
+}
+
+/// Truncate a string to `max_chars`, replacing newlines with ↵ and
+/// appending "…" if it was shortened.
 /// Truncate a string to `max_chars`, replacing newlines with ↵ and
 /// appending "…" if it was shortened.
 fn truncate_preview(s: &str, max_chars: usize) -> String {
@@ -1072,5 +1120,66 @@ mod drain_tests {
             iterations >= 8,
             "expected >=8 iters at cap 64 for 500 items"
         );
+    }
+}
+
+#[cfg(test)]
+mod slash_guard_tests {
+    //! Regression tests for #1211 — slash commands typed during
+    //! inference must not silently steer.
+    //!
+    //! These pin the classifier (`is_slash_command_attempt`) that the
+    //! Enter (QueueNext) and Ctrl+J (later) handlers consult before
+    //! sending. The handlers themselves are deeply entangled with
+    //! `TuiContext` field-borrows and the engine command channel — the
+    //! cleanest unit-level surface is the classifier, so we keep these
+    //! tests focused there. End-to-end coverage of the rejection path
+    //! belongs in a future scripted-TUI test (none exists yet).
+
+    use super::is_slash_command_attempt;
+
+    #[test]
+    fn bare_slash_command_is_detected() {
+        assert!(is_slash_command_attempt("/cancel"));
+        assert!(is_slash_command_attempt("/clear"));
+        assert!(is_slash_command_attempt("/model"));
+    }
+
+    #[test]
+    fn slash_command_with_args_is_detected() {
+        // The canonical post-#1213 victim: `/cancel <id>` typed during
+        // a WaitTask. Without the guard this becomes a steer message.
+        assert!(is_slash_command_attempt("/cancel agent:1"));
+        assert!(is_slash_command_attempt("/model gpt-4o"));
+    }
+
+    #[test]
+    fn leading_whitespace_does_not_bypass_guard() {
+        // A stray space is overwhelmingly more likely to be a typo on
+        // a slash command than a real intent to steer with leading
+        // whitespace. Trim before classifying so the guard isn't
+        // trivially defeated.
+        assert!(is_slash_command_attempt(" /cancel"));
+        assert!(is_slash_command_attempt("  /clear"));
+        assert!(is_slash_command_attempt("\t/model gpt-4o"));
+    }
+
+    #[test]
+    fn plain_text_is_allowed_through() {
+        // The whole point of QueueNext during inference is mid-turn
+        // steers — those must keep working unmolested.
+        assert!(!is_slash_command_attempt("please use rust 2024 edition"));
+        assert!(!is_slash_command_attempt("actually, skip the test for now"));
+        assert!(!is_slash_command_attempt(""));
+        assert!(!is_slash_command_attempt("   "));
+    }
+
+    #[test]
+    fn mid_text_slash_is_not_a_command() {
+        // A slash mid-message is a path / URL / regex / fraction —
+        // not a command. Only a leading `/` (after trim) counts.
+        assert!(!is_slash_command_attempt("check /etc/hosts for the entry"));
+        assert!(!is_slash_command_attempt("see https://example.com/path"));
+        assert!(!is_slash_command_attempt("the ratio is 1/2"));
     }
 }
