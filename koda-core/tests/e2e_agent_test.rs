@@ -753,3 +753,176 @@ async fn test_sub_agent_grace_turn_drops_tool_calls_when_model_defies() {
          must be dropped, not executed. got: {events:?}"
     );
 }
+
+// ── #1232 §3a: pre-flight context-budget check ──────────────────────────────
+
+/// When the resolved sub-agent context (system + tools + prompt) exceeds the
+/// model's `max_context_tokens`, dispatch must bail BEFORE any LLM call with
+/// an actionable breakdown — not let the user see a raw upstream 400.
+///
+/// We trigger the gate by setting `max_context_tokens: 50` in the agent
+/// JSON. The system prompt + 1 inherited tool + the user prompt easily
+/// blow past 50 tokens, so the pre-flight tripwire fires on the first
+/// iteration. (`max_context_tokens` is per-agent, not parent-inherited
+/// — it comes from `ModelSettings::defaults_for(model)` unless the agent
+/// JSON overrides it.)
+///
+/// Asserts:
+///   * the sub-agent's `InvokeAgent` tool result mentions the over-budget
+///     condition (the actionable error the model sees on its next turn);
+///   * a `ChildAgentActivity` activity message tagged with the pre-flight
+///     summary is emitted so the overlay (#1232 §1) shows the failure
+///     reason instead of just a silent "agent finished" row;
+///   * NO mock provider call was ever made — the gate fires before
+///     `provider.chat(...)`. Pre-PR, the dispatch would have plowed ahead
+///     and the user would have seen the upstream 400.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sub_agent_preflight_bails_when_context_exceeds_window() {
+    let _lock = ENV_MUTEX.lock().await;
+    // Sub-agent's `max_context_tokens` does NOT inherit from the parent
+    // (config.rs builds it from `ModelSettings::defaults_for(model)`).
+    // Set the budget directly in the agent JSON so the gate has a knob
+    // to trip on.
+    let env = Env::new().await;
+
+    let agents_dir = env.root.join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("over-budget-agent.json"),
+        serde_json::json!({
+            "name": "over-budget-agent",
+            "system_prompt": "You are a moderately verbose agent. \
+                              Take your time, think step by step, and \
+                              explain your reasoning carefully before \
+                              answering. This system prompt alone is \
+                              already large enough to blow a tiny \
+                              context window many times over.",
+            "allowed_tools": [],
+            "provider": "mock",
+            "base_url": "http://localhost:0",
+            // 50-token budget is small enough that the system prompt
+            // alone busts it. Pre-flight tripwire fires first iteration.
+            "max_context_tokens": 50
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // If the gate fails to fire, this MockProvider would be hit and the
+    // test would still pass for the wrong reason. Set a sentinel response
+    // that, if observed in the final transcript, proves the bypass.
+    runtime_env::set(
+        "KODA_MOCK_RESPONSES",
+        r#"[{"text": "BYPASSED_PREFLIGHT_GATE"}]"#,
+    );
+    env.insert_user_message("delegate to the over-budget agent")
+        .await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({
+                "agent_name": "over-budget-agent",
+                "prompt": "do the thing",
+                "background": false
+            }),
+        ),
+        MockResponse::Text("done".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+    runtime_env::remove("KODA_MOCK_RESPONSES");
+
+    // 1. The pre-flight Info event must surface so the overlay shows
+    //    the failure reason. Pin substrings the dispatcher emits.
+    let preflight_signal = events.iter().any(|e| {
+        matches!(
+            e,
+            EngineEvent::Info { message } if message.contains("context pre-flight failed")
+        )
+    });
+    assert!(
+        preflight_signal,
+        "expected pre-flight failed Info event; got: {events:?}"
+    );
+
+    // 2. The sub-agent's InvokeAgent tool result must contain the
+    //    actionable error so the model can self-correct on the next
+    //    turn (drop tools, switch model, shorten prompt).
+    let invoke_result = events.iter().find_map(|e| match e {
+        EngineEvent::ToolCallResult { name, output, .. } if name == "InvokeAgent" => {
+            Some(output.clone())
+        }
+        _ => None,
+    });
+    let invoke_result = invoke_result.expect("InvokeAgent tool result must be present");
+    assert!(
+        invoke_result.contains("context exceeds model window")
+            || invoke_result.contains("pre-flight"),
+        "InvokeAgent result must surface the pre-flight bail; got: {invoke_result}"
+    );
+
+    // 3. The sub-agent's MockProvider must NOT have been hit. If our
+    //    sentinel ever appears in the assistant transcript, the gate
+    //    was bypassed.
+    let last = env
+        .db
+        .last_assistant_message(&env.session_id)
+        .await
+        .unwrap_or_default();
+    assert!(
+        !last.contains("BYPASSED_PREFLIGHT_GATE"),
+        "sub-agent's mock provider was reached \u{2014} pre-flight gate bypassed! transcript: {last}"
+    );
+}
+
+/// Negative case: a generously-budgeted sub-agent must NOT be tripped by
+/// the pre-flight gate. Catches a regression where the heuristic over-counts
+/// and starts blocking legitimately-sized invocations.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sub_agent_preflight_passes_under_normal_budget() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::builder().max_context_tokens(200_000).build().await;
+
+    let agents_dir = env.root.join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("normal-agent.json"),
+        serde_json::json!({
+            "name": "normal-agent",
+            "system_prompt": "You are helpful.",
+            "allowed_tools": [],
+            "provider": "mock",
+            "base_url": "http://localhost:0"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    runtime_env::set("KODA_MOCK_RESPONSES", r#"[{"text": "ok"}]"#);
+    env.insert_user_message("delegate to normal-agent").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({
+                "agent_name": "normal-agent",
+                "prompt": "hi",
+                "background": false
+            }),
+        ),
+        MockResponse::Text("done".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+    runtime_env::remove("KODA_MOCK_RESPONSES");
+
+    let preflight_failed = events.iter().any(|e| {
+        matches!(
+            e,
+            EngineEvent::Info { message } if message.contains("context pre-flight failed")
+        )
+    });
+    assert!(
+        !preflight_failed,
+        "200k budget must not trip the gate \u{2014} regression! got events: {events:?}"
+    );
+}
