@@ -1366,7 +1366,12 @@ pub(crate) fn execute_sub_agent<'a>(
                 let output = if let Some(error) = validation_error {
                     format!("Validation error: {error}")
                 } else {
-                    let approval = trust::check_tool(
+                    // #1250: sub-agent context. The dead approval channel
+                    // (line 173) means `NeedsConfirmation` is meaningless
+                    // here. `check_tool_for_sub_agent` resolves it per the
+                    // safe-side rule: mutating ops auto-approve (the agent
+                    // was invoked to do work), destructive ops block.
+                    let approval = trust::check_tool_for_sub_agent(
                         &tc.function_name,
                         &parsed_args,
                         mode,

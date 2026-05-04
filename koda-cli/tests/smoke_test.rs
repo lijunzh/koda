@@ -71,32 +71,31 @@ fn mock_text_response_returns_json() {
     );
 }
 
-// ── Headless safety: destructive commands auto-approved in sandbox (#855) ────
+// ── Headless safety: destructive commands always rejected at top-level (#1250) ──
 
 #[test]
-fn mock_destructive_bash_auto_approved_in_headless() {
-    // Model tries to run `rm -rf /tmp/nonexistent_test_dir` — with `--mode auto`,
-    // headless auto-approves all actions within the project sandbox (#855).
-    // The sandbox kernel enforcement is the safety boundary, not the approval prompt.
+fn mock_destructive_bash_rejected_in_auto_mode_in_headless() {
+    // #1250: Destructive operations require human confirmation in EVERY trust
+    // mode, including Auto. The user said YOLO for normal work, not for
+    // `rm -rf /`. In headless mode, no human is available to confirm, so
+    // destructive operations are auto-rejected by policy at all trust levels.
     //
-    // Note: pre-#982 this test passed without `--mode auto` because headless
-    // hardcoded `TrustMode::Auto` regardless of the flag. Post-fix, the flag
-    // must be passed explicitly — which is the entire point of having a flag.
+    // Pre-#1250 this test asserted the opposite: Auto + destructive auto-
+    // approved within the sandbox boundary. That hole is closed: the trust
+    // matrix now returns NeedsConfirmation for Auto × Destructive, which the
+    // headless policy then auto-rejects. Trust layer + headless policy agree.
     let responses = r#"[
         {"tool":"Bash","args":{"command":"rm -rf /tmp/nonexistent_test_dir"}},
         {"text":"Done."}
     ]"#;
 
-    let (_stdout, stderr, success) =
+    let (_stdout, stderr, _success) =
         run_mock_with_mode("delete everything", responses, Some("auto"));
     assert!(
-        success,
-        "Process should succeed (Auto mode approves within sandbox).\nstderr: {stderr}"
-    );
-    // In Auto mode, destructive actions should NOT be rejected
-    assert!(
-        !stderr.contains("Rejected destructive action"),
-        "Should not reject destructive action in Auto mode.\nstderr: {stderr}"
+        stderr.contains("Rejected destructive action"),
+        "#1250: Auto mode in headless MUST still reject destructive Bash. \
+         The user gave YOLO consent for ordinary work, not for rm -rf.\n\
+         stderr: {stderr}"
     );
 }
 
