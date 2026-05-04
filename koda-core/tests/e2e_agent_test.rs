@@ -926,3 +926,60 @@ async fn sub_agent_preflight_passes_under_normal_budget() {
         "200k budget must not trip the gate \u{2014} regression! got events: {events:?}"
     );
 }
+
+// ── #1232 §5: required `agent_name` ─────────────────────────────────────────
+
+/// When the model emits `InvokeAgent` without `agent_name`, dispatch must
+/// surface an actionable validation error (with the available-agent list)
+/// instead of silently routing to `task` — the bug-review session showed
+/// 10/10 calls hit the silent-default path, so every "Rust code architect"
+/// / "security specialist" prompt was actually answered by the generic
+/// worker.
+///
+/// Asserts:
+///   * the InvokeAgent tool result is an error string mentioning
+///     `'agent_name' is required` (the runtime backstop bailed);
+///   * the error string lists at least one built-in agent name
+///     (so the model can self-correct on the next turn).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn invoke_agent_without_agent_name_is_rejected_with_actionable_error() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::new().await;
+
+    env.insert_user_message("call without agent_name").await;
+
+    let provider = MockProvider::new(vec![
+        // No `agent_name` field — the silently-defaulted path pre-#1232 §5.
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({
+                "prompt": "do something",
+                "background": false,
+            }),
+        ),
+        MockResponse::Text("acknowledged".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+
+    let invoke_result = events
+        .iter()
+        .find_map(|e| match e {
+            EngineEvent::ToolCallResult { name, output, .. } if name == "InvokeAgent" => {
+                Some(output.clone())
+            }
+            _ => None,
+        })
+        .expect("InvokeAgent tool result must be present");
+
+    assert!(
+        invoke_result.contains("'agent_name' is required"),
+        "result must surface the required-field error; got: {invoke_result}"
+    );
+    // The hint must list available agents so the model can self-correct.
+    // Don't pin a specific name beyond `task` (always present as a built-in)
+    // — discovery output is environment-sensitive.
+    assert!(
+        invoke_result.contains("task"),
+        "error must list `task` in the available agents hint; got: {invoke_result}"
+    );
+}

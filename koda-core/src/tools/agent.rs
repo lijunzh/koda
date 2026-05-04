@@ -6,13 +6,16 @@
 //!
 //! ## Usage patterns
 //!
-//! - **Delegate a task**: `InvokeAgent { prompt: "write tests for auth.rs" }`
-//!   (uses the `task` agent by default)
-//! - **Use a specialist**: `InvokeAgent { agent_name: "explore", prompt: "find all error handling" }`
-//! - **Fork context**: `InvokeAgent { agent_name: "fork", prompt: "..." }`
+//! - **Delegate a task**: `InvokeAgent { agent_name: "task", prompt: "write tests for auth.rs", background: false }`
+//! - **Use a specialist**: `InvokeAgent { agent_name: "explore", prompt: "find all error handling", background: false }`
+//! - **Fork context**: `InvokeAgent { agent_name: "fork", prompt: "...", background: false }`
 //!   (inherits parent's full conversation)
-//! - **Background work**: `InvokeAgent { prompt: "...", background: true }`
+//! - **Background work**: `InvokeAgent { agent_name: "task", prompt: "...", background: true }`
 //!   (returns immediately, results injected when complete)
+//!
+//! `agent_name` and `background` are both **required** — see #1232 §2 + §5
+//! for the rationale (silently-defaulted fields hid routing intent and
+//! turned every parallel pattern into serial blocking calls).
 //!
 //! ## When to use sub-agents
 //!
@@ -72,14 +75,25 @@ Key rules:
 - A result starting with '[ERROR: sub-agent ...]' is a structural failure (e.g. workspace setup, isolation issue), not a model answer. Re-strategize rather than treat as content.
 - Always write a clear, self-contained prompt — the sub-agent hasn't seen your conversation
 - Include specific file paths, function names, and success criteria in your prompt
-- Omit agent_name to use the 'task' worker (full write access)"
+- agent_name is REQUIRED. Pick a specific specialist from the 'Available Sub-Agents' list in your system prompt (typically: explore, plan, task, verify). Use 'fork' to inherit the full parent context."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "agent_name": {
                         "type": "string",
-                        "description": "Name of the sub-agent (from ListAgents). Omit for 'task', use 'fork' to inherit parent context."
+                        "description": "REQUIRED. Name of the sub-agent to dispatch to. \
+                            Pick a specialist from the 'Available Sub-Agents' list in your system \
+                            prompt \u{2014} commonly `explore` (read-only search/analysis), `plan` \
+                            (architecture / step-by-step design), `task` (general-purpose worker, \
+                            full write access), `verify` (adversarial review). Use `fork` to \
+                            inherit the full parent conversation context.\n\n\
+                            **#1232 \u{00a7}5**: this field is required \u{2014} there is no default. \
+                            Pre-fix the field silently defaulted to `task`, so every InvokeAgent \
+                            call routed to the generic worker even when the model's prompt was \
+                            written for a specialist (\"Rust code architect\", \"security \
+                            specialist\", etc.). Forcing the choice surfaces routing intent at \
+                            the call site (Zen of Python: explicit is better than implicit)."
                     },
                     "prompt": {
                         "type": "string",
@@ -112,7 +126,7 @@ Key rules:
                             is cancelled on Ctrl+C."
                     }
                 },
-                "required": ["prompt", "background"]
+                "required": ["agent_name", "prompt", "background"]
             }),
         },
         ToolDefinition {
@@ -151,15 +165,31 @@ pub fn discover_all_agents(project_root: &Path) -> Vec<AgentInfo> {
     // 1. Built-in agents (lowest priority)
     for (name, config) in crate::config::KodaConfig::builtin_agents() {
         // Skip `default` — it's the main agent, not a sub-agent.
-        // Map omitted agent_name to `task` instead (see InvokeAgent schema).
+        // (Pre-#1232 §5 there was also no "omitted agent_name" path
+        // routing here — dispatch now requires the field.)
         if name == "default" {
             continue;
         }
+        // **#1232 §5 (drive-by)**: prefer the explicit `description`
+        // field over the heuristic `extract_description(system_prompt)`.
+        // The four built-in JSONs (`explore`, `plan`, `task`, `verify`)
+        // all carry rich, model-facing one-liners in their
+        // `description` fields, but pre-fix this branch ignored them
+        // and showed the heuristic's first-sentence guess instead
+        // (often "You are a ..."). The disk-load branch in
+        // `load_agents_from_dir` already does this fallback dance
+        // — this aligns the built-in branch to match.
+        let description = config
+            .description
+            .as_deref()
+            .filter(|d| !d.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| extract_description(&config.system_prompt));
         agents.insert(
             name.clone(),
             AgentInfo {
                 name,
-                description: extract_description(&config.system_prompt),
+                description,
                 source: "built-in",
                 system_prompt: config.system_prompt,
             },

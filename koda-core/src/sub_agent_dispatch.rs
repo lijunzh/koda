@@ -301,6 +301,96 @@ async fn run_bg_agent(
 /// an actionable error so the model sees a tool-error and can
 /// correct on the next turn rather than silently defaulting to
 /// `false`.
+/// Parse the **required** `agent_name` field out of an `InvokeAgent`
+/// argument object.
+///
+/// **#1232 §5**: extracted from `execute_sub_agent` so the missing-
+/// field / wrong-type / empty-string / unknown-agent branches can be
+/// unit-tested without spinning up the full sub-agent dispatch
+/// plumbing. The schema declares `agent_name` required (see
+/// `tools/agent.rs::definitions`) but schema compliance is best-
+/// effort across LLMs. Pre-fix the field silently defaulted to
+/// `"task"` (`unwrap_or("task")`) so every InvokeAgent call routed
+/// to the generic worker even when the model's prompt was written
+/// for a specialist ("Rust code architect", "security specialist",
+/// etc. — see the bug-review session that opened the issue: 10/10
+/// calls omitted the field).
+///
+/// On any failure the error message lists the available agents
+/// (discovered via `tools::agent::discover_all_agents`) so the model
+/// can self-correct on the next turn. Discovery is project-aware
+/// (built-in → user → project precedence), so a project that adds
+/// custom agents under `<root>/agents/` sees them in the hint too.
+///
+/// Accepts only non-empty strings. Missing, null, empty, wrong-type,
+/// and unknown-agent cases all bail with actionable text.
+pub(crate) fn parse_agent_name_required(
+    args: &serde_json::Value,
+    project_root: &std::path::Path,
+) -> anyhow::Result<String> {
+    let raw = match args.get("agent_name") {
+        Some(serde_json::Value::String(s)) => s,
+        Some(serde_json::Value::Null) | None => {
+            anyhow::bail!(
+                "InvokeAgent: 'agent_name' is required \u{2014} no default. {hint}",
+                hint = available_agents_hint(project_root),
+            );
+        }
+        Some(other) => {
+            let kind = match other {
+                serde_json::Value::Null => "null",
+                serde_json::Value::Bool(_) => "a boolean",
+                serde_json::Value::Number(_) => "a number",
+                serde_json::Value::Array(_) => "an array",
+                serde_json::Value::Object(_) => "an object",
+                serde_json::Value::String(_) => unreachable!("matched above"),
+            };
+            anyhow::bail!(
+                "InvokeAgent: 'agent_name' must be a string, got {kind}. {hint}",
+                hint = available_agents_hint(project_root),
+            );
+        }
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!(
+            "InvokeAgent: 'agent_name' must be a non-empty string. {hint}",
+            hint = available_agents_hint(project_root),
+        );
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Build the "Available agents: ..." suffix used by
+/// `parse_agent_name_required`'s error messages.
+///
+/// Lists every discovered agent's name plus `fork` (the special
+/// context-inheriting pseudo-agent that doesn't appear in discovery
+/// because it isn't a real agent file). Sorted, comma-separated, so
+/// the model gets a stable hint string it can copy-paste from.
+fn available_agents_hint(project_root: &std::path::Path) -> String {
+    let mut names: Vec<String> = crate::tools::agent::discover_all_agents(project_root)
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    // `fork` is dispatched specially in `execute_sub_agent` and is
+    // never a real agent on disk — surface it here so the model knows
+    // it's a valid choice for context-inheriting work.
+    names.push("fork".to_string());
+    names.sort();
+    names.dedup();
+    if names.len() == 1 {
+        // Should be unreachable in practice (built-ins always present)
+        // but be defensive.
+        format!("Available agent: {}.", names[0])
+    } else {
+        format!(
+            "Available agents (call ListAgents for descriptions): {}.",
+            names.join(", "),
+        )
+    }
+}
+
 pub(crate) fn parse_background_required(args: &serde_json::Value) -> anyhow::Result<bool> {
     match args.get("background") {
         Some(serde_json::Value::Bool(b)) => Ok(*b),
@@ -388,7 +478,21 @@ pub(crate) fn execute_sub_agent<'a>(
         // hook below uses to reap any orphaned bg work.
         let my_invocation_id = next_invocation_id();
         let args: serde_json::Value = serde_json::from_str(arguments)?;
-        let agent_name = args["agent_name"].as_str().unwrap_or("task");
+        // **#1232 §5**: `agent_name` is a required field. Pre-fix the
+        // dispatcher used `args["agent_name"].as_str().unwrap_or("task")`,
+        // which silently routed every missing-field call to the
+        // generic worker even when the model's prompt was written for
+        // a specialist ("Rust code architect", "security specialist",
+        // ...). The bug-review session that opened the issue showed
+        // 10/10 InvokeAgent calls hit this path.
+        //
+        // Validation is extracted into a free function so the
+        // missing / wrong-type / empty / bad-name branches can be
+        // unit-tested without spinning up the full dispatch
+        // plumbing. The error message lists available agents so the
+        // model can self-correct on the next turn.
+        let agent_name_owned = parse_agent_name_required(&args, project_root)?;
+        let agent_name = agent_name_owned.as_str();
         tracing::Span::current().record("agent_name", agent_name);
         let prompt = args["prompt"]
             .as_str()
@@ -1767,5 +1871,119 @@ mod parse_background_required_tests {
                 "non-bool collection must surface type-mismatch; got: {msg}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod parse_agent_name_required_tests {
+    //! #1232 §5: schema declares `agent_name` required, and this
+    //! module's runtime backstop holds the line for models that
+    //! ignore the schema. The tests pin every branch so a future
+    //! refactor that re-introduces an `unwrap_or("task")` fallback
+    //! fails loudly here.
+
+    use super::{available_agents_hint, parse_agent_name_required};
+    use serde_json::json;
+    use std::path::Path;
+
+    /// Tests use `Path::new(".")` for the project root. Discovery
+    /// will return only built-in agents (`explore`, `plan`, `task`,
+    /// `verify`) plus any in `<cwd>/agents/` if it exists. The
+    /// hint-suffix assertions only check for built-in names that
+    /// must always be present.
+    fn root() -> &'static Path {
+        Path::new(".")
+    }
+
+    #[test]
+    fn accepts_well_formed_string() {
+        let name = parse_agent_name_required(&json!({"agent_name": "explore"}), root())
+            .expect("explore must parse");
+        assert_eq!(name, "explore");
+    }
+
+    #[test]
+    fn trims_surrounding_whitespace() {
+        // Models occasionally emit `"  explore  "` from sloppy
+        // template interpolation. Accept it rather than reject.
+        let name = parse_agent_name_required(&json!({"agent_name": "  explore  "}), root())
+            .expect("trimmed string must parse");
+        assert_eq!(name, "explore");
+    }
+
+    #[test]
+    fn rejects_missing_field_with_actionable_hint() {
+        let err = parse_agent_name_required(&json!({"prompt": "x"}), root())
+            .expect_err("missing agent_name must fail")
+            .to_string();
+        assert!(
+            err.contains("'agent_name' is required"),
+            "missing-field error must name the field: {err}"
+        );
+        assert!(
+            err.contains("Available agent"),
+            "error must list available agents: {err}"
+        );
+        // Built-ins must be discoverable from any project root.
+        assert!(err.contains("task"), "hint must list `task`: {err}");
+    }
+
+    #[test]
+    fn rejects_explicit_null() {
+        let err = parse_agent_name_required(&json!({"agent_name": null}), root())
+            .expect_err("null agent_name must fail")
+            .to_string();
+        // null falls into the same arm as missing — same error message.
+        assert!(err.contains("'agent_name' is required"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_empty_string() {
+        // Empty / whitespace-only strings are useless and silently-
+        // routing them anywhere would resurrect the original bug.
+        for empty in ["", "   ", "\t\n"] {
+            let err = parse_agent_name_required(&json!({"agent_name": empty}), root())
+                .expect_err("empty agent_name must fail")
+                .to_string();
+            assert!(
+                err.contains("non-empty"),
+                "empty {empty:?} must produce 'non-empty' error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_types() {
+        for (value, expected_kind) in [
+            (json!({"agent_name": true}), "a boolean"),
+            (json!({"agent_name": 42}), "a number"),
+            (json!({"agent_name": ["explore"]}), "an array"),
+            (json!({"agent_name": {"name": "explore"}}), "an object"),
+        ] {
+            let err = parse_agent_name_required(&value, root())
+                .expect_err("wrong-type agent_name must fail")
+                .to_string();
+            assert!(
+                err.contains(expected_kind),
+                "got: {err} — expected to mention {expected_kind:?}"
+            );
+            assert!(
+                err.contains("Available"),
+                "wrong-type error must also surface the available list: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn hint_lists_builtins_and_fork() {
+        let hint = available_agents_hint(root());
+        // The four built-in agents must always be present.
+        for name in ["explore", "plan", "task", "verify", "fork"] {
+            assert!(hint.contains(name), "hint must list `{name}`: {hint}");
+        }
+        // Names are sorted + deduplicated; `fork` should appear exactly once
+        // even though it's pushed in addition to discovery.
+        let fork_count = hint.matches("fork").count();
+        assert_eq!(fork_count, 1, "`fork` must not be duplicated: {hint}");
     }
 }
