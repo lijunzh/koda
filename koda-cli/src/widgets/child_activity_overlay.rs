@@ -41,7 +41,7 @@
 //!   covers the field-standard surface area without rebuilding the
 //!   `/agents` modal panel that #1210 deletes.
 //! - Does NOT auto-refresh — caller drives a redraw on each
-//!   `ChildAgentActivity` / `BgTaskUpdate` event (already wired via
+//!   `ChildAgentActivity` / `ChildTaskUpdate` event (already wired via
 //!   `frame_requester`).
 
 use ratatui::{
@@ -62,7 +62,7 @@ use ratatui::{
 pub const MAX_VISIBLE: usize = 5;
 
 /// One row of background work to render. Pre-formatted; this widget
-/// does not know about `BgTaskSnapshot` or `BgProcessSnapshot`. The
+/// does not know about `ChildTaskSnapshot` or `BgProcessSnapshot`. The
 /// caller (event handler in `tui_context`) does the formatting and
 /// hands a flat list down.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -126,7 +126,7 @@ pub(crate) struct TuiContext {
     pub draw_rx: crate::frame_requester::DrawNotifyRx,
 
     /// Live activity tracker for bg agents + processes (#1210).
-    /// Absorbs `ChildAgentActivity` / `BgTaskUpdate` events into a per-task
+    /// Absorbs `ChildAgentActivity` / `ChildTaskUpdate` events into a per-task
     /// last-seen map; projected each frame into the
     /// `widgets::child_activity_overlay` rendered above the status bar.
     /// See [`crate::child_activity::ChildActivityTracker`].

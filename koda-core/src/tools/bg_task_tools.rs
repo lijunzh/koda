@@ -17,7 +17,7 @@
 //! shell processes apart at a glance:
 //!
 //! - `agent:N`   — bg-agent task (the `task_id` from
-//!   [`crate::bg_agent::BgAgentRegistry::reserve`]).
+//!   [`crate::child_agent::ChildAgentRegistry::reserve`]).
 //! - `process:N` — bg shell process (the OS PID from
 //!   [`crate::tools::bg_process::BgRegistry::insert`]).
 //!
@@ -30,11 +30,11 @@
 //! Each tool is filtered to the caller's own tasks: top-level sees
 //! only top-level-spawned, sub-agent N sees only its own. Cross-spawner
 //! cancel/wait returns a `Forbidden` error. This is enforced at the
-//! [`BgAgentRegistry`] / [`BgRegistry`] layer; the tool layer just
+//! [`ChildAgentRegistry`] / [`BgRegistry`] layer; the tool layer just
 //! produces a useful message when it sees `CancelOutcome::Forbidden`
 //! / `WaitOutcome::Forbidden`.
 //!
-//! [`BgAgentRegistry`]: crate::bg_agent::BgAgentRegistry
+//! [`ChildAgentRegistry`]: crate::child_agent::ChildAgentRegistry
 //! [`BgRegistry`]: crate::tools::bg_process::BgRegistry
 
 use crate::providers::ToolDefinition;
@@ -43,8 +43,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use crate::bg_agent::{
-    AgentStatus, BgAgentRegistry, BgAgentResult, BgTaskSnapshot, CancelOutcome, WaitOutcome,
+use crate::child_agent::{
+    AgentStatus, BgAgentResult, CancelOutcome, ChildAgentRegistry, ChildTaskSnapshot, WaitOutcome,
 };
 use crate::tools::ToolResult;
 use crate::tools::bg_process::{
@@ -276,7 +276,7 @@ pub fn clamp_wait_timeout_secs(requested: Option<u32>) -> u32 {
 // Dispatch entry point for the three Layer-2 tools. Called from
 // `tool_dispatch::execute_one_tool` when `tool_name` matches; never
 // goes through `ToolRegistry::execute()` because we need the
-// `Arc<BgAgentRegistry>` (not stored on the registry) and the caller's
+// `Arc<ChildAgentRegistry>` (not stored on the registry) and the caller's
 // spawner identity (only known at the dispatch layer).
 
 /// Render an [`AgentStatus`] as the lower-case status string we
@@ -302,7 +302,7 @@ fn process_status_str(s: &BgProcessStatus) -> &'static str {
     }
 }
 
-fn agent_snapshot_to_json(s: &BgTaskSnapshot) -> Value {
+fn agent_snapshot_to_json(s: &ChildTaskSnapshot) -> Value {
     json!({
         "task_id": format!("agent:{}", s.task_id),
         "task_type": "agent",
@@ -357,7 +357,7 @@ fn ok(value: Value) -> ToolResult {
 pub async fn execute(
     tool_name: &str,
     arguments: &str,
-    bg_agents: &Arc<BgAgentRegistry>,
+    bg_agents: &Arc<ChildAgentRegistry>,
     bg_processes: &BgRegistry,
     caller_spawner: Option<u32>,
     cancel: &CancellationToken,
@@ -376,7 +376,7 @@ pub async fn execute(
 }
 
 fn execute_list(
-    bg_agents: &BgAgentRegistry,
+    bg_agents: &ChildAgentRegistry,
     bg_processes: &BgRegistry,
     caller_spawner: Option<u32>,
 ) -> ToolResult {
@@ -399,7 +399,7 @@ fn execute_list(
 
 fn execute_cancel(
     arguments: &str,
-    bg_agents: &BgAgentRegistry,
+    bg_agents: &ChildAgentRegistry,
     bg_processes: &BgRegistry,
     caller_spawner: Option<u32>,
 ) -> ToolResult {
@@ -438,7 +438,7 @@ fn execute_cancel(
 
 async fn execute_wait(
     arguments: &str,
-    bg_agents: &Arc<BgAgentRegistry>,
+    bg_agents: &Arc<ChildAgentRegistry>,
     bg_processes: &BgRegistry,
     caller_spawner: Option<u32>,
     cancel: &CancellationToken,
@@ -527,7 +527,7 @@ async fn execute_wait(
 /// doesn't blow away the results of the other N-1.
 async fn wait_one_task(
     task_id_str: String,
-    bg_agents: &Arc<BgAgentRegistry>,
+    bg_agents: &Arc<ChildAgentRegistry>,
     bg_processes: &BgRegistry,
     caller_spawner: Option<u32>,
     timeout: Duration,
@@ -797,8 +797,8 @@ mod tests {
 
     // ── execute() dispatch tests ─────────────────────────────────────────────────────
 
-    fn fresh_registries() -> (Arc<BgAgentRegistry>, BgRegistry) {
-        (Arc::new(BgAgentRegistry::new()), BgRegistry::new())
+    fn fresh_registries() -> (Arc<ChildAgentRegistry>, BgRegistry) {
+        (Arc::new(ChildAgentRegistry::new()), BgRegistry::new())
     }
 
     /// `ListBackgroundTasks` on empty registries returns `[]`, success.
@@ -878,7 +878,7 @@ mod tests {
         assert_eq!(arr.as_array().unwrap().len(), 1, "sub sees only its own");
     }
 
-    /// `CancelTask` routes `agent:N` to BgAgentRegistry and reports
+    /// `CancelTask` routes `agent:N` to ChildAgentRegistry and reports
     /// success in the structured payload.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn execute_cancel_succeeds_for_owned_agent_task() {

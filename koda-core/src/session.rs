@@ -23,7 +23,7 @@
 //! (e.g., main REPL + background sub-agents) without shared mutable state.
 
 use crate::agent::KodaAgent;
-use crate::bg_agent::{self, BgAgentRegistry};
+use crate::child_agent::{self, ChildAgentRegistry};
 use crate::config::KodaConfig;
 use crate::db::Database;
 use crate::engine::{EngineCommand, EngineSink};
@@ -220,7 +220,7 @@ pub struct KodaSession {
     /// registry into the recursive `execute_sub_agent` call (so
     /// nested `InvokeAgent { background: true }` registers in the
     /// caller-visible slot, not a fresh per-call one).
-    pub bg_agents: Arc<BgAgentRegistry>,
+    pub bg_agents: Arc<ChildAgentRegistry>,
 
     /// Cross-turn sub-agent result cache (#1022 B12).
     ///
@@ -330,7 +330,7 @@ impl KodaSession {
             // #1022 B12: registry + cache live on the session so bg
             // agents survive across turns and the cache yields
             // cross-turn hits.
-            bg_agents: bg_agent::new_shared(),
+            bg_agents: child_agent::new_shared(),
             sub_agent_cache: SubAgentCache::new(),
         }
     }

@@ -5,7 +5,7 @@
 
 use koda_core::persistence::Persistence;
 use koda_core::{
-    bg_agent::BgAgentRegistry,
+    child_agent::ChildAgentRegistry,
     config::{KodaConfig, ProviderType},
     db::{Database, Role},
     engine::{EngineCommand, EngineEvent, sink::TestSink},
@@ -45,9 +45,9 @@ pub struct Env {
     /// Background agent registry shared across inference calls.
     ///
     /// Tests that spawn background sub-agents can poll this for
-    /// live status snapshots, or call [`BgAgentRegistry::subscribe`]
+    /// live status snapshots, or call [`ChildAgentRegistry::subscribe`]
     /// to get a watch receiver for a specific task.
-    pub bg_agents: Arc<BgAgentRegistry>,
+    pub bg_agents: Arc<ChildAgentRegistry>,
 }
 
 /// Builder for [`Env`] — customise provider, context window, agent name, etc.
@@ -125,7 +125,7 @@ impl EnvBuilder {
             config,
             tools,
             trust: self.trust,
-            bg_agents: koda_core::bg_agent::new_shared(),
+            bg_agents: koda_core::child_agent::new_shared(),
         }
     }
 }
@@ -296,14 +296,14 @@ impl Env {
         (result, sink.events())
     }
 
-    /// Collect every `BgTaskUpdate` event a background sub-agent will
+    /// Collect every `ChildTaskUpdate` event a background sub-agent will
     /// emit, regardless of which side of the parent's `inference_loop`
     /// drained them.
     ///
     /// **Why this helper exists** (#1109, PR #1113):
     ///
-    /// `BgTaskUpdate` events flow through a single-consumer queue
-    /// inside [`BgAgentRegistry`]. The parent's `inference_loop`
+    /// `ChildTaskUpdate` events flow through a single-consumer queue
+    /// inside [`ChildAgentRegistry`]. The parent's `inference_loop`
     /// drains them on every iteration and forwards to the sink. A
     /// test that asserts on these events is racing the parent for
     /// the same queue:
@@ -323,19 +323,19 @@ impl Env {
     ///
     /// * `events_from_run_inference` — the `Vec<EngineEvent>`
     ///   returned by [`Self::run_inference`] (or any of its
-    ///   variants). `BgTaskUpdate` events are filtered out; other
+    ///   variants). `ChildTaskUpdate` events are filtered out; other
     ///   event types are ignored.
     /// * `terminal_timeout` — how long to keep polling
-    ///   [`BgAgentRegistry::drain_status_events`] waiting for a
+    ///   [`ChildAgentRegistry::drain_status_events`] waiting for a
     ///   terminal status (`Completed`, `Errored`, `Cancelled`). Use
     ///   a generous bound (e.g. 10s) — on a healthy machine the
     ///   helper returns in single-digit milliseconds.
     ///
     /// # Returns
     ///
-    /// `Ok(events)` if a terminal `BgTaskUpdate` was observed within
+    /// `Ok(events)` if a terminal `ChildTaskUpdate` was observed within
     /// `terminal_timeout`, where `events` contains every
-    /// `BgTaskUpdate` from both sources in arrival order (sink-side
+    /// `ChildTaskUpdate` from both sources in arrival order (sink-side
     /// events first, then queue-drained events).
     ///
     /// `Err(events)` if the timeout elapsed without a terminal
@@ -350,7 +350,7 @@ impl Env {
     ///     .await
     ///     .expect("bg task never reached terminal state");
     /// assert!(bg_events.iter().any(|e| matches!(
-    ///     e, EngineEvent::BgTaskUpdate {
+    ///     e, EngineEvent::ChildTaskUpdate {
     ///         status: AgentStatus::Completed { .. }, ..
     ///     }
     /// )));
@@ -362,7 +362,7 @@ impl Env {
     ) -> Result<Vec<EngineEvent>, Vec<EngineEvent>> {
         let mut bg_events: Vec<EngineEvent> = events_from_run_inference
             .into_iter()
-            .filter(|ev| matches!(ev, EngineEvent::BgTaskUpdate { .. }))
+            .filter(|ev| matches!(ev, EngineEvent::ChildTaskUpdate { .. }))
             .collect();
 
         let deadline = tokio::time::Instant::now() + terminal_timeout;
@@ -381,7 +381,7 @@ impl Env {
     }
 }
 
-/// Returns `true` if `ev` is a [`EngineEvent::BgTaskUpdate`] in a
+/// Returns `true` if `ev` is a [`EngineEvent::ChildTaskUpdate`] in a
 /// terminal status (`Completed`, `Errored`, or `Cancelled`).
 ///
 /// Extracted as a free function so [`Env::collect_bg_events_after`]
@@ -389,10 +389,10 @@ impl Env {
 /// `AgentStatus` has additional non-terminal variants we must not
 /// mistakenly treat as final.
 fn is_terminal_bg_update(ev: &EngineEvent) -> bool {
-    use koda_core::bg_agent::AgentStatus;
+    use koda_core::child_agent::AgentStatus;
     matches!(
         ev,
-        EngineEvent::BgTaskUpdate {
+        EngineEvent::ChildTaskUpdate {
             status: AgentStatus::Completed { .. }
                 | AgentStatus::Errored { .. }
                 | AgentStatus::Cancelled,

@@ -605,7 +605,7 @@ pub struct InferenceContext<'a> {
     /// so bg agents survive across turns; this is just a borrow into
     /// the loop. Drained at the top of every iteration to inject
     /// completed bg results into the conversation.
-    pub bg_agents: &'a std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
+    pub bg_agents: &'a std::sync::Arc<crate::child_agent::ChildAgentRegistry>,
     /// Cross-turn sub-agent result cache (#1022 B12). Owned by [`crate::session::KodaSession`].
     /// Generation-based invalidation on mutating tool calls is
     /// honored uniformly via `crate::tool_dispatch::execute_one_tool`.
@@ -635,7 +635,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     } = ctx;
 
     // #1108 P1b: wrap the user-facing sink with `PersistingSink` so
-    // every `Info` / `BgTaskUpdate` event lands in `session_events`
+    // every `Info` / `ChildTaskUpdate` event lands in `session_events`
     // for the markdown transcript export. Pre-#1108 these were
     // sink-only and disappeared once the user closed the TUI.
     let _persisting_sink = crate::engine::sink::PersistingSink::new(
@@ -655,7 +655,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     // #1022 B12: `bg_agents` and `sub_agent_cache` now live on
     // `KodaSession` and are borrowed in via `InferenceContext`. Local
     // construction here was the root cause of the cross-turn drop bug:
-    // when this function returned, the `Arc<BgAgentRegistry>` dropped,
+    // when this function returned, the `Arc<ChildAgentRegistry>` dropped,
     // every still-pending bg task was aborted by `AbortOnDropHandle`,
     // and the result was lost. Owning on the session means the
     // registry survives across turns and the next call drains anything
@@ -686,7 +686,7 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     loop {
         // #1076: forward queued bg-task status transitions to the sink
         // before processing anything else. Drained from the same
-        // `Arc<BgAgentRegistry>` that owns `drain_completed`, so the
+        // `Arc<ChildAgentRegistry>` that owns `drain_completed`, so the
         // ordering is: status transitions first (so clients see
         // `Running { iter: N }` heartbeats), then completed-result
         // injection (so the model gets the final output as a user

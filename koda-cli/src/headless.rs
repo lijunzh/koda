@@ -275,21 +275,23 @@ impl EngineSink for HeadlessSink {
             // running (iter 3)" instead of nothing. The full result
             // payload is still injected at completion via the
             // `drain_completed` path — this is just live progress.
-            EngineEvent::BgTaskUpdate {
+            EngineEvent::ChildTaskUpdate {
                 task_id, status, ..
             } => {
                 let summary = match status {
-                    koda_core::bg_agent::AgentStatus::Pending => "pending".to_string(),
-                    koda_core::bg_agent::AgentStatus::Running { iter } => {
+                    koda_core::child_agent::AgentStatus::Pending => "pending".to_string(),
+                    koda_core::child_agent::AgentStatus::Running { iter } => {
                         if iter == 0 {
                             "running (starting)".to_string()
                         } else {
                             format!("running (iter {iter})")
                         }
                     }
-                    koda_core::bg_agent::AgentStatus::Cancelled => "cancelled".to_string(),
-                    koda_core::bg_agent::AgentStatus::Completed { .. } => "completed".to_string(),
-                    koda_core::bg_agent::AgentStatus::Errored { error } => {
+                    koda_core::child_agent::AgentStatus::Cancelled => "cancelled".to_string(),
+                    koda_core::child_agent::AgentStatus::Completed { .. } => {
+                        "completed".to_string()
+                    }
+                    koda_core::child_agent::AgentStatus::Errored { error } => {
                         let snippet: String = error.chars().take(80).collect();
                         format!("errored: {snippet}")
                     }

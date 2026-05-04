@@ -58,7 +58,7 @@ pub mod bash_path_lint;
 /// Bash command safety classification — ReadOnly, LocalMutation, Destructive.
 pub mod bash_safety;
 /// Background sub-agent registry — tracks and drains async agent results.
-pub mod bg_agent;
+pub mod child_agent;
 /// Context compaction — summarise old messages to reclaim token budget.
 pub mod compact;
 /// Global configuration: provider, model, model settings, CLI flags.

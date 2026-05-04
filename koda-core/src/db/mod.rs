@@ -263,7 +263,7 @@ impl Database {
         .await?;
 
         // Session events (#1108 P1b/P2a): non-message engine events that
-        // matter for debugging — `EngineEvent::Info`, `BgTaskUpdate`, and
+        // matter for debugging — `EngineEvent::Info`, `ChildTaskUpdate`, and
         // sub-agent inner-trace lines. Pre-#1108 these were sink-only and
         // never reached the transcript export, leaving the reader unable
         // to tell what a bg sub-agent was doing during its wait window.

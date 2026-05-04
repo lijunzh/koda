@@ -7,7 +7,7 @@
 //! ## Lifecycle
 //!
 //! 1. **Spawn**: `InvokeAgent { background: true }` creates a tokio task
-//! 2. **Track**: the task handle + metadata are stored in `BgAgentRegistry`
+//! 2. **Track**: the task handle + metadata are stored in `ChildAgentRegistry`
 //! 3. **Poll**: before each inference call, the loop calls `drain_completed()`
 //! 4. **Inject**: completed results are appended as user messages
 //! 5. **Cleanup**: on registry drop, all pending task handles are aborted —
@@ -125,7 +125,7 @@ pub enum AgentStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 #[must_use = "a snapshot is only useful if you read its fields"]
-pub struct BgTaskSnapshot {
+pub struct ChildTaskSnapshot {
     /// Monotonic id assigned at `reserve()` time. Stable for the
     /// lifetime of the task; reused across snapshots.
     pub task_id: u32,
@@ -140,11 +140,25 @@ pub struct BgTaskSnapshot {
     pub age: Duration,
     /// Latest value from the task's `watch::Receiver<AgentStatus>`.
     pub status: AgentStatus,
+    /// `true` if this entry represents a background sub-agent
+    /// (auto-drains its result on a future iteration), `false` for
+    /// foreground sub-agents (parent awaits inline).
+    ///
+    /// **PR-A0.5 of #1232**: added when the registry was generalized
+    /// from bg-only to host both fg and bg child agents. Today every
+    /// constructor still passes `true`; PR-A wires up the fg path
+    /// that registers entries with `false`.
+    ///
+    /// Consumers that want a bg-only view (e.g. the `/agents`
+    /// overlay's "truly backgrounded" filter) should check this
+    /// field rather than assuming presence in the registry implies
+    /// background.
+    pub is_background: bool,
     /// Sub-agent task that spawned this bg-agent. `None` = top-level
     /// (the user's main conversation).
     ///
     /// **#996 Layer 2 / Model D**: tracked so that when a sub-agent
-    /// exits, [`BgAgentRegistry::cancel_for_spawner`] can fire the
+    /// exits, [`ChildAgentRegistry::cancel_for_spawner`] can fire the
     /// cancel token on every bg-agent it left behind. Mirrors
     /// Claude Code's `agentId` field on `LocalShellTaskState`
     /// (`prevents 10-day fake-logs.sh zombies`).
@@ -155,13 +169,13 @@ pub struct BgTaskSnapshot {
     pub spawner: Option<u32>,
 }
 
-impl BgTaskSnapshot {
+impl ChildTaskSnapshot {
     /// Test-only constructor for downstream crates (e.g. `koda-cli`
     /// renderer tests). The `#[non_exhaustive]` attribute on the
     /// struct forbids brace-init from outside this crate; this
     /// helper preserves that invariant for production code while
     /// still letting renderer-layer tests build fixtures without
-    /// spinning up a full `BgAgentRegistry` + `tokio::spawn`.
+    /// spinning up a full `ChildAgentRegistry` + `tokio::spawn`.
     ///
     /// Hidden from rustdoc (`#[doc(hidden)]`) so it doesn't pollute
     /// the public surface; intentional opt-out of API stability.
@@ -180,6 +194,37 @@ impl BgTaskSnapshot {
             prompt,
             age,
             status,
+            // PR-A0.5 of #1232: legacy test fixtures predate the fg/bg
+            // split, so default to `true` to match historical behavior
+            // (every test agent today is a bg agent). Tests that need
+            // to assert fg behavior should use `for_testing_fg`.
+            is_background: true,
+            spawner,
+        }
+    }
+
+    /// Test-only constructor for foreground child-agent fixtures.
+    /// Same shape as [`Self::for_testing`] but with `is_background`
+    /// flipped to `false`. Added in PR-A0.5 of #1232 so PR-A's
+    /// fg-routing tests can assert overlay behavior under the new
+    /// `is_background == false` path without resurrecting the
+    /// brace-init bypass that `#[non_exhaustive]` forbids.
+    #[doc(hidden)]
+    pub fn for_testing_fg(
+        task_id: u32,
+        agent_name: String,
+        prompt: String,
+        age: std::time::Duration,
+        status: AgentStatus,
+        spawner: Option<u32>,
+    ) -> Self {
+        Self {
+            task_id,
+            agent_name,
+            prompt,
+            age,
+            status,
+            is_background: false,
             spawner,
         }
     }
@@ -244,13 +289,13 @@ pub struct BgAgentResult {
 /// completes (B3 of #1022). Also holds the per-task
 /// [`CancellationToken`] so future per-task cancel commands
 /// (`/cancel <id>` — see #996) have a hook to fire.
-struct BgAgentEntry {
+struct ChildAgentEntry {
     agent_name: String,
     prompt: String,
     rx: oneshot::Receiver<Result<BgPayload, BgPayload>>,
     /// Per-task cancel — derived as a `child_token()` of the parent
     /// session's token at spawn time. Firing this token (via
-    /// [`BgAgentRegistry::cancel`] for #996, or via the registry-drop
+    /// [`ChildAgentRegistry::cancel`] for #996, or via the registry-drop
     /// path) causes the in-flight bg agent to observe `is_cancelled()`
     /// on its next loop iteration.
     cancel: CancellationToken,
@@ -260,8 +305,11 @@ struct BgAgentEntry {
     /// When the task was attached. Used to compute `age` in snapshots.
     started_at: Instant,
     /// Sub-agent task that spawned this bg-agent. `None` = top-level.
-    /// **#996 Layer 2 / Model D** — see [`BgTaskSnapshot::spawner`].
+    /// **#996 Layer 2 / Model D** — see [`ChildTaskSnapshot::spawner`].
     spawner: Option<u32>,
+    /// `true` for background agents, `false` for foreground. Surfaced
+    /// via the snapshot's `is_background` field. PR-A0.5 of #1232.
+    is_background: bool,
     /// **#1108 P2a**: parent's `InvokeAgent` tool_call_id. Stored at
     /// reserve time, surfaced via [`BgAgentResult::parent_tool_call_id`]
     /// at drain time. `None` only for legacy `attach()`-based tests.
@@ -279,17 +327,17 @@ struct BgAgentEntry {
 ///
 /// Shared via `Arc` between the inference loop (which drains results)
 /// and the tool dispatch (which spawns agents).
-pub struct BgAgentRegistry {
-    pending: Mutex<HashMap<u32, BgAgentEntry>>,
+pub struct ChildAgentRegistry {
+    pending: Mutex<HashMap<u32, ChildAgentEntry>>,
     next_id: Mutex<u32>,
-    /// Queue of `EngineEvent::BgTaskUpdate` events produced by
-    /// [`BgStatusEmitter::send`]. Drained by the inference loop
+    /// Queue of `EngineEvent::ChildTaskUpdate` events produced by
+    /// [`ChildStatusEmitter::send`]. Drained by the inference loop
     /// alongside [`Self::drain_completed`] and forwarded to the
     /// active `EngineSink`.
     ///
     /// **#1076**: closes the engine/UI boundary leak — prior to this
     /// queue, bg-task status only reached the TUI by the TUI grabbing
-    /// `Arc<BgAgentRegistry>` directly out of `KodaSession` and
+    /// `Arc<ChildAgentRegistry>` directly out of `KodaSession` and
     /// polling `snapshot()`. ACP / headless clients saw nothing.
     /// Routing through `EngineEvent` puts every client surface on
     /// the same channel.
@@ -314,15 +362,16 @@ pub struct BgAgentRegistry {
 /// Both clones share the same `watch::Sender` and `Arc<registry>`,
 /// so every `.send()` reaches both fan-out targets.
 #[derive(Clone)]
-pub struct BgStatusEmitter {
+pub struct ChildStatusEmitter {
     task_id: u32,
     spawner: Option<u32>,
+    is_background: bool,
     status_tx: watch::Sender<AgentStatus>,
-    registry: Arc<BgAgentRegistry>,
+    registry: Arc<ChildAgentRegistry>,
 }
 
-impl BgStatusEmitter {
-    /// Construct from the parts handed back by [`BgAgentRegistry::reserve`].
+impl ChildStatusEmitter {
+    /// Construct from the parts handed back by [`ChildAgentRegistry::reserve`].
     ///
     /// The registry `Arc` is held for the lifetime of the bg agent,
     /// which is fine: the inference loop already keeps an `Arc` on
@@ -332,12 +381,14 @@ impl BgStatusEmitter {
     pub fn new(
         task_id: u32,
         spawner: Option<u32>,
+        is_background: bool,
         status_tx: watch::Sender<AgentStatus>,
-        registry: Arc<BgAgentRegistry>,
+        registry: Arc<ChildAgentRegistry>,
     ) -> Self {
         Self {
             task_id,
             spawner,
+            is_background,
             status_tx,
             registry,
         }
@@ -350,21 +401,23 @@ impl BgStatusEmitter {
     ///    see the new state on the next read — no behavior change).
     /// 2. The registry's event queue, drained by the inference loop
     ///    and forwarded to the active `EngineSink` (so the TUI / ACP
-    ///    / headless clients all see the same `BgTaskUpdate` event).
+    ///    / headless clients all see the same `ChildTaskUpdate` event).
     ///
     /// `watch::Sender::send` only fails if every receiver was dropped,
     /// which means the registry entry is gone — in that case the queue
     /// push is harmless (it'll be drained and ignored by clients that
     /// don't recognize the task id). We deliberately don't gate the
     /// queue push on the watch send result so a racing reap doesn't
-    /// swallow the terminal `BgTaskUpdate`.
+    /// swallow the terminal `ChildTaskUpdate`.
     pub fn send(&self, status: AgentStatus) {
         let _ = self.status_tx.send(status.clone());
-        self.registry.push_status_event(EngineEvent::BgTaskUpdate {
-            task_id: self.task_id,
-            spawner: self.spawner,
-            status,
-        });
+        self.registry
+            .push_status_event(EngineEvent::ChildTaskUpdate {
+                task_id: self.task_id,
+                spawner: self.spawner,
+                is_background: self.is_background,
+                status,
+            });
     }
 
     /// Forward a live activity event from inside the bg agent up to
@@ -374,7 +427,7 @@ impl BgStatusEmitter {
     /// which decorates the bg agent's `BufferingSink` and calls this
     /// method whenever an interesting child event happens (tool
     /// start/end, info line). The event lands on the same registry
-    /// queue as `BgTaskUpdate`, so the inference loop's existing
+    /// queue as `ChildTaskUpdate`, so the inference loop's existing
     /// drain in [`crate::inference`] forwards it to whatever sink
     /// is active (TUI / headless / ACP) without further plumbing.
     ///
@@ -410,7 +463,7 @@ impl BgStatusEmitter {
     }
 }
 
-/// Reservation slot returned by [`BgAgentRegistry::reserve`].
+/// Reservation slot returned by [`ChildAgentRegistry::reserve`].
 ///
 /// The two-phase pattern (`reserve` → spawn → `attach`) lets the
 /// dispatcher hand the oneshot sender into the spawned future
@@ -419,7 +472,7 @@ impl BgStatusEmitter {
 /// `child_token()` of the parent's cancel — fires either when the
 /// parent fires (cascade) or when this slot is individually cancelled
 /// (future per-task `/cancel <id>` UX, #996).
-pub struct BgAgentReservation {
+pub struct ChildAgentReservation {
     /// Monotonically-assigned task ID. Surfaces in user-facing
     /// messages (`Background agent 'foo' started (agent:7)`) and
     /// keys the per-task `/cancel <id>` UX (#996).
@@ -427,7 +480,7 @@ pub struct BgAgentReservation {
     /// Sender half of the result oneshot. Move into the spawned
     /// future so it can deliver `Ok(output)` / `Err(message)`.
     pub tx: oneshot::Sender<Result<BgPayload, BgPayload>>,
-    /// Receiver half. Move back into the registry via [`BgAgentRegistry::attach`]
+    /// Receiver half. Move back into the registry via [`ChildAgentRegistry::attach`]
     /// so `drain_completed()` can poll it.
     pub rx: oneshot::Receiver<Result<BgPayload, BgPayload>>,
     /// Per-task cancel token. Cloned for the spawned future
@@ -439,17 +492,28 @@ pub struct BgAgentReservation {
     /// the sole writer; it transitions through
     /// [`AgentStatus::Pending`] → `Running` → terminal.
     pub status_tx: watch::Sender<AgentStatus>,
-    /// Status receiver — hand back to the registry via [`BgAgentRegistry::attach`]
+    /// Status receiver — hand back to the registry via [`ChildAgentRegistry::attach`]
     /// so `snapshot()` and `/agents` can read the current state without
     /// touching the spawn site.
     pub status_rx: watch::Receiver<AgentStatus>,
     /// Sub-agent task id of the spawner, or `None` for the top-level
-    /// loop. Carried verbatim to [`BgAgentRegistry::attach`] so the
+    /// loop. Carried verbatim to [`ChildAgentRegistry::attach`] so the
     /// entry knows who spawned it (Model D cleanup-on-exit).
     pub spawner: Option<u32>,
+    /// `true` if this reservation is for a background sub-agent
+    /// (auto-drains its result on a future iteration), `false` for
+    /// foreground sub-agents (parent awaits inline).
+    ///
+    /// **PR-A0.5 of #1232**: added when the registry was generalized
+    /// from bg-only to host both fg and bg child agents. The flag is
+    /// carried into [`ChildAgentRegistry::attach`] so the registry
+    /// entry's snapshots and the [`EngineEvent::ChildTaskUpdate`]
+    /// events emitted by [`ChildStatusEmitter::send`] both reflect
+    /// the same source-of-truth value.
+    pub is_background: bool,
 }
 
-impl BgAgentRegistry {
+impl ChildAgentRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
         Self {
@@ -460,7 +524,7 @@ impl BgAgentRegistry {
     }
 
     /// Push an event onto the status queue. Called by
-    /// [`BgStatusEmitter::send`]; not part of the public API.
+    /// [`ChildStatusEmitter::send`]; not part of the public API.
     pub(crate) fn push_status_event(&self, event: EngineEvent) {
         self.events.lock().push_back(event);
     }
@@ -497,13 +561,14 @@ impl BgAgentRegistry {
         &self,
         parent_cancel: &CancellationToken,
         spawner: Option<u32>,
-    ) -> BgAgentReservation {
+        is_background: bool,
+    ) -> ChildAgentReservation {
         let (tx, rx) = oneshot::channel();
         let (status_tx, status_rx) = watch::channel(AgentStatus::Pending);
         let mut id = self.next_id.lock();
         let task_id = *id;
         *id += 1;
-        BgAgentReservation {
+        ChildAgentReservation {
             task_id,
             tx,
             rx,
@@ -511,6 +576,7 @@ impl BgAgentRegistry {
             status_tx,
             status_rx,
             spawner,
+            is_background,
         }
     }
 
@@ -541,12 +607,13 @@ impl BgAgentRegistry {
         cancel: CancellationToken,
         status_rx: watch::Receiver<AgentStatus>,
         spawner: Option<u32>,
+        is_background: bool,
         parent_tool_call_id: Option<String>,
         handle: tokio::task::JoinHandle<()>,
     ) {
         self.pending.lock().insert(
             reservation_id,
-            BgAgentEntry {
+            ChildAgentEntry {
                 agent_name: agent_name.to_string(),
                 prompt: prompt.to_string(),
                 rx,
@@ -554,6 +621,7 @@ impl BgAgentRegistry {
                 status_rx,
                 started_at: Instant::now(),
                 spawner,
+                is_background,
                 parent_tool_call_id,
                 _handle: AbortOnDropHandle::new(handle),
             },
@@ -606,7 +674,7 @@ impl BgAgentRegistry {
         let noop = tokio::spawn(async {});
         self.pending.lock().insert(
             task_id,
-            BgAgentEntry {
+            ChildAgentEntry {
                 agent_name: agent_name.to_string(),
                 prompt: prompt.to_string(),
                 rx,
@@ -614,6 +682,9 @@ impl BgAgentRegistry {
                 status_rx,
                 started_at: Instant::now(),
                 spawner,
+                // Test-only entries default to bg-true (legacy behavior).
+                // PR-A0.5 of #1232.
+                is_background: true,
                 parent_tool_call_id: None,
                 _handle: AbortOnDropHandle::new(noop),
             },
@@ -719,17 +790,18 @@ impl BgAgentRegistry {
     /// **Unscoped**: returns every task regardless of spawner. Used by
     /// the TUI `/agents` command (humans want the global view) and as
     /// the engine of [`Self::snapshot_for_caller`] (which filters).
-    pub fn snapshot(&self) -> Vec<BgTaskSnapshot> {
+    pub fn snapshot(&self) -> Vec<ChildTaskSnapshot> {
         let guard = self.pending.lock();
         let now = Instant::now();
         let mut out: Vec<_> = guard
             .iter()
-            .map(|(id, entry)| BgTaskSnapshot {
+            .map(|(id, entry)| ChildTaskSnapshot {
                 task_id: *id,
                 agent_name: entry.agent_name.clone(),
                 prompt: entry.prompt.clone(),
                 age: now.saturating_duration_since(entry.started_at),
                 status: entry.status_rx.borrow().clone(),
+                is_background: entry.is_background,
                 spawner: entry.spawner,
             })
             .collect();
@@ -747,7 +819,7 @@ impl BgAgentRegistry {
     /// Strict equality — a sub-agent does NOT see sibling sub-agents'
     /// tasks, and the top-level does NOT see sub-agents' tasks via the
     /// LLM (the TUI's `/agents` command remains the global view).
-    pub fn snapshot_for_caller(&self, caller_spawner: Option<u32>) -> Vec<BgTaskSnapshot> {
+    pub fn snapshot_for_caller(&self, caller_spawner: Option<u32>) -> Vec<ChildTaskSnapshot> {
         self.snapshot()
             .into_iter()
             .filter(|s| s.spawner == caller_spawner)
@@ -817,7 +889,7 @@ impl BgAgentRegistry {
     }
 }
 
-/// Outcome of [`BgAgentRegistry::cancel_as_caller`].
+/// Outcome of [`ChildAgentRegistry::cancel_as_caller`].
 ///
 /// Mirrors HTTP-ish status codes so the LLM-tool layer can produce
 /// useful error messages without inspecting registry internals.
@@ -842,7 +914,7 @@ pub enum CancelOutcome {
     Forbidden,
 }
 
-/// Outcome of [`BgAgentRegistry::wait_for_completion`].
+/// Outcome of [`ChildAgentRegistry::wait_for_completion`].
 ///
 /// Encodes the four resolutions of a `WaitTask` call. The LLM-tool
 /// layer translates each into a serialised payload the model receives.
@@ -867,7 +939,7 @@ pub enum WaitOutcome {
     /// task is still in `pending` and may still complete on its own.
     /// Carries the most-recent status snapshot so the model can
     /// decide whether to wait again or move on.
-    TimedOut(BgTaskSnapshot),
+    TimedOut(ChildTaskSnapshot),
     /// No task with that id, or caller's spawner doesn't match.
     /// Same `Forbidden`/`NotFound` distinction as [`CancelOutcome`].
     NotFound,
@@ -875,7 +947,7 @@ pub enum WaitOutcome {
     Forbidden,
 }
 
-impl BgAgentRegistry {
+impl ChildAgentRegistry {
     /// Block until a single task reaches a terminal state, or until
     /// `timeout` elapses. The tool layer is the sole caller; humans
     /// use `/cancel` (synchronous) and the auto-drain path.
@@ -1011,7 +1083,7 @@ impl BgAgentRegistry {
 /// Returns when the current value is already terminal OR after a
 /// `changed()` event lands a terminal value. Yields control on
 /// every iteration so the timeout future in
-/// [`BgAgentRegistry::wait_for_completion`] gets a chance to fire.
+/// [`ChildAgentRegistry::wait_for_completion`] gets a chance to fire.
 async fn wait_for_terminal_status(mut rx: watch::Receiver<AgentStatus>) {
     loop {
         let is_terminal = matches!(
@@ -1031,13 +1103,13 @@ async fn wait_for_terminal_status(mut rx: watch::Receiver<AgentStatus>) {
     }
 }
 
-impl Default for BgAgentRegistry {
+impl Default for ChildAgentRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Drop for BgAgentRegistry {
+impl Drop for ChildAgentRegistry {
     /// Abort every still-pending bg task on registry drop.
     ///
     /// `AbortOnDropHandle::drop` does the work — this impl exists
@@ -1055,7 +1127,7 @@ impl Drop for BgAgentRegistry {
         if !map.is_empty() {
             tracing::debug!(
                 count = map.len(),
-                "BgAgentRegistry dropped with pending tasks; aborting"
+                "ChildAgentRegistry dropped with pending tasks; aborting"
             );
         }
         // Map drops here → each entry's `AbortOnDropHandle` aborts
@@ -1064,8 +1136,8 @@ impl Drop for BgAgentRegistry {
 }
 
 /// Wrap in Arc for sharing between inference loop and tool dispatch.
-pub fn new_shared() -> Arc<BgAgentRegistry> {
-    Arc::new(BgAgentRegistry::new())
+pub fn new_shared() -> Arc<ChildAgentRegistry> {
+    Arc::new(ChildAgentRegistry::new())
 }
 
 #[cfg(test)]
@@ -1076,7 +1148,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn register_and_complete() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (task_id, tx) = reg.register_test("explore", "find all tests");
         assert_eq!(task_id, 1);
         assert_eq!(reg.pending_count(), 1);
@@ -1097,7 +1169,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn drain_only_completed() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (_id1, tx1) = reg.register_test("task", "build");
         let (_id2, _tx2) = reg.register_test("explore", "search");
 
@@ -1111,7 +1183,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropped_sender_reports_cancelled() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (_id, tx) = reg.register_test("task", "build");
         drop(tx); // simulate task panic/cancel
 
@@ -1123,7 +1195,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn error_result() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (_id, tx) = reg.register_test("verify", "check");
         tx.send(Err(("test failures".to_string(), Vec::new())))
             .unwrap();
@@ -1143,7 +1215,7 @@ mod tests {
     /// so this test pins the round-trip end-to-end.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn events_propagate_through_drain_for_success() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (_id, tx) = reg.register_test("explore", "map repo");
         let trace = vec![
             "  \u{1f527} Read".to_string(),
@@ -1169,7 +1241,7 @@ mod tests {
     /// debuggable one.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn events_propagate_through_drain_for_failure() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (_id, tx) = reg.register_test("build", "compile");
         let trace = vec![
             "  \u{1f527} Bash".to_string(),
@@ -1189,7 +1261,7 @@ mod tests {
     /// that's an explicitly-empty Vec rather than uninitialized.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelled_task_has_empty_event_trace() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (_id, tx) = reg.register_test("flaky", "x");
         drop(tx); // simulate panic / abort
         let results = reg.drain_completed();
@@ -1209,9 +1281,9 @@ mod tests {
     /// were dropped. That's the leak we're fixing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn registry_drop_aborts_pending_tasks() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let parent = CancellationToken::new();
-        let reservation = reg.reserve(&parent, None);
+        let reservation = reg.reserve(&parent, None, true);
         let task_id = reservation.task_id;
         let cancel_for_task = reservation.cancel.clone();
         let tx = reservation.tx;
@@ -1245,6 +1317,7 @@ mod tests {
             cancel_for_entry,
             status_rx,
             None,
+            true,
             None,
             handle,
         );
@@ -1270,10 +1343,10 @@ mod tests {
     /// `reserve`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn parent_cancel_cascades_to_reserved_child() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let parent = CancellationToken::new();
-        let r1 = reg.reserve(&parent, None);
-        let r2 = reg.reserve(&parent, None);
+        let r1 = reg.reserve(&parent, None, true);
+        let r2 = reg.reserve(&parent, None, true);
 
         assert!(!r1.cancel.is_cancelled());
         assert!(!r2.cancel.is_cancelled());
@@ -1300,7 +1373,7 @@ mod tests {
     /// true *and* the underlying token actually fires.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_known_task_fires_token() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (task_id, _tx, _status_tx, observer) =
             reg.register_test_with_status("explore", "map repo", None);
 
@@ -1318,7 +1391,7 @@ mod tests {
     /// surface this to the user as "no such task".
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_unknown_task_returns_false() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         assert!(
             !reg.cancel(999),
             "cancel of an unknown id should be a no-op returning false"
@@ -1331,7 +1404,7 @@ mod tests {
     /// in `pending`; a third call after drain returns false.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_is_idempotent_while_pending() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (task_id, _tx, _status_tx, _observer) =
             reg.register_test_with_status("explore", "x", None);
 
@@ -1347,7 +1420,7 @@ mod tests {
     /// because no spawned future has flipped it yet.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_lists_pending_tasks_in_id_order() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (id_a, _tx_a) = reg.register_test("explore", "map");
         let (id_b, _tx_b) = reg.register_test("verify", "check");
 
@@ -1371,7 +1444,7 @@ mod tests {
     /// and live `/agents -v` (Layer 1) reflect transitions immediately.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_reflects_status_writes() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (task_id, _tx, status_tx, _cancel) =
             reg.register_test_with_status("explore", "map", None);
 
@@ -1406,7 +1479,7 @@ mod tests {
     /// prevents underflow if the system clock jumps backwards).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_age_is_monotonic() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (_id, _tx) = reg.register_test("explore", "x");
 
         let age1 = reg.snapshot()[0].age;
@@ -1423,7 +1496,7 @@ mod tests {
     /// background agents."
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_empty_registry_is_empty_vec() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         assert!(reg.snapshot().is_empty());
     }
 
@@ -1434,7 +1507,7 @@ mod tests {
     /// 30 s" UX is implemented at the *display* layer, not here.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_drops_drained_tasks() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (_id, tx) = reg.register_test("explore", "x");
         assert_eq!(reg.snapshot().len(), 1);
 
@@ -1454,7 +1527,7 @@ mod tests {
     /// visibility is exactly zero — the Model E isolation guarantee.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn snapshot_for_caller_filters_by_spawner() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (top_id, _tx, _, _) = reg.register_test_with_status("a", "top", None);
         let (sub_a_id, _tx, _, _) = reg.register_test_with_status("b", "sub-a", Some(7));
         let (_sub_b_id, _tx, _, _) = reg.register_test_with_status("c", "sub-b", Some(9));
@@ -1474,7 +1547,7 @@ mod tests {
     /// `cancel_as_caller` enforces the Model E permission rule.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_as_caller_returns_forbidden_for_other_spawner() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (id, _tx, _, observer) = reg.register_test_with_status("x", "y", Some(7));
 
         // Wrong caller — not the top-level (None != Some(7)) and not a peer.
@@ -1500,7 +1573,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_as_caller_returns_not_found_for_unknown_id() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         assert_eq!(reg.cancel_as_caller(999, None), CancelOutcome::NotFound);
     }
 
@@ -1508,7 +1581,7 @@ mod tests {
     /// and leaves siblings + top-level alone. The cleanup-on-exit hook.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_for_spawner_kills_only_matching_children() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (_top, _, _, top_obs) = reg.register_test_with_status("top", "t", None);
         let (_a1, _, _, a1_obs) = reg.register_test_with_status("a1", "x", Some(7));
         let (_a2, _, _, a2_obs) = reg.register_test_with_status("a2", "y", Some(7));
@@ -1533,7 +1606,7 @@ mod tests {
     /// (so a subsequent `drain_completed` can't double-inject).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_completion_consumes_completed_task() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (id, tx, status_tx, _) = reg.register_test_with_status("explore", "map", Some(3));
 
         // Fire the result, then transition status to terminal so the
@@ -1568,7 +1641,7 @@ mod tests {
     /// entry in the registry so a later drain still works.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_completion_timeout_preserves_entry() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (id, _tx, status_tx, _) = reg.register_test_with_status("slow", "x", None);
 
         // Move to Running so the snapshot test below can verify the
@@ -1593,7 +1666,7 @@ mod tests {
     /// as `cancel_as_caller`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_completion_returns_forbidden_for_other_spawner() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (id, _tx, _, _) = reg.register_test_with_status("x", "y", Some(5));
 
         let outcome = reg
@@ -1617,7 +1690,7 @@ mod tests {
     /// up surfaces as `Cancelled` (oneshot closed without sending).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_completion_returns_cancelled_when_sender_dropped() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let (id, tx, status_tx, _) = reg.register_test_with_status("x", "y", None);
 
         // Drop the sender (simulates task panic / abort), then push
@@ -1634,7 +1707,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_completion_returns_not_found_for_unknown_id() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let outcome = reg
             .wait_for_completion(999, None, Duration::from_millis(10))
             .await;
@@ -1659,7 +1732,7 @@ mod tests {
     /// sends reliably triggers the old race.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wait_for_completion_handles_status_then_yield_then_payload() {
-        let reg = Arc::new(BgAgentRegistry::new());
+        let reg = Arc::new(ChildAgentRegistry::new());
         let (id, tx, status_tx, _observer) =
             reg.register_test_with_status("explore", "map repo", None);
 
@@ -1693,33 +1766,34 @@ mod tests {
         }
     }
 
-    // ── #1076: BgStatusEmitter → sink fan-out ───────────────────────────────
+    // ── #1076: ChildStatusEmitter → sink fan-out ───────────────────────────────
 
     /// Helper: build an emitter wired to the given registry, mirroring
     /// the production construction in `sub_agent_dispatch::execute_sub_agent`.
     fn emitter_for(
-        reg: &Arc<BgAgentRegistry>,
+        reg: &Arc<ChildAgentRegistry>,
         task_id: u32,
         spawner: Option<u32>,
-    ) -> BgStatusEmitter {
+    ) -> ChildStatusEmitter {
         let (tx, _rx) = watch::channel(AgentStatus::Pending);
-        BgStatusEmitter::new(task_id, spawner, tx, reg.clone())
+        ChildStatusEmitter::new(task_id, spawner, true, tx, reg.clone())
     }
 
-    fn extract(event: &EngineEvent) -> (u32, Option<u32>, &AgentStatus) {
+    fn extract(event: &EngineEvent) -> (u32, Option<u32>, bool, &AgentStatus) {
         match event {
-            EngineEvent::BgTaskUpdate {
+            EngineEvent::ChildTaskUpdate {
                 task_id,
                 spawner,
+                is_background,
                 status,
-            } => (*task_id, *spawner, status),
-            other => panic!("expected BgTaskUpdate, got {other:?}"),
+            } => (*task_id, *spawner, *is_background, status),
+            other => panic!("expected ChildTaskUpdate, got {other:?}"),
         }
     }
 
     #[test]
     fn emitter_send_queues_engine_event_on_registry() {
-        let reg = Arc::new(BgAgentRegistry::new());
+        let reg = Arc::new(ChildAgentRegistry::new());
         let emitter = emitter_for(&reg, 7, Some(42));
 
         // Initial: queue is empty.
@@ -1731,7 +1805,7 @@ mod tests {
         emitter.send(AgentStatus::Running { iter: 0 });
         let drained = reg.drain_status_events();
         assert_eq!(drained.len(), 1, "single send must produce one event");
-        let (id, spawner, status) = extract(&drained[0]);
+        let (id, spawner, _is_bg, status) = extract(&drained[0]);
         assert_eq!(id, 7);
         assert_eq!(spawner, Some(42));
         assert!(matches!(status, AgentStatus::Running { iter: 0 }));
@@ -1739,7 +1813,7 @@ mod tests {
 
     #[test]
     fn emitter_drain_is_fifo_and_clears_queue() {
-        let reg = Arc::new(BgAgentRegistry::new());
+        let reg = Arc::new(ChildAgentRegistry::new());
         let emitter = emitter_for(&reg, 1, None);
 
         emitter.send(AgentStatus::Running { iter: 0 });
@@ -1758,7 +1832,7 @@ mod tests {
         let iters: Vec<_> = drained
             .iter()
             .filter_map(|e| match e {
-                EngineEvent::BgTaskUpdate {
+                EngineEvent::ChildTaskUpdate {
                     status: AgentStatus::Running { iter },
                     ..
                 } => Some(*iter),
@@ -1769,7 +1843,7 @@ mod tests {
 
         // Last event is the terminal Completed.
         assert!(matches!(
-            extract(&drained[3]).2,
+            extract(&drained[3]).3,
             AgentStatus::Completed { .. }
         ));
 
@@ -1786,9 +1860,9 @@ mod tests {
         // Sink fan-out (queue) is for the inference-loop → EngineSink
         // path.  Both targets must see every transition or `/agents`
         // and the TUI/ACP/headless clients will disagree on state.
-        let reg = Arc::new(BgAgentRegistry::new());
+        let reg = Arc::new(ChildAgentRegistry::new());
         let (tx, mut rx) = watch::channel(AgentStatus::Pending);
-        let emitter = BgStatusEmitter::new(3, None, tx, reg.clone());
+        let emitter = ChildStatusEmitter::new(3, None, true, tx, reg.clone());
 
         emitter.send(AgentStatus::Running { iter: 5 });
 
@@ -1801,7 +1875,7 @@ mod tests {
         let drained = reg.drain_status_events();
         assert_eq!(drained.len(), 1);
         assert!(matches!(
-            extract(&drained[0]).2,
+            extract(&drained[0]).3,
             AgentStatus::Running { iter: 5 }
         ));
     }
@@ -1814,9 +1888,9 @@ mod tests {
         // the same per-task watch channel — otherwise terminal
         // states could land on a different queue than the heartbeats
         // and clients would see Running forever.
-        let reg = Arc::new(BgAgentRegistry::new());
+        let reg = Arc::new(ChildAgentRegistry::new());
         let (tx, _rx) = watch::channel(AgentStatus::Pending);
-        let a = BgStatusEmitter::new(11, Some(2), tx, reg.clone());
+        let a = ChildStatusEmitter::new(11, Some(2), true, tx, reg.clone());
         let b = a.clone();
 
         a.send(AgentStatus::Running { iter: 1 });
@@ -1833,7 +1907,7 @@ mod tests {
 
     #[test]
     fn agent_status_round_trips_through_serde() {
-        // `EngineEvent::BgTaskUpdate` is the wire format for ACP /
+        // `EngineEvent::ChildTaskUpdate` is the wire format for ACP /
         // headless / future transports.  All `AgentStatus` variants
         // must survive a serde round-trip or the boundary leak fix
         // creates a new boundary leak (engine emits, transport drops
@@ -1850,21 +1924,24 @@ mod tests {
                 error: "boom".into(),
             },
         ] {
-            let event = EngineEvent::BgTaskUpdate {
+            let event = EngineEvent::ChildTaskUpdate {
                 task_id: 1,
                 spawner: Some(2),
+                is_background: true,
                 status: status.clone(),
             };
             let json = serde_json::to_string(&event).expect("serialize");
             let back: EngineEvent = serde_json::from_str(&json).expect("deserialize");
             match back {
-                EngineEvent::BgTaskUpdate {
+                EngineEvent::ChildTaskUpdate {
                     task_id,
                     spawner,
+                    is_background,
                     status: round_tripped,
                 } => {
                     assert_eq!(task_id, 1);
                     assert_eq!(spawner, Some(2));
+                    assert!(is_background, "is_background must round-trip true");
                     assert_eq!(round_tripped, status, "json round-trip lost data: {json}");
                 }
                 other => panic!("round-trip changed variant: {other:?}"),
@@ -1878,13 +1955,13 @@ mod tests {
         // iteration; the no-bg-task case must be cheap and yield
         // an empty Vec without any allocations forced by mistakes
         // in the queue type (e.g. `Some(VecDeque::new())`).
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let drained = reg.drain_status_events();
         assert!(drained.is_empty());
     }
 
-    /// #1201 B: `BgStatusEmitter::send_activity` must push events
-    /// onto the *same* registry queue that `BgStatusEmitter::send`
+    /// #1201 B: `ChildStatusEmitter::send_activity` must push events
+    /// onto the *same* registry queue that `ChildStatusEmitter::send`
     /// uses, with the emitter's `task_id` and `spawner` baked in.
     /// This pins the wire-up so the inference loop's existing drain
     /// in `inference.rs` picks up activity events without any extra
@@ -1893,7 +1970,7 @@ mod tests {
     async fn send_activity_queues_bg_child_activity_with_task_id() {
         let registry = new_shared();
         let (status_tx, _status_rx) = tokio::sync::watch::channel(AgentStatus::Pending);
-        let emitter = BgStatusEmitter::new(42, Some(7), status_tx, registry.clone());
+        let emitter = ChildStatusEmitter::new(42, Some(7), true, status_tx, registry.clone());
 
         emitter.send_activity(crate::engine::event::ChildAgentActivityKind::ToolStart {
             tool_name: "Read".into(),
