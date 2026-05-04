@@ -156,7 +156,8 @@ pub enum EngineEvent {
         status: crate::bg_agent::AgentStatus,
     },
 
-    /// Live activity from inside a running background sub-agent.
+    /// Live activity from inside a running child agent (foreground or
+    /// background sub-agent).
     ///
     /// **#1201 B**: pre-this-event the parent's TUI had no live signal
     /// from inside a bg agent — only `BgTaskUpdate` heartbeats
@@ -164,28 +165,46 @@ pub enum EngineEvent {
     /// "doing what". The narrative trace shipped via `BufferingSink`
     /// only surfaced at result-injection time.
     ///
-    /// `BgChildActivity` is the live tap: each interesting event
-    /// inside the bg agent (tool start/end, info line) fans out to
-    /// the parent's sink as soon as it happens, so the parent's TUI
-    /// can render a Gemini-style activity feed under the bg-task's
+    /// **PR-A0 of #1232 § 1**: renamed from `BgChildActivity`. The
+    /// underlying mechanism is identical — pushed onto the registry's
+    /// status-event queue and forwarded to the active sink — but the
+    /// type name no longer pretends bg is the only valid source.
+    /// Foreground sub-agent routing through this event is the actual
+    /// behavior change in PR-A; PR-A0 is just the rename so the type
+    /// stops lying. Today every emit site still passes
+    /// `is_background: true`.
+    ///
+    /// Wire format (`"type":"bg_child_activity"`) is preserved via
+    /// `#[serde(rename)]` so ACP / headless clients keep parsing the
+    /// same envelope. PR-A will revisit the wire tag once fg actually
+    /// flows through here.
+    ///
+    /// `ChildAgentActivity` is the live tap: each interesting event
+    /// inside the child agent (tool start/end, info line) fans out
+    /// to the parent's sink as soon as it happens, so the parent's
+    /// TUI can render a Gemini-style activity feed under the child's
     /// spawn cell. The post-completion narrative trace via
     /// `BufferingSink` is still emitted (and is still authoritative
     /// for the persisted transcript) — this event is purely for
     /// real-time UX.
-    ///
-    /// Same routing as `BgTaskUpdate`: pushed onto the registry's
-    /// status-event queue by [`crate::bg_agent::BgStatusEmitter::send_activity`]
-    /// and drained by the inference loop, so every client surface
-    /// (TUI / headless / ACP) sees the same stream.
-    BgChildActivity {
+    #[serde(rename = "bg_child_activity")]
+    ChildAgentActivity {
         /// Matches the `task_id` from `BgTaskUpdate` for the same
-        /// running bg task.
+        /// running task. For foreground sub-agents (PR-A) this will
+        /// be a synthetic id assigned at dispatch time.
         task_id: u32,
         /// Sub-agent invocation id of the spawner, or `None` for
-        /// top-level-spawned bg tasks. Mirrors `BgTaskUpdate.spawner`.
+        /// top-level-spawned tasks. Mirrors `BgTaskUpdate.spawner`.
         spawner: Option<u32>,
-        /// What just happened inside the bg agent.
-        kind: BgChildActivityKind,
+        /// `true` if the child runs as a background task (today: all
+        /// emit sites). `false` reserved for foreground sub-agents
+        /// in PR-A. Wire-default is `true` so older clients that
+        /// never received this field deserialize as the historical
+        /// behavior.
+        #[serde(default = "default_is_background_true")]
+        is_background: bool,
+        /// What just happened inside the child agent.
+        kind: ChildAgentActivityKind,
     },
 
     // ── Approval flow ─────────────────────────────────────────────────
@@ -357,7 +376,7 @@ pub enum EngineEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
-pub enum BgChildActivityKind {
+pub enum ChildAgentActivityKind {
     /// The child started a tool call.
     ///
     /// `summary` is a pre-truncated one-line description suitable
@@ -394,6 +413,14 @@ pub enum BgChildActivityKind {
         /// The info line, rendered as-is.
         message: String,
     },
+}
+
+/// Serde default for the `is_background` field on
+/// [`EngineEvent::ChildAgentActivity`]. Returns `true` so older wire
+/// payloads that pre-date the field deserialize as the historical
+/// behavior (every emit was from a bg agent before PR-A).
+fn default_is_background_true() -> bool {
+    true
 }
 
 /// Why an inference turn ended.
@@ -785,40 +812,44 @@ mod tests {
         }
     }
 
-    /// #1201 B: BgChildActivity must roundtrip cleanly so ACP / headless
-    /// clients see the same wire shape as the in-process TUI. Tests all
-    /// three kinds and the `BgChildActivity` envelope.
+    /// #1201 B + PR-A0 of #1232: ChildAgentActivity must roundtrip
+    /// cleanly so ACP / headless clients see the same wire shape as
+    /// the in-process TUI. Tests all three kinds, the envelope, and
+    /// the wire-tag preservation (still `bg_child_activity` for back
+    /// compat).
     #[test]
-    fn test_bg_child_activity_roundtrip() {
+    fn test_child_agent_activity_roundtrip() {
         let kinds = vec![
-            BgChildActivityKind::ToolStart {
+            ChildAgentActivityKind::ToolStart {
                 tool_name: "Read".into(),
                 summary: "Read src/auth.rs".into(),
             },
-            BgChildActivityKind::ToolEnd {
+            ChildAgentActivityKind::ToolEnd {
                 tool_name: "Bash".into(),
                 success: true,
             },
-            BgChildActivityKind::ToolEnd {
+            ChildAgentActivityKind::ToolEnd {
                 tool_name: "Edit".into(),
                 success: false,
             },
-            BgChildActivityKind::Info {
+            ChildAgentActivityKind::Info {
                 message: "  \u{26a1} cache hit".into(),
             },
         ];
         for kind in kinds {
             let json = serde_json::to_string(&kind).unwrap();
-            let roundtripped: BgChildActivityKind = serde_json::from_str(&json).unwrap();
+            let roundtripped: ChildAgentActivityKind = serde_json::from_str(&json).unwrap();
             assert_eq!(kind, roundtripped);
         }
 
         // Envelope event — tests the outer EngineEvent serialization
-        // including the snake_case type tag ("bg_child_activity").
-        let event = EngineEvent::BgChildActivity {
+        // including the preserved snake_case type tag
+        // ("bg_child_activity") and the new is_background field.
+        let event = EngineEvent::ChildAgentActivity {
             task_id: 7,
             spawner: Some(3),
-            kind: BgChildActivityKind::ToolStart {
+            is_background: true,
+            kind: ChildAgentActivityKind::ToolStart {
                 tool_name: "Grep".into(),
                 summary: "Grep TODO src/".into(),
             },
@@ -826,31 +857,49 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(
             json.contains("\"type\":\"bg_child_activity\""),
-            "envelope must use snake_case type tag for ACP / headless clients"
+            "envelope must preserve historical wire tag for ACP / headless clients"
         );
         assert!(
             json.contains("\"kind\":\"tool_start\""),
             "inner kind must use snake_case tag"
         );
+        assert!(
+            json.contains("\"is_background\":true"),
+            "is_background must serialize on the wire so future fg emits are distinguishable"
+        );
         let deserialized: EngineEvent = serde_json::from_str(&json).unwrap();
         assert!(matches!(
             deserialized,
-            EngineEvent::BgChildActivity {
+            EngineEvent::ChildAgentActivity {
                 task_id: 7,
                 spawner: Some(3),
+                is_background: true,
                 ..
             }
         ));
 
-        // Top-level-spawned bg task — spawner is None.
-        let top_level = EngineEvent::BgChildActivity {
+        // Top-level-spawned task — spawner is None.
+        let top_level = EngineEvent::ChildAgentActivity {
             task_id: 1,
             spawner: None,
-            kind: BgChildActivityKind::Info {
+            is_background: true,
+            kind: ChildAgentActivityKind::Info {
                 message: "hello".into(),
             },
         };
         let json = serde_json::to_string(&top_level).unwrap();
         let _: EngineEvent = serde_json::from_str(&json).unwrap();
+
+        // Back-compat: a payload from before is_background existed
+        // must still deserialize, defaulting is_background to true.
+        let legacy_json = r#"{"type":"bg_child_activity","task_id":2,"spawner":null,"kind":{"kind":"info","message":"legacy"}}"#;
+        let legacy: EngineEvent = serde_json::from_str(legacy_json).unwrap();
+        assert!(matches!(
+            legacy,
+            EngineEvent::ChildAgentActivity {
+                is_background: true,
+                ..
+            }
+        ));
     }
 }

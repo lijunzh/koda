@@ -380,7 +380,7 @@ mod tests {
 
     // (#1158's bg-pill tests removed in #1210 along with the pill
     // itself; the live bg-activity overlay is covered by
-    // `widgets::bg_activity_overlay::tests` and `bg_activity::tests`.)
+    // `widgets::child_activity_overlay::tests` and `child_activity::tests`.)
 
     /// Vim segment is hidden when the textarea reports `None`
     /// (vim editing disabled). PR 3 of #1178.

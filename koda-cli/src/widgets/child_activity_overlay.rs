@@ -41,7 +41,7 @@
 //!   covers the field-standard surface area without rebuilding the
 //!   `/agents` modal panel that #1210 deletes.
 //! - Does NOT auto-refresh — caller drives a redraw on each
-//!   `BgChildActivity` / `BgTaskUpdate` event (already wired via
+//!   `ChildAgentActivity` / `BgTaskUpdate` event (already wired via
 //!   `frame_requester`).
 
 use ratatui::{
@@ -105,7 +105,7 @@ pub enum ActivityStatus {
 ///
 /// Construction is cheap (borrows the row slice + total). Pass to
 /// [`ratatui::Frame::render_widget`].
-pub struct BgActivityOverlay<'a> {
+pub struct ChildActivityOverlay<'a> {
     /// Visible rows (already truncated to [`MAX_VISIBLE`] by caller).
     rows: &'a [ActivityRow],
     /// Total live work count (may exceed `rows.len()`); drives
@@ -113,7 +113,7 @@ pub struct BgActivityOverlay<'a> {
     total: usize,
 }
 
-impl<'a> BgActivityOverlay<'a> {
+impl<'a> ChildActivityOverlay<'a> {
     /// Construct an overlay for the given visible row slice.
     ///
     /// `rows.len() <= MAX_VISIBLE` is the caller's invariant; this
@@ -137,7 +137,7 @@ impl<'a> BgActivityOverlay<'a> {
     }
 }
 
-impl Widget for BgActivityOverlay<'_> {
+impl Widget for ChildActivityOverlay<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Reserve space for the leading "  ICON LABEL  AGE  · " prefix.
         // Worked example: "  " (2) + icon+space (2 cells: emoji is
@@ -253,10 +253,10 @@ mod tests {
     use super::*;
 
     fn render(rows: &[ActivityRow], total: usize, width: u16) -> Vec<String> {
-        let height = BgActivityOverlay::height_for(total).max(1);
+        let height = ChildActivityOverlay::height_for(total).max(1);
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
-        BgActivityOverlay::new(rows, total).render(area, &mut buf);
+        ChildActivityOverlay::new(rows, total).render(area, &mut buf);
         (0..height)
             .map(|y| {
                 (0..width)
@@ -280,19 +280,19 @@ mod tests {
 
     #[test]
     fn height_zero_when_no_work() {
-        assert_eq!(BgActivityOverlay::height_for(0), 0);
+        assert_eq!(ChildActivityOverlay::height_for(0), 0);
     }
 
     #[test]
     fn height_one_row_includes_hint() {
         // 1 body row + 1 hint = 2
-        assert_eq!(BgActivityOverlay::height_for(1), 2);
+        assert_eq!(ChildActivityOverlay::height_for(1), 2);
     }
 
     #[test]
     fn height_capped_at_max_visible_plus_hint() {
         assert_eq!(
-            BgActivityOverlay::height_for(MAX_VISIBLE + 10),
+            ChildActivityOverlay::height_for(MAX_VISIBLE + 10),
             (MAX_VISIBLE + 1) as u16
         );
     }

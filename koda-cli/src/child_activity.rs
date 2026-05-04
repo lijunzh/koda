@@ -1,11 +1,11 @@
 //! Live tracker for background-work activity (#1210).
 //!
 //! Stateful counterpart to the pure-render
-//! [`crate::widgets::bg_activity_overlay`] widget. Absorbs
-//! `BgChildActivity` and `BgTaskUpdate` engine events into a
+//! [`crate::widgets::child_activity_overlay`] widget. Absorbs
+//! `ChildAgentActivity` and `BgTaskUpdate` engine events into a
 //! per-task last-activity map, then projects (alongside the engine's
 //! `BgAgentRegistry` + `BgRegistry` snapshots) into a flat list of
-//! [`crate::widgets::bg_activity_overlay::ActivityRow`]s the widget
+//! [`crate::widgets::child_activity_overlay::ActivityRow`]s the widget
 //! can render.
 //!
 //! ## Why a separate module
@@ -19,12 +19,12 @@
 //!
 //! ## Lifecycle
 //!
-//! 1. Construct empty (`BgActivityTracker::default()`) at TUI start.
-//! 2. On every `EngineEvent::BgChildActivity`, call
-//!    [`BgActivityTracker::record_activity`].
+//! 1. Construct empty (`ChildActivityTracker::default()`) at TUI start.
+//! 2. On every `EngineEvent::ChildAgentActivity`, call
+//!    [`ChildActivityTracker::record_activity`].
 //! 3. On every `EngineEvent::BgTaskUpdate`, call
-//!    [`BgActivityTracker::record_status`].
-//! 4. Each frame, call [`BgActivityTracker::build_rows`] with the
+//!    [`ChildActivityTracker::record_status`].
+//! 4. Each frame, call [`ChildActivityTracker::build_rows`] with the
 //!    current registry snapshots to get visible rows + total count.
 //!
 //! Pruning is implicit: rows are derived from the registry snapshot,
@@ -32,15 +32,15 @@
 //! drops them. The tracker's internal map is bounded by registry
 //! membership at projection time (see `build_rows`).
 
-use crate::widgets::bg_activity_overlay::{ActivityRow, ActivityStatus, MAX_VISIBLE};
+use crate::widgets::child_activity_overlay::{ActivityRow, ActivityStatus, MAX_VISIBLE};
 use koda_core::bg_agent::{AgentStatus, BgTaskSnapshot};
-use koda_core::engine::event::BgChildActivityKind;
+use koda_core::engine::event::ChildAgentActivityKind;
 use koda_core::tools::bg_process::{BgProcessSnapshot, BgProcessStatus};
 use std::collections::HashMap;
 use std::time::Duration;
 
 /// Per-task last-known activity description. Populated from
-/// `BgChildActivity` events. Bounded by registry membership: rows
+/// `ChildAgentActivity` events. Bounded by registry membership: rows
 /// for task ids no longer in the agent registry are dropped at
 /// projection time.
 #[derive(Debug, Clone)]
@@ -54,7 +54,7 @@ struct LastActivity {
 /// Stateful tracker. Cheap to construct; carry one as a field on
 /// `TuiContext`.
 #[derive(Debug, Clone, Default)]
-pub struct BgActivityTracker {
+pub struct ChildActivityTracker {
     /// Latest activity per agent task_id. Process tasks have no
     /// activity stream (they're shells, not LLM agents) — their
     /// "activity" is the static command string from
@@ -67,13 +67,13 @@ pub struct BgActivityTracker {
     cancelling: std::collections::HashSet<u32>,
 }
 
-impl BgActivityTracker {
-    /// Absorb a `BgChildActivity` event. Idempotent — re-recording
+impl ChildActivityTracker {
+    /// Absorb a `ChildAgentActivity` event. Idempotent — re-recording
     /// the same activity overwrites the previous entry.
-    pub fn record_activity(&mut self, task_id: u32, kind: &BgChildActivityKind) {
+    pub fn record_activity(&mut self, task_id: u32, kind: &ChildAgentActivityKind) {
         let description = match kind {
-            BgChildActivityKind::ToolStart { summary, .. } => summary.clone(),
-            BgChildActivityKind::ToolEnd { tool_name, success } => {
+            ChildAgentActivityKind::ToolStart { summary, .. } => summary.clone(),
+            ChildAgentActivityKind::ToolEnd { tool_name, success } => {
                 // ToolEnd would normally be a no-op (we want to keep
                 // showing the most recent ToolStart, not "Read foo
                 // ✓"), but if it's a *failure* we surface that so the
@@ -85,7 +85,7 @@ impl BgActivityTracker {
                 }
                 format!("{tool_name} \u{2717}")
             }
-            BgChildActivityKind::Info { message } => message.clone(),
+            ChildAgentActivityKind::Info { message } => message.clone(),
             // Forward-compat: future activity kinds are dropped from
             // the live overlay until we know how to render them. Same
             // shape as the success ToolEnd case above (#1224).
@@ -114,7 +114,7 @@ impl BgActivityTracker {
 
     /// Project current state + registry snapshots into renderable
     /// rows. Returns `(visible_rows, total_count)` matching the
-    /// widget's `BgActivityOverlay::new` signature.
+    /// widget's `ChildActivityOverlay::new` signature.
     ///
     /// Sort order: agents first (sorted by task_id ascending, so the
     /// fan-out spawn order is preserved), then processes (sorted by
@@ -251,7 +251,7 @@ fn format_age(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koda_core::engine::event::BgChildActivityKind;
+    use koda_core::engine::event::ChildAgentActivityKind;
 
     fn agent(task_id: u32, name: &str, age_secs: u64, status: AgentStatus) -> BgTaskSnapshot {
         BgTaskSnapshot::for_testing(
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn empty_tracker_with_empty_registry_yields_no_rows() {
-        let mut t = BgActivityTracker::default();
+        let mut t = ChildActivityTracker::default();
         let (rows, total) = t.build_rows(&[], &[]);
         assert!(rows.is_empty());
         assert_eq!(total, 0);
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn running_agent_without_recorded_activity_renders_with_no_activity() {
-        let mut t = BgActivityTracker::default();
+        let mut t = ChildActivityTracker::default();
         let snap = vec![agent(1, "explore", 5, AgentStatus::Running { iter: 1 })];
         let (rows, total) = t.build_rows(&snap, &[]);
         assert_eq!(total, 1);
@@ -296,10 +296,10 @@ mod tests {
 
     #[test]
     fn tool_start_event_populates_activity() {
-        let mut t = BgActivityTracker::default();
+        let mut t = ChildActivityTracker::default();
         t.record_activity(
             1,
-            &BgChildActivityKind::ToolStart {
+            &ChildAgentActivityKind::ToolStart {
                 tool_name: "Read".into(),
                 summary: "Read src/auth.rs".into(),
             },
@@ -311,17 +311,17 @@ mod tests {
 
     #[test]
     fn tool_end_success_does_not_overwrite_last_tool_start() {
-        let mut t = BgActivityTracker::default();
+        let mut t = ChildActivityTracker::default();
         t.record_activity(
             1,
-            &BgChildActivityKind::ToolStart {
+            &ChildAgentActivityKind::ToolStart {
                 tool_name: "Read".into(),
                 summary: "Read foo.rs".into(),
             },
         );
         t.record_activity(
             1,
-            &BgChildActivityKind::ToolEnd {
+            &ChildAgentActivityKind::ToolEnd {
                 tool_name: "Read".into(),
                 success: true,
             },
@@ -334,17 +334,17 @@ mod tests {
 
     #[test]
     fn tool_end_failure_surfaces_failure_marker() {
-        let mut t = BgActivityTracker::default();
+        let mut t = ChildActivityTracker::default();
         t.record_activity(
             1,
-            &BgChildActivityKind::ToolStart {
+            &ChildAgentActivityKind::ToolStart {
                 tool_name: "Bash".into(),
                 summary: "Bash cargo test".into(),
             },
         );
         t.record_activity(
             1,
-            &BgChildActivityKind::ToolEnd {
+            &ChildAgentActivityKind::ToolEnd {
                 tool_name: "Bash".into(),
                 success: false,
             },
@@ -360,17 +360,17 @@ mod tests {
 
     #[test]
     fn info_event_overrides_previous_activity() {
-        let mut t = BgActivityTracker::default();
+        let mut t = ChildActivityTracker::default();
         t.record_activity(
             1,
-            &BgChildActivityKind::ToolStart {
+            &ChildAgentActivityKind::ToolStart {
                 tool_name: "Read".into(),
                 summary: "Read foo.rs".into(),
             },
         );
         t.record_activity(
             1,
-            &BgChildActivityKind::Info {
+            &ChildAgentActivityKind::Info {
                 message: "Cache hit, skipping".into(),
             },
         );
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn terminal_agents_are_excluded_from_overlay() {
-        let mut t = BgActivityTracker::default();
+        let mut t = ChildActivityTracker::default();
         let snap = vec![
             agent(1, "explore", 5, AgentStatus::Running { iter: 2 }),
             agent(
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn cancelling_marker_flips_status_color() {
-        let mut t = BgActivityTracker::default();
+        let mut t = ChildActivityTracker::default();
         t.mark_cancelling(7);
         let snap = vec![agent(7, "explore", 5, AgentStatus::Running { iter: 2 })];
         let (rows, _) = t.build_rows(&snap, &[]);
@@ -418,10 +418,10 @@ mod tests {
 
     #[test]
     fn stale_tracker_entries_pruned_when_registry_drops_task() {
-        let mut t = BgActivityTracker::default();
+        let mut t = ChildActivityTracker::default();
         t.record_activity(
             42,
-            &BgChildActivityKind::ToolStart {
+            &ChildAgentActivityKind::ToolStart {
                 tool_name: "Read".into(),
                 summary: "stale".into(),
             },
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn agents_sorted_before_processes_in_render_order() {
-        let mut t = BgActivityTracker::default();
+        let mut t = ChildActivityTracker::default();
         let agents = vec![
             agent(2, "verify", 2, AgentStatus::Running { iter: 1 }),
             agent(1, "explore", 4, AgentStatus::Running { iter: 1 }),
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn overflow_total_exceeds_visible_when_more_than_max_visible() {
-        let mut t = BgActivityTracker::default();
+        let mut t = ChildActivityTracker::default();
         let agents: Vec<_> = (0..(MAX_VISIBLE as u32 + 4))
             .map(|i| agent(i, &format!("ag{i}"), 1, AgentStatus::Running { iter: 1 }))
             .collect();
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn process_row_uses_command_as_activity() {
-        let mut t = BgActivityTracker::default();
+        let mut t = ChildActivityTracker::default();
         let procs = vec![process(123, "cargo test --release", 4)];
         let (rows, _) = t.build_rows(&[], &procs);
         assert_eq!(rows.len(), 1);

@@ -180,16 +180,21 @@ pub fn engine_event_to_acp(
         // shape used by `BgTaskUpdate` above. The full structured
         // payload (with `kind: tool_start` / `tool_end` / `info`) is
         // still on the wire for any future typed mapping.
-        EngineEvent::BgChildActivity { task_id, kind, .. } => {
+        EngineEvent::ChildAgentActivity { task_id, kind, .. } => {
             let body = match kind {
-                koda_core::engine::event::BgChildActivityKind::ToolStart { summary, .. } => {
+                koda_core::engine::event::ChildAgentActivityKind::ToolStart { summary, .. } => {
                     format!("\u{1f527} {summary}")
                 }
-                koda_core::engine::event::BgChildActivityKind::ToolEnd { tool_name, success } => {
+                koda_core::engine::event::ChildAgentActivityKind::ToolEnd {
+                    tool_name,
+                    success,
+                } => {
                     let icon = if *success { "\u{2713}" } else { "\u{2717}" };
                     format!("{icon} {tool_name}")
                 }
-                koda_core::engine::event::BgChildActivityKind::Info { message } => message.clone(),
+                koda_core::engine::event::ChildAgentActivityKind::Info { message } => {
+                    message.clone()
+                }
                 // Forward-compat: future activity kinds render as a
                 // generic line so ACP IDEs see something (#1224).
                 _ => "(activity)".to_string(),

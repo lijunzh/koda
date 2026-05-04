@@ -370,7 +370,7 @@ impl BgStatusEmitter {
     /// Forward a live activity event from inside the bg agent up to
     /// the parent's sink.
     ///
-    /// **#1201 B**: paired with [`crate::engine::sink::ForwardingBgSink`],
+    /// **#1201 B**: paired with [`crate::engine::sink::ForwardingChildSink`],
     /// which decorates the bg agent's `BufferingSink` and calls this
     /// method whenever an interesting child event happens (tool
     /// start/end, info line). The event lands on the same registry
@@ -382,11 +382,15 @@ impl BgStatusEmitter {
     /// the same cost as [`Self::send`]. The activity feed runs at
     /// roughly tool-call frequency — not hot enough for any of this
     /// to register in a profile.
-    pub fn send_activity(&self, kind: crate::engine::event::BgChildActivityKind) {
+    pub fn send_activity(&self, kind: crate::engine::event::ChildAgentActivityKind) {
         self.registry
-            .push_status_event(EngineEvent::BgChildActivity {
+            .push_status_event(EngineEvent::ChildAgentActivity {
                 task_id: self.task_id,
                 spawner: self.spawner,
+                // PR-A0 of #1232: hardcoded `true` because every emit
+                // site today is a bg agent. PR-A wires up a fg path
+                // that passes `false` here.
+                is_background: true,
                 kind,
             });
     }
@@ -1891,11 +1895,11 @@ mod tests {
         let (status_tx, _status_rx) = tokio::sync::watch::channel(AgentStatus::Pending);
         let emitter = BgStatusEmitter::new(42, Some(7), status_tx, registry.clone());
 
-        emitter.send_activity(crate::engine::event::BgChildActivityKind::ToolStart {
+        emitter.send_activity(crate::engine::event::ChildAgentActivityKind::ToolStart {
             tool_name: "Read".into(),
             summary: "Read foo.txt".into(),
         });
-        emitter.send_activity(crate::engine::event::BgChildActivityKind::Info {
+        emitter.send_activity(crate::engine::event::ChildAgentActivityKind::Info {
             message: "\u{26a1} cache hit".into(),
         });
 
@@ -1903,18 +1907,20 @@ mod tests {
         assert_eq!(drained.len(), 2);
         assert!(matches!(
             &drained[0],
-            EngineEvent::BgChildActivity {
+            EngineEvent::ChildAgentActivity {
                 task_id: 42,
                 spawner: Some(7),
-                kind: crate::engine::event::BgChildActivityKind::ToolStart { tool_name, .. }
+                is_background: true,
+                kind: crate::engine::event::ChildAgentActivityKind::ToolStart { tool_name, .. }
             } if tool_name == "Read"
         ));
         assert!(matches!(
             &drained[1],
-            EngineEvent::BgChildActivity {
+            EngineEvent::ChildAgentActivity {
                 task_id: 42,
                 spawner: Some(7),
-                kind: crate::engine::event::BgChildActivityKind::Info { message }
+                is_background: true,
+                kind: crate::engine::event::ChildAgentActivityKind::Info { message }
             } if message.contains("cache hit")
         ));
     }

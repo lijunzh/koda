@@ -304,19 +304,19 @@ impl EngineSink for HeadlessSink {
             // dimly indented under the parent feed so a tailing script
             // sees "  [bg task 7]   \u{1f527} Read src/auth.rs" without
             // having to wait for the post-completion drain.
-            EngineEvent::BgChildActivity { task_id, kind, .. } => {
+            EngineEvent::ChildAgentActivity { task_id, kind, .. } => {
                 let line = match kind {
-                    koda_core::engine::event::BgChildActivityKind::ToolStart {
+                    koda_core::engine::event::ChildAgentActivityKind::ToolStart {
                         summary, ..
                     } => format!("\u{1f527} {summary}"),
-                    koda_core::engine::event::BgChildActivityKind::ToolEnd {
+                    koda_core::engine::event::ChildAgentActivityKind::ToolEnd {
                         tool_name,
                         success,
                     } => {
                         let icon = if success { "\u{2713}" } else { "\u{2717}" };
                         format!("{icon} {tool_name}")
                     }
-                    koda_core::engine::event::BgChildActivityKind::Info { message } => message,
+                    koda_core::engine::event::ChildAgentActivityKind::Info { message } => message,
                     // Forward-compat: future activity kinds render as
                     // a generic line (#1224).
                     _ => "(activity)".to_string(),
