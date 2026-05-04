@@ -493,4 +493,120 @@ mod tests {
     fn format_age_hours_padded() {
         assert_eq!(format_age(Duration::from_secs(3600)), " 1h");
     }
+
+    // ── PR-A of #1232 §1: foreground sub-agent overlay rows ─────────────
+
+    /// A foreground sub-agent (`is_background == false`) registered
+    /// in the registry must render an overlay row with the same
+    /// shape as a background entry.
+    ///
+    /// **Why this is the headline test for PR-A**: the umbrella bug
+    /// (#1232 §1) was "fg sub-agents have ZERO live progress in the
+    /// master TUI." The overlay's `build_rows` is what the user
+    /// actually sees; if a fg-tagged snapshot doesn't produce a row
+    /// here, the engine-side wiring (`register_fg_with_emitter` +
+    /// `FgForwardingSink`) is invisible end-to-end and the bug isn't
+    /// fixed regardless of how clean the lower layers look.
+    #[test]
+    fn foreground_agent_renders_overlay_row_with_activity_snippet() {
+        let mut t = ChildActivityTracker::default();
+        let snap = vec![ChildTaskSnapshot::for_testing_fg(
+            7,
+            "explore".into(),
+            "audit storage".into(),
+            Duration::from_secs(12),
+            AgentStatus::Running { iter: 3 },
+            None,
+        )];
+        // Drive activity in via the same `record_activity` entrypoint
+        // the inference loop uses for both fg and bg — the tracker
+        // intentionally treats every `ChildAgentActivity` event the
+        // same regardless of `is_background`, so this end-to-end
+        // shape proves there's no fg-specific filter blocking the row.
+        t.record_activity(
+            7,
+            &ChildAgentActivityKind::ToolStart {
+                tool_name: "Read".into(),
+                summary: "Read storage/mod.rs".into(),
+            },
+        );
+        let (rows, total) = t.build_rows(&snap, &[]);
+        assert_eq!(total, 1, "fg snapshot must produce exactly one overlay row");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.label, "explore", "label uses agent_name");
+        assert_eq!(
+            row.activity.as_deref(),
+            Some("Read storage/mod.rs"),
+            "fg row must show the same `last activity` snippet as bg \
+             — the headline UX for #1232 §1"
+        );
+        assert_eq!(row.status, ActivityStatus::Running);
+    }
+
+    /// Symmetric removal: when a fg sub-agent's registry entry
+    /// disappears (the `FgRegistrationGuard` dropped on the engine
+    /// side), the overlay must drop the row on the next `build_rows`
+    /// call. Issue acceptance criterion: "Removing the row when the
+    /// sub-agent returns is symmetric with bg path."
+    #[test]
+    fn foreground_row_disappears_when_registry_entry_removed() {
+        let mut t = ChildActivityTracker::default();
+        let snap_running = vec![ChildTaskSnapshot::for_testing_fg(
+            7,
+            "explore".into(),
+            "x".into(),
+            Duration::from_secs(1),
+            AgentStatus::Running { iter: 0 },
+            None,
+        )];
+        t.record_activity(
+            7,
+            &ChildAgentActivityKind::ToolStart {
+                tool_name: "Read".into(),
+                summary: "Read foo".into(),
+            },
+        );
+        let (rows, _) = t.build_rows(&snap_running, &[]);
+        assert_eq!(rows.len(), 1, "row present while registered");
+
+        // Simulate guard drop: registry no longer reports this task.
+        let (rows_after, total_after) = t.build_rows(&[], &[]);
+        assert_eq!(
+            total_after, 0,
+            "row must vanish when fg entry leaves the registry; \
+             without this the overlay would show phantom rows for \
+             every completed fg sub-agent"
+        );
+        assert!(rows_after.is_empty());
+    }
+
+    /// Mixed fg + bg snapshot: both render, both count toward `total`,
+    /// neither shadows the other. Catches a regression where a future
+    /// `is_background` filter accidentally hides one or the other.
+    #[test]
+    fn mixed_foreground_and_background_agents_both_render() {
+        let mut t = ChildActivityTracker::default();
+        let snap = vec![
+            // bg first (id 1)
+            agent(1, "task", 30, AgentStatus::Running { iter: 5 }),
+            // fg next (id 2)
+            ChildTaskSnapshot::for_testing_fg(
+                2,
+                "plan".into(),
+                "y".into(),
+                Duration::from_secs(10),
+                AgentStatus::Running { iter: 1 },
+                None,
+            ),
+        ];
+        let (rows, total) = t.build_rows(&snap, &[]);
+        assert_eq!(total, 2, "both fg and bg agents must be counted");
+        assert_eq!(rows.len(), 2);
+        // Sort by label for stability — build_rows sorts by task_id,
+        // so order is bg(1) then fg(2), but we shouldn't bake that in.
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert!(labels.contains(&"task"), "bg agent row missing");
+        assert!(labels.contains(&"plan"), "fg agent row missing");
+    }
 }
