@@ -34,6 +34,7 @@ pub mod bwrap;
 #[cfg(target_os = "linux")]
 pub mod bwrap_proxy;
 pub mod defaults;
+pub mod env;
 pub mod fs;
 pub mod ipc;
 pub mod monitor;
@@ -370,6 +371,12 @@ impl SandboxRuntime for UnsandboxedRuntime {
             .arg("-c")
             .arg(req.command)
             .current_dir(req.project_root);
+        // #1228: scrub parent env down to the allowlist before exposing
+        // it to LLM-driven shell tool calls. UnsandboxedRuntime is the
+        // weakest backend (no kernel sandbox at all), so env scrubbing
+        // is the *only* line of defense here against secret exfiltration
+        // via `env`, `printenv`, etc.
+        env::scrub(&mut command, req.command);
         Ok(SandboxExecRequest { command })
     }
 
