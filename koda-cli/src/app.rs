@@ -175,9 +175,7 @@ pub(crate) async fn run() -> Result<()> {
                             cli.thinking_budget,
                             cli.reasoning_effort.clone(),
                         )
-                        .with_trust(
-                            koda_core::trust::TrustMode::parse(&cli.mode).unwrap_or_default(),
-                        );
+                        .with_trust(parse_top_level_trust_mode(&cli.mode));
                     server::run_stdio_server(project_root, config).await?;
                 } else {
                     eprintln!("WebSocket server (--port {port}) not yet implemented. Use --stdio.");
@@ -251,7 +249,7 @@ pub(crate) async fn run() -> Result<()> {
                 cli.thinking_budget,
                 cli.reasoning_effort,
             )
-            .with_trust(koda_core::trust::TrustMode::parse(&cli.mode).unwrap_or_default());
+            .with_trust(parse_top_level_trust_mode(&cli.mode));
         let session_id = match cli.session {
             Some(id) => id,
             None => db.create_session(&config.agent_name, &project_root).await?,
@@ -284,7 +282,7 @@ pub(crate) async fn run() -> Result<()> {
             cli.thinking_budget,
             cli.reasoning_effort,
         )
-        .with_trust(koda_core::trust::TrustMode::parse(&cli.mode).unwrap_or_default());
+        .with_trust(parse_top_level_trust_mode(&cli.mode));
 
     // Initialize database is already done above
 
@@ -323,6 +321,26 @@ fn init_server_tracing() {
         .with_target(true)
         .try_init();
     tracing::info!("koda server --stdio: tracing initialized");
+}
+
+/// Parse the `--mode` CLI flag and coerce to a top-level-valid trust
+/// mode, emitting a warning to stderr if Plan was requested.
+///
+/// **#1244**: this is the single CLI-side coercion point. Three
+/// `with_trust(...)` call sites in this file used to call
+/// `TrustMode::parse(&cli.mode).unwrap_or_default()` directly, which
+/// silently let `--mode plan` through to the top-level session —
+/// where Plan is sub-agent-only and just makes every write tool fail.
+/// Funneling all three through here ensures the rule lives in one
+/// place (DRY) and the warning is consistent across stdio-server,
+/// headless, and TUI launch modes.
+fn parse_top_level_trust_mode(cli_mode: &str) -> koda_core::trust::TrustMode {
+    let parsed = koda_core::trust::TrustMode::parse(cli_mode).unwrap_or_default();
+    let (mode, warning) = koda_core::trust::coerce_for_top_level(parsed);
+    if let Some(w) = warning {
+        eprintln!("warning: {w}");
+    }
+    mode
 }
 
 /// Resolve the headless prompt from -p flag, positional arg, or stdin pipe.

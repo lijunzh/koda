@@ -71,10 +71,17 @@ pub enum TrustMode {
 impl TrustMode {
     /// Cycle between user-facing modes: Safe ↔ Auto.
     ///
-    /// Plan is agent-only and never toggled by the user.
+    /// Plan is **sub-agent-only** (#1244) and never reachable for the
+    /// top-level session via any path — not the keyboard toggle, not
+    /// the `--mode plan` CLI flag, not `/resume` of a Plan-persisted
+    /// session. All non-toggle entry paths funnel through
+    /// [`coerce_for_top_level`] which coerces Plan → Safe + warns.
+    /// The toggle simply loops Plan → Plan as a defensive no-op for
+    /// the (impossible-by-construction) case where a sub-agent's
+    /// runtime mode somehow gets cycled.
     pub fn next(self) -> Self {
         match self {
-            Self::Plan => Self::Plan, // agent-only, no toggle
+            Self::Plan => Self::Plan, // sub-agent-only; #1244
             Self::Safe => Self::Auto,
             Self::Auto => Self::Safe,
         }
@@ -119,6 +126,53 @@ impl TrustMode {
     /// this is simply `std::cmp::min(parent, child)`.
     pub fn clamp(parent: TrustMode, child: TrustMode) -> TrustMode {
         std::cmp::min(parent, child)
+    }
+}
+
+/// Coerce a candidate trust mode to one valid for the **top-level**
+/// session, returning `(coerced, warning)`.
+///
+/// **#1244**: `Plan` is sub-agent-only. Pre-fix, the main session
+/// could enter Plan via `--mode plan`, `/resume` of a Plan-persisted
+/// session, or any other call that fed `TrustMode::parse(..)` output
+/// directly into `KodaConfig::with_trust(..)` / `set_trust(..)`. None
+/// of those paths offered a coherent UX — the user would land in a
+/// "read-only main session" where every write tool the model called
+/// would be silently denied, leading to confused
+/// retry-loop-then-give-up behavior.
+///
+/// This helper is the **single coercion point**: every call site that
+/// turns a parsed/persisted/CLI-flag mode into a top-level session
+/// trust value must route through here. Sub-agent dispatch uses
+/// [`derive_child_trust`] instead and is unaffected — sub-agents can
+/// (and should) still be Plan.
+///
+/// Returns the warning as `Option<&'static str>` (not `String`) because
+/// the message is wholly static — callers can `eprintln!`/`warn_msg`
+/// without an intermediate allocation.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::trust::{TrustMode, coerce_for_top_level};
+/// // Plan → Safe with a warning
+/// let (m, w) = coerce_for_top_level(TrustMode::Plan);
+/// assert_eq!(m, TrustMode::Safe);
+/// assert!(w.is_some());
+/// // Safe / Auto pass through unchanged with no warning
+/// assert_eq!(coerce_for_top_level(TrustMode::Safe), (TrustMode::Safe, None));
+/// assert_eq!(coerce_for_top_level(TrustMode::Auto), (TrustMode::Auto, None));
+/// ```
+pub fn coerce_for_top_level(candidate: TrustMode) -> (TrustMode, Option<&'static str>) {
+    match candidate {
+        TrustMode::Plan => (
+            TrustMode::Safe,
+            Some(
+                "Plan mode is sub-agent-only (read-only mode for spawned agents). \
+                 Falling back to Safe for the main session.",
+            ),
+        ),
+        other => (other, None),
     }
 }
 
@@ -1016,6 +1070,105 @@ mod tests {
             check_tool_with_tracker("Delete", &args, TrustMode::Safe, Some(root), None),
             ToolApproval::NeedsConfirmation,
             "Without tracker, Delete should need confirmation in Safe"
+        );
+    }
+
+    // ── #1244: Plan is sub-agent-only for the top-level session ────────────────
+    //
+    // The bug-review session that opened #1232 surfaced that a user
+    // can land in `TrustMode::Plan` for the **main session** via:
+    //   * `koda --mode plan` CLI flag
+    //   * `/resume` of a session that was previously persisted in Plan
+    // …which makes no sense — Plan denies all write tools, so the
+    // top-level user gets a model that can read but never act.
+    // `coerce_for_top_level` is the single funnel every non-sub-agent
+    // entry point goes through; sub-agent dispatch (`derive_child_trust`)
+    // is unaffected and continues to produce Plan freely.
+
+    #[test]
+    fn coerce_top_level_plan_falls_back_to_safe_with_warning() {
+        // The whole point of the fix: Plan must NOT survive as a
+        // top-level mode. Pin the coercion target (Safe — the most
+        // conservative writable mode) and the presence of a warning
+        // (callers depend on the `Some(_)` to know they should emit
+        // a banner / eprintln).
+        let (coerced, warning) = coerce_for_top_level(TrustMode::Plan);
+        assert_eq!(coerced, TrustMode::Safe, "Plan must coerce to Safe");
+        assert!(
+            warning.is_some(),
+            "Plan coercion must yield a warning so the user sees what happened"
+        );
+        // Sniff for the keywords callers will look for in the message;
+        // a wholesale rephrasing is fine but it must still self-explain.
+        let msg = warning.unwrap();
+        assert!(
+            msg.contains("Plan") && msg.contains("Safe"),
+            "warning must mention both Plan and Safe so the user knows what changed; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn coerce_top_level_safe_passes_through_unchanged_no_warning() {
+        // Negative regression: only Plan should ever produce a
+        // warning. Safe — the existing default — must round-trip
+        // exactly so users who explicitly `--mode safe` don't get
+        // a spurious banner.
+        let (coerced, warning) = coerce_for_top_level(TrustMode::Safe);
+        assert_eq!(coerced, TrustMode::Safe);
+        assert!(
+            warning.is_none(),
+            "Safe must not warn (it's the coerce target, not the source)"
+        );
+    }
+
+    #[test]
+    fn coerce_top_level_auto_passes_through_unchanged_no_warning() {
+        // Same negative regression for Auto. After #1241 flips the
+        // default to Auto, this test is the load-bearing assertion
+        // that the new default doesn't get caught by some future
+        // "coerce dangerous modes" change — only Plan ever coerces.
+        let (coerced, warning) = coerce_for_top_level(TrustMode::Auto);
+        assert_eq!(coerced, TrustMode::Auto);
+        assert!(
+            warning.is_none(),
+            "Auto is a valid top-level mode; no warning"
+        );
+    }
+
+    #[test]
+    fn coerce_top_level_is_idempotent() {
+        // Coercing the output of `coerce_for_top_level` again must
+        // never produce a warning — the result of a coerce IS valid
+        // by construction. Defends against a future change that
+        // accidentally widens what coerces (e.g. "also coerce Auto").
+        for mode in [TrustMode::Plan, TrustMode::Safe, TrustMode::Auto] {
+            let (first, _) = coerce_for_top_level(mode);
+            let (second, second_warn) = coerce_for_top_level(first);
+            assert_eq!(
+                first, second,
+                "coerce must be idempotent for input {mode:?}"
+            );
+            assert!(
+                second_warn.is_none(),
+                "coerce of an already-coerced value must not warn (input {mode:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn coerce_top_level_does_not_affect_derive_child_trust() {
+        // Sanity: the sub-agent dispatch path (`derive_child_trust`)
+        // is the LEGITIMATE source of Plan and must remain untouched
+        // by the top-level coercion. If a parent in Plan spawns a
+        // child, the child stays in Plan — coercion never enters
+        // the picture. This test pins that separation so a future
+        // "unify all trust-routing" refactor can't accidentally
+        // funnel sub-agents through `coerce_for_top_level`.
+        let child_inherits = derive_child_trust(TrustMode::Plan, TrustMode::Auto);
+        assert_eq!(
+            child_inherits,
+            TrustMode::Plan,
+            "sub-agent must keep Plan; coercion is top-level-only"
         );
     }
 }

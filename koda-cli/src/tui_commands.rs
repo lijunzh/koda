@@ -482,10 +482,24 @@ async fn handle_resume_session(
                                 Span::styled(detail, DIM),
                             ]),
                         );
-                        // Restore persisted approval mode (#590)
+                        // Restore persisted approval mode (#590).
+                        // **#1244**: route the parsed mode through
+                        // `coerce_for_top_level` so a session that
+                        // somehow got persisted with `plan` (older
+                        // koda version, manual DB edit, race) is
+                        // coerced to Safe with a visible banner
+                        // instead of silently resurrecting a confused
+                        // "read-only main session" state. Sub-agents
+                        // never persist their own session-level mode
+                        // here — only the top-level session does —
+                        // so this coercion is the right scope.
                         if let Ok(Some(mode_str)) = session.db.get_session_mode(&session.id).await
-                            && let Some(m) = trust::TrustMode::parse(&mode_str)
+                            && let Some(parsed) = trust::TrustMode::parse(&mode_str)
                         {
+                            let (m, warning) = trust::coerce_for_top_level(parsed);
+                            if let Some(w) = warning {
+                                tui_output::warn_msg(buffer, w.to_string());
+                            }
                             trust::set_trust(shared_mode, m);
                         }
                         // Read idle time BEFORE load_context updates last_accessed_at.
