@@ -1,8 +1,9 @@
 # Tools reference
 
 Koda exposes these tools to the model. In **Safe** trust mode you'll
-be prompted before each mutating call. In **Auto** mode, all actions
-within the project sandbox are auto-approved.
+be prompted before each mutating call. In **Auto** mode, mutating ops
+within the project sandbox auto-approve, but **destructive** ops still
+prompt. See [Trust modes](./approval.md) for the canonical matrix.
 
 | Tool | Effect | Description |
 |------|--------|-------------|
@@ -36,16 +37,19 @@ within the project sandbox are auto-approved.
 | Read-only | Read, Grep, Glob, ListFiles, WebFetch, WebSearch, RecallContext, TodoWrite | ✅ Auto | ✅ Auto | ✅ Auto |
 | Internal | Think, ActivateSkill | ✅ Auto | ✅ Auto | ✅ Auto |
 | Mutations | Write, Edit, MemoryWrite | ❌ Deny | ⏸ Prompt | ✅ Auto |
-| Destructive | Delete | ❌ Deny | ⏸ Prompt | ✅ Auto |
+| Destructive | Delete | ❌ Deny | ⏸ Prompt | ⏸ Prompt |
 | Agent calls | InvokeAgent | ✅ Auto | ✅ Auto | ✅ Auto |
 | Background tasks | ListBackgroundTasks, CancelTask, WaitTask | ✅ Auto | ✅ Auto | ✅ Auto |
 | User interaction | AskUser | ⏸ Prompt | ⏸ Prompt | ⏸ Prompt |
 | Safe shell | `git status`, `grep`, `cargo test` | ✅ Auto | ✅ Auto | ✅ Auto |
 | Mutating shell | `echo > file`, `gh issue create` | ❌ Deny | ⏸ Prompt | ✅ Auto |
-| Destructive shell | `rm -rf`, `sudo`, `git push --force` | ❌ Deny | ⏸ Prompt | ✅ Auto |
+| Destructive shell | `rm -rf`, `sudo`, `git push --force`, `git reset --hard` | ❌ Deny | ⏸ Prompt | ⏸ Prompt |
 | Outside-project write | Write/Edit to paths outside project root | ❌ Deny | ⏸ Prompt | ⏸ Prompt |
 
-See [Trust modes](./approval.md) for the canonical policy matrix.
+See [Trust modes](./approval.md) for the canonical policy matrix and
+the sub-agent context-sensitive variant (sub-agents resolve `⏸ Prompt`
+as auto-approve for mutations and block for destructive ops, since
+there's no human channel to prompt into).
 
 ## WaitTask
 

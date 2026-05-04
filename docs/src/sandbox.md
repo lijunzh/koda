@@ -123,7 +123,14 @@ agent definitions that could alter system prompts or tool access.
 Child agents inherit the parent's trust mode and sandbox via
 `TrustMode::clamp()` — a child can never run with less protection than
 its caller. If the parent runs in Safe mode, the child runs in Safe mode
-even if the agent JSON specifies `"mode": "auto"`.
+even if the agent JSON specifies `"trust": "auto"`.
+
+Within that clamp, sub-agents resolve permission decisions through a
+**context-sensitive matrix** (`koda_core::trust::check_tool_for_sub_agent`)
+that differs from the master matrix on the "ask" cells: mutating ops
+auto-approve and destructive ops block, since sub-agents have no live
+human approval channel by design. See
+[Trust modes § sub-agent matrix](./approval.md#sub-agent-matrix-context-sensitive-resolution).
 
 ## Platform backends
 
