@@ -509,6 +509,31 @@ pub enum EngineCommand {
     },
 }
 
+impl EngineCommand {
+    /// Stable, payload-free name of this variant.
+    ///
+    /// **#1232 §6**: pre-fix, `inference.rs` logged unexpected commands
+    /// as `Discriminant(2)`, forcing devs to grep the source to map the
+    /// integer back to a variant. Naive `{:?}` on `Self` would surface
+    /// the variant name but also dump payload fields like
+    /// `AskUserResponse.answer` and `QueueNext.text` — user-typed
+    /// content that has no business in a structured log line. This
+    /// accessor returns just the variant name so logs stay readable
+    /// AND payload-safe.
+    ///
+    /// Returned strings are stable identifiers — treat them as a
+    /// public API for downstream metric/log filters.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Interrupt => "Interrupt",
+            Self::AskUserResponse { .. } => "AskUserResponse",
+            Self::ApprovalResponse { .. } => "ApprovalResponse",
+            Self::LoopDecision { .. } => "LoopDecision",
+            Self::QueueNext { .. } => "QueueNext",
+        }
+    }
+}
+
 /// The user's decision on an approval request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
@@ -915,5 +940,71 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ── EngineCommand::kind (#1232 §6) ──────────────────────────
+
+    /// Pin every variant → stable name. If a future PR adds a new
+    /// `EngineCommand` variant the `match` in `kind()` becomes
+    /// non-exhaustive and the build breaks — but if someone *renames*
+    /// an existing variant without updating `kind()`, only this test
+    /// catches it. Treat the names as a stable API.
+    #[test]
+    fn engine_command_kind_names_every_variant() {
+        let cases: &[(EngineCommand, &str)] = &[
+            (EngineCommand::Interrupt, "Interrupt"),
+            (
+                EngineCommand::AskUserResponse {
+                    id: "x".into(),
+                    answer: "y".into(),
+                },
+                "AskUserResponse",
+            ),
+            (
+                EngineCommand::ApprovalResponse {
+                    id: "x".into(),
+                    decision: ApprovalDecision::Approve,
+                },
+                "ApprovalResponse",
+            ),
+            (
+                EngineCommand::LoopDecision {
+                    action: crate::loop_guard::LoopContinuation::Stop,
+                },
+                "LoopDecision",
+            ),
+            (EngineCommand::QueueNext { text: "hi".into() }, "QueueNext"),
+        ];
+        for (cmd, expected) in cases {
+            assert_eq!(
+                cmd.kind(),
+                *expected,
+                "variant name mismatch — update kind() AND log/metric consumers if renaming"
+            );
+        }
+    }
+
+    /// Payload-safety guard: `kind()` must NOT leak user-typed text
+    /// into the returned static string. The whole point of using
+    /// `kind()` instead of `{:?}` in the WARN log is to keep
+    /// `AskUserResponse.answer` and `QueueNext.text` out of logs.
+    #[test]
+    fn engine_command_kind_does_not_leak_payload() {
+        let secret = "P@SSW0RD-leaked-via-logs";
+        let answer_cmd = EngineCommand::AskUserResponse {
+            id: "x".into(),
+            answer: secret.into(),
+        };
+        let queue_cmd = EngineCommand::QueueNext {
+            text: secret.into(),
+        };
+        assert!(
+            !answer_cmd.kind().contains(secret),
+            "AskUserResponse.kind() leaked the answer payload"
+        );
+        assert!(
+            !queue_cmd.kind().contains(secret),
+            "QueueNext.kind() leaked the text payload"
+        );
     }
 }

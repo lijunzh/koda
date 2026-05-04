@@ -807,9 +807,17 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
                 match cmd {
                     EngineCommand::QueueNext { text } => next_texts.push(text),
                     other => {
+                        // #1232 §6: name the variant instead of
+                        // dumping `Discriminant(N)` (which forces
+                        // devs to grep the source to figure out
+                        // which `EngineCommand` integer N maps to)
+                        // — and use `.kind()` rather than `{:?}` so
+                        // potentially-sensitive payload fields
+                        // (e.g. `AskUserResponse.answer`,
+                        // `QueueNext.text`) stay out of logs.
                         tracing::warn!(
-                            "inference_loop: unexpected command at iteration start (discarded): {:?}",
-                            std::mem::discriminant(&other)
+                            "inference_loop: unexpected command at iteration start (discarded): {}",
+                            other.kind()
                         );
                     }
                 }
