@@ -904,6 +904,42 @@ mod tests {
         );
     }
 
+    /// #1232 §8b: writing to `/var/folders/.../T/...` (macOS scratch
+    /// root) must auto-approve in Auto mode even without `$TMPDIR`
+    /// in the env. The pre-PR repro was a sub-process inheriting a
+    /// stripped env, losing `$TMPDIR`, and prompting on every
+    /// scratchpad write — the env-independent `/var/folders/`
+    /// prefix in `is_safe_external_path` is the safety belt.
+    #[test]
+    fn test_write_to_var_folders_auto_approved() {
+        let root = Path::new("/home/user/project");
+        let args = serde_json::json!({"path": "/var/folders/xx/yy/T/scratch.md"});
+        assert_eq!(
+            check_tool("Write", &args, TrustMode::Auto, Some(root)),
+            ToolApproval::AutoApprove,
+            "/var/folders/* writes should auto-approve in Auto (#1232 §8b) \
+             — it's macOS's scratch root, env-independent"
+        );
+    }
+
+    /// #1232 §8b: writing to `~/.cache/koda/` (koda's own cache
+    /// zone) must auto-approve in Auto mode. Without this the model
+    /// would get a confirm prompt every time it touched its own
+    /// cache, which is absurd.
+    #[test]
+    fn test_write_to_koda_cache_auto_approved() {
+        let root = Path::new("/home/user/project");
+        // Use the real $HOME so the test mirrors production resolution.
+        let home = std::env::var("HOME").expect("HOME must be set in test env");
+        let path = format!("{home}/.cache/koda/test-scratch.json");
+        let args = serde_json::json!({ "path": path });
+        assert_eq!(
+            check_tool("Write", &args, TrustMode::Auto, Some(root)),
+            ToolApproval::AutoApprove,
+            "~/.cache/koda/ writes should auto-approve in Auto (#1232 §8b)"
+        );
+    }
+
     #[test]
     fn test_write_to_etc_still_blocked() {
         let root = Path::new("/home/user/project");
