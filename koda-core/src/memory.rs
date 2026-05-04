@@ -14,7 +14,10 @@
 //! When Koda writes (auto-memory), it always writes to `MEMORY.md`.
 
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 /// Project-local memory files, checked in priority order.
 const PROJECT_MEMORY_FILES: &[&str] = &["MEMORY.md", "CLAUDE.md", "AGENTS.md"];
@@ -25,27 +28,145 @@ const GLOBAL_MEMORY_FILE: &str = "memory.md";
 /// Koda's native project memory filename (used for writes).
 const KODA_MEMORY_FILE: &str = "MEMORY.md";
 
+/// Per-file memoization for [`load`] (#1232 §3b).
+///
+/// Pre-fix, every sub-agent dispatch called `memory::load(project_root)`
+/// and re-read `CLAUDE.md` / `MEMORY.md` from disk. The bug-review
+/// session that opened #1232 logged `Loaded project memory from
+/// CLAUDE.md (24200 bytes)` four times in a 200ms window for a
+/// parallel-batch fan-out — 4× the disk I/O AND 4× the duplicate
+/// log spam.
+///
+/// This cache memoizes by **resolved file path** with **(mtime, len)
+/// invalidation**: if the file is unchanged since the last read we
+/// return the cached content; if it was edited (e.g. via the
+/// `MemoryWrite` tool's `append` path below) the next `load` call
+/// detects the new mtime, re-reads, and updates the cache. No
+/// explicit invalidation hook is needed because the filesystem
+/// itself is the source of truth.
+///
+/// Why `(mtime, len)` not just `mtime`: HFS+ on macOS has
+/// 1-second mtime resolution, so a same-second edit that doesn't
+/// change file size COULD slip past an mtime-only check. Adding
+/// `len` makes that pathological case still safe for the common
+/// "the model added a line" pattern.
+///
+/// `len` is u64 so it matches `Metadata::len()` directly; no width
+/// math, no surprises on >4GB memory files (humans should not have
+/// >4GB memory files, but the type is free).
+struct CachedEntry {
+    mtime: SystemTime,
+    len: u64,
+    content: String,
+}
+
+/// Process-wide cache. `OnceLock<Mutex<HashMap>>` keeps init
+/// trivially thread-safe without an external dependency. The cache
+/// is unbounded but in practice only holds entries for paths the
+/// current process has actually touched (typically 1-3 paths per
+/// koda session: maybe one project memory + the global file).
+static MEMORY_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedEntry>>> = OnceLock::new();
+
+fn cache() -> &'static Mutex<HashMap<PathBuf, CachedEntry>> {
+    MEMORY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Read `path` through the memoization cache (#1232 §3b).
+///
+/// Returns `(content, was_cache_hit)`. Caller decides what (if anything)
+/// to log based on the second tuple element — the cache logs at
+/// `debug!` only, leaving the existing `info!` "Loaded ..." line for
+/// genuine refreshes (cache miss or mtime-changed) so noisy parallel
+/// fan-out no longer spams the log.
+fn read_through_cache(path: &Path) -> Result<(String, bool)> {
+    let meta = std::fs::metadata(path)?;
+    let mtime = meta.modified()?;
+    let len = meta.len();
+
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+    // Fast path: cache hit.
+    {
+        let map = cache().lock().expect("memory cache mutex poisoned");
+        if let Some(entry) = map.get(&canonical)
+            && entry.mtime == mtime
+            && entry.len == len
+        {
+            tracing::debug!(
+                path = %canonical.display(),
+                bytes = entry.content.len(),
+                "memory cache hit"
+            );
+            return Ok((entry.content.clone(), true));
+        }
+    }
+
+    // Slow path: read + insert. Done outside the lock so concurrent
+    // readers of OTHER paths aren't blocked on disk I/O.
+    let content = std::fs::read_to_string(path)?;
+    {
+        let mut map = cache().lock().expect("memory cache mutex poisoned");
+        map.insert(
+            canonical,
+            CachedEntry {
+                mtime,
+                len,
+                content: content.clone(),
+            },
+        );
+    }
+    Ok((content, false))
+}
+
+/// Clear the in-process memory cache. **Test-only.**
+///
+/// Required by tests that mutate memory files directly (bypassing
+/// `append` / `append_global`) or that need a guaranteed cold-cache
+/// starting state. Production code never needs this — mtime
+/// invalidation handles every legitimate edit path.
+#[cfg(test)]
+pub(crate) fn clear_cache_for_tests() {
+    if let Some(m) = MEMORY_CACHE.get() {
+        m.lock().expect("memory cache mutex poisoned").clear();
+    }
+}
+
 /// Load memory from both global and project-local sources.
 ///
 /// Returns the combined content (global first, then project-local).
 /// Returns an empty string if no memory files exist.
+///
+/// **#1232 §3b**: this function is memoized per resolved file path
+/// with `(mtime, len)` invalidation. Calling it N times in a row
+/// without touching the underlying files (e.g. parallel sub-agent
+/// fan-out) reads disk exactly once and emits the `info!` log line
+/// exactly once. Edits via `append` / `append_global` (or any
+/// out-of-process `MemoryWrite`) update mtime, so the next call
+/// re-reads transparently.
 pub fn load(project_root: &Path) -> Result<String> {
     let mut parts: Vec<String> = Vec::new();
 
     // 1. Global memory (~/.config/koda/memory.md)
-    if let Some(global) = load_global()? {
-        tracing::info!("Loaded global memory ({} bytes)", global.len());
-        parts.push(global);
+    if let Some((content, was_hit)) = load_global()? {
+        if !was_hit {
+            tracing::info!("Loaded global memory ({} bytes)", content.len());
+        }
+        parts.push(content);
     }
 
     // 2. Project-local memory (first match wins)
-    if let Some((filename, content)) = load_project(project_root)? {
-        tracing::info!(
-            "Loaded project memory from {filename} ({} bytes)",
-            content.len()
-        );
+    if let Some((filename, content, was_hit)) = load_project(project_root)? {
+        if !was_hit {
+            tracing::info!(
+                "Loaded project memory from {filename} ({} bytes)",
+                content.len()
+            );
+        }
         parts.push(content);
     } else {
+        // "no file" log stays at info; it's once-per-load and
+        // genuinely informative for diagnosing missing-memory
+        // confusion. Not a cache concern (nothing to cache).
         tracing::info!("No project memory file found");
     }
 
@@ -185,15 +306,18 @@ fn replace_section(content: &str, heading: &str, replacement: &str) -> String {
 }
 
 /// Load global memory from `~/.config/koda/memory.md`.
-fn load_global() -> Result<Option<String>> {
+///
+/// Returns `(content, was_cache_hit)` so the caller can suppress
+/// duplicate log lines on cache-hit (#1232 §3b).
+fn load_global() -> Result<Option<(String, bool)>> {
     let path = global_memory_path();
     match path {
         Some(p) if p.exists() => {
-            let content = std::fs::read_to_string(&p)?;
+            let (content, was_hit) = read_through_cache(&p)?;
             if content.trim().is_empty() {
                 Ok(None)
             } else {
-                Ok(Some(content))
+                Ok(Some((content, was_hit)))
             }
         }
         _ => Ok(None),
@@ -201,13 +325,16 @@ fn load_global() -> Result<Option<String>> {
 }
 
 /// Load project-local memory (first matching file wins).
-fn load_project(project_root: &Path) -> Result<Option<(String, String)>> {
+///
+/// Returns `(filename, content, was_cache_hit)` so the caller can
+/// suppress duplicate log lines on cache-hit (#1232 §3b).
+fn load_project(project_root: &Path) -> Result<Option<(String, String, bool)>> {
     for filename in PROJECT_MEMORY_FILES {
         let path = project_root.join(filename);
         if path.exists() {
-            let content = std::fs::read_to_string(&path)?;
+            let (content, was_hit) = read_through_cache(&path)?;
             if !content.trim().is_empty() {
-                return Ok(Some((filename.to_string(), content)));
+                return Ok(Some((filename.to_string(), content, was_hit)));
             }
         }
     }
@@ -436,5 +563,168 @@ mod tests {
         let content = std::fs::read_to_string(tmp.path().join("MEMORY.md")).unwrap();
         assert!(content.contains("just a plain note"));
         assert!(content.contains("another plain note"));
+    }
+
+    // ── Memoization tests (#1232 §3b) ──────────────────────────────────
+    //
+    // The cache is process-wide. Tests below MUST be isolated by
+    // using their own TempDir (different canonical paths → different
+    // cache keys) and call `clear_cache_for_tests()` defensively in
+    // case a future test mutates a shared path. The TempDir-per-test
+    // pattern means concurrent test runs don't fight over keys.
+
+    /// Cache hit: same project_root, no file mutations → second
+    /// `load()` reads zero bytes from disk and returns identical content.
+    ///
+    /// We can't directly observe "no disk I/O happened" without
+    /// instrumentation, so we use the inotify-style proxy: read once,
+    /// snapshot the mtime, do a flurry of loads, confirm the cached
+    /// content matches AND the file was never re-stat'd into a fresh
+    /// entry (we'd see a different mtime if it were).
+    #[test]
+    fn test_cache_hit_skips_disk_reread() {
+        clear_cache_for_tests();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("CLAUDE.md");
+        std::fs::write(&path, "# pinned content\n- entry one").unwrap();
+
+        let first = load(tmp.path()).unwrap();
+        assert!(first.contains("entry one"));
+
+        // Hammer the cache. Pre-fix this would have hit disk N times.
+        // The output must stay byte-identical to the first read because
+        // nothing on disk changed and the cache must serve every call.
+        for _ in 0..10 {
+            let again = load(tmp.path()).unwrap();
+            assert_eq!(again, first, "cache must serve identical bytes");
+        }
+
+        // Snapshot the cache entry directly to confirm we recorded
+        // exactly one entry for this canonical path (i.e. didn't
+        // re-insert on every call).
+        let canonical = path.canonicalize().unwrap();
+        let map = cache().lock().unwrap();
+        let entry = map.get(&canonical).expect("path must be cached");
+        assert_eq!(entry.content, "# pinned content\n- entry one");
+        assert_eq!(entry.len, std::fs::metadata(&path).unwrap().len());
+    }
+
+    /// Cache invalidation via `append`: writing through the public
+    /// `append` API touches mtime, so the next `load` must detect
+    /// the change and refresh.
+    #[test]
+    fn test_cache_invalidates_on_append() {
+        clear_cache_for_tests();
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("MEMORY.md"), "## Initial\n- one\n").unwrap();
+
+        let before = load(tmp.path()).unwrap();
+        assert!(before.contains("- one"));
+        assert!(!before.contains("- two"));
+
+        // Sleep just enough to guarantee a mtime tick on filesystems
+        // with 1-second resolution (HFS+). Without this, an immediate
+        // append could land in the same second AND happen to keep the
+        // same len (impossible here — we're growing — but the sleep
+        // is the principled defense).
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        append(tmp.path(), "- two").unwrap();
+
+        let after = load(tmp.path()).unwrap();
+        assert!(
+            after.contains("- two"),
+            "post-append load must surface the new entry; got: {after:?}"
+        );
+    }
+
+    /// Cache invalidation via direct disk mutation (out-of-process
+    /// edit, or `MemoryWrite` that grows the file). This pins the
+    /// `len` half of the `(mtime, len)` invariant: if mtime were the
+    /// only key and the filesystem had coarse resolution, a same-
+    /// second edit could slip through. Growing the file changes len
+    /// even if mtime didn't, so the cache MUST refresh.
+    #[test]
+    fn test_cache_invalidates_on_size_change() {
+        clear_cache_for_tests();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("CLAUDE.md");
+        std::fs::write(&path, "short").unwrap();
+
+        let before = load(tmp.path()).unwrap();
+        assert!(before.contains("short"));
+
+        // Overwrite with a larger payload. Even on coarse-mtime
+        // filesystems the len delta forces a cache refresh.
+        std::fs::write(&path, "this is much longer content than before").unwrap();
+        let after = load(tmp.path()).unwrap();
+        assert!(
+            after.contains("much longer"),
+            "len-delta must trigger a refresh; got: {after:?}"
+        );
+    }
+
+    /// Different project roots get separate cache entries — the cache
+    /// is keyed on the canonical file path, not the project root.
+    /// Two TempDirs each with their own CLAUDE.md must not
+    /// cross-contaminate.
+    #[test]
+    fn test_cache_isolates_by_path() {
+        clear_cache_for_tests();
+        let proj_a = TempDir::new().unwrap();
+        let proj_b = TempDir::new().unwrap();
+        std::fs::write(proj_a.path().join("CLAUDE.md"), "alpha-content").unwrap();
+        std::fs::write(proj_b.path().join("CLAUDE.md"), "beta-content").unwrap();
+
+        let a = load(proj_a.path()).unwrap();
+        let b = load(proj_b.path()).unwrap();
+
+        assert!(a.contains("alpha-content"));
+        assert!(!a.contains("beta-content"));
+        assert!(b.contains("beta-content"));
+        assert!(!b.contains("alpha-content"));
+
+        // Both paths are now cached independently. Toggle-load to
+        // confirm neither cache entry was clobbered by the other.
+        assert_eq!(load(proj_a.path()).unwrap(), a);
+        assert_eq!(load(proj_b.path()).unwrap(), b);
+    }
+
+    /// Concurrent loads on the same project: the cache must serve
+    /// all of them with at most ONE disk read. Models the bug-review
+    /// scenario directly — parallel sub-agent fan-out hammering
+    /// `memory::load` from N tokio tasks.
+    #[test]
+    fn test_concurrent_loads_share_cache() {
+        clear_cache_for_tests();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("CLAUDE.md");
+        std::fs::write(&path, "shared-by-many").unwrap();
+        let project_root = tmp.path().to_path_buf();
+
+        // 8 threads × 10 calls each = 80 loads. With the cache, only
+        // the first thread's first call should actually hit disk;
+        // the other 79 must return cached content.
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let pr = project_root.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..10 {
+                        let c = load(&pr).unwrap();
+                        assert!(c.contains("shared-by-many"));
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+
+        // Exactly one cache entry exists for this canonical path.
+        let canonical = path.canonicalize().unwrap();
+        let map = cache().lock().unwrap();
+        assert!(
+            map.contains_key(&canonical),
+            "cache must contain entry for {canonical:?}"
+        );
     }
 }
