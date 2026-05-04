@@ -548,16 +548,18 @@ Do the review.
             !agent.meta.allowed_tools.is_empty(),
             "create-agent should scope its tools (least privilege)"
         );
-        // The body must include the write_access footgun warning — this is
-        // the #1 thing that breaks generated agents if missing.
+        // The body must include the trust footgun warning — this is
+        // the #1 thing that breaks generated agents if missing (#1250).
+        // Pre-#1250 the equivalent footgun was `write_access`; post-#1250
+        // the canonical mechanism is the `trust` field.
         let agent_body = registry.activate("create-agent").unwrap();
         assert!(
-            agent_body.contains("write_access"),
-            "create-agent must teach the write_access field"
+            agent_body.contains("trust"),
+            "create-agent must teach the trust field (post-#1250)"
         );
         assert!(
             agent_body.contains("footgun") || agent_body.contains("silently"),
-            "create-agent must warn about the write_access default-false footgun"
+            "create-agent must warn about the trust default-deny footgun"
         );
         // Both scope paths documented + correct personal path.
         assert!(

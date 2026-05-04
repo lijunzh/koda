@@ -5,5 +5,5 @@
     "allowed_tools": [],
     "model": null,
     "base_url": null,
-    "write_access": true
+    "trust": "safe"
 }
