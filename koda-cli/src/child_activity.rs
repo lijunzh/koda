@@ -2,9 +2,9 @@
 //!
 //! Stateful counterpart to the pure-render
 //! [`crate::widgets::child_activity_overlay`] widget. Absorbs
-//! `ChildAgentActivity` and `BgTaskUpdate` engine events into a
+//! `ChildAgentActivity` and `ChildTaskUpdate` engine events into a
 //! per-task last-activity map, then projects (alongside the engine's
-//! `BgAgentRegistry` + `BgRegistry` snapshots) into a flat list of
+//! `ChildAgentRegistry` + `BgRegistry` snapshots) into a flat list of
 //! [`crate::widgets::child_activity_overlay::ActivityRow`]s the widget
 //! can render.
 //!
@@ -22,7 +22,7 @@
 //! 1. Construct empty (`ChildActivityTracker::default()`) at TUI start.
 //! 2. On every `EngineEvent::ChildAgentActivity`, call
 //!    [`ChildActivityTracker::record_activity`].
-//! 3. On every `EngineEvent::BgTaskUpdate`, call
+//! 3. On every `EngineEvent::ChildTaskUpdate`, call
 //!    [`ChildActivityTracker::record_status`].
 //! 4. Each frame, call [`ChildActivityTracker::build_rows`] with the
 //!    current registry snapshots to get visible rows + total count.
@@ -33,7 +33,7 @@
 //! membership at projection time (see `build_rows`).
 
 use crate::widgets::child_activity_overlay::{ActivityRow, ActivityStatus, MAX_VISIBLE};
-use koda_core::bg_agent::{AgentStatus, BgTaskSnapshot};
+use koda_core::child_agent::{AgentStatus, ChildTaskSnapshot};
 use koda_core::engine::event::ChildAgentActivityKind;
 use koda_core::tools::bg_process::{BgProcessSnapshot, BgProcessStatus};
 use std::collections::HashMap;
@@ -129,7 +129,7 @@ impl ChildActivityTracker {
     /// fan-out → drain cycles.
     pub fn build_rows(
         &mut self,
-        agents: &[BgTaskSnapshot],
+        agents: &[ChildTaskSnapshot],
         processes: &[BgProcessSnapshot],
     ) -> (Vec<ActivityRow>, usize) {
         // ── Prune stale tracker entries (registry has dropped these tasks) ──
@@ -253,8 +253,8 @@ mod tests {
     use super::*;
     use koda_core::engine::event::ChildAgentActivityKind;
 
-    fn agent(task_id: u32, name: &str, age_secs: u64, status: AgentStatus) -> BgTaskSnapshot {
-        BgTaskSnapshot::for_testing(
+    fn agent(task_id: u32, name: &str, age_secs: u64, status: AgentStatus) -> ChildTaskSnapshot {
+        ChildTaskSnapshot::for_testing(
             task_id,
             name.to_string(),
             "x".into(),

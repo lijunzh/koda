@@ -35,7 +35,7 @@
 //! the session are keyed by PID. The registry is `Mutex`-protected since
 //! the spawning thread, the reaper, and the cleanup path all touch it.
 
-use crate::bg_agent::CancelOutcome;
+use crate::child_agent::CancelOutcome;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -43,7 +43,7 @@ use tokio::process::Child;
 
 /// Outcome of [`BgRegistry::wait_for_exit_as_caller`].
 ///
-/// Mirrors [`crate::bg_agent::WaitOutcome`] but carries process-specific
+/// Mirrors [`crate::child_agent::WaitOutcome`] but carries process-specific
 /// terminal info (exit code) instead of an agent result. The two enums
 /// stay separate because they really are different things — forcing one
 /// to wear the other's shape would mean optionalizing fields that aren't
@@ -197,7 +197,7 @@ impl BgRegistry {
     }
 
     /// Scoped snapshot for the `ListBackgroundTasks` LLM tool. Same
-    /// Model E rule as [`crate::bg_agent::BgAgentRegistry::snapshot_for_caller`]:
+    /// Model E rule as [`crate::child_agent::ChildAgentRegistry::snapshot_for_caller`]:
     /// strict spawner equality, `None == None`.
     pub fn snapshot_for_caller(&self, caller_spawner: Option<u32>) -> Vec<BgProcessSnapshot> {
         self.snapshot()
@@ -270,7 +270,7 @@ impl BgRegistry {
     }
 
     /// Scoped kill for the `CancelTask` LLM tool. Same Model E rule
-    /// as [`crate::bg_agent::BgAgentRegistry::cancel_as_caller`].
+    /// as [`crate::child_agent::ChildAgentRegistry::cancel_as_caller`].
     pub fn kill_as_caller(&self, pid: u32, caller_spawner: Option<u32>) -> CancelOutcome {
         let mut guard = self.inner.lock().unwrap();
         let Some(entry) = guard.get_mut(&pid) else {

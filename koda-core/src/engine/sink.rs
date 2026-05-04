@@ -144,7 +144,7 @@ impl EngineSink for BufferingSink {
 /// up to the parent's sink via the bg-task's status emitter.
 ///
 /// **#1201 B**: pre-this-decorator the parent's TUI had zero live
-/// signal from inside a running bg agent — only `BgTaskUpdate`
+/// signal from inside a running bg agent — only `ChildTaskUpdate`
 /// heartbeats (`Running { iter: N }`), which tell you "still going"
 /// but not "doing what". The narrative trace from `BufferingSink`
 /// only surfaced at result-injection time, so a 30-second tool call
@@ -154,7 +154,7 @@ impl EngineSink for BufferingSink {
 /// enough to surface in the parent's feed, it builds a
 /// [`crate::engine::event::ChildAgentActivityKind`] and pushes it onto
 /// the registry's status-event queue via
-/// [`crate::bg_agent::BgStatusEmitter::send_activity`]. The
+/// [`crate::child_agent::ChildStatusEmitter::send_activity`]. The
 /// inference loop's existing drain in `inference.rs` forwards the
 /// resulting `ChildAgentActivity` event to whatever sink is active
 /// (TUI / headless / ACP) without further plumbing.
@@ -179,7 +179,7 @@ impl EngineSink for BufferingSink {
 /// post-completion drain.
 pub struct ForwardingChildSink {
     inner: BufferingSink,
-    emitter: crate::bg_agent::BgStatusEmitter,
+    emitter: crate::child_agent::ChildStatusEmitter,
 }
 
 impl ForwardingChildSink {
@@ -187,7 +187,7 @@ impl ForwardingChildSink {
     /// emitter. The emitter is cheap to clone (two `Arc`s and a
     /// `watch::Sender`); pass a clone and keep the original for the
     /// terminal-status sends in `run_bg_agent`.
-    pub fn new(inner: BufferingSink, emitter: crate::bg_agent::BgStatusEmitter) -> Self {
+    pub fn new(inner: BufferingSink, emitter: crate::child_agent::ChildStatusEmitter) -> Self {
         Self { inner, emitter }
     }
 
@@ -238,7 +238,7 @@ impl EngineSink for ForwardingChildSink {
             // Streaming text, thinking, status, approval, etc. are
             // intentionally not forwarded — too noisy for a feed,
             // duplicative with the result oneshot, or already covered
-            // by `BgTaskUpdate` heartbeats.
+            // by `ChildTaskUpdate` heartbeats.
             _ => {}
         }
         // Forward to the inner buffering sink for the post-completion
@@ -309,7 +309,7 @@ fn looks_like_tool_error(output: &str) -> bool {
 
 // ── PersistingSink (#1108 P1b/P2a) ───────────────────────────────
 
-/// A decorator that persists `Info` and `BgTaskUpdate` events to the
+/// A decorator that persists `Info` and `ChildTaskUpdate` events to the
 /// `session_events` table before forwarding to an inner sink.
 ///
 /// Pre-#1108 these events were sink-only and never reached the DB,
@@ -343,7 +343,7 @@ pub struct PersistingSink<'a> {
 }
 
 impl<'a> PersistingSink<'a> {
-    /// Wrap an inner sink. The decorator persists Info/BgTaskUpdate
+    /// Wrap an inner sink. The decorator persists Info/ChildTaskUpdate
     /// events as a side effect; everything else passes through
     /// untouched.
     pub fn new(
@@ -386,7 +386,7 @@ impl EngineSink for PersistingSink<'_> {
         // Branch on whether this is a sub-agent context. Sub-agents
         // need a richer event set persisted (the inner trace) so the
         // parent transcript can show what they did. Top-level only
-        // needs Info / BgTaskUpdate — tool calls there are already
+        // needs Info / ChildTaskUpdate — tool calls there are already
         // in `messages.tool_calls`.
         if self.parent_tool_call_id.is_some() {
             // Sub-agent: persist the same set BufferingSink renders
@@ -422,7 +422,7 @@ impl EngineSink for PersistingSink<'_> {
                 EngineEvent::Info { message } => {
                     self.persist(sek::INFO, message.clone());
                 }
-                EngineEvent::BgTaskUpdate { .. } => {
+                EngineEvent::ChildTaskUpdate { .. } => {
                     if let Ok(json) = serde_json::to_string(&event) {
                         self.persist(sek::BG_TASK_UPDATE, json);
                     }
@@ -683,7 +683,7 @@ mod tests {
 
     // ── ForwardingChildSink (#1201 B) ────────────────────
 
-    /// Build a [`crate::bg_agent::BgStatusEmitter`] hooked up to a
+    /// Build a [`crate::child_agent::ChildStatusEmitter`] hooked up to a
     /// real registry so we can drain forwarded events. The registry
     /// is the load-bearing piece — it's what the inference loop
     /// drains in production, so testing through it (rather than
@@ -691,14 +691,19 @@ mod tests {
     fn make_test_emitter(
         task_id: u32,
     ) -> (
-        std::sync::Arc<crate::bg_agent::BgAgentRegistry>,
-        crate::bg_agent::BgStatusEmitter,
+        std::sync::Arc<crate::child_agent::ChildAgentRegistry>,
+        crate::child_agent::ChildStatusEmitter,
     ) {
-        let registry = crate::bg_agent::new_shared();
+        let registry = crate::child_agent::new_shared();
         let (status_tx, _status_rx) =
-            tokio::sync::watch::channel(crate::bg_agent::AgentStatus::Pending);
-        let emitter =
-            crate::bg_agent::BgStatusEmitter::new(task_id, None, status_tx, registry.clone());
+            tokio::sync::watch::channel(crate::child_agent::AgentStatus::Pending);
+        let emitter = crate::child_agent::ChildStatusEmitter::new(
+            task_id,
+            None,
+            true,
+            status_tx,
+            registry.clone(),
+        );
         (registry, emitter)
     }
 

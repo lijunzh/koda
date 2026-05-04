@@ -1,7 +1,7 @@
 //! E2E tests: sub-agent invocation and caching.
 
 use koda_core::{
-    bg_agent::AgentStatus, engine::EngineEvent, persistence::Persistence, runtime_env,
+    child_agent::AgentStatus, engine::EngineEvent, persistence::Persistence, runtime_env,
 };
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 use std::time::Duration;
@@ -480,14 +480,14 @@ async fn bg_agent_iter_counter_advances_via_status_channel() {
     let bg_updates: Vec<&AgentStatus> = bg_events
         .iter()
         .filter_map(|ev| match ev {
-            EngineEvent::BgTaskUpdate { status, .. } => Some(status),
+            EngineEvent::ChildTaskUpdate { status, .. } => Some(status),
             _ => None,
         })
         .collect();
 
     assert!(
         !bg_updates.is_empty(),
-        "expected at least one BgTaskUpdate event; bg_events ({} total): {bg_events:#?}",
+        "expected at least one ChildTaskUpdate event; bg_events ({} total): {bg_events:#?}",
         bg_events.len()
     );
 

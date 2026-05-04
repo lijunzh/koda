@@ -116,7 +116,7 @@ pub struct Message {
 pub mod session_event_kind {
     /// `EngineEvent::Info` — payload is the message text.
     pub const INFO: &str = "info";
-    /// `EngineEvent::BgTaskUpdate` — payload is JSON
+    /// `EngineEvent::ChildTaskUpdate` — payload is JSON
     /// `{"task_id": u32, "spawner": Option<u32>, "status": AgentStatus}`.
     pub const BG_TASK_UPDATE: &str = "bg_task_update";
     /// One line of a sub-agent's `BufferingSink` trace — payload is
@@ -389,7 +389,7 @@ pub trait Persistence: Send + Sync {
     /// `Some(call_id)` only for sub-agent events so the renderer can
     /// fold them under the parent's `InvokeAgent` tool result.
     ///
-    /// Hot-path: called from every `EngineEvent::Info`/`BgTaskUpdate`
+    /// Hot-path: called from every `EngineEvent::Info`/`ChildTaskUpdate`
     /// emission via [`crate::engine::sink::PersistingSink`]. Failures
     /// are logged but never propagated — a DB hiccup must not crash
     /// the inference loop.

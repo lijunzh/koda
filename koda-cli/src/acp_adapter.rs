@@ -141,22 +141,22 @@ pub fn engine_event_to_acp(
         // a short `[bg task N] kind` line that ACP-aware IDEs can
         // either show inline or filter on the `[bg task N]` prefix.
         // The full structured payload is still on the wire for any
-        // future typed mapping — see `EngineEvent::BgTaskUpdate`.
-        EngineEvent::BgTaskUpdate {
+        // future typed mapping — see `EngineEvent::ChildTaskUpdate`.
+        EngineEvent::ChildTaskUpdate {
             task_id, status, ..
         } => {
             let summary = match status {
-                koda_core::bg_agent::AgentStatus::Pending => "pending".to_string(),
-                koda_core::bg_agent::AgentStatus::Running { iter } => {
+                koda_core::child_agent::AgentStatus::Pending => "pending".to_string(),
+                koda_core::child_agent::AgentStatus::Running { iter } => {
                     if *iter == 0 {
                         "running (starting)".to_string()
                     } else {
                         format!("running (iter {iter})")
                     }
                 }
-                koda_core::bg_agent::AgentStatus::Cancelled => "cancelled".to_string(),
-                koda_core::bg_agent::AgentStatus::Completed { .. } => "completed".to_string(),
-                koda_core::bg_agent::AgentStatus::Errored { error } => {
+                koda_core::child_agent::AgentStatus::Cancelled => "cancelled".to_string(),
+                koda_core::child_agent::AgentStatus::Completed { .. } => "completed".to_string(),
+                koda_core::child_agent::AgentStatus::Errored { error } => {
                     let snippet: String = error.chars().take(80).collect();
                     format!("errored: {snippet}")
                 }
@@ -177,7 +177,7 @@ pub fn engine_event_to_acp(
         // (#1201 B) Live activity from inside a running bg agent.
         // ACP doesn't have a typed bg-child-activity notification, so
         // we fall through to the same `[bg task N] ...` text-chunk
-        // shape used by `BgTaskUpdate` above. The full structured
+        // shape used by `ChildTaskUpdate` above. The full structured
         // payload (with `kind: tool_start` / `tool_end` / `info`) is
         // still on the wire for any future typed mapping.
         EngineEvent::ChildAgentActivity { task_id, kind, .. } => {
@@ -217,7 +217,7 @@ pub fn engine_event_to_acp(
         // here. IDEs that want richer rendering can scan the
         // tool-result stream for `TodoWrite` outputs (the formatted
         // list lives there); the goal of this notification is parity
-        // with `BgTaskUpdate` ("a transition happened, here's the
+        // with `ChildTaskUpdate` ("a transition happened, here's the
         // gist"), not to be the sole source of render data.
         EngineEvent::TodoUpdate { items, diff } => {
             let cb = acp::ContentBlock::Text(acp::TextContent::new(format!(
@@ -534,14 +534,15 @@ mod tests {
     // #1076: bg-task lifecycle must reach ACP clients as session
     // notifications.  Pre-fix the TUI was the only client that saw
     // bg status because it polled the registry directly; now every
-    // transition flows through `EngineEvent::BgTaskUpdate` and lands
+    // transition flows through `EngineEvent::ChildTaskUpdate` and lands
     // here as a text chunk an ACP-aware IDE can render or filter.
     #[test]
     fn test_bg_task_update_running_iter_zero_renders_starting() {
-        let event = EngineEvent::BgTaskUpdate {
+        let event = EngineEvent::ChildTaskUpdate {
             task_id: 5,
             spawner: None,
-            status: koda_core::bg_agent::AgentStatus::Running { iter: 0 },
+            is_background: true,
+            status: koda_core::child_agent::AgentStatus::Running { iter: 0 },
         };
         let notif = engine_event_to_acp(&event, "s1").expect("must produce notification");
         match notif.update {
@@ -558,10 +559,11 @@ mod tests {
 
     #[test]
     fn test_bg_task_update_renders_iter_count() {
-        let event = EngineEvent::BgTaskUpdate {
+        let event = EngineEvent::ChildTaskUpdate {
             task_id: 12,
             spawner: Some(7),
-            status: koda_core::bg_agent::AgentStatus::Running { iter: 4 },
+            is_background: true,
+            status: koda_core::child_agent::AgentStatus::Running { iter: 4 },
         };
         let notif = engine_event_to_acp(&event, "s1").unwrap();
         let acp::SessionUpdate::AgentMessageChunk(chunk) = notif.update else {
@@ -580,25 +582,26 @@ mod tests {
         // Pending is included because it's the initial reservation
         // state — some clients may want to show "queued".
         let cases = [
-            (koda_core::bg_agent::AgentStatus::Pending, "pending"),
-            (koda_core::bg_agent::AgentStatus::Cancelled, "cancelled"),
+            (koda_core::child_agent::AgentStatus::Pending, "pending"),
+            (koda_core::child_agent::AgentStatus::Cancelled, "cancelled"),
             (
-                koda_core::bg_agent::AgentStatus::Completed {
+                koda_core::child_agent::AgentStatus::Completed {
                     summary: "all good".into(),
                 },
                 "completed",
             ),
             (
-                koda_core::bg_agent::AgentStatus::Errored {
+                koda_core::child_agent::AgentStatus::Errored {
                     error: "boom".into(),
                 },
                 "errored",
             ),
         ];
         for (status, marker) in cases {
-            let event = EngineEvent::BgTaskUpdate {
+            let event = EngineEvent::ChildTaskUpdate {
                 task_id: 1,
                 spawner: None,
+                is_background: true,
                 status,
             };
             let notif = engine_event_to_acp(&event, "s1").unwrap();

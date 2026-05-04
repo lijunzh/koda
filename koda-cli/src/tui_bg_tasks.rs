@@ -4,7 +4,7 @@
 //! ## Overview
 //!
 //! `/agents` lists every currently-tracked background task — both
-//! background sub-agents from [`koda_core::bg_agent::BgAgentRegistry`]
+//! background sub-agents from [`koda_core::child_agent::ChildAgentRegistry`]
 //! (spawned via `InvokeAgent { background: true }`) and background
 //! shell processes from [`koda_core::tools::bg_process::BgRegistry`]
 //! (spawned via `Bash { background: true }`). They share a single
@@ -68,7 +68,7 @@ use koda_core::tools::bg_task_tools::TaskId;
 /// Render `/cancel <id>`. Routes to the right registry based on the
 /// parsed [`TaskId`]:
 ///
-/// - [`TaskId::Agent`] → [`BgAgentRegistry::cancel`]
+/// - [`TaskId::Agent`] → [`ChildAgentRegistry::cancel`]
 /// - [`TaskId::Process`] → [`BgRegistry::kill`] (sends SIGTERM)
 ///
 /// Both registries' cancel paths are idempotent (PR #1041's
@@ -81,11 +81,11 @@ use koda_core::tools::bg_task_tools::TaskId;
 /// than at the parser layer (see `ReplAction::CancelBackgroundTask`'s
 /// docstring for the rationale).
 ///
-/// [`BgAgentRegistry::cancel`]: koda_core::bg_agent::BgAgentRegistry::cancel
+/// [`ChildAgentRegistry::cancel`]: koda_core::child_agent::ChildAgentRegistry::cancel
 /// [`BgRegistry::kill`]: koda_core::tools::bg_process::BgRegistry::kill
 pub(crate) fn handle_cancel_background_task(
     buffer: &mut ScrollBuffer,
-    bg_agents: &koda_core::bg_agent::BgAgentRegistry,
+    bg_agents: &koda_core::child_agent::ChildAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
     child_activity: &mut crate::child_activity::ChildActivityTracker,
     task_id: Option<TaskId>,
@@ -151,11 +151,11 @@ pub(crate) fn handle_cancel_background_task(
 /// alternate Ctrl+C behaviour (e.g. textarea clear at idle).
 pub(crate) fn cancel_all_bg_work(
     buffer: &mut ScrollBuffer,
-    bg_agents: &koda_core::bg_agent::BgAgentRegistry,
+    bg_agents: &koda_core::child_agent::ChildAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
     child_activity: &mut crate::child_activity::ChildActivityTracker,
 ) -> (usize, usize) {
-    use koda_core::bg_agent::AgentStatus;
+    use koda_core::child_agent::AgentStatus;
 
     // Collect ids first so we don't hold the registry lock across
     // `.cancel()` (which itself takes the lock). Snapshot is cheap
@@ -218,10 +218,10 @@ pub(crate) fn cancel_all_bg_work(
 /// processes). Used by the idle Ctrl+C path to decide whether to
 /// cancel bg work or fall back to the textarea-clear behaviour.
 pub(crate) fn active_bg_count(
-    bg_agents: &koda_core::bg_agent::BgAgentRegistry,
+    bg_agents: &koda_core::child_agent::ChildAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
 ) -> usize {
-    use koda_core::bg_agent::AgentStatus;
+    use koda_core::child_agent::AgentStatus;
     use koda_core::tools::bg_process::BgProcessStatus;
     let active_agents = bg_agents
         .snapshot()
@@ -239,7 +239,7 @@ pub(crate) fn active_bg_count(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koda_core::bg_agent::{AgentStatus, BgAgentRegistry, BgPayload};
+    use koda_core::child_agent::{AgentStatus, BgPayload, ChildAgentRegistry};
     use koda_core::tools::bg_process::BgRegistry;
     use tokio::sync::{oneshot, watch};
     use tokio_util::sync::CancellationToken;
@@ -259,7 +259,7 @@ mod tests {
             .join("\n")
     }
 
-    /// Build a registered bg-agent entry using only `BgAgentRegistry`'s
+    /// Build a registered bg-agent entry using only `ChildAgentRegistry`'s
     /// **public** API. We can't use the in-crate `register_test*`
     /// helpers because they're `#[cfg(test)]`-gated to `koda-core`
     /// itself — those gates make them invisible to other crates'
@@ -270,7 +270,7 @@ mod tests {
     /// `JoinHandle` we attach is a noop spawn — enough to satisfy
     /// `AbortOnDropHandle` without burning a tokio worker on real work.
     fn register_entry(
-        reg: &BgAgentRegistry,
+        reg: &ChildAgentRegistry,
         agent_name: &str,
         prompt: &str,
     ) -> (
@@ -283,7 +283,7 @@ mod tests {
         // Phase A1 of #996 added a `spawner: Option<u32>` to both
         // reserve() and attach(). The TUI test harness only ever
         // exercises the top-level path, so `None` is the right value.
-        let r = reg.reserve(&parent, None);
+        let r = reg.reserve(&parent, None, true);
         let task_id = r.task_id;
         let tx = r.tx;
         let status_tx = r.status_tx;
@@ -297,6 +297,7 @@ mod tests {
             r.cancel,
             r.status_rx,
             None,
+            true,
             None,
             noop,
         );
@@ -329,7 +330,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_known_agent_id_reports_success_and_fires_token() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let procs = BgRegistry::new();
         let (task_id, _tx, _status_tx, observer) = register_entry(&reg, "explore", "x");
 
@@ -359,7 +360,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_known_process_id_kills_and_reports_success() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let procs = BgRegistry::new();
         let pid = spawn_sleep_in_registry(&procs);
 
@@ -388,7 +389,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_unknown_agent_id_reports_helpful_error() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let procs = BgRegistry::new();
         handle_cancel_background_task(
             &mut buf,
@@ -409,7 +410,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_unknown_process_id_reports_helpful_error() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let procs = BgRegistry::new();
         handle_cancel_background_task(
             &mut buf,
@@ -432,7 +433,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_none_id_renders_usage_with_both_prefixes() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let procs = BgRegistry::new();
         handle_cancel_background_task(
             &mut buf,
@@ -457,7 +458,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_all_bg_work_empty_is_silent() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let procs = BgRegistry::new();
         let (a, p) = cancel_all_bg_work(
             &mut buf,
@@ -473,13 +474,13 @@ mod tests {
     }
 
     /// Multiple running agents are all cancelled in one call and
-    /// each `BgAgentReservation::cancel` token observes the cascade.
+    /// each `ChildAgentReservation::cancel` token observes the cascade.
     /// This is the in-process equivalent of "user hit Ctrl+C and
     /// every bg agent should die".
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_all_bg_work_cancels_every_running_agent() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let procs = BgRegistry::new();
 
         let (_id1, _tx1, status1, observer1) = register_entry(&reg, "explore", "prompt 1");
@@ -512,7 +513,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_all_bg_work_handles_agents_and_processes() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let procs = BgRegistry::new();
 
         let (_id, _tx, status, observer) = register_entry(&reg, "explore", "hi");
@@ -540,7 +541,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancel_all_bg_work_skips_completed_entries() {
         let mut buf = ScrollBuffer::new(64);
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let procs = BgRegistry::new();
 
         let (_id, tx, status, observer) = register_entry(&reg, "explore", "hi");
@@ -573,7 +574,7 @@ mod tests {
     /// entries (same filter as `cancel_all_bg_work`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn active_bg_count_excludes_completed() {
-        let reg = BgAgentRegistry::new();
+        let reg = ChildAgentRegistry::new();
         let procs = BgRegistry::new();
         assert_eq!(active_bg_count(&reg, &procs), 0);
 

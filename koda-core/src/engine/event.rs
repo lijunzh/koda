@@ -129,38 +129,52 @@ pub enum EngineEvent {
         diff: crate::tools::todo::TodoDiff,
     },
 
-    // ── Background sub-agent lifecycle ────────────────────────────────
-    /// A background sub-agent's status changed.
+    // ── Child sub-agent lifecycle ──────────────────────────────────
+    /// A child sub-agent's status changed.
     ///
-    /// Emitted on every transition through [`crate::bg_agent::AgentStatus`]
+    /// Emitted on every transition through [`crate::child_agent::AgentStatus`]
     /// (`Pending` → `Running { iter }` → terminal). Drained from the
     /// registry's status queue inside the inference loop alongside
-    /// [`crate::bg_agent::BgAgentRegistry::drain_completed`], so any sink
+    /// [`crate::child_agent::ChildAgentRegistry::drain_completed`], so any sink
     /// (CLI / TUI / headless / ACP) sees the same event stream without
     /// having to poll the registry directly.
     ///
     /// Closes the engine/UI boundary leak documented in #1076 — prior to
-    /// this variant the TUI was the only client that could see live bg
+    /// this variant the TUI was the only client that could see live
     /// status because it shared the process and grabbed
-    /// `Arc<BgAgentRegistry>` straight out of `KodaSession`.
-    BgTaskUpdate {
+    /// `Arc<ChildAgentRegistry>` straight out of `KodaSession`.
+    ///
+    /// **PR-A0.5 of #1232**: renamed from `BgTaskUpdate`. The wire tag
+    /// (`"type":"bg_task_update"`) is preserved via `#[serde(rename)]`
+    /// so ACP / headless clients keep parsing the same envelope. The
+    /// new `is_background` field defaults to `true` on legacy payloads
+    /// for the same reason.
+    #[serde(rename = "bg_task_update")]
+    ChildTaskUpdate {
         /// Monotonic id assigned at `reserve()` time, stable for the
         /// lifetime of the task.
         task_id: u32,
         /// Sub-agent invocation id of the spawner, or `None` if the
         /// task was launched from the top-level loop. See
-        /// [`crate::bg_agent::BgTaskSnapshot::spawner`].
+        /// [`crate::child_agent::ChildTaskSnapshot::spawner`].
         spawner: Option<u32>,
+        /// `true` if this is a background sub-agent (auto-drains its
+        /// result on a future iteration), `false` for foreground
+        /// sub-agents (parent awaits inline). Wire-default is `true`
+        /// so older clients that never received this field
+        /// deserialize as the historical bg-only behavior.
+        #[serde(default = "default_is_background_true")]
+        is_background: bool,
         /// New status. Includes `Running { iter }` heartbeats so
         /// clients can render iteration progress without polling.
-        status: crate::bg_agent::AgentStatus,
+        status: crate::child_agent::AgentStatus,
     },
 
     /// Live activity from inside a running child agent (foreground or
     /// background sub-agent).
     ///
     /// **#1201 B**: pre-this-event the parent's TUI had no live signal
-    /// from inside a bg agent — only `BgTaskUpdate` heartbeats
+    /// from inside a bg agent — only `ChildTaskUpdate` heartbeats
     /// (`Running { iter: N }`), which tell you "still going" but not
     /// "doing what". The narrative trace shipped via `BufferingSink`
     /// only surfaced at result-injection time.
@@ -189,12 +203,12 @@ pub enum EngineEvent {
     /// real-time UX.
     #[serde(rename = "bg_child_activity")]
     ChildAgentActivity {
-        /// Matches the `task_id` from `BgTaskUpdate` for the same
+        /// Matches the `task_id` from `ChildTaskUpdate` for the same
         /// running task. For foreground sub-agents (PR-A) this will
         /// be a synthetic id assigned at dispatch time.
         task_id: u32,
         /// Sub-agent invocation id of the spawner, or `None` for
-        /// top-level-spawned tasks. Mirrors `BgTaskUpdate.spawner`.
+        /// top-level-spawned tasks. Mirrors `ChildTaskUpdate.spawner`.
         spawner: Option<u32>,
         /// `true` if the child runs as a background task (today: all
         /// emit sites). `false` reserved for foreground sub-agents
@@ -372,7 +386,7 @@ pub enum EngineEvent {
 ///
 /// Wire format is `snake_case` with an internal `kind` tag, matching
 /// the convention for [`TurnEndReason`] and
-/// [`crate::bg_agent::AgentStatus`].
+/// [`crate::child_agent::AgentStatus`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]

@@ -81,7 +81,7 @@ impl TuiContext {
         // #1200: derive a per-turn child token instead of cloning the
         // session-lifetime root. This keeps `session.cancel` stable
         // across turn boundaries so bg agents (which call
-        // `BgAgentRegistry::reserve(&session.cancel, …)`) keep their
+        // `ChildAgentRegistry::reserve(&session.cancel, …)`) keep their
         // cancel-token cascade pointing at a live parent. Cancelling
         // the child fires only the foreground turn; bg agents are
         // explicitly cancelled by the Ctrl+C path further down.
@@ -510,7 +510,7 @@ async fn handle_crossterm_event_inline(
     later_queue: &mut std::collections::VecDeque<String>,
     paste_blocks: &mut Vec<input::PasteBlock>,
     db: &koda_core::db::Database,
-    bg_agents: &koda_core::bg_agent::BgAgentRegistry,
+    bg_agents: &koda_core::child_agent::ChildAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
     child_activity: &mut crate::child_activity::ChildActivityTracker,
 ) {
@@ -587,7 +587,7 @@ async fn handle_inference_key_inline(
     history_idx: &mut Option<usize>,
     later_queue: &mut std::collections::VecDeque<String>,
     db: &koda_core::db::Database,
-    bg_agents: &koda_core::bg_agent::BgAgentRegistry,
+    bg_agents: &koda_core::child_agent::ChildAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
     child_activity: &mut crate::child_activity::ChildActivityTracker,
 ) {

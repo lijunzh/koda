@@ -3,12 +3,12 @@
 //! ## What this file guards
 //!
 //! `PersistingSink` (`koda-core/src/engine/sink.rs`) is the
-//! decorator that writes `Info` / `BgTaskUpdate` / sub-agent-trace
+//! decorator that writes `Info` / `ChildTaskUpdate` / sub-agent-trace
 //! events into the `session_events` table on the way to the
 //! user-facing sink. The routing decision is a single branch:
 //!
 //! - `parent_tool_call_id == None` → top-level event, persist `Info`
-//!   and `BgTaskUpdate`.
+//!   and `ChildTaskUpdate`.
 //! - `parent_tool_call_id == Some(call_id)` → sub-agent event,
 //!   persist a richer set (`Info`, `ToolCallStart`, `ApprovalRequest`,
 //!   `AskUserRequest`) and stamp every row with `call_id` so the
@@ -140,20 +140,21 @@ async fn top_level_info_event_persists_with_null_parent() {
     );
 }
 
-/// Top-level `BgTaskUpdate` events persist with `kind = bg_task_update`
+/// Top-level `ChildTaskUpdate` events persist with `kind = bg_task_update`
 /// and a JSON-encoded payload (so the renderer can deserialize the
 /// `AgentStatus` back into the original variant).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn top_level_bg_task_update_persists_as_json_with_null_parent() {
-    use koda_core::bg_agent::AgentStatus;
+    use koda_core::child_agent::AgentStatus;
 
     let (_tmp, db, session_id) = fresh_db().await;
     let inner = TestSink::new();
     let sink = PersistingSink::new(&inner, db.clone(), session_id.clone(), None);
 
-    let event = EngineEvent::BgTaskUpdate {
+    let event = EngineEvent::ChildTaskUpdate {
         task_id: 42,
         spawner: None,
+        is_background: true,
         status: AgentStatus::Running { iter: 7 },
     };
     sink.emit(event);
@@ -180,7 +181,7 @@ async fn top_level_bg_task_update_persists_as_json_with_null_parent() {
     assert_eq!(parsed["status"]["iter"], 7, "full payload: {parsed}");
 }
 
-/// Sanity: events that aren't on the `Info` / `BgTaskUpdate` allowlist
+/// Sanity: events that aren't on the `Info` / `ChildTaskUpdate` allowlist
 /// do NOT create rows in the top-level routing path. If `TextDelta`
 /// started persisting we'd flood the table on every streaming token —
 /// regression guard for that explicit bug shape.
@@ -209,7 +210,7 @@ async fn top_level_passes_through_non_persistable_events_without_db_writes() {
     let events = db.load_session_events(&session_id).await.unwrap();
     assert!(
         events.is_empty(),
-        "top-level routing must only persist Info/BgTaskUpdate; \
+        "top-level routing must only persist Info/ChildTaskUpdate; \
          got rows for non-allowlisted events: {events:?}"
     );
 
@@ -359,11 +360,11 @@ async fn sub_agent_ask_user_request_persists_truncated() {
     );
 }
 
-/// Sub-agent routing must NOT persist `BgTaskUpdate` (that's a
+/// Sub-agent routing must NOT persist `ChildTaskUpdate` (that's a
 /// top-level concept). Tests the negative side of the asymmetry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sub_agent_does_not_persist_bg_task_update() {
-    use koda_core::bg_agent::AgentStatus;
+    use koda_core::child_agent::AgentStatus;
 
     let (_tmp, db, session_id) = fresh_db().await;
     let inner = TestSink::new();
@@ -374,9 +375,10 @@ async fn sub_agent_does_not_persist_bg_task_update() {
         Some("parent-4".into()),
     );
 
-    sink.emit(EngineEvent::BgTaskUpdate {
+    sink.emit(EngineEvent::ChildTaskUpdate {
         task_id: 1,
         spawner: Some(99),
+        is_background: true,
         status: AgentStatus::Pending,
     });
 
@@ -387,7 +389,7 @@ async fn sub_agent_does_not_persist_bg_task_update() {
     let events = db.load_session_events(&session_id).await.unwrap();
     assert!(
         events.is_empty(),
-        "BgTaskUpdate must not persist on the sub-agent path; got: {events:?}"
+        "ChildTaskUpdate must not persist on the sub-agent path; got: {events:?}"
     );
 
     // Inner sink still saw the event — forwarding is unconditional.

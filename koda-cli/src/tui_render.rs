@@ -282,11 +282,11 @@ impl TuiRenderer {
             | EngineEvent::TurnStart { .. }
             | EngineEvent::TurnEnd { .. }
             | EngineEvent::LoopCapReached { .. }
-            | EngineEvent::BgTaskUpdate { .. }
+            | EngineEvent::ChildTaskUpdate { .. }
             | EngineEvent::TodoUpdate { .. }
             | EngineEvent::ChildAgentActivity { .. } => {
                 // Handled by the event loop, not the renderer.
-                // (#1076) BgTaskUpdate is routed to the bg-task panel,
+                // (#1076) ChildTaskUpdate is routed to the bg-task panel,
                 // which still reads from the registry snapshot for its
                 // primary render. Future cleanup may have it consume
                 // the event stream directly and drop the polling.
@@ -294,7 +294,7 @@ impl TuiRenderer {
                 // todo-list panel from the tool-result message stream;
                 // the structured event is for ACP / headless clients
                 // that want diff-driven animation. Same future-cleanup
-                // path as BgTaskUpdate.
+                // path as ChildTaskUpdate.
                 // (#1201 B2) ChildAgentActivity is dropped from TUI
                 // scrollback render. The B1 inline-line render
                 // (`[bg N] 🔧 Read foo.rs` per event) was redundant

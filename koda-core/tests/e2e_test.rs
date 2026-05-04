@@ -172,7 +172,7 @@ async fn test_provider_error_emits_error_event() {
         cancel: CancellationToken::new(),
         cmd_rx: &mut cmd_rx,
         file_tracker: &mut file_tracker,
-        bg_agents: &koda_core::bg_agent::new_shared(),
+        bg_agents: &koda_core::child_agent::new_shared(),
         sub_agent_cache: &koda_core::sub_agent_cache::SubAgentCache::new(),
     })
     .await;
@@ -296,7 +296,7 @@ async fn test_cancel_during_streaming() {
         cancel,
         cmd_rx: &mut cmd_rx,
         file_tracker: &mut file_tracker,
-        bg_agents: &koda_core::bg_agent::new_shared(),
+        bg_agents: &koda_core::child_agent::new_shared(),
         sub_agent_cache: &koda_core::sub_agent_cache::SubAgentCache::new(),
     })
     .await;
