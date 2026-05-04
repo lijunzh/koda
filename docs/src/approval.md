@@ -22,12 +22,15 @@ confirmation prompt before each mutation. There are no separate
 |------|-------|---------------|
 | **Plan** | 📋 PLAN (cyan) | "Investigation only — no side effects." Read tools auto-approve; mutating and destructive tools are **blocked** (not just confirmed). Use for code review, exploration, and dry runs. |
 | **Safe** | 🔒 SAFE (yellow) | "Confirm every side effect." Read tools auto-approve; everything that mutates state asks first. The conservative default. |
-| **Auto** | ⚡ **AUTO** (inverted black-on-green) | "Trust the sandbox." Read and mutating ops auto-approve within the sandbox; destructive ops (`rm -rf`, `git reset --hard`, `git push --force`, `Delete`) still ask. Outside-project writes still ask. |
+| **Auto** | ⚡ **AUTO** (bold green) | "Trust the sandbox." Read and mutating ops auto-approve within the sandbox; destructive ops (`rm -rf`, `git reset --hard`, `git push --force`, `Delete`) still ask. Outside-project writes still ask. |
 
-The `Auto` badge is **inverted black-on-green** specifically because
-Auto is the most-permissive mode and the user must never be unsure
-they're in it. Plan and Safe stay as bold colored text — visible but
-not as visually loud. (#1232 §8a)
+All three badges share the same icon + UPPERCASE + bold styling so
+the trust mode is unmissable in the status bar regardless of which
+mode you're in. Auto originally rendered as inverted black-on-green
+for extra loudness, but the hardcoded background clashed with
+terminal color schemes that already use bright green palettes;
+reverted to bold green text for guaranteed readability on every
+scheme. (#1232 §8a, originally #1243; reverted post-merge.)
 
 ## Trust mode × tool effect matrix (top-level / master agent)
 

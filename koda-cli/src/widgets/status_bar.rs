@@ -118,23 +118,27 @@ impl Widget for StatusBar<'_> {
         // both. Bug-review session that opened #1232: "User wasn't
         // sure whether they were in Safe or Auto."
         //
-        // The new badge is icon + UPPERCASE + bold for every mode,
-        // with **inverted black-on-color** for Auto specifically
-        // (since Auto is the "be careful" mode that should be
-        // unmissable, especially before/when #1241 flips the default).
-        // Plan and Safe stay as bold colored text — visible but not
-        // as visually loud, matching the relative caution-level.
+        // The new badge is icon + UPPERCASE + bold for every mode.
+        // Auto used to render as a black-on-green inverted badge for
+        // extra loudness, but a hardcoded `bg: Green` clashes badly
+        // with terminal color schemes that already use a bright or
+        // light green palette — the black foreground washes out and
+        // "AUTO" becomes unreadable. Bold green text on the user's
+        // own background works on every scheme. (#1243 → reverted in
+        // this commit's PR; if #1241 needs more loudness post-flip,
+        // use `Modifier::REVERSED` which inverts using the user's own
+        // terminal colors instead of imposing fixed colors.)
         //
         // Color/icon choices match the prompt indicator in
         // `tui_viewport.rs` so users see the SAME color for the SAME
-        // mode across both surfaces (pre-fix Safe was Cyan in the
+        // mode across both surfaces (pre-#1243 Safe was Cyan in the
         // prompt and Yellow in the bar — confusing inconsistency).
         // Drive-by: the dead `"strict"` arm is gone (TrustMode never
         // emits that label; only `plan`/`safe`/`auto`).
         let (mode_icon, mode_fg, mode_bg) = match self.mode_label {
             "plan" => ("\u{1f4cb}", Color::Cyan, None),
             "safe" => ("\u{1f512}", Color::Yellow, None),
-            "auto" => ("\u{26a1}", Color::Black, Some(Color::Green)),
+            "auto" => ("\u{26a1}", Color::Green, None),
             // Defensive default for any future mode label that gets added
             // to `TrustMode` without updating this match. Renders as a
             // visible-but-bland "?" badge so it's obvious something is
@@ -441,8 +445,12 @@ mod tests {
     // The bug-review session that opened #1232 reported that the user
     // couldn't tell whether they were in Safe or Auto. The fix makes
     // the trust-mode segment unmissable: icon + UPPERCASE + bold for
-    // every mode, with **inverted black-on-color** specifically for
-    // Auto so the most-permissive mode reads as a colored badge.
+    // every mode. (#1243 originally rendered Auto as an inverted
+    // black-on-green badge for extra loudness, but the hardcoded
+    // green bg clashed with terminal color schemes that use bright
+    // green and made "AUTO" unreadable; reverted to bold green text
+    // matching Plan/Safe styling. The icon + uppercase + bold trio
+    // still makes Auto distinguishable at a glance.)
     //
     // Tests below pin the contract so a future "let's use a single
     // muted color for all status segments" refactor fails loudly.
@@ -470,17 +478,24 @@ mod tests {
     }
 
     #[test]
-    fn auto_badge_is_inverted_black_on_green_and_bold() {
-        // Auto is the loudest mode — inverted black-on-green badge.
-        // This is the configuration that's most likely to surprise a
-        // user (they're in YOLO-ish territory) so it MUST be visually
-        // distinct from regular colored text. Pin all three style
-        // attributes so the badge can't silently regress to plain
-        // colored text.
+    fn auto_badge_is_bold_green_text_no_background() {
+        // Auto used to render as inverted black-on-green for extra
+        // loudness, but a hardcoded Green background clashed with
+        // terminal color schemes that already use bright/light green
+        // — the black fg washed out and "AUTO" became unreadable.
+        // Now matches Plan/Safe styling: bold colored text on the
+        // user's own background, which works on every scheme. The
+        // ICON (⚡), the UPPERCASE label, and the bold modifier still
+        // make Auto distinguishable from Plan/Safe at a glance.
+        //
+        // If #1241 (flip default to Auto) needs more loudness, use
+        // `Modifier::REVERSED` here — it inverts using the user's
+        // own terminal colors instead of imposing fixed colors,
+        // guaranteed-readable on any scheme.
         let bar = StatusBar::new("gpt-4", "auto", 50);
         let (fg, bg, modifier) = cell_style_at(bar, "AUTO", 200);
-        assert_eq!(fg, Color::Black, "Auto badge fg must be black");
-        assert_eq!(bg, Color::Green, "Auto badge bg must be green (inverted)");
+        assert_eq!(fg, Color::Green, "Auto badge fg must be green");
+        assert_eq!(bg, Color::Reset, "Auto badge must have NO background fill");
         assert!(
             modifier.contains(Modifier::BOLD),
             "Auto badge must be bold; got modifier: {modifier:?}"
@@ -490,7 +505,8 @@ mod tests {
     #[test]
     fn safe_badge_is_bold_yellow_text_no_background() {
         // Safe is conservative-default — visible (bold yellow) but
-        // not as loud as Auto's inverted badge. No background fill.
+        // matches Plan/Auto styling: bold colored text on the user's
+        // own background, no fill.
         // Yellow matches the prompt indicator in `tui_viewport.rs`
         // (post-fix); pre-fix Safe was Cyan in the prompt, Yellow in
         // the bar — confusing inconsistency this test pins gone.
