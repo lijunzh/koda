@@ -150,6 +150,26 @@ pub struct AgentConfig {
     /// saves tokens without affecting their ability to search the codebase.
     #[serde(default)]
     pub skip_memory: bool,
+    /// Declared trust mode for this agent. Optional.
+    ///
+    /// **#1246**: agents declare their natural trust mode in JSON
+    /// (`"trust": "plan" | "safe" | "auto"`). The dispatch layer
+    /// then runs the declared value through
+    /// [`derive_child_trust`](crate::trust::derive_child_trust) which
+    /// clamps `min(parent_runtime, declared)` — so an agent can only
+    /// ever **narrow** trust, never widen it. A read-only agent
+    /// (`explore`, `plan`) declaring `"trust": "plan"` gets
+    /// kernel-enforced read-only via the sandbox, which is strictly
+    /// stronger than the soft `disallowed_tools` gate.
+    ///
+    /// Stored as `Option<String>` (not `TrustMode`) at parse time
+    /// because `TrustMode` doesn't impl `Deserialize` and the parse
+    /// validation belongs in the loader (so a typo in the JSON yields
+    /// a useful error, not a deserialization panic). Absent or unknown
+    /// value → defaults to `Safe` in `KodaConfig::load` for backward
+    /// compat with every existing agent JSON that doesn't set this.
+    #[serde(default)]
+    pub trust: Option<String>,
 }
 
 /// Runtime configuration assembled from CLI args, env vars, and agent JSON.
@@ -246,6 +266,35 @@ impl KodaConfig {
 
         let max_iterations = agent.max_iterations.unwrap_or(200);
 
+        // **#1246**: derive the agent's declared trust mode from the
+        // optional `"trust"` JSON field. This is the agent's *intent*
+        // — the dispatch layer will then run it through
+        // `derive_child_trust(parent_runtime, declared)` which clamps
+        // to `min(parent, declared)` so trust can only ever narrow.
+        //
+        // Backward compat: every pre-#1246 agent JSON omits this field
+        // — they all default to `Safe` (the historical hardcoded value
+        // this branch replaces). New built-in agents `explore` and
+        // `plan` declare `"trust": "plan"` to opt into kernel-enforced
+        // read-only via the sandbox.
+        //
+        // An *unrecognized* trust string falls back to `Safe` rather
+        // than erroring — same forgiveness policy as the rest of the
+        // agent loader (a typo in `model` doesn't fail the load, it
+        // falls back to provider default). A `tracing::warn!` makes
+        // the typo discoverable without bricking the agent.
+        let declared_trust = match agent.trust.as_deref() {
+            None => crate::trust::TrustMode::Safe,
+            Some(s) => crate::trust::TrustMode::parse(s).unwrap_or_else(|| {
+                tracing::warn!(
+                    agent = %agent.name,
+                    value = %s,
+                    "unknown trust mode in agent JSON; falling back to Safe"
+                );
+                crate::trust::TrustMode::Safe
+            }),
+        };
+
         Ok(Self {
             agent_name: agent.name,
             system_prompt: agent.system_prompt,
@@ -259,7 +308,7 @@ impl KodaConfig {
             model_settings: settings,
             max_iterations,
             skip_memory: agent.skip_memory,
-            trust: crate::trust::TrustMode::Safe,
+            trust: declared_trust,
         })
     }
 
@@ -1104,6 +1153,211 @@ mod tests {
         assert_eq!(
             cfg.model, "gemini-2.5-flash",
             "agent's explicit model must not be overridden by parent"
+        );
+    }
+
+    // ── #1246: agent JSON `trust` field ─────────────────────────────────────────
+    //
+    // Pre-#1246 every agent silently got `TrustMode::Safe` regardless
+    // of what the JSON intended; `cfg.trust` was a hardcoded constant
+    // in `KodaConfig::load`. Tests below pin the new contract:
+    //   * `"trust": "plan"` parses to `TrustMode::Plan`
+    //   * Absent field defaults to `TrustMode::Safe` (back-compat)
+    //   * Unknown string falls back to `TrustMode::Safe` (forgiveness)
+    //   * Built-in `explore` and `plan` declare `"plan"` (the whole
+    //     reason this field exists)
+
+    /// Helper: write an agent JSON to a temp dir and load it.
+    /// Centralizes the boilerplate so each test below is one assertion
+    /// and one tiny JSON literal — the rest is shared scaffolding.
+    fn load_with_trust_field(trust_json_value: &str) -> KodaConfig {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        // `trust_json_value` is the literal that goes in the JSON; pass
+        // an empty string to omit the field entirely (back-compat path).
+        let trust_field = if trust_json_value.is_empty() {
+            String::new()
+        } else {
+            format!(",\n            {trust_json_value}")
+        };
+        let agent_json = format!(
+            r#"{{
+            "name": "trusttest",
+            "system_prompt": "test",
+            "model": "gpt-4o-mini"{trust_field}
+        }}"#
+        );
+        std::fs::write(agents_dir.join("trusttest.json"), agent_json).unwrap();
+        KodaConfig::load(tmp.path(), "trusttest").expect("load failed")
+    }
+
+    #[test]
+    fn agent_json_trust_plan_loads_as_plan() {
+        // The whole point of #1246: an agent that declares `"plan"` in
+        // JSON gets `TrustMode::Plan` on its `KodaConfig`. The dispatch
+        // layer's `derive_child_trust(parent, declared)` then clamps
+        // to `min(parent, Plan) == Plan` for every parent (Plan is the
+        // strictest mode), giving the agent kernel-enforced read-only
+        // semantics regardless of how the parent is configured.
+        let cfg = load_with_trust_field(r#""trust": "plan""#);
+        assert_eq!(
+            cfg.trust,
+            crate::trust::TrustMode::Plan,
+            "agent JSON `\"trust\": \"plan\"` must produce TrustMode::Plan"
+        );
+    }
+
+    #[test]
+    fn agent_json_trust_safe_loads_as_safe() {
+        // Explicit `"safe"` round-trips. Distinct from "absent" (which
+        // ALSO defaults to Safe) because someone reading a future
+        // diff that flips the default away from Safe needs to be able
+        // to express "this agent specifically wants Safe."
+        let cfg = load_with_trust_field(r#""trust": "safe""#);
+        assert_eq!(cfg.trust, crate::trust::TrustMode::Safe);
+    }
+
+    #[test]
+    fn agent_json_trust_auto_loads_as_auto() {
+        // Auto is allowed but should be rare for sub-agents (they
+        // usually want least-privilege). `derive_child_trust(parent,
+        // Auto)` clamps to `min(parent, Auto) = parent`, so this
+        // effectively means "inherit parent's runtime trust unchanged."
+        // Pinned so a future "forbid Auto in agent JSON" decision is
+        // an active, visible code change.
+        let cfg = load_with_trust_field(r#""trust": "auto""#);
+        assert_eq!(cfg.trust, crate::trust::TrustMode::Auto);
+    }
+
+    #[test]
+    fn agent_json_trust_field_absent_defaults_to_safe() {
+        // **Back-compat**: every pre-#1246 agent JSON omits `trust`.
+        // Those agents must continue to load with `TrustMode::Safe`
+        // (the historical hardcoded value) so this PR is a strict
+        // additive change — no existing custom agent's behavior shifts.
+        let cfg = load_with_trust_field("");
+        assert_eq!(
+            cfg.trust,
+            crate::trust::TrustMode::Safe,
+            "agent JSON without `trust` field must default to Safe (back-compat)"
+        );
+    }
+
+    #[test]
+    fn agent_json_trust_unknown_string_falls_back_to_safe_not_panic() {
+        // Forgiveness policy: a typo in the JSON shouldn't brick the
+        // agent. Falls back to Safe (the conservative default) and
+        // emits a `tracing::warn!` for discoverability. Same forgiveness
+        // policy as the rest of the agent loader (e.g. an unknown
+        // `model` falls back to provider default, not a hard error).
+        let cfg = load_with_trust_field(r#""trust": "super-secret-mode""#);
+        assert_eq!(
+            cfg.trust,
+            crate::trust::TrustMode::Safe,
+            "unknown trust string must fall back to Safe, not panic or error"
+        );
+    }
+
+    #[test]
+    fn agent_json_trust_aliases_resolve_via_trustmode_parse() {
+        // `TrustMode::parse` recognizes aliases (`yolo` → Auto, `strict`
+        // → Safe, `readonly` → Plan, ...). Verify the agent JSON loader
+        // routes through `parse` (not its own ad-hoc match) so the
+        // alias surface stays consistent across CLI flag, /resume,
+        // and agent JSON entry points.
+        for (alias, expected) in [
+            ("readonly", crate::trust::TrustMode::Plan),
+            ("read-only", crate::trust::TrustMode::Plan),
+            ("yolo", crate::trust::TrustMode::Auto),
+            ("strict", crate::trust::TrustMode::Safe),
+        ] {
+            let cfg = load_with_trust_field(&format!(r#""trust": "{alias}""#));
+            assert_eq!(
+                cfg.trust, expected,
+                "agent JSON trust alias {alias:?} must resolve to {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_explore_agent_declares_trust_plan() {
+        // Load-bearing assertion of #1246: the `explore` built-in
+        // agent declares `"trust": "plan"` so it gets kernel-enforced
+        // read-only via the sandbox — strictly stronger than the
+        // soft `disallowed_tools` gate that was the only protection
+        // pre-#1246. If a future refactor accidentally drops the
+        // `"trust"` field from explore.json, this test fails loudly
+        // (because the load defaults back to Safe).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg = KodaConfig::load(tmp.path(), "explore").expect("load explore failed");
+        assert_eq!(
+            cfg.trust,
+            crate::trust::TrustMode::Plan,
+            "explore.json must declare `\"trust\": \"plan\"` so the agent gets \
+             kernel-enforced read-only via the sandbox"
+        );
+    }
+
+    #[test]
+    fn builtin_plan_agent_declares_trust_plan() {
+        // Same pin as `builtin_explore_agent_declares_trust_plan` but
+        // for the `plan` built-in agent. Both built-in read-only
+        // agents share the same trust-mode story; both need their
+        // own regression-protection test so a one-file edit can't
+        // silently regress one without the other.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg = KodaConfig::load(tmp.path(), "plan").expect("load plan failed");
+        assert_eq!(
+            cfg.trust,
+            crate::trust::TrustMode::Plan,
+            "plan.json must declare `\"trust\": \"plan\"`"
+        );
+    }
+
+    #[test]
+    fn builtin_default_agent_does_not_declare_plan() {
+        // Negative regression: the `default` (top-level koda) agent
+        // must NOT declare `"trust": "plan"` — it's the main agent
+        // and needs to be able to write. If someone copy-pastes the
+        // explore.json `"trust": "plan"` line into default.json by
+        // accident, the entire main session would land in Plan and
+        // every write tool would be blocked. This test catches that
+        // class of mistake before it ships.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg = KodaConfig::load(tmp.path(), "default").expect("load default failed");
+        assert_ne!(
+            cfg.trust,
+            crate::trust::TrustMode::Plan,
+            "default agent (top-level koda) must NOT be Plan — it needs to write"
+        );
+    }
+
+    #[test]
+    fn agent_json_trust_interacts_with_derive_child_trust_correctly() {
+        // **End-to-end pin** of the property #1246 unlocks: a sub-agent
+        // declaring `"trust": "plan"` ends up with `TrustMode::Plan`
+        // EVEN WHEN the parent is in `Auto` (the most permissive mode).
+        // This is the load-bearing invariant for the parallel-fan-out
+        // story: a parent that's been YOLO'd into Auto can still spawn
+        // N read-only `explore` sub-agents and trust that none of them
+        // can mutate anything — because `derive_child_trust(Auto, Plan)`
+        // returns `Plan` (the strictly-narrower mode wins).
+        //
+        // If `derive_child_trust`'s contract ever flips to widening,
+        // OR if the agent loader stops feeding `cfg.trust` through it,
+        // OR if Plan loses its `< Safe < Auto` ordering, this test
+        // fails. That's the whole defense for the parallel-fan-out
+        // claim.
+        use crate::trust::{TrustMode, derive_child_trust};
+        let cfg = load_with_trust_field(r#""trust": "plan""#);
+        let parent_runtime = TrustMode::Auto;
+        let effective = derive_child_trust(parent_runtime, cfg.trust);
+        assert_eq!(
+            effective,
+            TrustMode::Plan,
+            "declared `Plan` must survive against any parent runtime — \
+             this is the parallel-fan-out invariant"
         );
     }
 }
