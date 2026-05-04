@@ -98,9 +98,10 @@ fn matrix_write_outside_project() {
 fn matrix_delete_files() {
     let args = serde_json::json!({"file_path": "old.rs"});
     let (auto, confirm) = check_both("Delete", &args);
-    // Auto: sandbox enforces perimeter, destructive ops auto-approved
-    // (downgrades to NeedsConfirmation if sandbox unavailable, #860)
-    assert_eq!(auto, auto_mutation_expected());
+    // #1250: Destructive ops require human confirmation in BOTH Auto and Safe
+    // at top-level. The user said YOLO for normal work, not for `rm`-equivalent
+    // operations. (Sub-agents block destructive entirely — see trust.rs tests.)
+    assert_eq!(auto, ToolApproval::NeedsConfirmation);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
 
@@ -130,9 +131,10 @@ fn matrix_bash_write_side_effect() {
 fn matrix_destructive_bash() {
     let args = serde_json::json!({"command": "rm -rf target/"});
     let (auto, confirm) = check_both("Bash", &args);
-    // Auto: sandbox enforces perimeter, destructive ops auto-approved
-    // (downgrades to NeedsConfirmation if sandbox unavailable, #860)
-    assert_eq!(auto, auto_mutation_expected());
+    // #1250: Destructive ops require human confirmation in BOTH Auto and Safe
+    // at top-level. The user said YOLO for normal work, not for `rm -rf`.
+    // (Sub-agents block destructive entirely — see trust.rs tests.)
+    assert_eq!(auto, ToolApproval::NeedsConfirmation);
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
 }
 
