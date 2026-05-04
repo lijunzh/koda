@@ -283,6 +283,7 @@ impl KodaConfig {
         // agent loader (a typo in `model` doesn't fail the load, it
         // falls back to provider default). A `tracing::warn!` makes
         // the typo discoverable without bricking the agent.
+        let trust_explicit = agent.trust.is_some();
         let declared_trust = match agent.trust.as_deref() {
             None => crate::trust::TrustMode::Safe,
             Some(s) => crate::trust::TrustMode::parse(s).unwrap_or_else(|| {
@@ -295,11 +296,48 @@ impl KodaConfig {
             }),
         };
 
+        // **#1250**: `write_access` is deprecated in favor of explicit
+        // `trust`. Emit a one-time-per-load warning when an agent JSON
+        // still uses `write_access: true` so users migrate.
+        //
+        // **Back-compat rule**: only apply the legacy default-deny
+        // (inject Write/Edit/Delete into disallowed_tools) when the
+        // agent JSON did NOT declare `trust` explicitly. If it did,
+        // the new trust matrix (`check_tool_for_sub_agent`) is the
+        // single mechanism — we don't want an explicit `trust: "safe"`
+        // declaration to silently get Writes denied because the loader
+        // injected the old default-deny on top.
+        //
+        // The matrix:
+        //   trust set + write_access true   → trust wins, warn deprecation
+        //   trust set + write_access false  → trust wins, no warning (old default)
+        //   trust unset + write_access true → inferred trust=Safe, no default-deny
+        //   trust unset + write_access false→ inferred trust=Safe, default-deny
+        //                                     applied (pre-#1250 behavior)
+        if agent.write_access && trust_explicit {
+            tracing::warn!(
+                agent = %agent.name,
+                "`write_access: true` is deprecated; declare `trust: \"safe\"` (or stronger) instead"
+            );
+        }
+        let disallowed_tools = if trust_explicit {
+            // New mechanism: trust matrix is the single source of truth.
+            // Don't inject default deny; respect the JSON's `disallowed_tools`
+            // verbatim (keeps the escape-valve for behavioral constraints
+            // like blocking `InvokeAgent` on read-only agents).
+            agent.disallowed_tools
+        } else {
+            // Legacy mechanism: pre-#1250 JSONs that didn't set `trust`
+            // relied on `write_access: false` to inject Write/Edit/Delete
+            // into the deny list. Preserve that behavior.
+            Self::apply_default_deny(agent.disallowed_tools, agent.write_access)
+        };
+
         Ok(Self {
             agent_name: agent.name,
             system_prompt: agent.system_prompt,
             allowed_tools: agent.allowed_tools,
-            disallowed_tools: Self::apply_default_deny(agent.disallowed_tools, agent.write_access),
+            disallowed_tools,
             provider_type,
             base_url,
             model: model.clone(),
@@ -723,16 +761,161 @@ mod tests {
         assert!(config.disallowed_tools.contains(&"Delete".to_string()));
     }
 
+    // ── #1250: trust replaces write_access ────────────────────
+
     #[test]
-    fn test_builtin_task_has_write_access() {
-        let agent = KodaConfig::load_builtin("task").unwrap();
-        assert!(agent.write_access, "task agent should have write_access");
+    fn test_explicit_trust_skips_legacy_default_deny() {
+        // **#1250**: when `trust` is declared explicitly, the loader
+        // must NOT inject Write/Edit/Delete into disallowed_tools via
+        // legacy default-deny. The new trust matrix is the single
+        // mechanism. If the JSON declares trust:safe, writes should be
+        // available (and gated by the trust matrix at call time).
+        let tmp = TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("newstyle.json"),
+            r#"{
+                "name": "newstyle",
+                "system_prompt": "I declare trust.",
+                "trust": "safe"
+            }"#,
+        )
+        .unwrap();
+        let config = KodaConfig::load(tmp.path(), "newstyle").unwrap();
+        assert!(
+            !config.disallowed_tools.contains(&"Write".to_string()),
+            "explicit trust must skip legacy default-deny (Write should be available)"
+        );
+        assert!(
+            !config.disallowed_tools.contains(&"Edit".to_string()),
+            "explicit trust must skip legacy default-deny (Edit should be available)"
+        );
+        assert!(
+            !config.disallowed_tools.contains(&"Delete".to_string()),
+            "explicit trust must skip legacy default-deny (Delete should be available)"
+        );
+        assert_eq!(config.trust, crate::trust::TrustMode::Safe);
     }
 
     #[test]
-    fn test_builtin_explore_no_write_access() {
+    fn test_explicit_trust_respects_user_disallowed_tools() {
+        // **#1250**: declaring `trust` opts out of legacy default-deny
+        // but the JSON's own `disallowed_tools` list is still honored
+        // (it's the behavioral-floor escape valve — e.g. blocking
+        // `InvokeAgent` on read-only agents).
+        let tmp = TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("verifier.json"),
+            r#"{
+                "name": "verifier",
+                "system_prompt": "I run tests but don't write files.",
+                "trust": "safe",
+                "disallowed_tools": ["Write", "Edit", "Delete"]
+            }"#,
+        )
+        .unwrap();
+        let config = KodaConfig::load(tmp.path(), "verifier").unwrap();
+        // User-declared disallowed_tools survive (no auto-injection,
+        // but no auto-removal either):
+        assert!(config.disallowed_tools.contains(&"Write".to_string()));
+        assert!(config.disallowed_tools.contains(&"Edit".to_string()));
+        assert!(config.disallowed_tools.contains(&"Delete".to_string()));
+    }
+
+    #[test]
+    fn test_legacy_write_access_false_still_default_denies() {
+        // **#1250 back-compat**: pre-#1250 JSONs that didn't set `trust`
+        // and relied on `write_access: false` (or omission) to get
+        // Write/Edit/Delete into disallowed_tools must keep working.
+        // Test isolated from `test_custom_agent_without_write_access_is_readonly`
+        // because that one accidentally also covers this; this is the
+        // explicit pin against accidental future regression.
+        let tmp = TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("oldstyle.json"),
+            r#"{
+                "name": "oldstyle",
+                "system_prompt": "I am pre-#1250.",
+                "write_access": false
+            }"#,
+        )
+        .unwrap();
+        let config = KodaConfig::load(tmp.path(), "oldstyle").unwrap();
+        assert!(
+            config.disallowed_tools.contains(&"Write".to_string()),
+            "pre-#1250 JSON without trust must still get default-deny"
+        );
+    }
+
+    #[test]
+    fn test_builtin_task_loaded_config_allows_writes() {
+        // End-to-end pin for the bug fix in #1250: `task` agent
+        // (built-in, declared `trust: "safe"`) must NOT have Write/Edit
+        // in disallowed_tools at runtime. Pre-#1250 this required
+        // `write_access: true` in the JSON; post-#1250 the explicit
+        // `trust` declaration alone is sufficient because the loader
+        // skips legacy default-deny when trust is explicit.
+        let tmp = TempDir::new().unwrap();
+        // Force load_builtin path by NOT creating a project-local
+        // override; the loader falls back to the embedded built-in.
+        let config = KodaConfig::load(tmp.path(), "task").unwrap();
+        assert!(
+            !config.disallowed_tools.contains(&"Write".to_string()),
+            "task agent must allow Write at runtime (post-#1250 bug fix)"
+        );
+        assert!(
+            !config.disallowed_tools.contains(&"Edit".to_string()),
+            "task agent must allow Edit at runtime (post-#1250 bug fix)"
+        );
+        assert_eq!(config.trust, crate::trust::TrustMode::Safe);
+    }
+
+    #[test]
+    fn test_builtin_task_declares_safe_trust() {
+        // **#1250**: built-in `task` migrated from `write_access: true`
+        // to `trust: "safe"`. The new mechanism delivers the same
+        // capability (writes available) plus the sub-agent context-
+        // sensitive matrix that auto-approves Write/Edit at Safe.
+        let agent = KodaConfig::load_builtin("task").unwrap();
+        assert_eq!(
+            agent.trust.as_deref(),
+            Some("safe"),
+            "task agent should declare trust=safe (post-#1250)"
+        );
+        assert!(
+            !agent.write_access,
+            "task agent should not use deprecated write_access flag (post-#1250)"
+        );
+    }
+
+    #[test]
+    fn test_builtin_explore_declares_plan_trust() {
+        // **#1250**: `explore` keeps `trust: "plan"` (kernel-enforced
+        // read-only) and drops the redundant Write/Edit/Delete entries
+        // from `disallowed_tools` (Plan trust blocks all mutations).
+        // What remains in `disallowed_tools` is the behavioral floor:
+        // meta-tools and read-only-classified mutators that the trust
+        // matrix can't gate (`InvokeAgent`, `AskUser`, `TodoWrite`).
         let agent = KodaConfig::load_builtin("explore").unwrap();
-        assert!(!agent.write_access, "explore should be read-only");
+        assert_eq!(
+            agent.trust.as_deref(),
+            Some("plan"),
+            "explore should declare trust=plan"
+        );
+        assert!(
+            !agent.write_access,
+            "explore should not use deprecated write_access flag"
+        );
+        // Behavioral floor still enforced via disallowed_tools:
+        assert!(
+            agent.disallowed_tools.contains(&"InvokeAgent".to_string()),
+            "explore must keep InvokeAgent in disallowed_tools (behavioral, not trust)"
+        );
     }
 
     // ── Override logic ────────────────────────────────────────
