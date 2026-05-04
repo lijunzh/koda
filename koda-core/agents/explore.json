@@ -12,5 +12,6 @@
         "TodoWrite",
         "AskUser"
     ],
-    "skip_memory": true
+    "skip_memory": true,
+    "trust": "plan"
 }

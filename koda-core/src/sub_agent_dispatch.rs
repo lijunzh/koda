@@ -833,6 +833,28 @@ pub(crate) fn execute_sub_agent<'a>(
             // loop — that's the only authoritative value. The helper
             // `derive_child_trust` exists to make this antipattern
             // greppable (see its doc).
+            //
+            // **#1246**: `cfg.trust` here is the agent's **declared**
+            // mode, sourced from the optional `"trust"` field in agent
+            // JSON (defaults to `Safe` for back-compat with pre-#1246
+            // agent files). Built-in `explore` and `plan` agents
+            // declare `"trust": "plan"` so they get kernel-enforced
+            // read-only via the sandbox — strictly stronger than the
+            // soft `disallowed_tools` gate (which a creative model
+            // could try to bash around via `cat > foo`).
+            //
+            // **The parallel-fan-out invariant** (the architectural
+            // payoff of #1246): two or more sub-agents that BOTH end
+            // up with `effective == Plan` cannot mutate any file by
+            // construction. So a parent can fan out N read-only
+            // sub-agents simultaneously WITHOUT git worktrees, WITHOUT
+            // copy-on-write filesystems, and WITHOUT any conflict-
+            // resolution machinery — the absence of writes IS the
+            // conflict-prevention. This property is load-bearing for
+            // any future bg-dispatch scheduler that wants to widen
+            // fan-out aggressively for `explore`/`plan`-style agents.
+            // The pinning test for this invariant lives in
+            // `config.rs::agent_json_trust_interacts_with_derive_child_trust_correctly`.
             let child_trust = cfg.trust;
             cfg.trust = derive_child_trust(mode, cfg.trust);
             if cfg.trust != child_trust {
