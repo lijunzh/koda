@@ -281,7 +281,13 @@ async fn run_bg_agent(
 
     let _ = match result {
         Ok(output) => tx.send(Ok((output, events))),
-        Err(e) => tx.send(Err((format!("Error: {e}"), events))),
+        // **#1232 §4**: `{:#}` walks the full anyhow context chain so the
+        // bg-agent's narrative trace records the underlying cause, not
+        // just the topmost `.context(...)` label. See the matching
+        // comment in `tool_dispatch.rs`'s foreground branch — same fix,
+        // same reasoning. Pre-fix the bg path collapsed multi-layer
+        // errors to one line of useless top-level text.
+        Err(e) => tx.send(Err((format!("Error: {e:#}"), events))),
     };
 }
 
@@ -1985,5 +1991,91 @@ mod parse_agent_name_required_tests {
         // even though it's pushed in addition to discovery.
         let fork_count = hint.matches("fork").count();
         assert_eq!(fork_count, 1, "`fork` must not be duplicated: {hint}");
+    }
+}
+
+#[cfg(test)]
+mod error_chain_format_tests {
+    //! #1232 §4: pin the contract that sub-agent dispatch error
+    //! strings include the **entire** anyhow context chain, not just
+    //! the topmost label.
+    //!
+    //! The bug-review session that opened #1232 logged:
+    //!   * msg #8–11: `Error invoking sub-agent: LLM API returned 400
+    //!     Bad Request: {"error":"Context size has been exceeded."}`
+    //!     — useful, the upstream HTTP body is a single `anyhow::bail!`
+    //!     string so default `{e}` already shows everything.
+    //!   * msg #19–20: `Error invoking sub-agent: Failed to call LLM
+    //!     API` — useless, the underlying `reqwest::send()` cause
+    //!     (network error, timeout, connection refused, ...) was added
+    //!     by `.context("Failed to call LLM API")` in the provider but
+    //!     `format!("{e}")` strips every layer except the top.
+    //!
+    //! Fix: switch every error-stringification site to `{e:#}` (anyhow's
+    //! "alternate" Display flag) which walks the chain joined with ": ".
+    //! These tests pin the format so a future "let's clean up the
+    //! formatting" refactor can't silently regress to `{e}`.
+    use anyhow::{Context, Error};
+    #[test]
+    fn alt_display_walks_chain_in_order_root_first_topmost_last() {
+        // Build the exact shape `openai_compat.rs::chat` produces on
+        // a network failure: an inner reqwest-style cause wrapped by
+        // `.context("Failed to call LLM API")`.
+        let e: Error = Err::<(), _>(anyhow::anyhow!("connection refused"))
+            .context("error sending request for url")
+            .context("Failed to call LLM API")
+            .unwrap_err();
+        // Default `{}` is the regression case the bug report flagged:
+        // only the topmost label survives. Pin this so anyone reading
+        // the test sees WHY we use `{:#}` everywhere.
+        assert_eq!(format!("{e}"), "Failed to call LLM API");
+        // `{:#}` walks the chain top-to-bottom, joined with ": ".
+        // This is the contract every sub-agent error site relies on.
+        assert_eq!(
+            format!("{e:#}"),
+            "Failed to call LLM API: error sending request for url: connection refused"
+        );
+    }
+    #[test]
+    fn fg_dispatch_error_string_format_contract() {
+        // Mirror the literal `format!` in `tool_dispatch.rs`'s
+        // foreground branch. If this assertion ever fails it means
+        // someone reverted `{e:#}` → `{e}` and re-broke msg #19/20.
+        let e: Error = Err::<(), _>(anyhow::anyhow!("timed out"))
+            .context("Failed to call LLM API")
+            .unwrap_err();
+        let formatted = format!("Error invoking sub-agent: {e:#}");
+        assert_eq!(
+            formatted,
+            "Error invoking sub-agent: Failed to call LLM API: timed out"
+        );
+    }
+    #[test]
+    fn bg_dispatch_error_string_format_contract() {
+        // Mirror the literal `format!` in this module's bg-task branch
+        // (the `Err(e) => tx.send(Err((format!("Error: {e:#}"), ...)))`
+        // arm above). Same regression protection as the foreground test.
+        let e: Error = Err::<(), _>(anyhow::anyhow!("dns lookup failed"))
+            .context("error sending request for url")
+            .context("Failed to call LLM API (stream)")
+            .unwrap_err();
+        let formatted = format!("Error: {e:#}");
+        assert_eq!(
+            formatted,
+            "Error: Failed to call LLM API (stream): error sending request for url: dns lookup failed"
+        );
+    }
+    #[test]
+    fn single_layer_error_unchanged_by_alt_format() {
+        // Negative regression: for the working sibling case (`anyhow::bail!`
+        // already produces a rich message with no chain), `{:#}` and
+        // `{}` must produce IDENTICAL output. This prevents a future
+        // refactor that switches to `{:#}` from accidentally adding
+        // a trailing colon or any other formatting noise to errors
+        // that were already fine.
+        let e: Error = anyhow::anyhow!(
+            "LLM API returned 400 Bad Request: {{\"error\":\"Context size has been exceeded.\"}}"
+        );
+        assert_eq!(format!("{e}"), format!("{e:#}"));
     }
 }

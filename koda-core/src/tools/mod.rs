@@ -714,7 +714,9 @@ impl ToolRegistry {
                         }
                     }
                     Err(e) => ToolResult {
-                        output: format!("Error: {e}"),
+                        // #1232 §4: `{:#}` walks the anyhow context chain so the
+                        // model sees the full cause, not just the topmost label.
+                        output: format!("Error: {e:#}"),
                         success: false,
                         full_output: None,
                     },
@@ -832,7 +834,9 @@ impl ToolRegistry {
                                 full_output: None,
                             },
                             Err(e) => ToolResult {
-                                output: format!("Error: {e}"),
+                                // #1232 §4: `{:#}` walks the anyhow context chain so the
+                                // model sees the full cause, not just the topmost label.
+                                output: format!("Error: {e:#}"),
                                 success: false,
                                 full_output: None,
                             },
@@ -881,7 +885,9 @@ impl ToolRegistry {
                 }
             }
             Err(e) => ToolResult {
-                output: format!("Error: {e}"),
+                // #1232 §4: `{:#}` walks the anyhow context chain so the
+                // model sees the full cause, not just the topmost label.
+                output: format!("Error: {e:#}"),
                 success: false,
                 full_output: None,
             },
