@@ -177,7 +177,11 @@ fn unknown_skill_returns_not_found_gracefully() {
 
 fn invoke_agent_responses(agent_name: &str, prompt: &str) -> String {
     serde_json::json!([
-        {"tool": "InvokeAgent", "args": {"agent_name": agent_name, "prompt": prompt}},
+        // PR-A of #1232 §2: `background` is required — these e2e
+        // tests pin the foreground dispatch path, so explicit false.
+        {"tool": "InvokeAgent", "args": {
+            "agent_name": agent_name, "prompt": prompt, "background": false
+        }},
         {"text": format!("{agent_name} delegation done")}
     ])
     .to_string()
@@ -249,7 +253,9 @@ fn task_sub_agent_is_dispatched_when_invoked() {
     // sub-delegation.  Explore disallows InvokeAgent, so recursion stops.
     let responses = serde_json::json!([
         // Main agent turn 1: delegate to task
-        {"tool": "InvokeAgent", "args": {"agent_name": "task", "prompt": "run a bash command"}},
+        {"tool": "InvokeAgent", "args": {
+            "agent_name": "task", "prompt": "run a bash command", "background": false
+        }},
         // Main agent turn 2 (after task returns): final answer
         {"text": "task completed"},
         // task sub-agent turn 1: safe Bash call (no recursion)

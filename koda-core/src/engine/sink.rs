@@ -247,6 +247,80 @@ impl EngineSink for ForwardingChildSink {
     }
 }
 
+/// Live-activity tap for **foreground** sub-agents.
+///
+/// **PR-A of #1232 §1**: foreground sub-agents share the parent's
+/// sink (the parent is blocked awaiting them inline), so unlike
+/// [`ForwardingChildSink`] there's no `BufferingSink` to wrap and
+/// no post-completion narrative to drain. The parent already sees
+/// every event the child emits because they go to the same sink.
+///
+/// What's missing without this wrapper is the
+/// [`crate::engine::event::EngineEvent::ChildAgentActivity`] fan-out
+/// that powers the `/agents` overlay's per-row "last activity"
+/// snippet. The bg path gets that fan-out via
+/// [`ForwardingChildSink`]'s `emitter.send_activity` calls; this
+/// type is the fg analog — same emitter API, no buffering.
+///
+/// Borrows the parent sink to avoid an `Arc` allocation per
+/// invocation. The borrow lives for the duration of the inline
+/// sub-agent call, which is exactly the scope of the
+/// [`crate::child_agent::FgRegistrationGuard`] that owns the
+/// emitter — they form a matched pair on the call stack.
+pub struct FgForwardingSink<'a> {
+    inner: &'a dyn EngineSink,
+    emitter: crate::child_agent::ChildStatusEmitter,
+}
+
+impl<'a> FgForwardingSink<'a> {
+    /// Construct from the parent's sink + the emitter handed back by
+    /// [`crate::child_agent::ChildAgentRegistry::register_fg_with_emitter`].
+    pub fn new(inner: &'a dyn EngineSink, emitter: crate::child_agent::ChildStatusEmitter) -> Self {
+        Self { inner, emitter }
+    }
+}
+
+impl EngineSink for FgForwardingSink<'_> {
+    fn emit(&self, event: EngineEvent) {
+        // Same fan-out shape as `ForwardingChildSink::emit` — keep
+        // the two arms in sync. Diverged behavior here would mean
+        // bg and fg overlay rows show different content for the
+        // same tool call, which is exactly the inconsistency PR-A
+        // is trying to eliminate.
+        match &event {
+            EngineEvent::ToolCallStart { name, args, .. } => {
+                self.emitter.send_activity(
+                    crate::engine::event::ChildAgentActivityKind::ToolStart {
+                        tool_name: name.clone(),
+                        summary: summarize_tool_call(name, args),
+                    },
+                );
+            }
+            EngineEvent::ToolCallResult { name, output, .. } => {
+                let success = !looks_like_tool_error(output);
+                self.emitter
+                    .send_activity(crate::engine::event::ChildAgentActivityKind::ToolEnd {
+                        tool_name: name.clone(),
+                        success,
+                    });
+            }
+            EngineEvent::Info { message } => {
+                self.emitter
+                    .send_activity(crate::engine::event::ChildAgentActivityKind::Info {
+                        message: message.clone(),
+                    });
+            }
+            _ => {}
+        }
+        // Forward to the parent's sink so the master TUI's normal
+        // event stream is preserved — fg sub-agents have always
+        // emitted directly to the parent and downstream clients
+        // (CLI, ACP, headless) depend on that. The wrapper only
+        // *adds* the activity fan-out; it never swallows events.
+        self.inner.emit(event);
+    }
+}
+
 /// Build a one-line summary of a tool call for the live activity
 /// feed. Output is rendered as-is by clients, so trim hard.
 ///

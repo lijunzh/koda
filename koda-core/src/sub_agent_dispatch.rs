@@ -285,6 +285,50 @@ async fn run_bg_agent(
     };
 }
 
+/// Parse the **required** `background` field out of an `InvokeAgent`
+/// argument object.
+///
+/// **PR-A of #1232 §2**: extracted from `execute_sub_agent` so the
+/// missing-field / wrong-type / good-bool branches can be unit-
+/// tested without standing up the full sub-agent dispatch plumbing
+/// (provider, registry, sandbox, sink, ...). The schema declares
+/// `background` required (see `tools/agent.rs::definitions`) but
+/// schema compliance is best-effort across LLMs — some models still
+/// emit calls without it. This function is the runtime backstop.
+///
+/// Accepts only literal `true` / `false`. Strings (`"true"`),
+/// numbers (`1`), null, arrays, and objects are all rejected with
+/// an actionable error so the model sees a tool-error and can
+/// correct on the next turn rather than silently defaulting to
+/// `false`.
+pub(crate) fn parse_background_required(args: &serde_json::Value) -> anyhow::Result<bool> {
+    match args.get("background") {
+        Some(serde_json::Value::Bool(b)) => Ok(*b),
+        Some(other) => {
+            let kind = match other {
+                serde_json::Value::Null => "null",
+                serde_json::Value::String(_) => "a string",
+                serde_json::Value::Number(_) => "a number",
+                serde_json::Value::Array(_) => "an array",
+                serde_json::Value::Object(_) => "an object",
+                serde_json::Value::Bool(_) => unreachable!("matched above"),
+            };
+            anyhow::bail!(
+                "InvokeAgent: 'background' must be a boolean (true or false), got {kind}. \
+                 Pick `true` for parallel/independent work, `false` when the next \
+                 step strictly depends on this agent's output."
+            );
+        }
+        None => anyhow::bail!(
+            "InvokeAgent: 'background' is required — no default. \
+             Pick `true` for parallel fan-out / independent long-running tasks (results \
+             auto-inject on a future iteration), or `false` when the next step strictly \
+             depends on this agent's output and no parallel work is possible. \
+             See the 'background' parameter description for the full rationale."
+        ),
+    }
+}
+
 /// Execute a sub-agent in its own isolated event loop.
 ///
 /// When `parent_cache` is provided, the sub-agent shares the parent's
@@ -350,7 +394,19 @@ pub(crate) fn execute_sub_agent<'a>(
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'prompt'"))?;
         let is_fork = agent_name == "fork";
-        let background = args["background"].as_bool().unwrap_or(false);
+        // PR-A of #1232 §2: `background` is a required field. The
+        // schema marks it required (see `tools/agent.rs`) but model
+        // compliance with `required` is best-effort — some models
+        // emit calls without it. Reject loudly so the model sees a
+        // tool-error and can correct on the next turn, instead of
+        // silently defaulting to `false` and triggering the
+        // "sub-agent ran for 1009s with no progress" UX that opened
+        // the issue.
+        //
+        // Validation is extracted into a free function below so it
+        // can be unit-tested without spinning up the full
+        // `execute_sub_agent` plumbing.
+        let background = parse_background_required(&args)?;
 
         // Background mode: spawn and return immediately.
         //
@@ -492,6 +548,77 @@ pub(crate) fn execute_sub_agent<'a>(
             tracing::Span::current().record("cached", true);
             return Ok(cached);
         }
+
+        // PR-A of #1232 §1: register the foreground sub-agent in the
+        // shared `ChildAgentRegistry` so the `/agents` overlay can
+        // render its row alongside any concurrent bg sub-agents.
+        // Pre-PR-A foreground sub-agents emitted nested
+        // `execute_one_tool` spans visible in tracing logs but had
+        // ZERO presence in the live overlay — the user-visible
+        // "sub-agent ran for 1009s with no progress signal"
+        // complaint that opened #1232.
+        //
+        // The guard is held until function return (success, `?`-error,
+        // or panic), at which point its `Drop` impl removes the entry.
+        // RAII is critical: every error path below uses `?` to bubble,
+        // so manual unregister would leak the registry slot on the
+        // first failure (and the overlay would render a phantom row
+        // forever).
+        //
+        // The cache-hit early-return above intentionally skips this
+        // — a cache hit returns synchronously in microseconds, far
+        // below the overlay's render cadence, so registering would
+        // just flash a row that immediately disappears.
+        let (fg_emitter, _fg_guard) = bg_agents.register_fg_with_emitter(
+            agent_name,
+            prompt,
+            &cancel,
+            parent_spawner,
+            parent_tool_call_id.map(str::to_string),
+        );
+        // Push `Pending` immediately so the overlay row appears
+        // before the LLM call — same shape as bg's `reserve()` +
+        // initial `Pending` from the `watch::channel`. Sending it
+        // explicitly (rather than relying on the channel's initial
+        // value) keeps the bg/fg event streams symmetric for any
+        // downstream consumer that reads the queue rather than the
+        // watch.
+        fg_emitter.send(crate::child_agent::AgentStatus::Pending);
+        // Wrap the parent's sink so tool/info events fan out to the
+        // overlay's `ChildAgentActivity` stream in addition to the
+        // normal forwarded path. The wrapper borrows `sink` for the
+        // duration of this scope; the original `sink` reference is
+        // shadowed below so every existing emit site downstream
+        // routes through the wrapper without code changes.
+        let fg_sink = crate::engine::sink::FgForwardingSink::new(sink, fg_emitter.clone());
+        let sink: &dyn crate::engine::EngineSink = &fg_sink;
+        // Now that the registry entry exists, transition to
+        // `Running { iter: 0 }` so the overlay shows the agent as
+        // active rather than queued. The inference loop below
+        // doesn't currently push per-iteration `Running` heartbeats
+        // for fg (bg gets them via the registered emitter inside
+        // `run_bg_agent`) — a follow-up could add iter ticks here,
+        // but the `last activity` line driven by `ToolCallStart`
+        // events already gives the user a moving signal.
+        fg_emitter.send(crate::child_agent::AgentStatus::Running { iter: 0 });
+        // Note on terminal status: we deliberately do NOT emit a
+        // `Completed`/`Errored` `ChildTaskUpdate` on return. Reason:
+        // the function has ~half a dozen `return Ok(...)` sites and
+        // many `?`-bubbled errors; instrumenting each is fragile and
+        // refactoring the inference body into an inner async fn just
+        // to capture a Result was ruled out as scope creep. Instead
+        // we lean on the `_fg_guard`'s `Drop` impl, which removes
+        // the entry from the registry at the instant the function
+        // returns. The overlay's `build_rows` prunes activity for
+        // missing task ids on the very next frame — visually
+        // identical to receiving a terminal event. ACP / headless
+        // clients that subscribe to the raw `ChildTaskUpdate`
+        // stream will see the event flow simply stop for that
+        // task_id, which mirrors how a bg drain looks to them once
+        // the registry entry is gone. Documented as a known
+        // asymmetry in the PR body; can be tightened in a follow-up
+        // if downstream consumers grow a hard dependency on the
+        // terminal tag.
 
         sink.emit(EngineEvent::SubAgentStart {
             agent_name: agent_name.to_string(),
@@ -1505,5 +1632,92 @@ mod invocation_cleanup_tests {
             !cancel.is_cancelled(),
             "unrelated entry's cancel token must not fire"
         );
+    }
+}
+
+#[cfg(test)]
+mod parse_background_required_tests {
+    //! PR-A of #1232 §2: schema declares `background` required, and
+    //! this module's runtime backstop holds the line for models that
+    //! ignore the schema. The tests pin every branch so a future
+    //! refactor that re-introduces a default-false fallback fails
+    //! loudly here.
+
+    use super::parse_background_required;
+    use serde_json::json;
+
+    #[test]
+    fn accepts_literal_true() {
+        let v = parse_background_required(&json!({"background": true})).expect("ok");
+        assert!(v);
+    }
+
+    #[test]
+    fn accepts_literal_false() {
+        let v = parse_background_required(&json!({"background": false})).expect("ok");
+        assert!(!v);
+    }
+
+    #[test]
+    fn missing_field_errors_with_actionable_message() {
+        let err = parse_background_required(&json!({"prompt": "x"}))
+            .expect_err("missing background must be an error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("'background' is required"),
+            "error must name the field; got: {msg}"
+        );
+        // Actionable: the model needs to know what to pick. Both of
+        // the canonical choices are mentioned so the next-turn
+        // correction is unambiguous.
+        assert!(msg.contains("`true`"), "error must mention `true` option");
+        assert!(msg.contains("`false`"), "error must mention `false` option");
+    }
+
+    #[test]
+    fn string_value_rejected_with_type_hint() {
+        // Models sometimes emit "true" (string) when fine-tuned on
+        // datasets that quoted JSON booleans. Catch and reject so we
+        // don't fall through to the default-false path that #1232 §2
+        // exists to eliminate.
+        let err = parse_background_required(&json!({"background": "true"}))
+            .expect_err("string must be an error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("must be a boolean"),
+            "error must explain the type requirement; got: {msg}"
+        );
+        assert!(
+            msg.contains("a string"),
+            "error must name the actual offending type; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn number_value_rejected() {
+        let err = parse_background_required(&json!({"background": 1}))
+            .expect_err("number must be an error");
+        assert!(format!("{err:#}").contains("a number"));
+    }
+
+    #[test]
+    fn null_value_rejected() {
+        // null is `Some(Null)` in serde_json, distinct from missing.
+        // Both should fail, but null hits the type-mismatch arm.
+        let err = parse_background_required(&json!({"background": null}))
+            .expect_err("null must be an error");
+        assert!(format!("{err:#}").contains("null"));
+    }
+
+    #[test]
+    fn array_and_object_rejected() {
+        for v in [json!({"background": []}), json!({"background": {}})] {
+            let err = parse_background_required(&v).expect_err("collection must be an error");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("must be a boolean"),
+                "non-bool collection must surface type-mismatch; got: {msg}"
+            );
+        }
     }
 }

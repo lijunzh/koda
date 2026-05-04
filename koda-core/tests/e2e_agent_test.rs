@@ -37,7 +37,8 @@ async fn test_sub_agent_invocation_e2e() {
             "InvokeAgent",
             serde_json::json!({
                 "agent_name": "echo-agent",
-                "prompt": "review the auth module"
+                "prompt": "review the auth module",
+                "background": false
             }),
         ),
         MockResponse::Text("Sub-agent says: Echo: review the auth module".into()),
@@ -150,7 +151,8 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
             "InvokeAgent",
             serde_json::json!({
                 "agent_name": "loop-test-agent",
-                "prompt": "do the thing"
+                "prompt": "do the thing",
+                "background": false
             }),
         ),
         MockResponse::Text("parent done".into()),
@@ -230,11 +232,11 @@ async fn test_sub_agent_cache_hit_skips_llm() {
     let provider = MockProvider::new(vec![
         MockResponse::tool_call(
             "InvokeAgent",
-            serde_json::json!({"agent_name": "echo-agent", "prompt": "do the thing"}),
+            serde_json::json!({"agent_name": "echo-agent", "prompt": "do the thing", "background": false}),
         ),
         MockResponse::tool_call(
             "InvokeAgent",
-            serde_json::json!({"agent_name": "echo-agent", "prompt": "do the thing"}),
+            serde_json::json!({"agent_name": "echo-agent", "prompt": "do the thing", "background": false}),
         ),
         MockResponse::Text("Done with both calls.".into()),
     ]);
@@ -289,7 +291,7 @@ async fn invoke_agent_and_take_calls(
     let provider = MockProvider::new(vec![
         MockResponse::tool_call(
             "InvokeAgent",
-            serde_json::json!({"agent_name": agent_name, "prompt": "go"}),
+            serde_json::json!({"agent_name": agent_name, "prompt": "go", "background": false}),
         ),
         MockResponse::Text("done".into()),
     ]);
@@ -386,7 +388,7 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
     let provider = MockProvider::new(vec![
         MockResponse::tool_call(
             "InvokeAgent",
-            serde_json::json!({"agent_name": "would-recurse", "prompt": "go"}),
+            serde_json::json!({"agent_name": "would-recurse", "prompt": "go", "background": false}),
         ),
         MockResponse::Text("parent done".into()),
     ]);
@@ -605,7 +607,7 @@ async fn test_sub_agent_grace_turn_terminates_runaway_explorer() {
     let provider = MockProvider::new(vec![
         MockResponse::tool_call(
             "InvokeAgent",
-            serde_json::json!({"agent_name": "spinner", "prompt": "search broadly"}),
+            serde_json::json!({"agent_name": "spinner", "prompt": "search broadly", "background": false}),
         ),
         MockResponse::Text("Sub-agent reported back.".into()),
     ]);
@@ -709,7 +711,7 @@ async fn test_sub_agent_grace_turn_drops_tool_calls_when_model_defies() {
     let provider = MockProvider::new(vec![
         MockResponse::tool_call(
             "InvokeAgent",
-            serde_json::json!({"agent_name": "defiant", "prompt": "search"}),
+            serde_json::json!({"agent_name": "defiant", "prompt": "search", "background": false}),
         ),
         MockResponse::Text("Sub-agent reported back.".into()),
     ]);

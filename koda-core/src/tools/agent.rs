@@ -87,25 +87,32 @@ Key rules:
                     },
                     "background": {
                         "type": "boolean",
-                        "description": "Run in background and return immediately (default: false). \
-                            Results are drained and injected as a user message at the start of \
-                            the next iteration — NOT mid-iteration. The bg agent inherits the \
-                            parent's trust + sandbox at spawn time and is cancelled on Ctrl+C.\n\n\
-                            **After spawning, keep working.** The whole point of background \
-                            mode is that you do other useful things (file edits, follow-up \
-                            searches, summarizing progress for the user) while the agent runs. \
-                            Results inject automatically on a future iteration via auto-drain \
-                            — you do NOT need to call `WaitTask` to receive them. Calling \
-                            `WaitTask` immediately after the spawn turns the background dispatch \
-                            back into a blocking call and silences the parent for the duration; \
-                            only do that when you genuinely have no other work to make progress \
-                            on (e.g. the next step strictly depends on this agent's output and \
-                            no parallel work is possible).\n\n\
-                            Use for independent long-running tasks that don't block your \
-                            current work."
+                        "description": "REQUIRED. `true` runs the sub-agent in the background and returns \
+                            immediately; results inject as a user message at the start of a future \
+                            iteration via auto-drain (you do NOT need to call `WaitTask`). \
+                            `false` runs the sub-agent in the foreground and blocks the parent until \
+                            the result is ready.\n\n\
+                            **PR-A of #1232 §2**: this field is required — there is no default. \
+                            Pre-PR-A the field defaulted to `false`, which silently turned every \
+                            parallel-fanout pattern into serial blocking calls and produced the \
+                            \"sub-agent ran for 1009s with no progress\" UX that opened the issue. \
+                            Forcing the model to choose makes the parallelism decision explicit at \
+                            the call site (Zen of Python: explicit is better than implicit).\n\n\
+                            Choose `true` for: parallel fan-out reviews, independent long-running \
+                            tasks, anything where you can do useful work concurrently.\n\
+                            Choose `false` for: the next step strictly depends on this agent's \
+                            output AND no parallel work is possible (the result is the next thing \
+                            you need to read).\n\n\
+                            **After spawning a `true` sub-agent, keep working.** The whole point \
+                            of background mode is that you do other useful things (file edits, \
+                            follow-up searches, summarizing progress) while the agent runs. \
+                            Calling `WaitTask` immediately after a bg spawn turns it back into a \
+                            blocking call — only do that when you genuinely have no parallel work.\n\n\
+                            The bg agent inherits the parent's trust + sandbox at spawn time and \
+                            is cancelled on Ctrl+C."
                     }
                 },
-                "required": ["prompt"]
+                "required": ["prompt", "background"]
             }),
         },
         ToolDefinition {
@@ -396,8 +403,36 @@ mod tests {
             .and_then(|v| v.as_str())
             .expect("background param must have a description");
         assert!(
-            bg_desc.contains("next iteration"),
-            "background param must explain drain-on-next-iteration timing"
+            bg_desc.contains("future iteration") || bg_desc.contains("next iteration"),
+            "background param must explain drain-on-next-iteration timing; \
+             post-PR-A wording uses 'future iteration' since the drain \
+             can land any iteration after the spawn, not strictly the next one"
+        );
+    }
+
+    /// PR-A of #1232 §2: `background` is required — no default. The
+    /// schema-side enforcement (this test) pairs with the runtime
+    /// validation in `sub_agent_dispatch::execute_sub_agent`.
+    /// Both arms must hold for the contract to actually bind models
+    /// that respect `required` AND models that don't.
+    #[test]
+    fn test_invoke_agent_background_is_required_in_schema() {
+        let defs = definitions();
+        let required = defs[0]
+            .parameters
+            .pointer("/required")
+            .and_then(|v| v.as_array())
+            .expect("InvokeAgent schema must declare a `required` array");
+        let names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            names.contains(&"prompt"),
+            "`prompt` must remain required (regression guard)"
+        );
+        assert!(
+            names.contains(&"background"),
+            "PR-A of #1232 §2: `background` must be required so models can't \
+             silently default it to false and serialize parallel fan-out into \
+             blocking calls. Got required = {names:?}"
         );
     }
 

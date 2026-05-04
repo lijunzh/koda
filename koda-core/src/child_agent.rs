@@ -440,10 +440,12 @@ impl ChildStatusEmitter {
             .push_status_event(EngineEvent::ChildAgentActivity {
                 task_id: self.task_id,
                 spawner: self.spawner,
-                // PR-A0 of #1232: hardcoded `true` because every emit
-                // site today is a bg agent. PR-A wires up a fg path
-                // that passes `false` here.
-                is_background: true,
+                // PR-A of #1232 §1: thread the emitter's stored
+                // `is_background` flag through. Bg path passes `true`,
+                // fg path passes `false`. Replaces PR-A0's hardcoded
+                // `true` placeholder — the emitter has held the real
+                // value since PR-A0.5.
+                is_background: self.is_background,
                 kind,
             });
     }
@@ -511,6 +513,49 @@ pub struct ChildAgentReservation {
     /// events emitted by [`ChildStatusEmitter::send`] both reflect
     /// the same source-of-truth value.
     pub is_background: bool,
+}
+
+/// RAII handle returned from [`ChildAgentRegistry::register_fg_with_emitter`].
+///
+/// **PR-A of #1232 §1**: foreground sub-agents are owned by the
+/// inline call that's awaiting them — there's no oneshot drain to
+/// hook into for cleanup. Instead the parent holds this guard for
+/// the duration of the await; on drop the registry entry is removed
+/// so the `/agents` overlay stops showing the row.
+///
+/// Drop semantics:
+/// * Successful return — guard dropped at scope exit, entry pulled.
+/// * `?`-bubbled error — guard dropped during stack unwind, entry
+///   pulled. Without RAII this path leaks the registry slot, which
+///   the overlay would then render as a phantom "running" row.
+/// * Panic — same as `?`. Mirrors `AbortOnDropHandle`'s drop-safety
+///   story for the bg path.
+///
+/// The guard intentionally does *not* cancel the child token — fg
+/// sub-agents return through the inline await, so the cancel-token
+/// cascade isn't needed for cleanup. Cancellation comes from the
+/// usual Ctrl-C path on the parent's loop.
+pub struct FgRegistrationGuard {
+    registry: Arc<ChildAgentRegistry>,
+    task_id: u32,
+}
+
+impl FgRegistrationGuard {
+    /// The registry id assigned at registration time. Stable for the
+    /// lifetime of the guard. Useful for tests asserting that the
+    /// emitter and the guard refer to the same entry.
+    pub fn task_id(&self) -> u32 {
+        self.task_id
+    }
+}
+
+impl Drop for FgRegistrationGuard {
+    fn drop(&mut self) {
+        // Best-effort removal. If the registry was already drained
+        // (shouldn't happen for fg — `drain_completed` skips us),
+        // the `remove` is a no-op.
+        self.registry.pending.lock().remove(&self.task_id);
+    }
 }
 
 impl ChildAgentRegistry {
@@ -628,6 +673,89 @@ impl ChildAgentRegistry {
         );
     }
 
+    /// Register a **foreground** sub-agent and hand back the live
+    /// signal lines for it.
+    ///
+    /// **PR-A of #1232 §1**: the bg path uses `reserve` + `attach`,
+    /// which provisions a oneshot result channel and an
+    /// `AbortOnDropHandle` so the inference loop can drain results
+    /// asynchronously. Foreground sub-agents don't need any of that
+    /// — the parent is *already blocked* awaiting the inline call,
+    /// so the result returns through the normal function return path.
+    /// What the parent *does* need is the registry membership so the
+    /// `/agents` overlay can render an activity row, plus an emitter
+    /// so child events fan out to the same `ChildAgentActivity`
+    /// stream that bg uses.
+    ///
+    /// Returns `(emitter, guard)`:
+    /// * `emitter` — use `.send(...)` to push status transitions
+    ///   (`Pending` → `Running { iter }` → terminal) and
+    ///   `.send_activity(...)` to fan out tool/info events. The
+    ///   emitter's `is_background` is wired to `false` so every
+    ///   `ChildTaskUpdate`/`ChildAgentActivity` event the fg path
+    ///   emits is correctly tagged.
+    /// * `guard` — a [`FgRegistrationGuard`] that removes the entry
+    ///   from the registry when dropped. Hold it for the duration of
+    ///   the inline sub-agent call. RAII over manual unregister so a
+    ///   panic / `?`-bubble doesn't leak the entry. (Mirrors
+    ///   `AbortOnDropHandle`'s drop-safety story for the bg path.)
+    ///
+    /// The entry is inserted with a noop oneshot sender that never
+    /// fires + a noop spawn handle. `drain_completed` skips fg
+    /// entries unconditionally (see its doc), so neither the dummy
+    /// rx nor the dummy handle ever surface to a consumer.
+    pub fn register_fg_with_emitter(
+        self: &Arc<Self>,
+        agent_name: &str,
+        prompt: &str,
+        parent_cancel: &CancellationToken,
+        spawner: Option<u32>,
+        parent_tool_call_id: Option<String>,
+    ) -> (ChildStatusEmitter, FgRegistrationGuard) {
+        let (_dummy_tx, dummy_rx) = oneshot::channel::<Result<BgPayload, BgPayload>>();
+        // Leak the sender into the entry's environment via a parked
+        // task so `try_recv` always returns `Empty`, not `Closed`.
+        // We can't actually keep `_dummy_tx` alive that way without a
+        // task — simpler: just drop it here, accept that try_recv
+        // would return `Closed`, and rely on `drain_completed`'s
+        // `is_background` early-skip (the whole reason that skip
+        // exists). Belt + suspenders against a future refactor that
+        // accidentally drops the skip.
+        drop(_dummy_tx);
+
+        let (status_tx, status_rx) = watch::channel(AgentStatus::Pending);
+        let cancel = parent_cancel.child_token();
+        let task_id = {
+            let mut id = self.next_id.lock();
+            let next = *id;
+            *id += 1;
+            next
+        };
+        let noop = tokio::spawn(async {});
+        self.pending.lock().insert(
+            task_id,
+            ChildAgentEntry {
+                agent_name: agent_name.to_string(),
+                prompt: prompt.to_string(),
+                rx: dummy_rx,
+                cancel,
+                status_rx,
+                started_at: Instant::now(),
+                spawner,
+                is_background: false,
+                parent_tool_call_id,
+                _handle: AbortOnDropHandle::new(noop),
+            },
+        );
+
+        let emitter = ChildStatusEmitter::new(task_id, spawner, false, status_tx, self.clone());
+        let guard = FgRegistrationGuard {
+            registry: self.clone(),
+            task_id,
+        };
+        (emitter, guard)
+    }
+
     /// Convenience for tests: register a synthetic entry without a
     /// real spawned task. The provided `tx` can be used to fire the
     /// result manually. The handle is a noop spawned task that
@@ -694,12 +822,29 @@ impl ChildAgentRegistry {
 
     /// Drain all completed background agents. Non-blocking — only takes
     /// entries whose oneshot has already resolved.
+    ///
+    /// **PR-A of #1232 §1**: foreground entries (`is_background == false`)
+    /// are skipped. The fg dispatch path returns the sub-agent's output
+    /// inline through its own `await`, so injecting a duplicate result
+    /// via the bg drain channel would corrupt the parent's transcript.
+    /// Defense-in-depth: today the fg registration path doesn't even
+    /// hold a sender that can fire, so the `try_recv` would only ever
+    /// return `Empty` or `Closed` — but `Closed` would manufacture a
+    /// fake "cancelled" `BgAgentResult` (see the `Closed` arm below),
+    /// which the inference loop would then inject into the parent. The
+    /// `is_background` skip here makes that whole class of bug
+    /// impossible by construction rather than relying on the fg path's
+    /// discipline to never close its sender.
     pub fn drain_completed(&self) -> Vec<BgAgentResult> {
         let mut guard = self.pending.lock();
         let mut completed = Vec::new();
         let mut done_ids = Vec::new();
 
         for (id, entry) in guard.iter_mut() {
+            if !entry.is_background {
+                // PR-A of #1232 §1: see fn-level doc.
+                continue;
+            }
             match entry.rx.try_recv() {
                 Ok(Ok((output, events))) => {
                     done_ids.push(*id);
@@ -2000,5 +2145,138 @@ mod tests {
                 kind: crate::engine::event::ChildAgentActivityKind::Info { message }
             } if message.contains("cache hit")
         ));
+    }
+
+    // ── PR-A of #1232 §1: foreground sub-agent registry path ────────────
+
+    /// `register_fg_with_emitter` inserts an entry whose snapshot
+    /// reports `is_background == false`. Sanity-checks that the fg
+    /// path is wired to the same registry the `/agents` overlay reads.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn register_fg_inserts_entry_with_is_background_false() {
+        let reg = Arc::new(ChildAgentRegistry::new());
+        let parent = CancellationToken::new();
+
+        let (_emitter, _guard) = reg.register_fg_with_emitter(
+            "explore",
+            "audit the storage layer",
+            &parent,
+            Some(7),
+            Some("call_42".into()),
+        );
+
+        let snap = reg.snapshot();
+        assert_eq!(snap.len(), 1, "fg registration must add exactly one entry");
+        let entry = &snap[0];
+        assert_eq!(entry.agent_name, "explore");
+        assert_eq!(entry.prompt, "audit the storage layer");
+        assert_eq!(entry.spawner, Some(7));
+        assert!(
+            !entry.is_background,
+            "fg entries must be tagged is_background=false so the overlay \
+             and any future is_background-aware filter agree"
+        );
+    }
+
+    /// Dropping the `FgRegistrationGuard` removes the entry.
+    /// RAII covers `?`-bubbled errors and panics; without it the
+    /// overlay would render a phantom "running" row indefinitely.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fg_guard_drop_removes_entry_from_registry() {
+        let reg = Arc::new(ChildAgentRegistry::new());
+        let parent = CancellationToken::new();
+
+        {
+            let (_emitter, _guard) =
+                reg.register_fg_with_emitter("explore", "do thing", &parent, None, None);
+            assert_eq!(reg.snapshot().len(), 1, "entry present while guard alive");
+        }
+
+        assert_eq!(
+            reg.snapshot().len(),
+            0,
+            "guard's Drop impl must remove the registry entry on scope exit"
+        );
+    }
+
+    /// `drain_completed` must skip foreground entries unconditionally.
+    /// Defense-in-depth: today the fg path doesn't fire its (dropped)
+    /// oneshot sender, so try_recv would yield `Closed` and the
+    /// `Closed` arm would manufacture a fake "cancelled"
+    /// `BgAgentResult` — which the inference loop would then inject
+    /// as a duplicate of the result the parent already returned
+    /// inline. The `is_background` skip prevents that whole bug class
+    /// by construction.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drain_completed_skips_foreground_entries() {
+        let reg = Arc::new(ChildAgentRegistry::new());
+        let parent = CancellationToken::new();
+
+        let (_emitter, _guard) =
+            reg.register_fg_with_emitter("explore", "prompt", &parent, None, None);
+
+        let drained = reg.drain_completed();
+        assert!(
+            drained.is_empty(),
+            "fg entries must never be drained as bg results; got {drained:?}"
+        );
+        assert_eq!(
+            reg.snapshot().len(),
+            1,
+            "drain must not pop fg entries either"
+        );
+    }
+
+    /// A bg entry whose oneshot sender has been dropped DOES get
+    /// drained (yielding the synthetic "cancelled" result). This is
+    /// the existing behavior the fg-skip is defending against.
+    /// Pinning it so a future refactor that changes the bg semantics
+    /// can't silently regress the fg case.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drain_completed_still_synthesizes_cancelled_for_bg_with_closed_rx() {
+        let reg = Arc::new(ChildAgentRegistry::new());
+        let (_id, tx) = reg.register_test("explore", "prompt");
+        // Drop the sender to simulate a panicked/cancelled bg task.
+        drop(tx);
+
+        let drained = reg.drain_completed();
+        assert_eq!(drained.len(), 1, "bg with closed rx still drains");
+        assert!(!drained[0].success, "closed-rx drain marks failure");
+        assert!(
+            drained[0].output.contains("cancelled"),
+            "closed-rx synthetic result mentions cancellation"
+        );
+    }
+
+    /// Fg emitter's `send_activity` must tag events with
+    /// `is_background: false`. Pre-PR-A the emitter hardcoded `true`,
+    /// which would have made every fg activity event mis-tagged on
+    /// the wire — ACP / headless filters keying on that flag would
+    /// silently drop fg events.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fg_emitter_tags_activity_events_with_is_background_false() {
+        let reg = Arc::new(ChildAgentRegistry::new());
+        let parent = CancellationToken::new();
+
+        let (emitter, _guard) =
+            reg.register_fg_with_emitter("explore", "prompt", &parent, None, None);
+        emitter.send_activity(crate::engine::event::ChildAgentActivityKind::ToolStart {
+            tool_name: "Read".into(),
+            summary: "Read foo.rs".into(),
+        });
+
+        let drained = reg.drain_status_events();
+        let activity = drained
+            .iter()
+            .find(|e| matches!(e, EngineEvent::ChildAgentActivity { .. }))
+            .expect("activity event present");
+        let EngineEvent::ChildAgentActivity { is_background, .. } = activity else {
+            unreachable!("matched above");
+        };
+        assert!(
+            !*is_background,
+            "fg emitter must produce ChildAgentActivity {{ is_background: false }}; \
+             pre-PR-A this was hardcoded true and would silently mis-tag the wire"
+        );
     }
 }
