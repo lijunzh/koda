@@ -277,7 +277,13 @@ pub(crate) fn draw_viewport(
     // shows it; static info doesn't earn its keep in the persistent
     // footer. `project_root` is still threaded through `draw_viewport`
     // because `render_history` uses it to resolve hyperlink paths.
-    let mut sb = StatusBar::new(model, mode.label(), context_pct);
+    let mut sb = StatusBar::new(model, mode.label(), context_pct)
+        // #860 visibility companion: surface kernel sandbox state next
+        // to the trust badge so users on unsandboxed systems can see
+        // at a glance why Auto refuses (and why Safe is their only
+        // top-level option there). `is_available()` is cached after
+        // first probe so this is a cheap function call per draw.
+        .with_sandbox_status(Some(koda_core::sandbox::is_available()));
     if queue_total > 0 {
         sb = sb.with_queue(queue_total);
     }

@@ -30,9 +30,13 @@
 
 use anyhow::Result;
 use koda_sandbox::{
-    SandboxPolicy, SandboxRuntime, SandboxTransformRequest, ca_bundle_for_policy, current_runtime,
-    is_available as ks_is_available, proxy_env_vars,
+    DependencyReport, SandboxPolicy, SandboxRuntime, SandboxTransformRequest, ca_bundle_for_policy,
+    current_runtime, is_available as ks_is_available, proxy_env_vars,
 };
+
+/// Re-export so consumers (e.g. `koda doctor` in `koda-cli`) don't have
+/// to add a direct dependency on `koda-sandbox` just to read the report.
+pub use koda_sandbox::DependencyReport as SandboxDependencyReport;
 use std::path::Path;
 use std::sync::OnceLock;
 use tokio::process::Command;
@@ -44,6 +48,22 @@ use tokio::process::Command;
 /// prompt (#860). Cached after first probe.
 pub fn is_available() -> bool {
     ks_is_available()
+}
+
+/// Detailed sandbox health report — backend identifier, availability,
+/// and a human-readable reason when unavailable.
+///
+/// Consumed by:
+///   - `koda doctor` for end-user diagnostics (the actionable
+///     equivalent of `is_available()` for issue reports and setup).
+///   - The TUI status bar's sandbox indicator.
+///   - Bug-report templates (via `koda doctor` output).
+///
+/// This is a thin wrapper over the sandbox runtime's own health
+/// check; it exists in `koda-core::sandbox` so callers don't need
+/// to depend on `koda-sandbox` directly (DRY: one re-export point).
+pub fn dependency_report() -> DependencyReport {
+    current_runtime().check_dependencies()
 }
 
 /// Re-export of [`koda_sandbox::is_fully_denied`] for in-process file tools.

@@ -253,7 +253,171 @@ pub fn coerce_for_top_level(candidate: TrustMode) -> (TrustMode, Option<&'static
     }
 }
 
-// ── Child trust derivation (#1022 B19) ─────────────────────────────────
+// ── Sandbox-availability requirement for Auto (#860 → hard refuse) ─────────────
+
+/// Validate that [`TrustMode::Auto`] has a kernel sandbox available
+/// to enforce the perimeter. Returns `Err` with a user-actionable
+/// message when Auto is requested without sandbox support; `Ok`
+/// with the (unchanged) mode otherwise.
+///
+/// # The invariant
+///
+/// Auto's whole value proposition is "trust the kernel sandbox to
+/// contain auto-approved mutations". Without the sandbox, Auto
+/// would auto-approve `Bash` mutations that touch arbitrary paths
+/// on the user's filesystem — the destructive ops we *do* still
+/// confirm in Auto (#1251) are only one class of risk; the more
+/// common class is "`pip install --user` modifies `~/.local/`,
+/// destructive ops are bounded by the sandbox alone". Removing
+/// the sandbox removes that bound.
+///
+/// Plan and Safe don't need this validation:
+/// - **Plan** (sub-agent-only — not reachable as a top-level TUI
+///   mode; see `coerce_for_top_level`) denies all mutating tools at
+///   the trust layer; Bash never runs, so kernel sandbox state is
+///   irrelevant. The Plan branch in this helper exists for symmetry
+///   and to defend against any future code path that calls it on a
+///   sub-agent's declared mode.
+/// - **Safe** keeps the human in the approval loop for every
+///   mutation; the sandbox is defense-in-depth there, not the
+///   primary boundary.
+///
+/// # Why a hard refusal, not a silent coerce
+///
+/// Pre-#860 the plan was "silently downgrade Auto → Safe when the
+/// sandbox is unavailable". That violates the Zen of Python
+/// (errors should never pass silently) and — critically — it's
+/// **catastrophic in headless mode**: `koda --mode auto -p "..."`
+/// would silently become Safe, and every mutation would hit
+/// `RejectAuto` (no human channel to approve), causing the task
+/// to abort halfway with a confusing partial-state failure.
+/// Hard refusal at startup gives a clear error and exit-code-1
+/// instead.
+///
+/// # When this is called
+///
+/// - **CLI startup** (via `parse_top_level_trust_mode` in `app.rs`):
+///   `--mode auto` + no sandbox → print error + exit 1.
+/// - **TUI mode toggle** (`Shift+Tab`, `/auto`): catch the error
+///   and surface a warning toast instead of cycling — the user
+///   stays in the previous mode.
+/// - **Persistence resume**: a session persisted in Auto on a
+///   sandboxed machine, resumed on an unsandboxed machine, gets
+///   the same hard refusal as `--mode auto`.
+///
+/// The per-tool bail in `sandbox::build()` (sandbox.rs:111)
+/// remains as belt-and-suspenders for any future call path that
+/// bypasses startup validation.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::trust::{require_sandbox_for_auto, TrustMode};
+///
+/// // Auto + sandbox available: passes through unchanged.
+/// assert_eq!(require_sandbox_for_auto(TrustMode::Auto, true).unwrap(), TrustMode::Auto);
+///
+/// // Auto + no sandbox: errors with an actionable message.
+/// let err = require_sandbox_for_auto(TrustMode::Auto, false).unwrap_err();
+/// assert!(err.contains("sandbox"));
+/// assert!(err.contains("--mode safe") || err.contains("koda doctor"));
+///
+/// // Safe and Plan don't depend on sandbox availability.
+/// assert!(require_sandbox_for_auto(TrustMode::Safe, false).is_ok());
+/// assert!(require_sandbox_for_auto(TrustMode::Plan, false).is_ok());
+/// ```
+pub fn require_sandbox_for_auto(
+    candidate: TrustMode,
+    sandbox_available: bool,
+) -> Result<TrustMode, String> {
+    match candidate {
+        TrustMode::Auto if !sandbox_available => Err(
+            "Auto mode requires the kernel sandbox, which is unavailable on this system. \
+             Auto auto-approves mutating tool calls and relies on the sandbox to contain \
+             them; without the sandbox, the agent could touch arbitrary files outside the \
+             project. Run `koda doctor` for setup instructions, or use `--mode safe` to \
+             keep the human in the approval loop."
+                .to_string(),
+        ),
+        other => Ok(other),
+    }
+}
+
+/// Compute the **default** trust mode for a session given sandbox
+/// availability. Auto when the sandbox is present, Safe when not.
+///
+/// This is the helper that #1241 (flip default `Safe → Auto`) will
+/// consume. Today it's only invoked when neither `--mode` nor
+/// `KODA_MODE` are set explicitly — explicit user intent always
+/// wins, and an explicit `--mode auto` on an unsandboxed system
+/// is rejected by [`require_sandbox_for_auto`] rather than
+/// silently coerced.
+///
+/// The asymmetry is deliberate:
+/// - **Implicit default** picks the strongest mode the platform
+///   can support — better UX on the supported case, no foot-gun
+///   on the unsupported case.
+/// - **Explicit request** is honored or rejected, never silently
+///   coerced — follows the Zen of Python rule that errors should
+///   never pass silently.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::trust::{derive_default_trust, TrustMode};
+///
+/// assert_eq!(derive_default_trust(true), TrustMode::Auto);
+/// assert_eq!(derive_default_trust(false), TrustMode::Safe);
+/// ```
+pub fn derive_default_trust(sandbox_available: bool) -> TrustMode {
+    if sandbox_available {
+        TrustMode::Auto
+    } else {
+        TrustMode::Safe
+    }
+}
+
+// ── TUI-side sandbox-aware setters ──────────────────────────
+
+/// Sandbox-aware variant of [`cycle_trust`]. Computes the next mode,
+/// validates it with [`require_sandbox_for_auto`], and either commits
+/// it via [`set_trust`] (returning `Ok(new_mode)`) or returns Err
+/// with the actionable message; the shared mode is **left unchanged**
+/// in the Err case.
+///
+/// Used by the TUI `BackTab` cycle handler so a user pressing the
+/// trust toggle on an unsandboxed system stays in their previous
+/// mode and gets a visible warning instead of silently flipping to
+/// Auto (which would fail at the next mutation anyway).
+pub fn cycle_trust_checked(
+    shared: &SharedTrustMode,
+    sandbox_available: bool,
+) -> Result<TrustMode, String> {
+    let next = read_trust(shared).next();
+    let validated = require_sandbox_for_auto(next, sandbox_available)?;
+    set_trust(shared, validated);
+    Ok(validated)
+}
+
+/// Sandbox-aware variant of [`set_trust`]. Validates `mode` with
+/// [`require_sandbox_for_auto`] before committing; on Err, the
+/// shared mode is **left unchanged** and the caller surfaces the
+/// message.
+///
+/// Used by the TUI approval-prompt `a` (always-allow) hotkey so a
+/// user pressing it on an unsandboxed system gets a clear refusal
+/// instead of an Auto state that would bail at the next tool call.
+pub fn set_trust_checked(
+    shared: &SharedTrustMode,
+    mode: TrustMode,
+    sandbox_available: bool,
+) -> Result<TrustMode, String> {
+    let validated = require_sandbox_for_auto(mode, sandbox_available)?;
+    set_trust(shared, validated);
+    Ok(validated)
+}
+
+// ── Child trust derivation (#1022 B19) ──────────────────────
 
 /// The single, authoritative way to compute a child agent's trust mode.
 ///
@@ -1404,6 +1568,93 @@ mod tests {
             child_inherits,
             TrustMode::Plan,
             "sub-agent must keep Plan; coercion is top-level-only"
+        );
+    }
+
+    // ────────────────────────────────────────────
+    // require_sandbox_for_auto + derive_default_trust (#860 → hard refuse)
+    //
+    // Auto's value proposition is "trust the kernel sandbox to contain
+    // auto-approved mutations". Without the sandbox we MUST refuse Auto
+    // — not silently coerce to Safe (catastrophic in headless: every
+    // mutation hits RejectAuto with no human channel and the task
+    // aborts halfway). The pin tests below enforce that contract.
+    // ────────────────────────────────────────────
+
+    #[test]
+    fn require_sandbox_auto_with_sandbox_passes_through() {
+        let result = require_sandbox_for_auto(TrustMode::Auto, true);
+        assert_eq!(result.unwrap(), TrustMode::Auto);
+    }
+
+    #[test]
+    fn require_sandbox_auto_without_sandbox_errors_with_actionable_message() {
+        let err = require_sandbox_for_auto(TrustMode::Auto, false).unwrap_err();
+        // Pin the actionable parts of the error so future edits don't
+        // strip the user's recovery path.
+        assert!(
+            err.contains("sandbox"),
+            "error must mention sandbox; got: {err}"
+        );
+        assert!(
+            err.contains("--mode safe"),
+            "error must point at --mode safe as the escape hatch; got: {err}"
+        );
+        assert!(
+            err.contains("koda doctor"),
+            "error must point at `koda doctor` for setup help; got: {err}"
+        );
+    }
+
+    #[test]
+    fn require_sandbox_safe_passes_regardless_of_sandbox() {
+        // Safe doesn't need the sandbox — the human is the boundary.
+        // Pin both branches so a future "defense-in-depth, force
+        // sandbox for Safe too" refactor has to actively touch this.
+        assert_eq!(
+            require_sandbox_for_auto(TrustMode::Safe, true).unwrap(),
+            TrustMode::Safe
+        );
+        assert_eq!(
+            require_sandbox_for_auto(TrustMode::Safe, false).unwrap(),
+            TrustMode::Safe
+        );
+    }
+
+    #[test]
+    fn require_sandbox_plan_passes_regardless_of_sandbox() {
+        // Plan denies all mutating tools at the trust layer; Bash never
+        // runs so kernel sandbox state is irrelevant. Same dual-branch
+        // pin as Safe.
+        assert_eq!(
+            require_sandbox_for_auto(TrustMode::Plan, true).unwrap(),
+            TrustMode::Plan
+        );
+        assert_eq!(
+            require_sandbox_for_auto(TrustMode::Plan, false).unwrap(),
+            TrustMode::Plan
+        );
+    }
+
+    #[test]
+    fn derive_default_trust_picks_strongest_supported_mode() {
+        // The sandbox-aware default consumed by #1241's flip: Auto when
+        // the platform can support it, Safe otherwise. No coercion of
+        // explicit user intent; this only fires when nothing was set.
+        assert_eq!(derive_default_trust(true), TrustMode::Auto);
+        assert_eq!(derive_default_trust(false), TrustMode::Safe);
+    }
+
+    #[test]
+    fn require_sandbox_does_not_silently_coerce_to_safe() {
+        // Negative assertion: the function MUST return Err for the
+        // Auto+unsandboxed case, not Ok(Safe). Headless tasks rely on
+        // this — a silent coerce would turn `koda --mode auto -p "..."`
+        // into Safe, and then RejectAuto would abort every mutation.
+        let result = require_sandbox_for_auto(TrustMode::Auto, false);
+        assert!(
+            result.is_err(),
+            "Auto + unavailable must Err; silent coerce-to-Safe is the bug we're preventing. Got: {result:?}"
         );
     }
 
