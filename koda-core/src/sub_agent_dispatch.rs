@@ -962,6 +962,54 @@ pub(crate) fn execute_sub_agent<'a>(
         // `local-executor.ts:436`.
         let mut grace_turn_done = false;
 
+        // #1232 §3a: pre-flight context-budget check.
+        //
+        // Estimate `system_prompt + tool_defs + user_prompt` size against
+        // the resolved `max_context_tokens` for this sub-agent. Bail with
+        // an actionable breakdown when over budget instead of letting the
+        // user see a raw `400 "Context size has been exceeded"` from
+        // upstream (the actual UX in the bug-review session that opened
+        // #1232: 4/10 sub-agents failed this way with no usable hint).
+        //
+        // The estimate is heuristic and conservative — it doesn't account
+        // for the response budget or any future tool-call traffic, but it
+        // catches the common "baseline already exceeds the window"
+        // failure mode that drove the issue. Subsequent in-loop estimates
+        // (`estimate_tokens(&messages)` further down) handle the
+        // grow-during-the-conversation case.
+        let preflight = crate::inference_helpers::estimate_subagent_preflight(
+            &system_prompt,
+            &tool_defs,
+            prompt,
+            sub_config.max_context_tokens,
+        );
+        tracing::debug!(
+            agent = agent_name,
+            preflight = %preflight.summary(),
+            "sub-agent context pre-flight"
+        );
+        if preflight.is_over_budget() {
+            // Surface to the inference loop's normal narrative so the
+            // master TUI / ACP / headless clients all see the same
+            // structured signal alongside the bubbled error.
+            sink.emit(EngineEvent::Info {
+                message: format!(
+                    "  \u{1f6d1} {agent_name}: context pre-flight failed ({})",
+                    preflight.summary()
+                ),
+            });
+            // Best-effort cleanup mirrors the cancel path below — release
+            // any provisioned workspace before bubbling so we don't leak
+            // a tempdir on every over-budget sub-agent invocation.
+            let _ = workspace.release(&sub_session, &effective_root).await;
+            anyhow::bail!(
+                "Sub-agent '{agent_name}' context exceeds model window: {summary}. \
+                 Reduce the prompt, drop tools (set `disallowed_tools` on the agent), \
+                 or pick a model with a larger context window.",
+                summary = preflight.summary(),
+            );
+        }
+
         for iter in 1u32.. {
             // #1110: sub-agents have no hardcoded iteration cap. Termination
             // is driven by the model (clean stop, no tool calls), `LoopDetector`

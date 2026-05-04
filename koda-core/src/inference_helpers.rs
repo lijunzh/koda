@@ -65,6 +65,103 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
         .sum()
 }
 
+/// Pre-flight context-budget breakdown for a single sub-agent invocation.
+///
+/// **#1232 §3a**: prior to this check, sub-agent dispatch could fire an
+/// LLM call that the model rejected with a raw `400 "Context size has been
+/// exceeded"` from upstream — leaving the user with no actionable hint.
+/// This pre-flight estimate runs *before* the first provider call and lets
+/// the dispatcher bail with a useful breakdown instead.
+///
+/// Token counts are heuristic estimates using the same `chars / 3.5 + overhead`
+/// model the live token gauge uses (see [`estimate_tokens`]); calibrated to
+/// over-estimate slightly, which is the safe direction for a pre-flight gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreflightTokenBudget {
+    /// Estimated tokens for the rendered system prompt.
+    pub system_prompt_tokens: usize,
+    /// Estimated tokens for the serialized tool definitions array.
+    pub tool_defs_tokens: usize,
+    /// Estimated tokens for the user-supplied prompt (the body of the
+    /// `InvokeAgent` call).
+    pub user_prompt_tokens: usize,
+    /// `system + tools + user`. Rough lower bound on what the first turn
+    /// will send to the provider.
+    pub total_tokens: usize,
+    /// `max_context_tokens` from the sub-agent's resolved config.
+    pub limit_tokens: usize,
+}
+
+impl PreflightTokenBudget {
+    /// Whether the estimated total exceeds the configured budget.
+    pub fn is_over_budget(&self) -> bool {
+        self.total_tokens > self.limit_tokens
+    }
+
+    /// Render the breakdown as a single-line, human-readable summary
+    /// suitable for both error messages and debug logging. Numbers are
+    /// rounded to 0.1k for readability — the underlying estimates are
+    /// heuristic, so additional precision would be false confidence.
+    pub fn summary(&self) -> String {
+        format!(
+            "system={}k + tools={}k + prompt={}k = {}k / limit {}k",
+            (self.system_prompt_tokens as f64 / 1000.0).round() as usize,
+            (self.tool_defs_tokens as f64 / 1000.0).round() as usize,
+            (self.user_prompt_tokens as f64 / 1000.0).round() as usize,
+            (self.total_tokens as f64 / 1000.0).round() as usize,
+            (self.limit_tokens as f64 / 1000.0).round() as usize,
+        )
+    }
+}
+
+/// Estimate the first-turn token cost of dispatching a sub-agent before
+/// the LLM call is made.
+///
+/// Inputs mirror what `sub_agent_dispatch::execute_sub_agent` already has
+/// in scope:
+///   * `system_prompt` — the result of `build_system_prompt(...)`.
+///   * `tool_defs` — the filtered tool list from `tools.get_definitions(...)`.
+///   * `user_prompt` — the `prompt` argument from the `InvokeAgent` call.
+///   * `limit_tokens` — `sub_config.max_context_tokens`.
+///
+/// The breakdown intentionally does NOT account for the (empty) initial
+/// transcript, persisted history (sub-agents start fresh), or the response
+/// budget. The goal is a fast, conservative pre-flight signal — not a
+/// perfect simulation of the wire payload.
+pub fn estimate_subagent_preflight(
+    system_prompt: &str,
+    tool_defs: &[crate::providers::ToolDefinition],
+    user_prompt: &str,
+    limit_tokens: usize,
+) -> PreflightTokenBudget {
+    let system_prompt_tokens = (system_prompt.len() as f64 / CHARS_PER_TOKEN) as usize
+        + PER_MESSAGE_OVERHEAD
+        + SYSTEM_PROMPT_OVERHEAD;
+
+    // Tool defs travel as JSON; the serialized form is the wire-cost proxy.
+    // serde_json::to_string failures are vanishingly unlikely for our owned
+    // types, but treat any failure as zero rather than panicking — a
+    // pre-flight that crashes is strictly worse than a pre-flight that
+    // under-estimates by a few k tokens.
+    let tool_defs_chars = serde_json::to_string(tool_defs)
+        .map(|s| s.len())
+        .unwrap_or(0);
+    let tool_defs_tokens = (tool_defs_chars as f64 / CHARS_PER_TOKEN) as usize;
+
+    let user_prompt_tokens =
+        (user_prompt.len() as f64 / CHARS_PER_TOKEN) as usize + PER_MESSAGE_OVERHEAD;
+
+    let total_tokens = system_prompt_tokens + tool_defs_tokens + user_prompt_tokens;
+
+    PreflightTokenBudget {
+        system_prompt_tokens,
+        tool_defs_tokens,
+        user_prompt_tokens,
+        total_tokens,
+        limit_tokens,
+    }
+}
+
 /// Synthetic assistant message injected between consecutive user-side messages.
 ///
 /// Inserted in-memory by [`assemble_messages`] — never written to the DB.
@@ -549,7 +646,116 @@ mod tests {
         assert!(tokens > 20 && tokens < 40, "tokens={tokens}");
     }
 
-    // ── is_server_error ──────────────────────────────────────────────
+    // ── estimate_subagent_preflight (#1232 §3a) ─────────────────────
+
+    fn fake_tool_def(name: &str, desc: &str) -> crate::providers::ToolDefinition {
+        crate::providers::ToolDefinition {
+            name: name.to_string(),
+            description: desc.to_string(),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        }
+    }
+
+    /// Tiny payloads must always fit in any reasonable budget. Sanity
+    /// floor: if a 50-char system prompt + 1 trivial tool + 10-char
+    /// user prompt blows the gate, the heuristic itself is broken.
+    #[test]
+    fn preflight_under_budget_for_tiny_payloads() {
+        let pf = estimate_subagent_preflight(
+            "You are helpful.",
+            &[fake_tool_def("Read", "Read a file")],
+            "do the thing",
+            100_000,
+        );
+        assert!(
+            !pf.is_over_budget(),
+            "tiny payload must fit in 100k budget; got {}",
+            pf.summary()
+        );
+        assert!(pf.total_tokens > 0, "some tokens should be counted");
+    }
+
+    /// Pathological case: a giant system prompt blows the gate. Pre-PR
+    /// the dispatcher would have plowed ahead and let upstream return a
+    /// raw 400.
+    #[test]
+    fn preflight_over_budget_when_system_prompt_dwarfs_window() {
+        let huge_prompt = "x".repeat(500_000); // ~143k tokens
+        let pf = estimate_subagent_preflight(&huge_prompt, &[], "hi", 100_000);
+        assert!(
+            pf.is_over_budget(),
+            "500k-char system prompt must exceed 100k budget; got {}",
+            pf.summary()
+        );
+    }
+
+    /// Tool definitions count toward the budget. The bug-review session
+    /// in #1232 specifically called out "~30 tools" as a non-trivial
+    /// share of the baseline — if tools were free, we'd be lying about
+    /// the cost.
+    #[test]
+    fn preflight_tool_defs_contribute_to_total() {
+        let no_tools = estimate_subagent_preflight("sys", &[], "prompt", 100_000);
+        let many_tools: Vec<_> = (0..30)
+            .map(|i| fake_tool_def(&format!("Tool{i}"), &"description ".repeat(50)))
+            .collect();
+        let with_tools = estimate_subagent_preflight("sys", &many_tools, "prompt", 100_000);
+        assert!(
+            with_tools.total_tokens > no_tools.total_tokens,
+            "30 tool defs must add to the total: {} vs {}",
+            with_tools.summary(),
+            no_tools.summary()
+        );
+        assert!(
+            with_tools.tool_defs_tokens > 0,
+            "tool_defs_tokens must be non-zero when tools are passed"
+        );
+    }
+
+    /// Summary string is human-readable and surfaces every component so
+    /// the caller's error message is actionable. Pin the format — the
+    /// dispatcher quotes it directly into the bubbled-up error.
+    #[test]
+    fn preflight_summary_includes_all_components() {
+        let pf = PreflightTokenBudget {
+            system_prompt_tokens: 12_345,
+            tool_defs_tokens: 6_789,
+            user_prompt_tokens: 1_000,
+            total_tokens: 20_134,
+            limit_tokens: 100_000,
+        };
+        let s = pf.summary();
+        assert!(
+            s.contains("system="),
+            "summary must name the system arm: {s}"
+        );
+        assert!(s.contains("tools="), "summary must name the tools arm: {s}");
+        assert!(
+            s.contains("prompt="),
+            "summary must name the prompt arm: {s}"
+        );
+        assert!(s.contains("limit "), "summary must show the limit: {s}");
+    }
+
+    /// Boundary case: total exactly at the limit is NOT over budget
+    /// (strict `>` keeps the gate tight; the heuristic is already
+    /// conservative enough that we don't need extra slack).
+    #[test]
+    fn preflight_at_exact_limit_is_under_budget() {
+        let pf = PreflightTokenBudget {
+            system_prompt_tokens: 0,
+            tool_defs_tokens: 0,
+            user_prompt_tokens: 0,
+            total_tokens: 100,
+            limit_tokens: 100,
+        };
+        assert!(
+            !pf.is_over_budget(),
+            "exactly-at-limit must not trip the gate — over-budget should be strict >"
+        );
+    }
+
+    // ── is_server_error ───────────────────────────────────────────────────
 
     #[test]
     fn test_is_server_error_http_codes() {
