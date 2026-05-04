@@ -333,7 +333,19 @@ pub(crate) async fn execute_one_tool(
         );
         match Box::pin(fut).await {
             Ok(output) => (output, true, None),
-            Err(e) => (format!("Error invoking sub-agent: {e}"), false, None),
+            // **#1232 §4**: format with `{:#}` (anyhow's "alternate" Display)
+            // so the entire context chain lands in the tool result string.
+            // Pre-fix this used `{e}`, which only shows the topmost message
+            // — a sub-agent dispatch failure caused by `reqwest::send()`
+            // surfaced as `"Error invoking sub-agent: Failed to call LLM
+            // API"` while the actually-useful `"connection refused" /
+            // "timed out"` cause (added by `.context(...)` in the
+            // provider) was silently dropped. The model has nothing to
+            // act on. With `{e:#}` the chain renders as
+            // `"Failed to call LLM API: error sending request: connection
+            // refused"` and the model can self-correct (retry, switch
+            // model, ask the user to check the network, ...).
+            Err(e) => (format!("Error invoking sub-agent: {e:#}"), false, None),
         }
     } else {
         // Invalidate sub-agent cache on file mutations
