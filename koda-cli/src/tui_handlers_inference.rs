@@ -609,7 +609,23 @@ async fn handle_inference_key_inline(
             KeyCode::Char('y') | KeyCode::Char('Y') => Some(ApprovalDecision::Approve),
             KeyCode::Char('n') | KeyCode::Char('N') => Some(ApprovalDecision::Reject),
             KeyCode::Char('a') | KeyCode::Char('A') => {
-                trust::set_trust(shared_mode, TrustMode::Auto);
+                // Sandbox-aware Auto switch (#860 hard refusal). If the
+                // kernel sandbox is unavailable we skip the trust flip
+                // but still honor the approval as a one-shot — graceful
+                // degradation rather than blocking the user mid-prompt.
+                // The status-bar sandbox indicator + `koda doctor` make
+                // the underlying state visible; the warn-level log line
+                // here aids debugging when users wonder why pressing
+                // 'a' didn't persist.
+                if let Err(msg) = trust::set_trust_checked(
+                    shared_mode,
+                    TrustMode::Auto,
+                    koda_core::sandbox::is_available(),
+                ) {
+                    tracing::warn!(
+                        "Approve+Always pressed but Auto refused: {msg} \u{2014} approving one-shot only"
+                    );
+                }
                 Some(ApprovalDecision::Approve)
             }
             KeyCode::Char('f') | KeyCode::Char('F') => {
@@ -868,7 +884,17 @@ async fn handle_inference_key_inline(
             }
         }
         (KeyCode::BackTab, _) => {
-            trust::cycle_trust(shared_mode);
+            // Sandbox-aware cycle (#860 hard refusal). Keep the user
+            // in the current mode and surface a visible warning if
+            // Auto isn't safe to enter on this system.
+            if let Err(msg) =
+                trust::cycle_trust_checked(shared_mode, koda_core::sandbox::is_available())
+            {
+                scroll_buffer.push(Line::styled(
+                    format!("\u{26a0} {msg}"),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
         }
         // Up during inference: pop the last later_queue item back into the
         // editor so the user can edit it before re-submitting.

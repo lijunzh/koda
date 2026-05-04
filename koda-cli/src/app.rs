@@ -136,6 +136,13 @@ enum Command {
     },
     /// Connect to a running Koda server (not yet implemented)
     Connect { url: String },
+    /// Print platform diagnostics (sandbox availability, version, OS).
+    ///
+    /// Pure read-only inspection. Output is suitable for pasting into
+    /// bug reports — the bug-report template links to this command.
+    /// Use this to debug "why does `--mode auto` refuse to start?" or
+    /// to share your platform configuration when filing an issue.
+    Doctor,
 }
 
 pub(crate) async fn run() -> Result<()> {
@@ -185,6 +192,13 @@ pub(crate) async fn run() -> Result<()> {
             }
             Command::Connect { url } => {
                 println!("Not implemented: Connect to {}", url);
+                std::process::exit(0);
+            }
+            Command::Doctor => {
+                // Pure stdout report; no tracing init, no DB, no provider
+                // probing. Stays cheap so users can run it inside a hung
+                // shell or CI step without side effects.
+                crate::doctor::run();
                 std::process::exit(0);
             }
         }
@@ -334,13 +348,30 @@ fn init_server_tracing() {
 /// Funneling all three through here ensures the rule lives in one
 /// place (DRY) and the warning is consistent across stdio-server,
 /// headless, and TUI launch modes.
+///
+/// **#860 / Auto-requires-sandbox**: after the Plan coercion, also
+/// validate that Auto isn't requested on a system without kernel
+/// sandbox support. The check is a hard fail (process exits 1)
+/// rather than a silent coerce because:
+///   - Headless: `koda --mode auto -p "..."` silently becoming Safe
+///     would `RejectAuto` every mutation and abort the task halfway.
+///   - Interactive: explicit user intent should never be silently
+///     reinterpreted (Zen of Python: errors should never pass
+///     silently). The error message points at `koda doctor` for
+///     setup and `--mode safe` as the immediate escape hatch.
 fn parse_top_level_trust_mode(cli_mode: &str) -> koda_core::trust::TrustMode {
     let parsed = koda_core::trust::TrustMode::parse(cli_mode).unwrap_or_default();
     let (mode, warning) = koda_core::trust::coerce_for_top_level(parsed);
     if let Some(w) = warning {
         eprintln!("warning: {w}");
     }
-    mode
+    match koda_core::trust::require_sandbox_for_auto(mode, koda_core::sandbox::is_available()) {
+        Ok(m) => m,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Resolve the headless prompt from -p flag, positional arg, or stdin pipe.

@@ -245,12 +245,29 @@ impl TuiContext {
                 self.scroll_buffer.scroll_to_bottom();
             }
             (KeyCode::BackTab, _) => {
-                let new_mode = trust::cycle_trust(&self.shared_mode);
-                let _ = self
-                    .session
-                    .db
-                    .set_session_mode(&self.session.id, new_mode.as_str())
-                    .await;
+                // Sandbox-aware cycle (#860 hard refusal). Auto requires the
+                // kernel sandbox; if unavailable, stay in the current mode
+                // and surface a one-line warning in the scroll buffer
+                // instead of silently flipping to a state that would bail
+                // at the next tool call.
+                match trust::cycle_trust_checked(
+                    &self.shared_mode,
+                    koda_core::sandbox::is_available(),
+                ) {
+                    Ok(new_mode) => {
+                        let _ = self
+                            .session
+                            .db
+                            .set_session_mode(&self.session.id, new_mode.as_str())
+                            .await;
+                    }
+                    Err(msg) => {
+                        self.scroll_buffer.push(ratatui::text::Line::styled(
+                            format!("\u{26a0} {msg}"),
+                            ratatui::style::Style::default().fg(ratatui::style::Color::Yellow),
+                        ));
+                    }
+                }
             }
             (KeyCode::Tab, KeyModifiers::NONE) => {
                 let current = self.textarea.text().to_string();

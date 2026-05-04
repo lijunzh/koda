@@ -40,6 +40,15 @@ pub struct StatusBar<'a> {
     /// which the status-bar caller passes in via [`with_vim_label`].
     /// Added in PR 3 of #1178 (vim mode wire-up).
     vim_label: Option<&'a str>,
+    /// Sandbox availability indicator (#860 visibility companion).
+    /// `None` hides the segment (back-compat default for tests and
+    /// code paths that don't yet pass it). When `Some(true)` shows
+    /// a green 🛡 "sandboxed" pill; `Some(false)` shows a yellow
+    /// ⚠ "unsandboxed" pill so users on systems without kernel
+    /// sandbox can see at a glance why Auto mode refuses (and why
+    /// Safe is the only available top-level mode there). Sourced
+    /// from `koda_core::sandbox::is_available()` in `tui_viewport`.
+    sandbox_available: Option<bool>,
 }
 
 /// Stats from the most recent inference turn.
@@ -67,6 +76,7 @@ impl<'a> StatusBar<'a> {
             scroll_info: None,
             mcp_info: None,
             vim_label: None,
+            sandbox_available: None,
         }
     }
 
@@ -103,6 +113,18 @@ impl<'a> StatusBar<'a> {
     /// `composer::textarea::TextArea::vim_mode_label()`.
     pub fn with_vim_label(mut self, label: Option<&'a str>) -> Self {
         self.vim_label = label;
+        self
+    }
+
+    /// Set the sandbox-availability indicator (#860 visibility companion).
+    ///
+    /// Pass `Some(koda_core::sandbox::is_available())` from production
+    /// call sites. `None` (or omitting this builder method) hides the
+    /// segment — used by the existing tests so adding the indicator
+    /// doesn't churn the rendered-bar snapshots; the new sandbox
+    /// segment has its own dedicated tests below.
+    pub fn with_sandbox_status(mut self, available: Option<bool>) -> Self {
+        self.sandbox_available = available;
         self
     }
 }
@@ -177,8 +199,41 @@ impl Widget for StatusBar<'_> {
         // color, so eye-anchoring it leftmost matches user attention.
         // Model is second; context bar last because it's the widest
         // segment and naturally tail-anchors the always-on cluster.
+        spans.extend([Span::styled(
+            format!(" {mode_icon} {mode_label_upper} "),
+            mode_style,
+        )]);
+
+        // Sandbox indicator (#860 visibility companion). Sits right
+        // after the trust badge because the two pieces of state are
+        // semantically coupled — "what mode am I in" and "what's
+        // enforcing the perimeter" answer adjacent questions. Hidden
+        // when `sandbox_available` is `None` so existing renders
+        // (and tests) don't churn.
+        //
+        // Color philosophy mirrors the trust badge: bold foreground,
+        // no hardcoded background (lesson from #1243's reverted
+        // black-on-green badge — hardcoded bg colors clash with
+        // user color schemes). Green → healthy, yellow → attention.
+        // We deliberately don't go red for unsandboxed: it's a
+        // legitimate state for Safe/Plan, not an error.
+        if let Some(available) = self.sandbox_available {
+            let (icon, label, color) = if available {
+                ("\u{1f6e1}", "sandboxed", Color::Green)
+            } else {
+                ("\u{26a0}", "unsandboxed", Color::Yellow)
+            };
+            spans.push(Span::styled(
+                "\u{2502}",
+                Style::default().fg(Color::Rgb(60, 60, 60)),
+            ));
+            spans.push(Span::styled(
+                format!(" {icon} {label} "),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
+        }
+
         spans.extend([
-            Span::styled(format!(" {mode_icon} {mode_label_upper} "), mode_style),
             Span::styled("\u{2502}", Style::default().fg(Color::Rgb(60, 60, 60))),
             Span::styled(
                 format!(" {model_display} "),
@@ -591,6 +646,95 @@ mod tests {
         assert!(
             text.contains("?"),
             "unknown mode label must render `?` placeholder, got: {text}"
+        );
+    }
+
+    // ── Sandbox indicator (#860 visibility companion) ────────────
+
+    #[test]
+    fn sandbox_segment_hidden_when_status_is_none() {
+        // Default-construction (existing call sites that don't yet
+        // wire up sandbox status) must NOT render a sandbox segment.
+        // This is the back-compat pin: adding the indicator can't
+        // churn the rendered bar for unaware callers.
+        let bar = StatusBar::new("gpt-4", "safe", 50);
+        let text = render_bar(bar, 120);
+        assert!(
+            !text.contains("sandboxed") && !text.contains("unsandboxed"),
+            "no sandbox status → no sandbox segment; got: {text}"
+        );
+    }
+
+    #[test]
+    fn sandbox_segment_renders_sandboxed_when_available() {
+        let bar = StatusBar::new("gpt-4", "auto", 50).with_sandbox_status(Some(true));
+        let text = render_bar(bar, 200);
+        assert!(
+            text.contains("sandboxed"),
+            "available → 'sandboxed' label; got: {text}"
+        );
+        assert!(
+            !text.contains("unsandboxed"),
+            "available must not show 'unsandboxed'; got: {text}"
+        );
+    }
+
+    #[test]
+    fn sandbox_segment_renders_unsandboxed_when_unavailable() {
+        let bar = StatusBar::new("gpt-4", "safe", 50).with_sandbox_status(Some(false));
+        let text = render_bar(bar, 200);
+        assert!(
+            text.contains("unsandboxed"),
+            "unavailable → 'unsandboxed' label; got: {text}"
+        );
+    }
+
+    #[test]
+    fn sandbox_segment_uses_bold_green_when_available_no_bg() {
+        // Same color philosophy as the trust badge revert (#1257):
+        // foreground-only, no hardcoded background. Pin the styling
+        // so a future tweak doesn't reintroduce the inverted-badge
+        // readability problem.
+        let bar = StatusBar::new("gpt-4", "auto", 50).with_sandbox_status(Some(true));
+        let (fg, bg, modifier) = cell_style_at(bar, "\u{1f6e1}", 200);
+        assert_eq!(fg, Color::Green, "sandbox-available fg must be green");
+        assert_eq!(bg, Color::Reset, "sandbox-available must have no bg");
+        assert!(
+            modifier.contains(Modifier::BOLD),
+            "sandbox-available must be bold; got: {modifier:?}"
+        );
+    }
+
+    #[test]
+    fn sandbox_segment_uses_bold_yellow_when_unavailable_no_bg() {
+        // Yellow (not red) because unsandboxed is a legitimate state
+        // for Safe/Plan — the human is the primary boundary there,
+        // sandbox is defense-in-depth. Red would falsely imply error.
+        let bar = StatusBar::new("gpt-4", "safe", 50).with_sandbox_status(Some(false));
+        let (fg, bg, modifier) = cell_style_at(bar, "\u{26a0}", 200);
+        assert_eq!(fg, Color::Yellow, "sandbox-unavailable fg must be yellow");
+        assert_eq!(bg, Color::Reset, "sandbox-unavailable must have no bg");
+        assert!(
+            modifier.contains(Modifier::BOLD),
+            "sandbox-unavailable must be bold; got: {modifier:?}"
+        );
+    }
+
+    #[test]
+    fn sandbox_segment_renders_immediately_after_trust_badge() {
+        // The two pieces of state are semantically coupled — "what
+        // mode" and "what's enforcing the perimeter" — so they MUST
+        // sit adjacent. Pin the order so a future status-bar reshuffle
+        // doesn't separate them and dilute the visual coupling.
+        let bar = StatusBar::new("gpt-4", "auto", 50).with_sandbox_status(Some(true));
+        let text = render_bar(bar, 200);
+        let auto_pos = text.find("AUTO").expect("AUTO badge must render");
+        let sandbox_pos = text.find("sandboxed").expect("sandbox segment must render");
+        let model_pos = text.find("gpt-4").expect("model must render");
+        assert!(
+            auto_pos < sandbox_pos && sandbox_pos < model_pos,
+            "order must be: trust badge → sandbox segment → model; got positions \
+             AUTO={auto_pos}, sandbox={sandbox_pos}, model={model_pos}"
         );
     }
 }
