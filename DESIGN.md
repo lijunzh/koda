@@ -927,10 +927,41 @@ effects need confirmation. Hardcoded floors ensure outside-project writes
 always require confirmation regardless of mode. The kernel sandbox
 (always active) enforces the perimeter.
 
+**TrustMode is the single mechanism** (#1250). The same `TrustMode` enum
+derives kernel sandbox bounds, per-tool approval rules, and sub-agent
+context-sensitive defaults. There are no separate "strict mode", "yolo
+mode", or per-tool toggles — every permission decision in the system
+resolves to `(trust_mode, tool_effect)` plus the always-on safety floors.
+This is the canonical instance of P1 ("customization over configuration"):
+adding a new permission concept means extending the matrix in `trust.rs`,
+not bolting on a parallel knob.
+
 For trust mode tables, tool effect matrix, and operational details, see
-the [trust module docs](https://docs.rs/koda-core/latest/koda_core/trust/).
+the [trust module docs](https://docs.rs/koda-core/latest/koda_core/trust/)
+and [`docs/src/approval.md`](docs/src/approval.md) (the canonical
+user-facing mental-model doc).
 
 **Key design choices**:
+- **`Auto × Destructive` confirms, not auto-approves** (#1251). The user
+  said YOLO for normal work, not for `rm -rf` / `git reset --hard` /
+  `git push --force` / `Delete`. Destructive ops by definition can't be
+  undone by the sandbox alone (deleting a tracked file is "legal" inside
+  the project root), so Auto keeps the prompt as a deliberate speed-bump.
+- **Sub-agents resolve `⏸ confirm` cells using a context-sensitive
+  matrix** (`check_tool_for_sub_agent`, #1251). Sub-agents have no live
+  human approval channel by design — the master TUI is the only
+  confirm-prompt surface. So what the master matrix would treat as
+  `⏸ confirm` resolves to **auto-approve for mutations** (the user
+  already trusted this sub-agent enough to spawn it; nagging would be
+  useless without a UI to nag in) and **block for destructive ops**
+  (we still want a backstop on the worst ops, even when no one's home
+  to confirm). This pins the bug fix from #1249.
+- **Per-agent trust declaration via `trust:` field** (#1247, #1252).
+  Agent JSONs declare `"trust": "plan" | "safe" | "auto"`. The legacy
+  `write_access: bool` field is deprecated but still loads with a
+  deprecation warning. The new field is strictly more expressive: it
+  captures sandbox bounds + approval rules + sub-agent defaults in one
+  declaration, where `write_access` only spoke to the second.
 - Sub-agents inherit the parent’s trust mode (clamped via `TrustMode::clamp()`
   — child can never run with less protection than parent). The clamp is the
   *single source of truth* across all four sub-agent modes (sequential,
@@ -939,6 +970,11 @@ the [trust module docs](https://docs.rs/koda-core/latest/koda_core/trust/).
 - **Kernel-level sandboxing** — always active. macOS uses `sandbox-exec`
   (seatbelt); Linux uses `bwrap` (bubblewrap). Credential directories
   are always protected.
+- **Sandboxed shell env scrub** (#1228) — every `bash -c` tool call runs
+  with a fixed env allowlist (locale, identity, `PATH`, tmpdir, proxy
+  URLs + per-tool extras like `CARGO_HOME` for `cargo`). Secrets like
+  `OPENAI_API_KEY`, `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN` never reach
+  the child process even if a prompt-injected sub-agent runs `env`.
 
 **Accepted risks**:
 1. Shell command parsing is heuristic — complex pipelines can bypass classification

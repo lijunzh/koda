@@ -29,16 +29,29 @@ No phases, no tiers — the model drives execution directly.
 - **Built-in agents**: default (others via user-created agent configs)
 - **Git checkpointing** (`git.rs`): auto-snapshot before each turn
 
-Approval is per-tool. A single `TrustMode` enum (Plan/Safe/Auto) controls
-how mutations are gated:
+Approval is per-tool. A single `TrustMode` enum (Plan/Safe/Auto) is the
+**single mechanism** for tool gating — it derives kernel sandbox bounds,
+per-tool approval, and sub-agent context-sensitive defaults from one
+declaration. There are no separate "strict mode", "yolo mode", or
+per-tool toggles to keep in your head.
 
-- **TrustMode** (`trust.rs`): Plan (deny writes), Safe (confirm), Auto (auto-approve)
+- **TrustMode** (`trust.rs`): Plan (deny mutations), Safe (confirm), Auto (auto-approve mutations within sandbox)
 - **ToolEffect** (`tools/mod.rs`): ReadOnly / LocalMutation / Destructive / RemoteAction
   - Plan: only ReadOnly allowed; all mutations denied
   - Safe: local mutations and destructive ops need confirmation
-  - Auto: everything auto-approved; sandbox enforces the perimeter
+  - Auto: local mutations auto-approved; **destructive ops still confirm** (#1251 — the user said YOLO for normal work, not for `rm -rf`)
 - **Hardcoded floor**: outside-project writes always need confirmation
   regardless of mode
+- **Sub-agent matrix is context-sensitive** (`check_tool_for_sub_agent`,
+  #1251): sub-agents have no live human approval channel by design,
+  so what the master matrix would treat as `⏸ confirm` resolves to
+  **auto-approve for mutations, block for destructive ops**. The
+  asymmetry pins the bug fix from #1249 (pre-#1251 every Write from
+  a Safe-trust sub-agent was auto-rejected with "requires user
+  confirmation but this sub-agent has no channel to the user").
+- **Per-agent `trust` field** (`config.rs`): agent JSONs declare
+  `"trust": "plan" | "safe" | "auto"`. The legacy `write_access: bool`
+  is deprecated but still loads with a warning (#1252).
 - **Folder scoping** (`trust.rs`, `bash_path_lint.rs`):
   - `is_outside_project()`: checks file tool paths against project_root
   - `lint_bash_paths()`: heuristic bash command analysis for cd/path escapes
