@@ -4,29 +4,106 @@
 //! enum that controls both sandbox configuration and approval behavior.
 //! Users see one concept, one CLI flag (`--mode`), one status bar word.
 //!
+//! See [`docs/src/approval.md`](https://lijunzh.github.io/koda/approval.html)
+//! for the canonical user-facing mental-model doc, and `DESIGN.md §Security
+//! Model` for the architectural framing (TrustMode as the canonical instance
+//! of P1 — "customization over configuration").
+//!
 //! ## Trust modes
 //!
 //! | Mode | Sandbox | Approval | Use case |
 //! |------|---------|----------|----------|
-//! | **Plan** | project, read-only | deny all non-read | Investigation agents |
+//! | **Plan** | project, read-only | deny all non-read | Sub-agent investigation only — see [`coerce_for_top_level()`](crate::trust::coerce_for_top_level) |
 //! | **Safe** | project, read+write | confirm side effects | User default |
-//! | **Auto** | project, read+write | auto-approve all | Autonomous coding |
+//! | **Auto** | project, read+write | auto-approve mutations; destructive still confirms | Autonomous coding |
 //!
-//! ## Behavior matrix
+//! Plan is **sub-agent-only** for the top-level session (#1244): the
+//! `--mode plan` CLI flag, `/resume` of a Plan-persisted session, and
+//! the keyboard toggle all funnel through [`coerce_for_top_level()`](crate::trust::coerce_for_top_level)
+//! which coerces `Plan → Safe` with a warning. Sub-agents reach Plan
+//! via their JSON `"trust": "plan"` declaration plus parent clamping.
+//!
+//! ## Top-level (interactive) decision matrix
+//!
+//! Used by [`check_tool()`](crate::trust::check_tool) / [`check_tool_with_tracker()`](crate::trust::check_tool_with_tracker) when a human
+//! is at the keyboard.
 //!
 //! | Behavior | Plan | Safe | Auto |
 //! |---|---|---|---|
 //! | ReadOnly tools | ✅ auto | ✅ auto | ✅ auto |
 //! | RemoteAction | ❌ deny | ⚠️ confirm | ✅ auto |
 //! | LocalMutation | ❌ deny | ⚠️ confirm | ✅ auto |
-//! | Destructive | ❌ deny | ⚠️ confirm | ✅ auto |
+//! | Destructive | ❌ deny | ⚠️ confirm | ⚠️ confirm |
 //! | Outside project | ❌ deny | ⚠️ confirm | ⚠️ confirm |
+//!
+//! **`Auto × Destructive` confirms, not auto-approves** (#1251). The
+//! user said YOLO for normal work, not for `rm -rf` / `git reset --hard`
+//! / `git push --force` / `Delete`. Destructive ops by definition
+//! can't be undone by the sandbox alone (deleting a tracked file is
+//! "legal" inside the project root), so Auto keeps the prompt as a
+//! deliberate speed-bump.
+//!
+//! ## Sub-agent (no-human-channel) decision matrix
+//!
+//! Used by [`check_tool_for_sub_agent()`](crate::trust::check_tool_for_sub_agent) /
+//! [`check_tool_for_sub_agent_with_tracker()`](crate::trust::check_tool_for_sub_agent_with_tracker) when an agent dispatched
+//! via `InvokeAgent` is making the call. Sub-agents have no live
+//! human approval channel by design (#1022 B10), so the matrix
+//! resolves what the top-level matrix would treat as `⚠️ confirm`
+//! using a **safe-side rule**: mutating ops auto-approve, destructive
+//! ops block.
+//!
+//! | Behavior | Sub-agent in Plan | Sub-agent in Safe | Sub-agent in Auto |
+//! |---|---|---|---|
+//! | ReadOnly | ✅ auto | ✅ auto | ✅ auto |
+//! | RemoteAction | ❌ deny | ✅ auto | ✅ auto |
+//! | LocalMutation | ❌ deny | ✅ auto | ✅ auto |
+//! | Destructive | ❌ deny | ❌ block | ❌ block |
+//! | Outside project | ❌ deny | ❌ block | ❌ block |
+//!
+//! See [`check_tool_for_sub_agent()`](crate::trust::check_tool_for_sub_agent) for the rationale and the bug-fix
+//! reference (#1249).
+//!
+//! ## Always-on safety floors
+//!
+//! These apply regardless of trust mode:
+//!
+//! - **Outside-project floor** (#218) — writes to paths outside
+//!   `project_root` always confirm (Safe + Auto) or deny (Plan), even
+//!   if the matrix would otherwise auto-approve. Temp dirs (`/tmp`,
+//!   `$TMPDIR`, `/var/folders/*/T`) and `~/.cache/koda` are exempt
+//!   per the scratch-zone allowlist (#560, #1236).
+//! - **Bash path-escape lint** — commands containing `cd`/path
+//!   redirection out of the project tree get downgraded to
+//!   NeedsConfirmation.
+//! - **Sandbox-unavailable downgrade** (#860) — if the platform
+//!   sandbox backend isn't installed, Auto downgrades mutating and
+//!   destructive ops to NeedsConfirmation so you never lose both
+//!   the sandbox and the prompt.
+//! - **Koda-owned file Delete** (#465) — deleting a file Koda created
+//!   in this session auto-approves (net-zero effect: Koda created it,
+//!   Koda removes it). See [`check_tool_with_tracker()`](crate::trust::check_tool_with_tracker).
+//!
+//! ## Child trust derivation
+//!
+//! Sub-agents never widen their parent's trust.
+//! [`derive_child_trust()`](crate::trust::derive_child_trust) is the single,
+//! authoritative way to compute child trust across all
+//! sub-agent dispatch paths (sequential, parallel, background, fork).
+//! See its rustdoc for the #1022 B19 cautionary tale on why
+//! `parent_runtime` (the live atomic) and not `parent_config.trust`
+//! (the startup value) is the correct first argument.
 //!
 //! ## Design principle
 //!
 //! The sandbox is the safety boundary, not the approval prompt.
-//! Auto trusts the agent within the project sandbox — the kernel enforces the
-//! perimeter. Safe adds approval as a second layer (belt and suspenders).
+//! Auto trusts the agent for non-destructive work within the project
+//! sandbox — the kernel enforces the perimeter. Safe adds approval
+//! as a second layer (belt and suspenders). Auto keeps the prompt
+//! for destructive ops because the sandbox can't undo them. Plan
+//! denies all writes outright and is enforced at the syscall level
+//! (kernel-level read-only sandbox), strictly stronger than soft
+//! denylisting `Write`/`Edit`/`Delete` in `disallowed_tools`.
 //! Credential dirs are always blocked regardless of mode.
 
 use crate::bash_safety::classify_bash_command;
@@ -286,6 +363,12 @@ pub fn set_trust(shared: &SharedTrustMode, mode: TrustMode) {
 }
 
 /// Cycle to the next trust mode (Safe ↔ Auto) and return it.
+///
+/// Plan is **not** part of the cycle for the top-level session
+/// (#1244) — see [`coerce_for_top_level`] for the rationale. The
+/// underlying [`TrustMode::next`] implements the same Safe↔Auto
+/// loop as a defensive no-op for the (impossible-by-construction)
+/// case where Plan reaches the top-level toggle.
 pub fn cycle_trust(shared: &SharedTrustMode) -> TrustMode {
     let current = read_trust(shared);
     let next = current.next();
@@ -296,13 +379,32 @@ pub fn cycle_trust(shared: &SharedTrustMode) -> TrustMode {
 // ── Tool Approval Decision ──────────────────────────────────
 
 /// What the trust system decides for a given tool call.
+///
+/// Returned by [`check_tool`], [`check_tool_with_tracker`],
+/// [`check_tool_for_sub_agent`], and [`check_tool_for_sub_agent_with_tracker`].
+/// The engine dispatch loop maps each variant to a concrete action:
+///
+/// - [`AutoApprove`](Self::AutoApprove) — dispatch the tool immediately.
+/// - [`NeedsConfirmation`](Self::NeedsConfirmation) — in the TUI, surface
+///   an approval prompt; in headless mode, reject with a structural
+///   `RejectAuto` event so the model knows no human is in the loop.
+/// - [`Blocked`](Self::Blocked) — refuse outright; the tool result
+///   carries an error explaining which floor or matrix cell tripped.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolApproval {
     /// Execute without asking.
     AutoApprove,
-    /// Show confirmation dialog.
+    /// Show confirmation dialog (top-level only). In sub-agent contexts
+    /// this variant is never returned — [`check_tool_for_sub_agent`]
+    /// resolves it to either `AutoApprove` (mutating ops) or `Blocked`
+    /// (destructive ops) per the safe-side rule.
     NeedsConfirmation,
-    /// Blocked (Plan mode or delegation scope violation).
+    /// Blocked. Reasons include:
+    /// - Plan trust mode (denies all non-read effects)
+    /// - Sub-agent destructive op in Safe/Auto trust (#1251 — no
+    ///   human channel to confirm `rm -rf`)
+    /// - Delegation scope violation (sub-agent trying to use a tool
+    ///   not in its `allowed_tools`)
     Blocked,
 }
 
@@ -317,12 +419,19 @@ pub enum ToolApproval {
 /// | LocalMutation  | ❌ block | ⚠️ confirm     | ✅ auto        |
 /// | Destructive    | ❌ block | ⚠️ confirm     | ⚠️ confirm     |
 ///
+/// `Auto × Destructive` confirms (changed in #1251 — was auto pre-#1251).
+/// The sandbox can't undo a `Delete` or `git reset --hard` on a tracked
+/// file inside the project root, so Auto keeps the prompt as a
+/// deliberate speed-bump for ops that would otherwise be irreversible.
+///
 /// For sub-agent contexts, see [`check_tool_for_sub_agent`].
 ///
 /// Additional hardcoded floors:
 /// - Writes outside project root → NeedsConfirmation (even in Auto) (#218)
 /// - Bash path escapes → NeedsConfirmation
-/// - Delete of Koda-owned file → AutoApprove (#465)
+/// - Delete of Koda-owned file → AutoApprove (#465 — see [`check_tool_with_tracker`])
+/// - Sandbox backend unavailable → Auto downgrades mutating/destructive
+///   ops to NeedsConfirmation (#860)
 pub fn check_tool(
     tool_name: &str,
     args: &serde_json::Value,
@@ -515,6 +624,11 @@ fn resolve_confirmation(effect: ToolEffect, is_sub_agent: bool) -> ToolApproval 
 ///
 /// For MCP tools, falls back to `RemoteAction` unless a ToolRegistry
 /// is provided via [`resolve_tool_effect_with_registry`].
+///
+/// Typically called immediately before [`check_tool`] /
+/// [`check_tool_for_sub_agent`] in the engine dispatch loop — the
+/// resolved effect is the matrix row, the trust mode is the matrix
+/// column.
 pub fn resolve_tool_effect(tool_name: &str, args: &serde_json::Value) -> ToolEffect {
     resolve_tool_effect_inner(tool_name, args, None)
 }
