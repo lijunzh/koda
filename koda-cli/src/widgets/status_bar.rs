@@ -16,7 +16,7 @@ use koda_core::mcp::manager::McpStatusBarInfo;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Widget,
 };
@@ -109,12 +109,43 @@ impl<'a> StatusBar<'a> {
 
 impl Widget for StatusBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let mode_color = match self.mode_label {
-            "auto" => Color::Green,
-            "strict" => Color::Cyan,
-            "safe" => Color::Yellow,
-            _ => Color::DarkGray,
+        // **#1232 §8a**: trust mode is the single most-safety-relevant
+        // piece of state in the entire UI — the user must never be
+        // unsure whether they're in Safe (confirm every mutation) or
+        // Auto (auto-approve in-project mutations). Pre-fix the bar
+        // showed lowercase ` safe ` / ` auto ` in plain colored text;
+        // the prompt indicator showed a tiny `🔒>`. Easy to miss
+        // both. Bug-review session that opened #1232: "User wasn't
+        // sure whether they were in Safe or Auto."
+        //
+        // The new badge is icon + UPPERCASE + bold for every mode,
+        // with **inverted black-on-color** for Auto specifically
+        // (since Auto is the "be careful" mode that should be
+        // unmissable, especially before/when #1241 flips the default).
+        // Plan and Safe stay as bold colored text — visible but not
+        // as visually loud, matching the relative caution-level.
+        //
+        // Color/icon choices match the prompt indicator in
+        // `tui_viewport.rs` so users see the SAME color for the SAME
+        // mode across both surfaces (pre-fix Safe was Cyan in the
+        // prompt and Yellow in the bar — confusing inconsistency).
+        // Drive-by: the dead `"strict"` arm is gone (TrustMode never
+        // emits that label; only `plan`/`safe`/`auto`).
+        let (mode_icon, mode_fg, mode_bg) = match self.mode_label {
+            "plan" => ("\u{1f4cb}", Color::Cyan, None),
+            "safe" => ("\u{1f512}", Color::Yellow, None),
+            "auto" => ("\u{26a1}", Color::Black, Some(Color::Green)),
+            // Defensive default for any future mode label that gets added
+            // to `TrustMode` without updating this match. Renders as a
+            // visible-but-bland "?" badge so it's obvious something is
+            // miswired (rather than silently disappearing).
+            _ => ("?", Color::DarkGray, None),
         };
+        let mut mode_style = Style::default().fg(mode_fg).add_modifier(Modifier::BOLD);
+        if let Some(bg) = mode_bg {
+            mode_style = mode_style.bg(bg);
+        }
+        let mode_label_upper = self.mode_label.to_ascii_uppercase();
 
         let bar_width: u32 = 10;
         let filled = (self.context_pct * bar_width / 100).min(bar_width);
@@ -143,10 +174,7 @@ impl Widget for StatusBar<'_> {
         // Model is second; context bar last because it's the widest
         // segment and naturally tail-anchors the always-on cluster.
         spans.extend([
-            Span::styled(
-                format!(" {} ", self.mode_label),
-                Style::default().fg(mode_color),
-            ),
+            Span::styled(format!(" {mode_icon} {mode_label_upper} "), mode_style),
             Span::styled("\u{2502}", Style::default().fg(Color::Rgb(60, 60, 60))),
             Span::styled(
                 format!(" {model_display} "),
@@ -370,7 +398,8 @@ mod tests {
     fn mode_renders_leftmost_before_model() {
         let bar = StatusBar::new("gpt-4", "auto", 50);
         let text = render_bar(bar, 200);
-        let mode_pos = text.find("auto").expect("mode label should render");
+        // #1232 §8a: labels are now UPPERCASE for visibility.
+        let mode_pos = text.find("AUTO").expect("mode label should render");
         let model_pos = text.find("gpt-4").expect("model should render");
         assert!(
             mode_pos < model_pos,
@@ -404,6 +433,148 @@ mod tests {
         assert!(
             out.contains("VIM:NORMAL"),
             "vim pill must render label: {out}"
+        );
+    }
+
+    // ── #1232 §8a: loud trust-mode badge ─────────────────────────────
+    //
+    // The bug-review session that opened #1232 reported that the user
+    // couldn't tell whether they were in Safe or Auto. The fix makes
+    // the trust-mode segment unmissable: icon + UPPERCASE + bold for
+    // every mode, with **inverted black-on-color** specifically for
+    // Auto so the most-permissive mode reads as a colored badge.
+    //
+    // Tests below pin the contract so a future "let's use a single
+    // muted color for all status segments" refactor fails loudly.
+
+    /// Find the cell index of the first occurrence of `needle` in the
+    /// rendered buffer, returning `(x, fg, bg, modifier)`. Lets tests
+    /// assert on the styling of a SPECIFIC character without having
+    /// to scan every cell or guess offsets.
+    fn cell_style_at(bar: StatusBar<'_>, needle: &str, width: u16) -> (Color, Color, Modifier) {
+        let area = Rect::new(0, 0, width, 1);
+        let mut buf = Buffer::empty(area);
+        bar.render(area, &mut buf);
+        let row: String = (0..width)
+            .map(|x| buf.cell((x, 0)).map(|c| c.symbol()).unwrap_or(" "))
+            .collect();
+        let pos = row
+            .find(needle)
+            .unwrap_or_else(|| panic!("needle {needle:?} not found in: {row}"));
+        // Convert byte offset back to cell column. ASCII-only labels
+        // ("AUTO", "SAFE", "PLAN") so byte offset == column for the
+        // labels we test here. The icon is BMP-or-above and lives at
+        // a SEPARATE position; tests below only sniff the labels.
+        let cell = buf.cell((pos as u16, 0)).expect("cell in bounds");
+        (cell.fg, cell.bg, cell.modifier)
+    }
+
+    #[test]
+    fn auto_badge_is_inverted_black_on_green_and_bold() {
+        // Auto is the loudest mode — inverted black-on-green badge.
+        // This is the configuration that's most likely to surprise a
+        // user (they're in YOLO-ish territory) so it MUST be visually
+        // distinct from regular colored text. Pin all three style
+        // attributes so the badge can't silently regress to plain
+        // colored text.
+        let bar = StatusBar::new("gpt-4", "auto", 50);
+        let (fg, bg, modifier) = cell_style_at(bar, "AUTO", 200);
+        assert_eq!(fg, Color::Black, "Auto badge fg must be black");
+        assert_eq!(bg, Color::Green, "Auto badge bg must be green (inverted)");
+        assert!(
+            modifier.contains(Modifier::BOLD),
+            "Auto badge must be bold; got modifier: {modifier:?}"
+        );
+    }
+
+    #[test]
+    fn safe_badge_is_bold_yellow_text_no_background() {
+        // Safe is conservative-default — visible (bold yellow) but
+        // not as loud as Auto's inverted badge. No background fill.
+        // Yellow matches the prompt indicator in `tui_viewport.rs`
+        // (post-fix); pre-fix Safe was Cyan in the prompt, Yellow in
+        // the bar — confusing inconsistency this test pins gone.
+        let bar = StatusBar::new("gpt-4", "safe", 50);
+        let (fg, bg, modifier) = cell_style_at(bar, "SAFE", 200);
+        assert_eq!(fg, Color::Yellow, "Safe badge fg must be yellow");
+        assert_eq!(bg, Color::Reset, "Safe badge must have NO background fill");
+        assert!(
+            modifier.contains(Modifier::BOLD),
+            "Safe badge must be bold; got modifier: {modifier:?}"
+        );
+    }
+
+    #[test]
+    fn plan_badge_is_bold_cyan_text_no_background() {
+        // Plan is read-only — calm but visible. Bold cyan, no bg.
+        // Pre-fix Plan was DarkGray in the prompt indicator, which
+        // actively HID the indicator on a dark terminal background.
+        let bar = StatusBar::new("gpt-4", "plan", 50);
+        let (fg, bg, modifier) = cell_style_at(bar, "PLAN", 200);
+        assert_eq!(fg, Color::Cyan, "Plan badge fg must be cyan");
+        assert_eq!(bg, Color::Reset, "Plan badge must have NO background fill");
+        assert!(
+            modifier.contains(Modifier::BOLD),
+            "Plan badge must be bold; got modifier: {modifier:?}"
+        );
+    }
+
+    #[test]
+    fn mode_label_renders_uppercase_for_every_known_mode() {
+        // Every supported mode label must render UPPERCASE. Pre-fix
+        // they were lowercase (`safe` / `auto` / `plan`), which read
+        // as ordinary status text instead of a foregrounded mode
+        // indicator. The uppercasing is the cheap-but-loud half of
+        // "don't let the user be unsure which mode they're in."
+        for label in ["plan", "safe", "auto"] {
+            let bar = StatusBar::new("gpt-4", label, 50);
+            let text = render_bar(bar, 200);
+            let upper = label.to_ascii_uppercase();
+            assert!(
+                text.contains(&upper),
+                "label {label:?} must render uppercase {upper:?}, got: {text}"
+            );
+            // Negative: the lowercase form must NOT appear in the
+            // visible text (defends against "oops, formatted twice").
+            assert!(
+                !text.contains(label),
+                "lowercase {label:?} must NOT appear (got: {text})"
+            );
+        }
+    }
+
+    #[test]
+    fn mode_segment_renders_icon_prefix() {
+        // Icon prefix matches the prompt indicator in `tui_viewport.rs`
+        // for visual continuity across both surfaces. If the icon goes
+        // missing or changes character, that's a UX regression worth
+        // catching.
+        let cases = [
+            ("plan", '\u{1f4cb}'), // 📋
+            ("safe", '\u{1f512}'), // 🔒
+            ("auto", '\u{26a1}'),  // ⚡
+        ];
+        for (label, expected_icon) in cases {
+            let bar = StatusBar::new("gpt-4", label, 50);
+            let text = render_bar(bar, 200);
+            assert!(
+                text.contains(expected_icon),
+                "{label:?} must render icon {expected_icon:?}, got: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_mode_renders_question_mark_badge_not_silent() {
+        // The defensive `_` arm in the match must produce a VISIBLE
+        // "?" badge so a future TrustMode variant added without
+        // updating this match is obvious in the UI (instead of
+        // rendering as nothing or as the previous mode's color).
+        let bar = StatusBar::new("gpt-4", "future_unknown_mode", 50);
+        let text = render_bar(bar, 200);
+        assert!(
+            text.contains("?"),
+            "unknown mode label must render `?` placeholder, got: {text}"
         );
     }
 }
