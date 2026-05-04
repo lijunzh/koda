@@ -87,7 +87,7 @@ pub(crate) fn handle_cancel_background_task(
     buffer: &mut ScrollBuffer,
     bg_agents: &koda_core::bg_agent::BgAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
-    bg_activity: &mut crate::bg_activity::BgActivityTracker,
+    child_activity: &mut crate::child_activity::ChildActivityTracker,
     task_id: Option<TaskId>,
 ) {
     let Some(id) = task_id else {
@@ -106,7 +106,7 @@ pub(crate) fn handle_cancel_background_task(
                 // doesn't transition to Cancelled until the inference
                 // loop next checks the token — could be a few hundred
                 // ms — and that lag without feedback feels broken.
-                bg_activity.mark_cancelling(n);
+                child_activity.mark_cancelling(n);
                 tui_output::ok_msg(
                     buffer,
                     format!("Cancellation requested for agent:{n}. Result will inject shortly."),
@@ -153,7 +153,7 @@ pub(crate) fn cancel_all_bg_work(
     buffer: &mut ScrollBuffer,
     bg_agents: &koda_core::bg_agent::BgAgentRegistry,
     bg_processes: &koda_core::tools::bg_process::BgRegistry,
-    bg_activity: &mut crate::bg_activity::BgActivityTracker,
+    child_activity: &mut crate::child_activity::ChildActivityTracker,
 ) -> (usize, usize) {
     use koda_core::bg_agent::AgentStatus;
 
@@ -187,7 +187,7 @@ pub(crate) fn cancel_all_bg_work(
                 // immediate feedback (#1210); the registry status
                 // transition to Cancelled lags by an inference
                 // iteration.
-                bg_activity.mark_cancelling(**id);
+                child_activity.mark_cancelling(**id);
             }
             cancelled
         })
@@ -337,7 +337,7 @@ mod tests {
             &mut buf,
             &reg,
             &procs,
-            &mut crate::bg_activity::BgActivityTracker::default(),
+            &mut crate::child_activity::ChildActivityTracker::default(),
             Some(TaskId::Agent(task_id)),
         );
 
@@ -367,7 +367,7 @@ mod tests {
             &mut buf,
             &reg,
             &procs,
-            &mut crate::bg_activity::BgActivityTracker::default(),
+            &mut crate::child_activity::ChildActivityTracker::default(),
             Some(TaskId::Process(pid)),
         );
 
@@ -394,7 +394,7 @@ mod tests {
             &mut buf,
             &reg,
             &procs,
-            &mut crate::bg_activity::BgActivityTracker::default(),
+            &mut crate::child_activity::ChildActivityTracker::default(),
             Some(TaskId::Agent(999)),
         );
         let text = buffer_text(&buf);
@@ -415,7 +415,7 @@ mod tests {
             &mut buf,
             &reg,
             &procs,
-            &mut crate::bg_activity::BgActivityTracker::default(),
+            &mut crate::child_activity::ChildActivityTracker::default(),
             Some(TaskId::Process(999_999)),
         );
         let text = buffer_text(&buf);
@@ -438,7 +438,7 @@ mod tests {
             &mut buf,
             &reg,
             &procs,
-            &mut crate::bg_activity::BgActivityTracker::default(),
+            &mut crate::child_activity::ChildActivityTracker::default(),
             None,
         );
         let text = buffer_text(&buf);
@@ -463,7 +463,7 @@ mod tests {
             &mut buf,
             &reg,
             &procs,
-            &mut crate::bg_activity::BgActivityTracker::default(),
+            &mut crate::child_activity::ChildActivityTracker::default(),
         );
         assert_eq!((a, p), (0, 0));
         assert!(
@@ -493,7 +493,7 @@ mod tests {
             &mut buf,
             &reg,
             &procs,
-            &mut crate::bg_activity::BgActivityTracker::default(),
+            &mut crate::child_activity::ChildActivityTracker::default(),
         );
         assert_eq!((a, p), (2, 0));
         assert!(observer1.is_cancelled(), "agent 1 should observe cascade");
@@ -523,7 +523,7 @@ mod tests {
             &mut buf,
             &reg,
             &procs,
-            &mut crate::bg_activity::BgActivityTracker::default(),
+            &mut crate::child_activity::ChildActivityTracker::default(),
         );
         assert_eq!((a, p), (1, 1));
         assert!(observer.is_cancelled());
@@ -557,7 +557,7 @@ mod tests {
             &mut buf,
             &reg,
             &procs,
-            &mut crate::bg_activity::BgActivityTracker::default(),
+            &mut crate::child_activity::ChildActivityTracker::default(),
         );
         assert_eq!((a, p), (0, 0));
         assert!(

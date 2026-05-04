@@ -47,10 +47,10 @@ pub(crate) fn draw_viewport(
     project_root: &std::path::Path,
     // #1210: pre-built rows for the live bg-activity overlay rendered
     // above the status bar. Slice is already truncated to MAX_VISIBLE;
-    // `bg_activity_total` is the un-truncated count, used for the
+    // `child_activity_total` is the un-truncated count, used for the
     // "+ N more" overflow hint.
-    bg_activity_rows: &[crate::widgets::bg_activity_overlay::ActivityRow],
-    bg_activity_total: usize,
+    child_activity_rows: &[crate::widgets::child_activity_overlay::ActivityRow],
+    child_activity_total: usize,
 ) -> ratatui::layout::Rect {
     let area = frame.area();
 
@@ -93,8 +93,10 @@ pub(crate) fn draw_viewport(
     // Bg-activity overlay height (#1210): 0 when no live work; mirrors
     // QueuePreview's collapse-when-empty pattern so the chrome reflows
     // automatically as fan-out agents come and go.
-    let bg_activity_height =
-        crate::widgets::bg_activity_overlay::BgActivityOverlay::height_for(bg_activity_total);
+    let child_activity_height =
+        crate::widgets::child_activity_overlay::ChildActivityOverlay::height_for(
+            child_activity_total,
+        );
 
     // Layout: History | TopSep | Input | BotSep | Status | Queue? | Menu
     //
@@ -113,19 +115,19 @@ pub(crate) fn draw_viewport(
         top_sep_row,
         input_rows,
         bot_sep_row,
-        bg_activity_row,
+        child_activity_row,
         status_row,
         queue_preview_row,
         menu_area,
     ] = Layout::vertical([
-        Constraint::Min(1),                       // history: fill remaining space
-        Constraint::Length(1),                    // top separator (─────)
-        Constraint::Length(input_height),         // input textarea
-        Constraint::Length(1),                    // bottom separator (─────)
-        Constraint::Length(bg_activity_height),   // #1210 live bg-activity overlay (0 when empty)
-        Constraint::Length(1),                    // status bar
-        Constraint::Length(queue_preview_height), // later_queue preview (0 when empty)
-        Constraint::Length(menu_height),          // dropdown menu (0 when inactive)
+        Constraint::Min(1),                        // history: fill remaining space
+        Constraint::Length(1),                     // top separator (─────)
+        Constraint::Length(input_height),          // input textarea
+        Constraint::Length(1),                     // bottom separator (─────)
+        Constraint::Length(child_activity_height), // #1210 live bg-activity overlay (0 when empty)
+        Constraint::Length(1),                     // status bar
+        Constraint::Length(queue_preview_height),  // later_queue preview (0 when empty)
+        Constraint::Length(menu_height),           // dropdown menu (0 when inactive)
     ])
     .areas(area);
 
@@ -243,13 +245,13 @@ pub(crate) fn draw_viewport(
     // study (#1210) showed claude_code/gemini-cli surface the
     // equivalent in the same band, and that's where users expect
     // it.
-    if bg_activity_height > 0 {
+    if child_activity_height > 0 {
         frame.render_widget(
-            crate::widgets::bg_activity_overlay::BgActivityOverlay::new(
-                bg_activity_rows,
-                bg_activity_total,
+            crate::widgets::child_activity_overlay::ChildActivityOverlay::new(
+                child_activity_rows,
+                child_activity_total,
             ),
-            bg_activity_row,
+            child_activity_row,
         );
     }
 

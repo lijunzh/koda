@@ -154,7 +154,7 @@ impl TuiContext {
                         &mut self.scroll_buffer,
                         &self.session.bg_agents,
                         &self.agent.tools.bg_registry,
-                        &mut self.bg_activity,
+                        &mut self.child_activity,
                     );
                 }
             }
@@ -182,7 +182,7 @@ impl TuiContext {
                         &mut self.scroll_buffer,
                         &self.session.bg_agents,
                         &self.agent.tools.bg_registry,
-                        &mut self.bg_activity,
+                        &mut self.child_activity,
                     );
                 } else if composer_dirty {
                     self.quit_armed_at = None;

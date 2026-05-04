@@ -284,7 +284,7 @@ impl TuiRenderer {
             | EngineEvent::LoopCapReached { .. }
             | EngineEvent::BgTaskUpdate { .. }
             | EngineEvent::TodoUpdate { .. }
-            | EngineEvent::BgChildActivity { .. } => {
+            | EngineEvent::ChildAgentActivity { .. } => {
                 // Handled by the event loop, not the renderer.
                 // (#1076) BgTaskUpdate is routed to the bg-task panel,
                 // which still reads from the registry snapshot for its
@@ -295,7 +295,7 @@ impl TuiRenderer {
                 // the structured event is for ACP / headless clients
                 // that want diff-driven animation. Same future-cleanup
                 // path as BgTaskUpdate.
-                // (#1201 B2) BgChildActivity is dropped from TUI
+                // (#1201 B2) ChildAgentActivity is dropped from TUI
                 // scrollback render. The B1 inline-line render
                 // (`[bg N] 🔧 Read foo.rs` per event) was redundant
                 // with the post-completion `✅ Background agent X
@@ -441,7 +441,7 @@ fn render_tool_output(
     // ListBackgroundTasks (#1209) — same JSON-soup problem as WaitTask;
     // the model calls this to peek at running bg work and we owe the
     // user a per-task render with the same icon vocabulary as the
-    // live `bg_activity_overlay` instead of a one-line JSON dump.
+    // live `child_activity_overlay` instead of a one-line JSON dump.
     if name == "ListBackgroundTasks"
         && let Some(lines) = crate::wait_task_format::try_render_list_bg_tasks_lines(output)
     {
@@ -930,7 +930,7 @@ mod tests {
         assert_eq!(collapse_blank_lines("\n\n\n\n"), "\n");
     }
 
-    // ── #1201 B2: BgChildActivity is a TUI no-op ────────────────────────────
+    // ── #1201 B2: ChildAgentActivity is a TUI no-op ────────────────────────────
     //
     // The B1 PR rendered each child activity event as a dim inline
     // line in the scroll buffer. That turned out redundant with the
@@ -945,28 +945,29 @@ mod tests {
     // accidentally re-introduce the noise.
     #[test]
     fn bg_child_activity_does_not_push_lines_to_scroll_buffer() {
-        use koda_core::engine::event::{BgChildActivityKind, EngineEvent};
+        use koda_core::engine::event::{ChildAgentActivityKind, EngineEvent};
 
         let mut renderer = TuiRenderer::new();
         let mut buffer = ScrollBuffer::new(2500);
 
         for kind in [
-            BgChildActivityKind::ToolStart {
+            ChildAgentActivityKind::ToolStart {
                 tool_name: "Read".into(),
                 summary: "src/main.rs".into(),
             },
-            BgChildActivityKind::ToolEnd {
+            ChildAgentActivityKind::ToolEnd {
                 tool_name: "Read".into(),
                 success: true,
             },
-            BgChildActivityKind::Info {
+            ChildAgentActivityKind::Info {
                 message: "  \u{1f4cc} note".into(),
             },
         ] {
             renderer.render_to_buffer(
-                EngineEvent::BgChildActivity {
+                EngineEvent::ChildAgentActivity {
                     task_id: 7,
                     spawner: None,
+                    is_background: true,
                     kind,
                 },
                 &mut buffer,
@@ -976,7 +977,7 @@ mod tests {
         assert_eq!(
             buffer.len(),
             0,
-            "BgChildActivity must not push to scrollback (#1201 B2); \
+            "ChildAgentActivity must not push to scrollback (#1201 B2); \
              post-completion `✅ ... completed` Info line is the durable record"
         );
     }

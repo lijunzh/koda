@@ -53,7 +53,7 @@ pub fn wait_status_icon(status: &str) -> &'static str {
         "forbidden" => "\u{1F512}",  // 🔒
         "parse_error" => "\u{26A0}", // ⚠
         // ListBackgroundTasks-specific statuses (#1209). Glyph choice
-        // matches `bg_activity_overlay`'s status palette so the live
+        // matches `child_activity_overlay`'s status palette so the live
         // overlay and the tool-result render speak the same icon
         // vocabulary.
         "pending" => "\u{25D0}", // ◐ — half-filled circle
@@ -286,7 +286,7 @@ pub fn try_render_list_bg_tasks_lines(payload: &str) -> Option<Vec<Line<'static>
 
         // Status suffix shows the raw status word (with optional exit
         // code for processes) plus age. Format mirrors the live
-        // `bg_activity_overlay` so eye sweeps between live + history
+        // `child_activity_overlay` so eye sweeps between live + history
         // see the same tail.
         let status_tail = match exit_code {
             Some(code) => format!("({status} {code}, {age_secs}s)"),

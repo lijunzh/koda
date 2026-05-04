@@ -137,10 +137,10 @@ impl EngineSink for BufferingSink {
     }
 }
 
-// ── ForwardingBgSink (#1201 B) ──────────────────────────
+// ── ForwardingChildSink (#1201 B) ──────────────────────────
 
 /// A decorator around [`BufferingSink`] that *also* forwards select
-/// events as [`crate::engine::event::EngineEvent::BgChildActivity`]
+/// events as [`crate::engine::event::EngineEvent::ChildAgentActivity`]
 /// up to the parent's sink via the bg-task's status emitter.
 ///
 /// **#1201 B**: pre-this-decorator the parent's TUI had zero live
@@ -150,13 +150,13 @@ impl EngineSink for BufferingSink {
 /// only surfaced at result-injection time, so a 30-second tool call
 /// inside a bg agent looked identical to a 30-second hang.
 ///
-/// `ForwardingBgSink` is the live tap. For each event interesting
+/// `ForwardingChildSink` is the live tap. For each event interesting
 /// enough to surface in the parent's feed, it builds a
-/// [`crate::engine::event::BgChildActivityKind`] and pushes it onto
+/// [`crate::engine::event::ChildAgentActivityKind`] and pushes it onto
 /// the registry's status-event queue via
 /// [`crate::bg_agent::BgStatusEmitter::send_activity`]. The
 /// inference loop's existing drain in `inference.rs` forwards the
-/// resulting `BgChildActivity` event to whatever sink is active
+/// resulting `ChildAgentActivity` event to whatever sink is active
 /// (TUI / headless / ACP) without further plumbing.
 ///
 /// **The narrative trace is preserved.** Every event that hits this
@@ -164,7 +164,7 @@ impl EngineSink for BufferingSink {
 /// authoritative post-completion trace (drained at result-injection
 /// time and persisted to the transcript) is unchanged. Live and
 /// post-completion are deliberately two separate channels:
-/// - Live (`BgChildActivity`) is for real-time UX; events are
+/// - Live (`ChildAgentActivity`) is for real-time UX; events are
 ///   ephemeral and may be coalesced or dropped by the renderer.
 /// - Post-completion (the `BufferingSink::take_lines` dump) is the
 ///   load-bearing record — it's what the model sees in the result
@@ -172,17 +172,17 @@ impl EngineSink for BufferingSink {
 ///
 /// ## Sink wrapping order
 ///
-/// `PersistingSink` wraps `ForwardingBgSink` wraps `BufferingSink`.
+/// `PersistingSink` wraps `ForwardingChildSink` wraps `BufferingSink`.
 /// Persistence sees every event first (so the transcript captures
 /// `SubAgentEvent` rows in real time), then forwarding fans out to
 /// the parent's queue, then buffering captures the line for the
 /// post-completion drain.
-pub struct ForwardingBgSink {
+pub struct ForwardingChildSink {
     inner: BufferingSink,
     emitter: crate::bg_agent::BgStatusEmitter,
 }
 
-impl ForwardingBgSink {
+impl ForwardingChildSink {
     /// Wrap a `BufferingSink` and forward live activity through the
     /// emitter. The emitter is cheap to clone (two `Arc`s and a
     /// `watch::Sender`); pass a clone and keep the original for the
@@ -194,14 +194,14 @@ impl ForwardingBgSink {
     /// Drain the inner buffering sink. Same semantics as
     /// [`BufferingSink::take_lines`] — the buffer is empty after
     /// this returns. Only the post-completion narrative is drained
-    /// here; live `BgChildActivity` events have already been
+    /// here; live `ChildAgentActivity` events have already been
     /// forwarded individually as they happened.
     pub fn take_lines(&self) -> Vec<String> {
         self.inner.take_lines()
     }
 }
 
-impl EngineSink for ForwardingBgSink {
+impl EngineSink for ForwardingChildSink {
     fn emit(&self, event: EngineEvent) {
         // Forward the *live* signal first while we still own the
         // event by reference. Dropping a delta on the floor here
@@ -210,11 +210,12 @@ impl EngineSink for ForwardingBgSink {
         // authoritative.
         match &event {
             EngineEvent::ToolCallStart { name, args, .. } => {
-                self.emitter
-                    .send_activity(crate::engine::event::BgChildActivityKind::ToolStart {
+                self.emitter.send_activity(
+                    crate::engine::event::ChildAgentActivityKind::ToolStart {
                         tool_name: name.clone(),
                         summary: summarize_tool_call(name, args),
-                    });
+                    },
+                );
             }
             EngineEvent::ToolCallResult { name, output, .. } => {
                 // Best-effort success classification: tool dispatchers
@@ -223,14 +224,14 @@ impl EngineSink for ForwardingBgSink {
                 // icon hint, not for any control-flow decision.
                 let success = !looks_like_tool_error(output);
                 self.emitter
-                    .send_activity(crate::engine::event::BgChildActivityKind::ToolEnd {
+                    .send_activity(crate::engine::event::ChildAgentActivityKind::ToolEnd {
                         tool_name: name.clone(),
                         success,
                     });
             }
             EngineEvent::Info { message } => {
                 self.emitter
-                    .send_activity(crate::engine::event::BgChildActivityKind::Info {
+                    .send_activity(crate::engine::event::ChildAgentActivityKind::Info {
                         message: message.clone(),
                     });
             }
@@ -680,7 +681,7 @@ mod tests {
         assert_send_sync::<BufferingSink>();
     }
 
-    // ── ForwardingBgSink (#1201 B) ────────────────────
+    // ── ForwardingChildSink (#1201 B) ────────────────────
 
     /// Build a [`crate::bg_agent::BgStatusEmitter`] hooked up to a
     /// real registry so we can drain forwarded events. The registry
@@ -702,9 +703,9 @@ mod tests {
     }
 
     #[test]
-    fn forwarding_bg_sink_emits_tool_start_and_end_to_registry() {
+    fn forwarding_child_sink_emits_tool_start_and_end_to_registry() {
         let (registry, emitter) = make_test_emitter(7);
-        let sink = ForwardingBgSink::new(BufferingSink::new(), emitter);
+        let sink = ForwardingChildSink::new(BufferingSink::new(), emitter);
 
         sink.emit(EngineEvent::ToolCallStart {
             id: "t1".into(),
@@ -722,29 +723,29 @@ mod tests {
         assert_eq!(
             drained.len(),
             2,
-            "each interesting event should fan out exactly one BgChildActivity"
+            "each interesting event should fan out exactly one ChildAgentActivity"
         );
         assert!(matches!(
             &drained[0],
-            EngineEvent::BgChildActivity {
+            EngineEvent::ChildAgentActivity {
                 task_id: 7,
-                kind: crate::engine::event::BgChildActivityKind::ToolStart { tool_name, summary },
+                kind: crate::engine::event::ChildAgentActivityKind::ToolStart { tool_name, summary },
                 ..
             } if tool_name == "Read" && summary.contains("src/auth.rs")
         ));
         assert!(matches!(
             &drained[1],
-            EngineEvent::BgChildActivity {
-                kind: crate::engine::event::BgChildActivityKind::ToolEnd { tool_name, success: true },
+            EngineEvent::ChildAgentActivity {
+                kind: crate::engine::event::ChildAgentActivityKind::ToolEnd { tool_name, success: true },
                 ..
             } if tool_name == "Read"
         ));
     }
 
     #[test]
-    fn forwarding_bg_sink_classifies_tool_errors() {
+    fn forwarding_child_sink_classifies_tool_errors() {
         let (registry, emitter) = make_test_emitter(1);
-        let sink = ForwardingBgSink::new(BufferingSink::new(), emitter);
+        let sink = ForwardingChildSink::new(BufferingSink::new(), emitter);
 
         sink.emit(EngineEvent::ToolCallResult {
             id: "t1".into(),
@@ -754,20 +755,20 @@ mod tests {
         let drained = registry.drain_status_events();
         assert!(matches!(
             &drained[0],
-            EngineEvent::BgChildActivity {
-                kind: crate::engine::event::BgChildActivityKind::ToolEnd { success: false, .. },
+            EngineEvent::ChildAgentActivity {
+                kind: crate::engine::event::ChildAgentActivityKind::ToolEnd { success: false, .. },
                 ..
             }
         ));
     }
 
     #[test]
-    fn forwarding_bg_sink_preserves_buffering_for_post_completion_drain() {
+    fn forwarding_child_sink_preserves_buffering_for_post_completion_drain() {
         // The whole point of the decorator is "live AND buffered" —
         // dropping the inner buffer would silently break the
         // model-facing narrative trace. This test pins that.
         let (_registry, emitter) = make_test_emitter(1);
-        let sink = ForwardingBgSink::new(BufferingSink::new(), emitter);
+        let sink = ForwardingChildSink::new(BufferingSink::new(), emitter);
 
         sink.emit(EngineEvent::ToolCallStart {
             id: "t1".into(),
@@ -786,13 +787,13 @@ mod tests {
     }
 
     #[test]
-    fn forwarding_bg_sink_drops_streaming_text() {
+    fn forwarding_child_sink_drops_streaming_text() {
         // Streaming text is forwarded neither live nor to the buffer:
         // the model's final output already crosses the result oneshot,
         // so capturing it here would duplicate it AND spam the parent
         // feed with per-token noise.
         let (registry, emitter) = make_test_emitter(1);
-        let sink = ForwardingBgSink::new(BufferingSink::new(), emitter);
+        let sink = ForwardingChildSink::new(BufferingSink::new(), emitter);
 
         sink.emit(EngineEvent::TextDelta {
             text: "hello".into(),
@@ -807,13 +808,13 @@ mod tests {
     }
 
     #[test]
-    fn forwarding_bg_sink_summarizes_known_tool_args() {
+    fn forwarding_child_sink_summarizes_known_tool_args() {
         // Per-tool special cases live inside the sink so every client
         // renders the same summary string. Pin the contracts the TUI
         // depends on — if the summary format changes, the activity
         // feed render needs to update too.
         let (registry, emitter) = make_test_emitter(1);
-        let sink = ForwardingBgSink::new(BufferingSink::new(), emitter);
+        let sink = ForwardingChildSink::new(BufferingSink::new(), emitter);
 
         // Bash: command
         sink.emit(EngineEvent::ToolCallStart {
@@ -841,8 +842,8 @@ mod tests {
         let summaries: Vec<String> = drained
             .iter()
             .filter_map(|e| match e {
-                EngineEvent::BgChildActivity {
-                    kind: crate::engine::event::BgChildActivityKind::ToolStart { summary, .. },
+                EngineEvent::ChildAgentActivity {
+                    kind: crate::engine::event::ChildAgentActivityKind::ToolStart { summary, .. },
                     ..
                 } => Some(summary.clone()),
                 _ => None,
@@ -859,12 +860,12 @@ mod tests {
     }
 
     #[test]
-    fn forwarding_bg_sink_truncates_long_summaries() {
+    fn forwarding_child_sink_truncates_long_summaries() {
         // Summaries land in tight horizontal real estate (inline
         // under the bg-task spawn cell). A 5KB commit message in the
         // args must not blow up the feed.
         let (registry, emitter) = make_test_emitter(1);
-        let sink = ForwardingBgSink::new(BufferingSink::new(), emitter);
+        let sink = ForwardingChildSink::new(BufferingSink::new(), emitter);
 
         let long_cmd = "x".repeat(500);
         sink.emit(EngineEvent::ToolCallStart {
@@ -876,8 +877,8 @@ mod tests {
 
         let drained = registry.drain_status_events();
         let summary = match &drained[0] {
-            EngineEvent::BgChildActivity {
-                kind: crate::engine::event::BgChildActivityKind::ToolStart { summary, .. },
+            EngineEvent::ChildAgentActivity {
+                kind: crate::engine::event::ChildAgentActivityKind::ToolStart { summary, .. },
                 ..
             } => summary.clone(),
             _ => panic!("expected ToolStart"),
@@ -887,8 +888,8 @@ mod tests {
     }
 
     #[test]
-    fn forwarding_bg_sink_is_send_sync() {
+    fn forwarding_child_sink_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<ForwardingBgSink>();
+        assert_send_sync::<ForwardingChildSink>();
     }
 }

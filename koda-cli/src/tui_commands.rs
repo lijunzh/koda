@@ -46,7 +46,7 @@ pub async fn handle_slash_command(
     agent: &Arc<KodaAgent>,
     pending_command: &mut Option<String>,
     menu: &mut crate::tui_types::MenuContent,
-    bg_activity: &mut crate::bg_activity::BgActivityTracker,
+    child_activity: &mut crate::child_activity::ChildActivityTracker,
 ) -> SlashAction {
     let parts: Vec<&str> = input.splitn(2, ' ').collect();
     let cmd = parts[0];
@@ -176,7 +176,7 @@ pub async fn handle_slash_command(
 
         // #1210 deleted the legacy `/agents` interactive panel; live
         // bg-agent + bg-process state now flows through the always-on
-        // `widgets::bg_activity_overlay` rendered above the status bar.
+        // `widgets::child_activity_overlay` rendered above the status bar.
         // The model-facing `ListBackgroundTasks` tool keeps the same
         // dump shape for in-context introspection — `/agents` was the
         // user-facing surface for the same data and is redundant.
@@ -196,7 +196,7 @@ pub async fn handle_slash_command(
                 buffer,
                 &session.bg_agents,
                 &agent.tools.bg_registry,
-                bg_activity,
+                child_activity,
                 parsed,
             );
             SlashAction::Continue

@@ -126,11 +126,11 @@ pub(crate) struct TuiContext {
     pub draw_rx: crate::frame_requester::DrawNotifyRx,
 
     /// Live activity tracker for bg agents + processes (#1210).
-    /// Absorbs `BgChildActivity` / `BgTaskUpdate` events into a per-task
+    /// Absorbs `ChildAgentActivity` / `BgTaskUpdate` events into a per-task
     /// last-seen map; projected each frame into the
-    /// `widgets::bg_activity_overlay` rendered above the status bar.
-    /// See [`crate::bg_activity::BgActivityTracker`].
-    pub bg_activity: crate::bg_activity::BgActivityTracker,
+    /// `widgets::child_activity_overlay` rendered above the status bar.
+    /// See [`crate::child_activity::ChildActivityTracker`].
+    pub child_activity: crate::child_activity::ChildActivityTracker,
 }
 
 /// Outcome of dispatching a single command.
@@ -408,7 +408,7 @@ impl TuiContext {
             project_root,
             frame_requester,
             draw_rx,
-            bg_activity: crate::bg_activity::BgActivityTracker::default(),
+            child_activity: crate::child_activity::ChildActivityTracker::default(),
         })
     }
 
@@ -461,8 +461,8 @@ impl TuiContext {
         // redundant the moment the live surface exists (#1210).
         let agent_snaps = self.session.bg_agents.snapshot();
         let process_snaps = self.agent.tools.bg_registry.snapshot();
-        let (bg_activity_rows, bg_activity_total) =
-            self.bg_activity.build_rows(&agent_snaps, &process_snaps);
+        let (child_activity_rows, child_activity_total) =
+            self.child_activity.build_rows(&agent_snaps, &process_snaps);
 
         let mut history_rect = None;
         if let Err(e) = self.terminal.draw(|f| {
@@ -483,8 +483,8 @@ impl TuiContext {
                 selection,
                 mcp_info,
                 &project_root,
-                &bg_activity_rows,
-                bg_activity_total,
+                &child_activity_rows,
+                child_activity_total,
             ));
         }) {
             tracing::debug!("draw skipped: {e}");
@@ -668,7 +668,7 @@ impl TuiContext {
             &self.agent,
             &mut self.pending_command,
             &mut self.menu,
-            &mut self.bg_activity,
+            &mut self.child_activity,
         )
         .await;
 
