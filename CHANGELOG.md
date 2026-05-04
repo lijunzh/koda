@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Documentation
+
+- **CLAUDE.md teaches the `gh --body-file` heredoc pattern for multi-line content** (#1232 §7). The Bash tool runs commands through `sh -c "…"`; inlining content with newlines, backticks, `$(…)`, or quotes burns a turn on `sh: -c: line N: syntax error near unexpected token …`. The bug-review session that opened #1232 reproduced this exact failure when the model called `gh issue create --title "…" --body "…"` with a markdown body containing backticks. New "Bash tool: pass multi-line / backtick content via files, not inline" subsection in `CLAUDE.md §Conventions` shows the always-good heredoc-into-temp-file pattern (`<<'EOF'` is single-quoted so nothing inside expands) and lists the canonical sites: `gh pr create --body-file`, `gh issue create --body-file`, `git commit -F`. CLAUDE.md is loaded as project memory on every session, so the nudge reaches both the master agent and every sub-agent. No code changes — docs only.
+
 ### Behaviour change
 
 - **Sub-agent trust matrix is now context-sensitive; `write_access` is deprecated in favor of `trust`** (#1250, #1251 PR A, this PR is PR B). Two changes that close the dead-channel bug from #1249 and consolidate the agent-scoping mechanism:

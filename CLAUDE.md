@@ -278,6 +278,36 @@ Tools use PascalCase names. `mod.rs` has the registry, dispatcher, and `safe_res
   require cross-file context-switching. Test: if you must read file B
   every time you read file A, they should be the same file.
 
+### Bash tool: pass multi-line / backtick content via files, not inline
+
+The Bash tool runs commands through `sh -c "…"`. Inlining content that
+contains newlines, backticks, `$(…)`, or shell metacharacters in the
+argument string burns a turn on `sh: -c: line N: syntax error near
+unexpected token …` (#1232 §7).
+
+**Always-good pattern for `gh` issue/PR creation, commit messages,
+and any other multi-line payload:**
+
+```bash
+# 1. write the body to a temp file
+cat > /tmp/pr_body.md <<'EOF'
+## Summary
+
+Multi-line content with `backticks`, $(commands), and "quotes" all
+survive because the heredoc is parsed BEFORE sh -c sees the arg.
+EOF
+
+# 2. reference it via --body-file / -F
+gh pr create --title "…" --body-file /tmp/pr_body.md
+gh issue create --title "…" --body-file /tmp/pr_body.md
+git commit -F /tmp/commit_msg.md
+```
+
+The heredoc is single-quoted (`<<'EOF'`) so nothing inside it is
+expanded — you don't have to escape `$`, backticks, or `"`. This is
+strictly safer than `--body "…"` even for content you think is safe;
+the foot-gun is recurring and has zero upside to ignoring.
+
 ## Test Structure
 
 ### Quick reference
