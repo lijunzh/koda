@@ -149,10 +149,19 @@ pub(crate) fn draw_viewport(
     let (prompt_text, color) = match prompt_mode {
         PromptMode::WizardInput { label, .. } => (format!("{label}: "), Color::Cyan),
         PromptMode::Chat => {
+            // **#1232 §8a**: keep prompt indicator colors in lock-step
+            // with the status-bar mode badge so users see the SAME
+            // color for the SAME mode in both surfaces. Pre-fix Safe
+            // was Cyan here but Yellow in the bar — confusing.
+            // Plan was DarkGray here, which actively HID the indicator
+            // (DarkGray on the default dark terminal background blends
+            // into nothing); now Cyan so users can see they're in a
+            // read-only mode. Auto stays Green to match the bar's
+            // green-background badge.
             let (icon, c) = match (state, mode) {
                 (TuiState::Inferring, _) => ("\u{23f3}", Color::DarkGray),
-                (_, TrustMode::Plan) => ("\u{1f4cb}", Color::DarkGray),
-                (_, TrustMode::Safe) => ("\u{1f512}", Color::Cyan),
+                (_, TrustMode::Plan) => ("\u{1f4cb}", Color::Cyan),
+                (_, TrustMode::Safe) => ("\u{1f512}", Color::Yellow),
                 (_, TrustMode::Auto) => ("\u{26a1}", Color::Green),
             };
             (format!("{icon}> "), c)
