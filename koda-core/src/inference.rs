@@ -614,8 +614,8 @@ pub struct InferenceContext<'a> {
 
 /// Run the inference loop: send messages, stream responses, dispatch tool calls.
 ///
-/// This is a thin wrapper around [`inference_loop_inner`] that always
-/// finalizes the undo stack's pending snapshots on return — regardless
+/// This is a thin wrapper around the private `inference_loop_inner`
+/// that always finalizes the undo stack's pending snapshots on return — regardless
 /// of whether the inner loop completed, errored, or was cancelled
 /// (#1264). Without this, file mutations made by tools during the
 /// turn would stay in `pending` forever and never become an undoable
