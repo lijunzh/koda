@@ -13,6 +13,21 @@
 //! lines), so the re-stamp is a pure attribution change — no
 //! behavioral diff.
 //!
+//! ## Vendor-sync skips
+//!
+//! The vendor-sync workflow reads `skip <SHA>` lines below and excludes
+//! those upstream commits from drift reports. Each entry must justify
+//! WHY koda intentionally does not port the commit. To unskip, delete
+//! the line and re-port the commit.
+//!
+//! - skip 36912ce3de: fix(tui): use shared paste burst interval on Windows
+//!   (#18914) — the fix removes the Windows-only 30ms char interval and
+//!   uses the cross-platform 8ms value everywhere. Upstream validated
+//!   this on VS Code 1.107.0 integrated terminal. Koda's Windows support
+//!   isn't actively tested today; taking the cross-platform interval
+//!   without manual validation risks regressing multiline paste on
+//!   Windows terminals. Revisit when koda has a Windows test target.
+//!
 //! Original work: Copyright (c) OpenAI / codex contributors,
 //! licensed under the Apache License, Version 2.0.
 //! See `LICENSES/codex-APACHE-2.0` (vendored at the workspace root) for

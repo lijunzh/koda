@@ -74,7 +74,9 @@ jobs:
           )
 
           report=""
+          skipped_report=""
           total_drift=0
+          total_skipped=0
           warnings=0
 
           for local_path in "${!FILES[@]}"; do
@@ -98,37 +100,66 @@ jobs:
               continue
             fi
 
-            # Count commits that touched the upstream file since the pin.
-            # `git log` returns a clean exit even if the path no longer
-            # exists upstream — check that case explicitly.
-            #
+            # Extract intentionally-skipped commit SHAs from the file's
+            # `## Vendor-sync skips` section. Format: `//! - skip <SHA>: <reason>`
+            # where SHA is 7-40 hex chars. Build an alternation pattern for
+            # `grep -E` to filter the git log output below.
+            skip_shas=$(grep -oE '^//!\s*-\s*skip\s+[a-f0-9]{7,40}' "$local_path" | grep -oE '[a-f0-9]{7,40}' || true)
+            skip_pattern=""
+            if [[ -n "$skip_shas" ]]; then
+              skip_pattern=$(echo "$skip_shas" | paste -sd '|' -)
+            fi
+
+            # All upstream commits that touched the file since the pin.
             # `--follow` is critical: without it, a rename between pin and
-            # HEAD silently hides all drift (we'd see 0 commits because
-            # the path didn't exist under its new name pre-rename).
-            # Discovered the hard way on 2026-05-05 — `keymap.rs` was
-            # moved upstream from `bottom_pane/` to `tui/src/` and the
-            # initial workflow reported 0 drift instead of 2 commits.
-            count=$(git -C ../codex log --oneline --follow "${sha}..HEAD" -- "$upstream_path" 2>/dev/null | wc -l | tr -d ' ')
+            # HEAD silently hides all drift. Discovered the hard way on
+            # 2026-05-05 when `keymap.rs` moved from `bottom_pane/` to
+            # `tui/src/` upstream and the initial workflow reported 0
+            # drift instead of 2 commits.
+            all_log=$(git -C ../codex log --oneline --follow "${sha}..HEAD" -- "$upstream_path" 2>/dev/null || true)
+
+            # Partition into drift (needs review) vs. intentionally skipped.
+            # `git log --oneline` output starts with the abbreviated SHA, so
+            # `^(prefix1|prefix2|...)` matches lines whose commit was skipped.
+            if [[ -n "$skip_pattern" && -n "$all_log" ]]; then
+              drift_log=$(echo "$all_log" | grep -vE "^(${skip_pattern})" || true)
+              skipped_log=$(echo "$all_log" | grep -E "^(${skip_pattern})" || true)
+            else
+              drift_log="$all_log"
+              skipped_log=""
+            fi
+
+            # Use `grep -c .` (not `wc -l`) so empty input correctly returns 0.
+            count=$(echo "$drift_log" | grep -c . || true)
+            skipped_count=$(echo "$skipped_log" | grep -c . || true)
+
+            # Always surface skipped commits in their own report section so
+            # humans can see what's been deferred and reconsider periodically.
+            if [[ "$skipped_count" -gt 0 ]]; then
+              skipped_short=$(echo "$skipped_log" | head -5)
+              skipped_report+="| \`${local_path}\` | ${skipped_count} | <details><summary>show</summary>"$'\n\n'"\`\`\`"$'\n'"${skipped_short}"$'\n'"\`\`\`"$'\n'"</details> |"$'\n'
+              total_skipped=$((total_skipped + skipped_count))
+            fi
 
             if [[ "$count" -eq 0 ]]; then
-              # File exists upstream and is unchanged since pin.
-              # Verify upstream still has the file at all (catches renames).
+              # File exists upstream and has no UNSKIPPED drift. Verify
+              # upstream still has the file at all (catches renames).
               if ! git -C ../codex cat-file -e "HEAD:${upstream_path}" 2>/dev/null; then
                 report+="| \`${local_path}\` | ⚠️ **upstream path missing at HEAD (renamed?)** | — |"$'\n'
                 warnings=$((warnings + 1))
               fi
-              # Otherwise: silent — clean files don't clutter the report.
+              # Otherwise: silent — clean files don't clutter the drift report.
               continue
             fi
 
             # Pull a short summary of upstream changes for the issue body.
-            # `--follow` for the same reason as the count above.
-            short_log=$(git -C ../codex log --oneline --follow "${sha}..HEAD" -- "$upstream_path" | head -5)
+            short_log=$(echo "$drift_log" | head -5)
             report+="| \`${local_path}\` | **${count} commit(s) behind** | <details><summary>show</summary>"$'\n\n'"\`\`\`"$'\n'"${short_log}"$'\n'"\`\`\`"$'\n'"</details> |"$'\n'
             total_drift=$((total_drift + count))
           done
 
           echo "total_drift=${total_drift}" >> "$GITHUB_OUTPUT"
+          echo "total_skipped=${total_skipped}" >> "$GITHUB_OUTPUT"
           echo "warnings=${warnings}" >> "$GITHUB_OUTPUT"
 
           # Multi-line outputs need the heredoc form.
@@ -137,9 +168,15 @@ jobs:
             echo "$report"
             echo "EOF_VENDOR_REPORT"
           } >> "$GITHUB_OUTPUT"
+          {
+            echo "skipped_report<<EOF_VENDOR_SKIPPED"
+            echo "$skipped_report"
+            echo "EOF_VENDOR_SKIPPED"
+          } >> "$GITHUB_OUTPUT"
 
-          echo "Total drift: ${total_drift} commits across vendored files"
-          echo "Warnings:    ${warnings}"
+          echo "Total drift:   ${total_drift} commit(s) requiring review"
+          echo "Total skipped: ${total_skipped} commit(s) intentionally not ported"
+          echo "Warnings:      ${warnings}"
 
       - name: Skip when no drift and no warnings
         if: steps.drift.outputs.total_drift == '0' && steps.drift.outputs.warnings == '0'
@@ -174,46 +211,111 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DRIFT: ${{ steps.drift.outputs.total_drift }}
+          SKIPPED: ${{ steps.drift.outputs.total_skipped }}
           WARNINGS: ${{ steps.drift.outputs.warnings }}
           REPORT: ${{ steps.drift.outputs.report }}
+          SKIPPED_REPORT: ${{ steps.drift.outputs.skipped_report }}
         run: |
           set -euo pipefail
           today=$(date -u +%Y-%m-%d)
 
           # Title encodes the headline number so it's scannable from the
-          # issue list without opening it.
+          # issue list without opening it. Skipped commits are excluded
+          # from the headline — they're already-decided, not pending work.
           if [[ "$WARNINGS" -gt 0 ]]; then
             title="Vendor sync — ${DRIFT} commit(s) drift, ${WARNINGS} warning(s) (${today})"
           else
             title="Vendor sync — ${DRIFT} commit(s) of upstream drift (${today})"
           fi
 
+          # Optionally append the skipped-commits section. Only show it
+          # when something is skipped — otherwise it's noise.
+          skipped_section=""
+          if [[ -n "${SKIPPED_REPORT// /}" ]]; then
+            skipped_section=$(cat <<EOF
+
+          ## Intentionally skipped (${SKIPPED} commit(s))
+
+          These upstream commits are explicitly NOT being ported. Each one
+          is documented in the corresponding file's \`## Vendor-sync skips\`
+          doc-comment section with a justification. Re-evaluate periodically
+          — if the reason no longer holds (e.g. koda gained a missing
+          dependency, or upstream's change became more compelling), delete
+          the \`skip <SHA>\` line and re-port the commit.
+
+          | File | Skipped | Commits |
+          |------|---------|---------|
+          ${SKIPPED_REPORT}
+          EOF
+          )
+          fi
+
           body=$(cat <<EOF
           Weekly vendor-sync check found upstream drift in vendored codex files.
+
+          ## Drift requiring review (${DRIFT} commit(s))
 
           | File | Status | Upstream commits since pin |
           |------|--------|-----------------------------|
           ${REPORT}
+          ${skipped_section}
 
           ## How to act on this
 
-          1. Decide per-file whether the upstream changes are worth re-porting now.
-             Bug fixes and small refactors are usually worth taking; large feature
-             work probably isn't unless we want the feature.
-          2. To re-sync a file: 3-way merge anchored at the file's pinned SHA,
-             then re-apply the koda-specific adaptations listed in that file's
+          **For each commit listed above, ask: does this fit koda's needs?**
+          Don't port blindly. Upstream codex is a different product with
+          features koda doesn't have (\`/keymap\` slash command,
+          \`codex-config\` crate integration, etc.) — commits that depend on
+          that infrastructure are dead code on arrival here.
+
+          A useful triage rubric:
+
+          - **Bug fixes with no koda-only dependencies** → port them.
+          - **Pure refactors** → usually port to keep merges clean.
+          - **Features that depend on upstream-only infrastructure**
+            (\`/keymap\`, codex-config, etc.) → skip with a justification.
+          - **Platform-specific fixes for platforms koda doesn't actively
+            support** (Windows-only behavior changes, etc.) → skip until
+            koda picks up that platform.
+          - **Large feature additions** → case-by-case; only port if koda
+            wants the feature.
+
+          ### To port a commit
+
+          1. 3-way merge the upstream change into the vendored file, anchored
+             at the file's currently-pinned SHA.
+          2. Re-apply the koda-specific adaptations listed in that file's
              top doc-comment (module path swaps, ratatui API drift, etc.).
              See PR #1178 for prior art.
-          3. Update the pinned SHA in the provenance comment to whatever you
-             merged to.
-          4. Close this issue when done. The next scheduled run will refile if
-             drift remains (e.g. you only synced some files).
+          3. Update the pinned SHA in the provenance comment to the SHA of
+             the latest commit you ported (NOT necessarily upstream HEAD).
+
+          ### To intentionally skip a commit
+
+          Add a line to the file's \`## Vendor-sync skips\` doc-comment
+          section in this exact format (the workflow greps for it):
+
+          \`\`\`text
+          //! - skip <abbreviated-SHA>: <subject> — <reason koda is skipping>
+          \`\`\`
+
+          The next workflow run will exclude the commit from the drift
+          count and surface it in the "Intentionally skipped" section
+          instead. Make the reason specific: "depends on \`/keymap\` UI we
+          don't have" beats "don't want it."
+
+          ### To close this issue
+
+          Close when every commit in the drift table has been either ported
+          or skip-annotated. The next scheduled run will refile only if NEW
+          drift appears (e.g. upstream lands more commits).
 
           ## How this issue was generated
 
-          \`.github/workflows/vendor-sync-reminder.yml\` runs every Monday and
-          only files an issue when there is real drift. If this issue is wrong
-          or unhelpful, edit that workflow rather than ignoring the issue.
+          \`.github/workflows/vendor-sync-reminder.yml\` runs every Monday
+          and only files an issue when there is real drift (skipped commits
+          excluded from the headline). If this issue is wrong or unhelpful,
+          edit that workflow rather than ignoring the issue.
           EOF
           )
 
