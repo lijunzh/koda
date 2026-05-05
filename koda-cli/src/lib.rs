@@ -26,7 +26,6 @@ pub(crate) mod completer;
 pub(crate) mod composer;
 pub(crate) mod debug_bundle;
 pub(crate) mod diff_render;
-pub(crate) mod doctor;
 pub(crate) mod frame_requester;
 pub(crate) mod headless;
 pub(crate) mod highlight;

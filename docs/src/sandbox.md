@@ -144,10 +144,11 @@ If the platform backend is unavailable (e.g. `bwrap` not installed on
 Linux), behavior depends on your trust mode:
 
 - **Auto mode**: koda **refuses to start** with an actionable error
-  pointing at `koda doctor` for setup. Auto auto-approves mutating
-  tool calls and relies on the kernel sandbox to contain them —
-  silently dropping that boundary at startup is a security foot-gun.
-  See [#860](https://github.com/lijunzh/koda/issues/860).
+  that includes a platform-specific install hint (e.g. `apt install
+  bubblewrap` on Linux). Auto auto-approves mutating tool calls and
+  relies on the kernel sandbox to contain them — silently dropping
+  that boundary at startup is a security foot-gun. See
+  [#860](https://github.com/lijunzh/koda/issues/860).
 - **Safe mode**: koda runs unsandboxed with a one-time warning
   (`tracing::warn!`). The human is the primary boundary in Safe
   (every mutation prompts), so the sandbox is defense-in-depth
@@ -156,9 +157,9 @@ Linux), behavior depends on your trust mode:
   — Plan denies all mutating tools at the trust layer; Bash never
   runs.
 
-Run `koda doctor` to inspect your platform's sandbox backend, see
-whether it's available, and get a setup hint when it's not. The TUI
-status bar also surfaces the current state next to the trust badge
+Run `koda --version` to see your platform's sandbox state in one
+line (paste-friendly for bug reports). The TUI status bar also
+surfaces the current state next to the trust badge
 (🛡 sandboxed / ⚠ unsandboxed).
 
 ## Workspace providers

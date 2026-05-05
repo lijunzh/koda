@@ -320,7 +320,7 @@ pub fn coerce_for_top_level(candidate: TrustMode) -> (TrustMode, Option<&'static
 /// // Auto + no sandbox: errors with an actionable message.
 /// let err = require_sandbox_for_auto(TrustMode::Auto, false).unwrap_err();
 /// assert!(err.contains("sandbox"));
-/// assert!(err.contains("--mode safe") || err.contains("koda doctor"));
+/// assert!(err.contains("--mode safe"));
 ///
 /// // Safe and Plan don't depend on sandbox availability.
 /// assert!(require_sandbox_for_auto(TrustMode::Safe, false).is_ok());
@@ -335,8 +335,8 @@ pub fn require_sandbox_for_auto(
             "Auto mode requires the kernel sandbox, which is unavailable on this system. \
              Auto auto-approves mutating tool calls and relies on the sandbox to contain \
              them; without the sandbox, the agent could touch arbitrary files outside the \
-             project. Run `koda doctor` for setup instructions, or use `--mode safe` to \
-             keep the human in the approval loop."
+             project. Use `--mode safe` to keep the human in the approval loop, or install \
+             the platform sandbox backend (see setup hint below if printed by the CLI)."
                 .to_string(),
         ),
         other => Ok(other),
@@ -1600,10 +1600,10 @@ mod tests {
             err.contains("--mode safe"),
             "error must point at --mode safe as the escape hatch; got: {err}"
         );
-        assert!(
-            err.contains("koda doctor"),
-            "error must point at `koda doctor` for setup help; got: {err}"
-        );
+        // Setup hints (e.g. `apt install bubblewrap`) are appended
+        // by the CLI caller via `sandbox::setup_hint()`, not built
+        // into this pure helper. The error itself must stay
+        // backend-agnostic so it's testable without runtime probes.
     }
 
     #[test]

@@ -33,6 +33,27 @@ fn test_cli_version() {
         stdout.contains(version),
         "Version output should contain '{version}': {stdout}"
     );
+    // #1259-followup: --version is the user-facing replacement for
+    // the (removed) `koda doctor` subcommand. It MUST surface kernel
+    // sandbox state on a one-liner so bug filers can paste it without
+    // a second command. Pin both halves so a future refactor that
+    // strips it becomes loud.
+    assert!(
+        stdout.contains("sandbox:"),
+        "--version must include sandbox state for bug-report aid; got: {stdout}"
+    );
+    // The sandbox status is one of {available, UNAVAILABLE} and the
+    // backend identifier is in brackets (e.g. `[seatbelt]`, `[bwrap]`,
+    // `[none]`). Don't pin a specific backend — CI runs on
+    // multiple platforms.
+    assert!(
+        stdout.contains("available") || stdout.contains("UNAVAILABLE"),
+        "--version sandbox state must say available or UNAVAILABLE; got: {stdout}"
+    );
+    assert!(
+        stdout.contains('[') && stdout.contains(']'),
+        "--version must include backend identifier in brackets; got: {stdout}"
+    );
 }
 
 #[test]

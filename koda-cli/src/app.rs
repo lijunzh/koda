@@ -136,16 +136,34 @@ enum Command {
     },
     /// Connect to a running Koda server (not yet implemented)
     Connect { url: String },
-    /// Print platform diagnostics (sandbox availability, version, OS).
-    ///
-    /// Pure read-only inspection. Output is suitable for pasting into
-    /// bug reports — the bug-report template links to this command.
-    /// Use this to debug "why does `--mode auto` refuse to start?" or
-    /// to share your platform configuration when filing an issue.
-    Doctor,
 }
 
 pub(crate) async fn run() -> Result<()> {
+    // Intercept --version / -V before clap so we can append the
+    // platform sandbox state to the version line. clap's derive
+    // version handling only supports a static string, but we want
+    // bug filers to see whether their kernel sandbox is available
+    // (the most common variable affecting trust-mode behavior).
+    // This replaces the dedicated `koda doctor` subcommand removed
+    // in #1259-followup — same bug-report-aid value, no extra
+    // command for users to remember.
+    //
+    // Only matches the bare flag: `koda --version` / `koda -V`. We
+    // don't scan all positions to avoid colliding with prompts that
+    // happen to contain the literal token (e.g. `koda "what is the
+    // --version flag?"`).
+    let raw: Vec<String> = std::env::args().collect();
+    if raw.len() == 2 && (raw[1] == "--version" || raw[1] == "-V") {
+        let report = koda_core::sandbox::dependency_report();
+        let sandbox = if report.available {
+            format!("sandbox: available [{}]", report.backend)
+        } else {
+            format!("sandbox: UNAVAILABLE [{}]", report.backend)
+        };
+        println!("koda {} ({sandbox})", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     let cli = Cli::parse();
 
     // Handle subcommands first
@@ -192,13 +210,6 @@ pub(crate) async fn run() -> Result<()> {
             }
             Command::Connect { url } => {
                 println!("Not implemented: Connect to {}", url);
-                std::process::exit(0);
-            }
-            Command::Doctor => {
-                // Pure stdout report; no tracing init, no DB, no provider
-                // probing. Stays cheap so users can run it inside a hung
-                // shell or CI step without side effects.
-                crate::doctor::run();
                 std::process::exit(0);
             }
         }
@@ -357,18 +368,31 @@ fn init_server_tracing() {
 ///     would `RejectAuto` every mutation and abort the task halfway.
 ///   - Interactive: explicit user intent should never be silently
 ///     reinterpreted (Zen of Python: errors should never pass
-///     silently). The error message points at `koda doctor` for
-///     setup and `--mode safe` as the immediate escape hatch.
+///     silently). The error message is enriched with a
+///     platform-specific install hint via
+///     [`koda_core::sandbox::setup_hint`] so users see the exact fix
+///     (e.g. `apt install bubblewrap`) right at the failure site —
+///     no extra subcommand to remember (#1259 follow-up).
 fn parse_top_level_trust_mode(cli_mode: &str) -> koda_core::trust::TrustMode {
     let parsed = koda_core::trust::TrustMode::parse(cli_mode).unwrap_or_default();
     let (mode, warning) = koda_core::trust::coerce_for_top_level(parsed);
     if let Some(w) = warning {
         eprintln!("warning: {w}");
     }
-    match koda_core::trust::require_sandbox_for_auto(mode, koda_core::sandbox::is_available()) {
+    let report = koda_core::sandbox::dependency_report();
+    match koda_core::trust::require_sandbox_for_auto(mode, report.available) {
         Ok(m) => m,
         Err(msg) => {
             eprintln!("error: {msg}");
+            // Inline the platform-specific install hint so the user
+            // doesn't need a second command (the old `koda doctor`)
+            // to learn what to type next. Hint comes from
+            // `koda-core::sandbox::setup_hint` so it stays DRY with
+            // the docs and the bug-report template guidance.
+            eprintln!(
+                "\nSetup:\n{}",
+                koda_core::sandbox::setup_hint(report.backend)
+            );
             std::process::exit(1);
         }
     }
