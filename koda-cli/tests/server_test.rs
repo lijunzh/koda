@@ -3,7 +3,7 @@
 //! Tests that the `koda server --stdio` subprocess handles JSON-RPC
 //! messages correctly over stdin/stdout.
 //!
-//! ## Why this is one big test, not three small ones
+//! ## Why this is one big test, not N small ones
 //!
 //! Earlier revisions split this into separate `test_server_initialize`,
 //! `test_server_new_session`, and `test_server_cancel_notification` tests,
@@ -17,9 +17,11 @@
 //!   * Three Rust tests in one process: ~30 % flake rate
 //!
 //! Rather than chase the residual race, we use a single test that reuses one
-//! subprocess for the whole protocol smoke-test. This is also a more honest
-//! description of what's being tested (the same binary, the same protocol)
-//! and removes a spawn-per-test overhead that bought us nothing.
+//! subprocess for the whole protocol coverage. Each protocol scenario lives
+//! in its own `step_*` helper so failure attribution is still readable, and
+//! we get linear test time + zero spawn flakes. (#1264 expansion: this file
+//! went from one smoke step to eight ordered protocol scenarios; keeping
+//! them in one subprocess avoids reintroducing the original flake.)
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -168,6 +170,19 @@ impl ServerHarness {
         stdin.flush().unwrap();
     }
 
+    /// Send a raw line of bytes (no JSON serialization). Used to verify the
+    /// server is resilient to malformed input — the protocol contract is
+    /// that an invalid line gets a `-32700`/`-32600` error response and the
+    /// server keeps running, rather than crashing the whole stdio loop.
+    fn send_raw_line(&mut self, line: &str) {
+        let stdin = self.stdin.as_mut().expect("stdin gone");
+        stdin.write_all(line.as_bytes()).unwrap();
+        if !line.ends_with('\n') {
+            stdin.write_all(b"\n").unwrap();
+        }
+        stdin.flush().unwrap();
+    }
+
     /// Cleanly close stdin, then signal+reap the child. Idempotent.
     fn shutdown(&mut self) {
         drop(self.stdin.take());
@@ -214,23 +229,54 @@ fn new_session_msg(id: u64, project_dir: &tempfile::TempDir) -> Value {
     })
 }
 
-/// Single end-to-end smoke test of the ACP stdio server. Walks through:
-///   1. `initialize` returns expected agent info,
-///   2. `session/new` returns a non-empty session id,
-///   3. `session/cancel` notification (no id) does not crash the server,
-///   4. server still answers a follow-up `initialize` after the cancel.
+/// End-to-end coverage of the ACP stdio server protocol. Walks through every
+/// scenario the server is expected to handle correctly without an LLM in the
+/// loop. Scenario list (in execution order — ordering matters because some
+/// steps depend on session state established by earlier ones):
+///
+///   1. `initialize`                                  — happy path, agent info
+///   2. `unknown_method` request                      — -32601 error
+///   3. `prompt_without_active_session`               — -32000 error
+///   4. `cancel_notification_without_active_session`  — no-op, server alive
+///   5. `authenticate`                                — no-op response
+///   6. `new_session`                                 — happy path, sessionId
+///   7. `new_session_replaces_active`                 — second call, distinct id
+///   8. `cancel_notification` (active session)        — no response, no crash
+///   9. `malformed_json_line`                         — -32700 parse error
+///  10. `post_recovery_initialize`                    — server still responsive
 ///
 /// One subprocess for the whole flow — see module docs for why.
 #[test]
-fn test_server_protocol_smoke() {
+fn test_server_protocol_e2e() {
     let project_dir = tempfile::TempDir::new().unwrap();
     let config_dir = tempfile::TempDir::new().unwrap();
     let mut srv = ServerHarness::spawn(&project_dir, &config_dir);
 
-    // Step 1: initialize
-    let resp = srv.send_and_recv("initialize", &initialize_msg(1));
+    step_initialize(&mut srv, 1);
+    step_unknown_method_returns_method_not_found(&mut srv, 2);
+    step_prompt_without_active_session_returns_error(&mut srv, 3);
+    step_cancel_notification_without_active_session_is_noop(&mut srv);
+    step_authenticate_succeeds(&mut srv, 4);
+    let session_id_a = step_new_session(&mut srv, 5, &project_dir);
+    let session_id_b = step_new_session_replaces_active(&mut srv, 6, &project_dir, &session_id_a);
+    step_cancel_notification_for_active_session(&mut srv, &session_id_b);
+    step_malformed_json_line_returns_parse_error(&mut srv);
+    step_post_recovery_initialize(&mut srv, 99);
+
+    srv.shutdown();
+}
+
+// ── step helpers ─────────────────────────────────────────
+//
+// Each helper is one self-contained protocol scenario. They take `&mut srv`
+// (sharing the spawned subprocess across the whole `#[test]`) and an
+// explicit JSON-RPC `id` so the caller controls id allocation — makes the
+// expected ids in the body of `test_server_protocol_e2e` greppable.
+
+fn step_initialize(srv: &mut ServerHarness, id: u64) {
+    let resp = srv.send_and_recv("initialize", &initialize_msg(id));
     assert_eq!(resp["jsonrpc"], "2.0");
-    assert_eq!(resp["id"], 1);
+    assert_eq!(resp["id"], id);
     assert!(
         resp["result"].is_object(),
         "initialize: expected result object"
@@ -245,11 +291,95 @@ fn test_server_protocol_smoke() {
         env!("CARGO_PKG_VERSION"),
         "initialize: should report compiled version"
     );
+}
 
-    // Step 2: session/new
-    let resp = srv.send_and_recv("session/new", &new_session_msg(2, &project_dir));
-    assert_eq!(resp["jsonrpc"], "2.0");
-    assert_eq!(resp["id"], 2);
+/// JSON-RPC -32601 (Method not found) for any method the ACP decoder doesn't
+/// know. Guards `handle_request`'s decode-error branch (server.rs:214).
+fn step_unknown_method_returns_method_not_found(srv: &mut ServerHarness, id: u64) {
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "nonsense/method",
+        "params": {}
+    });
+    let resp = srv.send_and_recv("unknown_method", &req);
+    assert_eq!(resp["id"], id, "unknown_method: id should round-trip");
+    assert_eq!(
+        resp["error"]["code"], -32601,
+        "unknown_method: expected -32601 (Method not found), got: {resp:?}"
+    );
+    let err_msg = resp["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        err_msg.contains("nonsense/method"),
+        "unknown_method: error message should name the offending method, got: {err_msg:?}"
+    );
+}
+
+/// `session/prompt` before any `session/new` must return -32000 with the
+/// helpful "Call session/new first" message rather than panicking or hanging.
+/// Guards `handle_prompt`'s no-active-session branch (server.rs:361).
+fn step_prompt_without_active_session_returns_error(srv: &mut ServerHarness, id: u64) {
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "session/prompt",
+        "params": {
+            "sessionId": "nonexistent",
+            "prompt": [{"type": "text", "text": "hello"}]
+        }
+    });
+    let resp = srv.send_and_recv("prompt_without_session", &req);
+    assert_eq!(resp["id"], id);
+    assert_eq!(
+        resp["error"]["code"], -32000,
+        "prompt_without_session: expected -32000, got: {resp:?}"
+    );
+    let err_msg = resp["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        err_msg.contains("session/new"),
+        "prompt_without_session: error should suggest calling session/new, got: {err_msg:?}"
+    );
+}
+
+/// `session/cancel` is a notification (no `id`, no response expected). When
+/// no session is active, `handle_notification` early-exits via the
+/// `Some(ref active) = state.active` guard. We can't observe a response
+/// directly — we verify by sending a follow-up request and confirming the
+/// server still answers.
+fn step_cancel_notification_without_active_session_is_noop(srv: &mut ServerHarness) {
+    srv.send_notification(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "session/cancel",
+        "params": { "sessionId": "nonexistent" }
+    }));
+    // The aliveness check happens when the next step sends a request. If the
+    // server crashed here, that step's recv would time out / hit EOF.
+}
+
+/// `authenticate` is a no-op for the local agent but still returns a valid
+/// response so clients that always call it during handshake don't break.
+/// Guards `handle_authenticate` (server.rs:294).
+fn step_authenticate_succeeds(srv: &mut ServerHarness, id: u64) {
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "authenticate",
+        "params": { "methodId": "local" }
+    });
+    let resp = srv.send_and_recv("authenticate", &req);
+    assert_eq!(resp["id"], id);
+    assert!(
+        resp["result"].is_object(),
+        "authenticate: expected result object even though it's a no-op, got: {resp:?}"
+    );
+    // No assertion on result body shape — AuthenticateResponse is currently
+    // empty by design. If it ever sprouts fields we'll add field assertions
+    // when we wire authenticated transports.
+}
+
+fn step_new_session(srv: &mut ServerHarness, id: u64, project_dir: &tempfile::TempDir) -> String {
+    let resp = srv.send_and_recv("session/new", &new_session_msg(id, project_dir));
+    assert_eq!(resp["id"], id);
     assert!(
         resp["result"].is_object(),
         "session/new: expected result object"
@@ -262,21 +392,77 @@ fn test_server_protocol_smoke() {
         !session_id.is_empty(),
         "session/new: sessionId should not be empty"
     );
+    session_id
+}
 
-    // Step 3: cancel notification (no id, no response expected)
+/// The server's `ServerState.active` field is a single `Option<ActiveSession>`
+/// (server.rs:69) — calling `session/new` again silently replaces the previous
+/// session rather than returning an error. We document that contract here:
+/// the second call must succeed and return a *distinct* sessionId. If we ever
+/// add multi-session support, this test will need to flip to asserting both
+/// sessions remain accessible.
+fn step_new_session_replaces_active(
+    srv: &mut ServerHarness,
+    id: u64,
+    project_dir: &tempfile::TempDir,
+    previous_session_id: &str,
+) -> String {
+    let session_id = step_new_session(srv, id, project_dir);
+    // Note: assert_ne! already prints both values on failure, so we don't
+    // interpolate `session_id` into the message. Doing so trips CodeQL's
+    // 'cleartext logging of sensitive information' rule on the
+    // `session_id` identifier (rs/cleartext-logging) — not actually
+    // sensitive in this test (the value is a test-scoped UUID), but
+    // there's no signal lost by relying on the default assert message.
+    assert_ne!(
+        session_id, previous_session_id,
+        "session/new called twice should return distinct sessionIds"
+    );
+    session_id
+}
+
+fn step_cancel_notification_for_active_session(srv: &mut ServerHarness, session_id: &str) {
     srv.send_notification(&serde_json::json!({
         "jsonrpc": "2.0",
         "method": "session/cancel",
         "params": { "sessionId": session_id }
     }));
+    // Liveness verified by `step_post_recovery_initialize` later in the flow.
+}
 
-    // Step 4: server is still responsive after a cancel notification.
-    let resp = srv.send_and_recv("post-cancel initialize", &initialize_msg(3));
-    assert_eq!(resp["id"], 3);
+/// A non-JSON line on stdin must produce a -32700 parse-error response with
+/// `id: null` and the server must keep running. Guards the `serde_json::from_str`
+/// branch in the main loop (server.rs:166).
+fn step_malformed_json_line_returns_parse_error(srv: &mut ServerHarness) {
+    srv.send_raw_line("not even close to JSON {{{{");
+    let response = match srv.rx.recv_timeout(RPC_TIMEOUT) {
+        Ok(Ok(line)) => line,
+        other => panic!("malformed_json: expected a parse-error response line, got: {other:?}"),
+    };
+    let resp: Value = serde_json::from_str(response.trim()).unwrap_or_else(|e| {
+        panic!("malformed_json: invalid JSON in response: {e}\nraw: {response:?}")
+    });
+    assert_eq!(
+        resp["error"]["code"], -32700,
+        "malformed_json: expected -32700 (Parse error), got: {resp:?}"
+    );
+    assert!(
+        resp["id"].is_null(),
+        "malformed_json: parse-error response must use null id (the offending line had no parseable id), got: {:?}",
+        resp["id"]
+    );
+}
+
+/// Final liveness check: after every weird thing we threw at the server
+/// (unknown method, prompt without session, cancel-without-session, malformed
+/// JSON, etc.) it must still answer a vanilla `initialize` request. Catches
+/// silent crashes / wedges in any of the earlier steps that wouldn't be
+/// detected by their own assertions.
+fn step_post_recovery_initialize(srv: &mut ServerHarness, id: u64) {
+    let resp = srv.send_and_recv("post_recovery_initialize", &initialize_msg(id));
+    assert_eq!(resp["id"], id);
     assert!(
         resp["result"].is_object(),
-        "post-cancel initialize: expected result object"
+        "post_recovery_initialize: server should still respond after malformed input + cancels, got: {resp:?}"
     );
-
-    srv.shutdown();
 }

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **ACP server protocol coverage — 8 new e2e scenarios** (#1264 priority 1). The ACP stdio server previously had a single `test_server_protocol_smoke` test covering `initialize` → `session/new` → `cancel` → `initialize`. Expanded `koda-cli/tests/server_test.rs` to a 10-scenario `test_server_protocol_e2e` test — still one subprocess (the original spawn-flake mitigation, see module docs), but now with named `step_*` helpers for each scenario so failure attribution stays readable. New scenarios: unknown-method returns `-32601`; `session/prompt` without an active session returns `-32000` with helpful message; `session/cancel` notification without an active session is a no-op; `authenticate` no-op responds successfully; second `session/new` returns a distinct id (documents the single-slot `state.active` contract); malformed JSON line returns `-32700` with `id: null` and the server stays alive; final post-recovery `initialize` confirms the server survived everything.
+
 ### Fixed
 
 - **Mouse escape sequences (e.g. `[<65;107;38M`) no longer leak into the input field** (#1267). `init_terminal` was using `crossterm::event::EnableMouseCapture`, which enables five mouse-tracking modes including `?1003h` (any-event tracking — fires on every pixel of motion). Koda only consumes scroll wheel + left-click drag, so the extra event volume was pure overhead — and under heavy scroll/move flow the read buffer could fragment between the leading `\x1b` byte and the `[<…M` body, causing crossterm's parser to emit ESC alone and then each printable char individually. Replaced with a custom `EnableSelectiveMouseCapture` command that emits only `?1002h` (button-event tracking) + `?1006h` (SGR coordinates), matching the mode set used by gemini-cli. Pinned the exact byte sequences in three new unit tests (`mouse_capture_tests`).
