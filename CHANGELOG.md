@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`create_provider` routing tests** (#1264 priority 9). The function `koda_core::providers::create_provider` is the central provider-construction switchboard — it's called from at least 8 sites (`session::update_provider`, `tui_commands` for `/model`, `tui_context::menus` for the provider picker, `headless`, `server`, `sub_agent_dispatch`, `tui_context` session bootstrap, `builtin_proxy` smoke check). Despite that fan-in, it had **zero direct routing tests** — a `match` arm regression here would silently misroute a whole provider family at runtime, surfacing as "my Anthropic key doesn't work" reports that are actually "the request went to OpenAI-compat with the wrong base URL." Added 4 tests pinning every current `ProviderType` variant explicitly: `Anthropic` → `"anthropic"`, `Gemini` → `"gemini"`, `Mock` → `"mock"`, and the OpenAI-compat fallthrough family (`OpenAI`, `Groq`, `DeepSeek`, `Fireworks`) → `"openai-compat"`. The fall-through arm `_ => Box::new(openai_compat::...)` is the specific footgun: any new `ProviderType` variant added to the enum without a matching arm gets silently routed to OpenAI-compat (Rust doesn't warn on `_` arms catching new variants — by design — so we backstop with a test that lists the family explicitly and tells future contributors how to extend it). Closes #1264 priority 9.
+
 ### Fixed
 
 - **System prompt no longer lies about a non-existent git-checkpointing feature** (#1264 priority 2). The system prompt sent to every LLM call contained:

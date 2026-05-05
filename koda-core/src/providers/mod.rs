@@ -478,4 +478,70 @@ mod tests {
             "default stop_reason should be empty"
         );
     }
+
+    // ── create_provider routing (#1264 P9) ───────────────────────
+    //
+    // `create_provider` is the central provider-construction switchboard:
+    // it's called from at least 8 sites (`session::update_provider`,
+    // `tui_commands` for `/model`, `tui_context::menus` for the provider
+    // picker, `headless`, `server`, `sub_agent_dispatch`, `tui_context`
+    // session bootstrap). A `match` arm regression here silently
+    // misroutes a whole provider family at runtime, surfacing as
+    // "my Anthropic key doesn't work" reports that are actually
+    // "the request went to OpenAI-compat with the wrong base URL."
+    //
+    // The fall-through arm `_ => Box::new(openai_compat::...)` is the
+    // specific footgun: any new `ProviderType` variant added to the
+    // enum without a matching arm here gets silently routed to
+    // OpenAI-compat. These tests pin every variant explicitly so the
+    // compiler doesn't catch it (Rust doesn't warn on `_` arms
+    // catching new variants — by design — so we backstop with tests).
+
+    use crate::config::{KodaConfig, ProviderType};
+
+    /// Helper: build a config for `provider_type` and route through
+    /// `create_provider`, returning the resulting `provider_name()`.
+    fn route(provider_type: ProviderType) -> String {
+        let config = KodaConfig::default_for_testing(provider_type);
+        create_provider(&config).provider_name().to_string()
+    }
+
+    #[test]
+    fn create_provider_routes_anthropic_to_anthropic_provider() {
+        assert_eq!(route(ProviderType::Anthropic), "anthropic");
+    }
+
+    #[test]
+    fn create_provider_routes_gemini_to_gemini_provider() {
+        assert_eq!(route(ProviderType::Gemini), "gemini");
+    }
+
+    #[test]
+    fn create_provider_routes_mock_to_mock_provider() {
+        assert_eq!(route(ProviderType::Mock), "mock");
+    }
+
+    /// All other provider types currently fall through to the
+    /// OpenAI-compat client. If you add a new variant with bespoke
+    /// transport, add an explicit arm in `create_provider` AND a
+    /// dedicated test above; do **not** just append the variant name
+    /// to this list.
+    #[test]
+    fn create_provider_routes_openai_compat_family_to_openai_compat() {
+        for pt in [
+            ProviderType::OpenAI,
+            ProviderType::Groq,
+            ProviderType::DeepSeek,
+            ProviderType::Fireworks,
+        ] {
+            assert_eq!(
+                route(pt),
+                "openai-compat",
+                "{pt:?} should route to openai-compat per the current fallthrough \
+                 arm in create_provider; if you intentionally added bespoke \
+                 transport for this provider, add an explicit match arm AND a \
+                 dedicated test instead of editing this list"
+            );
+        }
+    }
 }
