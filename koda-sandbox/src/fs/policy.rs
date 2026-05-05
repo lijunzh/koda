@@ -1,7 +1,7 @@
 //! Filesystem mutation safety verifier (#1281, Tier 1 from #1265).
 //!
 //! [`verify_mutation_safe`] is the single seam every Write/Edit/Delete
-//! tool call passes through *after* [`koda-core::tools::safe_resolve_path`]
+//! tool call passes through *after* `koda_core::tools::safe_resolve_path`
 //! and *before* the actual `tokio::fs` (or `LocalFileSystem`) call. It
 //! catches two SSRF-adjacent attacks the logical-path resolver alone
 //! cannot:
