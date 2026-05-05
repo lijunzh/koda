@@ -222,7 +222,7 @@ mod tests {
         (dir, config, db)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn turn_context_holds_all_fields() {
         // Arrange: minimum-viable stand-ins for every TurnContext field.
         let (dir, config, db) = fixtures().await;
@@ -259,7 +259,7 @@ mod tests {
         assert!(Arc::ptr_eq(ctx.bg_agents, &bg_agents));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tool_execution_context_borrows_turn() {
         let (dir, config, db) = fixtures().await;
         let root: PathBuf = dir.path().to_path_buf();
