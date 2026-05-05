@@ -1,0 +1,209 @@
+name: Vendor sync reminder
+
+# Why this exists
+# ───────────────
+# We vendor a small set of files from `openai/codex` (mostly the composer
+# textarea + supporting modules). Each vendored file carries a provenance
+# doc-comment like:
+#
+#     //! Ported from `codex-rs/tui/src/bottom_pane/textarea.rs` at upstream
+#     //! commit `d55479488e125ef7a0a8584505d839a22eaf6204`
+#
+# This workflow checks once a week whether upstream has touched any of those
+# files since the pinned SHA. If — and only if — there is real drift, it
+# files a single GitHub issue with the per-file breakdown so a human can
+# decide whether to re-port.
+#
+# Design choices (per Lijun's feedback on the audit thread):
+#   • No issue is filed when there is zero drift. We do not train people to
+#     ignore weekly noise.
+#   • If a `vendor-sync` issue is already open, we skip — don't pile on.
+#   • The pinned SHAs live in the source files themselves, not a separate
+#     manifest. One source of truth, no synchronization to keep up.
+#   • The list of vendored files is hardcoded below. There are 6 of them
+#     and they change roughly never; auto-discovery would be more code than
+#     it saves.
+
+on:
+  schedule:
+    # Mondays at 09:00 America/Chicago = 14:00 UTC (15:00 during CST).
+    # Picking a fixed UTC time is fine; an hour of drift across DST is not
+    # worth solving.
+    - cron: '0 14 * * 1'
+  workflow_dispatch:  # also runnable on demand from the Actions tab
+
+permissions:
+  contents: read
+  issues: write       # needed to file the reminder issue
+
+jobs:
+  check-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout koda
+        uses: actions/checkout@v4
+
+      - name: Clone upstream codex
+        # Full history so `git log <pinned>..HEAD -- <path>` works for any
+        # pinned SHA, however old. `--filter=blob:none` skips file content
+        # we don't need (we only read commit metadata).
+        run: git clone --filter=blob:none https://github.com/openai/codex.git ../codex
+
+      - name: Compute drift
+        id: drift
+        run: |
+          set -euo pipefail
+
+          # Mapping: local koda path → upstream codex path.
+          # Update this list when adding/removing vendored files.
+          declare -A FILES=(
+            ["koda-cli/src/composer/textarea.rs"]="codex-rs/tui/src/bottom_pane/textarea.rs"
+            ["koda-cli/src/composer/keymap.rs"]="codex-rs/tui/src/bottom_pane/keymap.rs"
+            ["koda-cli/src/composer/key_hint.rs"]="codex-rs/tui/src/key_hint.rs"
+            ["koda-cli/src/composer/paste_burst.rs"]="codex-rs/tui/src/bottom_pane/paste_burst.rs"
+            ["koda-cli/src/composer/text_element.rs"]="codex-rs/tui/src/bottom_pane/text_element.rs"
+            ["koda-cli/src/composer/wrapping.rs"]="codex-rs/tui/src/wrapping.rs"
+          )
+
+          report=""
+          total_drift=0
+          warnings=0
+
+          for local_path in "${!FILES[@]}"; do
+            upstream_path="${FILES[$local_path]}"
+
+            # Pull the first 40-char hex string out of the provenance comment.
+            # Every vendored file currently has exactly one such SHA at the top.
+            sha=$(grep -oE '[a-f0-9]{40}' "$local_path" | head -1 || true)
+
+            if [[ -z "$sha" ]]; then
+              report+="| \`${local_path}\` | ⚠️ **no pinned SHA found** | — |"$'\n'
+              warnings=$((warnings + 1))
+              continue
+            fi
+
+            # Verify the SHA actually exists upstream. If it doesn't, the
+            # provenance comment is stale or wrong — surface it loudly.
+            if ! git -C ../codex cat-file -e "${sha}^{commit}" 2>/dev/null; then
+              report+="| \`${local_path}\` | ⚠️ **pinned SHA \`${sha:0:10}\` not found upstream** | — |"$'\n'
+              warnings=$((warnings + 1))
+              continue
+            fi
+
+            # Count commits that touched the upstream file since the pin.
+            # `git log` returns a clean exit even if the path no longer
+            # exists upstream — check that case explicitly.
+            count=$(git -C ../codex log --oneline "${sha}..HEAD" -- "$upstream_path" 2>/dev/null | wc -l | tr -d ' ')
+
+            if [[ "$count" -eq 0 ]]; then
+              # File exists upstream and is unchanged since pin.
+              # Verify upstream still has the file at all (catches renames).
+              if ! git -C ../codex cat-file -e "HEAD:${upstream_path}" 2>/dev/null; then
+                report+="| \`${local_path}\` | ⚠️ **upstream path missing at HEAD (renamed?)** | — |"$'\n'
+                warnings=$((warnings + 1))
+              fi
+              # Otherwise: silent — clean files don't clutter the report.
+              continue
+            fi
+
+            # Pull a short summary of upstream changes for the issue body.
+            short_log=$(git -C ../codex log --oneline "${sha}..HEAD" -- "$upstream_path" | head -5)
+            report+="| \`${local_path}\` | **${count} commit(s) behind** | <details><summary>show</summary>"$'\n\n'"\`\`\`"$'\n'"${short_log}"$'\n'"\`\`\`"$'\n'"</details> |"$'\n'
+            total_drift=$((total_drift + count))
+          done
+
+          echo "total_drift=${total_drift}" >> "$GITHUB_OUTPUT"
+          echo "warnings=${warnings}" >> "$GITHUB_OUTPUT"
+
+          # Multi-line outputs need the heredoc form.
+          {
+            echo "report<<EOF_VENDOR_REPORT"
+            echo "$report"
+            echo "EOF_VENDOR_REPORT"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Total drift: ${total_drift} commits across vendored files"
+          echo "Warnings:    ${warnings}"
+
+      - name: Skip when no drift and no warnings
+        if: steps.drift.outputs.total_drift == '0' && steps.drift.outputs.warnings == '0'
+        run: echo "✅ All vendored files are in sync with upstream. No issue filed."
+
+      - name: Check for existing open vendor-sync issue
+        if: steps.drift.outputs.total_drift != '0' || steps.drift.outputs.warnings != '0'
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # If a vendor-sync issue is already open, don't file a duplicate.
+          # The human will close the existing one when they finish the work,
+          # and the next scheduled run will refile if drift remains.
+          existing=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --label vendor-sync \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+          if [[ -n "$existing" ]]; then
+            echo "Existing open vendor-sync issue: #${existing}. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: File vendor-sync reminder issue
+        if: |
+          (steps.drift.outputs.total_drift != '0' || steps.drift.outputs.warnings != '0')
+          && steps.existing.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRIFT: ${{ steps.drift.outputs.total_drift }}
+          WARNINGS: ${{ steps.drift.outputs.warnings }}
+          REPORT: ${{ steps.drift.outputs.report }}
+        run: |
+          set -euo pipefail
+          today=$(date -u +%Y-%m-%d)
+
+          # Title encodes the headline number so it's scannable from the
+          # issue list without opening it.
+          if [[ "$WARNINGS" -gt 0 ]]; then
+            title="Vendor sync — ${DRIFT} commit(s) drift, ${WARNINGS} warning(s) (${today})"
+          else
+            title="Vendor sync — ${DRIFT} commit(s) of upstream drift (${today})"
+          fi
+
+          body=$(cat <<EOF
+          Weekly vendor-sync check found upstream drift in vendored codex files.
+
+          | File | Status | Upstream commits since pin |
+          |------|--------|-----------------------------|
+          ${REPORT}
+
+          ## How to act on this
+
+          1. Decide per-file whether the upstream changes are worth re-porting now.
+             Bug fixes and small refactors are usually worth taking; large feature
+             work probably isn't unless we want the feature.
+          2. To re-sync a file: 3-way merge anchored at the file's pinned SHA,
+             then re-apply the koda-specific adaptations listed in that file's
+             top doc-comment (module path swaps, ratatui API drift, etc.).
+             See PR #1178 for prior art.
+          3. Update the pinned SHA in the provenance comment to whatever you
+             merged to.
+          4. Close this issue when done. The next scheduled run will refile if
+             drift remains (e.g. you only synced some files).
+
+          ## How this issue was generated
+
+          \`.github/workflows/vendor-sync-reminder.yml\` runs every Monday and
+          only files an issue when there is real drift. If this issue is wrong
+          or unhelpful, edit that workflow rather than ignoring the issue.
+          EOF
+          )
+
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "$title" \
+            --label vendor-sync \
+            --label chore \
+            --body "$body"
