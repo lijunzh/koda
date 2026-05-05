@@ -669,6 +669,29 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
     );
     let sink: &dyn EngineSink = &_persisting_sink;
 
+    // #1265 item 4 PR-2: collect the per-turn ambient state into a
+    // single `TurnContext` so the dispatch helpers don't each take
+    // 11–13 explicit args. Reconstructed each turn (`mode` can change
+    // between turns), but borrows the same long-lived locals from the
+    // destructure above.
+    let turn_ctx = crate::turn_context::TurnContext::new(
+        project_root,
+        config,
+        db,
+        session_id,
+        sink,
+        cancel.clone(),
+        sub_agent_cache,
+        bg_agents,
+        mode,
+        tools,
+    );
+    // Phase E of #996: top-level inference has no spawner identity —
+    // bg-task tools see the global scope. Sub-agents construct their
+    // own `ToolExecutionContext` with `Some(parent_spawner)` inside
+    // `sub_agent_dispatch`.
+    let tool_ctx = crate::turn_context::ToolExecutionContext::new(&turn_ctx, None);
+
     // Hard cap is configurable per-agent; user can extend it interactively.
     let mut hard_cap = config.max_iterations;
     let mut iteration = 0u32;
@@ -1237,12 +1260,8 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
                         result,
                         *success,
                         full_output.as_deref(),
-                        db,
-                        session_id,
-                        tools.caps.tool_result_chars,
-                        project_root,
+                        &turn_ctx,
                         file_tracker,
-                        sink,
                     )
                     .await?;
                 }
@@ -1275,12 +1294,8 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
                         &err_msg,
                         false,
                         None,
-                        db,
-                        session_id,
-                        tools.caps.tool_result_chars,
-                        project_root,
+                        &turn_ctx,
                         file_tracker,
-                        sink,
                     )
                     .await?;
                 } else {
@@ -1300,60 +1315,11 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
         if remaining_tools.len() > 1
             && can_parallelize(&remaining_tools, mode, project_root, Some(file_tracker))
         {
-            execute_tools_parallel(
-                &remaining_tools,
-                project_root,
-                config,
-                db,
-                session_id,
-                tools,
-                mode,
-                sink,
-                cancel.clone(),
-                sub_agent_cache,
-                file_tracker,
-                bg_agents,
-                // Phase E of #996: top-level inference has no spawner
-                // identity — bg-task tools see the global scope.
-                None,
-            )
-            .await?;
+            execute_tools_parallel(&remaining_tools, tool_ctx, file_tracker).await?;
         } else if remaining_tools.len() > 1 {
-            execute_tools_split_batch(
-                &remaining_tools,
-                project_root,
-                config,
-                db,
-                session_id,
-                tools,
-                mode,
-                sink,
-                cancel.clone(),
-                cmd_rx,
-                sub_agent_cache,
-                file_tracker,
-                bg_agents,
-                None,
-            )
-            .await?;
+            execute_tools_split_batch(&remaining_tools, tool_ctx, cmd_rx, file_tracker).await?;
         } else if !remaining_tools.is_empty() {
-            execute_tools_sequential(
-                &remaining_tools,
-                project_root,
-                config,
-                db,
-                session_id,
-                tools,
-                mode,
-                sink,
-                cancel.clone(),
-                cmd_rx,
-                sub_agent_cache,
-                file_tracker,
-                bg_agents,
-                None,
-            )
-            .await?;
+            execute_tools_sequential(&remaining_tools, tool_ctx, cmd_rx, file_tracker).await?;
         }
 
         // Update skill scope: if any ActivateSkill call was made, check whether

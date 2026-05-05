@@ -1395,21 +1395,25 @@ pub(crate) fn execute_sub_agent<'a>(
                             //     loop." with success=false.
                             //   - Bash output streams through the parent
                             //     sink (free visibility win).
-                            let (_id, result, _success, _full) = execute_one_tool(
-                                tc,
-                                project_root,
-                                &sub_config,
-                                db,
-                                &sub_session,
-                                &tools,
-                                mode,
-                                sink,
-                                cancel.clone(),
-                                sub_agent_cache,
-                                bg_agents,
-                                Some(my_invocation_id),
-                            )
-                            .await;
+                            let (_id, result, _success, _full) = {
+                                let sub_turn = crate::turn_context::TurnContext::new(
+                                    project_root,
+                                    &sub_config,
+                                    db,
+                                    &sub_session,
+                                    sink,
+                                    cancel.clone(),
+                                    sub_agent_cache,
+                                    bg_agents,
+                                    mode,
+                                    &tools,
+                                );
+                                let sub_tx = crate::turn_context::ToolExecutionContext::new(
+                                    &sub_turn,
+                                    Some(my_invocation_id),
+                                );
+                                execute_one_tool(tc, sub_tx).await
+                            };
                             result
                         }
                         ToolApproval::Blocked => {
@@ -1452,21 +1456,25 @@ pub(crate) fn execute_sub_agent<'a>(
                             .await
                             {
                                 Some(ApprovalDecision::Approve) => {
-                                    let (_id, result, _success, _full) = execute_one_tool(
-                                        tc,
-                                        project_root,
-                                        &sub_config,
-                                        db,
-                                        &sub_session,
-                                        &tools,
-                                        mode,
-                                        sink,
-                                        cancel.clone(),
-                                        sub_agent_cache,
-                                        bg_agents,
-                                        Some(my_invocation_id),
-                                    )
-                                    .await;
+                                    let (_id, result, _success, _full) = {
+                                        let sub_turn = crate::turn_context::TurnContext::new(
+                                            project_root,
+                                            &sub_config,
+                                            db,
+                                            &sub_session,
+                                            sink,
+                                            cancel.clone(),
+                                            sub_agent_cache,
+                                            bg_agents,
+                                            mode,
+                                            &tools,
+                                        );
+                                        let sub_tx = crate::turn_context::ToolExecutionContext::new(
+                                            &sub_turn,
+                                            Some(my_invocation_id),
+                                        );
+                                        execute_one_tool(tc, sub_tx).await
+                                    };
                                     result
                                 }
                                 Some(ApprovalDecision::Reject) => "[rejected by user]".to_string(),
