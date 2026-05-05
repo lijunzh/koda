@@ -131,6 +131,9 @@ pub mod tools;
 pub mod truncate;
 /// Unified trust mode — single permission knob replacing ApprovalMode × SandboxMode.
 pub mod trust;
+/// Per-turn ambient context (`TurnContext`, `ToolExecutionContext`)
+/// — see #1265 item 4.
+pub mod turn_context;
 /// Undo stack for file mutations.
 pub mod undo;
 /// Version string and update-check helpers.
