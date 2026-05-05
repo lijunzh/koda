@@ -625,7 +625,43 @@ fn ask_user_menu_height(
     total.clamp(2, cap)
 }
 
-// ── Terminal lifecycle ─────────────────────────────────
+// ── Terminal lifecycle ─────────────────────
+
+/// Custom mouse-capture enable command (#1267).
+///
+/// Replaces `crossterm::event::EnableMouseCapture`, which enables five
+/// mouse-tracking modes including `?1003h` (any-event tracking — fires
+/// on every pixel of motion). That's far more event volume than we
+/// consume, and under heavy scroll/move flow the terminal→stdin read
+/// buffer can fragment between the leading `\x1b` byte and the
+/// `[<…M` body. When that happens crossterm's parser emits ESC alone
+/// and then each printable char individually, leaking sequences like
+/// `[<65;107;38M` into the textarea as literal text (#1267).
+///
+/// We only consume `MouseEventKind::{ScrollUp, ScrollDown, Down(Left),
+/// Drag(Left), Up(Left)}` — all reported by `?1002h` (button-event
+/// tracking). Pairing it with `?1006h` (SGR coordinates) handles wide
+/// terminals correctly. This mirrors the mode set used by gemini-cli
+/// (`packages/core/src/utils/terminal.ts::enableMouseEvents`).
+struct EnableSelectiveMouseCapture;
+
+impl crossterm::Command for EnableSelectiveMouseCapture {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        // ?1002h = button-event tracking (clicks + drags + scroll wheel)
+        // ?1006h = SGR extended coordinates (terminals wider than 223 cols)
+        f.write_str("\x1b[?1002h\x1b[?1006h")
+    }
+}
+
+/// Inverse of [`EnableSelectiveMouseCapture`], emitted in reverse order so
+/// the terminal returns to whatever state it was in before we touched it.
+struct DisableSelectiveMouseCapture;
+
+impl crossterm::Command for DisableSelectiveMouseCapture {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        f.write_str("\x1b[?1006l\x1b[?1002l")
+    }
+}
 
 /// Initialize the terminal in fullscreen mode (alternate screen buffer).
 ///
@@ -642,7 +678,7 @@ pub(crate) fn init_terminal() -> Result<Term> {
         std::io::stdout(),
         crossterm::terminal::EnterAlternateScreen,
         crossterm::event::EnableBracketedPaste,
-        crossterm::event::EnableMouseCapture,
+        EnableSelectiveMouseCapture,
     )?;
 
     set_panic_hook();
@@ -668,7 +704,7 @@ pub(crate) fn init_terminal() -> Result<Term> {
 pub(crate) fn restore_terminal_modes() {
     let _ = crossterm::execute!(
         std::io::stdout(),
-        crossterm::event::DisableMouseCapture,
+        DisableSelectiveMouseCapture,
         crossterm::event::DisableBracketedPaste,
         crossterm::terminal::LeaveAlternateScreen,
     );
@@ -1155,5 +1191,99 @@ mod cursor_wiring_tests {
             .get_cursor_position()
             .expect("backend cursor must be set even for empty input");
         assert_eq!(pos, ratatui::layout::Position::new(0, 0));
+    }
+}
+
+#[cfg(test)]
+mod mouse_capture_tests {
+    //! Regression tests for [`super::EnableSelectiveMouseCapture`] and
+    //! [`super::DisableSelectiveMouseCapture`] (issue #1267).
+    //!
+    //! We pin the exact byte sequences these commands emit so that an
+    //! accidental refactor (e.g. swapping back to crossterm's
+    //! `EnableMouseCapture`, which also enables `?1003h` any-event
+    //! tracking) is caught by CI rather than by users seeing
+    //! `[<65;107;38M` literals show up in their input again.
+    //!
+    //! ## Why we don't enable `?1003h` (any-event tracking)
+    //!
+    //! Koda only consumes `MouseEventKind::{ScrollUp, ScrollDown,
+    //! Down(Left), Drag(Left), Up(Left)}`. All five are covered by
+    //! `?1002h` (button-event tracking). `?1003h` adds reporting for
+    //! every pixel of mouse motion (no button held), which floods the
+    //! terminal->stdin pipe and makes it likely a single read() will
+    //! split a single mouse-event sequence between the leading ESC byte
+    //! and the `[<...M` body. When that happens, crossterm emits ESC
+    //! alone (often as `KeyCode::Esc`) and then each printable char
+    //! individually, leaking the body into the textarea (#1267).
+    //!
+    //! ## Why we don't enable `?1000h`, `?1015h`
+    //!
+    //! `?1000h` (normal tracking, press+release only) is a strict subset
+    //! of `?1002h` (button-event, which adds drag), so it's redundant.
+    //! `?1015h` is rxvt-style coordinates; we standardize on SGR
+    //! (`?1006h`) which all modern terminals understand and which is the
+    //! only one with a sane wire format above column 223.
+    //!
+    //! ## Disable order
+    //!
+    //! The disable command emits modes in *reverse* order of enable, to
+    //! match the convention used by crossterm's own
+    //! `DisableMouseCapture` (and to ensure that any terminal that
+    //! tracks "current active mode" sees the modes peel off in stack
+    //! order).
+
+    use super::{DisableSelectiveMouseCapture, EnableSelectiveMouseCapture};
+    use crossterm::Command;
+
+    fn render(cmd: impl Command) -> String {
+        let mut buf = String::new();
+        cmd.write_ansi(&mut buf).expect("write_ansi never fails");
+        buf
+    }
+
+    #[test]
+    fn enable_emits_only_button_event_and_sgr_modes() {
+        // \x1b[?1002h = button-event tracking, \x1b[?1006h = SGR coords.
+        // No ?1000h, no ?1003h (the motion flood that causes #1267),
+        // no ?1015h (rxvt coords; superseded by SGR).
+        assert_eq!(
+            render(EnableSelectiveMouseCapture),
+            "\x1b[?1002h\x1b[?1006h"
+        );
+    }
+
+    #[test]
+    fn disable_emits_inverse_in_reverse_order() {
+        // SGR turned off first, then button-event tracking — same
+        // ordering convention as crossterm::event::DisableMouseCapture.
+        assert_eq!(
+            render(DisableSelectiveMouseCapture),
+            "\x1b[?1006l\x1b[?1002l"
+        );
+    }
+
+    #[test]
+    fn enable_does_not_request_any_event_motion_tracking() {
+        // Hard guard against #1267 regression: ?1003h must never appear
+        // in our enable sequence regardless of how it's refactored. If
+        // someone re-adds it (or swaps to crossterm's EnableMouseCapture
+        // which bundles it), this test fails loudly.
+        let bytes = render(EnableSelectiveMouseCapture);
+        assert!(
+            !bytes.contains("?1003"),
+            "any-event motion tracking (?1003) reintroduced — see #1267. \
+             Got: {bytes:?}"
+        );
+        assert!(
+            !bytes.contains("?1000"),
+            "normal tracking (?1000) reintroduced; it's a redundant subset of ?1002. \
+             Got: {bytes:?}"
+        );
+        assert!(
+            !bytes.contains("?1015"),
+            "rxvt coordinates (?1015) reintroduced; we standardize on SGR (?1006). \
+             Got: {bytes:?}"
+        );
     }
 }
