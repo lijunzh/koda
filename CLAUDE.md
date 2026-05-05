@@ -27,7 +27,7 @@ No phases, no tiers — the model drives execution directly.
   - Fallback: `model_context.rs` lookup table
 - **Rate limit retry**: exponential backoff (2/4/8/16/32s) for 429 errors
 - **Built-in agents**: default (others via user-created agent configs)
-- **Git checkpointing** (`git.rs`): auto-snapshot before each turn
+- **Undo** (`undo.rs`): in-memory snapshot stack of file mutations. `/undo` rolls back the most recent turn. Does NOT survive process restarts — there is no on-disk or git-backed checkpoint subsystem. `git.rs` only injects branch/diff/recent-commits *context* into the system prompt; it never mutates state.
 
 Approval is per-tool. A single `TrustMode` enum (Plan/Safe/Auto) is the
 **single mechanism** for tool gating — it derives kernel sandbox bounds,
@@ -116,7 +116,7 @@ koda/
 │   │   │   ├── queries.rs  # Persistence trait impl (all SQL queries)
 │   │   │   └── tests.rs    # Database integration tests
 │   │   ├── file_tracker.rs # File lifecycle tracking (create/edit/delete ownership)
-│   │   ├── git.rs          # Git checkpointing + rollback
+│   │   ├── git.rs          # Read-only git context for the system prompt (branch, diff, recent commits)
 │   │   ├── inference.rs    # Streaming inference loop + tool execution
 │   │   ├── inference_helpers.rs # Token estimation, message assembly, overflow detection
 │   │   ├── keystore.rs     # Secure API key storage (~/.config/koda/keys.toml, 0600)

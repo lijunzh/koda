@@ -95,8 +95,11 @@ pub fn build_system_prompt(
          Hotkeys during tool confirmation: `y` approve, `n` reject, `f` feedback, `a` always.\n",
     );
     prompt.push_str(
-        "\n### Git Checkpointing\n\n\
-         Auto-snapshots working tree before each turn. `/undo` to rollback.\n",
+        "\n### Undo\n\n\
+         `/undo` rolls back file mutations from the most recent turn (Write,\n\
+         Edit, Delete, Overwrite). The undo stack is **in-memory only** — it\n\
+         does not survive process restarts. Tell the user to commit work to\n\
+         git before quitting if they want durable rollback.\n",
     );
 
     // Tool definitions intentionally NOT rendered here — each provider
@@ -793,5 +796,41 @@ mod tests {
         // Sanity: prompt should be non-empty + contain expected sections.
         assert!(total_chars > 1000, "prompt suspiciously short");
         assert!(prompt.contains("## Skills"));
+    }
+
+    /// Regression guard: the system prompt must NOT promise the model
+    /// an auto-git-snapshot/checkpoint feature, because no such feature
+    /// exists. The only undo mechanism is the in-memory stack in
+    /// [`crate::undo`], which dies with the process. Telling the model
+    /// otherwise causes it to reassure users ("don't worry, your changes
+    /// are checkpointed in git") that data loss is impossible — a lie.
+    ///
+    /// If a real git-backed checkpoint subsystem ever lands, delete this
+    /// test and update the prompt section with the truth.
+    #[test]
+    fn prompt_does_not_lie_about_git_checkpointing() {
+        let env = test_env();
+        let registry = SkillRegistry::default();
+        let prompt = build_system_prompt("You are koda.", "", &env, &[], &registry);
+
+        // Phrases from the old (deleted) lie. If any of these come back,
+        // either ship the feature or delete them again — do not just
+        // re-introduce the marketing copy.
+        for forbidden in [
+            "Git Checkpointing",
+            "Auto-snapshots working tree",
+            "auto-snapshot before each turn",
+            "auto-snapshot the working tree",
+        ] {
+            assert!(
+                !prompt.contains(forbidden),
+                "system prompt re-introduced a phantom-feature claim: {forbidden:?}"
+            );
+        }
+
+        // Positive: the truthful Undo section is present and explicitly
+        // calls out the durability gap.
+        assert!(prompt.contains("### Undo"));
+        assert!(prompt.contains("in-memory only"));
     }
 }
