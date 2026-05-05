@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gh auth status` and `gh auth list` no longer trigger an approval prompt in `Auto` mode** (#1266). `bash_safety::DANGER_CHECKS` previously matched the entire `gh auth` family with a single `CmdSub("gh", "auth")` rule, so read-only auth queries were classified as `Destructive` alongside the credential-mutating subcommands. Split the rule into the specific destructive subcommands (`login`, `logout`, `refresh`, `setup-git`, `token`) and added the read-only forms (`gh auth status`, `gh auth list`) to `READ_ONLY_PREFIXES`. Same approach the file already uses for `gh issue` and `gh pr`.
+
 ## [0.3.1] - 2026-05-05
 
 ### Fixed
