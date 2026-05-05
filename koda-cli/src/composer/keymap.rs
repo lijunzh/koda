@@ -77,11 +77,25 @@
 //!
 //! The hardcoded values in [`RuntimeKeymap::defaults`] are mirrored
 //! from codex's `built_in_defaults()` at SHA
-//! `d55479488e125ef7a0a8584505d839a22eaf6204`, file
-//! `codex-rs/tui/src/keymap.rs` lines ~531-707. We deliberately match
-//! codex's defaults so users coming from codex have a familiar
-//! experience by default; koda may diverge later as product decisions
-//! warrant.
+//! `87d2235b5470d8969b51d80278a46aa30703eeab`, file
+//! `codex-rs/tui/src/keymap.rs` (codex `main` as of 2026-05-06). We
+//! deliberately match codex's defaults so users coming from codex have
+//! a familiar experience by default; koda may diverge later as product
+//! decisions warrant.
+//!
+//! ## Vendor-sync skips
+//!
+//! The vendor-sync workflow reads `skip <SHA>` lines below and excludes
+//! those upstream commits from drift reports. Each entry must justify
+//! WHY koda intentionally does not port the commit. To unskip, delete
+//! the line and re-port the commit.
+//!
+//! - skip 48402be6fa: feat(tui): improve TUI keymap coverage (#20798) —
+//!   adds `kill_whole_line` / `fast_mode` keymap actions plus C0 control-char
+//!   normalization. The new actions are unbound-by-default upstream and
+//!   only become reachable through the `/keymap` slash command and
+//!   `codex-config` crate, neither of which koda has. Re-evaluate if koda
+//!   adds a `/keymap` UI.
 //!
 //! Original work: Copyright (c) OpenAI / codex contributors,
 //! licensed under the Apache License, Version 2.0.
@@ -357,11 +371,21 @@ impl RuntimeKeymap {
                 move_line_end: default_bindings![plain(KeyCode::End), ctrl(KeyCode::Char('e'))],
                 delete_backward: default_bindings![
                     plain(KeyCode::Backspace),
+                    shift(KeyCode::Backspace),
                     ctrl(KeyCode::Char('h'))
                 ],
-                delete_forward: default_bindings![plain(KeyCode::Delete), ctrl(KeyCode::Char('d'))],
+                delete_forward: default_bindings![
+                    plain(KeyCode::Delete),
+                    shift(KeyCode::Delete),
+                    ctrl(KeyCode::Char('d'))
+                ],
                 delete_backward_word: default_bindings![
                     alt(KeyCode::Backspace),
+                    ctrl(KeyCode::Backspace),
+                    raw(KeyBinding::new(
+                        KeyCode::Backspace,
+                        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                    )),
                     ctrl(KeyCode::Char('w')),
                     raw(KeyBinding::new(
                         KeyCode::Char('h'),
@@ -370,6 +394,11 @@ impl RuntimeKeymap {
                 ],
                 delete_forward_word: default_bindings![
                     alt(KeyCode::Delete),
+                    ctrl(KeyCode::Delete),
+                    raw(KeyBinding::new(
+                        KeyCode::Delete,
+                        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                    )),
                     alt(KeyCode::Char('d'))
                 ],
                 kill_line_start: default_bindings![ctrl(KeyCode::Char('u'))],
@@ -544,5 +573,56 @@ mod tests {
             Some(key_hint::ctrl(KeyCode::Char('a')))
         );
         assert_eq!(primary_binding(&[]), None);
+    }
+
+    /// Ported from upstream codex commit 87d2235b54 (#21058). Pins the new
+    /// modified-Backspace/Delete defaults so a future refactor of
+    /// `RuntimeKeymap::defaults()` can't silently drop them.
+    #[test]
+    fn default_editor_deletion_includes_modified_backspace_delete_aliases() {
+        let runtime = RuntimeKeymap::defaults();
+
+        assert!(
+            runtime
+                .editor
+                .delete_backward
+                .contains(&key_hint::shift(KeyCode::Backspace))
+        );
+        assert!(
+            runtime
+                .editor
+                .delete_forward
+                .contains(&key_hint::shift(KeyCode::Delete))
+        );
+        assert!(
+            runtime
+                .editor
+                .delete_backward_word
+                .contains(&key_hint::ctrl(KeyCode::Backspace))
+        );
+        assert!(
+            runtime
+                .editor
+                .delete_backward_word
+                .contains(&KeyBinding::new(
+                    KeyCode::Backspace,
+                    KeyModifiers::CONTROL | KeyModifiers::SHIFT
+                ))
+        );
+        assert!(
+            runtime
+                .editor
+                .delete_forward_word
+                .contains(&key_hint::ctrl(KeyCode::Delete))
+        );
+        assert!(
+            runtime
+                .editor
+                .delete_forward_word
+                .contains(&KeyBinding::new(
+                    KeyCode::Delete,
+                    KeyModifiers::CONTROL | KeyModifiers::SHIFT
+                ))
+        );
     }
 }

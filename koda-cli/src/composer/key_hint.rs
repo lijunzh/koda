@@ -10,6 +10,22 @@
 //! commit `d55479488e125ef7a0a8584505d839a22eaf6204` (codex `main`
 //! as of 2026-05-01).
 //!
+//! ## Vendor-sync skips
+//!
+//! The vendor-sync workflow reads `skip <SHA>` lines below and excludes
+//! those upstream commits from drift reports. Each entry must justify
+//! WHY koda intentionally does not port the commit. To unskip, delete
+//! the line and re-port the commit.
+//!
+//! - skip 48402be6fa: feat(tui): improve TUI keymap coverage (#20798) —
+//!   the key_hint changes here support new keymap actions whose only
+//!   surface upstream is the `/keymap` slash command + `codex-config`
+//!   crate, neither of which koda has. Re-evaluate alongside the keymap.rs
+//!   skip if koda adds a `/keymap` UI.
+//! - skip 94800ecbbf: feat(tui): add keymap debug inspector (#20794) —
+//!   pure UI for the `/keymap debug` subcommand. Koda has no `/keymap`
+//!   command at all, so the inspector has nothing to render against.
+//!
 //! Original work: Copyright (c) OpenAI / codex contributors,
 //! licensed under the Apache License, Version 2.0.
 //! See `LICENSES/codex-APACHE-2.0` (vendored at the workspace root)
