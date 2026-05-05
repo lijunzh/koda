@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **System prompt no longer lies about a non-existent git-checkpointing feature** (#1264 priority 2). The system prompt sent to every LLM call contained:
+
+  > ### Git Checkpointing
+  >
+  > Auto-snapshots working tree before each turn. `/undo` to rollback.
+
+  No such feature exists. `git.rs` is *read-only* — it runs `git rev-parse`, `git diff --stat`, and `git log` to format a context block for the system prompt; it never mutates state. The module's own doc comment even says so under "What this module does NOT do". The actual `/undo` is the in-memory stack in `undo.rs` (which itself was completely broken until #1271 yesterday) and dies with the process. Models receiving the false claim were reassuring users that destructive operations were safe to attempt because "the auto-snapshot will catch it" — they weren't, and it didn't. Replaced with a truthful Undo section that explicitly calls out the durability gap and tells the model to advise users to commit before quitting if they want durable rollback. Also fixed two stale references in `CLAUDE.md` (architecture overview line + module map line) that pointed at the same phantom feature. Added `prompt::tests::prompt_does_not_lie_about_git_checkpointing` regression guard so the marketing copy can't sneak back in via copy-paste from old git history. Closes #1264 priority 2 with a "drop the scaffolding" rationale; if a real git-backed checkpoint subsystem ever lands, delete the regression test and update the prompt with the truth.
+
 ### Added
 
 - **Context-window management — 4 new e2e scenarios** (#1264 priority 4). The existing `inference_context_test.rs` covered display accuracy only (the `ContextUsage`/`Footer` event emission, see #874 / #946). New `koda-core/tests/context_management_e2e_test.rs` covers the *behaviour* gaps the issue called out: pre-flight compaction firing when the heuristic gauge crosses [`AUTO_COMPACT_THRESHOLD`] (85%); pre-flight compaction being skipped under the threshold; provider-rejected context overflow triggering `try_overflow_recovery` → compact → retry → success; and overflow recovery propagating the original error when the session is too short for compaction to help (`CompactSkip::TooShort`). Module doc explains the `MockResponse` ordering required for the compact summary call vs. the streamed chat call. Tests are serialized via a file-scoped `LazyLock<Mutex>` because `compact::CONSECUTIVE_FAILURES` is a process-global atomic — same hazard the existing `compact.rs` test module called out at line 723 when it deleted duplicate breaker tests.
