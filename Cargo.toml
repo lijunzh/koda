@@ -34,6 +34,15 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Shared third-party deps used by 2+ crates. Hoisted here under #1265
+# dep-hygiene so version bumps land in one place and `cargo tree -d`
+# stays clean.
+futures-util = "0.3"
+glob = "0.3"
+ignore = "0.4"
+libc = "0.2"
+regex = "1"
+
 # Dev-only deps shared across crates.
 tempfile = "3"
 

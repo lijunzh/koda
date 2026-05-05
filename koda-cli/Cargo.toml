@@ -56,7 +56,7 @@ unicode-segmentation = "1.13"
 # (via crossterm → signal-hook-mio); declared explicitly here because we use
 # them directly and transitive contracts are fragile.
 signal-hook = "0.3"
-libc = "0.2"
+libc = { workspace = true }
 
 # Clipboard (for Ctrl+Y copy)
 arboard = "3"
@@ -74,7 +74,7 @@ ansi-to-tui = "8"
 
 # Regex — used to highlight Grep match substrings (mirrors koda-core's
 # Grep tool, so the same pattern compiles in both places).
-regex = "1"
+regex = { workspace = true }
 
 # Logging (subscriber for CLI configuration)
 tracing = { workspace = true }
@@ -91,7 +91,7 @@ time = "0.3"
 # Base64 encoding (for image input)
 base64 = "0.22"
 agent-client-protocol-schema = { version = "0.11", features = ["unstable_session_model", "unstable_session_list", "unstable"] }
-futures-util = "0.3"
+futures-util = { workspace = true }
 
 [[bench]]
 name = "render_bench"
