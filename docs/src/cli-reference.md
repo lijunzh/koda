@@ -25,4 +25,4 @@
 |---------|-------------|
 | `koda server --stdio` | Start ACP server over stdin/stdout (for editors) |
 | `koda server --port <N>` | WebSocket ACP server on port N (not yet implemented) |
-| `koda doctor` | Print platform diagnostics (sandbox, version, OS). Read-only. Pasteable into bug reports. |
+| `koda --version` | Print version + kernel sandbox availability (one line, paste-friendly for bug reports) |

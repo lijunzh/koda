@@ -34,8 +34,8 @@ use koda_sandbox::{
     current_runtime, is_available as ks_is_available, proxy_env_vars,
 };
 
-/// Re-export so consumers (e.g. `koda doctor` in `koda-cli`) don't have
-/// to add a direct dependency on `koda-sandbox` just to read the report.
+/// Re-export so callers don't have to add a direct dependency on
+/// `koda-sandbox` just to read the report.
 pub use koda_sandbox::DependencyReport as SandboxDependencyReport;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -54,16 +54,65 @@ pub fn is_available() -> bool {
 /// and a human-readable reason when unavailable.
 ///
 /// Consumed by:
-///   - `koda doctor` for end-user diagnostics (the actionable
-///     equivalent of `is_available()` for issue reports and setup).
+///   - `parse_top_level_trust_mode` to enrich the Auto-refusal error
+///     with a platform-specific install hint (#860 / #1259).
+///   - `koda --version` for one-line sandbox state (bug-report aid).
 ///   - The TUI status bar's sandbox indicator.
-///   - Bug-report templates (via `koda doctor` output).
 ///
 /// This is a thin wrapper over the sandbox runtime's own health
 /// check; it exists in `koda-core::sandbox` so callers don't need
 /// to depend on `koda-sandbox` directly (DRY: one re-export point).
 pub fn dependency_report() -> DependencyReport {
     current_runtime().check_dependencies()
+}
+
+/// Platform-specific install hint for an unavailable sandbox backend.
+///
+/// Returns a multi-line string describing how to install/enable the
+/// named backend, or how to bypass via `--mode safe` when no install
+/// path exists. Pure formatter — takes a backend identifier (from
+/// [`DependencyReport::backend`]) and returns text. No I/O, no
+/// platform probing.
+///
+/// Used by [`crate::trust::require_sandbox_for_auto`]'s caller in
+/// `koda-cli` to attach actionable setup instructions to the Auto
+/// refusal error (#1259 follow-up: replaced the dedicated
+/// `koda doctor` subcommand with inline error enrichment because
+/// the doctor's only substantive output was sandbox readiness).
+///
+/// Kept tiny on purpose: the real install instructions live in
+/// `docs/src/sandbox.md` — this is the one-line nudge so a user
+/// staring at a startup error knows what to type next.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::sandbox::setup_hint;
+///
+/// let hint = setup_hint("bwrap");
+/// assert!(hint.contains("apt install bubblewrap"));
+/// assert!(hint.contains("--mode safe"));
+/// ```
+pub fn setup_hint(backend: &str) -> String {
+    match backend {
+        "bwrap" => "  Install bubblewrap:\n\
+             Debian/Ubuntu:  sudo apt install bubblewrap\n\
+             Fedora/RHEL:    sudo dnf install bubblewrap\n\
+             Arch:           sudo pacman -S bubblewrap\n\
+           Or run with `--mode safe` to keep the human in the approval loop.\n"
+            .to_string(),
+        "seatbelt" => "  Seatbelt is built into macOS. If it's reporting unavailable,\n\
+           the `sandbox-exec` binary is missing from /usr/bin \u{2014} file an issue.\n\
+           Workaround: run with `--mode safe`.\n"
+            .to_string(),
+        // `none` backend = unknown platform (Windows pre-sandbox-port,
+        // exotic Unixes). No install path; only escape is `--mode safe`.
+        _ => format!(
+            "  No kernel sandbox backend exists for this platform ({}).\n\
+           Run with `--mode safe` to keep the human in the approval loop.\n",
+            std::env::consts::OS
+        ),
+    }
 }
 
 /// Re-export of [`koda_sandbox::is_fully_denied`] for in-process file tools.

@@ -93,16 +93,17 @@ These apply **regardless of the trust mode**:
    matrix would otherwise auto-approve.
 3. **Sandbox-unavailable refusal** — if the platform backend isn't
    installed (e.g. `bwrap` missing on Linux), Auto mode **refuses to
-   start** with an actionable error pointing at `koda doctor` for
-   setup. The previous "silently downgrade Auto → Safe" plan was
-   replaced (#860) because silent coercion is catastrophic in
-   headless: `koda --mode auto -p "..."` would become Safe and every
-   mutation would hit `RejectAuto` (no human channel), aborting the
-   task halfway. Hard refusal at startup gives a clear error + exit
-   code 1 instead. Safe and Plan are unaffected. The TUI status bar
-   shows the current sandbox state (🛡 sandboxed / ⚠ unsandboxed)
-   next to the trust badge so you can see at a glance why Auto
-   refuses on your system.
+   start** with an actionable error that includes a platform-specific
+   install hint (e.g. `apt install bubblewrap`). The previous
+   "silently downgrade Auto → Safe" plan was replaced (#860) because
+   silent coercion is catastrophic in headless: `koda --mode auto -p
+   "..."` would become Safe and every mutation would hit `RejectAuto`
+   (no human channel), aborting the task halfway. Hard refusal at
+   startup gives a clear error + exit code 1 instead. Safe and Plan
+   are unaffected. The TUI status bar shows the current sandbox state
+   (🛡 sandboxed / ⚠ unsandboxed) next to the trust badge so you can
+   see at a glance why Auto refuses on your system; `koda --version`
+   prints the same state on a paste-friendly one-liner.
 4. **Agent-file protection** — `.koda/agents/` and `.koda/skills/`
    are write-protected in every mode to prevent prompt injection
    from rewriting an agent's tools or system prompt mid-session.

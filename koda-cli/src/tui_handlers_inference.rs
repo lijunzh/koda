@@ -613,10 +613,11 @@ async fn handle_inference_key_inline(
                 // kernel sandbox is unavailable we skip the trust flip
                 // but still honor the approval as a one-shot — graceful
                 // degradation rather than blocking the user mid-prompt.
-                // The status-bar sandbox indicator + `koda doctor` make
-                // the underlying state visible; the warn-level log line
-                // here aids debugging when users wonder why pressing
-                // 'a' didn't persist.
+                // The status-bar sandbox indicator (🛡/⚠) plus the
+                // sandbox state in `koda --version` make the underlying
+                // state visible; the warn-level log line here aids
+                // debugging when users wonder why pressing 'a' didn't
+                // persist.
                 if let Err(msg) = trust::set_trust_checked(
                     shared_mode,
                     TrustMode::Auto,
