@@ -130,6 +130,8 @@ const READ_ONLY_PREFIXES: &[&str] = &[
     "gh run view",
     "gh run list",
     "gh run watch",
+    "gh auth status",
+    "gh auth list",
 ];
 
 // ── Token-level danger checks ─────────────────────────────────────────────────
@@ -252,13 +254,23 @@ const DANGER_CHECKS: &[DangerCheck] = &[
     DangerCheck::CmdSubFlag("git", "push", "--force"),
     DangerCheck::CmdSubFlag("git", "reset", "--hard"),
     DangerCheck::CmdSubFlag("git", "clean", "-f"), // also matches -fd, -fdc, …
-    // ── GitHub CLI destructive (#518, #525) ───────────────────────────────────
+    // ── GitHub CLI destructive (#518, #525, #1266) ───────────────────────────
     DangerCheck::CmdSubSub("gh", "pr", "merge"),
     DangerCheck::CmdSubSub("gh", "issue", "delete"),
     DangerCheck::CmdSubSub("gh", "repo", "delete"),
     DangerCheck::CmdSubSub("gh", "release", "delete"),
     DangerCheck::CmdSub("gh", "api"),
-    DangerCheck::CmdSub("gh", "auth"),
+    // `gh auth` was previously a blanket `CmdSub` (Destructive on every
+    // subcommand). That caught the credential-mutating ones (login/logout/…)
+    // but also `gh auth status` and `gh auth list`, which are pure reads —
+    // surprising approval prompts in Auto mode (#1266). Split into the
+    // specific destructive subcommands; the read-only forms live in
+    // `READ_ONLY_PREFIXES` above.
+    DangerCheck::CmdSubSub("gh", "auth", "login"),
+    DangerCheck::CmdSubSub("gh", "auth", "logout"),
+    DangerCheck::CmdSubSub("gh", "auth", "refresh"),
+    DangerCheck::CmdSubSub("gh", "auth", "setup-git"),
+    DangerCheck::CmdSubSub("gh", "auth", "token"),
 ];
 
 // ── Raw structural patterns ───────────────────────────────────────────────────
@@ -1025,6 +1037,87 @@ mod tests {
                 classify_bash_command(cmd),
                 ToolEffect::ReadOnly,
                 "`{cmd}` should still be ReadOnly",
+            );
+        }
+    }
+
+    // gh auth subcommand classification (#1266)
+
+    /// `gh auth status` and `gh auth list` are pure read-only queries about
+    /// the local auth state. They must NOT trigger an approval prompt in
+    /// Auto mode. Regression guard for #1266.
+    #[test]
+    fn test_classify_gh_auth_read_only_subcommands() {
+        for cmd in [
+            "gh auth status",
+            "gh auth status -t",
+            "gh auth status --hostname github.com",
+            "gh auth list",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::ReadOnly,
+                "`{cmd}` must be ReadOnly (queries local auth state, no mutation)",
+            );
+        }
+    }
+
+    /// Credential-mutating `gh auth` subcommands stay Destructive. They
+    /// either change which account is active, rotate tokens, or write to
+    /// `~/.config/gh` and the system git config — all worth a prompt even in
+    /// Auto mode.
+    #[test]
+    fn test_classify_gh_auth_destructive_subcommands_still_destructive() {
+        for cmd in [
+            "gh auth login",
+            "gh auth login --hostname github.com --web",
+            "gh auth logout",
+            "gh auth logout --hostname github.com",
+            "gh auth refresh",
+            "gh auth refresh --scopes repo,read:org",
+            "gh auth setup-git",
+            "gh auth token",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "`{cmd}` must remain Destructive",
+            );
+        }
+    }
+
+    /// Other `gh` subfamilies must not regress: read-only forms stay
+    /// ReadOnly, and the explicit destructive subcommands stay Destructive.
+    #[test]
+    fn test_classify_gh_other_subcommands_unchanged() {
+        // Read-only stays read-only.
+        for cmd in [
+            "gh issue view 1266",
+            "gh issue list --label bug",
+            "gh pr view 42",
+            "gh pr diff 42",
+            "gh repo view lijunzh/koda",
+            "gh run list",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::ReadOnly,
+                "`{cmd}` should remain ReadOnly",
+            );
+        }
+
+        // Explicit destructive forms stay Destructive.
+        for cmd in [
+            "gh pr merge 42",
+            "gh issue delete 1266",
+            "gh repo delete lijunzh/throwaway",
+            "gh release delete v0.0.1",
+            "gh api -X DELETE /repos/foo/bar",
+        ] {
+            assert_eq!(
+                classify_bash_command(cmd),
+                ToolEffect::Destructive,
+                "`{cmd}` should remain Destructive",
             );
         }
     }
