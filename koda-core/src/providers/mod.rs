@@ -198,7 +198,28 @@ fn is_localhost_url(url: &str) -> bool {
 ///   models (Gemini 3.x Pro, MiniMax 2.x, etc.) that may silent-think
 ///   for several minutes between SSE chunks. See issue #1119.
 pub fn build_http_client(base_url: Option<&str>) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder();
+    // Default redirect policy: reqwest's built-in (max 10 hops, no
+    // re-validation). This matches historical behavior for LLM provider
+    // clients, where redirect chains are between trusted endpoints.
+    //
+    // For untrusted-input URL fetches (e.g. WebFetch tool), use
+    // [`build_http_client_with_redirect_policy`] with `Policy::none()`
+    // and re-validate every hop manually — reqwest's default policy
+    // does NOT re-run our SSRF safety checks across redirects.
+    build_http_client_with_redirect_policy(base_url, reqwest::redirect::Policy::default())
+}
+
+/// Like [`build_http_client`] but with a caller-controlled redirect policy.
+///
+/// Used by callers that need to disable reqwest's automatic redirect
+/// following so they can re-run security checks on each hop themselves.
+/// All other configuration (timeouts, proxy, TLS-bypass-for-local) is
+/// identical to [`build_http_client`].
+pub fn build_http_client_with_redirect_policy(
+    base_url: Option<&str>,
+    redirect_policy: reqwest::redirect::Policy,
+) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder().redirect(redirect_policy);
 
     // ── Timeouts ──────────────────────────────────────────────────────────
     //

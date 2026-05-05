@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security
+
+- **WebFetch SSRF: re-validate every redirect hop** (#1280, Tier 1 from #1265). Pre-#1280, `web_fetch` validated only the initial URL via `is_safe_url` + DNS check, then handed off to a shared `reqwest::Client` whose default redirect policy follows up to 10 hops with NO re-validation. A public-looking URL could redirect to `127.0.0.1`, `169.254.169.254` (cloud metadata), or any RFC1918 private host, and reqwest would silently follow. WebFetch now uses its own client with `redirect::Policy::none()` and a hand-rolled `safely_follow_redirects` loop that re-runs the full SSRF check (host blocklist + IP-range check + DNS pre-check) on every hop, including relative and scheme-relative `Location` headers. The 15s timeout now bounds the entire chain (initial + all redirects), not just the first request. The shared `build_http_client` is unchanged and still defaults to reqwest's max-10-hops policy — the new `build_http_client_with_redirect_policy` is opt-in. Six new redirect re-validation tests cover: redirect to loopback blocked, redirect to cloud-metadata blocked, max-hop limit enforced, relative `Location` resolves correctly, scheme-relative `Location` re-validated, and a happy-path two-hop chain. Total web_fetch test count: 14 → 20.
+
 ### Added
 
 - **Modified Backspace/Delete defaults in vendored editor keymap** (#1278). Ported upstream codex commit `87d2235b54` (#21058) into `composer/keymap.rs` and `composer/textarea.rs`: the default `EditorKeymap` now binds `Shift+Backspace` and `Shift+Delete` to grapheme-delete (so Windows terminals that distinguish modified delete keys don't drop them on the floor), plus `Ctrl+Backspace`, `Ctrl+Shift+Backspace`, `Ctrl+Delete`, and `Ctrl+Shift+Delete` to word-delete (matching Windows text-input conventions). 4 new regression tests pin the new defaults so future refactors of `RuntimeKeymap::defaults()` can't silently drop them.
@@ -14,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`create_provider` routing tests** (#1264 priority 9). The function `koda_core::providers::create_provider` is the central provider-construction switchboard — it's called from at least 8 sites (`session::update_provider`, `tui_commands` for `/model`, `tui_context::menus` for the provider picker, `headless`, `server`, `sub_agent_dispatch`, `tui_context` session bootstrap, `builtin_proxy` smoke check). Despite that fan-in, it had **zero direct routing tests** — a `match` arm regression here would silently misroute a whole provider family at runtime, surfacing as "my Anthropic key doesn't work" reports that are actually "the request went to OpenAI-compat with the wrong base URL." Added 4 tests pinning every current `ProviderType` variant explicitly: `Anthropic` → `"anthropic"`, `Gemini` → `"gemini"`, `Mock` → `"mock"`, and the OpenAI-compat fallthrough family (`OpenAI`, `Groq`, `DeepSeek`, `Fireworks`) → `"openai-compat"`. The fall-through arm `_ => Box::new(openai_compat::...)` is the specific footgun: any new `ProviderType` variant added to the enum without a matching arm gets silently routed to OpenAI-compat (Rust doesn't warn on `_` arms catching new variants — by design — so we backstop with a test that lists the family explicitly and tells future contributors how to extend it). Closes #1264 priority 9.
 
 ### Fixed
+
+- **Internal `koda-core` dep version drift in `koda-cli/Cargo.toml`** (#1265 Tier 2). Runtime path-dep was pinned to `0.3.1` but the dev-dep (`features = ["test-support"]`) was still on `0.3.0`, which would fail to build the moment `koda-core` ever published as a real registry crate. Bumped both to `0.3.1`. Trivial, folded into the WebFetch SSRF PR for hygiene.
 
 - **System prompt no longer lies about a non-existent git-checkpointing feature** (#1264 priority 2). The system prompt sent to every LLM call contained:
 
