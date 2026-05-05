@@ -11,12 +11,12 @@
 //! the editor (LIFO — like a back button). Ctrl+U clears the whole later
 //! queue without cancelling inference.
 //!
-//! The actual keystroke handler in `tui_handlers_inference.rs` is huge and
+//! The actual keystroke handler in `inference::crossterm_handler` is huge and
 //! takes ~10 parameters (textarea, history, scroll buffer, db, …). The pure
 //! `VecDeque<String>` operations are extracted here so they can be unit
 //! tested without spinning up the whole TUI.
 //!
-//! Production callers (`tui_handlers_inference.rs`, `tui_context::dequeue_input`)
+//! Production callers (`inference::crossterm_handler`, `tui_context::dequeue_input`)
 //! use these helpers and add their own UI side effects (scroll-buffer lines,
 //! tracing, etc.) around the returned counts.
 
@@ -27,7 +27,7 @@ use std::collections::VecDeque;
 /// Returns the new queue length on success, or `None` if the input was
 /// blank/whitespace-only and was dropped.
 ///
-/// Mirrors the guard in `tui_handlers_inference.rs` Ctrl+J handler:
+/// Mirrors the guard in `inference::crossterm_handler` Ctrl+J handler:
 /// `if !text.trim().is_empty() { ... later_queue.push_back(text); }`.
 pub(crate) fn enqueue_later(queue: &mut VecDeque<String>, text: String) -> Option<usize> {
     if text.trim().is_empty() {
