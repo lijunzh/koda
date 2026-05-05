@@ -54,10 +54,12 @@ use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 
 pub mod local;
+pub mod policy;
 #[cfg(unix)]
 pub mod sandboxed;
 
 pub use local::LocalFileSystem;
+pub use policy::verify_mutation_safe;
 #[cfg(unix)]
 pub use sandboxed::SandboxedFileSystem;
 

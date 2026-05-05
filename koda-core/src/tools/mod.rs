@@ -993,6 +993,36 @@ fn is_allowed_write_root(path: &Path) -> bool {
     path.starts_with(std::env::temp_dir())
 }
 
+/// Return the policy list of roots a mutation tool (Write/Edit/Delete) is
+/// allowed to touch.
+///
+/// Single source of truth shared between [`safe_resolve_path`] (logical
+/// check, runs first) and `koda_sandbox::fs::verify_mutation_safe`
+/// (canonicalizing symlink check, runs second). When you add or remove a
+/// writable root, change this function and both checks pick up the new
+/// policy automatically. See #1281.
+///
+/// The returned roots are *not* canonicalized — that's the verifier's
+/// job. Some roots (e.g. per-user `$TMPDIR` on a stripped-down container)
+/// may not exist on disk; the verifier silently skips missing ones.
+pub fn allowed_mutation_roots(project_root: &Path) -> Vec<PathBuf> {
+    // Mirrors is_allowed_write_root + project_root. Order doesn't matter
+    // for the verifier (it tries each root), but we put project_root
+    // first so any error message that prints the list reads naturally.
+    let mut roots = vec![
+        project_root.to_path_buf(),
+        PathBuf::from("/tmp"),
+        PathBuf::from("/private/tmp"),
+        PathBuf::from("/var/tmp"),
+        std::env::temp_dir(),
+    ];
+    // De-dupe so canonicalize doesn't get called multiple times for the
+    // same physical root on Linux where /tmp == $TMPDIR.
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
 /// Normalise a path without enforcing any scope restriction.
 ///
 /// Low-level primitive — **tool implementations should call

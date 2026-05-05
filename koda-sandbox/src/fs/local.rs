@@ -32,6 +32,80 @@ use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
+/// Write `content` to `path` atomically: write to a sibling temp file,
+/// then `rename` over the destination.
+///
+/// **Why this matters for #1281**: `fs::write(target, ...)` on a
+/// symlink follows the link and clobbers the link's target. Our
+/// `verify_mutation_safe` call rejects escaping symlinks *before* the
+/// write, but the gap between check and write is a TOCTOU window. With
+/// atomic write, even if an attacker swaps `target` for an escaping
+/// symlink in that window:
+///
+/// 1. We write to `<parent>/.koda-write-<rand>.tmp` (a fresh inode that
+///    can't be a symlink because we just created it via
+///    `OpenOptions::create_new`).
+/// 2. We `rename(tmp, target)`. On Unix, `rename` over a symlink
+///    *replaces the symlink itself* with our regular file — the link's
+///    target is never touched.
+///
+/// So the worst case after a swap-attack is that `target` becomes a
+/// regular file with our new content, which is what the caller asked
+/// for in the first place. The escaping target file is unaffected.
+///
+/// On error, the temp file is best-effort cleaned up; if cleanup fails
+/// we log and ignore (the temp leak is harmless and we don't want to
+/// shadow the real error).
+async fn atomic_write(target: &Path, content: &[u8]) -> FsResult<()> {
+    let parent = target.parent().ok_or_else(|| {
+        FsError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("target {} has no parent directory", target.display()),
+        ))
+    })?;
+
+    // Random suffix avoids collisions if two writes race on the same
+    // file. We use the nanosecond timestamp + a small counter from
+    // SystemTime; pulling in `rand` for one number would be overkill.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let file_name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unnamed".to_string());
+    let tmp_name = format!(".koda-write-{pid}-{nanos}-{file_name}.tmp");
+    let tmp_path = parent.join(tmp_name);
+
+    // Write content. Using OpenOptions::create_new guarantees we get a
+    // brand-new inode (errors EEXIST otherwise), which means there is
+    // no symlink to follow at this layer.
+    use tokio::io::AsyncWriteExt as _;
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&tmp_path)
+        .await?;
+    if let Err(e) = file.write_all(content).await {
+        // Clean up the partial temp file.
+        let _ = fs::remove_file(&tmp_path).await;
+        return Err(FsError::Io(e));
+    }
+    if let Err(e) = file.sync_all().await {
+        let _ = fs::remove_file(&tmp_path).await;
+        return Err(FsError::Io(e));
+    }
+    drop(file); // close before rename
+
+    if let Err(e) = fs::rename(&tmp_path, target).await {
+        let _ = fs::remove_file(&tmp_path).await;
+        return Err(FsError::Io(e));
+    }
+    Ok(())
+}
+
 /// Unsandboxed, in-process [`FileSystem`].
 ///
 /// Construct with `LocalFileSystem::new()` (or `Default`) — there's
@@ -68,7 +142,11 @@ impl FileSystem for LocalFileSystem {
             // already exists.
             fs::create_dir_all(parent).await?;
         }
-        fs::write(path, content).await?;
+        // Atomic temp+rename rather than fs::write — see [`atomic_write`].
+        // This is the second half of the #1281 defense: even if a
+        // symlink swap slips past verify_mutation_safe, the rename
+        // replaces the symlink itself, not its target.
+        atomic_write(path, content).await?;
         Ok(content.len())
     }
 
@@ -102,7 +180,9 @@ impl FileSystem for LocalFileSystem {
         // `count` is what we return; bind a no-op ref to the buffer
         // so future maintainers don't "clean up" the destructure.
         let _ = &replaced;
-        fs::write(path, replaced.as_bytes()).await?;
+        // Atomic write so an in-flight symlink swap can't redirect the
+        // edit's payload to a file outside the project (#1281).
+        atomic_write(path, replaced.as_bytes()).await?;
         Ok(count)
     }
 

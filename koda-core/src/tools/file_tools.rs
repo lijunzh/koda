@@ -23,7 +23,7 @@
 use sha2::{Digest, Sha256};
 
 use super::resolve_read_path;
-use super::safe_resolve_path;
+use super::{allowed_mutation_roots, safe_resolve_path};
 use crate::providers::ToolDefinition;
 use anyhow::Result;
 use koda_sandbox::fs::FileSystem;
@@ -290,6 +290,16 @@ pub async fn write_file(project_root: &Path, args: &Value, fs: &dyn FileSystem) 
 
     let resolved = safe_resolve_path(project_root, path_str)?;
 
+    // #1281: re-verify the resolved path against canonicalized allowed
+    // roots so a symlink at the final component or any parent dir
+    // can't escape the project. safe_resolve_path is purely logical
+    // (no canonicalize) and is blind to symlinks. The two checks layer:
+    // safe_resolve_path catches literal `../etc/passwd` style escapes
+    // (works for non-existing files), verify_mutation_safe catches
+    // symlink escapes (requires walking the existing FS).
+    koda_sandbox::fs::verify_mutation_safe(&resolved, &allowed_mutation_roots(project_root))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
     // Overwrite protection: refuse to clobber existing files without explicit opt-in.
     // Use fs.stat() so the check respects the sandbox boundary.
     let already_exists = fs.stat(&resolved).await.is_ok();
@@ -356,6 +366,10 @@ pub async fn edit_file(
         .ok_or_else(|| anyhow::anyhow!("Missing 'replacements' argument"))?;
 
     let resolved = safe_resolve_path(project_root, path_str)?;
+
+    // #1281: symlink-aware re-check (see write_file for why).
+    koda_sandbox::fs::verify_mutation_safe(&resolved, &allowed_mutation_roots(project_root))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Read through the FileSystem abstraction so the sandbox can gate it.
     let raw_bytes = fs
@@ -505,6 +519,14 @@ pub async fn delete_file(project_root: &Path, args: &Value) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("Missing 'file_path' argument"))?;
     let recursive = args["recursive"].as_bool().unwrap_or(false);
     let resolved = safe_resolve_path(project_root, path_str)?;
+
+    // #1281: symlink-aware re-check before any unlink. delete is the
+    // most dangerous of the three: a symlink swap could trick us into
+    // unlinking the wrong path (though `remove_file` on a symlink
+    // removes the link itself, so the blast radius is small — we still
+    // want a clear error rather than silent surprise).
+    koda_sandbox::fs::verify_mutation_safe(&resolved, &allowed_mutation_roots(project_root))
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if !resolved.exists() {
         anyhow::bail!("Path not found: {}", resolved.display());
@@ -1141,5 +1163,194 @@ mod tests {
             result.contains("CAPPED"),
             "capped output must still include cap message: {result}"
         );
+    }
+
+    // ========================================================================
+    // #1281: symlink-mutation guards
+    //
+    // The unit tests in koda_sandbox::fs::policy already cover the verifier
+    // in isolation. These integration tests prove the wiring — that
+    // write_file / edit_file / delete_file actually call the verifier and
+    // refuse to mutate when an attacker plants an escaping symlink under
+    // the project root. Each test asserts BOTH that the tool errors AND
+    // that the file the symlink points to is unchanged.
+    //
+    // Why /etc/hosts as the canonical outside target?
+    //   `allowed_mutation_roots` includes /tmp, /var/tmp, AND
+    //   std::env::temp_dir() (e.g. /var/folders/.../T on macOS). So a
+    //   symlink from one tempdir to another tempdir is correctly
+    //   considered safe by the verifier. To exercise the escape path we
+    //   need a target outside *every* allowed root. /etc exists on
+    //   every Unix CI and is read-only for non-root users — so even if
+    //   the verifier had a bug, the tool couldn't actually clobber it.
+    // ========================================================================
+
+    /// Path used as the canonical "outside every allowed root" target.
+    /// /etc/hosts exists on every Unix host and is outside all tempdirs.
+    #[cfg(unix)]
+    const OUTSIDE_TARGET: &str = "/etc/hosts";
+
+    /// Skip a test if /etc/hosts somehow doesn't exist (very stripped
+    /// container?) so we don't false-fail in exotic environments.
+    #[cfg(unix)]
+    fn outside_or_skip() -> Option<std::path::PathBuf> {
+        let p = std::path::PathBuf::from(OUTSIDE_TARGET);
+        if p.exists() { Some(p) } else { None }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_file_refuses_symlink_escaping_project_root() {
+        let Some(outside_file) = outside_or_skip() else {
+            return;
+        };
+        let original = std::fs::read(&outside_file).unwrap();
+
+        let project = tempfile::tempdir().unwrap();
+        let link = project.path().join("sneaky.txt");
+        std::os::unix::fs::symlink(&outside_file, &link).unwrap();
+
+        let fs = koda_sandbox::fs::LocalFileSystem::new();
+        let args = json!({
+            "file_path": link.to_str().unwrap(),
+            "content": "clobber",
+            "overwrite": true,
+        });
+        let err = write_file(project.path(), &args, &fs)
+            .await
+            .expect_err("write through escaping symlink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("symlink") || msg.contains("outside"),
+            "error should mention symlink/outside: {msg}"
+        );
+        // Critical: the file the link pointed to is byte-identical.
+        assert_eq!(
+            std::fs::read(&outside_file).unwrap(),
+            original,
+            "the verifier must reject BEFORE any byte touches the outside file"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_file_refuses_symlinked_parent_dir_escaping_project_root() {
+        // <project>/escape -> /etc, then write to <project>/escape/koda-attack.txt
+        // should be refused because the parent canonicalizes outside the
+        // project AND outside every allowed tempdir.
+        let Some(_) = outside_or_skip() else { return };
+        let outside_dir = std::path::PathBuf::from("/etc");
+        if !outside_dir.is_dir() {
+            return;
+        }
+
+        let project = tempfile::tempdir().unwrap();
+        let escape = project.path().join("escape");
+        std::os::unix::fs::symlink(&outside_dir, &escape).unwrap();
+
+        let target = escape.join("koda-attack.txt");
+        let fs = koda_sandbox::fs::LocalFileSystem::new();
+        let args = json!({
+            "file_path": target.to_str().unwrap(),
+            "content": "clobber",
+        });
+        let err = write_file(project.path(), &args, &fs)
+            .await
+            .expect_err("write through escaping parent symlink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("escape") || msg.contains("outside") || msg.contains("symlink"),
+            "error should explain the escape: {msg}"
+        );
+        assert!(
+            !outside_dir.join("koda-attack.txt").exists(),
+            "outside dir must remain untouched"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn edit_file_refuses_symlink_escaping_project_root() {
+        let Some(outside_file) = outside_or_skip() else {
+            return;
+        };
+        let original = std::fs::read(&outside_file).unwrap();
+
+        let project = tempfile::tempdir().unwrap();
+        let link = project.path().join("alias.txt");
+        std::os::unix::fs::symlink(&outside_file, &link).unwrap();
+
+        let cache = cache();
+        let fs = koda_sandbox::fs::LocalFileSystem::new();
+        // Use a needle that's almost certainly not in /etc/hosts so even
+        // if the verifier failed open, the edit would no-op rather than
+        // mutate. Defense in depth.
+        let args = json!({
+            "file_path": link.to_str().unwrap(),
+            "replacements": [{"old_str": "KODA_ATTACK_NEEDLE_XYZ", "new_str": "PWNED"}],
+        });
+        let err = edit_file(project.path(), &args, &cache, &fs)
+            .await
+            .expect_err("edit through escaping symlink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("symlink") || msg.contains("outside"),
+            "error should mention symlink/outside: {msg}"
+        );
+        assert_eq!(std::fs::read(&outside_file).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_file_refuses_symlink_escaping_project_root() {
+        let Some(outside_file) = outside_or_skip() else {
+            return;
+        };
+
+        let project = tempfile::tempdir().unwrap();
+        let link = project.path().join("to_delete");
+        std::os::unix::fs::symlink(&outside_file, &link).unwrap();
+
+        let args = json!({ "file_path": link.to_str().unwrap() });
+        let err = delete_file(project.path(), &args)
+            .await
+            .expect_err("delete through escaping symlink must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("symlink") || msg.contains("outside"),
+            "error should mention symlink/outside: {msg}"
+        );
+        // Both the link AND the target must still exist.
+        assert!(outside_file.exists(), "outside target must not be deleted");
+        assert!(link.exists(), "link itself must still exist");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_file_allows_in_project_symlink() {
+        // Counter-example: a symlink whose target is INSIDE the
+        // project root must keep working. Lots of repos use
+        // `examples/latest -> v3/` patterns; we don't want this PR to
+        // regress them.
+        let project = tempfile::tempdir().unwrap();
+        let real_dir = project.path().join("v3");
+        std::fs::create_dir(&real_dir).unwrap();
+        let real_file = real_dir.join("config.toml");
+        std::fs::write(&real_file, b"old").unwrap();
+
+        let alias_dir = project.path().join("latest");
+        std::os::unix::fs::symlink(&real_dir, &alias_dir).unwrap();
+        let via_link = alias_dir.join("config.toml");
+
+        let fs = koda_sandbox::fs::LocalFileSystem::new();
+        let args = json!({
+            "file_path": via_link.to_str().unwrap(),
+            "content": "new",
+            "overwrite": true,
+        });
+        write_file(project.path(), &args, &fs)
+            .await
+            .expect("in-project symlink write must succeed");
+        assert_eq!(std::fs::read(&real_file).unwrap(), b"new");
     }
 }
