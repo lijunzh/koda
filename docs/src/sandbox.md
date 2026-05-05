@@ -63,6 +63,21 @@ Bash commands can only write to:
 - The project directory
 - `/tmp` and standard cache dirs (`~/.cache`, `~/.cargo`, etc.)
 
+The in-process file tools (`Write`, `Edit`, `Delete`) enforce the
+same perimeter via `safe_resolve_path` (logical check) and
+`koda_sandbox::fs::verify_mutation_safe` (canonicalizing
+symlink-aware check). The two layer: the first rejects literal
+`../etc/passwd` style escapes, the second rejects symlink escapes
+(the final path component being a symlink to outside, or any
+parent directory being one). See #1281.
+
+The symlink check is enforced **even with `--no-sandbox`**. The
+debug escape hatch is for shell tracing; it isn't a license to
+let the LLM clobber arbitrary files via a planted symlink.
+In-project symlinks (e.g. `examples/latest -> v3/`) keep working;
+only links whose canonical target escapes every allowed root are
+rejected.
+
 ### Credential protection
 
 Credential directories and files are **write-protected** — sandboxed
