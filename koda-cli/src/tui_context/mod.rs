@@ -158,11 +158,21 @@ pub(crate) enum CommandOutcome {
 /// back to the user's current `config.trust` — **never** to a hardcoded
 /// constant. Hardcoding `Auto` here was the original bug: it silently
 /// overrode `--mode safe`, defeating the whole point of the flag.
+///
+/// Top-level safety semantics (#1241 release audit): persisted modes must obey
+/// the same top-level rules as CLI/env startup. Plan coerces to Safe, and Auto
+/// is rejected when the kernel sandbox is unavailable. Without this, a session
+/// persisted as `auto` on a sandboxed host could be resumed on an unsandboxed
+/// host and bypass the startup Auto refusal. Sneaky little gremlin.
 pub(crate) fn resolve_initial_trust_mode(
     persisted: Option<&str>,
     fallback: TrustMode,
-) -> TrustMode {
-    persisted.and_then(TrustMode::parse).unwrap_or(fallback)
+    sandbox_available: bool,
+) -> Result<(TrustMode, Option<&'static str>), String> {
+    let parsed = persisted.and_then(TrustMode::parse).unwrap_or(fallback);
+    let (mode, warning) = koda_core::trust::coerce_for_top_level(parsed);
+    let mode = koda_core::trust::require_sandbox_for_auto(mode, sandbox_available)?;
+    Ok((mode, warning))
 }
 
 impl TuiContext {
@@ -250,7 +260,7 @@ impl TuiContext {
         // Fallback to the user's current CLI/config trust mode (not a hardcoded
         // constant) so `--mode safe` is honored on first run when there's no
         // persisted mode yet. Fixes #982.
-        let initial_mode = {
+        let (initial_mode, initial_mode_warning) = {
             use koda_core::persistence::Persistence;
             let persisted = session
                 .db
@@ -258,8 +268,21 @@ impl TuiContext {
                 .await
                 .ok()
                 .flatten();
-            resolve_initial_trust_mode(persisted.as_deref(), config.trust)
+            let report = koda_core::sandbox::dependency_report();
+            resolve_initial_trust_mode(persisted.as_deref(), config.trust, report.available)
+                .map_err(|msg| {
+                    anyhow::anyhow!(
+                        "{msg}\n\nSetup:\n{}",
+                        koda_core::sandbox::setup_hint(report.backend)
+                    )
+                })?
         };
+        if let Some(warning) = initial_mode_warning {
+            startup_lines.push(Line::from(vec![
+                Span::styled("  \u{26a0} ", Style::new().fg(Color::Yellow)),
+                Span::styled(warning.to_string(), Style::new().fg(Color::Yellow)),
+            ]));
+        }
         let shared_mode = trust::new_shared_trust(initial_mode);
 
         // Terminal + textarea
@@ -799,32 +822,44 @@ mod tests {
         // The exact bug: fresh session, no persisted mode, user passed `--mode safe`.
         // Pre-fix this returned hardcoded `Auto`, ignoring the user's choice.
         assert_eq!(
-            resolve_initial_trust_mode(None, TrustMode::Safe),
+            resolve_initial_trust_mode(None, TrustMode::Safe, true)
+                .unwrap()
+                .0,
             TrustMode::Safe,
         );
+        // Plan is sub-agent-only; top-level fallback still goes through
+        // coerce_for_top_level, so it resolves to Safe with a warning.
+        let (mode, warning) = resolve_initial_trust_mode(None, TrustMode::Plan, true).unwrap();
+        assert_eq!(mode, TrustMode::Safe);
+        assert!(warning.is_some());
         assert_eq!(
-            resolve_initial_trust_mode(None, TrustMode::Plan),
-            TrustMode::Plan,
-        );
-        assert_eq!(
-            resolve_initial_trust_mode(None, TrustMode::Auto),
+            resolve_initial_trust_mode(None, TrustMode::Auto, true)
+                .unwrap()
+                .0,
             TrustMode::Auto,
         );
     }
 
     #[test]
-    fn persisted_mode_wins_over_config_trust_on_resume() {
-        // Resume semantics from #590: a stored mode beats the CLI fallback.
+    fn persisted_mode_wins_over_config_trust_on_resume_after_top_level_coercion() {
+        // Resume semantics from #590: a stored mode beats the CLI fallback,
+        // then the top-level safety rules are applied.
         assert_eq!(
-            resolve_initial_trust_mode(Some("plan"), TrustMode::Auto),
-            TrustMode::Plan,
-        );
-        assert_eq!(
-            resolve_initial_trust_mode(Some("safe"), TrustMode::Auto),
+            resolve_initial_trust_mode(Some("plan"), TrustMode::Auto, true)
+                .unwrap()
+                .0,
             TrustMode::Safe,
         );
         assert_eq!(
-            resolve_initial_trust_mode(Some("auto"), TrustMode::Safe),
+            resolve_initial_trust_mode(Some("safe"), TrustMode::Auto, true)
+                .unwrap()
+                .0,
+            TrustMode::Safe,
+        );
+        assert_eq!(
+            resolve_initial_trust_mode(Some("auto"), TrustMode::Safe, true)
+                .unwrap()
+                .0,
             TrustMode::Auto,
         );
     }
@@ -834,12 +869,39 @@ mod tests {
         // The other half of the bug: corrupt/unknown persisted strings used
         // to fall through to a hardcoded `Auto`. Now they honor config.trust.
         assert_eq!(
-            resolve_initial_trust_mode(Some("bogus"), TrustMode::Safe),
+            resolve_initial_trust_mode(Some("bogus"), TrustMode::Safe, true)
+                .unwrap()
+                .0,
             TrustMode::Safe,
         );
         assert_eq!(
-            resolve_initial_trust_mode(Some(""), TrustMode::Plan),
-            TrustMode::Plan,
+            resolve_initial_trust_mode(Some(""), TrustMode::Plan, true)
+                .unwrap()
+                .0,
+            TrustMode::Safe,
+        );
+    }
+
+    #[test]
+    fn persisted_auto_requires_sandbox_on_resume() {
+        let err = resolve_initial_trust_mode(Some("auto"), TrustMode::Safe, false).unwrap_err();
+        assert!(err.contains("Auto mode requires"));
+        assert!(err.contains("--mode safe"));
+    }
+
+    #[test]
+    fn fallback_auto_requires_sandbox_on_fresh_session() {
+        let err = resolve_initial_trust_mode(None, TrustMode::Auto, false).unwrap_err();
+        assert!(err.contains("Auto mode requires"));
+    }
+
+    #[test]
+    fn persisted_safe_still_allowed_without_sandbox() {
+        assert_eq!(
+            resolve_initial_trust_mode(Some("safe"), TrustMode::Auto, false)
+                .unwrap()
+                .0,
+            TrustMode::Safe,
         );
     }
 
@@ -848,16 +910,22 @@ mod tests {
         // `TrustMode::parse` accepts aliases like "yolo", "strict", etc.
         // Make sure resume of older sessions stored under those names still works.
         assert_eq!(
-            resolve_initial_trust_mode(Some("yolo"), TrustMode::Safe),
+            resolve_initial_trust_mode(Some("yolo"), TrustMode::Safe, true)
+                .unwrap()
+                .0,
             TrustMode::Auto,
         );
         assert_eq!(
-            resolve_initial_trust_mode(Some("strict"), TrustMode::Auto),
+            resolve_initial_trust_mode(Some("strict"), TrustMode::Auto, true)
+                .unwrap()
+                .0,
             TrustMode::Safe,
         );
         assert_eq!(
-            resolve_initial_trust_mode(Some("readonly"), TrustMode::Auto),
-            TrustMode::Plan,
+            resolve_initial_trust_mode(Some("readonly"), TrustMode::Auto, true)
+                .unwrap()
+                .0,
+            TrustMode::Safe,
         );
     }
 }

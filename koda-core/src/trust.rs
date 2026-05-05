@@ -346,22 +346,12 @@ pub fn require_sandbox_for_auto(
 /// Compute the **default** trust mode for a session given sandbox
 /// availability. Auto when the sandbox is present, Safe when not.
 ///
-/// This is the helper that #1241 (default `Safe → Auto` flip) uses
-/// when neither `--mode` nor `KODA_MODE` are set. Today the clap
-/// layer hardcodes `default_value = "auto"` (we picked the loud
-/// option: Auto everywhere, fail-fast on unsandboxed platforms via
-/// [`require_sandbox_for_auto`] with inline install hints from
-/// [`crate::sandbox::setup_hint`]). The helper remains exported
-/// for downstream embedders who want sandbox-aware defaulting
-/// without the hard-refusal UX.
-///
-/// The asymmetry is deliberate:
-/// - **Implicit default** picks the strongest mode the platform
-///   can support — better UX on the supported case, no foot-gun
-///   on the unsupported case.
-/// - **Explicit request** is honored or rejected, never silently
-///   coerced — follows the Zen of Python rule that errors should
-///   never pass silently.
+/// The CLI's top-level default is now the louder `Auto` everywhere
+/// choice (#1241): it hardcodes `default_value = "auto"` and then
+/// fails fast on unsandboxed platforms via [`require_sandbox_for_auto`]
+/// with inline install hints from [`crate::sandbox::setup_hint`]. This
+/// helper remains exported for downstream embedders who prefer
+/// sandbox-aware defaulting without the hard-refusal UX.
 ///
 /// # Examples
 ///

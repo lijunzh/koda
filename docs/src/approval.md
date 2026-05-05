@@ -143,16 +143,18 @@ where `write_access` only spoke to the second half.
 
 ## Headless mode
 
-In headless mode there is no human to prompt. The trust mode is
-effectively "Auto with the destructive backstop": read and mutating
-tools approve, destructive Bash commands and `Delete` are rejected,
-and the sandbox enforces the perimeter. See [Headless mode](./headless.md).
+In headless mode there is no human to prompt. Koda applies the
+headless policy documented in [Headless mode](./headless.md): read
+and safe in-project mutating tools approve, destructive Bash commands
+and `Delete` are rejected, and the sandbox enforces the perimeter.
+Auto still requires the kernel sandbox before headless execution can
+start.
 
 ## Reference
 
 - Master matrix: `koda_core::trust::check_tool`
 - Sub-agent matrix: `koda_core::trust::check_tool_for_sub_agent`
-- Sandbox-unavailable fallback: `koda_core::trust::is_outside_project`
-  + #860 downgrade in `trust.rs`
+- Sandbox-unavailable Auto refusal: `koda_core::trust::require_sandbox_for_auto`
+  + setup hints from `koda_core::sandbox::setup_hint`
 - Per-agent loader & deprecation warning: `koda_core::config::KodaConfig::load`
 - Status-bar badge rendering: `koda_cli::widgets::status_bar`

@@ -979,8 +979,9 @@ user-facing mental-model doc).
 **Accepted risks**:
 1. Shell command parsing is heuristic — complex pipelines can bypass classification
 2. Network is unrestricted in all modes (required for `cargo fetch`, `npm install`)
-3. If the sandbox backend is unavailable (e.g. no bwrap on Linux), Koda falls
-   back to unsandboxed execution with a warning rather than hard-erroring
+3. If the sandbox backend is unavailable (e.g. no bwrap on Linux), `Auto`
+   refuses to start or resume; `Safe`/`Plan` may still run with warnings and
+   human approval floors
 
 ### File Lifecycle Tracking (P2)
 

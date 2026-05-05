@@ -14,6 +14,12 @@ cargo install koda-cli
 
 On first run, an onboarding wizard guides you through provider and API key setup.
 
+Linux note: the default trust mode is Auto, which requires bubblewrap
+(`bwrap`) so the kernel sandbox can contain auto-approved mutations.
+Install it with your package manager (`apt install bubblewrap`,
+`dnf install bubblewrap`, `pacman -S bubblewrap`) or start with
+`koda --mode safe` to keep the human in every approval loop.
+
 ## Quick start
 
 ```bash
@@ -29,18 +35,18 @@ Cycle with `Shift+Tab`:
 
 | Mode | Behavior |
 |------|----------|
-| **Safe** (default) | Confirm every side effect. Read-only tools auto-approved. |
-| **Auto** | Auto-approve all actions within the project sandbox. |
+| **Auto** (default) | Auto-approve safe in-project mutations within the kernel sandbox. Destructive ops and outside-project writes still ask. Requires sandbox availability. |
+| **Safe** | Confirm every mutation. Read-only tools auto-approved. Use this for CI or locked-down machines. |
 
 A third mode, **Plan**, is available for agent definitions that need
 investigation-only access — all writes are denied.
 
 ```bash
-# Start in Auto mode
-koda --mode auto
+# Keep the old prompt-every-mutation behavior
+koda --mode safe
 
 # Via environment variable
-export KODA_MODE=auto
+export KODA_MODE=safe
 ```
 
 ## Sandbox
