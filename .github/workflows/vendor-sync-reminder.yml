@@ -56,12 +56,20 @@ jobs:
 
           # Mapping: local koda path → upstream codex path.
           # Update this list when adding/removing vendored files.
+          #
+          # Path note: upstream paths reflect codex's CURRENT layout, not
+          # the layout at our pinned SHA. We pass `--follow` to `git log`
+          # below so renames between pin and HEAD are traced correctly
+          # (e.g. `keymap.rs` was at `bottom_pane/` at our original pin
+          # and lives at `tui/src/` today; `--follow` connects the two).
+          # If you re-pin to a SHA that predates a rename, leave the
+          # mapping pointing at the file's CURRENT location.
           declare -A FILES=(
             ["koda-cli/src/composer/textarea.rs"]="codex-rs/tui/src/bottom_pane/textarea.rs"
-            ["koda-cli/src/composer/keymap.rs"]="codex-rs/tui/src/bottom_pane/keymap.rs"
+            ["koda-cli/src/composer/keymap.rs"]="codex-rs/tui/src/keymap.rs"
             ["koda-cli/src/composer/key_hint.rs"]="codex-rs/tui/src/key_hint.rs"
             ["koda-cli/src/composer/paste_burst.rs"]="codex-rs/tui/src/bottom_pane/paste_burst.rs"
-            ["koda-cli/src/composer/text_element.rs"]="codex-rs/tui/src/bottom_pane/text_element.rs"
+            ["koda-cli/src/composer/text_element.rs"]="codex-rs/protocol/src/user_input.rs"
             ["koda-cli/src/composer/wrapping.rs"]="codex-rs/tui/src/wrapping.rs"
           )
 
@@ -93,7 +101,14 @@ jobs:
             # Count commits that touched the upstream file since the pin.
             # `git log` returns a clean exit even if the path no longer
             # exists upstream — check that case explicitly.
-            count=$(git -C ../codex log --oneline "${sha}..HEAD" -- "$upstream_path" 2>/dev/null | wc -l | tr -d ' ')
+            #
+            # `--follow` is critical: without it, a rename between pin and
+            # HEAD silently hides all drift (we'd see 0 commits because
+            # the path didn't exist under its new name pre-rename).
+            # Discovered the hard way on 2026-05-05 — `keymap.rs` was
+            # moved upstream from `bottom_pane/` to `tui/src/` and the
+            # initial workflow reported 0 drift instead of 2 commits.
+            count=$(git -C ../codex log --oneline --follow "${sha}..HEAD" -- "$upstream_path" 2>/dev/null | wc -l | tr -d ' ')
 
             if [[ "$count" -eq 0 ]]; then
               # File exists upstream and is unchanged since pin.
@@ -107,7 +122,8 @@ jobs:
             fi
 
             # Pull a short summary of upstream changes for the issue body.
-            short_log=$(git -C ../codex log --oneline "${sha}..HEAD" -- "$upstream_path" | head -5)
+            # `--follow` for the same reason as the count above.
+            short_log=$(git -C ../codex log --oneline --follow "${sha}..HEAD" -- "$upstream_path" | head -5)
             report+="| \`${local_path}\` | **${count} commit(s) behind** | <details><summary>show</summary>"$'\n\n'"\`\`\`"$'\n'"${short_log}"$'\n'"\`\`\`"$'\n'"</details> |"$'\n'
             total_drift=$((total_drift + count))
           done
