@@ -12,7 +12,7 @@
 //! - HTML pages are converted to clean text (strips tags, scripts, styles)
 //! - JSON and plain text are returned as-is
 //! - Output is truncated to context-scaled caps
-//! - Follows redirects (up to [`MAX_REDIRECTS`] hops), re-validating SSRF
+//! - Follows redirects (up to 10 hops, see `MAX_REDIRECTS`), re-validating SSRF
 //!   safety on every hop (#1280). Redirects to loopback / RFC1918 private
 //!   ranges / link-local cloud-metadata IPs are blocked even if the
 //!   initial URL was public.
@@ -472,7 +472,7 @@ mod tests {
         assert!(!result.contains("   ")); // No triple spaces
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_web_fetch_bad_url() {
         let args = json!({ "url": "not-a-url" });
         let result = web_fetch(&args, 15_000).await;
@@ -544,7 +544,7 @@ mod tests {
         assert!(is_safe_ip(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_web_fetch_blocks_ssrf() {
         let args = json!({ "url": "http://169.254.169.254/latest/meta-data/" });
         let result = web_fetch(&args, 15_000).await;
@@ -552,7 +552,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("blocked"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_web_fetch_missing_url() {
         let args = json!({});
         let result = web_fetch(&args, 15_000).await;
@@ -665,7 +665,7 @@ mod tests {
     /// The headline #1280 bug: a public-looking URL redirects to loopback,
     /// and the production validator must reject the redirect target even
     /// though the initial server URL was "reachable."
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_redirect_to_loopback_is_blocked_by_production_validator() {
         // Server's first response: 302 -> http://127.0.0.1:1/secret.
         // The production validator MUST reject this redirect target.
@@ -693,7 +693,7 @@ mod tests {
     /// Same bug, cloud-metadata variant. The classic GCP/AWS
     /// credential-exfil target. Must be rejected on redirect just like a
     /// direct hit.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_redirect_to_cloud_metadata_is_blocked() {
         let (server_url, ct) = spawn_test_server(vec![Step::Redirect(
             "http://169.254.169.254/latest/meta-data/iam/security-credentials/".to_string(),
@@ -717,7 +717,7 @@ mod tests {
     /// Exceeding the hop limit must be a hard error, not silently truncated.
     /// Uses the permissive validator so we isolate the hop-count enforcement
     /// from the SSRF check.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_max_redirect_hops_enforced() {
         // 11 redirects in a chain — max_hops=3 should bail at hop 3.
         let mut steps: Vec<Step> = (0..11)
@@ -741,7 +741,7 @@ mod tests {
 
     /// Relative `Location` headers must resolve against the current URL
     /// (RFC 3986) and be re-validated like absolute ones.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_relative_redirect_resolves_against_current_url() {
         // Two-hop relative redirect: /a -> /b (relative) -> 200 OK.
         let (server_url, ct) = spawn_test_server(vec![
@@ -770,7 +770,7 @@ mod tests {
 
     /// Scheme-relative `Location: //evil.com/...` resolves against the
     /// current URL's scheme — verify it doesn't sneak past the validator.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_scheme_relative_redirect_revalidated() {
         // `//127.0.0.1:1/x` resolves to `http://127.0.0.1:1/x` against an
         // http base; production validator must still reject.
@@ -794,7 +794,7 @@ mod tests {
     /// Happy path: a normal 302 chain that ends at 200 with permissive
     /// validation works end to end. Sanity check that the loop returns the
     /// right body.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_happy_path_two_hop_redirect_chain() {
         let (server_url, ct) = spawn_test_server(vec![
             Step::Redirect("/step2".to_string()),
