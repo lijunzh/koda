@@ -23,9 +23,11 @@ within 7 days of a confirmed vulnerability.
 ## Sandbox Security Model
 
 Koda enforces filesystem-write and exec policy via a kernel-backed
-sandbox (Seatbelt on macOS, Landlock on Linux; not supported on
+sandbox (Seatbelt on macOS, bubblewrap on Linux; not supported on
 Windows). The sandbox protects credential files and koda's own
-configuration even in `--yolo` trust mode.
+configuration even in `--mode auto` trust mode. Auto requires the
+kernel sandbox; if the backend is unavailable, koda refuses Auto with
+an actionable setup hint and users can opt into `--mode safe`.
 
 For the full model — file-tool read policy, write restrictions,
 credential protection, agent-file protection, sub-agent inheritance,

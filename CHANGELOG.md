@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-05
+
+### Fixed
+
+- **Persisted/resumed `Auto` sessions now obey the same sandbox gate as startup** (#1241 release audit). Fresh CLI/env/default startup already rejected Auto when the kernel sandbox was unavailable, but session restore paths trusted the DB mode directly. A session persisted as `auto` on a sandboxed machine could therefore be resumed on an unsandboxed host and bypass the headline invariant. TUI startup and `/sessions resume` now route persisted modes through the same top-level resolver: parse → Plan-to-Safe coercion → `require_sandbox_for_auto`. Invalid persisted Auto fails loudly with the same setup hint instead of silently entering Auto.
+
 ### Changed (BREAKING for first-run UX)
 
 - **Default trust mode flipped from `Safe` → `Auto`** (#1241). Running `koda` with no `--mode` flag and no `KODA_MODE` env var now starts in Auto mode (auto-approve mutations within the kernel sandbox; destructive ops and outside-project writes still confirm). The previous Safe-by-default — which prompted on **every** mutation — was the dominant source of "why is this thing nagging me?" friction and effectively encouraged users to flip to Auto on first use, making the safety value of Safe-by-default mostly theatrical.

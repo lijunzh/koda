@@ -461,6 +461,35 @@ async fn handle_resume_session(
                     0 => tui_output::err_msg(buffer, format!("No session found matching '{id}'.")),
                     1 => {
                         let target = &matches[0];
+                        let mode_to_apply = match session
+                            .db
+                            .get_session_mode(&target.id)
+                            .await
+                            .ok()
+                            .flatten()
+                        {
+                            Some(mode_str) => match trust::TrustMode::parse(&mode_str) {
+                                Some(parsed) => {
+                                    let (m, warning) = trust::coerce_for_top_level(parsed);
+                                    let report = koda_core::sandbox::dependency_report();
+                                    match trust::require_sandbox_for_auto(m, report.available) {
+                                        Ok(validated) => Some((validated, warning)),
+                                        Err(msg) => {
+                                            tui_output::err_msg(
+                                                buffer,
+                                                format!(
+                                                    "Cannot resume session in Auto mode: {msg}\n\nSetup:\n{}",
+                                                    koda_core::sandbox::setup_hint(report.backend)
+                                                ),
+                                            );
+                                            return;
+                                        }
+                                    }
+                                }
+                                None => None,
+                            },
+                            None => None,
+                        };
                         session.id = target.id.clone();
                         session.title_set = true;
                         let short_id = target.id[..8].to_string();
@@ -487,16 +516,14 @@ async fn handle_resume_session(
                         // `coerce_for_top_level` so a session that
                         // somehow got persisted with `plan` (older
                         // koda version, manual DB edit, race) is
-                        // coerced to Safe with a visible banner
-                        // instead of silently resurrecting a confused
-                        // "read-only main session" state. Sub-agents
-                        // never persist their own session-level mode
-                        // here — only the top-level session does —
-                        // so this coercion is the right scope.
-                        if let Ok(Some(mode_str)) = session.db.get_session_mode(&session.id).await
-                            && let Some(parsed) = trust::TrustMode::parse(&mode_str)
-                        {
-                            let (m, warning) = trust::coerce_for_top_level(parsed);
+                        // coerced to Safe with a visible banner.
+                        //
+                        // **#1241 release audit**: validate Auto with
+                        // `require_sandbox_for_auto` BEFORE switching
+                        // `session.id`; otherwise a persisted Auto
+                        // session could bypass the startup sandbox
+                        // refusal when resumed on an unsandboxed host.
+                        if let Some((m, warning)) = mode_to_apply {
                             if let Some(w) = warning {
                                 tui_output::warn_msg(buffer, w.to_string());
                             }

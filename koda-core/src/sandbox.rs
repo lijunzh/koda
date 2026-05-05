@@ -8,18 +8,19 @@
 //! ## Public API
 //!
 //! - [`build`](crate::sandbox::build) — main entry point used by `tools/shell.rs`
-//! - [`is_available`](crate::sandbox::is_available) — used by `trust.rs` to gate Auto → Safe downgrade
+//! - [`is_available`](crate::sandbox::is_available) — used by `trust.rs` to reject Auto when the sandbox is unavailable
 //! - [`is_fully_denied`](crate::sandbox::is_fully_denied) — used by `tools/mod.rs` for in-process Read/Edit
 //!   parity with the kernel sandbox (#882, #898)
 //!
 //! ## Behavior
 //!
-//! All trust modes get the same kernel-enforced "strict" baseline today
+//! All trust modes use the same kernel-enforced baseline today
 //! (project sandbox + credential write-protection + full deny on
-//! `~/.config/koda/db`). When the platform sandbox backend is missing
-//! (e.g. `bwrap` not installed on Linux, unsupported OS), commands run
-//! unsandboxed with a one-time warning — the sandbox is best-effort and
-//! never blocks the user.
+//! `~/.config/koda/db`) when a platform backend exists. When the
+//! backend is missing (e.g. `bwrap` not installed on Linux, unsupported
+//! OS), `Auto` refuses to start/resume because it auto-approves
+//! mutations and relies on the sandbox perimeter. `Safe`/`Plan` may
+//! still run with warning + human approval floors.
 //!
 //! Phase 1+ will let trust modes diverge by passing a richer
 //! [`koda_sandbox::SandboxPolicy`] through the shim.
@@ -43,9 +44,8 @@ use tokio::process::Command;
 
 /// Returns `true` if the platform sandbox backend is available.
 ///
-/// Used by the trust layer to downgrade Auto → Safe when the sandbox
-/// is unavailable, ensuring destructive ops still get a confirmation
-/// prompt (#860). Cached after first probe.
+/// Used by the trust layer to reject Auto when the sandbox is
+/// unavailable (#860/#1259). Cached after first probe.
 pub fn is_available() -> bool {
     ks_is_available()
 }
