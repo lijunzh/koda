@@ -408,9 +408,15 @@ fn step_new_session_replaces_active(
     previous_session_id: &str,
 ) -> String {
     let session_id = step_new_session(srv, id, project_dir);
+    // Note: assert_ne! already prints both values on failure, so we don't
+    // interpolate `session_id` into the message. Doing so trips CodeQL's
+    // 'cleartext logging of sensitive information' rule on the
+    // `session_id` identifier (rs/cleartext-logging) — not actually
+    // sensitive in this test (the value is a test-scoped UUID), but
+    // there's no signal lost by relying on the default assert message.
     assert_ne!(
         session_id, previous_session_id,
-        "session/new called twice should return distinct sessionIds (got the same: {session_id})"
+        "session/new called twice should return distinct sessionIds"
     );
     session_id
 }
