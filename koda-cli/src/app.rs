@@ -111,11 +111,18 @@ struct Cli {
     #[arg(long)]
     reasoning_effort: Option<String>,
 
-    /// Trust mode: safe (default) or auto.
-    /// "safe" confirms every side effect before executing.
-    /// "auto" auto-approves all actions within the project sandbox.
+    /// Trust mode: auto (default) or safe.
+    /// "auto" auto-approves mutating actions; the kernel sandbox
+    /// contains them. Destructive ops (rm -rf, git reset --hard,
+    /// git push --force, Delete) and outside-project writes still
+    /// confirm. Auto requires the kernel sandbox; on unsandboxed
+    /// platforms koda refuses to start with an actionable error
+    /// (use --mode safe or install the platform sandbox backend).
+    /// "safe" confirms every mutation before executing — use this
+    /// in CI, locked-down workstations, or any context where you
+    /// want a human in every approval loop.
     /// Sandbox with credential protection is always active.
-    #[arg(long, env = "KODA_MODE", default_value = "safe",
+    #[arg(long, env = "KODA_MODE", default_value = "auto",
           value_parser = ["safe", "auto"])]
     mode: String,
 }

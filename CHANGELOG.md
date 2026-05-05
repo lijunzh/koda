@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed (BREAKING for first-run UX)
+
+- **Default trust mode flipped from `Safe` → `Auto`** (#1241). Running `koda` with no `--mode` flag and no `KODA_MODE` env var now starts in Auto mode (auto-approve mutations within the kernel sandbox; destructive ops and outside-project writes still confirm). The previous Safe-by-default — which prompted on **every** mutation — was the dominant source of "why is this thing nagging me?" friction and effectively encouraged users to flip to Auto on first use, making the safety value of Safe-by-default mostly theatrical.
+  - **Why this is safe to flip now**: the kernel sandbox (#1259), outside-project floor (`is_outside_project`), destructive backstop (#1251 — `Auto × Destructive` confirms, doesn't auto-approve), scratch-zone allowlist (#1236), and pre-flight context-budget check (#1237) are all in place. The trust badge is also legible (#1257) and accompanied by a sandbox indicator (#1259) so the active mode is unmissable.
+  - **What happens on unsandboxed platforms (Linux without bwrap, Windows)**: Auto refuses to start with an actionable error that includes platform-specific install instructions (#1259 + #1260). Users either install the sandbox backend (one command) or pass `--mode safe` to opt into the previous behavior. We picked **loud-fail-fast** over silent coercion for the same reason #1259 did: silent coercion in headless (`koda --mode auto -p "..."` becoming Safe and aborting every mutation) is catastrophic.
+  - **Migration for users who want the old behavior**: pass `--mode safe`, set `KODA_MODE=safe` in your shell, or per-session toggle with `Shift+Tab` in the TUI.
+  - **Migration for CI users**: explicitly pass `--mode safe` in your CI command. CI shouldn't rely on default behavior anyway.
+  - **No silent change for sub-agents**: per-agent `trust:` declarations in agent JSON are unaffected. Built-in agents continue to ship with their explicit `trust: "safe"` / `trust: "plan"` declarations. Only the **top-level session default** changes.
+
 ### Documentation
 
 - **Trust-mode mental model documented end-to-end across all surfaces** (#1250 doc follow-up). Updated the user-facing book in `docs/src/`, the architecture overview in `DESIGN.md`, and the contributor primer in `CLAUDE.md` to reflect the post-#1251/#1252 state:

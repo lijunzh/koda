@@ -200,7 +200,7 @@ pub struct KodaConfig {
     /// Skip injecting project/global memory into the system prompt.
     /// Set by `skip_memory: true` in agent JSON. Default: `false`.
     pub skip_memory: bool,
-    /// Trust mode for this session. Default: `TrustMode::Safe`.
+    /// Trust mode for this session. Default: `TrustMode::Auto` (#1241).
     pub trust: crate::trust::TrustMode,
 }
 
@@ -553,7 +553,7 @@ impl KodaConfig {
             model_settings,
             max_iterations: crate::loop_guard::MAX_ITERATIONS_DEFAULT,
             skip_memory: false,
-            trust: crate::trust::TrustMode::Safe,
+            trust: crate::trust::TrustMode::Auto,
         }
     }
 

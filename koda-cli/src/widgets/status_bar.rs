@@ -559,9 +559,10 @@ mod tests {
 
     #[test]
     fn safe_badge_is_bold_yellow_text_no_background() {
-        // Safe is conservative-default — visible (bold yellow) but
-        // matches Plan/Auto styling: bold colored text on the user's
-        // own background, no fill.
+        // Safe is the opt-in conservative mode (post-#1241 Auto is
+        // the default) — visible (bold yellow) but matches Plan/Auto
+        // styling: bold colored text on the user's own background,
+        // no fill.
         // Yellow matches the prompt indicator in `tui_viewport.rs`
         // (post-fix); pre-fix Safe was Cyan in the prompt, Yellow in
         // the bar — confusing inconsistency this test pins gone.
