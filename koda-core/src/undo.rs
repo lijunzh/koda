@@ -16,9 +16,18 @@
 //! - **Edit**: snapshots the file before the edit
 //! - **Delete**: snapshots the file contents before deletion
 //!
-//! Git checkpointing provides a separate safety net via `git stash`-style
-//! snapshots before each turn. `/undo` is faster (in-memory) but git
-//! checkpoints survive process crashes.
+//! ## Lifecycle
+//!
+//! 1. `tools::ToolRegistry::execute_tool` calls `snapshot()` before each
+//!    Write/Edit/Delete/Overwrite invocation.
+//! 2. `KodaSession::run_turn` calls `commit_turn()` once after the
+//!    inference loop returns (any outcome — Complete / Cancelled / Error).
+//! 3. The TUI `/undo` slash command calls `undo()` to restore the most
+//!    recent turn's files.
+//!
+//! Note: there is currently no separate git-checkpoint subsystem; this
+//! in-memory stack is the sole undo mechanism. State does not survive
+//! process restarts.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

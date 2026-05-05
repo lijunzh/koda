@@ -613,8 +613,31 @@ pub struct InferenceContext<'a> {
 }
 
 /// Run the inference loop: send messages, stream responses, dispatch tool calls.
+///
+/// This is a thin wrapper around [`inference_loop_inner`] that always
+/// finalizes the undo stack's pending snapshots on return — regardless
+/// of whether the inner loop completed, errored, or was cancelled
+/// (#1264). Without this, file mutations made by tools during the
+/// turn would stay in `pending` forever and never become an undoable
+/// entry, so the `/undo` slash command would always report "Nothing
+/// to undo" no matter how many files had been written.
+///
+/// `commit_turn` is a no-op when `pending` is empty, so turns with
+/// zero file mutations don't grow the undo stack.
 #[tracing::instrument(skip_all, fields(session_id = %ctx.session_id, agent = %ctx.config.agent_name))]
 pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
+    // `&ToolRegistry` is `Copy`, so capturing here doesn't move `ctx`.
+    // We need this handle to call `commit_turn` after the inner
+    // function returns and releases its borrow on `ctx.tools`.
+    let tools = ctx.tools;
+    let result = inference_loop_inner(ctx).await;
+    if let Ok(mut undo) = tools.undo.lock() {
+        undo.commit_turn();
+    }
+    result
+}
+
+async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
     let InferenceContext {
         project_root,
         config,
