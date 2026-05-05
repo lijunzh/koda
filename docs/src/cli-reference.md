@@ -15,7 +15,7 @@
 | `--temperature <F>` | | Sampling temperature (0.0–2.0) |
 | `--thinking-budget <N>` | | Anthropic extended thinking budget (tokens) |
 | `--reasoning-effort <L>` | | OpenAI reasoning effort (`low`, `medium`, `high`) |
-| `--mode <MODE>` | `KODA_MODE` | Trust mode: `safe` (default) or `auto`. Safe confirms every side effect; Auto auto-approves all actions within the project sandbox. Kernel sandbox with credential protection is always active |
+| `--mode <MODE>` | `KODA_MODE` | Trust mode: `auto` (default, #1241) or `safe`. Auto auto-approves mutating actions; the kernel sandbox contains them — destructive ops (`rm -rf`, `git reset --hard`, `git push --force`, `Delete`) and outside-project writes still confirm. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start (use `--mode safe` or install the platform sandbox backend). Safe confirms every mutation. Kernel sandbox with credential protection is always active when available. |
 | `--output-format <FMT>` | | Headless output format: `text` (default) or `json` |
 | `--project-root <DIR>` | | Project root (defaults to cwd) |
 

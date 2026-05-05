@@ -14,7 +14,7 @@
 //! | Mode | Sandbox | Approval | Use case |
 //! |------|---------|----------|----------|
 //! | **Plan** | project, read-only | deny all non-read | Sub-agent investigation only — see [`coerce_for_top_level()`](crate::trust::coerce_for_top_level) |
-//! | **Safe** | project, read+write | confirm side effects | User default |
+//! | **Safe** | project, read+write | confirm side effects | Opt-in via `--mode safe` (CI, locked-down workstations) |
 //! | **Auto** | project, read+write | auto-approve mutations; destructive still confirms | Autonomous coding |
 //!
 //! Plan is **sub-agent-only** for the top-level session (#1244): the
@@ -346,12 +346,14 @@ pub fn require_sandbox_for_auto(
 /// Compute the **default** trust mode for a session given sandbox
 /// availability. Auto when the sandbox is present, Safe when not.
 ///
-/// This is the helper that #1241 (flip default `Safe → Auto`) will
-/// consume. Today it's only invoked when neither `--mode` nor
-/// `KODA_MODE` are set explicitly — explicit user intent always
-/// wins, and an explicit `--mode auto` on an unsandboxed system
-/// is rejected by [`require_sandbox_for_auto`] rather than
-/// silently coerced.
+/// This is the helper that #1241 (default `Safe → Auto` flip) uses
+/// when neither `--mode` nor `KODA_MODE` are set. Today the clap
+/// layer hardcodes `default_value = "auto"` (we picked the loud
+/// option: Auto everywhere, fail-fast on unsandboxed platforms via
+/// [`require_sandbox_for_auto`] with inline install hints from
+/// [`crate::sandbox::setup_hint`]). The helper remains exported
+/// for downstream embedders who want sandbox-aware defaulting
+/// without the hard-refusal UX.
 ///
 /// The asymmetry is deliberate:
 /// - **Implicit default** picks the strongest mode the platform
