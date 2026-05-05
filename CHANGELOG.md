@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Mouse escape sequences (e.g. `[<65;107;38M`) no longer leak into the input field** (#1267). `init_terminal` was using `crossterm::event::EnableMouseCapture`, which enables five mouse-tracking modes including `?1003h` (any-event tracking — fires on every pixel of motion). Koda only consumes scroll wheel + left-click drag, so the extra event volume was pure overhead — and under heavy scroll/move flow the read buffer could fragment between the leading `\x1b` byte and the `[<…M` body, causing crossterm's parser to emit ESC alone and then each printable char individually. Replaced with a custom `EnableSelectiveMouseCapture` command that emits only `?1002h` (button-event tracking) + `?1006h` (SGR coordinates), matching the mode set used by gemini-cli. Pinned the exact byte sequences in three new unit tests (`mouse_capture_tests`).
 - **`gh auth status` and `gh auth list` no longer trigger an approval prompt in `Auto` mode** (#1266). `bash_safety::DANGER_CHECKS` previously matched the entire `gh auth` family with a single `CmdSub("gh", "auth")` rule, so read-only auth queries were classified as `Destructive` alongside the credential-mutating subcommands. Split the rule into the specific destructive subcommands (`login`, `logout`, `refresh`, `setup-git`, `token`) and added the read-only forms (`gh auth status`, `gh auth list`) to `READ_ONLY_PREFIXES`. Same approach the file already uses for `gh issue` and `gh pr`.
 
 ## [0.3.1] - 2026-05-05
