@@ -1441,7 +1441,36 @@ mod tests {
         // we wait long enough for a non-aborted task to finish.
         let ran_to_completion = Arc::new(AtomicBool::new(false));
         let flag = ran_to_completion.clone();
+
+        // Deterministic abort signal (#1312): a drop guard inside
+        // the spawned task fires `aborted_tx` whenever the task
+        // unwinds — cooperative completion, parent cancel, or hard
+        // abort. The receiver lets the test wait for *the actual
+        // abort* instead of guessing a settle time.
+        //
+        // Why a drop guard (and not just a `tx.send()` after the
+        // `select!`): `JoinHandle::abort()` does **not** run the
+        // task's normal continuation — it polls the future, sees
+        // it cancelled, and drops it. Code after the await never
+        // runs. The drop guard fires from within the task's
+        // destructor, which DOES run on abort. This is the only
+        // shape that detects abort vs. completion.
+        struct AbortSignal(Option<oneshot::Sender<()>>);
+        impl Drop for AbortSignal {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+        let (aborted_tx, aborted_rx) = oneshot::channel::<()>();
+        let abort_signal = AbortSignal(Some(aborted_tx));
+
         let handle = tokio::spawn(async move {
+            // Move the guard into the task so its Drop fires when
+            // the task unwinds (whether via normal completion,
+            // cooperative cancel, or JoinHandle::abort()).
+            let _abort_signal = abort_signal;
             // Either the cancel token fires (parent cascade) or we
             // get aborted (drop cascade). The slow sleep just gives
             // the test time to drop the registry before we'd
@@ -1467,16 +1496,32 @@ mod tests {
             handle,
         );
 
-        // Give the task a tick to start.
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        // No "give the task a tick to start" sleep needed: `attach`
+        // calls `self.pending.lock().insert(...)` synchronously, so
+        // `pending_count` is incremented by the time `attach` returns.
+        // (Pre-#1312 this was a 20ms blind sleep based on the (false)
+        // assumption that the spawned task had to start before the
+        // count moved.)
         assert_eq!(reg.pending_count(), 1);
 
         // Drop the registry — this must abort the spawned task.
         drop(reg);
 
-        // Yield long enough for the abort to land; well under the
-        // 60 s sleep the task would have completed otherwise.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Deterministic readiness (#1312 was: blind `sleep(100ms)`).
+        // Wait for the AbortSignal drop guard to fire. If abort
+        // landed, the guard runs from the task's destructor and
+        // resolves `aborted_rx` immediately. If abort did NOT land,
+        // the receiver hangs (because the task is still running its
+        // 60s sleep and the guard hasn't dropped) and the timeout
+        // bails with a loud message — a real regression signal, not
+        // a flake.
+        tokio::time::timeout(Duration::from_secs(2), aborted_rx)
+            .await
+            .expect(
+                "AbortOnDropHandle did not abort the spawned task within 2s of \
+                 dropping the registry — task destructor never ran",
+            )
+            .expect("AbortSignal sender dropped without sending; task body panicked?");
         assert!(
             !ran_to_completion.load(Ordering::SeqCst),
             "task slept to completion — AbortOnDropHandle did not abort it"
