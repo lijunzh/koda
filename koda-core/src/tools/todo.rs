@@ -395,6 +395,85 @@ fn format_todo_list(todos: &[TodoItem]) -> String {
     out
 }
 
+// =============================================================
+// Tool trait implementation (#1265 item 5, PR-7/N).
+//
+// `TodoWrite` is `ReadOnly` from a user-impact perspective: it
+// only mutates Koda's own session-state todo list, not the user's
+// files or shell. Gating it behind approval breaks Plan-mode
+// planning entirely (#1212). Same classification as pre-#1265.
+//
+// Special wrinkle: on success, `TodoWrite` emits an
+// `EngineEvent::TodoUpdate` to the streaming sink so all clients
+// (TUI / ACP / headless) see the transition (#1077 Phase A). We
+// fold that emit *into* the trait's `execute`, so the registry's
+// dispatch fast path doesn't need a `name == "TodoWrite"` arm —
+// the trait owns its own side-effect plumbing.
+//
+// Empty-diff writes (the dedup-nudge path) suppress the event by
+// design — unchanged-list writes are a no-op for clients, only a
+// reminder for the model.
+// =============================================================
+
+use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
+use async_trait::async_trait;
+
+/// `TodoWrite` — update the session-state todo list.
+pub struct TodoWriteTool;
+
+#[async_trait]
+impl Tool for TodoWriteTool {
+    fn name(&self) -> &'static str {
+        "TodoWrite"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definitions()
+            .into_iter()
+            .find(|d| d.name == "TodoWrite")
+            .expect("todo::definitions() must contain TodoWrite")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        // ReadOnly because it only mutates Koda's own state.
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
+        let Some((db, sid)) = ctx.session else {
+            // Pre-#1265 dispatch returned `Ok("requires an active session.")`
+            // — a successful tool result with a self-explanatory message.
+            // Behavior preserved exactly.
+            return ToolResult {
+                output: "TodoWrite requires an active session.".to_string(),
+                success: true,
+                full_output: None,
+            };
+        };
+        match todo_write(db, sid, args).await {
+            Ok(outcome) => {
+                // #1077 Phase A: surface the transition unless the
+                // diff is empty (dedup-nudge path).
+                if !outcome.diff.is_empty()
+                    && let Some((sink, _call_id)) = ctx.sink
+                {
+                    sink.emit(crate::engine::EngineEvent::TodoUpdate {
+                        items: outcome.items.clone(),
+                        diff: outcome.diff.clone(),
+                    });
+                }
+                ToolResult {
+                    output: outcome.message,
+                    success: true,
+                    full_output: None,
+                }
+            }
+            Err(e) => ToolResult {
+                output: format!("Error: {e:#}"),
+                success: false,
+                full_output: None,
+            },
+        }
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -402,6 +481,44 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::TempDir;
+
+    // ── Trait invariants (#1265 PR-7) ─────────────────────────
+
+    #[test]
+    fn todo_tool_metadata() {
+        let t = TodoWriteTool;
+        assert_eq!(t.name(), "TodoWrite");
+        assert_eq!(t.definition().name, "TodoWrite");
+        // ReadOnly: only mutates Koda's own state (#1212).
+        assert_eq!(t.classify(&json!({})), crate::tools::ToolEffect::ReadOnly,);
+        assert!(t.extract_undo_path(&json!({})).is_none());
+    }
+
+    /// No-session path returns a graceful Ok message (preserves
+    /// pre-#1265 behavior exactly).
+    #[tokio::test]
+    async fn todo_no_session_returns_graceful_message() {
+        let t = TodoWriteTool;
+        let tmp = TempDir::new().unwrap();
+        let cache = crate::tools::FileReadCache::default();
+        let fs = koda_sandbox::fs::LocalFileSystem;
+        let caps = crate::output_caps::OutputCaps::for_context(100_000);
+        let bg = crate::tools::bg_process::BgRegistry::new();
+        let trust = crate::trust::TrustMode::Safe;
+        let policy = koda_sandbox::SandboxPolicy::default();
+        let ctx = crate::tools::ToolExecCtx::for_test(
+            tmp.path(),
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+        );
+        let r = t.execute(&ctx, &json!({"todos": []})).await;
+        assert!(r.success);
+        assert_eq!(r.output, "TodoWrite requires an active session.");
+    }
 
     async fn test_db() -> (Database, TempDir, String) {
         let dir = TempDir::new().unwrap();

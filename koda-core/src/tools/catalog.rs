@@ -205,6 +205,13 @@ impl ToolCatalog {
             boxed(glob_tool::GlobTool),
             // PR-6: shell.
             boxed(shell::BashTool),
+            // PR-7: misc cohort.
+            boxed(web_fetch::WebFetchTool),
+            boxed(web_search::WebSearchTool),
+            boxed(memory::MemoryReadTool),
+            boxed(memory::MemoryWriteTool),
+            boxed(todo::TodoWriteTool),
+            boxed(recall::RecallContextTool),
         ] {
             tools.insert(tool.name(), tool);
         }

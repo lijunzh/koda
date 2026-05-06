@@ -98,6 +98,69 @@ pub async fn memory_write(project_root: &Path, args: &Value) -> Result<String> {
     }
 }
 
+// =============================================================
+// Tool trait implementations (#1265 item 5, PR-7/N).
+//
+// `MemoryRead` is read-only; `MemoryWrite` is `LocalMutation`. The
+// memory file (`.koda/memory.md`) is its own concern — we don't
+// integrate it into the file-undo stack (matches pre-#1265 behavior).
+// =============================================================
+
+use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
+use async_trait::async_trait;
+
+/// `MemoryRead` — return the project memory file contents.
+pub struct MemoryReadTool;
+
+#[async_trait]
+impl Tool for MemoryReadTool {
+    fn name(&self) -> &'static str {
+        "MemoryRead"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definitions()
+            .into_iter()
+            .find(|d| d.name == "MemoryRead")
+            .expect("memory::definitions() must contain MemoryRead")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, _args: &serde_json::Value) -> ToolResult {
+        let r = memory_read(ctx.project_root).await;
+        crate::tools::wrap_result(r)
+    }
+}
+
+/// `MemoryWrite` — append a line to the project memory file.
+pub struct MemoryWriteTool;
+
+#[async_trait]
+impl Tool for MemoryWriteTool {
+    fn name(&self) -> &'static str {
+        "MemoryWrite"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definitions()
+            .into_iter()
+            .find(|d| d.name == "MemoryWrite")
+            .expect("memory::definitions() must contain MemoryWrite")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::LocalMutation
+    }
+    /// `extract_undo_path` returns `None` because the memory file
+    /// is intentionally outside the file-undo stack — same as
+    /// pre-#1265 (`MemoryWrite` was not in `undo::is_mutating_tool`).
+    fn extract_undo_path(&self, _args: &serde_json::Value) -> Option<std::path::PathBuf> {
+        None
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
+        let r = memory_write(ctx.project_root, args).await;
+        crate::tools::wrap_result(r)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

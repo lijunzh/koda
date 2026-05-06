@@ -443,6 +443,39 @@ fn strip_html(html: &str) -> String {
         .replace("&nbsp;", " ")
 }
 
+// =============================================================
+// Tool trait implementation (#1265 item 5, PR-7/N).
+//
+// `WebFetch` is read-only — GET-only fetch, no undo, no mutation.
+// Reads `caps.web_body_chars` off the context.
+// =============================================================
+
+use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
+use async_trait::async_trait;
+
+/// `WebFetch` — GET a URL and return body (HTML to plain text).
+pub struct WebFetchTool;
+
+#[async_trait]
+impl Tool for WebFetchTool {
+    fn name(&self) -> &'static str {
+        "WebFetch"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definitions()
+            .into_iter()
+            .find(|d| d.name == "WebFetch")
+            .expect("web_fetch::definitions() must contain WebFetch")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
+        let r = web_fetch(args, ctx.caps.web_body_chars).await;
+        crate::tools::wrap_result(r)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

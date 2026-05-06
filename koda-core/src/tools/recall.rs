@@ -146,11 +146,94 @@ fn extract_snippet(text: &str, query: &str, max_len: usize) -> String {
     }
 }
 
+// =============================================================
+// Tool trait implementation (#1265 item 5, PR-7/N).
+//
+// `RecallContext` is read-only — it queries the session DB for
+// previously-seen full-output content.
+// =============================================================
+
+use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
+use async_trait::async_trait;
+
+/// `RecallContext` — fetch full-output snippets from session history.
+pub struct RecallContextTool;
+
+#[async_trait]
+impl Tool for RecallContextTool {
+    fn name(&self) -> &'static str {
+        "RecallContext"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definition()
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
+        let Some((db, sid)) = ctx.session else {
+            return ToolResult {
+                output: "RecallContext requires an active session.".to_string(),
+                success: true,
+                full_output: None,
+            };
+        };
+        // recall_context returns a `String` (not Result) — always success.
+        ToolResult {
+            output: recall_context(db, sid, args).await,
+            success: true,
+            full_output: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::persistence::{Persistence, Role};
     use serde_json::json;
+
+    // ── Trait invariants (#1265 PR-7) ─────────────────────────
+
+    /// Pre-#1265 the no-session path returned a successful tool
+    /// result with a self-explanatory message (`Ok("...")`). The
+    /// trait must preserve that exactly — same message, same
+    /// success flag.
+    #[tokio::test]
+    async fn recall_no_session_returns_graceful_message() {
+        let t = RecallContextTool;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = crate::tools::FileReadCache::default();
+        let fs = koda_sandbox::fs::LocalFileSystem;
+        let caps = crate::output_caps::OutputCaps::for_context(100_000);
+        let bg = crate::tools::bg_process::BgRegistry::new();
+        let trust = crate::trust::TrustMode::Safe;
+        let policy = koda_sandbox::SandboxPolicy::default();
+        let ctx = crate::tools::ToolExecCtx::for_test(
+            tmp.path(),
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+        );
+        let r = t.execute(&ctx, &json!({})).await;
+        assert!(r.success);
+        assert_eq!(r.output, "RecallContext requires an active session.");
+    }
+
+    #[test]
+    fn recall_tool_metadata() {
+        let t = RecallContextTool;
+        assert_eq!(t.name(), "RecallContext");
+        assert_eq!(t.definition().name, "RecallContext");
+        assert_eq!(
+            t.classify(&serde_json::json!({})),
+            crate::tools::ToolEffect::ReadOnly,
+        );
+        assert!(t.extract_undo_path(&serde_json::json!({})).is_none());
+    }
 
     #[test]
     fn test_definition() {

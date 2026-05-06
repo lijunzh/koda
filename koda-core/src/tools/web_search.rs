@@ -258,7 +258,39 @@ fn percent_decode(s: &str) -> String {
     out
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────
+// =============================================================
+// Tool trait implementation (#1265 item 5, PR-7/N).
+//
+// `WebSearch` is read-only — search results are pure reads.
+// =============================================================
+
+use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
+use async_trait::async_trait;
+
+/// `WebSearch` — query a search engine and return results.
+pub struct WebSearchTool;
+
+#[async_trait]
+impl Tool for WebSearchTool {
+    fn name(&self) -> &'static str {
+        "WebSearch"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definitions()
+            .into_iter()
+            .find(|d| d.name == "WebSearch")
+            .expect("web_search::definitions() must contain WebSearch")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, _ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
+        let r = web_search(args).await;
+        crate::tools::wrap_result(r)
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
