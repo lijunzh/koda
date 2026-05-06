@@ -67,7 +67,7 @@ arboard = "3"
 # of O(bundle)) and broader cross-platform UX (Windows Explorer browses zips
 # natively). `default-features = false` + `deflate` keeps the dep minimal
 # (no aes-crypto, bzip2, zstd, lzma).
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 # ANSI escape code parsing for tool output
 ansi-to-tui = "8"
