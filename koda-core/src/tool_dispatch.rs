@@ -28,39 +28,46 @@
 //!   Rust's exhaustive matching catches missing handlers at compile time.
 
 use crate::approval_flow::{handle_ask_user, request_approval};
-use crate::config::KodaConfig;
-use crate::db::{Database, Role};
+use crate::db::Role;
 use crate::engine::{ApprovalDecision, EngineCommand, EngineEvent};
 use crate::file_tracker::FileTracker;
 use crate::persistence::Persistence;
 use crate::preview;
 use crate::providers::ToolCall;
-use crate::sub_agent_cache::SubAgentCache;
 use crate::sub_agent_dispatch;
 use crate::tools;
 use crate::trust::{self, ToolApproval, TrustMode};
+use crate::turn_context::{ToolExecutionContext, TurnContext};
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
 /// Post-execution recording: emit result event, persist to DB, track progress
 /// and file lifecycle. Called after every successful tool execution regardless
 /// of execution strategy (parallel, split-batch, or sequential).
-#[allow(clippy::too_many_arguments)]
+///
+/// Takes `&TurnContext` (not `ToolExecutionContext`) because spawner
+/// identity is irrelevant to recording — only the per-turn ambient
+/// fields are read. `file_tracker` stays as a separate `&mut` arg per
+/// the design rationale in `crate::turn_context` module docs.
 pub(crate) async fn record_tool_result(
     tc: &ToolCall,
     result: &str,
     success: bool,
     full_output: Option<&str>,
-    db: &Database,
-    session_id: &str,
-    max_result_chars: usize,
-    project_root: &Path,
+    ctx: &TurnContext<'_>,
     file_tracker: &mut FileTracker,
-    sink: &dyn crate::engine::EngineSink,
 ) -> Result<()> {
+    let TurnContext {
+        db,
+        session_id,
+        project_root,
+        sink,
+        tools,
+        ..
+    } = *ctx;
+    let max_result_chars = tools.caps.tool_result_chars;
     sink.emit(EngineEvent::ToolCallResult {
         id: tc.id.clone(),
         name: tc.function_name.clone(),
@@ -230,21 +237,25 @@ pub(crate) fn can_parallelize(
 
 /// Execute a single tool call, returning (tool_call_id, result_output, success).
 #[tracing::instrument(skip_all, fields(tool = %tc.function_name))]
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_one_tool(
     tc: &ToolCall,
-    project_root: &Path,
-    config: &KodaConfig,
-    db: &Database,
-    _session_id: &str,
-    tools: &crate::tools::ToolRegistry,
-    mode: TrustMode,
-    sink: &dyn crate::engine::EngineSink,
-    cancel: CancellationToken,
-    sub_agent_cache: &SubAgentCache,
-    bg_agents: &std::sync::Arc<crate::child_agent::ChildAgentRegistry>,
-    caller_spawner: Option<u32>,
+    tx: ToolExecutionContext<'_>,
 ) -> (String, String, bool, Option<String>) {
+    let TurnContext {
+        project_root,
+        config,
+        db,
+        session_id,
+        tools,
+        mode,
+        sink,
+        sub_agent_cache,
+        bg_agents,
+        ref cancel,
+        ..
+    } = *tx.turn;
+    let caller_spawner = tx.caller_spawner;
+    let _session_id = session_id; // mirror the existing `_session_id` arg name
     let (result, success, full_output) = if matches!(
         tc.function_name.as_str(),
         "ListBackgroundTasks" | "CancelTask" | "WaitTask"
@@ -261,7 +272,7 @@ pub(crate) async fn execute_one_tool(
             bg_agents,
             &tools.bg_registry,
             caller_spawner,
-            &cancel,
+            cancel,
         )
         .await;
         (r.output, r.success, r.full_output)
@@ -374,21 +385,15 @@ pub(crate) async fn execute_one_tool(
 /// confirmation that's guaranteed to fail. Parallel/split-batch only
 /// reach this point when every tool was already classified `AutoApprove`,
 /// so validate-then-execute is the right order.
-#[allow(clippy::too_many_arguments)]
 async fn validate_then_execute_one_tool(
     tc: &ToolCall,
-    project_root: &Path,
-    config: &KodaConfig,
-    db: &Database,
-    session_id: &str,
-    tools: &crate::tools::ToolRegistry,
-    mode: TrustMode,
-    sink: &dyn crate::engine::EngineSink,
-    cancel: CancellationToken,
-    sub_agent_cache: &SubAgentCache,
-    bg_agents: &std::sync::Arc<crate::child_agent::ChildAgentRegistry>,
-    caller_spawner: Option<u32>,
+    tx: ToolExecutionContext<'_>,
 ) -> (String, String, bool, Option<String>) {
+    let TurnContext {
+        project_root,
+        tools,
+        ..
+    } = *tx.turn;
     let parsed_args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
 
     let validation_error = tools::validate::validate_with_registry(
@@ -408,42 +413,18 @@ async fn validate_then_execute_one_tool(
         );
     }
 
-    execute_one_tool(
-        tc,
-        project_root,
-        config,
-        db,
-        session_id,
-        tools,
-        mode,
-        sink,
-        cancel,
-        sub_agent_cache,
-        bg_agents,
-        caller_spawner,
-    )
-    .await
+    execute_one_tool(tc, tx).await
 }
 
 /// Run multiple tool calls concurrently and store results.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_tools_parallel(
     tool_calls: &[ToolCall],
-    project_root: &Path,
-    config: &KodaConfig,
-    db: &Database,
-    session_id: &str,
-    tools: &crate::tools::ToolRegistry,
-    mode: TrustMode,
-    sink: &dyn crate::engine::EngineSink,
-    cancel: CancellationToken,
-    sub_agent_cache: &SubAgentCache,
+    tx: ToolExecutionContext<'_>,
     file_tracker: &mut FileTracker,
-    bg_agents: &std::sync::Arc<crate::child_agent::ChildAgentRegistry>,
-    caller_spawner: Option<u32>,
 ) -> Result<()> {
+    let ctx = tx.turn;
     let count = tool_calls.len();
-    sink.emit(EngineEvent::Info {
+    ctx.sink.emit(EngineEvent::Info {
         message: format!("Running {count} tools in parallel..."),
     });
 
@@ -455,27 +436,14 @@ pub(crate) async fn execute_tools_parallel(
             // does this *before* approval; here every tool is already
             // AutoApproved (see `can_parallelize`) so validate-then-execute
             // is the right order.
-            validate_then_execute_one_tool(
-                tc,
-                project_root,
-                config,
-                db,
-                session_id,
-                tools,
-                mode,
-                sink,
-                cancel.clone(),
-                sub_agent_cache,
-                bg_agents,
-                caller_spawner,
-            )
+            validate_then_execute_one_tool(tc, tx)
         })
         .collect();
     let results = futures_util::future::join_all(futures).await;
 
     // Emit banner + result together so each tool's output is visually grouped
     for (i, (tc_id, result, success, full_output)) in results.into_iter().enumerate() {
-        sink.emit(EngineEvent::ToolCallStart {
+        ctx.sink.emit(EngineEvent::ToolCallStart {
             id: tc_id.clone(),
             name: tool_calls[i].function_name.clone(),
             args: serde_json::from_str(&tool_calls[i].arguments).unwrap_or_default(),
@@ -486,12 +454,8 @@ pub(crate) async fn execute_tools_parallel(
             &result,
             success,
             full_output.as_deref(),
-            db,
-            session_id,
-            tools.caps.tool_result_chars,
-            project_root,
+            ctx,
             file_tracker,
-            sink,
         )
         .await?;
     }
@@ -504,35 +468,25 @@ pub(crate) async fn execute_tools_parallel(
 /// This is the key optimization for mixed batches like
 /// `[InvokeAgent, InvokeAgent, Write]` — the two sub-agents run in
 /// parallel while the Write waits for confirmation.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_tools_split_batch(
     tool_calls: &[ToolCall],
-    project_root: &Path,
-    config: &KodaConfig,
-    db: &Database,
-    session_id: &str,
-    tools: &crate::tools::ToolRegistry,
-    mode: TrustMode,
-    sink: &dyn crate::engine::EngineSink,
-    cancel: CancellationToken,
+    tx: ToolExecutionContext<'_>,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
-    sub_agent_cache: &SubAgentCache,
     file_tracker: &mut FileTracker,
-    bg_agents: &std::sync::Arc<crate::child_agent::ChildAgentRegistry>,
-    caller_spawner: Option<u32>,
 ) -> Result<()> {
+    let ctx = tx.turn;
     // Partition into parallelizable vs sequential
     let (parallel, sequential): (Vec<_>, Vec<_>) = tool_calls.iter().partition(|tc| {
         let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
         matches!(
-            trust::check_tool(&tc.function_name, &args, mode, Some(project_root),),
+            trust::check_tool(&tc.function_name, &args, ctx.mode, Some(ctx.project_root),),
             ToolApproval::AutoApprove
         )
     });
 
     // Run parallelizable tools concurrently (if more than one)
     if parallel.len() > 1 {
-        sink.emit(EngineEvent::Info {
+        ctx.sink.emit(EngineEvent::Info {
             message: format!("Running {} tools in parallel...", parallel.len()),
         });
 
@@ -542,26 +496,13 @@ pub(crate) async fn execute_tools_split_batch(
                 // #1022 B14: validate before executing. Same reasoning
                 // as `execute_tools_parallel` — every tool here is
                 // already AutoApproved.
-                validate_then_execute_one_tool(
-                    tc,
-                    project_root,
-                    config,
-                    db,
-                    session_id,
-                    tools,
-                    mode,
-                    sink,
-                    cancel.clone(),
-                    sub_agent_cache,
-                    bg_agents,
-                    caller_spawner,
-                )
+                validate_then_execute_one_tool(tc, tx)
             })
             .collect();
         let results = futures_util::future::join_all(futures).await;
 
         for (j, (tc_id, result, success, full_output)) in results.into_iter().enumerate() {
-            sink.emit(EngineEvent::ToolCallStart {
+            ctx.sink.emit(EngineEvent::ToolCallStart {
                 id: tc_id.clone(),
                 name: parallel[j].function_name.clone(),
                 args: serde_json::from_str(&parallel[j].arguments).unwrap_or_default(),
@@ -572,12 +513,8 @@ pub(crate) async fn execute_tools_split_batch(
                 &result,
                 success,
                 full_output.as_deref(),
-                db,
-                session_id,
-                tools.caps.tool_result_chars,
-                project_root,
+                ctx,
                 file_tracker,
-                sink,
             )
             .await?;
         }
@@ -585,69 +522,37 @@ pub(crate) async fn execute_tools_split_batch(
         // 0–1 parallelizable tools — just run sequentially
         for tc in &parallel {
             let calls = std::slice::from_ref(*tc);
-            execute_tools_sequential(
-                calls,
-                project_root,
-                config,
-                db,
-                session_id,
-                tools,
-                mode,
-                sink,
-                cancel.clone(),
-                cmd_rx,
-                sub_agent_cache,
-                file_tracker,
-                bg_agents,
-                caller_spawner,
-            )
-            .await?;
+            execute_tools_sequential(calls, tx, cmd_rx, file_tracker).await?;
         }
     }
 
     // Run non-parallelizable tools sequentially
     if !sequential.is_empty() {
         let seq_calls: Vec<ToolCall> = sequential.into_iter().cloned().collect();
-        execute_tools_sequential(
-            &seq_calls,
-            project_root,
-            config,
-            db,
-            session_id,
-            tools,
-            mode,
-            sink,
-            cancel.clone(),
-            cmd_rx,
-            sub_agent_cache,
-            file_tracker,
-            bg_agents,
-            caller_spawner,
-        )
-        .await?;
+        execute_tools_sequential(&seq_calls, tx, cmd_rx, file_tracker).await?;
     }
 
     Ok(())
 }
 
 /// Run tool calls one at a time (when confirmation is needed, or single call).
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_tools_sequential(
     tool_calls: &[ToolCall],
-    project_root: &Path,
-    config: &KodaConfig,
-    db: &Database,
-    session_id: &str,
-    tools: &crate::tools::ToolRegistry,
-    mode: TrustMode,
-    sink: &dyn crate::engine::EngineSink,
-    cancel: CancellationToken,
+    tx: ToolExecutionContext<'_>,
     cmd_rx: &mut mpsc::Receiver<EngineCommand>,
-    sub_agent_cache: &SubAgentCache,
     file_tracker: &mut FileTracker,
-    bg_agents: &std::sync::Arc<crate::child_agent::ChildAgentRegistry>,
-    caller_spawner: Option<u32>,
 ) -> Result<()> {
+    let ctx = tx.turn;
+    let TurnContext {
+        project_root,
+        db,
+        session_id,
+        tools,
+        mode,
+        sink,
+        ref cancel,
+        ..
+    } = *ctx;
     for tc in tool_calls {
         // Check for interrupt before each tool
         if cancel.is_cancelled() {
@@ -670,25 +575,13 @@ pub(crate) async fn execute_tools_sequential(
         // AskUser: pause inference, show question in TUI, wait for typed answer.
         // Handled here (not in execute_one_tool) because it needs sink + cmd_rx.
         if tc.function_name == "AskUser" {
-            let answer = handle_ask_user(sink, cmd_rx, &cancel, &parsed_args).await;
+            let answer = handle_ask_user(sink, cmd_rx, cancel, &parsed_args).await;
             let result = match answer {
                 Some(text) if !text.trim().is_empty() => text,
                 Some(_) => "User did not provide an answer.".into(),
                 None => return Ok(()), // cancelled
             };
-            record_tool_result(
-                tc,
-                &result,
-                true,
-                None, // AskUser has no full_output
-                db,
-                session_id,
-                tools.caps.tool_result_chars,
-                project_root,
-                file_tracker,
-                sink,
-            )
-            .await?;
+            record_tool_result(tc, &result, true, None, ctx, file_tracker).await?;
             continue;
         }
 
@@ -707,12 +600,8 @@ pub(crate) async fn execute_tools_sequential(
                 &format!("Validation error: {error}"),
                 false,
                 None,
-                db,
-                session_id,
-                tools.caps.tool_result_chars,
-                project_root,
+                ctx,
                 file_tracker,
-                sink,
             )
             .await?;
             continue;
@@ -765,7 +654,7 @@ pub(crate) async fn execute_tools_sequential(
                 match request_approval(
                     sink,
                     cmd_rx,
-                    &cancel,
+                    cancel,
                     &tc.function_name,
                     &detail,
                     diff_preview,
@@ -824,32 +713,14 @@ pub(crate) async fn execute_tools_sequential(
             }
         }
 
-        let (_, result, success, full_output) = execute_one_tool(
-            tc,
-            project_root,
-            config,
-            db,
-            session_id,
-            tools,
-            mode,
-            sink,
-            cancel.clone(),
-            sub_agent_cache,
-            bg_agents,
-            caller_spawner,
-        )
-        .await;
+        let (_, result, success, full_output) = execute_one_tool(tc, tx).await;
         record_tool_result(
             tc,
             &result,
             success,
             full_output.as_deref(),
-            db,
-            session_id,
-            tools.caps.tool_result_chars,
-            project_root,
+            ctx,
             file_tracker,
-            sink,
         )
         .await?;
     }
