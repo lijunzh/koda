@@ -223,8 +223,14 @@ where
     Fut: std::future::Future<Output = Result<ValidatedTarget>>,
 {
     let mut current = initial;
-    // hop 0 is the initial request; redirects 1..=max_hops are the followed ones.
-    for hop in 0..=max_hops {
+    let mut hops_followed: usize = 0;
+    // Restructured from `for hop in 0..=max_hops` + post-loop
+    // `unreachable!()` (#1315 polish): a `loop { … break response; … }`
+    // expression lets the compiler prove termination via the explicit
+    // `break`s and `bail!`s without a runtime panic guard. The cap
+    // check moved to the top of the loop body so it gates the *next*
+    // request rather than the current iteration's tail.
+    let response = loop {
         let client = pinned_client_for(&current);
         let response = client
             .get(current.url.clone())
@@ -235,16 +241,16 @@ where
 
         let status = response.status();
         if !status.is_redirection() {
-            return Ok(response);
+            break response;
         }
 
         // Only the standard redirect codes follow a Location header.
         // 304 Not Modified and other 3xx values are returned to the caller as-is.
         if !matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
-            return Ok(response);
+            break response;
         }
 
-        if hop == max_hops {
+        if hops_followed == max_hops {
             anyhow::bail!(
                 "WebFetch exceeded max redirect hops ({max_hops}); last URL: {}",
                 current.url
@@ -291,11 +297,9 @@ where
         current = validator(next_url.to_string()).await.map_err(|e| {
             anyhow::anyhow!("Redirect from {prev_url} to {next_url} blocked by SSRF policy: {e}")
         })?;
-    }
-
-    // Loop exits via the `is_redirection() == false` early return or the
-    // max_hops bail; this line is unreachable but the compiler can't prove it.
-    unreachable!("safely_follow_redirects loop exited without returning")
+        hops_followed += 1;
+    };
+    Ok(response)
 }
 
 /// Get-or-init the WebFetch HTTP client.
