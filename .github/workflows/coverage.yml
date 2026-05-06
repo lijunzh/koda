@@ -2,11 +2,22 @@ name: Coverage
 
 on:
   push:
-    branches: [main]   # Runs after every merge — informational, not a PR gate
+    branches: [main]   # Post-merge: opens/closes regression issues, badge source.
+  # Pull-request gate (#1265 item 8c, PR-2): block merging when a
+  # security-boundary file regresses below its per-file threshold.
+  # Path filter limits CI cost — PRs that don't touch the gated
+  # crates can't possibly regress their coverage. Workflow + script
+  # changes ARE included so threshold edits get re-validated.
+  pull_request:
+    paths:
+      - 'koda-core/**'
+      - 'koda-sandbox/**'
+      - '.github/workflows/coverage.yml'
+      - 'scripts/check_per_file_coverage.py'
 
 permissions:
   contents: read
-  issues:   write      # Needed to open / comment on regression issues
+  issues:   write      # Needed to open / comment on regression issues (push-to-main only)
 
 env:
   CARGO_TERM_COLOR: always
@@ -355,7 +366,11 @@ jobs:
       # result is 'failure'. Suppress when an infra flake was detected:
       # we can't trust 'failure' to mean "real regression" in that case.
       - name: Report regression
-        if: needs.coverage.result == 'failure' && steps.flake.outputs.detected != 'true'
+        # Push-only: PR failures should NOT open "Coverage regression
+        # on main" issues — the PR's own failed check is the signal.
+        # The PR-time gate is enforced by the final `Fail if any crate
+        # below threshold` step, which still runs on PRs.
+        if: github.event_name == 'push' && needs.coverage.result == 'failure' && steps.flake.outputs.detected != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -395,7 +410,10 @@ jobs:
       # step we never measured coverage, so we mustn't close a legitimate
       # open regression issue.
       - name: Close regression issue if green
-        if: needs.coverage.result == 'success' && steps.flake.outputs.detected != 'true'
+        # Push-only: PRs don't manage main's open-issue state. A PR
+        # passing while a main regression issue is open just means the
+        # PR didn't reproduce the regression — not that main is fixed.
+        if: github.event_name == 'push' && needs.coverage.result == 'success' && steps.flake.outputs.detected != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
