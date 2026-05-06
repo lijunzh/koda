@@ -55,7 +55,7 @@ unicode-segmentation = "1.13"
 # mouse-capture before the process dies. Both are already present transitively
 # (via crossterm → signal-hook-mio); declared explicitly here because we use
 # them directly and transitive contracts are fragile.
-signal-hook = "0.3"
+signal-hook = "0.4"
 libc = { workspace = true }
 
 # Clipboard (for Ctrl+Y copy)
