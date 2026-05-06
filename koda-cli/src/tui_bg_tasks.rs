@@ -4,8 +4,8 @@
 //! ## Overview
 //!
 //! `/agents` lists every currently-tracked background task — both
-//! background sub-agents from [`koda_core::child_agent::ChildAgentRegistry`]
-//! (spawned via `InvokeAgent { background: true }`) and background
+//! sub-agents from [`koda_core::child_agent::ChildAgentRegistry`]
+//! (every `InvokeAgent` dispatch post-#1163) and background
 //! shell processes from [`koda_core::tools::bg_process::BgRegistry`]
 //! (spawned via `Bash { background: true }`). They share a single
 //! table because from the user's perspective they're the same

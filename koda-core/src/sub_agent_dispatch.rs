@@ -312,22 +312,6 @@ async fn run_bg_agent(
     };
 }
 
-/// Parse the **required** `background` field out of an `InvokeAgent`
-/// argument object.
-///
-/// **PR-A of #1232 §2**: extracted from `execute_sub_agent` so the
-/// missing-field / wrong-type / good-bool branches can be unit-
-/// tested without standing up the full sub-agent dispatch plumbing
-/// (provider, registry, sandbox, sink, ...). The schema declares
-/// `background` required (see `tools/agent.rs::definitions`) but
-/// schema compliance is best-effort across LLMs — some models still
-/// emit calls without it. This function is the runtime backstop.
-///
-/// Accepts only literal `true` / `false`. Strings (`"true"`),
-/// numbers (`1`), null, arrays, and objects are all rejected with
-/// an actionable error so the model sees a tool-error and can
-/// correct on the next turn rather than silently defaulting to
-/// `false`.
 /// Parse the **required** `agent_name` field out of an `InvokeAgent`
 /// argument object.
 ///

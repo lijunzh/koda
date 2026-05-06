@@ -497,68 +497,94 @@ calls to potentially different providers.
 
 ### Sub-Agent Lifecycle (P2, P3)
 
-Four execution modes, one mental model:
+**#1163 (Lean A)**: every `InvokeAgent` call spawns a background
+task and returns its `task_id` immediately. There is no foreground /
+blocking variant exposed to the model — the prior `background:bool`
+parameter (and its parser) was deleted to remove the failure mode
+where models silently default to blocking and serialize parallel
+fan-out into sequential calls (#1232 origin issue). Two execution
+shapes remain, distinguished only by what the model writes:
 
-1. **Sequential foreground** (`InvokeAgent { prompt }`) — one sub-agent at a
-   time, blocks the parent loop until done. Default.
-2. **Parallel foreground** (multiple `InvokeAgent` calls in one batch) —
-   `tool_dispatch::execute_tools_parallel` runs them concurrently via
-   `futures_util::future::join_all`. Each gets its own DB session and (if
-   write-capable) its own workspace.
-3. **Background fire-and-forget** (`InvokeAgent { prompt, background: true }`)
-   — spawned via `tokio::spawn` onto the multi-thread runtime, with the
+1. **Single dispatch** (`InvokeAgent { agent_name, prompt }`) —
+   spawned via `tokio::spawn` onto the multi-thread runtime, with the
    resulting `JoinHandle` held by `BgAgentRegistry` as an
-   `AbortOnDropHandle`. The registry **lives on `KodaSession`**, not
-   inside `inference_loop`, so bg agents survive across turns: the
-   model can spawn a long-running explorer in turn 1, return final
-   text in the same iteration, and turn 2's first iteration drains
-   the result. Owning per-loop would have aborted every still-pending
-   task on every turn boundary via `AbortOnDropHandle` (silent data
-   loss in the single-iteration response case). The inference loop
-   drains completed handles before each iteration via
-   `BgAgentRegistry::drain_completed()` and injects results as user
-   messages. Bg-spawned agents cannot themselves spawn bg agents
-   (override `background: false`). `execute_sub_agent`'s future is
-   `Send` by construction — the function returns
-   `impl Future<Output = ...> + Send + 'a` rather than using `async fn`,
-   forcing the compiler to *prove* Send-ness at the boundary. The
-   transitive offender (generic IPC helpers in `koda-sandbox::ipc`) carry
-   matching `Send` bounds on their `R`/`W`/`T` parameters; without them,
-   `tokio::sync::MutexGuard<WorkerClient>` held across an `await` was
-   silently non-Send. **Visibility (#1022 B9)**: bg agents run with
-   `engine::sink::BufferingSink`, not `NullSink`. The buffering sink
-   captures a narrative trace (one short line per `ToolCallStart`,
-   `Info`, auto-rejected approval) capped at 256 lines. The trace
-   ships back over the result oneshot as a `BgPayload = (output,
-   Vec<String>)` and is surfaced to the user as a multi-line `Info`
-   event at result-injection time. `NullSink` is preserved for tests
-   and any future fully-detached path. Streaming text
-   (`TextDelta`/`TextDone`) is intentionally *not* captured — the
-   final output already crosses the oneshot, so capturing would
-   duplicate.
-4. **Forked context** (`agent_name="fork"`) — copies the parent's full
-   conversation history into the new session. Fork children cannot spawn
-   sub-agents (recursion guard) — same blanket rule that applies to all
-   sub-agents (see invariant below). The copy itself is **atomic and
-   batched** (#1022 B20): a single sqlx transaction inserts every parent
-   row with `completed_at` written inline for assistant rows, so an
-   N-message fork costs N+3 queries with one fsync instead of ~3N
-   queries with N fsyncs. `Persistence::copy_messages_into_session` is
-   the only fork-copy path; the row-by-row loop it replaced was a hot
-   path the user waits on synchronously, and partial writes on error
-   are impossible because the transaction is dropped without
+   `AbortOnDropHandle`. Returns a `task_id` synchronously; the
+   sub-agent's final output auto-drains as a synthetic user message
+   on a future parent iteration. The model uses `WaitTask([task_id])`
+   only when it has no useful concurrent work AND the next step
+   strictly depends on the result; otherwise the auto-drain delivers
+   the result without a blocking wait.
+2. **Parallel fan-out** (multiple `InvokeAgent` calls in one assistant
+   message) — `tool_dispatch::execute_tools_parallel` spawns each via
+   `tokio::spawn` and returns an array of `task_id`s. Each sub-agent
+   gets its own DB session and (if write-capable) its own workspace.
+   The model can keep working on its own thread while they run.
+3. **Forked context** (`agent_name="fork"`) — same dispatch shape, but
+   the spawned sub-agent inherits the parent's full conversation history
+   into its new session. Fork children cannot themselves spawn
+   sub-agents (recursion guard — same blanket rule that applies to
+   all sub-agents, see invariant below). The copy itself is **atomic
+   and batched** (#1022 B20): a single sqlx transaction inserts every
+   parent row with `completed_at` written inline for assistant rows,
+   so an N-message fork costs N+3 queries with one fsync instead of
+   ~3N queries with N fsyncs. `Persistence::copy_messages_into_session`
+   is the only fork-copy path; the row-by-row loop it replaced was a
+   hot path the user waits on synchronously, and partial writes on
+   error are impossible because the transaction is dropped without
+
+#### Internals (single shared spawn path)
+
+The registry **lives on `KodaSession`**, not inside `inference_loop`,
+so bg agents survive across turns: the model can spawn a long-running
+explorer in turn 1, return final text in the same iteration, and
+turn 2's first iteration drains the result. Owning per-loop would
+have aborted every still-pending task on every turn boundary via
+`AbortOnDropHandle` (silent data loss in the single-iteration response
+case). The inference loop drains completed handles before each
+iteration via `BgAgentRegistry::drain_completed()` and injects results
+as user messages.
+
+Spawned sub-agents cannot themselves dispatch new sub-agents — inside
+`run_bg_agent` the recursive `execute_sub_agent` call sets the private
+`inline_only: true` flag, which routes through the inference-loop body
+without re-entering the spawn path. (Pre-#1163 this was steered by
+overwriting `args["background"] = false`; post-#1163 the flag is an
+internal-only parameter, never visible to the model.) `execute_sub_agent`'s
+future is `Send` by construction — the function returns
+`impl Future<Output = ...> + Send + 'a` rather than using `async fn`,
+forcing the compiler to *prove* Send-ness at the boundary. The
+transitive offender (generic IPC helpers in `koda-sandbox::ipc`) carry
+matching `Send` bounds on their `R`/`W`/`T` parameters; without them,
+`tokio::sync::MutexGuard<WorkerClient>` held across an `await` was
+silently non-Send.
+
+**Visibility (#1022 B9 + #1201 B + #1163)**: bg agents run with a
+`ForwardingChildSink` that wraps a `BufferingSink`. The buffering sink
+captures a narrative trace (one short line per `ToolCallStart`, `Info`,
+auto-rejected approval) capped at 256 lines and shipped back over the
+result oneshot as a `BgPayload = (output, Vec<String>)` for surface at
+result-injection time. The forwarding wrapper additionally fans every
+interesting event out as `EngineEvent::ChildAgentActivity` on the
+parent's sink so the TUI / ACP / headless surfaces render live
+progress without polling. `NullSink` is preserved for tests and any
+future fully-detached path. Streaming text (`TextDelta`/`TextDone`)
+is intentionally *not* captured — the final output already crosses
+the oneshot, so capturing would duplicate.
    `commit()` on any `?`.
 
 ### Background-task management surface (#996)
 
-Both background sub-agents (mode 3 above) and background shell
-processes (`Bash { background: true }`) need a runtime surface for
+Both spawned sub-agents and background shell processes
+(`Bash { background: true }`) need a runtime surface for
 listing, waiting, and cancelling — otherwise the user's only escape
 hatch is `/exit`, which nukes everything indiscriminately, and the
 model has no way to coordinate its own background work. #996 ships
 that surface as a **single unified concept** "background task" with
 two flavors distinguished by a prefixed id (`agent:N` /
-`process:N`).
+`process:N`). (Note: `Bash`'s `background:bool` is unrelated to the
+now-deleted `InvokeAgent.background` — #1163 only collapsed sub-agent
+dispatch shapes; spawning long-running shell processes is a
+different concern with a different runtime model.)
 
 Four layers, all on `main`:
 
@@ -729,10 +755,13 @@ agent can no longer manage.
 - **Codex's collab v2 surface** (`spawn_agent`/`send_input`/`wait_agent`/
   `close_agent`/`resume_agent`, persistent ThreadId-addressed agents,
   inter-agent mailboxes). ~3,000 LOC for a workflow that's rare in personal
-  use. P2 says no. The `background: true` + drain-on-next-iter pattern
-  covers the same ground in a single registry (`bg_agent.rs`, ~830 production
-  LOC — grew from ~200 as concurrency invariants got hardened in #1022).
-  If the model wants more work it just calls `InvokeAgent` again.
+  use. P2 says no. Post-#1163 (Lean A) koda's `InvokeAgent` matches
+  Codex's `spawn_agent` shape almost exactly — spawn-and-return with a
+  `task_id`, paired with `WaitTask` for explicit join. The drain-on-next-
+  iteration mechanic covers the same ground as Codex's mailbox model
+  in a single registry (`bg_agent.rs`, ~830 production LOC — grew from
+  ~200 as concurrency invariants got hardened in #1022). If the model
+  wants more work it just calls `InvokeAgent` again.
 - **Codex's `agent_max_depth` + `agent_max_threads` atomic CAS reservations**.
   Koda hardcodes "sub-agents cannot spawn sub-agents" (depth = exactly 1
   for any worker) and adds a per-agent iteration cap. Removes the entire

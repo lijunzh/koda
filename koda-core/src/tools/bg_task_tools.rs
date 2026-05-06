@@ -1,8 +1,8 @@
 //! Background task management tools (Layer 2 of #996).
 //!
 //! Three LLM tools that let the model see, cancel, and wait for any
-//! background work it has spawned — both background sub-agents
-//! (`InvokeAgent { background: true }`) and background shell processes
+//! background work it has spawned — both sub-agents (every
+//! `InvokeAgent` call post-#1163) and background shell processes
 //! (`Bash { background: true }`):
 //!
 //! | Tool | Purpose |
@@ -73,9 +73,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "ListBackgroundTasks".to_string(),
             description:
-                "List every background task you have running — both background sub-agents (spawned via \
-                InvokeAgent { background: true }) and background shell processes (spawned via Bash \
-                { background: true }).\n\n\
+                "List every background task you have running — both sub-agents (spawned via \
+                InvokeAgent; every InvokeAgent dispatch is a background spawn post-#1163) and \
+                background shell processes (spawned via Bash { background: true }).\n\n\
                 Returns a JSON array of objects, each with:\n\
                 - task_id: prefixed string. \"agent:N\" for sub-agent tasks, \"process:N\" for shell processes.\n\
                 - task_type: \"agent\" or \"process\".\n\
