@@ -49,8 +49,15 @@ mod unix {
         let client = WorkerClient::spawn().await.expect("spawn");
         let path = client.socket_path().to_path_buf();
         assert!(path.exists());
+        // `WorkerClient::Drop` is fully synchronous: it issues
+        // `start_kill()` (a non-blocking syscall) and
+        // `std::fs::remove_file()` (a blocking syscall). By the time
+        // `drop(client)` returns, the socket dirent is unlinked.
+        // No race — no settle window needed. (#1265 item 8a follow-up:
+        // "test the decision, not the side effect". The decision here
+        // is `remove_file`, which is synchronous, so the side effect
+        // is observable on the next instruction.)
         drop(client);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(!path.exists(), "socket file must be removed on drop");
     }
 
