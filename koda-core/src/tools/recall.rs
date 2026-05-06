@@ -209,6 +209,7 @@ mod tests {
         let bg = crate::tools::bg_process::BgRegistry::new();
         let trust = crate::trust::TrustMode::Safe;
         let policy = koda_sandbox::SandboxPolicy::default();
+        let skills = crate::skills::SkillRegistry::default();
         let ctx = crate::tools::ToolExecCtx::for_test(
             tmp.path(),
             &cache,
@@ -217,6 +218,7 @@ mod tests {
             &bg,
             &trust,
             &policy,
+            &skills,
         );
         let r = t.execute(&ctx, &json!({})).await;
         assert!(r.success);

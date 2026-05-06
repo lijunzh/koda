@@ -217,6 +217,10 @@ pub struct ToolExecCtx<'a> {
     /// does the same snapshot once and threads borrows through
     /// the context.
     pub session: Option<(&'a crate::db::Database, &'a str)>,
+
+    /// Skill registry for `ListSkills` / `ActivateSkill`. Other
+    /// tools ignore this. Added in PR-8 of #1265 item 5.
+    pub skill_registry: &'a crate::skills::SkillRegistry,
 }
 
 /// A self-contained built-in tool.
@@ -409,6 +413,7 @@ impl<'a> ToolExecCtx<'a> {
     /// safely defaulted, this constructor stops compiling and the
     /// test author has to think about the field. Good failure mode.
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)] // test fixture, all args are borrows
     pub(crate) fn for_test(
         project_root: &'a std::path::Path,
         read_cache: &'a crate::tools::FileReadCache,
@@ -417,6 +422,7 @@ impl<'a> ToolExecCtx<'a> {
         bg_registry: &'a crate::tools::bg_process::BgRegistry,
         trust: &'a crate::trust::TrustMode,
         sandbox_policy: &'a koda_sandbox::SandboxPolicy,
+        skill_registry: &'a crate::skills::SkillRegistry,
     ) -> Self {
         Self {
             project_root,
@@ -431,6 +437,7 @@ impl<'a> ToolExecCtx<'a> {
             proxy_port: None,
             socks5_port: None,
             session: None,
+            skill_registry,
         }
     }
 }
@@ -446,6 +453,7 @@ mod tests {
     //! `ReadTool`/`WriteTool`/etc. structs they exercise.
 
     use super::*;
+    use crate::skills::SkillRegistry;
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -539,6 +547,7 @@ mod tests {
     /// to construct) and a fresh empty cache. Caps come from the
     /// `for_context` helper with a generous budget so List-style
     /// tools don't accidentally truncate test fixtures.
+    #[allow(clippy::too_many_arguments)] // test helper, all args are borrows
     fn make_ctx<'a>(
         root: &'a std::path::Path,
         cache: &'a crate::tools::FileReadCache,
@@ -547,6 +556,7 @@ mod tests {
         bg: &'a crate::tools::bg_process::BgRegistry,
         trust: &'a crate::trust::TrustMode,
         policy: &'a koda_sandbox::SandboxPolicy,
+        skills: &'a SkillRegistry,
     ) -> ToolExecCtx<'a> {
         ToolExecCtx {
             project_root: root,
@@ -561,6 +571,7 @@ mod tests {
             proxy_port: None,
             socks5_port: None,
             session: None,
+            skill_registry: skills,
         }
     }
 
@@ -574,7 +585,8 @@ mod tests {
         let bg = crate::tools::bg_process::BgRegistry::new();
         let trust = crate::trust::TrustMode::Safe;
         let policy = koda_sandbox::SandboxPolicy::default();
-        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy);
+        let skills = crate::skills::SkillRegistry::default();
+        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills);
 
         let args = json!({"hello": "world"});
         let result = tool.execute(&ctx, &args).await;
@@ -663,7 +675,8 @@ mod tests {
         let bg = crate::tools::bg_process::BgRegistry::new();
         let trust = crate::trust::TrustMode::Safe;
         let policy = koda_sandbox::SandboxPolicy::default();
-        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy);
+        let skills = crate::skills::SkillRegistry::default();
+        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills);
 
         let r1 = tools[0].execute(&ctx, &json!({})).await;
         assert!(r1.success);
@@ -685,7 +698,8 @@ mod tests {
         let bg = crate::tools::bg_process::BgRegistry::new();
         let trust = crate::trust::TrustMode::Safe;
         let policy = koda_sandbox::SandboxPolicy::default();
-        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy);
+        let skills = crate::skills::SkillRegistry::default();
+        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills);
 
         assert_eq!(ctx.project_root(), root.as_path());
         // Cache is a single shared handle — pointer-equality check.
