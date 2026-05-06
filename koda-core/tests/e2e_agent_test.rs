@@ -275,10 +275,7 @@ async fn test_sub_agent_cache_hit_skips_llm() {
         // serialization explicitly is also more honest — in the new
         // world, a model that wants dedupe must serialize via
         // WaitTask, exactly as written here.
-        MockResponse::tool_call(
-            "WaitTask",
-            serde_json::json!({"task_ids": ["agent:1"]}),
-        ),
+        MockResponse::tool_call("WaitTask", serde_json::json!({"task_ids": ["agent:1"]})),
         MockResponse::tool_call(
             "InvokeAgent",
             serde_json::json!({"agent_name": "echo-agent", "prompt": "do the thing"}),

@@ -402,7 +402,6 @@ fn available_agents_hint(project_root: &std::path::Path) -> String {
     }
 }
 
-
 /// Execute a sub-agent in its own isolated event loop.
 ///
 /// When `parent_cache` is provided, the sub-agent shares the parent's
