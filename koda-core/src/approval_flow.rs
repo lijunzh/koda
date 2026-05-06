@@ -118,17 +118,12 @@ mod tests {
         });
 
         // Wait for AskUserRequest to be emitted, then reply with matching id.
-        tokio::time::sleep(Duration::from_millis(20)).await;
         let id = sink
-            .events()
-            .into_iter()
-            .find_map(|e| {
-                if let EngineEvent::AskUserRequest { id, .. } = e {
-                    Some(id)
-                } else {
-                    None
-                }
+            .wait_for_map(Duration::from_secs(5), |e| match e {
+                EngineEvent::AskUserRequest { id, .. } => Some(id.clone()),
+                _ => None,
             })
+            .await
             .expect("AskUserRequest not emitted");
 
         cmd_tx
@@ -159,19 +154,15 @@ mod tests {
             handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        let events = sink.events();
-        let req = events.iter().find_map(|e| {
-            if let EngineEvent::AskUserRequest {
-                question, options, ..
-            } = e
-            {
-                Some((question.clone(), options.clone()))
-            } else {
-                None
-            }
-        });
-        let (q, opts) = req.expect("no AskUserRequest emitted");
+        let (q, opts) = sink
+            .wait_for_map(Duration::from_secs(5), |e| match e {
+                EngineEvent::AskUserRequest {
+                    question, options, ..
+                } => Some((question.clone(), options.clone())),
+                _ => None,
+            })
+            .await
+            .expect("no AskUserRequest emitted");
         assert_eq!(q, "Continue?");
         assert_eq!(opts, vec!["yes", "no"]);
 
@@ -192,17 +183,12 @@ mod tests {
             handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
         let id = sink
-            .events()
-            .into_iter()
-            .find_map(|e| {
-                if let EngineEvent::AskUserRequest { id, .. } = e {
-                    Some(id)
-                } else {
-                    None
-                }
+            .wait_for_map(Duration::from_secs(5), |e| match e {
+                EngineEvent::AskUserRequest { id, .. } => Some(id.clone()),
+                _ => None,
             })
+            .await
             .unwrap();
 
         // Wrong id first — should be ignored.
@@ -240,7 +226,13 @@ mod tests {
             handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Wait for the spawned task to reach the command-receive loop
+        // (proven by AskUserRequest emission) before sending the signal.
+        sink.wait_for(Duration::from_secs(5), |e| {
+            matches!(e, EngineEvent::AskUserRequest { .. })
+        })
+        .await
+        .expect("task did not enter select loop");
         cmd_tx.send(EngineCommand::Interrupt).await.unwrap();
         assert_eq!(task.await.unwrap(), None);
         assert!(cancel.is_cancelled(), "interrupt should cancel the token");
@@ -260,7 +252,11 @@ mod tests {
             handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        sink.wait_for(Duration::from_secs(5), |e| {
+            matches!(e, EngineEvent::AskUserRequest { .. })
+        })
+        .await
+        .expect("task did not enter select loop");
         drop(cmd_tx);
         assert_eq!(task.await.unwrap(), None);
     }
@@ -279,7 +275,11 @@ mod tests {
             handle_ask_user(&*sink2, &mut rx, &cancel2, &args).await
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        sink.wait_for(Duration::from_secs(5), |e| {
+            matches!(e, EngineEvent::AskUserRequest { .. })
+        })
+        .await
+        .expect("task did not enter select loop");
         cancel.cancel();
         assert_eq!(task.await.unwrap(), None);
     }
@@ -308,17 +308,12 @@ mod tests {
             .await
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
         let id = sink
-            .events()
-            .into_iter()
-            .find_map(|e| {
-                if let EngineEvent::ApprovalRequest { id, .. } = e {
-                    Some(id)
-                } else {
-                    None
-                }
+            .wait_for_map(Duration::from_secs(5), |e| match e {
+                EngineEvent::ApprovalRequest { id, .. } => Some(id.clone()),
+                _ => None,
             })
+            .await
             .expect("ApprovalRequest not emitted");
 
         cmd_tx
@@ -354,17 +349,12 @@ mod tests {
             .await
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
         let id = sink
-            .events()
-            .into_iter()
-            .find_map(|e| {
-                if let EngineEvent::ApprovalRequest { id, .. } = e {
-                    Some(id)
-                } else {
-                    None
-                }
+            .wait_for_map(Duration::from_secs(5), |e| match e {
+                EngineEvent::ApprovalRequest { id, .. } => Some(id.clone()),
+                _ => None,
             })
+            .await
             .unwrap();
 
         cmd_tx
@@ -400,19 +390,15 @@ mod tests {
             .await
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        let events = sink.events();
-        let req = events.iter().find_map(|e| {
-            if let EngineEvent::ApprovalRequest {
-                tool_name, detail, ..
-            } = e
-            {
-                Some((tool_name.clone(), detail.clone()))
-            } else {
-                None
-            }
-        });
-        let (tool, detail) = req.expect("no ApprovalRequest emitted");
+        let (tool, detail) = sink
+            .wait_for_map(Duration::from_secs(5), |e| match e {
+                EngineEvent::ApprovalRequest {
+                    tool_name, detail, ..
+                } => Some((tool_name.clone(), detail.clone())),
+                _ => None,
+            })
+            .await
+            .expect("no ApprovalRequest emitted");
         assert_eq!(tool, "Edit");
         assert_eq!(detail, "replace line 42");
 
@@ -441,17 +427,12 @@ mod tests {
             .await
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
         let id = sink
-            .events()
-            .into_iter()
-            .find_map(|e| {
-                if let EngineEvent::ApprovalRequest { id, .. } = e {
-                    Some(id)
-                } else {
-                    None
-                }
+            .wait_for_map(Duration::from_secs(5), |e| match e {
+                EngineEvent::ApprovalRequest { id, .. } => Some(id.clone()),
+                _ => None,
             })
+            .await
             .unwrap();
 
         // Wrong id ignored.
@@ -497,7 +478,11 @@ mod tests {
             .await
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        sink.wait_for(Duration::from_secs(5), |e| {
+            matches!(e, EngineEvent::ApprovalRequest { .. })
+        })
+        .await
+        .expect("task did not enter select loop");
         cmd_tx.send(EngineCommand::Interrupt).await.unwrap();
         assert_eq!(task.await.unwrap(), None);
         assert!(cancel.is_cancelled());
@@ -525,7 +510,11 @@ mod tests {
             .await
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        sink.wait_for(Duration::from_secs(5), |e| {
+            matches!(e, EngineEvent::ApprovalRequest { .. })
+        })
+        .await
+        .expect("task did not enter select loop");
         drop(cmd_tx);
         assert_eq!(task.await.unwrap(), None);
     }
@@ -552,7 +541,11 @@ mod tests {
             .await
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        sink.wait_for(Duration::from_secs(5), |e| {
+            matches!(e, EngineEvent::ApprovalRequest { .. })
+        })
+        .await
+        .expect("task did not enter select loop");
         cancel.cancel();
         assert_eq!(task.await.unwrap(), None);
     }
