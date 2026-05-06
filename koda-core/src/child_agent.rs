@@ -1,12 +1,17 @@
 //! Background sub-agent registry.
 //!
-//! Tracks sub-agents spawned with `background: true` in `InvokeAgent`.
-//! The inference loop drains completed results and injects them as
-//! user-role messages so the model sees them on the next iteration.
+//! Tracks sub-agents spawned via `InvokeAgent`. Post-#1163 (Lean A)
+//! every `InvokeAgent` dispatch is a background spawn — the foreground
+//! / blocking variant (and its `background:bool` parameter) was
+//! deleted to match Codex's `spawn_agent` shape and Claude Code's
+//! `TaskCreate` shape. The inference loop drains completed results
+//! and injects them as user-role messages so the model sees them on
+//! the next iteration.
 //!
 //! ## Lifecycle
 //!
-//! 1. **Spawn**: `InvokeAgent { background: true }` creates a tokio task
+//! 1. **Spawn**: every `InvokeAgent` call creates a tokio task and
+//!    returns its `task_id` immediately (no blocking variant)
 //! 2. **Track**: the task handle + metadata are stored in `ChildAgentRegistry`
 //! 3. **Poll**: before each inference call, the loop calls `drain_completed()`
 //! 4. **Inject**: completed results are appended as user messages

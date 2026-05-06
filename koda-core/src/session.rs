@@ -207,8 +207,9 @@ pub struct KodaSession {
     /// every still-pending bg task was aborted via
     /// [`tokio_util::task::AbortOnDropHandle`] — silently discarding
     /// any not-yet-completed result. With single-iteration responses
-    /// (`InvokeAgent { background: true }` followed by final text in
-    /// the same turn) this lost the bg result every time.
+    /// (an `InvokeAgent` dispatch followed by final text in the same
+    /// turn — the common shape post-#1163 since every dispatch is
+    /// now spawn-and-return) this lost the bg result every time.
     ///
     /// Owning here means: bg tasks keep running between turns, and the
     /// next turn's first iteration drains anything that completed
@@ -218,8 +219,8 @@ pub struct KodaSession {
     ///
     /// Wrapped in `Arc` because tool dispatch needs to hand the same
     /// registry into the recursive `execute_sub_agent` call (so
-    /// nested `InvokeAgent { background: true }` registers in the
-    /// caller-visible slot, not a fresh per-call one).
+    /// nested `InvokeAgent` calls inside a spawned sub-agent register
+    /// in the caller-visible slot, not a fresh per-call one).
     pub bg_agents: Arc<ChildAgentRegistry>,
 
     /// Cross-turn sub-agent result cache (#1022 B12).
