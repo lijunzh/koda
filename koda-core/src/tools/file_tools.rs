@@ -1664,14 +1664,18 @@ mod tests {
         let cache = cache();
         let fs = fs();
         let caps = crate::output_caps::OutputCaps::for_context(100_000);
-        let ctx = crate::tools::ToolExecCtx {
-            project_root: tmp.path(),
-            read_cache: &cache,
-            fs: &fs,
-            caps: &caps,
-            sink: None,
-            caller_spawner: None,
-        };
+        let bg = crate::tools::bg_process::BgRegistry::new();
+        let trust = crate::trust::TrustMode::Safe;
+        let policy = koda_sandbox::SandboxPolicy::default();
+        let ctx = crate::tools::ToolExecCtx::for_test(
+            tmp.path(),
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+        );
         let tool: Box<dyn Tool> = Box::new(ReadTool);
         let result = tool
             .execute(&ctx, &serde_json::json!({"file_path": "x.txt"}))
@@ -1689,14 +1693,18 @@ mod tests {
         let cache = cache();
         let fs = fs();
         let caps = crate::output_caps::OutputCaps::for_context(100_000);
-        let ctx = crate::tools::ToolExecCtx {
-            project_root: tmp.path(),
-            read_cache: &cache,
-            fs: &fs,
-            caps: &caps,
-            sink: None,
-            caller_spawner: None,
-        };
+        let bg = crate::tools::bg_process::BgRegistry::new();
+        let trust = crate::trust::TrustMode::Safe;
+        let policy = koda_sandbox::SandboxPolicy::default();
+        let ctx = crate::tools::ToolExecCtx::for_test(
+            tmp.path(),
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+        );
         let tool: Box<dyn Tool> = Box::new(WriteTool);
         let result = tool
             .execute(
@@ -1716,14 +1724,18 @@ mod tests {
         let cache = cache();
         let fs = fs();
         let caps = crate::output_caps::OutputCaps::for_context(100_000);
-        let ctx = crate::tools::ToolExecCtx {
-            project_root: tmp.path(),
-            read_cache: &cache,
-            fs: &fs,
-            caps: &caps,
-            sink: None,
-            caller_spawner: None,
-        };
+        let bg = crate::tools::bg_process::BgRegistry::new();
+        let trust = crate::trust::TrustMode::Safe;
+        let policy = koda_sandbox::SandboxPolicy::default();
+        let ctx = crate::tools::ToolExecCtx::for_test(
+            tmp.path(),
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+        );
         let tool: Box<dyn Tool> = Box::new(ReadTool);
         let result = tool
             .execute(&ctx, &serde_json::json!({"file_path": "does-not-exist"}))
