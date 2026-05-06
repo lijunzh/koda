@@ -203,8 +203,7 @@ jobs:
             "worker::tests::write_outside_root_is_denied"
             "worker::tests::symlink_escape_is_denied"
             "fs::policy::tests::rejects_path_outside_every_root"
-            "workspace::tests::clonefile::release_refuses_path_outside_clones_root"
-            # ── sandbox spawn-with-policy integration (\`#[cfg(unix)]\`) ─────
+            # ── sandbox spawn-with-policy integration (`#[cfg(unix)]`) ─────
             "unix::spawn_with_policy_write_outside_root_is_denied"
             "unix::spawn_with_policy_symlink_escape_is_denied"
           )
@@ -227,6 +226,30 @@ jobs:
             exit 1
           fi
           echo "✓ All ${#required_tests[@]} security-boundary tests ran on ${{ runner.os }}."
+
+      # macOS-only: `ClonefileProvider` (and its tests) live behind
+      # `#[cfg(target_os = "macos")]` because `clonefile(2)` is an APFS
+      # syscall. Split into its own step so the cross-platform list
+      # stays runner-agnostic.
+      - name: Assert macOS-only sandbox tests ran (#1265 item 8b)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          required_tests=(
+            "workspace::tests::clonefile::release_refuses_path_outside_clones_root"
+          )
+          missing=()
+          for t in "${required_tests[@]}"; do
+            if ! grep -qE "^test ${t} \.\.\. ok\$" test-output.log; then
+              missing+=("$t")
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Required macOS-only security-boundary tests did not run:"
+            printf '  - %s\n' "${missing[@]}"
+            exit 1
+          fi
+          echo "✓ All ${#required_tests[@]} macOS-only security-boundary tests ran."
 
   doc:
     name: Docs
