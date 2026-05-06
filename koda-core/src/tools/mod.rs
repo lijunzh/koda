@@ -140,6 +140,13 @@ pub mod bg_task_tools;
 /// composes one of these and delegates the read-only methods.
 pub mod catalog;
 pub use catalog::ToolCatalog;
+/// `Tool` trait + `ToolExecCtx` (#1265 item 5, PR-3/N). The seam for
+/// the per-tool migration that follows in PR-4..PR-N. Each migrated
+/// tool becomes a unit struct implementing this trait, replacing its
+/// arms in the `classify_tool` / `execute()` / `is_mutating_tool` /
+/// `extract_file_path` matches with co-located methods.
+pub mod tool_trait;
+pub use tool_trait::{DynTool, Tool, ToolExecCtx, boxed};
 /// File CRUD tools (`Read`, `Write`, `Edit`, `Delete`, `List`).
 pub mod file_tools;
 pub mod fuzzy;
