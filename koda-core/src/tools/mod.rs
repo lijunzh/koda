@@ -680,6 +680,7 @@ impl ToolRegistry {
                 proxy_port,
                 socks5_port,
                 session,
+                skill_registry: &self.skill_registry,
             };
             let result = tool.execute(&ctx, &args).await;
             // Post-execution registry-level recording. Lives here
@@ -715,146 +716,72 @@ impl ToolRegistry {
             return result;
         }
 
-        let result = match name {
-            // File tools — migrated to `Tool` trait in PR-4 of #1265
-            // item 5; dispatched above. The arms below stay only
-            // for tools that haven't migrated yet.
+        // ----------------------------------------------------------
+        // Fall-through: every built-in tool is now on the `Tool`
+        // trait (PR-4 through PR-8 of #1265 item 5). The only paths
+        // that reach here are MCP tool dispatch (`server__tool`
+        // names) and the unknown-tool error reporter.
+        //
+        // Pre-#1265 the `match name { ... }` had ~16 arms ending in
+        // a giant post-processing `match result { Ok|Err => ... }`
+        // block that recorded Write/Edit timestamps and wrapped
+        // results. All of that is now dead code (the trait fast
+        // path above handles Write/Edit/Bash recording, and the
+        // legacy fall-through never produces a path-tagged Ok
+        // anymore). PR-9 cleanup deleted it.
+        // ----------------------------------------------------------
 
-            // Search tools — migrated in PR-5.
-
-            // Shell — migrated in PR-6 (and gets per-call classification
-            // via `bash_safety::classify_bash_command`).
-
-            // Web — migrated in PR-7.
-            // TodoWrite — migrated in PR-7 (owns its own TodoUpdate emit).
-            // Memory — migrated in PR-7.
-            // RecallContext — migrated in PR-7.
-
-            // Agent tools
-            "ListAgents" => {
-                let detail = args["detail"].as_bool().unwrap_or(false);
-                if detail {
-                    Ok(agent::list_agents_detail(&self.project_root))
-                } else {
-                    let agents = agent::list_agents(&self.project_root);
-                    if agents.is_empty() {
-                        Ok("No sub-agents configured.".to_string())
-                    } else {
-                        let lines: Vec<String> = agents
-                            .iter()
-                            .map(|(name, desc, source)| {
-                                if source == "built-in" {
-                                    format!("  {name} — {desc}")
-                                } else {
-                                    format!("  {name} — {desc} [{source}]")
-                                }
-                            })
-                            .collect();
-                        Ok(lines.join("\n"))
-                    }
-                }
-            }
-            // Skill tools
-            "ListSkills" => Ok(skill_tools::list_skills(&self.skill_registry, &args)),
-            "ActivateSkill" => Ok(skill_tools::activate_skill(&self.skill_registry, &args)),
-
-            "InvokeAgent" => {
-                // Handled by tool_dispatch.rs before reaching here.
-                // This branch should not be reached in normal flow.
-                return ToolResult {
-                    output: "InvokeAgent is handled by the inference loop.".to_string(),
-                    success: false,
-                    full_output: None,
+        // MCP tool dispatch (#662): route `server__tool` calls to
+        // the appropriate MCP server.
+        if crate::mcp::is_mcp_tool_name(name) {
+            if let Some(mgr) = self.mcp_manager() {
+                let result = {
+                    let mgr = mgr.read().await;
+                    mgr.call_tool(name, args.clone()).await
                 };
-            }
-
-            "AskUser" => {
-                // Handled by execute_tools_sequential (needs sink + cmd_rx).
-                // This branch should not be reached in normal flow.
-                return ToolResult {
-                    output: "AskUser is handled by the inference loop.".to_string(),
-                    success: false,
-                    full_output: None,
-                };
-            }
-
-            other => {
-                // MCP tool dispatch (#662): route `server__tool` calls
-                // to the appropriate MCP server.
-                if crate::mcp::is_mcp_tool_name(other) {
-                    if let Some(mgr) = self.mcp_manager() {
-                        let result = {
-                            let mgr = mgr.read().await;
-                            mgr.call_tool(other, args.clone()).await
-                        };
-                        return match result {
-                            Ok(output) => ToolResult {
-                                output,
-                                success: true,
-                                full_output: None,
-                            },
-                            Err(e) => ToolResult {
-                                // #1232 §4: `{:#}` walks the anyhow context chain so the
-                                // model sees the full cause, not just the topmost label.
-                                output: format!("Error: {e:#}"),
-                                success: false,
-                                full_output: None,
-                            },
-                        };
-                    }
-                    return ToolResult {
-                        output: format!(
-                            "MCP tool '{other}' not available — \
-                             no MCP servers connected."
-                        ),
+                return match result {
+                    Ok(output) => ToolResult {
+                        output,
+                        success: true,
+                        full_output: None,
+                    },
+                    Err(e) => ToolResult {
+                        // #1232 §4: `{:#}` walks the anyhow context
+                        // chain so the model sees the full cause.
+                        output: format!("Error: {e:#}"),
                         success: false,
                         full_output: None,
-                    };
-                }
-
-                // Detect garbled tool names (JSON blobs, very long strings)
-                // — a sign the model can't do structured tool calling.
-                let warning = if other.contains('{') || other.len() > 64 {
-                    format!(
-                        "Unknown tool: {other}. \
-                         This model appears to struggle with tool calling. \
-                         Consider switching to a model with native function-call support."
-                    )
-                } else {
-                    format!("Unknown tool: {other}")
+                    },
                 };
-                Err(anyhow::anyhow!(warning))
             }
-        };
-
-        match result {
-            Ok(output) => {
-                // Record successful Write/Edit so the validation layer can
-                // name the responsible tool in staleness error messages.
-                if matches!(name, "Write" | "Edit")
-                    && let Some(path) =
-                        crate::file_tracker::resolve_file_path_from_args(&args, &self.project_root)
-                    && let Ok(mut guard) = self.last_writer.lock()
-                {
-                    guard.insert(path, (name.to_string(), std::time::Instant::now()));
-                }
-                ToolResult {
-                    output,
-                    success: true,
-                    full_output: None,
-                }
-            }
-            Err(e) => ToolResult {
-                // #1232 §4: `{:#}` walks the anyhow context chain so the
-                // model sees the full cause, not just the topmost label.
-                output: format!("Error: {e:#}"),
+            return ToolResult {
+                output: format!(
+                    "MCP tool '{name}' not available \u{2014} \
+                     no MCP servers connected."
+                ),
                 success: false,
                 full_output: None,
-            },
+            };
+        }
+
+        // Detect garbled tool names (JSON blobs, very long strings)
+        // — a sign the model can't do structured tool calling.
+        let warning = if name.contains('{') || name.len() > 64 {
+            format!(
+                "Unknown tool: {name}. \
+                 This model appears to struggle with tool calling. \
+                 Consider switching to a model with native function-call support."
+            )
+        } else {
+            format!("Unknown tool: {name}")
+        };
+        ToolResult {
+            output: format!("Error: {warning}"),
+            success: false,
+            full_output: None,
         }
     }
 }
-
 /// Validate and resolve a path, preventing directory traversal.
 ///
 /// Works for both existing and non-existing files (no `canonicalize!`).

@@ -212,6 +212,15 @@ impl ToolCatalog {
             boxed(memory::MemoryWriteTool),
             boxed(todo::TodoWriteTool),
             boxed(recall::RecallContextTool),
+            // PR-8: meta cohort. `InvokeAgent` and `AskUser` are
+            // intercepted upstream of the registry; their trait
+            // impls preserve the pre-#1265 "should not be reached"
+            // failure path so the catalog stays complete.
+            boxed(agent::ListAgentsTool),
+            boxed(agent::InvokeAgentTool),
+            boxed(skill_tools::ListSkillsTool),
+            boxed(skill_tools::ActivateSkillTool),
+            boxed(ask_user::AskUserTool),
         ] {
             tools.insert(tool.name(), tool);
         }

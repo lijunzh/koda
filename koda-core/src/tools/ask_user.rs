@@ -52,6 +52,46 @@ pub fn definitions() -> Vec<ToolDefinition> {
     }]
 }
 
+// =============================================================
+// Tool trait implementation (#1265 item 5, PR-8/N).
+//
+// `AskUser` is **special** — it's intercepted by
+// `execute_tools_sequential` (which has the sink + cmd_rx needed
+// to wait on user input). The trait impl below preserves the
+// pre-#1265 "this branch should not be reached in normal flow"
+// failure path: the dispatch fast path will only ever invoke this
+// if something has gone wrong upstream. Same shape as `InvokeAgent`.
+// =============================================================
+
+use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
+use async_trait::async_trait;
+
+/// `AskUser` — prompt the user for input mid-conversation.
+pub struct AskUserTool;
+
+#[async_trait]
+impl Tool for AskUserTool {
+    fn name(&self) -> &'static str {
+        "AskUser"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definitions()
+            .into_iter()
+            .find(|d| d.name == "AskUser")
+            .expect("ask_user::definitions() must contain AskUser")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, _ctx: &ToolExecCtx<'_>, _args: &serde_json::Value) -> ToolResult {
+        ToolResult {
+            output: "AskUser is handled by the inference loop.".to_string(),
+            success: false,
+            full_output: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

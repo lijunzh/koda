@@ -145,6 +145,69 @@ pub fn activate_skill(registry: &SkillRegistry, args: &serde_json::Value) -> Str
     }
 }
 
+// =============================================================
+// Tool trait implementations (#1265 item 5, PR-8/N).
+//
+// Both tools are read-only; both read the `SkillRegistry` off the
+// context (added in PR-8). Pre-#1265 they were thin wrappers in
+// the dispatch match arm; now they're a proper pair of structs.
+// =============================================================
+
+use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
+use async_trait::async_trait;
+
+/// `ListSkills` — enumerate available skills (built-in + user + project).
+pub struct ListSkillsTool;
+
+#[async_trait]
+impl Tool for ListSkillsTool {
+    fn name(&self) -> &'static str {
+        "ListSkills"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definitions()
+            .into_iter()
+            .find(|d| d.name == "ListSkills")
+            .expect("skill_tools::definitions() must contain ListSkills")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
+        ToolResult {
+            output: list_skills(ctx.skill_registry, args),
+            success: true,
+            full_output: None,
+        }
+    }
+}
+
+/// `ActivateSkill` — load a skill's full SKILL.md content.
+pub struct ActivateSkillTool;
+
+#[async_trait]
+impl Tool for ActivateSkillTool {
+    fn name(&self) -> &'static str {
+        "ActivateSkill"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definitions()
+            .into_iter()
+            .find(|d| d.name == "ActivateSkill")
+            .expect("skill_tools::definitions() must contain ActivateSkill")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
+        ToolResult {
+            output: activate_skill(ctx.skill_registry, args),
+            success: true,
+            full_output: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -342,9 +342,148 @@ fn capitalize_first(s: &str) -> String {
     }
 }
 
+// =============================================================
+// Tool trait implementations (#1265 item 5, PR-8/N).
+//
+// `ListAgents` is read-only (it scans the agents directory).
+//
+// `InvokeAgent` is **special** — it's intercepted by
+// `tool_dispatch.rs` before reaching the registry, because it needs
+// to spawn a sub-agent (which the registry can't do). The trait
+// impl below preserves the pre-#1265 "this branch should not be
+// reached in normal flow" failure path: the dispatch fast path
+// will only ever invoke this if something has gone seriously
+// wrong upstream.
+// =============================================================
+
+use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
+use async_trait::async_trait;
+
+/// `ListAgents` — enumerate sub-agents from project + user dirs.
+pub struct ListAgentsTool;
+
+#[async_trait]
+impl Tool for ListAgentsTool {
+    fn name(&self) -> &'static str {
+        "ListAgents"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definitions()
+            .into_iter()
+            .find(|d| d.name == "ListAgents")
+            .expect("agent::definitions() must contain ListAgents")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
+        let detail = args["detail"].as_bool().unwrap_or(false);
+        let output = if detail {
+            list_agents_detail(ctx.project_root)
+        } else {
+            let agents = list_agents(ctx.project_root);
+            if agents.is_empty() {
+                "No sub-agents configured.".to_string()
+            } else {
+                agents
+                    .iter()
+                    .map(|(name, desc, source)| {
+                        if source == "built-in" {
+                            format!("  {name} \u{2014} {desc}")
+                        } else {
+                            format!("  {name} \u{2014} {desc} [{source}]")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        };
+        ToolResult {
+            output,
+            success: true,
+            full_output: None,
+        }
+    }
+}
+
+/// `InvokeAgent` — intercepted by `tool_dispatch.rs`. This trait
+/// impl exists only to make the catalog complete; it preserves the
+/// pre-#1265 "this branch should not be reached in normal flow"
+/// behavior (success=false with a self-explanatory message).
+pub struct InvokeAgentTool;
+
+#[async_trait]
+impl Tool for InvokeAgentTool {
+    fn name(&self) -> &'static str {
+        "InvokeAgent"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definitions()
+            .into_iter()
+            .find(|d| d.name == "InvokeAgent")
+            .expect("agent::definitions() must contain InvokeAgent")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        // Sub-agents inherit the parent's approval mode; classification
+        // here is a placeholder — dispatch never asks.
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, _ctx: &ToolExecCtx<'_>, _args: &serde_json::Value) -> ToolResult {
+        ToolResult {
+            output: "InvokeAgent is handled by the inference loop.".to_string(),
+            success: false,
+            full_output: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Trait invariants (#1265 PR-8) ─────────────────────────
+
+    #[test]
+    fn list_agents_tool_metadata() {
+        let t = ListAgentsTool;
+        assert_eq!(t.name(), "ListAgents");
+        assert_eq!(t.definition().name, "ListAgents");
+        assert_eq!(
+            t.classify(&serde_json::json!({})),
+            crate::tools::ToolEffect::ReadOnly,
+        );
+    }
+
+    /// `InvokeAgent` is intercepted upstream of the registry.
+    /// If dispatch ever falls through to the trait impl, it must
+    /// preserve the pre-#1265 "should not be reached" failure path:
+    /// success=false with the same message verbatim.
+    #[tokio::test]
+    async fn invoke_agent_unreached_path_returns_failure() {
+        let t = InvokeAgentTool;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = crate::tools::FileReadCache::default();
+        let fs = koda_sandbox::fs::LocalFileSystem;
+        let caps = crate::output_caps::OutputCaps::for_context(100_000);
+        let bg = crate::tools::bg_process::BgRegistry::new();
+        let trust = crate::trust::TrustMode::Safe;
+        let policy = koda_sandbox::SandboxPolicy::default();
+        let skills = crate::skills::SkillRegistry::default();
+        let ctx = crate::tools::ToolExecCtx::for_test(
+            tmp.path(),
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+        );
+        let r = t.execute(&ctx, &serde_json::json!({})).await;
+        assert!(!r.success);
+        assert_eq!(r.output, "InvokeAgent is handled by the inference loop.");
+    }
+
     use tempfile::TempDir;
 
     #[test]
