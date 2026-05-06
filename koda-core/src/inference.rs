@@ -1312,14 +1312,37 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
         // sees the same Koda-owned-file downgrade the sequential path
         // sees. Without it, batches containing `Delete owned.tmp` are
         // spuriously refused parallelization (perf regression).
+        //
+        // #1321: each dispatch arm is wrapped in `with_status_pump` so
+        // bg-agent `ChildAgentActivity` events flow to the parent's
+        // sink in real time during long tool calls (notably `WaitTask`).
+        // Pre-#1321 these events sat in the registry queue until the
+        // top of the next inference iteration, making the activity
+        // overlay go dark for the entire wait — see the module docs
+        // on `crate::status_pump` for the full story.
         if remaining_tools.len() > 1
             && can_parallelize(&remaining_tools, mode, project_root, Some(file_tracker))
         {
-            execute_tools_parallel(&remaining_tools, tool_ctx, file_tracker).await?;
+            crate::status_pump::with_status_pump(
+                execute_tools_parallel(&remaining_tools, tool_ctx, file_tracker),
+                bg_agents,
+                sink,
+            )
+            .await?;
         } else if remaining_tools.len() > 1 {
-            execute_tools_split_batch(&remaining_tools, tool_ctx, cmd_rx, file_tracker).await?;
+            crate::status_pump::with_status_pump(
+                execute_tools_split_batch(&remaining_tools, tool_ctx, cmd_rx, file_tracker),
+                bg_agents,
+                sink,
+            )
+            .await?;
         } else if !remaining_tools.is_empty() {
-            execute_tools_sequential(&remaining_tools, tool_ctx, cmd_rx, file_tracker).await?;
+            crate::status_pump::with_status_pump(
+                execute_tools_sequential(&remaining_tools, tool_ctx, cmd_rx, file_tracker),
+                bg_agents,
+                sink,
+            )
+            .await?;
         }
 
         // Update skill scope: if any ActivateSkill call was made, check whether

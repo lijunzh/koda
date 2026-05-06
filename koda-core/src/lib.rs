@@ -117,6 +117,10 @@ pub mod session;
 pub mod skill_scope;
 /// Skill discovery and activation (project, user, built-in).
 pub mod skills;
+/// Status-event pump that bridges the gap between bg-agent emissions
+/// and the parent's `EngineSink` while a long-running tool call is in
+/// flight (#1321). See module docs for the full design rationale.
+pub mod status_pump;
 /// Sub-agent result caching — zero-cost retries after compaction.
 pub mod sub_agent_cache;
 /// Sub-agent invocation and lifecycle management.
