@@ -34,8 +34,11 @@ async fn make_session(env: &Env, provider: Box<dyn LlmProvider>) -> (KodaSession
     let agent = Arc::new(koda_core::agent::KodaAgent {
         project_root: env.root.clone(),
         tools,
-        tool_defs: ToolRegistry::new(env.root.clone(), env.config.max_context_tokens)
-            .get_definitions(&[], &[]),
+        // #1265 item 5 PR-2: read definitions from a fresh
+        // `ToolCatalog` instead of spinning up a second
+        // `ToolRegistry`. Cheaper and clearer — we don't need any of
+        // the registry's stateful fields just to list tools.
+        tool_defs: koda_core::tools::ToolCatalog::new().get_definitions(&[], &[]),
         system_prompt: "You are a test assistant.".to_string(),
         semantic_memory: String::new(),
     });

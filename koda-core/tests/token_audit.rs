@@ -1,11 +1,14 @@
 //! Token audit: dump tool definitions for analysis.
-
-use std::path::PathBuf;
+//!
+//! Migrated to `ToolCatalog` directly in #1265 item 5 PR-2 — we
+//! only need definitions, not the full registry's FS / undo /
+//! caps / proxy state. Construction is pure (no project root, no
+//! skill discovery), making this test cheaper and clearer.
 
 #[test]
 fn dump_tool_definitions_for_audit() {
-    let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("."), 100_000);
-    let defs = registry.get_definitions(&[], &[]); // empty = all tools
+    let catalog = koda_core::tools::ToolCatalog::new();
+    let defs = catalog.get_definitions(&[], &[]); // empty = all tools
 
     let mut total_chars = 0;
     let mut entries: Vec<(String, usize, usize)> = Vec::new();

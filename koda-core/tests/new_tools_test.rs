@@ -281,12 +281,15 @@ mod naming_convention {
 
     /// Ensure BUILTIN_TOOLS stays in sync with the actual registry.
     /// If this fails, a tool was added/removed without updating BUILTIN_TOOLS above.
+    ///
+    /// Migrated to `ToolCatalog` in #1265 item 5 PR-2 — we only
+    /// need names, not the full registry's stateful machinery.
     #[test]
     fn test_builtin_list_matches_registry() {
-        let registry =
-            koda_core::tools::ToolRegistry::new(std::path::PathBuf::from("/tmp/test"), 100_000);
-        let actual: std::collections::HashSet<String> =
-            registry.all_builtin_tool_names().into_iter().collect();
+        let actual: std::collections::HashSet<String> = koda_core::tools::ToolCatalog::new()
+            .all_builtin_tool_names()
+            .into_iter()
+            .collect();
         let expected: std::collections::HashSet<String> =
             BUILTIN_TOOLS.iter().map(|s| s.to_string()).collect();
 
