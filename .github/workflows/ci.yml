@@ -161,6 +161,73 @@ jobs:
           fi
           echo "✓ All ${#required_tests[@]} bwrap SEC-002/TOCTOU regression tests ran."
 
+      # #1265 item 8b: fail-closed guard for security-boundary tests.
+      # Same shape as the bwrap check above, broadened to every
+      # security-critical test across web_fetch (SSRF + redirect),
+      # file_tools (symlink/TOCTOU), MCP transport (SSRF), and
+      # sandbox (path confinement). Without this guard, a future
+      # `#[cfg(...)]`, `#[ignore]`, or test-binary split could
+      # silently exclude any of these and we'd only learn from a CVE.
+      #
+      # Cross-platform: every test below runs on both ubuntu-latest
+      # and macos-latest. Linux-only or macos-only tests stay out of
+      # this list (the bwrap step above handles Linux-only).
+      - name: Assert security-boundary tests ran (#1265 item 8b)
+        run: |
+          set -euo pipefail
+          # Each entry is a fully-qualified `cargo test` path as it
+          # appears on a `test ... ok` line in the log. The full path
+          # (not just the function name) is intentional: it pins the
+          # test to its module, so renaming a fn that happens to
+          # collide with a test name elsewhere can't accidentally
+          # satisfy the check.
+          required_tests=(
+            # ── web_fetch SSRF + redirect (#1282) ────────────────────────
+            "tools::web_fetch::tests::test_web_fetch_blocks_ssrf"
+            "tools::web_fetch::tests::test_redirect_to_loopback_is_blocked_by_production_validator"
+            "tools::web_fetch::tests::test_redirect_to_cloud_metadata_is_blocked"
+            "tools::web_fetch::tests::test_max_redirect_hops_enforced"
+            "tools::web_fetch::tests::test_relative_redirect_resolves_against_current_url"
+            "tools::web_fetch::tests::test_scheme_relative_redirect_revalidated"
+            "tools::web_fetch::tests::test_is_safe_url_blocks_metadata"
+            "tools::web_fetch::tests::test_is_safe_url_blocks_private_ips"
+            "tools::web_fetch::tests::test_is_safe_ip_blocks_private"
+            # ── file_tools symlink / TOCTOU confinement (#1283) ──────────
+            "tools::file_tools::tests::write_file_refuses_symlink_escaping_project_root"
+            "tools::file_tools::tests::write_file_refuses_symlinked_parent_dir_escaping_project_root"
+            "tools::file_tools::tests::edit_file_refuses_symlink_escaping_project_root"
+            "tools::file_tools::tests::delete_file_refuses_symlink_escaping_project_root"
+            # ── MCP transport SSRF ─────────────────────────────────────
+            "mcp_client_connect_rejects_loopback_ssrf"
+            # ── sandbox path confinement (worker / fs / workspace) ────────
+            "worker::tests::write_outside_root_is_denied"
+            "worker::tests::symlink_escape_is_denied"
+            "fs::policy::tests::rejects_path_outside_every_root"
+            "workspace::tests::clonefile::release_refuses_path_outside_clones_root"
+            # ── sandbox spawn-with-policy integration (\`#[cfg(unix)]\`) ─────
+            "unix::spawn_with_policy_write_outside_root_is_denied"
+            "unix::spawn_with_policy_symlink_escape_is_denied"
+          )
+          missing=()
+          for t in "${required_tests[@]}"; do
+            # \Q...\E would be cleaner but grep -E doesn't speak it.
+            # Test names contain only [A-Za-z0-9_:] so plain interpolation
+            # is safe — no regex metachars to escape.
+            if ! grep -qE "^test ${t} \.\.\. ok\$" test-output.log; then
+              missing+=("$t")
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Required security-boundary tests did not run on ${{ runner.os }}:"
+            printf '  - %s\n' "${missing[@]}"
+            echo ""
+            echo "These tests guard SSRF, symlink/TOCTOU, and sandbox path-escape boundaries."
+            echo "If one was renamed, update the list. If one was intentionally removed,"
+            echo "document why on #1265 before deleting from this guard."
+            exit 1
+          fi
+          echo "✓ All ${#required_tests[@]} security-boundary tests ran on ${{ runner.os }}."
+
   doc:
     name: Docs
     runs-on: ubuntu-latest
