@@ -242,12 +242,8 @@ pub(crate) async fn execute_one_tool(
     tx: ToolExecutionContext<'_>,
 ) -> (String, String, bool, Option<String>) {
     let TurnContext {
-        project_root,
-        config,
-        db,
         session_id,
         tools,
-        mode,
         sink,
         sub_agent_cache,
         bg_agents,
@@ -307,28 +303,14 @@ pub(crate) async fn execute_one_tool(
         let policy = tools.sandbox_policy().clone();
         let read_cache = tools.file_read_cache();
         let fut = sub_agent_dispatch::execute_sub_agent(
-            project_root,
-            config,
-            db,
+            tx,
             &tc.arguments,
-            mode,
-            sink,
-            cancel.clone(),
             // Sub-agents get a fresh command channel (they auto-approve in all modes)
             &mut dummy_rx,
             Some(read_cache),
-            sub_agent_cache,
-            _session_id,
-            bg_agents,
             // Phase 5 PR-4 of #934: hand the parent's effective policy
             // to the child so `compose()` can stack restrictions.
             &policy,
-            // Phase E of #996: parent's spawner identity. The new
-            // sub-agent uses this to tag any bg-sub-agent reservation
-            // it makes (so the parent owns/can-cancel its bg children),
-            // and allocates a fresh `my_invocation_id` internally for
-            // its own bg-task scoping.
-            caller_spawner,
             // Layer 4 of #996 + #1076: foreground sub-agents are not
             // tracked in the bg-agent registry, so there is no
             // `ChildStatusEmitter` to fan out per-iteration heartbeats
@@ -336,7 +318,7 @@ pub(crate) async fn execute_one_tool(
             None,
             // #1108 P2a: pass the InvokeAgent tool_call_id so any
             // bg-sub-agent reservation can record it. The drain
-            // handler in `inference_loop` then persists the bg
+            // hook in the inference loop will persist the bg sub-
             // agent's narrative trace to `session_events` keyed by
             // this id, so the transcript renderer can fold it under
             // the parent's `InvokeAgent` tool result.

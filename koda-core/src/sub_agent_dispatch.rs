@@ -18,13 +18,13 @@ use crate::sub_agent_cache::SubAgentCache;
 use crate::tool_dispatch::execute_one_tool;
 use crate::tools::{self, ToolRegistry};
 use crate::trust::{self, ToolApproval, TrustMode, derive_child_trust};
+use crate::turn_context::ToolExecutionContext;
 
 use anyhow::{Context, Result};
 use koda_sandbox::{CwdProvider, GitWorktreeProvider, WorkspaceProvider};
 
 #[cfg(target_os = "macos")]
 use koda_sandbox::ClonefileProvider;
-use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -208,26 +208,39 @@ async fn run_bg_agent(
     // not "Errored". Clone before the move.
     let cancel_for_status = cancel.clone();
 
-    let result = execute_sub_agent(
+    // #1265 item 4 PR-3: bg agents own their args (`'static` for
+    // `tokio::spawn`), so we have to construct the parent's dispatch
+    // context locally from owned borrows. The `tools` field is a
+    // throwaway empty registry — `execute_sub_agent` ignores the
+    // parent's tools (sub-agents always build their own from
+    // `sub_config.allowed_tools`).
+    let placeholder_tools =
+        crate::tools::ToolRegistry::new(project_root.clone(), parent_config.max_context_tokens);
+    let bg_turn = crate::turn_context::TurnContext::new(
         &project_root,
         &parent_config,
         &db,
-        &sync_arguments,
-        parent_trust,
+        &parent_session,
         &buffering_sink,
         cancel,
+        &sub_agent_cache,
+        &nested_bg,
+        parent_trust,
+        &placeholder_tools,
+    );
+    // Phase E of #996: the bg agent has no in-process parent in
+    // the spawner sense — its `nested_bg` registry is fresh, and
+    // any bg work it spawns gets tagged with the bg agent's *own*
+    // invocation id (allocated inside the recursive call). The
+    // parent's cascade-cancel covers cross-registry teardown.
+    let bg_tx = crate::turn_context::ToolExecutionContext::new(&bg_turn, None);
+
+    let result = execute_sub_agent(
+        bg_tx,
+        &sync_arguments,
         &mut cmd_rx,
         None,
-        &sub_agent_cache,
-        &parent_session,
-        &nested_bg,
         &parent_sandbox_policy,
-        // Phase E of #996: the bg agent has no in-process parent in
-        // the spawner sense — its `nested_bg` registry is fresh, and
-        // any bg work it spawns gets tagged with the bg agent's *own*
-        // invocation id (allocated inside the recursive call). The
-        // parent's cascade-cancel covers cross-registry teardown.
-        None,
         // Layer 4 of #996 + #1076: forward the status emitter so the
         // loop can push live `Running { iter }` updates that fan out
         // to BOTH the watch channel (for `/agents` snapshots) and
@@ -432,34 +445,23 @@ pub(crate) fn parse_background_required(args: &serde_json::Value) -> anyhow::Res
 ///
 /// Results are cached in `sub_agent_cache` keyed by `(agent_name, prompt_hash)`.
 /// On cache hit, returns immediately without any LLM calls.
+///
+/// **#1265 item 4 PR-3**: takes the parent's [`ToolExecutionContext`]
+/// instead of 11 individual ambient args. The parent's `tools` field
+/// is intentionally unused — sub-agents construct their own
+/// `sub_tools` registry from `sub_config.allowed_tools`.
 #[tracing::instrument(skip_all, fields(agent_name, cached = false))]
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_sub_agent<'a>(
-    project_root: &'a Path,
-    parent_config: &'a KodaConfig,
-    db: &'a Database,
+    parent_tx: ToolExecutionContext<'a>,
     arguments: &'a str,
-    mode: TrustMode,
-    sink: &'a dyn crate::engine::EngineSink,
-    cancel: CancellationToken,
     cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
     parent_cache: Option<crate::tools::FileReadCache>,
-    sub_agent_cache: &'a SubAgentCache,
-    parent_session_id: &'a str,
-    bg_agents: &'a std::sync::Arc<crate::child_agent::ChildAgentRegistry>,
     // Phase 5 PR-4 of #934: parent's effective sandbox policy. The
     // child policy is composed onto this so the child can only narrow,
     // never widen — see [`koda_sandbox::SandboxPolicy::compose`] for
     // the per-field rules. Pass `&SandboxPolicy::strict_default()`
     // when there is no meaningful parent (top-level invocation).
     parent_sandbox_policy: &'a koda_sandbox::SandboxPolicy,
-    // Phase E of #996: the **caller's** invocation id. Used as the
-    // `spawner` tag on bg-sub-agent reservations so the parent (not
-    // the child) owns the right to wait/cancel its bg children. Pass
-    // `None` when called from top-level inference. Distinct from the
-    // child's own `my_invocation_id`, which is allocated below and
-    // tags any bg work the child itself spawns.
-    parent_spawner: Option<u32>,
     // Layer 4 of #996 + #1076: live iteration heartbeat.  Pass the
     // bg-agent's `ChildStatusEmitter` so each loop iteration can push
     // `Running { iter }` to BOTH the registry's per-task watch
@@ -478,6 +480,25 @@ pub(crate) fn execute_sub_agent<'a>(
     parent_tool_call_id: Option<&'a str>,
 ) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
     async move {
+        // #1265 item 4 PR-3: rebind context fields to the same names
+        // the body has used since pre-refactor, so the rest of this
+        // 700-line function reads exactly as before. The parent's
+        // `tools` registry is intentionally NOT bound — sub-agents
+        // build their own from `sub_config.allowed_tools`.
+        let crate::turn_context::TurnContext {
+            project_root,
+            config: parent_config,
+            db,
+            session_id: parent_session_id,
+            sink,
+            sub_agent_cache,
+            bg_agents,
+            mode,
+            ..
+        } = *parent_tx.turn;
+        let cancel = parent_tx.turn.cancel.clone();
+        let parent_spawner = parent_tx.caller_spawner;
+
         // Phase E of #996: allocate this invocation's id up-front. It
         // becomes the `caller_spawner` for every tool call inside
         // this sub-agent's loop, AND the `spawner` tag the cleanup
@@ -1080,6 +1101,27 @@ pub(crate) fn execute_sub_agent<'a>(
             &tools.skill_registry,
         );
 
+        // #1265 item 4 PR-3: build the sub-agent's own dispatch
+        // context once. Used by both `execute_one_tool` callsites in
+        // the per-iteration loop below — PR-2 had to construct this
+        // inline twice with identical args. Hoisted here because
+        // `sub_config`, `sub_session`, and `tools` are all bound by
+        // this point and don't change across iterations.
+        let sub_turn = crate::turn_context::TurnContext::new(
+            project_root,
+            &sub_config,
+            db,
+            &sub_session,
+            sink,
+            cancel.clone(),
+            sub_agent_cache,
+            bg_agents,
+            mode,
+            &tools,
+        );
+        let sub_tx =
+            crate::turn_context::ToolExecutionContext::new(&sub_turn, Some(my_invocation_id));
+
         // #1135: gemini-pattern grace turn. When `iter > max_turns` we
         // append a system reminder to the message list ("you have one
         // final chance — give your best answer NOW, no more tools")
@@ -1395,25 +1437,7 @@ pub(crate) fn execute_sub_agent<'a>(
                             //     loop." with success=false.
                             //   - Bash output streams through the parent
                             //     sink (free visibility win).
-                            let (_id, result, _success, _full) = {
-                                let sub_turn = crate::turn_context::TurnContext::new(
-                                    project_root,
-                                    &sub_config,
-                                    db,
-                                    &sub_session,
-                                    sink,
-                                    cancel.clone(),
-                                    sub_agent_cache,
-                                    bg_agents,
-                                    mode,
-                                    &tools,
-                                );
-                                let sub_tx = crate::turn_context::ToolExecutionContext::new(
-                                    &sub_turn,
-                                    Some(my_invocation_id),
-                                );
-                                execute_one_tool(tc, sub_tx).await
-                            };
+                            let (_id, result, _success, _full) = execute_one_tool(tc, sub_tx).await;
                             result
                         }
                         ToolApproval::Blocked => {
@@ -1456,25 +1480,8 @@ pub(crate) fn execute_sub_agent<'a>(
                             .await
                             {
                                 Some(ApprovalDecision::Approve) => {
-                                    let (_id, result, _success, _full) = {
-                                        let sub_turn = crate::turn_context::TurnContext::new(
-                                            project_root,
-                                            &sub_config,
-                                            db,
-                                            &sub_session,
-                                            sink,
-                                            cancel.clone(),
-                                            sub_agent_cache,
-                                            bg_agents,
-                                            mode,
-                                            &tools,
-                                        );
-                                        let sub_tx = crate::turn_context::ToolExecutionContext::new(
-                                            &sub_turn,
-                                            Some(my_invocation_id),
-                                        );
-                                        execute_one_tool(tc, sub_tx).await
-                                    };
+                                    let (_id, result, _success, _full) =
+                                        execute_one_tool(tc, sub_tx).await;
                                     result
                                 }
                                 Some(ApprovalDecision::Reject) => "[rejected by user]".to_string(),
