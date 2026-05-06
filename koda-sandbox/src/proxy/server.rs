@@ -476,25 +476,30 @@ mod tests {
     /// upstream and back onto the direct path. Critical because
     /// `*.walmart.com` (and friends) are corp-internal and routing
     /// them through Zscaler produces 403s.
+    ///
+    /// Test the *decision*, not the *side effect*: the negative
+    /// assertion "corp proxy was never contacted" is implied by the
+    /// positive assertion "client got the direct payload back as a
+    /// 200". `connect_upstream`'s NO_PROXY check is a mutually-
+    /// exclusive `if`/`else`: it either dials direct or dials corp,
+    /// never both. If a regression dialed corp here, the corp
+    /// listener has no CONNECT responder — `do_connect` would hang
+    /// on `read_line`, the test would time out, and we'd never reach
+    /// the assertions. So reaching the 200 + payload-match line
+    /// already proves the bypass fired. (#1265 item 8a follow-up.)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn chains_skips_upstream_for_no_proxy_hosts() {
         let payload = "DIRECT-NOT-CHAINED";
         let (real_port, _) = fake_upstream(payload).await;
 
-        // Bind a corp proxy that will NEVER receive a connection —
-        // we'll fail the test if it does. Don't even spawn an accept
-        // loop: an unbound port would be the cleanest signal, but the
-        // upstream layer treats "connect refused" as a real failure
-        // (502 to client) and would mask a NO_PROXY bug. Instead bind
-        // and assert no accepts happen by counting through a channel.
-        let corp_listener = StdTcpListener::bind("127.0.0.1:0").await.unwrap();
-        let corp_port = corp_listener.local_addr().unwrap().port();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-        tokio::spawn(async move {
-            while corp_listener.accept().await.is_ok() {
-                let _ = tx.send(());
-            }
-        });
+        // Bind a corp proxy that will NEVER receive a connection.
+        // We don't need to count accepts — the positive assertion
+        // below is sufficient (see doc-comment) — but we DO need to
+        // bind a real port so `with_upstream` resolves to a routable
+        // address, otherwise `connect_via_http_proxy` would fail with
+        // "connection refused" and mask a NO_PROXY bug as a 502.
+        let _corp_listener = StdTcpListener::bind("127.0.0.1:0").await.unwrap();
+        let corp_port = _corp_listener.local_addr().unwrap().port();
 
         let server = Server::bind(None, Filter::new(["127.0.0.1"]).unwrap())
             .await
@@ -507,18 +512,31 @@ mod tests {
         let proxy_port = server.port();
         tokio::spawn(server.serve());
 
-        let (status, body) = do_connect(proxy_port, &format!("127.0.0.1:{real_port}")).await;
+        // Wrap `do_connect` in a deadline so a NO_PROXY regression is
+        // observable: a regression would dial the corp listener, which
+        // never sends a CONNECT response, and `do_connect` would hang
+        // forever on `read_line`. With the timeout, the regression
+        // surfaces as a clean test failure within 2s instead of an
+        // indefinite hang. 2s is generous — the happy path completes
+        // in ~10ms locally; CI typically <100ms.
+        let (status, body) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            do_connect(proxy_port, &format!("127.0.0.1:{real_port}")),
+        )
+        .await
+        .expect(
+            "do_connect timed out after 2s — NO_PROXY bypass likely \
+             regressed; client is hanging on the corp listener's \
+             unanswered CONNECT",
+        );
         assert!(status.starts_with("HTTP/1.1 200"), "got: {status:?}");
         let body_str = String::from_utf8_lossy(&body);
         let body_str = body_str.trim_start_matches("\r\n");
-        assert_eq!(body_str, payload);
-
-        // Give the accept loop a moment; corp proxy must not have been
-        // contacted because 127.0.0.1 is in NO_PROXY.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert!(
-            rx.try_recv().is_err(),
-            "NO_PROXY-listed host must bypass upstream proxy"
+        assert_eq!(
+            body_str, payload,
+            "client received the direct payload, proving the NO_PROXY \
+             bypass fired — a corp-route would have hung do_connect on \
+             the unanswered CONNECT, not returned this body"
         );
     }
 
