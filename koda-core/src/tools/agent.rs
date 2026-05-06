@@ -458,7 +458,7 @@ mod tests {
     /// If dispatch ever falls through to the trait impl, it must
     /// preserve the pre-#1265 "should not be reached" failure path:
     /// success=false with the same message verbatim.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn invoke_agent_unreached_path_returns_failure() {
         let t = InvokeAgentTool;
         let tmp = tempfile::tempdir().unwrap();
