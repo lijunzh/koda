@@ -76,6 +76,17 @@ jobs:
             --lcov --output-path lcov-core.info \
             -- --test-threads=1
 
+      # JSON export from the same profraw as the lcov run above. Used by
+      # the per-file threshold check (#1265 item 8c) further down. Must
+      # run BEFORE the koda-sandbox coverage step — that step's test run
+      # overwrites the workspace profraw.
+      - name: koda-core JSON coverage report
+        id: core_json
+        if: steps.core.outcome == 'success'
+        continue-on-error: true
+        run: |
+          cargo llvm-cov report --json --output-path cov-core.json
+
       - name: koda-sandbox coverage (≥ 80% lines)
         id: sandbox
         if: steps.install.outcome == 'success'
@@ -95,6 +106,30 @@ jobs:
             --fail-under-lines 80 \
             --lcov --output-path lcov-sandbox.info \
             -- --skip pool::tests
+
+      # Symmetric to core_json above.
+      - name: koda-sandbox JSON coverage report
+        id: sandbox_json
+        if: steps.sandbox.outcome == 'success'
+        continue-on-error: true
+        run: |
+          cargo llvm-cov report --json --output-path cov-sandbox.json
+
+      # #1265 item 8c: per-file thresholds for security-boundary modules.
+      # The crate-level 80% gate above is a coarse safety net — a single
+      # security-critical file can regress while the crate average stays
+      # above the bar (hundreds of low-risk files dilute the signal).
+      # This step gates each file enumerated in
+      # scripts/check_per_file_coverage.py at its measured baseline
+      # minus a small buffer. Files that don't compile on this platform
+      # (bwrap.rs on macOS, seatbelt.rs on Linux) are skipped — the
+      # other platform's run gates them.
+      - name: Per-file security-boundary coverage thresholds (#1265 item 8c)
+        id: per_file
+        if: steps.core_json.outcome == 'success' && steps.sandbox_json.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python3 scripts/check_per_file_coverage.py cov-core.json cov-sandbox.json
 
       # Drop a marker so the report job can distinguish "tooling broken,
       # never measured coverage" from "actually measured, dropped below
@@ -141,7 +176,9 @@ jobs:
         if: steps.install.outcome == 'success'
         with:
           name: lcov-reports-${{ runner.os }}
-          path: lcov-*.info
+          path: |
+            lcov-*.info
+            cov-*.json
           retention-days: 7
 
       # Final guard: fail this matrix leg only on REAL coverage regressions.
@@ -158,12 +195,13 @@ jobs:
           fi
           fail=0
           for crate_outcome in \
-              "core=${{ steps.core.outcome }}" \
-              "sandbox=${{ steps.sandbox.outcome }}"; do
+              "crate koda-core=${{ steps.core.outcome }}" \
+              "crate koda-sandbox=${{ steps.sandbox.outcome }}" \
+              "per-file thresholds (#1265 8c)=${{ steps.per_file.outcome }}"; do
             name="${crate_outcome%%=*}"
             outcome="${crate_outcome#*=}"
             if [ "$outcome" != "success" ]; then
-              echo "::error::koda-$name coverage check did not succeed: $outcome"
+              echo "::error::Coverage check '$name' did not succeed: $outcome"
               fail=1
             fi
           done
