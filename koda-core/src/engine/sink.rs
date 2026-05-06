@@ -602,6 +602,51 @@ impl TestSink {
             }
         }
     }
+
+    /// Wait for the first event for which `extract` returns `Some(T)`,
+    /// or until `timeout`. Returns the extracted `T` on match, `Err`
+    /// on timeout or channel close.
+    ///
+    /// This is the [`Iterator::find_map`] sister of [`Self::wait_for`]:
+    /// useful when the test needs a *field* of the awaited event
+    /// (e.g. the `id` of an `AskUserRequest`) rather than just
+    /// confirmation that one was emitted. Eliminates the
+    /// `wait_for(...).await + events().find_map(...)` two-step that
+    /// previously required a fixed sleep before the historical scan.
+    ///
+    /// Same race-free subscribe-before-scan ordering as [`Self::wait_for`].
+    pub async fn wait_for_map<F, T>(
+        &self,
+        timeout: std::time::Duration,
+        mut extract: F,
+    ) -> Result<T, &'static str>
+    where
+        F: FnMut(&EngineEvent) -> Option<T>,
+    {
+        let mut rx = self.subscribe();
+        if let Some(value) = self.events().iter().find_map(&mut extract) {
+            return Ok(value);
+        }
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err("timeout waiting for predicate");
+            }
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Ok(ev)) => {
+                    if let Some(value) = extract(&ev) {
+                        return Ok(value);
+                    }
+                }
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                    return Err("sink closed");
+                }
+                Err(_) => return Err("timeout waiting for predicate"),
+            }
+        }
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -970,5 +1015,155 @@ mod tests {
     fn forwarding_child_sink_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<ForwardingChildSink>();
+    }
+
+    // ── wait_for_map ────────────────────────────────────────────────────
+    //
+    // Why these tests live here, not in the consumer modules: `wait_for_map`
+    // is the deterministic-readiness primitive that lets approval_flow tests
+    // (and others) drop fixed `tokio::time::sleep` calls. If the helper
+    // breaks subtly — wrong ordering, missed-event race, timeout off-by-one
+    // — every consumer test goes flaky in a way that's hard to bisect. Pin
+    // the contract here.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wait_for_map_returns_extracted_value_for_already_emitted_event() {
+        // The historical-scan path: event was emitted *before* wait_for_map
+        // is called. Must still resolve immediately, not wait for the next
+        // broadcast. (This is what makes the helper safe to use after
+        // spawning a task without a fixed pre-sleep.)
+        let sink = TestSink::new();
+        sink.emit(EngineEvent::Info {
+            message: "first".into(),
+        });
+        sink.emit(EngineEvent::Info {
+            message: "second".into(),
+        });
+
+        let result: Result<String, _> = sink
+            .wait_for_map(std::time::Duration::from_secs(1), |e| match e {
+                EngineEvent::Info { message } if message == "second" => Some(message.clone()),
+                _ => None,
+            })
+            .await;
+
+        assert_eq!(result.unwrap(), "second");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wait_for_map_resolves_on_event_emitted_after_subscribe() {
+        // The live-channel path: the awaited event is emitted *after*
+        // wait_for_map subscribes. This is the common case for the
+        // approval_flow tests — the spawned task hasn't run yet.
+        let sink = std::sync::Arc::new(TestSink::new());
+        let sink2 = std::sync::Arc::clone(&sink);
+        let task = tokio::spawn(async move {
+            // Small natural delay; not load-bearing, just exercising the
+            // "emit happens after wait_for_map starts polling" path.
+            tokio::task::yield_now().await;
+            sink2.emit(EngineEvent::Info {
+                message: "hello".into(),
+            });
+        });
+
+        let value: String = sink
+            .wait_for_map(std::time::Duration::from_secs(5), |e| match e {
+                EngineEvent::Info { message } => Some(message.clone()),
+                _ => None,
+            })
+            .await
+            .expect("should resolve before timeout");
+
+        assert_eq!(value, "hello");
+        task.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wait_for_map_skips_non_matching_events() {
+        // The live channel can carry many events the predicate doesn't
+        // care about. wait_for_map must keep polling, not return on the
+        // first arrival.
+        use crate::engine::event::TurnEndReason;
+        let sink = std::sync::Arc::new(TestSink::new());
+        let sink2 = std::sync::Arc::clone(&sink);
+        tokio::spawn(async move {
+            sink2.emit(EngineEvent::Info {
+                message: "noise-1".into(),
+            });
+            sink2.emit(EngineEvent::Info {
+                message: "noise-2".into(),
+            });
+            sink2.emit(EngineEvent::TurnEnd {
+                turn_id: "t-1".into(),
+                reason: TurnEndReason::Complete,
+            });
+            sink2.emit(EngineEvent::Info {
+                message: "noise-3".into(),
+            });
+        });
+
+        let turn_id: String = sink
+            .wait_for_map(std::time::Duration::from_secs(5), |e| match e {
+                EngineEvent::TurnEnd { turn_id, .. } => Some(turn_id.clone()),
+                _ => None,
+            })
+            .await
+            .expect("TurnEnd should arrive");
+
+        assert_eq!(turn_id, "t-1");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wait_for_map_returns_err_on_timeout() {
+        // No matching event will ever arrive — helper must respect the
+        // bounded timeout instead of hanging the test runner.
+        let sink = TestSink::new();
+        sink.emit(EngineEvent::Info {
+            message: "unrelated".into(),
+        });
+
+        let result: Result<(), _> = sink
+            .wait_for_map(std::time::Duration::from_millis(50), |e| match e {
+                EngineEvent::TurnEnd { .. } => Some(()),
+                _ => None,
+            })
+            .await;
+
+        assert!(result.is_err(), "expected timeout error, got {result:?}");
+    }
+
+    // ── wait_for (backfill) ────────────────────────────────────────────
+    //
+    // The boolean-predicate sister was added before this test module
+    // existed; pin the same race-free contract for symmetry.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wait_for_returns_event_for_already_emitted_match() {
+        use crate::engine::event::TurnEndReason;
+        let sink = TestSink::new();
+        sink.emit(EngineEvent::TurnEnd {
+            turn_id: "t-1".into(),
+            reason: TurnEndReason::Complete,
+        });
+
+        let ev = sink
+            .wait_for(std::time::Duration::from_secs(1), |e| {
+                matches!(e, EngineEvent::TurnEnd { .. })
+            })
+            .await
+            .expect("already-emitted event should resolve immediately");
+
+        assert!(matches!(ev, EngineEvent::TurnEnd { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wait_for_returns_err_on_timeout() {
+        let sink = TestSink::new();
+        let result = sink
+            .wait_for(std::time::Duration::from_millis(50), |e| {
+                matches!(e, EngineEvent::TurnEnd { .. })
+            })
+            .await;
+        assert!(result.is_err());
     }
 }
