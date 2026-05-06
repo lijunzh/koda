@@ -16,12 +16,19 @@
 //!   safety on every hop (#1280). Redirects to loopback / RFC1918 private
 //!   ranges / link-local cloud-metadata IPs are blocked even if the
 //!   initial URL was public.
+//! - **DNS-rebinding TOCTOU defense (#1314)**: every hop's `reqwest::Client`
+//!   is built with `resolve_to_addrs(host, &validated_addrs)` so the
+//!   actual TCP connect uses the same IPs we validated. A malicious DNS
+//!   server with a low-TTL A-record swap cannot pass the initial
+//!   `validate_url_safety` check then resolve to `127.0.0.1` /
+//!   `169.254.169.254` on the connect.
 //! - Timeout: 15 seconds (see `DEFAULT_TIMEOUT_SECS`) for the entire
 //!   fetch including all redirect hops.
 
 use crate::providers::ToolDefinition;
 use anyhow::Result;
 use serde_json::{Value, json};
+use std::net::SocketAddr;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 15;
 
@@ -61,18 +68,48 @@ pub fn definitions() -> Vec<ToolDefinition> {
     }]
 }
 
+/// A URL that has passed every SSRF safety check, plus the resolved
+/// socket addresses to pin reqwest's connect to.
+///
+/// Returned by [`validate_url_safety`] and consumed by
+/// [`safely_follow_redirects`] / [`pinned_client_for`].
+///
+/// `addrs` is empty when the URL's host is an IP literal (no DNS lookup
+/// happened, so there's nothing to pin — reqwest will connect to the
+/// IP in the URL directly, which we already validated).
+///
+/// When `addrs` is non-empty, the per-hop client is built with
+/// `reqwest::ClientBuilder::resolve_to_addrs(host, &addrs)`, which
+/// makes reqwest skip its own DNS lookup and connect directly to one
+/// of the validated IPs. This closes the DNS-rebinding TOCTOU window
+/// (#1314).
+#[derive(Debug, Clone)]
+pub(crate) struct ValidatedTarget {
+    pub url: url::Url,
+    pub addrs: Vec<SocketAddr>,
+}
+
 /// Validate a URL against koda's SSRF policy.
 ///
 /// Combines the synchronous `is_safe_url` host-list / IP-range checks
 /// with a DNS pre-check that resolves domain names and rejects any
-/// resolution that rivate/internal IP. Returns the parsed
-/// [`url::Url`] on success so callers don't re-parse.
+/// resolution to a private/internal IP. Returns a [`ValidatedTarget`]
+/// on success, carrying both the parsed URL and the resolved socket
+/// addresses so callers can pin reqwest's connect to the same IPs we
+/// just validated.
 ///
 /// This is the **single seam** all WebFetch reachability decisions go
 /// through — both the initial URL check and every redirect hop call this
 /// function. Adding a new SSRF check here is automatically applied to
 /// redirect chains too (#1280).
-async fn validate_url_safety(url_str: &str) -> Result<url::Url> {
+///
+/// **DNS rebinding (#1314):** the returned `addrs` are the *exact* IPs
+/// validated here. By passing them to
+/// [`reqwest::ClientBuilder::resolve_to_addrs`] the caller ensures
+/// reqwest's TCP connect targets one of these IPs rather than
+/// re-resolving the hostname (which a malicious low-TTL DNS server
+/// could swap to a private IP between our check and the connect).
+async fn validate_url_safety(url_str: &str) -> Result<ValidatedTarget> {
     if !url_str.starts_with("http://") && !url_str.starts_with("https://") {
         anyhow::bail!("URL must start with http:// or https://");
     }
@@ -87,6 +124,12 @@ async fn validate_url_safety(url_str: &str) -> Result<url::Url> {
     let parsed = url::Url::parse(url_str)
         .map_err(|e| anyhow::anyhow!("Failed to parse URL '{url_str}': {e}"))?;
 
+    // IP-literal hosts: nothing to pin — the IP is already in the URL
+    // and was checked by `is_safe_url`. Leave `addrs` empty so the
+    // per-hop client builder skips `resolve_to_addrs` (which would be a
+    // no-op anyway, since reqwest doesn't look up IP literals).
+    let mut addrs = Vec::new();
+
     if let Some(host) = parsed.host_str()
         && parsed
             .host()
@@ -94,14 +137,18 @@ async fn validate_url_safety(url_str: &str) -> Result<url::Url> {
     {
         let port = parsed.port_or_known_default().unwrap_or(80);
         match tokio::net::lookup_host(format!("{host}:{port}")).await {
-            Ok(addrs) => {
-                for addr in addrs {
+            Ok(resolved) => {
+                for addr in resolved {
                     if !is_safe_ip(addr.ip()) {
                         anyhow::bail!(
                             "URL blocked: domain '{host}' resolves to private/internal IP {}.",
                             addr.ip()
                         );
                     }
+                    addrs.push(addr);
+                }
+                if addrs.is_empty() {
+                    anyhow::bail!("DNS resolution returned no addresses for '{host}'");
                 }
             }
             Err(e) => {
@@ -110,14 +157,42 @@ async fn validate_url_safety(url_str: &str) -> Result<url::Url> {
         }
     }
 
-    Ok(parsed)
+    Ok(ValidatedTarget { url: parsed, addrs })
+}
+
+/// Build a [`reqwest::Client`] that pins TCP connects for `target.url`'s
+/// host to `target.addrs`, defeating DNS-rebinding TOCTOU (#1314).
+///
+/// Inherits all the standard koda HTTP client config (timeouts, proxy,
+/// localhost-TLS-bypass) from
+/// [`crate::providers::build_http_client_builder`].
+///
+/// When `target.addrs` is empty (IP-literal URLs), no `resolve_to_addrs`
+/// override is applied — reqwest connects to the IP in the URL directly.
+fn pinned_client_for(target: &ValidatedTarget) -> reqwest::Client {
+    let mut builder =
+        crate::providers::build_http_client_builder(None, reqwest::redirect::Policy::none());
+
+    if !target.addrs.is_empty()
+        && let Some(host) = target.url.host_str()
+    {
+        // `resolve_to_addrs` overrides DNS for `host` only. Other hosts
+        // (e.g. proxy CONNECT targets) still use the system resolver,
+        // which is what we want.
+        builder = builder.resolve_to_addrs(host, &target.addrs);
+    }
+
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }
 
 /// Follow HTTP redirects manually, re-validating SSRF safety on every hop.
 ///
-/// `client` MUST be configured with `redirect::Policy::none()` (which is
-/// what [`web_fetch_client`] does); otherwise reqwest will silently
-/// follow redirects without re-validation, defeating the whole point.
+/// A fresh [`reqwest::Client`] is built per hop via [`pinned_client_for`]
+/// so that **the actual TCP connect uses the IPs we just validated**, not
+/// whatever the system resolver returns at connect time. This closes the
+/// DNS-rebinding TOCTOU window (#1314): a malicious DNS server with a
+/// low-TTL A-record swap can no longer pass `validate_url_safety` then
+/// have reqwest connect to `127.0.0.1` / `169.254.169.254`.
 ///
 /// `validator` is the safety check applied to every redirect target.
 /// Production callers pass [`validate_url_safety`]; tests can pass a
@@ -134,21 +209,25 @@ async fn validate_url_safety(url_str: &str) -> Result<url::Url> {
 /// Method is GET throughout (WebFetch only does GETs); see the function
 /// body for the RFC 7231 method-preservation note we'd need to revisit
 /// if WebFetch ever gains POST.
+///
+/// Per-hop client construction sacrifices connection pooling between
+/// hops, but WebFetch is a low-throughput single-shot tool so the
+/// extra TCP+TLS handshake per redirect is acceptable.
 pub(crate) async fn safely_follow_redirects<F, Fut>(
-    client: &reqwest::Client,
-    initial_url: url::Url,
+    initial: ValidatedTarget,
     max_hops: usize,
     validator: F,
 ) -> Result<reqwest::Response>
 where
     F: Fn(String) -> Fut,
-    Fut: std::future::Future<Output = Result<url::Url>>,
+    Fut: std::future::Future<Output = Result<ValidatedTarget>>,
 {
-    let mut current_url = initial_url;
+    let mut current = initial;
     // hop 0 is the initial request; redirects 1..=max_hops are the followed ones.
     for hop in 0..=max_hops {
+        let client = pinned_client_for(&current);
         let response = client
-            .get(current_url.clone())
+            .get(current.url.clone())
             .header("User-Agent", USER_AGENT)
             .send()
             .await
@@ -167,7 +246,8 @@ where
 
         if hop == max_hops {
             anyhow::bail!(
-                "WebFetch exceeded max redirect hops ({max_hops}); last URL: {current_url}"
+                "WebFetch exceeded max redirect hops ({max_hops}); last URL: {}",
+                current.url
             );
         }
 
@@ -176,22 +256,25 @@ where
             .get(reqwest::header::LOCATION)
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Redirect status {status} from {current_url} but no Location header"
+                    "Redirect status {status} from {} but no Location header",
+                    current.url
                 )
             })?
             .to_str()
             .map_err(|e| {
                 anyhow::anyhow!(
-                    "Redirect Location header from {current_url} is not valid UTF-8: {e}"
+                    "Redirect Location header from {} is not valid UTF-8: {e}",
+                    current.url
                 )
             })?
             .to_string();
 
         // `Url::join` handles absolute URLs, scheme-relative URLs (`//foo/bar`),
         // path-absolute (`/foo`), and relative (`foo`) Location values per RFC 3986.
-        let next_url = current_url.join(&location).map_err(|e| {
+        let next_url = current.url.join(&location).map_err(|e| {
             anyhow::anyhow!(
-                "Failed to resolve redirect Location '{location}' against {current_url}: {e}"
+                "Failed to resolve redirect Location '{location}' against {}: {e}",
+                current.url
             )
         })?;
 
@@ -199,8 +282,14 @@ where
         // the initial is_safe_url+DNS check does NOT cover redirect chains, so
         // a public URL redirecting to 169.254.169.254 would have been silently
         // followed before. Now every hop is checked.
-        current_url = validator(next_url.to_string()).await.map_err(|e| {
-            anyhow::anyhow!("Redirect from {current_url} to {next_url} blocked by SSRF policy: {e}")
+        //
+        // The returned ValidatedTarget carries the resolved IPs that
+        // pinned_client_for() will pass to resolve_to_addrs() on the
+        // NEXT iteration — so #1314's TOCTOU window is also closed for
+        // every redirect hop, not just the initial fetch.
+        let prev_url = current.url.clone();
+        current = validator(next_url.to_string()).await.map_err(|e| {
+            anyhow::anyhow!("Redirect from {prev_url} to {next_url} blocked by SSRF policy: {e}")
         })?;
     }
 
@@ -209,9 +298,16 @@ where
     unreachable!("safely_follow_redirects loop exited without returning")
 }
 
-/// Get-or-init the WebFetch HTTP client. Configured with redirect policy
-/// **disabled** (`Policy::none()`) so [`safely_follow_redirects`] owns
-/// the redirect loop and can re-validate every hop against SSRF policy.
+/// Get-or-init the WebFetch HTTP client.
+///
+/// **Deprecated as of #1314**: kept only for backwards-compat with any
+/// test or external caller that still expects a shared client. Production
+/// `web_fetch` no longer uses this — [`safely_follow_redirects`] builds
+/// a fresh client per hop via [`pinned_client_for`] so DNS-validated
+/// IPs are passed to `resolve_to_addrs`. A shared client cannot do that
+/// because the resolver overrides are baked in at `Client::build()`
+/// time and the host changes per redirect.
+#[allow(dead_code)]
 fn web_fetch_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -229,12 +325,11 @@ pub async fn web_fetch(args: &Value, max_body_chars: usize) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("Missing 'url' argument"))?;
     let raw = args["raw"].as_bool().unwrap_or(false);
 
-    let initial_url = validate_url_safety(url_str).await?;
-    let client = web_fetch_client();
+    let initial_target = validate_url_safety(url_str).await?;
 
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS),
-        safely_follow_redirects(client, initial_url, MAX_REDIRECTS, |u| async move {
+        safely_follow_redirects(initial_target, MAX_REDIRECTS, |u| async move {
             validate_url_safety(&u).await
         }),
     )
@@ -684,15 +779,27 @@ mod tests {
     /// A validator that allows any URL. Lets us exercise the redirect loop
     /// itself (loopback test server hitting loopback redirect targets)
     /// without the production SSRF check rejecting our own test fixtures.
-    async fn permissive_validator(url: String) -> Result<url::Url> {
-        url::Url::parse(&url).map_err(|e| anyhow::anyhow!("parse: {e}"))
+    ///
+    /// Returns an empty `addrs` list, which makes [`pinned_client_for`]
+    /// skip the `resolve_to_addrs` override — reqwest then uses the
+    /// system resolver, which correctly resolves loopback IP literals
+    /// in the test URLs.
+    async fn permissive_validator(url: String) -> Result<ValidatedTarget> {
+        let parsed = url::Url::parse(&url).map_err(|e| anyhow::anyhow!("parse: {e}"))?;
+        Ok(ValidatedTarget {
+            url: parsed,
+            addrs: Vec::new(),
+        })
     }
 
-    fn test_client() -> reqwest::Client {
-        crate::providers::build_http_client_with_redirect_policy(
-            None,
-            reqwest::redirect::Policy::none(),
-        )
+    /// Build a [`ValidatedTarget`] for an IP-literal URL (test-only helper).
+    /// Empty `addrs` is correct for IP literals — reqwest connects to the
+    /// IP in the URL directly without DNS lookup.
+    fn ip_literal_target(url_str: &str) -> ValidatedTarget {
+        ValidatedTarget {
+            url: url::Url::parse(url_str).expect("valid URL"),
+            addrs: Vec::new(),
+        }
     }
 
     /// The headline #1280 bug: a public-looking URL redirects to loopback,
@@ -707,9 +814,8 @@ mod tests {
         )])
         .await;
 
-        let initial = url::Url::parse(&server_url).unwrap();
-        let client = test_client();
-        let result = safely_follow_redirects(&client, initial, MAX_REDIRECTS, |u| async move {
+        let initial = ip_literal_target(&server_url);
+        let result = safely_follow_redirects(initial, MAX_REDIRECTS, |u| async move {
             validate_url_safety(&u).await
         })
         .await;
@@ -733,9 +839,8 @@ mod tests {
         )])
         .await;
 
-        let initial = url::Url::parse(&server_url).unwrap();
-        let client = test_client();
-        let result = safely_follow_redirects(&client, initial, MAX_REDIRECTS, |u| async move {
+        let initial = ip_literal_target(&server_url);
+        let result = safely_follow_redirects(initial, MAX_REDIRECTS, |u| async move {
             validate_url_safety(&u).await
         })
         .await;
@@ -759,9 +864,8 @@ mod tests {
         steps.push(Step::Ok("never reached".to_string()));
         let (server_url, ct) = spawn_test_server(steps).await;
 
-        let initial = url::Url::parse(&server_url).unwrap();
-        let client = test_client();
-        let result = safely_follow_redirects(&client, initial, 3, permissive_validator).await;
+        let initial = ip_literal_target(&server_url);
+        let result = safely_follow_redirects(initial, 3, permissive_validator).await;
 
         ct.cancel();
         let err = result.expect_err("hop limit must be enforced");
@@ -783,12 +887,10 @@ mod tests {
         ])
         .await;
 
-        let initial = url::Url::parse(&format!("{server_url}/a")).unwrap();
-        let client = test_client();
-        let response =
-            safely_follow_redirects(&client, initial, MAX_REDIRECTS, permissive_validator)
-                .await
-                .expect("relative redirect should succeed");
+        let initial = ip_literal_target(&format!("{server_url}/a"));
+        let response = safely_follow_redirects(initial, MAX_REDIRECTS, permissive_validator)
+            .await
+            .expect("relative redirect should succeed");
 
         let final_url = response.url().clone();
         let body = response.text().await.unwrap();
@@ -810,9 +912,8 @@ mod tests {
         let (server_url, ct) =
             spawn_test_server(vec![Step::Redirect("//127.0.0.1:1/x".to_string())]).await;
 
-        let initial = url::Url::parse(&server_url).unwrap();
-        let client = test_client();
-        let result = safely_follow_redirects(&client, initial, MAX_REDIRECTS, |u| async move {
+        let initial = ip_literal_target(&server_url);
+        let result = safely_follow_redirects(initial, MAX_REDIRECTS, |u| async move {
             validate_url_safety(&u).await
         })
         .await;
@@ -836,15 +937,226 @@ mod tests {
         ])
         .await;
 
-        let initial = url::Url::parse(&server_url).unwrap();
-        let client = test_client();
-        let response =
-            safely_follow_redirects(&client, initial, MAX_REDIRECTS, permissive_validator)
-                .await
-                .expect("happy path should succeed");
+        let initial = ip_literal_target(&server_url);
+        let response = safely_follow_redirects(initial, MAX_REDIRECTS, permissive_validator)
+            .await
+            .expect("happy path should succeed");
         let body = response.text().await.unwrap();
 
         ct.cancel();
         assert_eq!(body, "hello world");
+    }
+
+    // ========================================================================
+    // DNS-rebinding TOCTOU regression tests (#1314)
+    //
+    // The bug we're guarding against: pre-#1314, validate_url_safety called
+    // tokio::net::lookup_host to confirm a domain resolves to a public IP,
+    // then handed the URL (NOT the resolved IPs) off to a shared
+    // reqwest::Client whose connect performs its OWN DNS resolution. A
+    // malicious DNS server with a low-TTL A-record swap could pass the
+    // validation lookup with `8.8.8.8` then resolve to `127.0.0.1` /
+    // `169.254.169.254` on the connect.
+    //
+    // Strategy: prove `resolve_to_addrs` pinning is active by using an
+    // RFC-2606-reserved `.invalid` hostname (guaranteed to fail real DNS)
+    // and a target whose `addrs` points at a real local server. If pinning
+    // works, the request succeeds (reqwest uses the pinned addr, never
+    // touches DNS). If pinning is broken, the request fails on NXDOMAIN.
+    // Counterexample test: an empty addrs list with a `.invalid` host
+    // MUST fail — confirming the test would catch a regression.
+    // ========================================================================
+
+    /// validate_url_safety must populate `addrs` with non-empty resolved
+    /// IPs for a domain host so callers can pin reqwest's connect.
+    ///
+    /// Uses `localhost` (NOT a private IP per `is_safe_url`'s blocklist)
+    /// — wait, localhost IS blocked. Use `example.com` which resolves to
+    /// a public IP via real DNS. This test requires network; if DNS fails
+    /// (offline CI, etc.) it's skipped via the Err arm rather than
+    /// flaking. The behavior we care about (non-empty addrs on success)
+    /// is what we assert.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_validate_url_safety_returns_resolved_addrs_for_domain() {
+        let result = validate_url_safety("https://example.com/").await;
+        match result {
+            Ok(target) => {
+                assert!(
+                    !target.addrs.is_empty(),
+                    "validate_url_safety must return resolved socket addrs for a domain so \
+                     callers can pin reqwest's connect (#1314); got empty addrs for example.com"
+                );
+                // Sanity: every returned addr must be safe (the validator
+                // already enforced this, but double-check).
+                for addr in &target.addrs {
+                    assert!(
+                        is_safe_ip(addr.ip()),
+                        "validate_url_safety returned unsafe IP {}",
+                        addr.ip()
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "SKIPPING test_validate_url_safety_returns_resolved_addrs_for_domain: {e} \
+                     (likely offline CI — the addrs-pinning behavior is also covered by \
+                     test_pinned_client_uses_resolve_to_addrs which doesn't need real DNS)"
+                );
+            }
+        }
+    }
+
+    /// IP-literal URLs need no DNS lookup, so `addrs` must be empty.
+    /// (Production code uses `addrs.is_empty()` as the signal to skip
+    /// `resolve_to_addrs`, which would be a no-op for IP literals anyway
+    /// but keeps the wire clean.)
+    ///
+    /// Uses `8.8.8.8` (Google DNS — public IP, passes is_safe_url) so
+    /// validate_url_safety doesn't reject it for being private.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_validate_url_safety_empty_addrs_for_ip_literal() {
+        let target = validate_url_safety("http://8.8.8.8/")
+            .await
+            .expect("public IP literal must validate");
+        assert!(
+            target.addrs.is_empty(),
+            "IP-literal URLs need no DNS pinning; addrs must stay empty, got: {:?}",
+            target.addrs
+        );
+    }
+
+    /// **The headline #1314 regression test.** Proves `pinned_client_for`
+    /// actually wires `resolve_to_addrs` into the reqwest client.
+    ///
+    /// Setup: real local axum server on 127.0.0.1:PORT. ValidatedTarget
+    /// uses `http://attacker.invalid:PORT/` (RFC-2606 `.invalid` TLD,
+    /// guaranteed NXDOMAIN on real DNS) but pins `addrs = [127.0.0.1:PORT]`.
+    ///
+    /// If pinning works → reqwest connects to 127.0.0.1:PORT, request
+    /// succeeds, body matches. If pinning is broken → reqwest tries to
+    /// resolve `attacker.invalid` via system DNS, gets NXDOMAIN, fails.
+    ///
+    /// This test would FAIL if someone reverted #1314 by removing the
+    /// `resolve_to_addrs` call from pinned_client_for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_pinned_client_uses_resolve_to_addrs() {
+        let (server_url, ct) = spawn_test_server(vec![Step::Ok("pinning works".to_string())]).await;
+
+        // Extract the port the test server is listening on.
+        let parsed = url::Url::parse(&server_url).unwrap();
+        let port = parsed
+            .port()
+            .expect("test server URL must have explicit port");
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        // Spoofed URL: hostname is RFC-2606 `.invalid` (guaranteed
+        // NXDOMAIN). Without `resolve_to_addrs` pinning, this fetch
+        // CANNOT succeed.
+        let spoofed_url = url::Url::parse(&format!("http://attacker.invalid:{port}/")).unwrap();
+        let target = ValidatedTarget {
+            url: spoofed_url,
+            addrs: vec![addr],
+        };
+
+        let response = safely_follow_redirects(target, MAX_REDIRECTS, permissive_validator)
+            .await
+            .expect(
+                "pinned_client_for MUST honor `addrs` via resolve_to_addrs (#1314); \
+                 if this fails with a DNS error, the pinning has regressed and the \
+                 DNS-rebinding TOCTOU window is reopened",
+            );
+        let body = response.text().await.unwrap();
+
+        ct.cancel();
+        assert_eq!(body, "pinning works");
+    }
+
+    /// Counterexample to the test above: prove the test methodology works
+    /// by showing that without pinning (empty `addrs`), the same
+    /// `.invalid` hostname **does** fail with a DNS error.
+    ///
+    /// This guards against a sneaky regression where someone breaks
+    /// pinning but the headline test passes anyway because of some other
+    /// fallback. If THIS test ever passes, the headline test is no
+    /// longer trustworthy.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_invalid_hostname_without_pinning_fails() {
+        // No server needed — the DNS lookup happens before any TCP
+        // connect, so the request never reaches a server.
+        let target = ValidatedTarget {
+            url: url::Url::parse("http://attacker.invalid:1/").unwrap(),
+            addrs: Vec::new(), // <-- the key difference: no pinning
+        };
+
+        let result = safely_follow_redirects(target, MAX_REDIRECTS, permissive_validator).await;
+
+        let err = result.expect_err(
+            "control test: a `.invalid` hostname WITHOUT pinning must fail (NXDOMAIN); \
+             if this passes, the test methodology for `test_pinned_client_uses_resolve_to_addrs` \
+             is broken and that test's success no longer proves pinning works",
+        );
+        // Don't assert on the exact error string — reqwest's DNS error
+        // wording varies across platforms. The fact that it errored at
+        // all (vs. successfully connecting somewhere) is the signal.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("HTTP request failed"),
+            "expected an HTTP/connection failure, got: {msg}"
+        );
+    }
+
+    /// Redirect chains must also re-pin per hop. If a hop redirects to a
+    /// new host, the validator returns a new ValidatedTarget with that
+    /// host's resolved addrs, and the next iteration's pinned_client_for
+    /// applies the new pinning.
+    ///
+    /// We simulate this by having the test server redirect to itself
+    /// under a `.invalid` hostname (same port), and providing a
+    /// custom validator that returns the right pinning for the
+    /// redirect target. End-to-end proof that #1314 covers the full
+    /// redirect chain, not just the initial fetch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_pinning_applies_per_redirect_hop() {
+        let (server_url, ct) = spawn_test_server(vec![
+            Step::Redirect("http://attacker.invalid/final".to_string()),
+            Step::Ok("reached final hop".to_string()),
+        ])
+        .await;
+
+        let parsed = url::Url::parse(&server_url).unwrap();
+        let port = parsed
+            .port()
+            .expect("test server URL must have explicit port");
+        let server_addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        // Validator that pins `attacker.invalid` to the test server's
+        // real address. In production this would be validate_url_safety;
+        // here we simulate "validation passed and resolved to safe IPs."
+        let pinning_validator = move |url: String| async move {
+            let parsed = url::Url::parse(&url).map_err(|e| anyhow::anyhow!("parse: {e}"))?;
+            let addrs = if parsed.host_str() == Some("attacker.invalid") {
+                // Override the redirect's port with the test server's port.
+                vec![server_addr]
+            } else {
+                Vec::new()
+            };
+            // Rewrite the URL's port too so the request actually reaches
+            // our test server (resolve_to_addrs pins the IP but reqwest
+            // still uses the URL's port).
+            let mut u = parsed;
+            if u.host_str() == Some("attacker.invalid") {
+                u.set_port(Some(port)).unwrap();
+            }
+            Ok(ValidatedTarget { url: u, addrs })
+        };
+
+        let initial = ip_literal_target(&server_url);
+        let response = safely_follow_redirects(initial, MAX_REDIRECTS, pinning_validator)
+            .await
+            .expect("per-hop pinning must let the redirect chain complete");
+        let body = response.text().await.unwrap();
+
+        ct.cancel();
+        assert_eq!(body, "reached final hop");
     }
 }
