@@ -60,8 +60,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use super::{
-    ToolEffect, agent, ask_user, bg_task_tools, classify_tool, file_tools, glob_tool, grep, memory,
-    recall, shell, skill_tools, todo, web_fetch, web_search,
+    DynTool, Tool, ToolEffect, agent, ask_user, bg_task_tools, boxed, classify_tool, file_tools,
+    glob_tool, grep, memory, recall, shell, skill_tools, todo, web_fetch, web_search,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
@@ -91,6 +91,25 @@ pub struct ToolCatalog {
     /// All built-in tool definitions, keyed by tool name. Populated
     /// at construction time by [`Self::new`]; never mutated.
     definitions: HashMap<String, ToolDefinition>,
+
+    /// Migrated built-in tools (#1265 item 5, PR-4..PR-N), keyed by
+    /// name. Each entry implements [`Tool`] and is the authoritative
+    /// source for that tool's classification, undo behavior, and
+    /// execution.
+    ///
+    /// Coexists with [`Self::definitions`] during the migration
+    /// window: callers that need a definition look it up there
+    /// (where every tool's def lives, migrated or not), and callers
+    /// that dispatch execution check this map first — a hit means
+    /// "call `Tool::execute`", a miss means "fall through to the
+    /// legacy match arm in `ToolRegistry::execute`". After all
+    /// tools migrate, the legacy match disappears and the
+    /// `definitions` map will be derived from `tools` (cleanup PR).
+    ///
+    /// Stored as `HashMap<&'static str, DynTool>` because every tool
+    /// name is a string literal returned by `Tool::name()`. Avoids
+    /// allocating a `String` key per registration.
+    tools: HashMap<&'static str, DynTool>,
 
     /// Hot-pluggable MCP manager handle. `None` until
     /// [`Self::set_mcp_manager`] is called by `KodaSession::new`
@@ -165,8 +184,29 @@ impl ToolCatalog {
         let recall_def = recall::definition();
         definitions.insert(recall_def.name.clone(), recall_def);
 
+        // Tools migrated onto the `Tool` trait. PR-4 introduces the
+        // file-ops cohort. Subsequent PRs (5..8) register the search,
+        // bash, misc, and meta cohorts here; the cleanup PR drops
+        // the legacy match arms in `ToolRegistry::execute` and the
+        // duplicated `is_mutating_tool` / `extract_file_path` lists
+        // in `crate::undo`.
+        //
+        // Each `boxed(...)` cost is a single allocation at construction
+        // time — negligible compared to the rest of session start-up.
+        let mut tools: HashMap<&'static str, DynTool> = HashMap::new();
+        for tool in [
+            boxed(file_tools::ReadTool),
+            boxed(file_tools::WriteTool),
+            boxed(file_tools::EditTool),
+            boxed(file_tools::DeleteTool),
+            boxed(file_tools::ListTool),
+        ] {
+            tools.insert(tool.name(), tool);
+        }
+
         Self {
             definitions,
+            tools,
             mcp_manager: RwLock::new(None),
         }
     }
@@ -231,6 +271,22 @@ impl ToolCatalog {
     /// rely on [`Self::get_definitions`] which merges both sources.
     pub fn has_tool(&self, name: &str) -> bool {
         self.definitions.contains_key(name)
+    }
+
+    /// Look up a migrated [`Tool`] by name.
+    ///
+    /// Returns `Some(&dyn Tool)` for tools that have been migrated
+    /// onto the trait (#1265 item 5, PR-4..PR-N) and `None` for
+    /// tools still dispatched via the legacy `match` arm in
+    /// [`crate::tools::ToolRegistry::execute`]. The caller is expected
+    /// to fall through to the legacy path on `None`.
+    ///
+    /// **Not** the same as [`Self::has_tool`] — a tool can be
+    /// known to the catalog (definition registered) without yet
+    /// being trait-migrated. The two checks converge after the
+    /// cleanup PR removes the legacy dispatch.
+    pub fn get_tool(&self, name: &str) -> Option<&dyn Tool> {
+        self.tools.get(name).map(|boxed| &**boxed as &dyn Tool)
     }
 
     /// Filtered view of all tool definitions (built-ins + MCP).

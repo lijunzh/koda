@@ -144,6 +144,14 @@ pub struct ToolExecCtx<'a> {
     /// registry; tools only ever need a `&dyn` reference.
     pub fs: &'a dyn koda_sandbox::fs::FileSystem,
 
+    /// Output caps — token-budget-derived limits for tool output
+    /// (e.g. `caps.list_entries` for `List`, `caps.grep_matches` for
+    /// `Grep`). Added in PR-4 of #1265 item 5 because `ListTool`
+    /// needs `caps.list_entries`. Future migrations (Grep, Glob,
+    /// Bash, WebFetch) will read other fields off this same handle
+    /// — no need to add separate accessors per tool.
+    pub caps: &'a crate::output_caps::OutputCaps,
+
     /// Optional engine sink + call-id pair for tools that stream
     /// progress events to the UI (e.g. `Bash` shell output,
     /// `TodoWrite` todo updates). `None` means "no streaming
@@ -321,6 +329,14 @@ impl<'a> ToolExecCtx<'a> {
     pub fn fs(&self) -> &dyn koda_sandbox::fs::FileSystem {
         self.fs
     }
+
+    /// Output caps accessor — pure forwarder. Tools that need a
+    /// specific limit (e.g. `caps.list_entries`) read it directly
+    /// off this handle rather than us exposing a getter per limit.
+    #[inline]
+    pub fn caps(&self) -> &crate::output_caps::OutputCaps {
+        self.caps
+    }
 }
 
 #[cfg(test)]
@@ -424,16 +440,20 @@ mod tests {
 
     /// Build a minimal `ToolExecCtx` for tests that don't exercise FS
     /// or sink fields. Uses the production `LocalFileSystem` (cheap
-    /// to construct) and a fresh empty cache.
+    /// to construct) and a fresh empty cache. Caps come from the
+    /// `for_context` helper with a generous budget so List-style
+    /// tools don't accidentally truncate test fixtures.
     fn make_ctx<'a>(
         root: &'a std::path::Path,
         cache: &'a crate::tools::FileReadCache,
         fs: &'a dyn koda_sandbox::fs::FileSystem,
+        caps: &'a crate::output_caps::OutputCaps,
     ) -> ToolExecCtx<'a> {
         ToolExecCtx {
             project_root: root,
             read_cache: cache,
             fs,
+            caps,
             sink: None,
             caller_spawner: None,
         }
@@ -445,7 +465,8 @@ mod tests {
         let cache: crate::tools::FileReadCache = Arc::new(Mutex::new(HashMap::new()));
         let fs = koda_sandbox::fs::LocalFileSystem::new();
         let root = std::path::PathBuf::from("/tmp");
-        let ctx = make_ctx(&root, &cache, &fs);
+        let caps = crate::output_caps::OutputCaps::for_context(100_000);
+        let ctx = make_ctx(&root, &cache, &fs, &caps);
 
         let args = json!({"hello": "world"});
         let result = tool.execute(&ctx, &args).await;
@@ -530,7 +551,8 @@ mod tests {
         let cache: crate::tools::FileReadCache = Arc::new(Mutex::new(HashMap::new()));
         let fs = koda_sandbox::fs::LocalFileSystem::new();
         let root = std::path::PathBuf::from("/tmp");
-        let ctx = make_ctx(&root, &cache, &fs);
+        let caps = crate::output_caps::OutputCaps::for_context(100_000);
+        let ctx = make_ctx(&root, &cache, &fs, &caps);
 
         let r1 = tools[0].execute(&ctx, &json!({})).await;
         assert!(r1.success);
@@ -548,7 +570,8 @@ mod tests {
         let cache: crate::tools::FileReadCache = Arc::new(Mutex::new(HashMap::new()));
         let fs = koda_sandbox::fs::LocalFileSystem::new();
         let root = std::path::PathBuf::from("/tmp/whatever");
-        let ctx = make_ctx(&root, &cache, &fs);
+        let caps = crate::output_caps::OutputCaps::for_context(100_000);
+        let ctx = make_ctx(&root, &cache, &fs, &caps);
 
         assert_eq!(ctx.project_root(), root.as_path());
         // Cache is a single shared handle — pointer-equality check.
