@@ -33,3 +33,7 @@ logs/
 
 # mdBook build output
 docs/book/
+
+# Python bytecode (scripts/ contains a few helper scripts)
+__pycache__/
+*.pyc
