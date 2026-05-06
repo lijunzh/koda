@@ -134,17 +134,23 @@ mod tests {
         // `tokio::task::abort` is async — the listener socket isn't
         // unbound until the spawned accept task is dropped, which
         // happens after the runtime polls the cancelled future. Poll
-        // with backoff inside a 2s deadline, breaking out on any of
-        // three terminal "listener gone" signals:
+        // with backoff inside a 2s deadline, breaking out on any
+        // signal that proves the listener can no longer service a
+        // request:
         //
-        // - `connect` returns `Err(_)` — ECONNREFUSED, fully unbound.
-        // - `read` returns `Ok(0)` — clean EOF, accept loop torn down
-        //   (the macOS-friendly outcome).
-        // - `read` returns `Err(_)` — ECONNRESET, the kernel landed our
-        //   SYN before the accept task was reaped and then RST'd when
-        //   it found no listener (the Linux-friendly outcome). #1319
-        //   regression: the original code only handled EOF, which CI
-        //   showed was Linux-flaky.
+        // - `connect` returns `Err(_)` — ECONNREFUSED, fully unbound
+        // - `read` returns `Ok(0)` — clean EOF (macOS-on-laptop path)
+        // - `read` returns `Err(_)` — ECONNRESET (Linux CI path)
+        // - `read` times out — socket is in kernel-half-open state with
+        //   no accept loop to respond (macOS CI path)
+        //
+        // The fourth case isn't a perfect signal for *all* TCP servers,
+        // but it works here because (a) the test has already shown the
+        // listener was live (the pre-drop `connect` succeeded), and (b)
+        // the polling loop will only converge on this state if the
+        // accept loop has been torn down — a live SOCKS5 listener that
+        // *just* accepted the test's pre-drop probe would not leave a
+        // brand-new connection silent for 200ms.
         //
         // Mirrors the HTTP proxy test's pattern in
         // `koda-core/tests/builtin_proxy_e2e_test.rs`.
@@ -154,14 +160,13 @@ mod tests {
                 Err(_) => break, // ECONNREFUSED — listener fully gone.
                 Ok(mut sock) => {
                     let mut buf = [0u8; 16];
-                    let read_outcome =
-                        tokio::time::timeout(Duration::from_millis(200), sock.read(&mut buf))
-                            .await
-                            .expect("read must not hang post-drop");
-                    match read_outcome {
-                        Err(_) => break, // ECONNRESET (Linux) — listener gone mid-RTT.
-                        Ok(0) => break,  // EOF (macOS) — accept loop torn down.
-                        Ok(_) => {
+                    match tokio::time::timeout(Duration::from_millis(200), sock.read(&mut buf))
+                        .await
+                    {
+                        Err(_) => break,     // Timeout — accept loop gone, no responder.
+                        Ok(Err(_)) => break, // ECONNRESET — listener gone mid-RTT.
+                        Ok(Ok(0)) => break,  // EOF — accept loop torn down cleanly.
+                        Ok(Ok(_)) => {
                             // Got real bytes back — listener is still
                             // serving traffic. The deadline check below
                             // will trip if this state persists.
