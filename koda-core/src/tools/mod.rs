@@ -245,6 +245,34 @@ pub struct ToolResult {
     pub full_output: Option<String>,
 }
 
+/// Convert a `Result<String>` (the legacy free-function return shape)
+/// into a `ToolResult` with consistent error formatting.
+///
+/// Used by `Tool` trait implementations that delegate to existing free
+/// functions returning `Result<String>` (PR-4..PR-N migrations of
+/// #1265 item 5). The error formatting (`{:#}` walks the anyhow
+/// context chain per #1232 §4) matches the centralized post-match
+/// converter in `ToolRegistry::execute` byte-for-byte — no behavior
+/// drift between migrated and not-yet-migrated tools.
+///
+/// `full_output` is always `None` here; tools that produce truncated
+/// output (currently only `Bash`) populate it themselves by
+/// constructing `ToolResult` directly.
+pub fn wrap_result(r: anyhow::Result<String>) -> ToolResult {
+    match r {
+        Ok(output) => ToolResult {
+            output,
+            success: true,
+            full_output: None,
+        },
+        Err(e) => ToolResult {
+            output: format!("Error: {e:#}"),
+            success: false,
+            full_output: None,
+        },
+    }
+}
+
 /// The tool registry: maps tool names to their definitions and handlers.
 pub struct ToolRegistry {
     project_root: PathBuf,
@@ -577,30 +605,74 @@ impl ToolRegistry {
             arguments.len()
         );
 
-        // Snapshot file before mutation (for /undo)
-        if let Some(file_path) = crate::undo::is_mutating_tool(name)
-            .then(|| crate::undo::extract_file_path(name, &args))
-            .flatten()
-        {
+        // Snapshot file before mutation (for /undo).
+        //
+        // Source-of-truth precedence:
+        //  1. Migrated tools (#1265 item 5, PR-4..PR-N) own their
+        //     undo behavior via `Tool::extract_undo_path` — the
+        //     trait's `None` default means "don't snapshot".
+        //  2. Non-migrated tools fall back to the legacy
+        //     `crate::undo::is_mutating_tool` + `extract_file_path`
+        //     pair. That fallback list is gradually shrinking; the
+        //     cleanup PR after PR-8 removes it entirely.
+        //
+        // Why the trait wins for migrated tools: the legacy list
+        // contains `"Overwrite"` (a tool that doesn't exist) and
+        // would silently miss any new mutating tool that forgot to
+        // update both lists. Routing migrated tools through the
+        // trait fixes that drift class as each cohort migrates.
+        let undo_path = if let Some(tool) = self.catalog.get_tool(name) {
+            tool.extract_undo_path(&args)
+        } else if crate::undo::is_mutating_tool(name) {
+            crate::undo::extract_file_path(name, &args).map(std::path::PathBuf::from)
+        } else {
+            None
+        };
+        if let Some(file_path) = undo_path {
             let resolved = self.project_root.join(&file_path);
             if let Ok(mut undo) = self.undo.lock() {
                 undo.snapshot(&resolved);
             }
         }
 
+        // Trait dispatch for migrated tools (#1265 item 5, PR-4..PR-N).
+        //
+        // Hits this fast path for any tool registered in
+        // `ToolCatalog::tools`; misses fall through to the legacy
+        // `match` below. The branch is taken in `O(1)` (HashMap
+        // lookup) so the cost on the miss path is negligible.
+        //
+        // Post-execution `Write`/`Edit` recording for the
+        // file-tracker stays here — it's a registry-level concern
+        // (it touches `self.last_writer`) and doesn't belong on the
+        // per-tool struct. Same logic the legacy `match result`
+        // block below applies; centralized here so it fires for
+        // both migrated and not-yet-migrated tools.
+        if let Some(tool) = self.catalog.get_tool(name) {
+            let ctx = tool_trait::ToolExecCtx {
+                project_root: &self.project_root,
+                read_cache: &self.read_cache,
+                fs: &*self.fs,
+                caps: &self.caps,
+                sink: None,
+                caller_spawner: None,
+            };
+            let result = tool.execute(&ctx, &args).await;
+            if result.success
+                && matches!(name, "Write" | "Edit")
+                && let Some(path) =
+                    crate::file_tracker::resolve_file_path_from_args(&args, &self.project_root)
+                && let Ok(mut guard) = self.last_writer.lock()
+            {
+                guard.insert(path, (name.to_string(), std::time::Instant::now()));
+            }
+            return result;
+        }
+
         let result = match name {
-            // File tools
-            "Read" => {
-                file_tools::read_file(&self.project_root, &args, &self.read_cache, &*self.fs).await
-            }
-            "Write" => file_tools::write_file(&self.project_root, &args, &*self.fs).await,
-            "Edit" => {
-                file_tools::edit_file(&self.project_root, &args, &self.read_cache, &*self.fs).await
-            }
-            "Delete" => file_tools::delete_file(&self.project_root, &args).await,
-            "List" => {
-                file_tools::list_files(&self.project_root, &args, self.caps.list_entries).await
-            }
+            // File tools — migrated to `Tool` trait in PR-4 of #1265
+            // item 5; dispatched above. The arms below stay only
+            // for tools that haven't migrated yet.
 
             // Search tools
             "Grep" => {

@@ -708,6 +708,176 @@ pub async fn list_files(project_root: &Path, args: &Value, max_entries: usize) -
     }
 }
 
+// =============================================================
+// Tool trait implementations (#1265 item 5, PR-4/N).
+//
+// Each struct delegates to the corresponding free function above
+// — the functions stay public because tests in `tests/file_tools_test.rs`
+// call them directly. The structs are the canonical entry point
+// for production dispatch (via `ToolCatalog::get_tool` → `Tool::execute`).
+//
+// Why structs *and* free functions, instead of moving the bodies
+// into the trait impl?
+//
+//   1. Test stability. `tests/file_tools_test.rs` exercises
+//      `file_tools::edit_file` directly with custom fixtures. Moving
+//      the body into a trait method would force test churn for no
+//      win — the existing tests already cover the bodies and
+//      changing them is out of scope for this PR.
+//   2. Optionality. Other code paths (e.g. future scripted
+//      pre/post hooks) may want to call the file-op functions
+//      without going through the trait. Keeping them public costs
+//      nothing.
+//   3. Reviewability. This PR's diff stays focused on "add the
+//      trait seam"; the trait impls are mechanical 4-line forwarders
+//      that any reviewer can read top-to-bottom.
+//
+// `definition()` for each struct re-derives its definition from the
+// existing `definitions()` aggregator — single source of truth, no
+// risk of drift. We `expect()` because the names are compile-time
+// literals that `definitions()` is *required* to contain (an unwrap
+// here would crash on registry construction, which is exactly when
+// you want to find out).
+// =============================================================
+
+use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
+use async_trait::async_trait;
+
+/// Helper for the trait impls below — looks up a definition by
+/// name from the centralized `definitions()` aggregator. Panics if
+/// the name isn't registered, which can only happen if `definitions()`
+/// drifted out of sync with the structs below — a bug worth crashing
+/// the registry's construction over.
+fn def(name: &str) -> ToolDefinition {
+    definitions()
+        .into_iter()
+        .find(|d| d.name == name)
+        .unwrap_or_else(|| panic!("file_tools::definitions() is missing {name:?}"))
+}
+
+/// `Read` — read a file's contents.
+pub struct ReadTool;
+
+#[async_trait]
+impl Tool for ReadTool {
+    fn name(&self) -> &'static str {
+        "Read"
+    }
+    fn definition(&self) -> ToolDefinition {
+        def("Read")
+    }
+    fn classify(&self, _args: &Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &Value) -> ToolResult {
+        let r = read_file(ctx.project_root, args, ctx.read_cache, ctx.fs).await;
+        crate::tools::wrap_result(r)
+    }
+}
+
+/// `Write` — create or overwrite a file.
+pub struct WriteTool;
+
+#[async_trait]
+impl Tool for WriteTool {
+    fn name(&self) -> &'static str {
+        "Write"
+    }
+    fn definition(&self) -> ToolDefinition {
+        def("Write")
+    }
+    fn classify(&self, _args: &Value) -> ToolEffect {
+        ToolEffect::LocalMutation
+    }
+    fn extract_undo_path(&self, args: &Value) -> Option<std::path::PathBuf> {
+        extract_file_path_arg(args)
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &Value) -> ToolResult {
+        let r = write_file(ctx.project_root, args, ctx.fs).await;
+        crate::tools::wrap_result(r)
+    }
+}
+
+/// `Edit` — in-place find/replace edit on an existing file.
+pub struct EditTool;
+
+#[async_trait]
+impl Tool for EditTool {
+    fn name(&self) -> &'static str {
+        "Edit"
+    }
+    fn definition(&self) -> ToolDefinition {
+        def("Edit")
+    }
+    fn classify(&self, _args: &Value) -> ToolEffect {
+        ToolEffect::LocalMutation
+    }
+    fn extract_undo_path(&self, args: &Value) -> Option<std::path::PathBuf> {
+        extract_file_path_arg(args)
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &Value) -> ToolResult {
+        let r = edit_file(ctx.project_root, args, ctx.read_cache, ctx.fs).await;
+        crate::tools::wrap_result(r)
+    }
+}
+
+/// `Delete` — remove a file.
+pub struct DeleteTool;
+
+#[async_trait]
+impl Tool for DeleteTool {
+    fn name(&self) -> &'static str {
+        "Delete"
+    }
+    fn definition(&self) -> ToolDefinition {
+        def("Delete")
+    }
+    fn classify(&self, _args: &Value) -> ToolEffect {
+        // Matches the pre-#1265 `tools::classify_tool` arm — Delete
+        // is irreversible-without-undo, the strictest gating tier.
+        ToolEffect::Destructive
+    }
+    fn extract_undo_path(&self, args: &Value) -> Option<std::path::PathBuf> {
+        extract_file_path_arg(args)
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &Value) -> ToolResult {
+        let r = delete_file(ctx.project_root, args).await;
+        crate::tools::wrap_result(r)
+    }
+}
+
+/// `List` — directory listing.
+pub struct ListTool;
+
+#[async_trait]
+impl Tool for ListTool {
+    fn name(&self) -> &'static str {
+        "List"
+    }
+    fn definition(&self) -> ToolDefinition {
+        def("List")
+    }
+    fn classify(&self, _args: &Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &Value) -> ToolResult {
+        let r = list_files(ctx.project_root, args, ctx.caps.list_entries).await;
+        crate::tools::wrap_result(r)
+    }
+}
+
+/// Pull `file_path` (or its `path` alias) out of an args object.
+/// Used by `Write`/`Edit`/`Delete`'s `extract_undo_path` — same
+/// extraction logic that lives in `undo::extract_file_path` today.
+/// In the cleanup PR, `undo::extract_file_path` will delegate here
+/// (or be deleted entirely once all mutating tools have migrated).
+fn extract_file_path_arg(args: &Value) -> Option<std::path::PathBuf> {
+    args.get("file_path")
+        .or_else(|| args.get("path"))
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1352,5 +1522,217 @@ mod tests {
             .await
             .expect("in-project symlink write must succeed");
         assert_eq!(std::fs::read(&real_file).unwrap(), b"new");
+    }
+
+    // =========================================================
+    // Tool trait invariants (#1265 item 5, PR-4/N).
+    //
+    // These tests live alongside the structs they exercise so any
+    // future contributor adding a file-op tool sees the contract
+    // they need to maintain. They cover four classes of bug the
+    // trait migration is *supposed* to make impossible:
+    //
+    //   1. `name()` and `definition().name` drift apart — breaks
+    //      registry lookup.
+    //   2. `classify()` returns the wrong tier — breaks approval
+    //      gating (this is what the duplicated `is_mutating_tool`
+    //      lists allowed pre-PR).
+    //   3. `extract_undo_path()` returns `None` for a mutating tool
+    //      — breaks `/undo`.
+    //   4. `extract_undo_path()` returns `Some` for a read-only
+    //      tool — wastes snapshot work and pollutes the undo stack.
+    // =========================================================
+
+    /// All five file-op trait impls plus their expected metadata.
+    /// Centralized so the assertions below stay table-driven.
+    fn cohort() -> Vec<(
+        &'static str,
+        Box<dyn crate::tools::Tool>,
+        ToolEffect,
+        bool, // expects an undo path when args carry `file_path`
+    )> {
+        vec![
+            ("Read", Box::new(ReadTool), ToolEffect::ReadOnly, false),
+            (
+                "Write",
+                Box::new(WriteTool),
+                ToolEffect::LocalMutation,
+                true,
+            ),
+            ("Edit", Box::new(EditTool), ToolEffect::LocalMutation, true),
+            (
+                "Delete",
+                Box::new(DeleteTool),
+                ToolEffect::Destructive,
+                true,
+            ),
+            ("List", Box::new(ListTool), ToolEffect::ReadOnly, false),
+        ]
+    }
+
+    #[test]
+    fn name_matches_definition_for_every_file_op() {
+        // Registry lookup is keyed by `name()` and the LLM sees
+        // `definition().name`. Drift = silent dispatch failure.
+        for (expected, tool, _, _) in cohort() {
+            assert_eq!(tool.name(), expected);
+            assert_eq!(tool.definition().name, expected);
+        }
+    }
+
+    #[test]
+    fn classify_matches_pre_migration_tiers() {
+        // Locks the classification each tool was assigned by the
+        // pre-#1265 `tools::classify_tool` arms. Any change here
+        // is a behavior change — must be intentional.
+        for (name, tool, expected, _) in cohort() {
+            assert_eq!(
+                tool.classify(&serde_json::json!({})),
+                expected,
+                "{name} classified incorrectly",
+            );
+        }
+    }
+
+    #[test]
+    fn extract_undo_path_only_for_mutating_tools() {
+        // Mutating cohort returns Some(path); read-only cohort returns
+        // None even when `file_path` is present. Prevents pollution
+        // of the undo stack with read-only operations.
+        let args = serde_json::json!({"file_path": "src/main.rs"});
+        for (name, tool, _, expects_path) in cohort() {
+            let actual = tool.extract_undo_path(&args);
+            assert_eq!(
+                actual.is_some(),
+                expects_path,
+                "{name} undo-path extraction wrong",
+            );
+            if expects_path {
+                assert_eq!(actual, Some(std::path::PathBuf::from("src/main.rs")));
+            }
+        }
+    }
+
+    #[test]
+    fn extract_undo_path_accepts_path_alias() {
+        // The legacy `undo::extract_file_path` accepts both
+        // `file_path` and `path`. Migrated tools must too — some
+        // older test fixtures and a few prompt examples use `path`.
+        let args = serde_json::json!({"path": "lib.rs"});
+        assert_eq!(
+            WriteTool.extract_undo_path(&args),
+            Some(std::path::PathBuf::from("lib.rs")),
+        );
+        assert_eq!(
+            EditTool.extract_undo_path(&args),
+            Some(std::path::PathBuf::from("lib.rs")),
+        );
+        assert_eq!(
+            DeleteTool.extract_undo_path(&args),
+            Some(std::path::PathBuf::from("lib.rs")),
+        );
+    }
+
+    #[test]
+    fn extract_undo_path_handles_missing_args_gracefully() {
+        // No path at all — must return None, not panic. (A common
+        // failure mode of "unwrap because args _should_ have it".)
+        for tool in [
+            Box::new(WriteTool) as Box<dyn Tool>,
+            Box::new(EditTool),
+            Box::new(DeleteTool),
+        ] {
+            assert!(tool.extract_undo_path(&serde_json::json!({})).is_none());
+            // Wrong-typed value — also graceful.
+            assert!(
+                tool.extract_undo_path(&serde_json::json!({"file_path": 42}))
+                    .is_none()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn trait_dispatch_executes_read() {
+        // End-to-end proof that a migrated tool's full code path
+        // (definition + classification + execution) works through
+        // the trait. Mirrors `dyn_dispatch_executes_correct_tool`
+        // from PR-3's seam tests but on a *real* tool.
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("x.txt");
+        std::fs::write(&f, "hi").unwrap();
+
+        let cache = cache();
+        let fs = fs();
+        let caps = crate::output_caps::OutputCaps::for_context(100_000);
+        let ctx = crate::tools::ToolExecCtx {
+            project_root: tmp.path(),
+            read_cache: &cache,
+            fs: &fs,
+            caps: &caps,
+            sink: None,
+            caller_spawner: None,
+        };
+        let tool: Box<dyn Tool> = Box::new(ReadTool);
+        let result = tool
+            .execute(&ctx, &serde_json::json!({"file_path": "x.txt"}))
+            .await;
+        assert!(result.success, "trait dispatch failed: {}", result.output);
+        assert!(result.output.contains("hi"));
+    }
+
+    #[tokio::test]
+    async fn trait_dispatch_executes_write_and_writes_file() {
+        // Verifies `WriteTool::execute` actually mutates the FS —
+        // not just "returns success". The bug class this catches is
+        // a trait impl that delegates to the wrong free function.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = cache();
+        let fs = fs();
+        let caps = crate::output_caps::OutputCaps::for_context(100_000);
+        let ctx = crate::tools::ToolExecCtx {
+            project_root: tmp.path(),
+            read_cache: &cache,
+            fs: &fs,
+            caps: &caps,
+            sink: None,
+            caller_spawner: None,
+        };
+        let tool: Box<dyn Tool> = Box::new(WriteTool);
+        let result = tool
+            .execute(
+                &ctx,
+                &serde_json::json!({"file_path": "new.txt", "content": "abc"}),
+            )
+            .await;
+        assert!(result.success, "{}", result.output);
+        assert_eq!(std::fs::read(tmp.path().join("new.txt")).unwrap(), b"abc");
+    }
+
+    #[tokio::test]
+    async fn trait_dispatch_error_path_returns_failure_result() {
+        // Errors from the underlying free function must land as
+        // `success: false` (the contract `wrap_result` enforces).
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = cache();
+        let fs = fs();
+        let caps = crate::output_caps::OutputCaps::for_context(100_000);
+        let ctx = crate::tools::ToolExecCtx {
+            project_root: tmp.path(),
+            read_cache: &cache,
+            fs: &fs,
+            caps: &caps,
+            sink: None,
+            caller_spawner: None,
+        };
+        let tool: Box<dyn Tool> = Box::new(ReadTool);
+        let result = tool
+            .execute(&ctx, &serde_json::json!({"file_path": "does-not-exist"}))
+            .await;
+        assert!(!result.success);
+        assert!(
+            result.output.starts_with("Error:"),
+            "error output should be prefixed: {}",
+            result.output
+        );
     }
 }
