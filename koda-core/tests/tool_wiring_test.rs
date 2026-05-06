@@ -6,9 +6,12 @@
 use std::path::PathBuf;
 
 /// Get all built-in tool names from the registry.
+///
+/// Migrated to `ToolCatalog` in #1265 item 5 PR-2 — we only need
+/// names, not the full registry. Avoids constructing FS / undo /
+/// caps state we'd never touch.
 fn all_tool_names() -> Vec<String> {
-    let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"), 100_000);
-    registry.all_builtin_tool_names()
+    koda_core::tools::ToolCatalog::new().all_builtin_tool_names()
 }
 
 /// Every tool must be routable in the dispatcher.

@@ -71,8 +71,10 @@ async fn make_session_with_mcp(
     let agent = Arc::new(koda_core::agent::KodaAgent {
         project_root: env.root.clone(),
         tools,
-        tool_defs: ToolRegistry::new(env.root.clone(), env.config.max_context_tokens)
-            .get_definitions(&[], &[]),
+        // #1265 item 5 PR-2: definitions come from a fresh
+        // `ToolCatalog` — a second full `ToolRegistry` here would be
+        // wasteful (we'd never touch its FS / undo / caps state).
+        tool_defs: koda_core::tools::ToolCatalog::new().get_definitions(&[], &[]),
         // Important: this is the STATIC prompt — it must NOT contain the
         // MCP block. The fix in #929 composes the MCP section per-turn in
         // `run_turn`, so this test verifies that composition actually
