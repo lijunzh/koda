@@ -30,6 +30,23 @@
 | `Ctrl+C` | Cancel current inference |
 | `Ctrl+D` | Quit koda |
 
+## Editor (composer)
+
+Deletion chords inside the input composer. The redundant variants exist
+so users coming from different terminals / OSes hit a working binding
+on the first try (ported from upstream codex in #1278 to match codex's
+default keymap).
+
+| Key | Action |
+|-----|--------|
+| `Backspace` &middot; `Shift+Backspace` &middot; `Ctrl+H` | Delete character before cursor |
+| `Delete` &middot; `Shift+Delete` &middot; `Ctrl+D`¹ | Delete character after cursor |
+| `Alt+Backspace` &middot; `Ctrl+Backspace` &middot; `Ctrl+Shift+Backspace` &middot; `Ctrl+W` | Delete word before cursor |
+| `Alt+Delete` &middot; `Ctrl+Delete` &middot; `Ctrl+Shift+Delete` | Delete word after cursor |
+
+¹ `Ctrl+D` deletes a character only when the input has content; on an
+empty input it quits koda (see *Session control* above).
+
 ## Approval prompt
 
 These keys appear when the agent asks to execute a tool:

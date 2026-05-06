@@ -1075,7 +1075,9 @@ mod tests {
             "gh auth logout --hostname github.com",
             "gh auth refresh",
             "gh auth refresh --scopes repo,read:org",
+            "gh auth refresh --hostname github.com",
             "gh auth setup-git",
+            "gh auth setup-git --hostname github.com",
             "gh auth token",
         ] {
             assert_eq!(
