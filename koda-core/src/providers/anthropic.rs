@@ -475,27 +475,15 @@ impl LlmProvider for AnthropicProvider {
             tools: api_tools,
         };
 
-        let resp = self
+        let req = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_API_VERSION)
             .header("anthropic-beta", beta_header(extended_ctx))
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to call Anthropic API")?;
+            .json(&request);
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Anthropic API returned {status}: {body}");
-        }
-
-        let msg_resp: MessagesResponse = resp
-            .json()
-            .await
-            .context("Failed to parse Anthropic response")?;
+        let msg_resp: MessagesResponse = super::http::send_and_parse_json(req, "Anthropic").await?;
 
         // Parse response content blocks into our unified format
         let mut content_text = String::new();
@@ -677,22 +665,15 @@ impl LlmProvider for AnthropicProvider {
             body["tools"] = serde_json::to_value(&api_tools)?;
         }
 
-        let resp = self
+        let req = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_API_VERSION)
             .header("anthropic-beta", beta_header(extended_ctx))
-            .json(&body)
-            .send()
-            .await
-            .context("Failed to call Anthropic API (stream)")?;
+            .json(&body);
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Anthropic API returned {status}: {body}");
-        }
+        let resp = super::http::send_or_bail(req, "Anthropic").await?;
 
         let collector = super::stream_collector::spawn_sse_collector(
             resp,

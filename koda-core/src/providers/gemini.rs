@@ -446,24 +446,12 @@ impl LlmProvider for GeminiProvider {
             cache_name.as_deref(),
         );
 
-        let resp = self
+        let req = self
             .client
             .post(self.api_url(&format!("models/{model}:generateContent")))
-            .json(&body)
-            .send()
-            .await
-            .context("Failed to call Gemini API")?;
+            .json(&body);
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Gemini API returned {status}: {body}");
-        }
-
-        let gen_resp: GenerateResponse = resp
-            .json()
-            .await
-            .context("Failed to parse Gemini response")?;
+        let gen_resp: GenerateResponse = super::http::send_and_parse_json(req, "Gemini").await?;
 
         self.parse_response(gen_resp)
     }
@@ -554,22 +542,15 @@ impl LlmProvider for GeminiProvider {
             Some(settings),
         );
 
-        let resp =
+        let req =
             self.client
                 .post(self.api_url_with_params(
                     &format!("models/{model}:streamGenerateContent"),
                     "alt=sse",
                 ))
-                .json(&body)
-                .send()
-                .await
-                .context("Failed to call Gemini API (stream)")?;
+                .json(&body);
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Gemini API returned {status}: {body}");
-        }
+        let resp = super::http::send_or_bail(req, "Gemini").await?;
 
         let collector =
             super::stream_collector::spawn_sse_collector(resp, Box::new(GeminiChunkParser::new()));

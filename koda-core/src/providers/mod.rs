@@ -44,6 +44,10 @@ pub mod stream_collector;
 /// Streaming XML tag filter for think/reasoning tags.
 pub mod stream_tag_filter;
 
+/// Provider-neutral HTTP helpers (#1265 item 7) — send/status/parse
+/// boilerplate that was duplicated 8x across the three providers.
+pub(crate) mod http;
+
 /// Mock provider for deterministic testing.
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;

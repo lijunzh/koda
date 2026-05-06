@@ -399,19 +399,8 @@ impl LlmProvider for OpenAiCompatProvider {
             req = req.bearer_auth(key);
         }
 
-        let resp = req
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to call LLM API")?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("LLM API returned {status}: {body}");
-        }
-
-        let chat_resp: ChatResponse = resp.json().await.context("Failed to parse LLM response")?;
+        let resp_req = req.json(&request);
+        let chat_resp: ChatResponse = super::http::send_and_parse_json(resp_req, "LLM").await?;
 
         let choice = chat_resp
             .choices
@@ -461,17 +450,7 @@ impl LlmProvider for OpenAiCompatProvider {
             req = req.bearer_auth(key);
         }
 
-        let resp = req
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to call LLM API (stream)")?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("LLM API returned {status}: {body}");
-        }
+        let resp = super::http::send_or_bail(req.json(&request), "LLM").await?;
 
         let collector =
             super::stream_collector::spawn_sse_collector(resp, Box::new(OpenAiChunkParser::new()));
