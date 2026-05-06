@@ -223,6 +223,22 @@ pub fn build_http_client_with_redirect_policy(
     base_url: Option<&str>,
     redirect_policy: reqwest::redirect::Policy,
 ) -> reqwest::Client {
+    build_http_client_builder(base_url, redirect_policy)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Like [`build_http_client_with_redirect_policy`] but returns the
+/// [`reqwest::ClientBuilder`] instead of a built [`reqwest::Client`].
+///
+/// Callers that need to chain additional configuration (e.g.
+/// `.resolve_to_addrs(host, &addrs)` to pin DNS resolution to a
+/// pre-validated IP set, defeating DNS-rebinding TOCTOU — see #1314)
+/// use this variant and call `.build()` themselves.
+pub fn build_http_client_builder(
+    base_url: Option<&str>,
+    redirect_policy: reqwest::redirect::Policy,
+) -> reqwest::ClientBuilder {
     let mut builder = reqwest::Client::builder().redirect(redirect_policy);
 
     // ── Timeouts ──────────────────────────────────────────────────────────
@@ -294,7 +310,7 @@ pub fn build_http_client_with_redirect_policy(
         );
     }
 
-    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+    builder
 }
 
 /// Redact embedded credentials from a URL.
