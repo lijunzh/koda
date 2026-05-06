@@ -19,20 +19,28 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
+use tokio::sync::Notify;
 
 use crate::ipc::Request;
 use crate::policy::SandboxPolicy;
 use crate::workspace::{CwdProvider, WorkspaceProvider};
 
-// ── Mock provider ─────────────────────────────────────────────────────────
+// ── Mock provider ────────────────────────────────────────────────
 
 /// Counts provision/release calls so tests can assert lifecycle
 /// behavior without a real filesystem provider in the loop.
+///
+/// `release_notify` fires inside `release()` *after* the counter is
+/// incremented, so tests that need to know "the spawned release task
+/// actually ran" can `notify.notified().await` with a deadline
+/// instead of guessing a settle time. See #1312 for the rationale
+/// ("test the decision, not the side effect").
 #[derive(Debug, Default)]
 struct CountingProvider {
     project_root: PathBuf,
     provisioned: AtomicUsize,
     released: AtomicUsize,
+    release_notify: Notify,
 }
 
 impl CountingProvider {
@@ -41,6 +49,7 @@ impl CountingProvider {
             project_root,
             provisioned: AtomicUsize::new(0),
             released: AtomicUsize::new(0),
+            release_notify: Notify::new(),
         })
     }
 }
@@ -53,6 +62,15 @@ impl WorkspaceProvider for CountingProvider {
     }
     async fn release(&self, _slot_id: &str, _path: &Path) -> Result<Option<String>> {
         self.released.fetch_add(1, Ordering::SeqCst);
+        // Notify *after* the counter is bumped so any awaiter that
+        // wakes immediately sees the post-increment value. `notify_one`
+        // is buffered — even if no awaiter is parked yet, the next
+        // `notified()` call returns immediately. (See `Notify` docs:
+        // "if no permits are available, this method awaits the next call
+        // to notify_one". The flip side: `notify_one` issued before any
+        // `notified()` is recorded as a permit and consumed by the next
+        // call.)
+        self.release_notify.notify_one();
         Ok(None)
     }
 }
@@ -431,13 +449,31 @@ async fn slot_outliving_pool_still_drops_cleanly() {
     // Pool gone before slot.
     drop(pool);
 
+    // Park a `notified()` listener BEFORE we drop the slot. `Notify`
+    // is buffered (`notify_one` issued without a parked awaiter is
+    // recorded as one permit), so even if the spawned release task
+    // races ahead and signals before we await, the await returns
+    // immediately by consuming the permit. Listener-first ordering
+    // closes the (theoretical) window between `drop(slot)` and the
+    // listener registration.
+    let release_signal = provider.release_notify.notified();
+    tokio::pin!(release_signal);
+
     // This drop must NOT panic — the slot uses Weak<Pool> precisely
     // so the worker can be killed (not returned) when the pool is
     // already dead.
     drop(slot);
 
-    // Give the async release task a tick to run.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Deterministic readiness (#1312 was: blind `sleep(50ms)`).
+    // The release task signals via `release_notify` after
+    // incrementing `released`, so by the time `notified()` resolves
+    // we know the spawned task has run — not just "50ms have passed."
+    tokio::time::timeout(std::time::Duration::from_secs(2), release_signal)
+        .await
+        .expect(
+            "spawned release task did not run within 2s of dropping the orphaned slot \
+             — SandboxSlot::Drop's `Handle::try_current() + spawn(release)` regressed",
+        );
     assert!(
         provider.released.load(Ordering::SeqCst) >= 1,
         "release should have been spawned even with pool gone"

@@ -130,20 +130,44 @@ mod tests {
 
         drop(h);
 
-        // tokio::task::abort is async — give the runtime a tick. Same
-        // pattern as the HTTP proxy test.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        match TcpStream::connect(("127.0.0.1", port)).await {
-            Err(_) => {} // ECONNREFUSED — listener gone.
-            Ok(mut sock) => {
-                let mut buf = [0u8; 16];
-                let n = tokio::time::timeout(Duration::from_millis(200), sock.read(&mut buf))
-                    .await
-                    .expect("read must not hang post-drop")
-                    .expect("read must not error");
-                assert_eq!(n, 0, "post-drop socket must EOF immediately");
+        // Deterministic readiness (#1312 was: blind `sleep(50ms)`).
+        // `tokio::task::abort` is async — the listener socket isn't
+        // unbound until the spawned accept task is dropped, which
+        // happens after the runtime polls the cancelled future. Poll
+        // with backoff inside a 2s deadline, breaking out on either
+        // `Err(_)` (ECONNREFUSED, listener fully gone) or `Ok(sock)`
+        // that EOFs immediately (kernel still has the bind but the
+        // accept loop has been torn down). Mirrors the HTTP proxy
+        // test's pattern in `koda-core/tests/builtin_proxy_e2e_test.rs`.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match TcpStream::connect(("127.0.0.1", port)).await {
+                Err(_) => break, // ECONNREFUSED — listener gone.
+                Ok(mut sock) => {
+                    let mut buf = [0u8; 16];
+                    let n = tokio::time::timeout(Duration::from_millis(200), sock.read(&mut buf))
+                        .await
+                        .expect("read must not hang post-drop")
+                        .expect("read must not error");
+                    if n == 0 {
+                        // Post-drop socket EOFed immediately — accept
+                        // loop is gone even if the bind hasn't been
+                        // released yet. Acceptable terminal state.
+                        break;
+                    }
+                    // Got real bytes back — listener is still serving
+                    // traffic. The deadline check below will trip if
+                    // this state persists.
+                }
             }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "after 2s post-drop, listener still accepting and serving traffic \
+                 (proxy abort task did not unbind the socket)"
+            );
+            // Small backoff so we don't spin the CPU. 5ms cadence is
+            // ~400 attempts inside the 2s budget — plenty of granularity.
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
 }
