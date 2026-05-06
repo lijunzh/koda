@@ -6,16 +6,20 @@
 //!
 //! ## Usage patterns
 //!
-//! - **Delegate a task**: `InvokeAgent { agent_name: "task", prompt: "write tests for auth.rs", background: false }`
-//! - **Use a specialist**: `InvokeAgent { agent_name: "explore", prompt: "find all error handling", background: false }`
-//! - **Fork context**: `InvokeAgent { agent_name: "fork", prompt: "...", background: false }`
+//! - **Delegate a task**: `InvokeAgent { agent_name: "task", prompt: "write tests for auth.rs" }`
+//! - **Use a specialist**: `InvokeAgent { agent_name: "explore", prompt: "find all error handling" }`
+//! - **Fork context**: `InvokeAgent { agent_name: "fork", prompt: "..." }`
 //!   (inherits parent's full conversation)
-//! - **Background work**: `InvokeAgent { agent_name: "task", prompt: "...", background: true }`
-//!   (returns immediately, results injected when complete)
 //!
-//! `agent_name` and `background` are both **required** — see #1232 §2 + §5
-//! for the rationale (silently-defaulted fields hid routing intent and
-//! turned every parallel pattern into serial blocking calls).
+//! All sub-agents run in the **background**. The tool returns IMMEDIATELY
+//! with a task_id; results auto-inject as a user message on a future
+//! iteration. Use `WaitTask([task_id, ...])` only when you have no useful
+//! concurrent work and the next step strictly depends on the result.
+//!
+//! `agent_name` is **required** — see #1232 §5 for rationale. The previous
+//! `background:bool` flag was removed in #1163 (Lean A: koda matches
+//! Codex's `spawn_agent` and Claude Code's `TaskCreate` model — one shape
+//! per call, no foreground / blocking variant).
 //!
 //! ## When to use sub-agents
 //!
@@ -38,44 +42,66 @@ pub fn definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "InvokeAgent".to_string(),
-            description: "Delegate a task to a specialized sub-agent.
+            description: "Spawn a sub-agent to work on a task in the background.
 
-EXECUTION MODES (pick one per call):
-- Sequential foreground (default): one sub-agent runs, blocks until done.
-- Parallel foreground: emit multiple InvokeAgent tool calls in the same
-  message and they run concurrently. Each write-capable agent gets its own
-  isolated workspace, so parallel write-agents cannot trample each other.
-- Background (background=true): returns immediately. Results inject as a
-  user message on the next iteration. Use for long-running independent work.
-  After spawning, KEEP WORKING — do other useful things and let the result
-  inject naturally. Do NOT immediately call WaitTask; that defeats the
-  point of backgrounding (turns the whole pattern back into a blocking call
-  and silences the parent for the duration).
-- Forked context (agent_name='fork'): inherits your full conversation
-  history. Useful when the sub-agent needs everything you've already loaded.
+Returns IMMEDIATELY with a task_id. The sub-agent runs concurrently; \
+you keep working in parallel. Results inject as a user message at the \
+start of a future iteration via auto-drain \u{2014} you do NOT need to call \
+`WaitTask` unless you have nothing else useful to do.
 
-Use InvokeAgent when:
+EXECUTION MODEL
+
+- All sub-agents run in the **background**. There is no foreground / blocking \
+  mode \u{2014} spawn the agent, get a task_id back, and continue your own reasoning. \
+  This matches Codex's `spawn_agent` and Claude Code's `TaskCreate` model: one \
+  shape per call, no `background:bool` flag to think about.
+- Emit multiple `InvokeAgent` calls in the same assistant message to fan out \
+  N agents in parallel. Each write-capable agent gets its own isolated \
+  workspace, so parallel write-agents cannot trample each other.
+- After spawning, KEEP WORKING. Do follow-up searches, edit files, summarize \
+  progress \u{2014} anything useful. Results inject naturally on a future iteration. \
+  Calling `WaitTask` immediately after spawning defeats the purpose.
+- Use `WaitTask([task_id, ...])` ONLY when:
+    1. You have genuinely run out of useful concurrent work, AND
+    2. The next step strictly depends on the sub-agent's output.
+  Otherwise let auto-drain do its job.
+- `agent_name='fork'` inherits your full conversation context. Useful when \
+  the sub-agent needs everything you've already loaded.
+
+WHEN TO USE InvokeAgent
+
 - The task requires exploring many files or running many searches that would pollute your context
 - Work is independent and can run in parallel with your current reasoning
-- A specialist persona adds value (explore for search, plan for architecture, verify for testing)
+- A specialist persona adds value (`explore` for search, `plan` for architecture, `verify` for testing)
 
-Agent selection:
-- For read-only exploration / search / analysis, prefer 'explore' (faster, cheaper, no isolated workspace).
-- For implementation that needs file writes, use 'task' (the default; isolated worktree).
+AGENT SELECTION
 
-Do NOT use InvokeAgent when:
+- For read-only exploration / search / analysis, prefer `explore` (faster, cheaper, no isolated workspace)
+- For implementation that needs file writes, use `task` (general-purpose worker; isolated worktree)
+
+WHEN NOT TO USE InvokeAgent
+
 - A single Read, Grep, or Glob would answer the question (overhead > benefit)
 - The task requires real-time back-and-forth with the user (sub-agents have no way to ask questions; AskUser is filtered from their tool set)
 - You've already loaded the relevant context (just do the work yourself)
 
-Key rules:
-- Sub-agent results are NOT shown to the user — you must summarize them in your reply
-- Sub-agents CANNOT spawn other sub-agents. Plan all fan-out at this level; the InvokeAgent tool is filtered from every sub-agent's tool set.
-- Identical (agent_name, prompt) calls hit a cache and skip the LLM call. Cheap to retry idempotent tasks; no need to memoize yourself.
-- A result starting with '[ERROR: sub-agent ...]' is a structural failure (e.g. workspace setup, isolation issue), not a model answer. Re-strategize rather than treat as content.
-- Always write a clear, self-contained prompt — the sub-agent hasn't seen your conversation
-- Include specific file paths, function names, and success criteria in your prompt
-- agent_name is REQUIRED. Pick a specific specialist from the 'Available Sub-Agents' list in your system prompt (typically: explore, plan, task, verify). Use 'fork' to inherit the full parent context."
+KEY RULES
+
+- Sub-agent activity is HIDDEN from the user's transcript by default. The user sees \
+  a one-line summary on completion (or the full output on failure). You must \
+  summarize sub-agent results in your own reply if the user needs to see them.
+- Sub-agents CANNOT spawn other sub-agents. Plan all fan-out at this level; \
+  the `InvokeAgent` tool is filtered from every sub-agent's tool set.
+- Identical (agent_name, prompt) pairs hit a cache and skip the LLM call. \
+  Cheap to retry idempotent tasks; no need to memoize yourself.
+- A task_id starting with '[ERROR: sub-agent ...]' is a structural failure \
+  (e.g. workspace setup, isolation issue), not a model answer. Re-strategize \
+  rather than treat as content.
+- Always write a clear, self-contained prompt \u{2014} the sub-agent hasn't seen \
+  your conversation. Include specific file paths, function names, and success criteria.
+- `agent_name` is REQUIRED. Pick a specialist from the 'Available Sub-Agents' \
+  list in your system prompt (typically: explore, plan, task, verify). Use \
+  `fork` to inherit the full parent context."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -98,35 +124,9 @@ Key rules:
                     "prompt": {
                         "type": "string",
                         "description": "The task to delegate to the sub-agent"
-                    },
-                    "background": {
-                        "type": "boolean",
-                        "description": "REQUIRED. `true` runs the sub-agent in the background and returns \
-                            immediately; results inject as a user message at the start of a future \
-                            iteration via auto-drain (you do NOT need to call `WaitTask`). \
-                            `false` runs the sub-agent in the foreground and blocks the parent until \
-                            the result is ready.\n\n\
-                            **PR-A of #1232 §2**: this field is required — there is no default. \
-                            Pre-PR-A the field defaulted to `false`, which silently turned every \
-                            parallel-fanout pattern into serial blocking calls and produced the \
-                            \"sub-agent ran for 1009s with no progress\" UX that opened the issue. \
-                            Forcing the model to choose makes the parallelism decision explicit at \
-                            the call site (Zen of Python: explicit is better than implicit).\n\n\
-                            Choose `true` for: parallel fan-out reviews, independent long-running \
-                            tasks, anything where you can do useful work concurrently.\n\
-                            Choose `false` for: the next step strictly depends on this agent's \
-                            output AND no parallel work is possible (the result is the next thing \
-                            you need to read).\n\n\
-                            **After spawning a `true` sub-agent, keep working.** The whole point \
-                            of background mode is that you do other useful things (file edits, \
-                            follow-up searches, summarizing progress) while the agent runs. \
-                            Calling `WaitTask` immediately after a bg spawn turns it back into a \
-                            blocking call — only do that when you genuinely have no parallel work.\n\n\
-                            The bg agent inherits the parent's trust + sandbox at spawn time and \
-                            is cancelled on Ctrl+C."
                     }
                 },
-                "required": ["agent_name", "prompt", "background"]
+                "required": ["agent_name", "prompt"]
             }),
         },
         ToolDefinition {
@@ -498,27 +498,41 @@ mod tests {
     /// "tighter wording" refactors don't silently drop the bits the model
     /// needs to dispatch correctly. We don't pin exact wording — just the
     /// concepts that have engineering meaning behind them.
+    ///
+    /// **#1163 (Lean A)**: koda no longer has a foreground/blocking mode.
+    /// All sub-agents run in the background. The description must say so
+    /// clearly, surface the auto-drain mechanic, and explain when WaitTask
+    /// IS appropriate (rather than its old role as a foreground replacement).
     #[test]
-    fn test_invoke_agent_description_documents_all_four_modes() {
+    fn test_invoke_agent_description_documents_spawn_only_model() {
         let defs = definitions();
         let desc = &defs[0].description;
-        // The four execution modes are the user-facing vocabulary the
-        // engine actually implements (sub_agent_dispatch.rs + bg_agent.rs).
+        // The spawn-only execution model — no fg / blocking variant.
         assert!(
-            desc.contains("Sequential foreground"),
-            "description must name the sequential foreground mode"
+            desc.contains("background") || desc.contains("Background"),
+            "description must declare sub-agents run in the background"
         );
         assert!(
-            desc.contains("Parallel foreground"),
-            "description must name the parallel foreground mode"
+            !desc.contains("Sequential foreground")
+                && !desc.contains("Parallel foreground")
+                && !desc.contains("foreground (default)"),
+            "description must NOT name foreground modes — #1163 deleted them"
         );
         assert!(
-            desc.contains("Background") && desc.contains("background=true"),
-            "description must explain background dispatch and the parameter"
+            desc.contains("task_id") || desc.contains("task ID"),
+            "description must surface the task_id return contract so the \
+             model knows it's spawn-and-poll, not blocking"
         );
         assert!(
-            desc.contains("Forked context") && desc.contains("agent_name='fork'"),
-            "description must name fork mode and its trigger"
+            desc.contains("parallel") || desc.contains("concurrent"),
+            "description must explain that multiple InvokeAgent calls in \
+             one assistant message fan out concurrently — the only way to \
+             parallelize after the fg mode was removed"
+        );
+        // Fork is still a thing.
+        assert!(
+            desc.contains("fork"),
+            "description must name the fork agent and its context-inheritance role"
         );
     }
 
@@ -561,32 +575,44 @@ mod tests {
         );
     }
 
+    /// **#1163 (Lean A)**: drain semantics now live in the top-level
+    /// description (since there's no `background` parameter to anchor
+    /// them to). The drain-on-future-iteration timing is still load-
+    /// bearing — the model shouldn't expect mid-iteration results from
+    /// a freshly-spawned sub-agent.
     #[test]
-    fn test_invoke_agent_background_param_documents_drain_semantics() {
-        // The drain-on-next-iteration timing is load-bearing: the model
-        // shouldn't expect mid-iteration results from a bg agent.
+    fn test_invoke_agent_top_level_documents_drain_semantics() {
         let defs = definitions();
-        let bg_desc = defs[0]
-            .parameters
-            .pointer("/properties/background/description")
-            .and_then(|v| v.as_str())
-            .expect("background param must have a description");
+        let desc = &defs[0].description;
         assert!(
-            bg_desc.contains("future iteration") || bg_desc.contains("next iteration"),
-            "background param must explain drain-on-next-iteration timing; \
-             post-PR-A wording uses 'future iteration' since the drain \
+            desc.contains("future iteration") || desc.contains("next iteration"),
+            "description must explain drain-on-next-iteration timing; \
+             post-#1163 wording uses 'future iteration' since the drain \
              can land any iteration after the spawn, not strictly the next one"
         );
     }
 
-    /// PR-A of #1232 §2: `background` is required — no default. The
-    /// schema-side enforcement (this test) pairs with the runtime
-    /// validation in `sub_agent_dispatch::execute_sub_agent`.
-    /// Both arms must hold for the contract to actually bind models
-    /// that respect `required` AND models that don't.
+    /// **#1163 (Lean A)**: the schema must NOT carry a `background`
+    /// property anymore. Pre-#1163 the field was `required`; removing
+    /// it from the schema is the API contract change models will see
+    /// first. A regression that re-adds `background` (e.g. a copy-paste
+    /// from the v0.3 schema) would re-introduce the asymmetric
+    /// foreground/background behaviour this PR was specifically built to
+    /// delete.
     #[test]
-    fn test_invoke_agent_background_is_required_in_schema() {
+    fn test_invoke_agent_schema_does_not_carry_background_param() {
         let defs = definitions();
+        let props = defs[0]
+            .parameters
+            .pointer("/properties")
+            .and_then(|v| v.as_object())
+            .expect("InvokeAgent schema must declare /properties");
+        assert!(
+            !props.contains_key("background"),
+            "#1163: `background` parameter was deleted — sub-agents always \
+             run in the background. Found properties: {:?}",
+            props.keys().collect::<Vec<_>>()
+        );
         let required = defs[0]
             .parameters
             .pointer("/required")
@@ -594,50 +620,38 @@ mod tests {
             .expect("InvokeAgent schema must declare a `required` array");
         let names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
         assert!(
-            names.contains(&"prompt"),
-            "`prompt` must remain required (regression guard)"
+            names.contains(&"prompt") && names.contains(&"agent_name"),
+            "`prompt` and `agent_name` must remain required (regression guard). \
+             Got required = {names:?}"
         );
         assert!(
-            names.contains(&"background"),
-            "PR-A of #1232 §2: `background` must be required so models can't \
-             silently default it to false and serialize parallel fan-out into \
-             blocking calls. Got required = {names:?}"
+            !names.contains(&"background"),
+            "#1163: `background` must NOT be in the required list — the \
+             field was deleted. Got required = {names:?}"
         );
     }
 
-    /// #1201 A1: nudge the model away from "spawn bg agent → immediately
+    /// #1201 A1: nudge the model away from "spawn agent → immediately
     /// WaitTask". That pattern silences the parent for the entire wait
     /// and turns the non-blocking dispatch back into a blocking call.
-    /// The mode bullet AND the per-param description must both push back.
+    ///
+    /// **#1163 (Lean A) update**: with the `background` parameter deleted,
+    /// the nudge can only live in the top-level description. Both the
+    /// WaitTask reference and the auto-drain mechanic must remain there.
     #[test]
     fn test_invoke_agent_description_discourages_immediate_wait_task() {
         let defs = definitions();
         let desc = &defs[0].description;
-        // The top-level Background mode bullet must mention WaitTask
-        // explicitly so the model sees the anti-pattern named.
         assert!(
             desc.contains("WaitTask"),
-            "top-level Background mode bullet must reference WaitTask by \
-             name so the model can recognize the anti-pattern (#1201 A1)"
-        );
-        // Per-param description must reinforce the same nudge — the model
-        // tends to look at the parameter doc when deciding *how* to use
-        // a tool, not the broader prose.
-        let bg_desc = defs[0]
-            .parameters
-            .pointer("/properties/background/description")
-            .and_then(|v| v.as_str())
-            .expect("background param must have a description");
-        assert!(
-            bg_desc.contains("WaitTask"),
-            "background param description must reference WaitTask so the \
-             nudge appears next to the parameter the model is setting \
-             (#1201 A1)"
+            "top-level description must reference WaitTask by name so the \
+             model can recognize the spawn-then-immediately-wait \
+             anti-pattern (#1201 A1)"
         );
         assert!(
-            bg_desc.contains("auto-drain"),
-            "background param description must name the auto-drain path \
-             so the model knows results arrive without WaitTask (#1201 A1)"
+            desc.contains("auto-drain"),
+            "top-level description must name the auto-drain path so the \
+             model knows results arrive without WaitTask (#1201 A1)"
         );
     }
 
@@ -751,14 +765,17 @@ mod tests {
             "`default` is the main-agent config slot, NOT a sub-agent. Discovered: {names:?}"
         );
 
-        // (4) The InvokeAgent tool description still pins `'task'`
+        // (4) The InvokeAgent tool description still pins `task`
         // as the omitted-agent_name fallback. If someone renames
         // the agent, the docs and the dispatch behavior must be
         // updated together — this catches half-migrations.
+        // Accept either single-quoted ('task') or backticked (`task`)
+        // form — #1163 switched the description to backticks for
+        // consistency, but earlier copies used single quotes.
         let invoke_desc = &definitions()[0].description;
         assert!(
-            invoke_desc.contains("'task'"),
-            "InvokeAgent description must reference `'task'` as the omitted-agent_name fallback worker. If you renamed `task`, update the schema and this test together."
+            invoke_desc.contains("'task'") || invoke_desc.contains("`task`"),
+            "InvokeAgent description must reference `task` as the omitted-agent_name fallback worker. If you renamed `task`, update the schema and this test together."
         );
     }
 
