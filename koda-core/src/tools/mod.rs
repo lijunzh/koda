@@ -135,6 +135,11 @@ pub mod bg_process;
 /// Background-task management tools — `ListBackgroundTasks`,
 /// `CancelTask`, `WaitTask` (Layer 2 of #996).
 pub mod bg_task_tools;
+/// Read-only tool metadata catalog (#1265 item 5, PR-1/N).
+/// Owns built-in definitions + the MCP manager slot. `ToolRegistry`
+/// composes one of these and delegates the read-only methods.
+pub mod catalog;
+pub use catalog::ToolCatalog;
 /// File CRUD tools (`Read`, `Write`, `Edit`, `Delete`, `List`).
 pub mod file_tools;
 pub mod fuzzy;
@@ -236,7 +241,14 @@ pub struct ToolResult {
 /// The tool registry: maps tool names to their definitions and handlers.
 pub struct ToolRegistry {
     project_root: PathBuf,
-    definitions: HashMap<String, ToolDefinition>,
+    /// Read-only tool metadata — built-in definitions and the MCP
+    /// manager slot. Extracted into [`ToolCatalog`] in #1265 item 5
+    /// PR-1; `ToolRegistry` delegates `get_definitions`,
+    /// `all_builtin_tool_names`, `has_tool`, `classify_tool_with_mcp`,
+    /// `set_mcp_manager`, and `mcp_manager` to it. Pre-#1265 these
+    /// were two separate fields (`definitions: HashMap<...>` and
+    /// `mcp_manager: RwLock<Option<...>>`) on this struct.
+    catalog: ToolCatalog,
     read_cache: FileReadCache,
     /// Filesystem abstraction — `LocalFileSystem` by default; swap to
     /// `SandboxedFileSystem` when a sandbox slot is active (Phase 2d, #934).
@@ -270,9 +282,6 @@ pub struct ToolRegistry {
     /// so behavior is byte-for-byte unchanged — PR-3 starts populating it
     /// with non-default values via [`crate::sandbox::policy_for_agent`].
     sandbox_policy: koda_sandbox::SandboxPolicy,
-    /// MCP connection manager — owns all MCP server connections (#662).
-    /// `None` until attached via `set_mcp_manager()`.
-    mcp_manager: std::sync::RwLock<Option<Arc<tokio::sync::RwLock<crate::mcp::McpManager>>>>,
     /// Loopback port of the per-session HTTP CONNECT proxy (Phase 3b of
     /// #934). When `Some`, [`crate::sandbox::build`] attaches the
     /// canonical `HTTPS_PROXY`/`NO_PROXY`/etc. env-var bouquet to every
@@ -307,54 +316,16 @@ impl ToolRegistry {
         max_context_tokens: usize,
         trust: crate::trust::TrustMode,
     ) -> Self {
-        let mut definitions = HashMap::new();
-
-        // Register all built-in tools
-        for def in file_tools::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-
-        for def in grep::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-        for def in shell::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-        for def in agent::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-        for def in bg_task_tools::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-        for def in ask_user::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-        for def in glob_tool::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-        for def in web_fetch::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-        for def in web_search::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-        for def in todo::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-        for def in memory::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-        for def in skill_tools::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
-        // RecallContext — on-demand history retrieval
-        let recall_def = recall::definition();
-        definitions.insert(recall_def.name.clone(), recall_def);
+        // Built-in tool definitions and the MCP manager slot moved
+        // into [`ToolCatalog`] in #1265 item 5 PR-1. Construction is
+        // a single call now — the per-tool `definitions()` walk
+        // lives inside `ToolCatalog::new()`.
+        let catalog = ToolCatalog::new();
         let skill_registry = crate::skills::SkillRegistry::discover(&project_root);
 
         Self {
             project_root,
-            definitions,
+            catalog,
             read_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
             fs: Arc::new(LocalFileSystem::new()),
             last_writer: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -370,7 +341,6 @@ impl ToolRegistry {
             // can override via [`Self::with_sandbox_policy`] (sub-agent
             // dispatch does this; the main agent inherits the default).
             sandbox_policy: koda_sandbox::SandboxPolicy::strict_default(),
-            mcp_manager: std::sync::RwLock::new(None),
             proxy_port: std::sync::RwLock::new(None),
             socks5_port: std::sync::RwLock::new(None),
         }
@@ -442,15 +412,16 @@ impl ToolRegistry {
     ///
     /// Called after MCP servers have connected and discovered their tools.
     /// Tool definitions are merged into the registry so the LLM can see them.
+    ///
+    /// Delegates to [`ToolCatalog::set_mcp_manager`] (#1265 item 5 PR-1).
     pub fn set_mcp_manager(&self, manager: Arc<tokio::sync::RwLock<crate::mcp::McpManager>>) {
-        if let Ok(mut guard) = self.mcp_manager.write() {
-            *guard = Some(manager);
-        }
+        self.catalog.set_mcp_manager(manager);
     }
 
-    /// Get the MCP manager (if attached).
+    /// Get the MCP manager (if attached). Delegates to
+    /// [`ToolCatalog::mcp_manager`] (#1265 item 5 PR-1).
     pub fn mcp_manager(&self) -> Option<Arc<tokio::sync::RwLock<crate::mcp::McpManager>>> {
-        self.mcp_manager.read().ok().and_then(|guard| guard.clone())
+        self.catalog.mcp_manager()
     }
 
     /// Attach (or detach) the per-session HTTP CONNECT proxy port.
@@ -495,30 +466,25 @@ impl ToolRegistry {
     ///
     /// For built-in tools, delegates to `classify_tool()`.
     /// For MCP tools, looks up cached annotations in the manager.
+    ///
+    /// Delegates to [`ToolCatalog::classify_tool_with_mcp`] (#1265 item 5 PR-1).
     pub fn classify_tool_with_mcp(&self, name: &str) -> ToolEffect {
-        if crate::mcp::is_mcp_tool_name(name) {
-            if let Some(mgr) = self.mcp_manager()
-                && let Ok(mgr) = mgr.try_read()
-            {
-                return mgr.classify_tool(name);
-            }
-            // Fallback: no manager or lock contention.
-            return ToolEffect::RemoteAction;
-        }
-        classify_tool(name)
+        self.catalog.classify_tool_with_mcp(name)
     }
 
     /// Get all built-in tool names.
     /// Used by wiring tests to verify every tool is properly integrated.
+    ///
+    /// Delegates to [`ToolCatalog::all_builtin_tool_names`] (#1265 item 5 PR-1).
     pub fn all_builtin_tool_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.definitions.keys().cloned().collect();
-        names.sort();
-        names
+        self.catalog.all_builtin_tool_names()
     }
 
     /// Check whether a tool name is known.
+    ///
+    /// Delegates to [`ToolCatalog::has_tool`] (#1265 item 5 PR-1).
     pub fn has_tool(&self, name: &str) -> bool {
-        self.definitions.contains_key(name)
+        self.catalog.has_tool(name)
     }
 
     /// List all available skills as `(name, description, source)` tuples.
@@ -561,48 +527,10 @@ impl ToolRegistry {
     /// - `denied` non-empty → all tools except those (denylist).
     /// - Both empty → all tools.
     /// - If both are specified, allowlist wins (deny is ignored).
+    ///
+    /// Delegates to [`ToolCatalog::get_definitions`] (#1265 item 5 PR-1).
     pub fn get_definitions(&self, allowed: &[String], denied: &[String]) -> Vec<ToolDefinition> {
-        let mut defs: Vec<ToolDefinition> = if !allowed.is_empty() {
-            allowed
-                .iter()
-                .filter_map(|name| self.definitions.get(name).cloned())
-                .collect()
-        } else if !denied.is_empty() {
-            self.definitions
-                .values()
-                .filter(|d| !denied.contains(&d.name))
-                .cloned()
-                .collect()
-        } else {
-            self.definitions.values().cloned().collect()
-        };
-
-        // Append MCP tool definitions.
-        if let Some(mgr) = self.mcp_manager()
-            && let Ok(mgr) = mgr.try_read()
-        {
-            let mcp_defs = mgr.all_tool_definitions();
-            if !allowed.is_empty() {
-                // Allowlist mode: only include MCP tools in the allowlist.
-                for def in mcp_defs {
-                    if allowed.contains(&def.name) {
-                        defs.push(def);
-                    }
-                }
-            } else if !denied.is_empty() {
-                // Denylist mode: include MCP tools not in the denylist.
-                for def in mcp_defs {
-                    if !denied.contains(&def.name) {
-                        defs.push(def);
-                    }
-                }
-            } else {
-                // No filter: include all MCP tools.
-                defs.extend(mcp_defs);
-            }
-        }
-
-        defs
+        self.catalog.get_definitions(allowed, denied)
     }
 
     /// Execute a tool by name with the given JSON arguments.
