@@ -658,6 +658,15 @@ impl ToolRegistry {
             let policy = self.sandbox_policy();
             let proxy_port = self.proxy_port();
             let socks5_port = self.socks5_port();
+            // Snapshot the session pair under one lock-acquisition
+            // each, hold the `Arc<Database>` so the borrow into the
+            // ctx stays valid for the duration of `tool.execute`.
+            let db_arc = self.db.read().ok().and_then(|g| g.clone());
+            let sid_str = self.session_id.read().ok().and_then(|g| g.clone());
+            let session = match (db_arc.as_deref(), sid_str.as_deref()) {
+                (Some(db), Some(sid)) => Some((db, sid)),
+                _ => None,
+            };
             let ctx = tool_trait::ToolExecCtx {
                 project_root: &self.project_root,
                 read_cache: &self.read_cache,
@@ -670,6 +679,7 @@ impl ToolRegistry {
                 sandbox_policy: policy,
                 proxy_port,
                 socks5_port,
+                session,
             };
             let result = tool.execute(&ctx, &args).await;
             // Post-execution registry-level recording. Lives here
@@ -715,41 +725,10 @@ impl ToolRegistry {
             // Shell — migrated in PR-6 (and gets per-call classification
             // via `bash_safety::classify_bash_command`).
 
-            // Web
-            "WebFetch" => web_fetch::web_fetch(&args, self.caps.web_body_chars).await,
-            "WebSearch" => web_search::web_search(&args).await,
-            "TodoWrite" => {
-                let db_opt = self.db.read().ok().and_then(|g| g.clone());
-                let sid_opt = self.session_id.read().ok().and_then(|g| g.clone());
-                match (db_opt, sid_opt) {
-                    (Some(db), Some(sid)) => match todo::todo_write(&db, &sid, &args).await {
-                        Ok(outcome) => {
-                            // #1077 Phase A: surface the transition to
-                            // every client (TUI / ACP / headless) via
-                            // EngineEvent::TodoUpdate. The dedup-nudge
-                            // path returns an empty diff so we suppress
-                            // the event there — unchanged-list writes
-                            // are a no-op for clients, only a reminder
-                            // for the model.
-                            if !outcome.diff.is_empty()
-                                && let Some((sink, _call_id)) = sink_for_streaming
-                            {
-                                sink.emit(crate::engine::EngineEvent::TodoUpdate {
-                                    items: outcome.items.clone(),
-                                    diff: outcome.diff.clone(),
-                                });
-                            }
-                            Ok(outcome.message)
-                        }
-                        Err(e) => Err(e),
-                    },
-                    _ => Ok("TodoWrite requires an active session.".to_string()),
-                }
-            }
-
-            // Memory
-            "MemoryRead" => memory::memory_read(&self.project_root).await,
-            "MemoryWrite" => memory::memory_write(&self.project_root, &args).await,
+            // Web — migrated in PR-7.
+            // TodoWrite — migrated in PR-7 (owns its own TodoUpdate emit).
+            // Memory — migrated in PR-7.
+            // RecallContext — migrated in PR-7.
 
             // Agent tools
             "ListAgents" => {
@@ -778,17 +757,6 @@ impl ToolRegistry {
             // Skill tools
             "ListSkills" => Ok(skill_tools::list_skills(&self.skill_registry, &args)),
             "ActivateSkill" => Ok(skill_tools::activate_skill(&self.skill_registry, &args)),
-
-            // Recall context tool
-            "RecallContext" => {
-                let db_opt = self.db.read().ok().and_then(|g| g.clone());
-                let sid_opt = self.session_id.read().ok().and_then(|g| g.clone());
-                if let (Some(db), Some(sid)) = (db_opt, sid_opt) {
-                    Ok(recall::recall_context(&db, &sid, &args).await)
-                } else {
-                    Ok("RecallContext requires an active session.".to_string())
-                }
-            }
 
             "InvokeAgent" => {
                 // Handled by tool_dispatch.rs before reaching here.

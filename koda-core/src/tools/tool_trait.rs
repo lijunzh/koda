@@ -204,6 +204,19 @@ pub struct ToolExecCtx<'a> {
 
     /// SOCKS5 proxy port. Same shape and consumers as `proxy_port`.
     pub socks5_port: Option<u16>,
+
+    /// Optional session handle — (`Database`, `session_id`) pair for
+    /// tools that read/write per-session state. `None` means "no
+    /// active session" — tools that need it should return a
+    /// graceful 'requires an active session' message in that case.
+    ///
+    /// Added in PR-7 of #1265 item 5 because `TodoWrite`,
+    /// `RecallContext` (and the bg-task tools, in PR-8) all need
+    /// the session pair. Pre-#1265 the dispatch arms snapshotted
+    /// these from `RwLock`s on the registry; the fast path now
+    /// does the same snapshot once and threads borrows through
+    /// the context.
+    pub session: Option<(&'a crate::db::Database, &'a str)>,
 }
 
 /// A self-contained built-in tool.
@@ -417,6 +430,7 @@ impl<'a> ToolExecCtx<'a> {
             sandbox_policy,
             proxy_port: None,
             socks5_port: None,
+            session: None,
         }
     }
 }
@@ -546,6 +560,7 @@ mod tests {
             sandbox_policy: policy,
             proxy_port: None,
             socks5_port: None,
+            session: None,
         }
     }
 
