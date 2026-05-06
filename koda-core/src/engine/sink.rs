@@ -454,55 +454,76 @@ impl<'a> PersistingSink<'a> {
     }
 }
 
+/// Pure classification of an [`EngineEvent`] into a persistence
+/// decision. `None` means "skip — do not write a row"; `Some((kind,
+/// payload))` is exactly the row [`PersistingSink::persist`] would
+/// spawn.
+///
+/// Pulled out of [`PersistingSink::emit`] so the routing contract
+/// ("which events persist on which path?") is testable as a pure
+/// function. Without this, the only way to assert "event X must NOT
+/// persist" was to send X, sleep an arbitrary wall-clock duration
+/// hoping any erroneous spawn would land, then check the DB was
+/// still empty — a fundamentally racy negative-assertion shape.
+///
+/// Branches on `parent_tool_call_id`:
+/// - `None` (top-level) — persist `Info` and `ChildTaskUpdate` only.
+///   Other events are already in `messages.*`.
+/// - `Some(_)` (sub-agent) — persist a richer set matching what
+///   [`BufferingSink::emit`] renders, so the parent transcript can
+///   reconstruct the sub-agent trace.
+pub(crate) fn classify_for_persist(
+    event: &EngineEvent,
+    parent_tool_call_id: Option<&str>,
+) -> Option<(&'static str, String)> {
+    use crate::persistence::session_event_kind as sek;
+    if parent_tool_call_id.is_some() {
+        match event {
+            EngineEvent::Info { message } => Some((sek::SUB_AGENT_EVENT, message.clone())),
+            EngineEvent::ToolCallStart { name, .. } => {
+                Some((sek::SUB_AGENT_EVENT, format!("  \u{1f527} {name}")))
+            }
+            EngineEvent::ApprovalRequest { tool_name, .. } => Some((
+                sek::SUB_AGENT_EVENT,
+                format!("  \u{2398} approval auto-rejected for {tool_name} (no user channel)"),
+            )),
+            EngineEvent::AskUserRequest { question, .. } => {
+                let truncated: String = question.chars().take(80).collect();
+                Some((
+                    sek::SUB_AGENT_EVENT,
+                    format!("  \u{2398} ask-user auto-skipped: {truncated}"),
+                ))
+            }
+            _ => None,
+        }
+    } else {
+        match event {
+            EngineEvent::Info { message } => Some((sek::INFO, message.clone())),
+            EngineEvent::ChildTaskUpdate { .. } => {
+                // serde_json::to_string on EngineEvent is infallible in
+                // practice (every variant is `Serialize`-clean), but
+                // we preserve the original silent-skip-on-error
+                // behaviour rather than panic. A future test could
+                // construct an event that fails serialization — we'd
+                // log and skip, not crash a session.
+                serde_json::to_string(event)
+                    .ok()
+                    .map(|json| (sek::BG_TASK_UPDATE, json))
+            }
+            _ => None,
+        }
+    }
+}
+
 impl EngineSink for PersistingSink<'_> {
     fn emit(&self, event: EngineEvent) {
-        use crate::persistence::session_event_kind as sek;
-        // Branch on whether this is a sub-agent context. Sub-agents
-        // need a richer event set persisted (the inner trace) so the
-        // parent transcript can show what they did. Top-level only
-        // needs Info / ChildTaskUpdate — tool calls there are already
-        // in `messages.tool_calls`.
-        if self.parent_tool_call_id.is_some() {
-            // Sub-agent: persist the same set BufferingSink renders
-            // (see [`BufferingSink::emit`]). Use the rendered string
-            // form so the transcript matches the live trace.
-            match &event {
-                EngineEvent::Info { message } => {
-                    self.persist(sek::SUB_AGENT_EVENT, message.clone());
-                }
-                EngineEvent::ToolCallStart { name, .. } => {
-                    self.persist(sek::SUB_AGENT_EVENT, format!("  \u{1f527} {name}"));
-                }
-                EngineEvent::ApprovalRequest { tool_name, .. } => {
-                    self.persist(
-                        sek::SUB_AGENT_EVENT,
-                        format!(
-                            "  \u{2398} approval auto-rejected for {tool_name} (no user channel)"
-                        ),
-                    );
-                }
-                EngineEvent::AskUserRequest { question, .. } => {
-                    let truncated: String = question.chars().take(80).collect();
-                    self.persist(
-                        sek::SUB_AGENT_EVENT,
-                        format!("  \u{2398} ask-user auto-skipped: {truncated}"),
-                    );
-                }
-                _ => {}
-            }
-        } else {
-            // Top-level: only sink-only events not already in messages.
-            match &event {
-                EngineEvent::Info { message } => {
-                    self.persist(sek::INFO, message.clone());
-                }
-                EngineEvent::ChildTaskUpdate { .. } => {
-                    if let Ok(json) = serde_json::to_string(&event) {
-                        self.persist(sek::BG_TASK_UPDATE, json);
-                    }
-                }
-                _ => {}
-            }
+        // The routing decision is a pure function (see
+        // [`classify_for_persist`]); `emit` only wires it to the
+        // fire-and-forget spawner and forwards unconditionally.
+        if let Some((kind, payload)) =
+            classify_for_persist(&event, self.parent_tool_call_id.as_deref())
+        {
+            self.persist(kind, payload);
         }
         self.inner.emit(event);
     }
@@ -1165,5 +1186,171 @@ mod tests {
             })
             .await;
         assert!(result.is_err());
+    }
+
+    // ── classify_for_persist (8a PR-2) ──────────────────────────────
+    //
+    // The pre-#1265-8a-PR-2 negative-assertion tests for PersistingSink
+    // (in `tests/persisting_sink_test.rs`) sent a non-allowlisted event,
+    // slept 50ms hoping any erroneous fire-and-forget DB insert would
+    // land, then asserted the table was empty. That's a fundamentally
+    // racy negative assertion: "absence after a guess."
+    //
+    // The classifier extraction makes the routing decision a pure
+    // function. We can now assert exactly the right thing — the
+    // *decision*, not the side effect — with no async, no DB, no sleep.
+
+    use crate::child_agent::AgentStatus;
+    use crate::persistence::session_event_kind as sek;
+
+    fn child_task_update_event() -> EngineEvent {
+        EngineEvent::ChildTaskUpdate {
+            task_id: 42,
+            spawner: Some(7),
+            is_background: true,
+            status: AgentStatus::Pending,
+        }
+    }
+
+    #[test]
+    fn classify_top_level_persists_info_with_message_payload() {
+        let event = EngineEvent::Info {
+            message: "hello".into(),
+        };
+        let decision = classify_for_persist(&event, None);
+        assert_eq!(decision, Some((sek::INFO, "hello".to_string())));
+    }
+
+    #[test]
+    fn classify_top_level_persists_child_task_update_with_json_payload() {
+        let event = child_task_update_event();
+        let (kind, payload) =
+            classify_for_persist(&event, None).expect("ChildTaskUpdate must persist top-level");
+        assert_eq!(kind, sek::BG_TASK_UPDATE);
+        // Payload is a JSON-serialized EngineEvent; sanity-check a
+        // couple of fields rather than pinning the full schema.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&payload).expect("payload must parse as JSON");
+        assert_eq!(parsed["task_id"], 42);
+        assert_eq!(parsed["is_background"], true);
+    }
+
+    #[test]
+    fn classify_top_level_skips_non_allowlisted_events() {
+        // Anything not Info / ChildTaskUpdate must skip on the
+        // top-level path — these events are already in `messages.*`.
+        // Replaces the racy `top_level_passes_through_non_persistable_
+        // events_without_db_writes` integration sleep test.
+        let cases = [
+            EngineEvent::ResponseStart,
+            EngineEvent::TextDelta { text: "a".into() },
+            EngineEvent::TextDone,
+            EngineEvent::ToolCallStart {
+                id: "call-1".into(),
+                name: "Read".into(),
+                args: serde_json::json!({"path": "f.txt"}),
+                is_sub_agent: false,
+            },
+        ];
+        for event in cases {
+            assert_eq!(
+                classify_for_persist(&event, None),
+                None,
+                "top-level must skip {event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_sub_agent_persists_info_with_sub_agent_kind() {
+        let event = EngineEvent::Info {
+            message: "sub said hi".into(),
+        };
+        let decision = classify_for_persist(&event, Some("parent-call"));
+        assert_eq!(
+            decision,
+            Some((sek::SUB_AGENT_EVENT, "sub said hi".to_string()))
+        );
+    }
+
+    #[test]
+    fn classify_sub_agent_persists_tool_call_start_as_rendered_line() {
+        let event = EngineEvent::ToolCallStart {
+            id: "c-1".into(),
+            name: "Read".into(),
+            args: serde_json::json!({}),
+            is_sub_agent: false,
+        };
+        let (kind, payload) = classify_for_persist(&event, Some("parent-call"))
+            .expect("ToolCallStart must persist on sub-agent path");
+        assert_eq!(kind, sek::SUB_AGENT_EVENT);
+        assert_eq!(payload, "  \u{1f527} Read");
+    }
+
+    #[test]
+    fn classify_sub_agent_persists_approval_request_as_auto_reject_line() {
+        let event = EngineEvent::ApprovalRequest {
+            id: "a-1".into(),
+            tool_name: "WriteFile".into(),
+            detail: "write 1 file".into(),
+            preview: None,
+            effect: crate::tools::ToolEffect::LocalMutation,
+        };
+        let (kind, payload) = classify_for_persist(&event, Some("parent-call"))
+            .expect("ApprovalRequest must persist on sub-agent path");
+        assert_eq!(kind, sek::SUB_AGENT_EVENT);
+        assert!(
+            payload.contains("approval auto-rejected for WriteFile"),
+            "payload should explain the auto-rejection: {payload:?}"
+        );
+    }
+
+    #[test]
+    fn classify_sub_agent_truncates_ask_user_question_to_80_chars() {
+        let long_question = "q".repeat(200);
+        let event = EngineEvent::AskUserRequest {
+            id: "q-1".into(),
+            question: long_question,
+            options: Vec::new(),
+        };
+        let (kind, payload) = classify_for_persist(&event, Some("parent-call"))
+            .expect("AskUserRequest must persist on sub-agent path");
+        assert_eq!(kind, sek::SUB_AGENT_EVENT);
+        // Prefix is fixed; the question slice must be exactly 80 chars
+        // (truncation contract). 8 chars of prefix + 80 of question = 88.
+        let prefix = "  \u{2398} ask-user auto-skipped: ";
+        let question_part = payload.strip_prefix(prefix).expect("prefix should match");
+        assert_eq!(
+            question_part.chars().count(),
+            80,
+            "question must truncate to 80 chars, got {} in {payload:?}",
+            question_part.chars().count()
+        );
+    }
+
+    #[test]
+    fn classify_sub_agent_skips_child_task_update() {
+        // ChildTaskUpdate is a top-level-only signal (parent transcript
+        // shows sub-agent activity through InvokeAgent's tool result).
+        // Replaces the racy `sub_agent_does_not_persist_bg_task_update`
+        // integration sleep test.
+        let event = child_task_update_event();
+        assert_eq!(classify_for_persist(&event, Some("parent-call")), None);
+    }
+
+    #[test]
+    fn classify_sub_agent_skips_other_non_allowlisted_events() {
+        let cases = [
+            EngineEvent::ResponseStart,
+            EngineEvent::TextDelta { text: "a".into() },
+            EngineEvent::TextDone,
+        ];
+        for event in cases {
+            assert_eq!(
+                classify_for_persist(&event, Some("parent-call")),
+                None,
+                "sub-agent must skip {event:?}"
+            );
+        }
     }
 }

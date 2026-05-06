@@ -181,12 +181,16 @@ async fn top_level_bg_task_update_persists_as_json_with_null_parent() {
     assert_eq!(parsed["status"]["iter"], 7, "full payload: {parsed}");
 }
 
-/// Sanity: events that aren't on the `Info` / `ChildTaskUpdate` allowlist
-/// do NOT create rows in the top-level routing path. If `TextDelta`
-/// started persisting we'd flood the table on every streaming token —
-/// regression guard for that explicit bug shape.
+/// Forwarding contract: events that aren't on the `Info` /
+/// `ChildTaskUpdate` allowlist must still reach the inner sink
+/// untouched. The persistence-side guarantee ("these events do not
+/// write rows") is covered as a pure-function test in
+/// [`koda_core::engine::sink::tests::classify_top_level_skips_non_allowlisted_events`]
+/// — see #1265 item 8a, PR-2 for why the negative DB assertion
+/// previously here was deleted in favour of testing the *decision*
+/// instead of waiting for the *side effect*.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn top_level_passes_through_non_persistable_events_without_db_writes() {
+async fn top_level_forwards_non_persistable_events_unconditionally() {
     let (_tmp, db, session_id) = fresh_db().await;
     let inner = TestSink::new();
     let sink = PersistingSink::new(&inner, db.clone(), session_id.clone(), None);
@@ -202,17 +206,6 @@ async fn top_level_passes_through_non_persistable_events_without_db_writes() {
         args: serde_json::json!({"path": "f.txt"}),
         is_sub_agent: false,
     });
-
-    // Give any (incorrectly) spawned inserts a beat to land before
-    // asserting the table is empty. Without the small wait a buggy
-    // implementation that DID spawn writes could race past us.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let events = db.load_session_events(&session_id).await.unwrap();
-    assert!(
-        events.is_empty(),
-        "top-level routing must only persist Info/ChildTaskUpdate; \
-         got rows for non-allowlisted events: {events:?}"
-    );
 
     // Forwarding still works for every event, persisted or not.
     assert_eq!(inner.len(), 4);
@@ -360,10 +353,14 @@ async fn sub_agent_ask_user_request_persists_truncated() {
     );
 }
 
-/// Sub-agent routing must NOT persist `ChildTaskUpdate` (that's a
-/// top-level concept). Tests the negative side of the asymmetry.
+/// Forwarding contract on the sub-agent path: `ChildTaskUpdate`
+/// must reach the inner sink even though it's not on the sub-agent
+/// persist allowlist. The persistence-side guarantee is covered as
+/// a pure-function test in
+/// [`koda_core::engine::sink::tests::classify_sub_agent_skips_child_task_update`]
+/// — see #1265 item 8a, PR-2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sub_agent_does_not_persist_bg_task_update() {
+async fn sub_agent_forwards_child_task_update_unconditionally() {
     use koda_core::child_agent::AgentStatus;
 
     let (_tmp, db, session_id) = fresh_db().await;
@@ -381,16 +378,6 @@ async fn sub_agent_does_not_persist_bg_task_update() {
         is_background: true,
         status: AgentStatus::Pending,
     });
-
-    // Wait long enough for an erroneously-spawned insert to land,
-    // then assert nothing did. (The forwarding contract still fires —
-    // checked separately on the inner sink below.)
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let events = db.load_session_events(&session_id).await.unwrap();
-    assert!(
-        events.is_empty(),
-        "ChildTaskUpdate must not persist on the sub-agent path; got: {events:?}"
-    );
 
     // Inner sink still saw the event — forwarding is unconditional.
     assert_eq!(inner.len(), 1);
@@ -465,6 +452,12 @@ async fn sub_agent_multi_event_sequence_preserves_order_and_parent_id() {
 /// to the inner sink. Locks in the "decorator transparency" contract
 /// — a buggy implementation that early-returned after the routing
 /// branches would silently drop these events.
+///
+/// The persistence-side guarantee for these events ("do not write
+/// rows") is covered as a pure-function test in
+/// [`koda_core::engine::sink::tests::classify_sub_agent_skips_other_non_allowlisted_events`]
+/// — see #1265 item 8a, PR-2 for why the negative DB assertion
+/// previously here was deleted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forwarding_is_unconditional_for_non_persisted_events() {
     let (_tmp, db, session_id) = fresh_db().await;
@@ -474,15 +467,7 @@ async fn forwarding_is_unconditional_for_non_persisted_events() {
     sink.emit(EngineEvent::ResponseStart);
     sink.emit(EngineEvent::TextDone);
 
-    // Neither event is on either persistence allowlist.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let events = db.load_session_events(&session_id).await.unwrap();
-    assert!(
-        events.is_empty(),
-        "non-allowlisted events must not write rows; got: {events:?}"
-    );
-
-    // But the inner sink saw both — forwarding is unconditional.
+    // Inner sink saw both — forwarding is unconditional.
     assert_eq!(inner.len(), 2);
     assert!(matches!(&inner.events()[0], EngineEvent::ResponseStart));
     assert!(matches!(&inner.events()[1], EngineEvent::TextDone));
