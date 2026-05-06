@@ -329,6 +329,11 @@ pub(crate) async fn execute_one_tool(
             // this id, so the transcript renderer can fold it under
             // the parent's `InvokeAgent` tool result.
             Some(&tc.id),
+            // **#1163 (Lean A)**: `inline_only=false` is the public
+            // dispatch path — every InvokeAgent call spawns a bg
+            // task and returns its task_id immediately. The `true`
+            // value is reserved for `run_bg_agent`'s recursion guard.
+            false,
         );
         match Box::pin(fut).await {
             Ok(output) => (output, true, None),

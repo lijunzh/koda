@@ -193,13 +193,14 @@ async fn run_bg_agent(
     );
     let nested_bg = crate::child_agent::new_shared();
 
-    // Override background=false to prevent infinite spawn — a bg agent
-    // that itself emitted `InvokeAgent { background: true }` would
-    // never see its child's result (no inference loop is running
-    // *inside* a bg agent to drain results).
-    let mut sync_args: serde_json::Value = serde_json::from_str(&arguments).unwrap_or_default();
-    sync_args["background"] = serde_json::Value::Bool(false);
-    let sync_arguments = serde_json::to_string(&sync_args).unwrap();
+    // **#1163 (Lean A)**: pre-#1163 we had to inject
+    // `sync_args["background"] = false` here so the recursive
+    // `execute_sub_agent` call ran the loop inline instead of
+    // re-spawning. The `background` field is gone from the schema
+    // now (and from `parse_background_required`, also deleted), so
+    // the recursion is steered by the `inline_only: true` argument
+    // below. The arguments string passes through unchanged.
+    let sync_arguments = arguments.clone();
 
     // We need to inspect `cancel` *after* the call to decide between
     // Cancelled and Errored when `execute_sub_agent` returns Err —
@@ -255,6 +256,13 @@ async fn run_bg_agent(
         // live in the sub-session). Pass `None` — their trace will
         // be visible only via the bg agent's own surfaced output.
         None,
+        // **#1163 (Lean A)**: `inline_only=true` is the recursion
+        // guard. We're already inside `tokio::spawn(run_bg_agent(...))`,
+        // so `execute_sub_agent`'s bg-spawn block must NOT fire again
+        // — otherwise every InvokeAgent would spawn an infinite chain
+        // of bg tasks. The inline path runs the actual inference loop
+        // and writes its result back via the oneshot `tx`.
+        true,
     )
     .await;
 
@@ -410,33 +418,6 @@ fn available_agents_hint(project_root: &std::path::Path) -> String {
     }
 }
 
-pub(crate) fn parse_background_required(args: &serde_json::Value) -> anyhow::Result<bool> {
-    match args.get("background") {
-        Some(serde_json::Value::Bool(b)) => Ok(*b),
-        Some(other) => {
-            let kind = match other {
-                serde_json::Value::Null => "null",
-                serde_json::Value::String(_) => "a string",
-                serde_json::Value::Number(_) => "a number",
-                serde_json::Value::Array(_) => "an array",
-                serde_json::Value::Object(_) => "an object",
-                serde_json::Value::Bool(_) => unreachable!("matched above"),
-            };
-            anyhow::bail!(
-                "InvokeAgent: 'background' must be a boolean (true or false), got {kind}. \
-                 Pick `true` for parallel/independent work, `false` when the next \
-                 step strictly depends on this agent's output."
-            );
-        }
-        None => anyhow::bail!(
-            "InvokeAgent: 'background' is required — no default. \
-             Pick `true` for parallel fan-out / independent long-running tasks (results \
-             auto-inject on a future iteration), or `false` when the next step strictly \
-             depends on this agent's output and no parallel work is possible. \
-             See the 'background' parameter description for the full rationale."
-        ),
-    }
-}
 
 /// Execute a sub-agent in its own isolated event loop.
 ///
@@ -451,6 +432,13 @@ pub(crate) fn parse_background_required(args: &serde_json::Value) -> anyhow::Res
 /// is intentionally unused — sub-agents construct their own
 /// `sub_tools` registry from `sub_config.allowed_tools`.
 #[tracing::instrument(skip_all, fields(agent_name, cached = false))]
+// 8 args: 7 ambient (tx, arguments, cmd_rx, cache, sandbox, registry,
+// session) + 1 private `inline_only` recursion guard added in #1163
+// (Lean A) so `run_bg_agent` can drive the inference loop body without
+// re-entering the spawn path. Bundling into a struct would just push
+// the count from "function args" to "struct fields" without making
+// any caller's life easier.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_sub_agent<'a>(
     parent_tx: ToolExecutionContext<'a>,
     arguments: &'a str,
@@ -478,6 +466,19 @@ pub(crate) fn execute_sub_agent<'a>(
     // `None` for foreground sub-agents (their events flow inline
     // through the parent's `EngineSink` and don't need correlation).
     parent_tool_call_id: Option<&'a str>,
+    // **#1163 (Lean A)**: internal-only marker. `false` is the public
+    // dispatch shape — spawn the agent in the background and return
+    // immediately with a task_id. `true` is the recursion-guard path
+    // used by `run_bg_agent` when it needs to actually drive the
+    // inference loop inside the spawned task; that path skips the
+    // bg-spawn block and runs the loop inline.
+    //
+    // Pre-#1163 the public `background:bool` parameter on the
+    // InvokeAgent tool served both roles: model-facing choice AND
+    // recursion guard for `run_bg_agent`. #1163 deleted the model-
+    // facing flag (sub-agents always spawn-and-return), so this
+    // parameter is now strictly an internal implementation detail.
+    inline_only: bool,
 ) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
     async move {
         // #1265 item 4 PR-3: rebind context fields to the same names
@@ -525,21 +526,47 @@ pub(crate) fn execute_sub_agent<'a>(
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'prompt'"))?;
         let is_fork = agent_name == "fork";
-        // PR-A of #1232 §2: `background` is a required field. The
-        // schema marks it required (see `tools/agent.rs`) but model
-        // compliance with `required` is best-effort — some models
-        // emit calls without it. Reject loudly so the model sees a
-        // tool-error and can correct on the next turn, instead of
-        // silently defaulting to `false` and triggering the
-        // "sub-agent ran for 1009s with no progress" UX that opened
-        // the issue.
-        //
-        // Validation is extracted into a free function below so it
-        // can be unit-tested without spinning up the full
-        // `execute_sub_agent` plumbing.
-        let background = parse_background_required(&args)?;
 
-        // Background mode: spawn and return immediately.
+        // **#1163 (Lean A)**: emit `SubAgentStart` here — BEFORE the
+        // bg-spawn early-return — so the parent's sink observes the
+        // dispatch synchronously. Pre-#1163 this fired only on the
+        // (now-deleted) inline foreground path, and the bg path leaked
+        // through with just an `Info { "\u{1f680} ... launched in
+        // background" }` line. ACP / headless clients (and the
+        // e2e tests in `e2e_agent_test.rs`) rely on `SubAgentStart`
+        // as the canonical "a sub-agent was just dispatched" signal,
+        // independent of whether dispatch resolves inline (cache hit)
+        // or by spawn. The `inline_only` recursion-guard path is the
+        // only place this could double-emit, but that path's `sink`
+        // is a `BufferingSink` inside `run_bg_agent`, so the duplicate
+        // is silently captured and never reaches a user surface.
+        sink.emit(EngineEvent::SubAgentStart {
+            agent_name: agent_name.to_string(),
+        });
+
+        // **#1163 (Lean A)**: cache lookup MUST happen before the
+        // bg-spawn block, not after. Pre-#1163 it lived in the (then
+        // foreground-only) inline path, which meant a cache hit on a
+        // background dispatch still spawned a `tokio::spawn` task,
+        // ate a registry slot, and only short-circuited *inside* the
+        // spawned task (where the cache-hit Info event vanished into
+        // the BufferingSink). Hoisting it here means cache hits emit
+        // their Info on the parent's real sink AND skip the spawn
+        // entirely — the test fixture in `test_sub_agent_cache_hit_skips_llm`
+        // directly asserts both behaviours. Cheap to retry idempotent
+        // tasks; no provider hit, no worktree, no registry churn.
+        if let Some(cached) = sub_agent_cache.get(agent_name, prompt) {
+            sink.emit(EngineEvent::Info {
+                message: format!("  \u{26a1} {agent_name}: cache hit, skipping LLM call"),
+            });
+            tracing::Span::current().record("cached", true);
+            return Ok(cached);
+        }
+        // **#1163 (Lean A)**: every InvokeAgent dispatch spawns a
+        // background task and returns its task_id immediately. The only
+        // skip-spawn path is the `inline_only` recursion guard used by
+        // `run_bg_agent` to drive the inference loop inside the spawned
+        // task itself.
         //
         // Phase 1 of #1022 fixes B1–B4 here:
         //  * **B1 trust:** the recursive `execute_sub_agent` call below
@@ -566,7 +593,7 @@ pub(crate) fn execute_sub_agent<'a>(
         //    — those generic helpers had no `Send` bound on `R`/`W`/`T`,
         //    so MutexGuards held across their awaits weren't Send. Bounds
         //    have been added there as well.
-        if background {
+        if !inline_only {
             // Phase E of #996: tag the bg-sub-agent task with the
             // **parent's** spawner identity. The parent (not the bg
             // sub-agent itself) owns the right to wait/cancel its
@@ -670,16 +697,6 @@ pub(crate) fn execute_sub_agent<'a>(
             bg: bg_agents,
             invocation_id: my_invocation_id,
         };
-        // Check result cache — identical (agent_name, prompt) pairs hit
-        // a cache and skip the LLM call. Cheap to retry idempotent tasks.
-        if let Some(cached) = sub_agent_cache.get(agent_name, prompt) {
-            sink.emit(EngineEvent::Info {
-                message: format!("  \u{26a1} {agent_name}: cache hit, skipping LLM call"),
-            });
-            tracing::Span::current().record("cached", true);
-            return Ok(cached);
-        }
-
         // PR-A of #1232 §1: register the foreground sub-agent in the
         // shared `ChildAgentRegistry` so the `/agents` overlay can
         // render its row alongside any concurrent bg sub-agents.
@@ -1832,93 +1849,6 @@ mod invocation_cleanup_tests {
             !cancel.is_cancelled(),
             "unrelated entry's cancel token must not fire"
         );
-    }
-}
-
-#[cfg(test)]
-mod parse_background_required_tests {
-    //! PR-A of #1232 §2: schema declares `background` required, and
-    //! this module's runtime backstop holds the line for models that
-    //! ignore the schema. The tests pin every branch so a future
-    //! refactor that re-introduces a default-false fallback fails
-    //! loudly here.
-
-    use super::parse_background_required;
-    use serde_json::json;
-
-    #[test]
-    fn accepts_literal_true() {
-        let v = parse_background_required(&json!({"background": true})).expect("ok");
-        assert!(v);
-    }
-
-    #[test]
-    fn accepts_literal_false() {
-        let v = parse_background_required(&json!({"background": false})).expect("ok");
-        assert!(!v);
-    }
-
-    #[test]
-    fn missing_field_errors_with_actionable_message() {
-        let err = parse_background_required(&json!({"prompt": "x"}))
-            .expect_err("missing background must be an error");
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("'background' is required"),
-            "error must name the field; got: {msg}"
-        );
-        // Actionable: the model needs to know what to pick. Both of
-        // the canonical choices are mentioned so the next-turn
-        // correction is unambiguous.
-        assert!(msg.contains("`true`"), "error must mention `true` option");
-        assert!(msg.contains("`false`"), "error must mention `false` option");
-    }
-
-    #[test]
-    fn string_value_rejected_with_type_hint() {
-        // Models sometimes emit "true" (string) when fine-tuned on
-        // datasets that quoted JSON booleans. Catch and reject so we
-        // don't fall through to the default-false path that #1232 §2
-        // exists to eliminate.
-        let err = parse_background_required(&json!({"background": "true"}))
-            .expect_err("string must be an error");
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("must be a boolean"),
-            "error must explain the type requirement; got: {msg}"
-        );
-        assert!(
-            msg.contains("a string"),
-            "error must name the actual offending type; got: {msg}"
-        );
-    }
-
-    #[test]
-    fn number_value_rejected() {
-        let err = parse_background_required(&json!({"background": 1}))
-            .expect_err("number must be an error");
-        assert!(format!("{err:#}").contains("a number"));
-    }
-
-    #[test]
-    fn null_value_rejected() {
-        // null is `Some(Null)` in serde_json, distinct from missing.
-        // Both should fail, but null hits the type-mismatch arm.
-        let err = parse_background_required(&json!({"background": null}))
-            .expect_err("null must be an error");
-        assert!(format!("{err:#}").contains("null"));
-    }
-
-    #[test]
-    fn array_and_object_rejected() {
-        for v in [json!({"background": []}), json!({"background": {}})] {
-            let err = parse_background_required(&v).expect_err("collection must be an error");
-            let msg = format!("{err:#}");
-            assert!(
-                msg.contains("must be a boolean"),
-                "non-bool collection must surface type-mismatch; got: {msg}"
-            );
-        }
     }
 }
 
