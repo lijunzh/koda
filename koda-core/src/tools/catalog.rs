@@ -53,7 +53,7 @@
 //! module, not in 30 unrelated call sites.
 //!
 //! [`ToolRegistry`]: crate::tools::ToolRegistry
-//! [`ToolDefinition`]: crate::types::ToolDefinition
+//! [`ToolDefinition`]: crate::providers::ToolDefinition
 
 use crate::providers::ToolDefinition;
 use std::collections::HashMap;
