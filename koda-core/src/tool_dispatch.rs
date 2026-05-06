@@ -219,14 +219,20 @@ pub(crate) fn can_parallelize(
     }
 
     let mut seen = std::collections::HashSet::new();
+    let catalog = crate::tools::ToolCatalog::default_static();
     let has_conflict = tool_calls.iter().any(|tc| {
-        if !crate::tools::is_mutating_tool(&tc.function_name) {
+        let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+        if !catalog.is_mutating_call(&tc.function_name, &args) {
             return false;
         }
-        let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
-        if let Some(path) = crate::undo::extract_file_path(&tc.function_name, &args) {
+        // Per-tool undo path now lives on the trait — single source
+        // of truth for which tools snapshot which arg.
+        if let Some(path) = catalog
+            .get_tool(&tc.function_name)
+            .and_then(|tool| tool.extract_undo_path(&args))
+        {
             // If the path is already in the set, we have a conflict
-            !seen.insert(path)
+            !seen.insert(path.to_string_lossy().into_owned())
         } else {
             false
         }
@@ -341,8 +347,13 @@ pub(crate) async fn execute_one_tool(
             Err(e) => (format!("Error invoking sub-agent: {e:#}"), false, None),
         }
     } else {
-        // Invalidate sub-agent cache on file mutations
-        if crate::tools::is_mutating_tool(&tc.function_name) {
+        // Invalidate sub-agent cache on file mutations.
+        //
+        // Args-aware classification (#1265 PR-9): for `Bash` this
+        // means `cat foo.txt` no longer wastes a cache invalidation,
+        // while `rm foo.txt` still does.
+        let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+        if tools.catalog().is_mutating_call(&tc.function_name, &args) {
             sub_agent_cache.invalidate();
         }
         let streaming = if tc.function_name == "Bash" {
@@ -826,15 +837,29 @@ mod tests {
 
     #[test]
     fn test_is_mutating_tool() {
-        assert!(crate::tools::is_mutating_tool("Write"));
-        assert!(crate::tools::is_mutating_tool("Edit"));
-        assert!(crate::tools::is_mutating_tool("Delete"));
-        assert!(crate::tools::is_mutating_tool("Bash"));
-        assert!(crate::tools::is_mutating_tool("MemoryWrite"));
-        assert!(!crate::tools::is_mutating_tool("Read"));
-        assert!(!crate::tools::is_mutating_tool("List"));
+        // Post-#1265 PR-9: classification flows through the catalog
+        // (per-call, args-aware). For args-insensitive tools the
+        // result is identical to the legacy name-only check; for
+        // `Bash` it depends on the command — here we pass `Null`
+        // which `BashTool::classify` treats as "unknown command,
+        // assume worst case" → mutating.
+        let cat = crate::tools::ToolCatalog::default_static();
+        let null = serde_json::Value::Null;
+        assert!(cat.is_mutating_call("Write", &null));
+        assert!(cat.is_mutating_call("Edit", &null));
+        assert!(cat.is_mutating_call("Delete", &null));
+        assert!(cat.is_mutating_call("Bash", &null));
+        assert!(cat.is_mutating_call("MemoryWrite", &null));
+        assert!(!cat.is_mutating_call("Read", &null));
+        assert!(!cat.is_mutating_call("List", &null));
         // InvokeAgent is ReadOnly (sub-agents inherit parent's approval mode)
-        assert!(!crate::tools::is_mutating_tool("InvokeAgent"));
+        assert!(!cat.is_mutating_call("InvokeAgent", &null));
+
+        // Args-aware showcase: Bash with a benign command is
+        // ReadOnly; this is the bug the legacy name-only function
+        // could not catch.
+        let echo = serde_json::json!({"command": "echo hello"});
+        assert!(!cat.is_mutating_call("Bash", &echo));
     }
 
     #[test]

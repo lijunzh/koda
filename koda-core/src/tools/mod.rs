@@ -33,7 +33,8 @@
 //!
 //! Every tool call is classified by `ToolEffect` and checked against the
 //! current approval mode before execution. See
-//! `classify_tool` for the effect of each tool.
+//! [`crate::tools::ToolCatalog::classify_call`] for the per-call entry point and
+//! each tool's `Tool::classify` impl for the actual logic.
 
 /// Effect classification for tool calls.
 ///
@@ -43,11 +44,12 @@
 /// # Examples
 ///
 /// ```
-/// use koda_core::tools::{ToolEffect, classify_tool};
+/// use koda_core::tools::ToolEffect;
 ///
-/// assert_eq!(classify_tool("Read"), ToolEffect::ReadOnly);
-/// assert_eq!(classify_tool("Write"), ToolEffect::LocalMutation);
-/// assert_eq!(classify_tool("Delete"), ToolEffect::Destructive);
+/// assert!(!ToolEffect::ReadOnly.is_mutating());
+/// assert!(ToolEffect::LocalMutation.is_mutating());
+/// assert!(ToolEffect::Destructive.is_mutating());
+/// assert!(ToolEffect::RemoteAction.is_mutating());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -62,72 +64,22 @@ pub enum ToolEffect {
     Destructive,
 }
 
-/// Classify a built-in tool by name.
-///
-/// For `Bash`, this returns the *default* classification (`LocalMutation`);
-/// the actual effect depends on the command string and must be refined
-/// via [`crate::bash_safety::classify_bash_command`].
-///
-/// Unknown tools default to `LocalMutation` (conservative — always asks).
-///
-/// For MCP tools (names containing `__`), call
-/// [`ToolRegistry::classify_tool_with_mcp`] instead to use server-provided
-/// annotations.
-pub fn classify_tool(name: &str) -> ToolEffect {
-    match name {
-        // Pure reads — zero side-effects.
-        // `TodoWrite` lives here because it only mutates Koda's own session
-        // state (the in-memory todo list), not the user's files or shell. From
-        // a user-impact perspective it's read-only; gating it behind approval
-        // breaks Plan-mode planning entirely (#1212).
-        "Read" | "List" | "Grep" | "Glob" | "MemoryRead" | "ListAgents" | "ListSkills"
-        | "ActivateSkill" | "RecallContext" | "AskUser" | "TodoWrite" => ToolEffect::ReadOnly,
-
-        // Remote actions — side-effects on remote services only
-        "WebFetch" => ToolEffect::ReadOnly,    // GET-only fetch
-        "WebSearch" => ToolEffect::ReadOnly,   // read-only search
-        "InvokeAgent" => ToolEffect::ReadOnly, // sub-agents inherit parent's mode
-
-        // Background task management (Layer 2 of #996). ListBackgroundTasks
-        // is a pure read; CancelTask / WaitTask signal but don't write
-        // files — they're idempotent observation/control of work the
-        // model already started. Treating as ReadOnly avoids an approval
-        // prompt every time the model checks on a bg task.
-        "ListBackgroundTasks" | "CancelTask" | "WaitTask" => ToolEffect::ReadOnly,
-
-        // Local mutations — write to filesystem or local state
-        "Write" | "Edit" | "MemoryWrite" => ToolEffect::LocalMutation,
-
-        // Bash — default to LocalMutation; refined by classify_bash_command()
-        "Bash" => ToolEffect::LocalMutation,
-
-        // Delete is destructive (irreversible without undo)
-        "Delete" => ToolEffect::Destructive,
-
-        // MCP tools — use annotations-based classification.
-        name if crate::mcp::is_mcp_tool_name(name) => ToolEffect::RemoteAction,
-
-        // Unknown tools — default to LocalMutation (conservative)
-        _ => ToolEffect::LocalMutation,
+impl ToolEffect {
+    /// `true` for any effect class **other than** `ReadOnly`.
+    ///
+    /// Replaces the legacy free function `tools::is_mutating_tool`
+    /// (deleted in PR-9 of #1265 item 5). Lifting it onto the enum
+    /// puts the predicate next to the variants it inspects, so any
+    /// future class addition forces the author to think about which
+    /// side of this fence it belongs on.
+    #[inline]
+    pub fn is_mutating(self) -> bool {
+        !matches!(self, ToolEffect::ReadOnly)
     }
 }
 
-/// Returns true if the tool performs a mutating operation.
+/// Classify a built-in tool by name.
 ///
-/// Convenience wrapper over [`classify_tool`] for call sites that only
-/// need a bool (e.g., loop guard).
-///
-/// ```
-/// use koda_core::tools::is_mutating_tool;
-///
-/// assert!(!is_mutating_tool("Read"));
-/// assert!(is_mutating_tool("Write"));
-/// assert!(is_mutating_tool("Delete"));
-/// ```
-pub fn is_mutating_tool(name: &str) -> bool {
-    !matches!(classify_tool(name), ToolEffect::ReadOnly)
-}
-
 /// Sub-agent invocation tool (`InvokeAgent`, `ListAgents`).
 pub mod agent;
 pub mod ask_user;
@@ -497,10 +449,18 @@ impl ToolRegistry {
         self.socks5_port.read().ok().and_then(|guard| *guard)
     }
 
-    /// Classify a tool, using MCP annotations when available.
+    /// Borrow the underlying read-only metadata catalog.
     ///
-    /// For built-in tools, delegates to `classify_tool()`.
-    /// For MCP tools, looks up cached annotations in the manager.
+    /// Use this for per-call classification
+    /// ([`ToolCatalog::classify_call`]) and per-tool undo-path
+    /// resolution ([`ToolCatalog::get_tool`]) — both replaced the
+    /// legacy `tools::classify_tool` / `undo::extract_file_path`
+    /// free functions in PR-9 of #1265 item 5.
+    pub fn catalog(&self) -> &ToolCatalog {
+        &self.catalog
+    }
+
+    /// Classify a tool using MCP annotations when available.
     ///
     /// Delegates to [`ToolCatalog::classify_tool_with_mcp`] (#1265 item 5 PR-1).
     pub fn classify_tool_with_mcp(&self, name: &str) -> ToolEffect {
@@ -607,27 +567,17 @@ impl ToolRegistry {
 
         // Snapshot file before mutation (for /undo).
         //
-        // Source-of-truth precedence:
-        //  1. Migrated tools (#1265 item 5, PR-4..PR-N) own their
-        //     undo behavior via `Tool::extract_undo_path` — the
-        //     trait's `None` default means "don't snapshot".
-        //  2. Non-migrated tools fall back to the legacy
-        //     `crate::undo::is_mutating_tool` + `extract_file_path`
-        //     pair. That fallback list is gradually shrinking; the
-        //     cleanup PR after PR-8 removes it entirely.
-        //
-        // Why the trait wins for migrated tools: the legacy list
-        // contains `"Overwrite"` (a tool that doesn't exist) and
-        // would silently miss any new mutating tool that forgot to
-        // update both lists. Routing migrated tools through the
-        // trait fixes that drift class as each cohort migrates.
-        let undo_path = if let Some(tool) = self.catalog.get_tool(name) {
-            tool.extract_undo_path(&args)
-        } else if crate::undo::is_mutating_tool(name) {
-            crate::undo::extract_file_path(name, &args).map(std::path::PathBuf::from)
-        } else {
-            None
-        };
+        // Every built-in tool is now on the `Tool` trait (#1265 item 5,
+        // PR-4..PR-8) and owns its own undo behavior via
+        // `Tool::extract_undo_path`. The trait's `None` default means
+        // "don't snapshot". MCP tools (`server__tool` names) aren't
+        // in the catalog, so they get `None` here — matching the
+        // pre-#1265 behavior where MCP tools weren't in the legacy
+        // `undo::is_mutating_tool` allowlist either.
+        let undo_path = self
+            .catalog
+            .get_tool(name)
+            .and_then(|tool| tool.extract_undo_path(&args));
         if let Some(file_path) = undo_path {
             let resolved = self.project_root.join(&file_path);
             if let Ok(mut undo) = self.undo.lock() {

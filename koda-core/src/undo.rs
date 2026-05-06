@@ -128,49 +128,6 @@ impl UndoStack {
     }
 }
 
-/// Check if a tool name is a file-mutating tool that should be snapshotted.
-///
-/// # Examples
-///
-/// ```
-/// use koda_core::undo::is_mutating_tool;
-///
-/// assert!(is_mutating_tool("Write"));
-/// assert!(is_mutating_tool("Edit"));
-/// assert!(is_mutating_tool("Delete"));
-/// assert!(!is_mutating_tool("Read"));
-/// assert!(!is_mutating_tool("Grep"));
-/// ```
-pub fn is_mutating_tool(name: &str) -> bool {
-    matches!(name, "Write" | "Edit" | "Delete" | "Overwrite")
-}
-
-/// Extract the target file path from tool arguments.
-///
-/// # Examples
-///
-/// ```
-/// use koda_core::undo::extract_file_path;
-///
-/// let args = serde_json::json!({"file_path": "src/main.rs"});
-/// assert_eq!(extract_file_path("Write", &args), Some("src/main.rs".into()));
-/// assert_eq!(extract_file_path("Read", &args), None);
-///
-/// // Also accepts "path" as an alias:
-/// let args = serde_json::json!({"path": "lib.rs"});
-/// assert_eq!(extract_file_path("Edit", &args), Some("lib.rs".into()));
-/// ```
-pub fn extract_file_path(name: &str, args: &serde_json::Value) -> Option<String> {
-    match name {
-        "Write" | "Edit" | "Delete" | "Overwrite" => args
-            .get("file_path")
-            .or_else(|| args.get("path"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,26 +235,6 @@ mod tests {
         // Undo turn 1
         stack.undo();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
-    }
-
-    #[test]
-    fn test_is_mutating_tool() {
-        assert!(is_mutating_tool("Write"));
-        assert!(is_mutating_tool("Edit"));
-        assert!(is_mutating_tool("Delete"));
-        assert!(!is_mutating_tool("Read"));
-        assert!(!is_mutating_tool("Grep"));
-        assert!(!is_mutating_tool("Bash"));
-    }
-
-    #[test]
-    fn test_extract_file_path() {
-        let args = serde_json::json!({"file_path": "src/main.rs"});
-        assert_eq!(
-            extract_file_path("Write", &args),
-            Some("src/main.rs".into())
-        );
-        assert_eq!(extract_file_path("Read", &args), None);
     }
 
     #[test]

@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use koda_core::persistence::{Message, Role};
-use koda_core::tools::{ToolEffect, classify_tool};
+use koda_core::tools::{ToolCatalog, ToolEffect};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -218,10 +218,11 @@ fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message, tool_name: 
 
     let total_lines = content.lines().count();
 
-    let content_style = match classify_tool(tool_name) {
-        ToolEffect::ReadOnly => READ_CONTENT,
-        _ => WRITE_CONTENT,
-    };
+    let content_style =
+        match ToolCatalog::default_static().classify_call(tool_name, &serde_json::Value::Null) {
+            ToolEffect::ReadOnly => READ_CONTENT,
+            _ => WRITE_CONTENT,
+        };
 
     if total_lines == 0 {
         lines.push(Line::from(vec![

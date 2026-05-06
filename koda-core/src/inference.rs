@@ -484,7 +484,7 @@ async fn collect_stream(
                 }
                 let args: serde_json::Value =
                     serde_json::from_str(&tc.arguments).unwrap_or_default();
-                let is_read_only = !crate::tools::is_mutating_tool(&tc.function_name);
+                let is_read_only = !tools.catalog().is_mutating_call(&tc.function_name, &args);
                 let is_auto_approved = !matches!(
                     crate::trust::check_tool(&tc.function_name, &args, mode, Some(project_root),),
                     crate::trust::ToolApproval::NeedsConfirmation
