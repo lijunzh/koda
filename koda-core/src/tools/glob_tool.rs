@@ -104,6 +104,39 @@ pub async fn glob_search(
     }
 }
 
+// =============================================================
+// Tool trait implementation (#1265 item 5, PR-5/N).
+//
+// `Glob` is read-only — no `extract_undo_path` override needed.
+// Reads `caps.glob_results` off the context.
+// =============================================================
+
+use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
+use async_trait::async_trait;
+
+/// `Glob` — path-pattern file search.
+pub struct GlobTool;
+
+#[async_trait]
+impl Tool for GlobTool {
+    fn name(&self) -> &'static str {
+        "Glob"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definitions()
+            .into_iter()
+            .find(|d| d.name == "Glob")
+            .expect("glob_tool::definitions() must contain Glob")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
+        let r = glob_search(ctx.project_root, args, ctx.caps.glob_results, ctx.fs).await;
+        crate::tools::wrap_result(r)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +228,42 @@ mod tests {
             .unwrap();
         assert!(result.contains("mod.rs"));
         assert!(!result.contains("main.rs"));
+    }
+
+    // ── Tool trait invariants (#1265 PR-5) ─────────────────────
+
+    #[test]
+    fn glob_tool_metadata_matches_definition() {
+        let t = GlobTool;
+        assert_eq!(t.name(), "Glob");
+        assert_eq!(t.definition().name, "Glob");
+        assert_eq!(t.classify(&serde_json::json!({})), ToolEffect::ReadOnly);
+        assert!(t.extract_undo_path(&serde_json::json!({})).is_none());
+    }
+
+    #[tokio::test]
+    async fn glob_tool_dispatches_through_trait() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.rs"), "").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "").unwrap();
+        let cache: crate::tools::FileReadCache =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let fs = LocalFileSystem::new();
+        let caps = crate::output_caps::OutputCaps::for_context(100_000);
+        let ctx = crate::tools::ToolExecCtx {
+            project_root: tmp.path(),
+            read_cache: &cache,
+            fs: &fs,
+            caps: &caps,
+            sink: None,
+            caller_spawner: None,
+        };
+        let tool: Box<dyn Tool> = Box::new(GlobTool);
+        let result = tool
+            .execute(&ctx, &serde_json::json!({"pattern": "*.rs"}))
+            .await;
+        assert!(result.success, "{}", result.output);
+        assert!(result.output.contains("a.rs"));
+        assert!(!result.output.contains("b.txt"));
     }
 }

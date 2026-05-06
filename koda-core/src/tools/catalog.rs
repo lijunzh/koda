@@ -200,6 +200,9 @@ impl ToolCatalog {
             boxed(file_tools::EditTool),
             boxed(file_tools::DeleteTool),
             boxed(file_tools::ListTool),
+            // PR-5: search cohort.
+            boxed(grep::GrepTool),
+            boxed(glob_tool::GlobTool),
         ] {
             tools.insert(tool.name(), tool);
         }
