@@ -674,14 +674,7 @@ impl ToolRegistry {
             // item 5; dispatched above. The arms below stay only
             // for tools that haven't migrated yet.
 
-            // Search tools
-            "Grep" => {
-                grep::grep(&self.project_root, &args, self.caps.grep_matches, &*self.fs).await
-            }
-            "Glob" => {
-                glob_tool::glob_search(&self.project_root, &args, self.caps.glob_results, &*self.fs)
-                    .await
-            }
+            // Search tools — migrated in PR-5.
 
             // Shell
             // Shell — returns ShellOutput with summary + full output.

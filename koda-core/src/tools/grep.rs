@@ -162,6 +162,40 @@ fn truncate_line(line: &str, max_bytes: usize) -> &str {
     }
 }
 
+// =============================================================
+// Tool trait implementation (#1265 item 5, PR-5/N).
+//
+// `Grep` is read-only — no `extract_undo_path` override needed.
+// Reads `caps.grep_matches` off the context (added to `ToolExecCtx`
+// in PR-4 alongside `caps.list_entries`).
+// =============================================================
+
+use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
+use async_trait::async_trait;
+
+/// `Grep` — ripgrep-style content search.
+pub struct GrepTool;
+
+#[async_trait]
+impl Tool for GrepTool {
+    fn name(&self) -> &'static str {
+        "Grep"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definitions()
+            .into_iter()
+            .find(|d| d.name == "Grep")
+            .expect("grep::definitions() must contain Grep")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
+        let r = grep(ctx.project_root, args, ctx.caps.grep_matches, ctx.fs).await;
+        crate::tools::wrap_result(r)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,5 +362,42 @@ mod tests {
             result.contains("code.rs"),
             "literal paren should be matched without regex error"
         );
+    }
+
+    // ── Tool trait invariants (#1265 PR-5) ─────────────────────
+
+    #[test]
+    fn grep_tool_metadata_matches_definition() {
+        let t = GrepTool;
+        assert_eq!(t.name(), "Grep");
+        assert_eq!(t.definition().name, "Grep");
+        assert_eq!(t.classify(&serde_json::json!({})), ToolEffect::ReadOnly);
+        // Read-only tools must NOT register an undo path — prevents
+        // pollution of the undo stack with no-op snapshots.
+        assert!(t.extract_undo_path(&serde_json::json!({})).is_none());
+    }
+
+    #[tokio::test]
+    async fn grep_tool_dispatches_through_trait() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "hello world").unwrap();
+        let cache: crate::tools::FileReadCache =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let fs = LocalFileSystem::new();
+        let caps = crate::output_caps::OutputCaps::for_context(100_000);
+        let ctx = crate::tools::ToolExecCtx {
+            project_root: tmp.path(),
+            read_cache: &cache,
+            fs: &fs,
+            caps: &caps,
+            sink: None,
+            caller_spawner: None,
+        };
+        let tool: Box<dyn Tool> = Box::new(GrepTool);
+        let result = tool
+            .execute(&ctx, &serde_json::json!({"pattern": "hello"}))
+            .await;
+        assert!(result.success, "{}", result.output);
+        assert!(result.output.contains("a.txt"));
     }
 }
