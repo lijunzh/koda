@@ -550,6 +550,95 @@ fn annotate_violations(exit_code: i32, command: &str, stderr_lines: &mut Vec<Str
     }
 }
 
+// =============================================================
+// Tool trait implementation (#1265 item 5, PR-6/N).
+//
+// `Bash` is the most state-heavy built-in: it reads bg_registry,
+// trust, sandbox_policy, both proxy ports, the streaming sink, and
+// the caller-spawner id off the context. PR-6 added all of those
+// to `ToolExecCtx`.
+//
+// Bash is also the **showcase** for input-aware classification:
+// `classify(args)` extracts the command string and delegates to
+// `bash_safety::classify_bash_command`, so `rm -rf /` classifies
+// `Destructive` while `echo hi` classifies `ReadOnly`. Pre-#1265
+// this happened in a *separate* match arm in `tools::classify_tool`
+// (which then delegated to `bash_safety` itself). Folding it into
+// the trait closes the per-tool/per-call gap that `tools::
+// classify_tool` had to paper over.
+//
+// `extract_undo_path` returns `None` — Bash can mutate anything,
+// and we make no attempt to snapshot all of `$PWD` before each
+// command. Pre-#1265 behavior preserved exactly (Bash was not in
+// `undo::is_mutating_tool`'s list).
+// =============================================================
+
+use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
+use async_trait::async_trait;
+
+/// `Bash` — sandboxed shell command execution.
+pub struct BashTool;
+
+#[async_trait]
+impl Tool for BashTool {
+    fn name(&self) -> &'static str {
+        "Bash"
+    }
+    fn definition(&self) -> ToolDefinition {
+        definitions()
+            .into_iter()
+            .find(|d| d.name == "Bash")
+            .expect("shell::definitions() must contain Bash")
+    }
+    /// Per-call classification: extract `command` and delegate to
+    /// the `bash_safety` analyzer. Falls back to `Destructive` if
+    /// the args are malformed (defensive: better to over-gate than
+    /// to under-gate when we can't read the command).
+    fn classify(&self, args: &serde_json::Value) -> ToolEffect {
+        match args.get("command").and_then(|v| v.as_str()) {
+            Some(cmd) => crate::bash_safety::classify_bash_command(cmd),
+            None => ToolEffect::Destructive,
+        }
+    }
+    /// `Bash` doesn't participate in `/undo`. The pre-#1265
+    /// `undo::is_mutating_tool` did not list it; preserved exactly.
+    fn extract_undo_path(&self, _args: &serde_json::Value) -> Option<std::path::PathBuf> {
+        None
+    }
+    async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
+        // Bash is special-cased on result mapping: success returns
+        // a `ShellOutput { summary, full_output }` rather than a
+        // `Result<String>`, so we can't use `wrap_result`. We open-
+        // code the conversion here, matching the legacy match arm
+        // byte-for-byte (#1232 §4 `{:#}` for error chains).
+        match run_shell_command(
+            ctx.project_root,
+            args,
+            ctx.caps.shell_output_lines,
+            ctx.bg_registry,
+            ctx.sink,
+            ctx.trust,
+            ctx.sandbox_policy,
+            ctx.proxy_port,
+            ctx.socks5_port,
+            ctx.caller_spawner,
+        )
+        .await
+        {
+            Ok(so) => ToolResult {
+                output: so.summary,
+                success: true,
+                full_output: so.full_output,
+            },
+            Err(e) => ToolResult {
+                output: format!("Error: {e:#}"),
+                success: false,
+                full_output: None,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1162,6 +1251,50 @@ mod tests {
         assert!(
             !std::path::Path::new(&canary).exists(),
             "canary file should NOT have been created: {canary}"
+        );
+    }
+
+    // ── Tool trait invariants (#1265 PR-6) ─────────────────────
+
+    #[test]
+    fn bash_tool_metadata_matches_definition() {
+        let t = BashTool;
+        assert_eq!(t.name(), "Bash");
+        assert_eq!(t.definition().name, "Bash");
+        // Bash never participates in /undo — same as pre-#1265.
+        assert!(t.extract_undo_path(&serde_json::json!({})).is_none());
+    }
+
+    /// Per-call classify is the headline feature of PR-6: same
+    /// tool, different commands, different effects. Pre-#1265
+    /// `tools::classify_tool("Bash")` ignored args entirely and
+    /// delegated to `bash_safety::classify_bash_command` via a
+    /// separate code path; trait-folded here.
+    #[test]
+    fn bash_classify_is_input_aware() {
+        let t = BashTool;
+        // Read-only command → ReadOnly.
+        assert_eq!(
+            t.classify(&serde_json::json!({"command": "echo hi"})),
+            ToolEffect::ReadOnly,
+        );
+        // Plainly destructive → Destructive.
+        assert_eq!(
+            t.classify(&serde_json::json!({"command": "rm -rf /tmp/somewhere"})),
+            ToolEffect::Destructive,
+        );
+    }
+
+    /// Defensive: if the args don't carry a `command`, classify must
+    /// over-gate (Destructive), not under-gate (ReadOnly). Better to
+    /// prompt unnecessarily than to skip approval on a malformed call.
+    #[test]
+    fn bash_classify_defaults_destructive_on_missing_command() {
+        let t = BashTool;
+        assert_eq!(t.classify(&serde_json::json!({})), ToolEffect::Destructive,);
+        assert_eq!(
+            t.classify(&serde_json::json!({"command": 42})),
+            ToolEffect::Destructive,
         );
     }
 }

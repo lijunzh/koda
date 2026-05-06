@@ -649,22 +649,58 @@ impl ToolRegistry {
         // block below applies; centralized here so it fires for
         // both migrated and not-yet-migrated tools.
         if let Some(tool) = self.catalog.get_tool(name) {
+            // Trait-dispatch fast path. Reads sink + caller_spawner
+            // from the call's parameters (not `None`) so trait-
+            // migrated streaming tools (`Bash` from PR-6 onward)
+            // still see them. The other fields come straight off
+            // `self` — same shape every legacy match arm pre-#1265
+            // would have read.
+            let policy = self.sandbox_policy();
+            let proxy_port = self.proxy_port();
+            let socks5_port = self.socks5_port();
             let ctx = tool_trait::ToolExecCtx {
                 project_root: &self.project_root,
                 read_cache: &self.read_cache,
                 fs: &*self.fs,
                 caps: &self.caps,
-                sink: None,
-                caller_spawner: None,
+                sink: sink_for_streaming,
+                caller_spawner,
+                bg_registry: &self.bg_registry,
+                trust: &self.trust,
+                sandbox_policy: policy,
+                proxy_port,
+                socks5_port,
             };
             let result = tool.execute(&ctx, &args).await;
-            if result.success
-                && matches!(name, "Write" | "Edit")
-                && let Some(path) =
-                    crate::file_tracker::resolve_file_path_from_args(&args, &self.project_root)
-                && let Ok(mut guard) = self.last_writer.lock()
-            {
-                guard.insert(path, (name.to_string(), std::time::Instant::now()));
+            // Post-execution registry-level recording. Lives here
+            // (not on the per-tool struct) because it touches
+            // registry state. Each `name == "X"` arm is a sticky
+            // hook bridging until the registry exposes a generic
+            // post-exec hook (out of scope for this stack).
+            if result.success {
+                if matches!(name, "Write" | "Edit")
+                    && let Some(path) =
+                        crate::file_tracker::resolve_file_path_from_args(&args, &self.project_root)
+                    && let Ok(mut guard) = self.last_writer.lock()
+                {
+                    guard.insert(path, (name.to_string(), std::time::Instant::now()));
+                }
+                if name == "Bash" {
+                    // #804 item 7: record the most recent bash
+                    // invocation snippet so the validation layer
+                    // can name it in staleness errors.
+                    let snippet = args["command"]
+                        .as_str()
+                        .unwrap_or("")
+                        .chars()
+                        .take(72)
+                        .collect::<String>();
+                    if !snippet.is_empty()
+                        && let Ok(mut guard) = self.last_bash.lock()
+                    {
+                        *guard = Some((snippet, std::time::Instant::now()));
+                    }
+                }
             }
             return result;
         }
@@ -676,52 +712,8 @@ impl ToolRegistry {
 
             // Search tools — migrated in PR-5.
 
-            // Shell
-            // Shell — returns ShellOutput with summary + full output.
-            "Bash" => {
-                let shell_result = shell::run_shell_command(
-                    &self.project_root,
-                    &args,
-                    self.caps.shell_output_lines,
-                    &self.bg_registry,
-                    sink_for_streaming,
-                    &self.trust,
-                    self.sandbox_policy(),
-                    self.proxy_port(),
-                    self.socks5_port(),
-                    caller_spawner,
-                )
-                .await;
-                return match shell_result {
-                    Ok(so) => {
-                        // Record the invocation so validate_edit can hint at it
-                        // in staleness error messages (#804 item 7).
-                        let snippet = args["command"]
-                            .as_str()
-                            .unwrap_or("")
-                            .chars()
-                            .take(72)
-                            .collect::<String>();
-                        if !snippet.is_empty()
-                            && let Ok(mut guard) = self.last_bash.lock()
-                        {
-                            *guard = Some((snippet, std::time::Instant::now()));
-                        }
-                        ToolResult {
-                            output: so.summary,
-                            success: true,
-                            full_output: so.full_output,
-                        }
-                    }
-                    Err(e) => ToolResult {
-                        // #1232 §4: `{:#}` walks the anyhow context chain so the
-                        // model sees the full cause, not just the topmost label.
-                        output: format!("Error: {e:#}"),
-                        success: false,
-                        full_output: None,
-                    },
-                };
-            }
+            // Shell — migrated in PR-6 (and gets per-call classification
+            // via `bash_safety::classify_bash_command`).
 
             // Web
             "WebFetch" => web_fetch::web_fetch(&args, self.caps.web_body_chars).await,

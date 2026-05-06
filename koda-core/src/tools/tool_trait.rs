@@ -163,6 +163,47 @@ pub struct ToolExecCtx<'a> {
     /// invoking agent's id. Every other tool ignores this. Top-
     /// level callers pass `None`.
     pub caller_spawner: Option<u32>,
+
+    // ---- Bash-specific fields, added in PR-6 of #1265 item 5 ----
+    //
+    // These five fields are read exclusively by `BashTool::execute`.
+    // They live on the context (rather than e.g. a separate
+    // `BashContext`) because:
+    //
+    //   1. Adding a separate context type would mean either two
+    //      `execute(...)` signatures on the trait (one per ctx type),
+    //      or a wrapper enum — both worse than five `Option`-free
+    //      borrows on the existing struct.
+    //   2. Other tools migrating in PR-7/PR-8 (notably `WebFetch`)
+    //      will probably need at least `proxy_port` too. Adding it
+    //      here once is cheaper than threading it through a new
+    //      type later.
+    //
+    // The growth-by-pull discipline still holds: every field is
+    // pulled in by a concrete tool that needs it in this same PR.
+    /// Background-process registry, owned by `ToolRegistry`. `Bash`
+    /// uses it to spawn `background: true` shells whose lifecycle
+    /// outlives a single tool call. No other built-in touches it.
+    pub bg_registry: &'a crate::tools::bg_process::BgRegistry,
+
+    /// Trust mode — determines sandbox configuration. Read by
+    /// `BashTool::execute`; future tools that gate behavior on
+    /// trust (none today) would read it here.
+    pub trust: &'a crate::trust::TrustMode,
+
+    /// Sandbox policy resolved at registry construction time, with
+    /// optional per-`with_sandbox_policy` override. `BashTool`
+    /// passes this to the shell runner so sub-agent invocations
+    /// inherit the right confinement.
+    pub sandbox_policy: &'a koda_sandbox::SandboxPolicy,
+
+    /// HTTPS proxy port for outbound network access. `None` means
+    /// "no proxy configured". `Bash` honors it; `WebFetch` will
+    /// honor it when it migrates in PR-7.
+    pub proxy_port: Option<u16>,
+
+    /// SOCKS5 proxy port. Same shape and consumers as `proxy_port`.
+    pub socks5_port: Option<u16>,
 }
 
 /// A self-contained built-in tool.
@@ -337,6 +378,47 @@ impl<'a> ToolExecCtx<'a> {
     pub fn caps(&self) -> &crate::output_caps::OutputCaps {
         self.caps
     }
+
+    /// **Test-only** convenience constructor. Builds a `ToolExecCtx`
+    /// from the four borrows that vary across tool tests, filling in
+    /// safe defaults for the ten fields that don't (no sink, no
+    /// caller spawner, no proxy ports, default trust + sandbox).
+    ///
+    /// Why a `for_test` rather than `Default`: `Default` requires
+    /// owned values, but the context is borrows. A test fixture
+    /// constructor accepts the borrows the caller already owns and
+    /// fills in the rest.
+    ///
+    /// **Hard rule:** every field default here must be safe to use in
+    /// production too — a test calling `for_test` should never
+    /// observe behavior that wouldn't happen in a real session with
+    /// the same set of provided values. If a future field can't be
+    /// safely defaulted, this constructor stops compiling and the
+    /// test author has to think about the field. Good failure mode.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        project_root: &'a std::path::Path,
+        read_cache: &'a crate::tools::FileReadCache,
+        fs: &'a dyn koda_sandbox::fs::FileSystem,
+        caps: &'a crate::output_caps::OutputCaps,
+        bg_registry: &'a crate::tools::bg_process::BgRegistry,
+        trust: &'a crate::trust::TrustMode,
+        sandbox_policy: &'a koda_sandbox::SandboxPolicy,
+    ) -> Self {
+        Self {
+            project_root,
+            read_cache,
+            fs,
+            caps,
+            sink: None,
+            caller_spawner: None,
+            bg_registry,
+            trust,
+            sandbox_policy,
+            proxy_port: None,
+            socks5_port: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -448,6 +530,9 @@ mod tests {
         cache: &'a crate::tools::FileReadCache,
         fs: &'a dyn koda_sandbox::fs::FileSystem,
         caps: &'a crate::output_caps::OutputCaps,
+        bg: &'a crate::tools::bg_process::BgRegistry,
+        trust: &'a crate::trust::TrustMode,
+        policy: &'a koda_sandbox::SandboxPolicy,
     ) -> ToolExecCtx<'a> {
         ToolExecCtx {
             project_root: root,
@@ -456,6 +541,11 @@ mod tests {
             caps,
             sink: None,
             caller_spawner: None,
+            bg_registry: bg,
+            trust,
+            sandbox_policy: policy,
+            proxy_port: None,
+            socks5_port: None,
         }
     }
 
@@ -466,7 +556,10 @@ mod tests {
         let fs = koda_sandbox::fs::LocalFileSystem::new();
         let root = std::path::PathBuf::from("/tmp");
         let caps = crate::output_caps::OutputCaps::for_context(100_000);
-        let ctx = make_ctx(&root, &cache, &fs, &caps);
+        let bg = crate::tools::bg_process::BgRegistry::new();
+        let trust = crate::trust::TrustMode::Safe;
+        let policy = koda_sandbox::SandboxPolicy::default();
+        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy);
 
         let args = json!({"hello": "world"});
         let result = tool.execute(&ctx, &args).await;
@@ -552,7 +645,10 @@ mod tests {
         let fs = koda_sandbox::fs::LocalFileSystem::new();
         let root = std::path::PathBuf::from("/tmp");
         let caps = crate::output_caps::OutputCaps::for_context(100_000);
-        let ctx = make_ctx(&root, &cache, &fs, &caps);
+        let bg = crate::tools::bg_process::BgRegistry::new();
+        let trust = crate::trust::TrustMode::Safe;
+        let policy = koda_sandbox::SandboxPolicy::default();
+        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy);
 
         let r1 = tools[0].execute(&ctx, &json!({})).await;
         assert!(r1.success);
@@ -571,7 +667,10 @@ mod tests {
         let fs = koda_sandbox::fs::LocalFileSystem::new();
         let root = std::path::PathBuf::from("/tmp/whatever");
         let caps = crate::output_caps::OutputCaps::for_context(100_000);
-        let ctx = make_ctx(&root, &cache, &fs, &caps);
+        let bg = crate::tools::bg_process::BgRegistry::new();
+        let trust = crate::trust::TrustMode::Safe;
+        let policy = koda_sandbox::SandboxPolicy::default();
+        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy);
 
         assert_eq!(ctx.project_root(), root.as_path());
         // Cache is a single shared handle — pointer-equality check.

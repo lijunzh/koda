@@ -203,6 +203,8 @@ impl ToolCatalog {
             // PR-5: search cohort.
             boxed(grep::GrepTool),
             boxed(glob_tool::GlobTool),
+            // PR-6: shell.
+            boxed(shell::BashTool),
         ] {
             tools.insert(tool.name(), tool);
         }
