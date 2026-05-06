@@ -99,7 +99,7 @@ fn test_all_tools_handled_by_approval() {
 /// add it to this map — the test will fail until you do.
 #[test]
 fn test_classify_tool_covers_all_tools_explicitly() {
-    use koda_core::tools::{ToolEffect, classify_tool};
+    use koda_core::tools::{ToolCatalog, ToolEffect};
 
     // Canonical expected classification for every built-in tool.
     // If you add a tool, add it here with its expected ToolEffect.
@@ -126,15 +126,22 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         // Background-task management (#996 Layer 2). All three are
         // ReadOnly: List is a pure read; Cancel/Wait signal but don't
         // write files — idempotent control of work the model already
-        // started. See the matching arms in `tools::classify_tool`.
+        // started. See `bg_task_tools::{ListBackgroundTasksTool,
+        // CancelTaskTool, WaitTaskTool}` (PR-9 placeholder cohort).
         ("ListBackgroundTasks", ToolEffect::ReadOnly),
         ("CancelTask", ToolEffect::ReadOnly),
         ("WaitTask", ToolEffect::ReadOnly),
         // Local mutations
         ("Write", ToolEffect::LocalMutation),
         ("Edit", ToolEffect::LocalMutation),
-        ("Bash", ToolEffect::LocalMutation),
         ("MemoryWrite", ToolEffect::LocalMutation),
+        // Bash with no args is the *defensive default* under per-call
+        // classification (#1265 PR-6). Real call sites always pass a
+        // command, which `BashTool::classify` then routes through
+        // `bash_safety::classify_bash_command` for ReadOnly /
+        // LocalMutation / Destructive. Strictly more conservative
+        // than the pre-#1265 `LocalMutation` name-only default.
+        ("Bash", ToolEffect::Destructive),
         // Destructive
         ("Delete", ToolEffect::Destructive),
     ]
@@ -142,23 +149,28 @@ fn test_classify_tool_covers_all_tools_explicitly() {
     .collect();
 
     let registered = all_tool_names();
+    let catalog = ToolCatalog::default_static();
+    let null = serde_json::Value::Null;
 
     // Every registered tool must appear in our expected map.
     for name in &registered {
         assert!(
             expected.contains_key(name.as_str()),
-            "Tool '{name}' is registered but missing from the classify_tool sync test. \
+            "Tool '{name}' is registered but missing from the classify sync test. \
              Add it to the `expected` map in test_classify_tool_covers_all_tools_explicitly()."
         );
     }
 
-    // Every expected tool must return the documented classification.
+    // Every expected tool must return the documented name-only
+    // classification (i.e. with `Value::Null` args). Bash falls into
+    // its defensive default here — see the args-aware tests on
+    // `BashTool` for the per-call behavior.
     for (name, effect) in &expected {
         assert_eq!(
-            classify_tool(name),
+            catalog.classify_call(name, &null),
             *effect,
-            "classify_tool(\"{name}\") returned wrong effect. \
-             Update either classify_tool() or the expected map."
+            "catalog.classify_call(\"{name}\", Null) returned wrong effect. \
+             Update either the tool's `Tool::classify` impl or the expected map."
         );
     }
 }
@@ -170,12 +182,16 @@ fn test_classify_tool_covers_all_tools_explicitly() {
 /// so a generic description is fine for them.
 #[test]
 fn test_describe_action_covers_all_mutating_tools() {
-    use koda_core::tools::{ToolEffect, classify_tool, describe_action};
+    use koda_core::tools::{ToolCatalog, ToolEffect, describe_action};
 
     let empty_args = serde_json::json!({});
+    let catalog = ToolCatalog::default_static();
 
     for name in all_tool_names() {
-        if matches!(classify_tool(&name), ToolEffect::ReadOnly) {
+        if matches!(
+            catalog.classify_call(&name, &serde_json::Value::Null),
+            ToolEffect::ReadOnly
+        ) {
             continue; // read-only tools don't need custom descriptions
         }
         let desc = describe_action(&name, &empty_args);

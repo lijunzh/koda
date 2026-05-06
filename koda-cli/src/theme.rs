@@ -29,7 +29,7 @@
 //! - **Code highlight kill-switch** — [`syntax_highlight_enabled`] honors
 //!   the `KODA_SYNTAX_HIGHLIGHT=off` env var (steals Claude Code's pattern).
 
-use koda_core::tools::{ToolEffect, classify_tool};
+use koda_core::tools::{ToolCatalog, ToolEffect};
 use ratatui::style::{Color, Modifier, Style};
 
 // ── Status tokens ───────────────────────────────────────────
@@ -115,7 +115,7 @@ pub fn tool_dot_color(name: &str) -> Color {
         "Delete" => return ACCENT_DELETE,
         _ => {}
     }
-    match classify_tool(name) {
+    match ToolCatalog::default_static().classify_call(name, &serde_json::Value::Null) {
         ToolEffect::ReadOnly => ACCENT_READ,
         ToolEffect::RemoteAction => ACCENT_NETWORK,
         ToolEffect::LocalMutation => ACCENT_WRITE,
@@ -130,7 +130,10 @@ pub fn tool_dot_color(name: &str) -> Color {
 pub fn content_style_for(tool_name: &str, is_stderr: bool) -> Style {
     if is_stderr {
         STATUS_ERROR
-    } else if matches!(classify_tool(tool_name), ToolEffect::ReadOnly) {
+    } else if matches!(
+        ToolCatalog::default_static().classify_call(tool_name, &serde_json::Value::Null),
+        ToolEffect::ReadOnly
+    ) {
         CONTENT_READ
     } else {
         CONTENT_WRITE

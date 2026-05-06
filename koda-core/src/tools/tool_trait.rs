@@ -29,8 +29,16 @@
 //! migration is deliberately deferred to PR-4..PR-N so each cohort of
 //! tools moves over in a small reviewable diff with its own CI proof.
 //!
-//! - [`Tool`] — the trait every built-in tool will eventually implement.
-//!   Owns the tool's name, schema, classification, undo behavior, and
+//! **Status (post-PR-9):** all 18 built-in tools migrated; the four
+//! legacy free functions called out above (`tools::classify_tool`,
+//! `tools::is_mutating_tool`, `undo::is_mutating_tool`,
+//! `undo::extract_file_path`) are deleted. Per-call classification
+//! and undo-path resolution flow through this trait via
+//! [`ToolCatalog::classify_call`] /
+//! [`ToolCatalog::get_tool`]\.
+//!
+//! - [`Tool`] — the trait every built-in tool implements. Owns the
+//!   tool's name, schema, classification, undo behavior, and
 //!   execution. MCP tools intentionally don't implement this — they
 //!   route through [`crate::mcp::McpManager`] via a separate dispatch
 //!   path because their schema/behavior is server-defined at runtime.
@@ -38,11 +46,9 @@
 //! - [`ToolExecCtx`] — the per-invocation context bundle. Holds borrows
 //!   to the bits of [`ToolRegistry`] state a tool's `execute()` needs.
 //!   Starts intentionally small (only the fields the seam-test tools
-//!   need). Migration PRs add fields as required by the tool being
-//!   moved over. After all migrations land, a cleanup PR removes the
-//!   now-orphaned fields from `ToolRegistry`.
+//!   need). Migration PRs added fields as required.
 //!
-//! # Why it's types-only this PR
+//! # Why it was types-only in PR-3
 //!
 //! Same playbook as the TurnContext stack (#1287/#1288/#1290) and the
 //! ToolCatalog stack (#1292/#1293):
@@ -53,10 +59,10 @@
 //! 2. **Migrate cohorts.** Each PR moves one tool family
 //!    (file ops, search, bash, etc.) onto the trait. Per-PR the
 //!    central `match` shrinks; per-PR CI proves no regressions.
-//! 3. **Delete dead code.** Final cleanup PR removes `classify_tool`,
-//!    `is_mutating_tool` (both copies), `extract_file_path`, and the
-//!    central dispatch `match` — replaced by trait dispatch through
-//!    [`ToolCatalog`].
+//! 3. **Delete dead code.** PR-9 removed `classify_tool`,
+//!    `is_mutating_tool` (both copies), `extract_file_path`, and
+//!    the central dispatch `match` — trait dispatch through
+//!    [`ToolCatalog`] is now the only path.
 //!
 //! If something here is wrong, the broken test is in this module —
 //! not in 25 unrelated migration PRs.
@@ -252,7 +258,9 @@ pub struct ToolExecCtx<'a> {
 /// `extract_undo_path` and `classify` have safe defaults: tools that
 /// don't override them are treated as mutating-but-untracked-in-undo.
 /// That's the same conservative treatment unknown tools get from
-/// today's [`crate::tools::classify_tool`].
+/// today's [`crate::tools::ToolCatalog::classify_call`] (which
+/// returns [`crate::tools::ToolEffect::LocalMutation`] for unknown
+/// names).
 ///
 /// # Why not `dyn` everywhere
 ///
@@ -309,10 +317,10 @@ pub trait Tool: Send + Sync {
     /// tools and for mutating tools whose target path can't be
     /// statically extracted from the arguments (e.g. `Bash`).
     ///
-    /// Today this logic lives in `undo::extract_file_path` as a
-    /// separate `match` on tool name; migration moves it onto the
-    /// implementing struct so adding a mutating tool can't forget
-    /// to wire its undo behavior.
+    /// Pre-#1265 this logic lived in `undo::extract_file_path` as a
+    /// separate `match` on tool name (deleted in PR-9). Lifting it
+    /// onto the implementing struct means adding a mutating tool
+    /// can't forget to wire its undo behavior.
     fn extract_undo_path(&self, _args: &Value) -> Option<PathBuf> {
         None
     }

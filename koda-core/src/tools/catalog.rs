@@ -60,8 +60,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use super::{
-    DynTool, Tool, ToolEffect, agent, ask_user, bg_task_tools, boxed, classify_tool, file_tools,
-    glob_tool, grep, memory, recall, shell, skill_tools, todo, web_fetch, web_search,
+    DynTool, Tool, ToolEffect, agent, ask_user, bg_task_tools, boxed, file_tools, glob_tool, grep,
+    memory, recall, shell, skill_tools, todo, web_fetch, web_search,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
@@ -221,6 +221,13 @@ impl ToolCatalog {
             boxed(skill_tools::ListSkillsTool),
             boxed(skill_tools::ActivateSkillTool),
             boxed(ask_user::AskUserTool),
+            // PR-9 cohort: bg-task tools as placeholder trait impls.
+            // Real dispatch lives in `tool_dispatch.rs` (they need
+            // `Arc<ChildAgentRegistry>`); these exist so the catalog
+            // is the single source of truth for classification.
+            boxed(bg_task_tools::ListBackgroundTasksTool),
+            boxed(bg_task_tools::CancelTaskTool),
+            boxed(bg_task_tools::WaitTaskTool),
         ] {
             tools.insert(tool.name(), tool);
         }
@@ -255,26 +262,79 @@ impl ToolCatalog {
     }
 
     /// Classify a tool into its [`ToolEffect`], using MCP annotations
-    /// when available.
+    /// when available. **Name-only** classification — see
+    /// [`Self::classify_call`] for the input-aware variant that
+    /// makes `Bash` discriminate between `echo hi` and `rm -rf`.
     ///
-    /// - **Built-in tools** delegate to the free function
-    ///   [`classify_tool`].
+    /// - **Built-in tools** delegate to [`Tool::classify`] with
+    ///   `Value::Null` as args. For args-insensitive tools this is
+    ///   identical to the per-call result; for `Bash` it returns
+    ///   the defensive default (`Destructive`), matching the legacy
+    ///   conservative-default behavior.
     /// - **MCP tools** look up cached annotations on the manager.
     /// - If we *think* a name is an MCP tool but the manager isn't
     ///   attached or its lock is contended, we fall back to
     ///   [`ToolEffect::RemoteAction`] — a defensible "side effects
     ///   somewhere remote" guess that errs toward asking for approval.
+    /// - **Unknown** built-in names default to
+    ///   [`ToolEffect::LocalMutation`] (matches pre-#1265 default).
     pub fn classify_tool_with_mcp(&self, name: &str) -> ToolEffect {
+        self.classify_call(name, &serde_json::Value::Null)
+    }
+
+    /// Per-call classification — the canonical entry point post-#1265
+    /// PR-9 cleanup.
+    ///
+    /// Routing:
+    /// - MCP tool name → manager annotation, falling back to
+    ///   `RemoteAction` when the manager isn't reachable.
+    /// - Registered built-in → [`Tool::classify`]. This is the
+    ///   only path that sees `args`, so `BashTool` can examine the
+    ///   command string and return `ReadOnly` for `echo hi` and
+    ///   `Destructive` for `rm -rf`.
+    /// - Unknown name → `LocalMutation` (conservative; preserves
+    ///   pre-#1265 default).
+    ///
+    /// Replaces the legacy `tools::classify_tool(name)` free function
+    /// (deleted in PR-9 of #1265 item 5).
+    pub fn classify_call(&self, name: &str, args: &serde_json::Value) -> ToolEffect {
         if crate::mcp::is_mcp_tool_name(name) {
             if let Some(mgr) = self.mcp_manager()
                 && let Ok(mgr) = mgr.try_read()
             {
                 return mgr.classify_tool(name);
             }
-            // Fallback: no manager or lock contention.
             return ToolEffect::RemoteAction;
         }
-        classify_tool(name)
+        match self.get_tool(name) {
+            Some(tool) => tool.classify(args),
+            None => ToolEffect::LocalMutation,
+        }
+    }
+
+    /// Convenience: `true` iff [`Self::classify_call`] returns
+    /// anything other than [`ToolEffect::ReadOnly`].
+    ///
+    /// Replaces the legacy `tools::is_mutating_tool(name)` free
+    /// function. New callers should prefer this method because it
+    ///`args` (so `Bash { command: "echo hi" }` correctly
+    /// returns `false`).
+    pub fn is_mutating_call(&self, name: &str, args: &serde_json::Value) -> bool {
+        self.classify_call(name, args).is_mutating()
+    }
+
+    /// Process-wide default catalog. Built once on first access and
+    /// reused. The catalog is dependency-free at construction
+    /// (`ToolCatalog::new()` just registers built-ins into a HashMap),
+    /// so the static is cheap to keep around.
+    ///
+    /// Used by [`crate::trust`] for the no-registry classification
+    /// fallback. Production code with a real `ToolRegistry` should
+    /// prefer the registry's catalog (it carries the MCP manager).
+    pub fn default_static() -> &'static Self {
+        use std::sync::OnceLock;
+        static CATALOG: OnceLock<ToolCatalog> = OnceLock::new();
+        CATALOG.get_or_init(ToolCatalog::new)
     }
 
     /// Sorted list of every registered built-in tool name. Used by
@@ -500,8 +560,8 @@ mod tests {
     #[test]
     fn classify_tool_with_mcp_falls_back_for_builtins() {
         let catalog = ToolCatalog::new();
-        // Built-ins go through the free `classify_tool` function.
-        // We just verify the wrapper preserves that behavior for a
+        // Built-ins flow through `Tool::classify(Value::Null)` post-#1265 PR-9.
+        // We verify the wrapper preserves the legacy effect for a
         // representative sample.
         assert_eq!(catalog.classify_tool_with_mcp("Read"), ToolEffect::ReadOnly);
         assert_eq!(
@@ -512,6 +572,28 @@ mod tests {
             catalog.classify_tool_with_mcp("Delete"),
             ToolEffect::Destructive
         );
+    }
+
+    #[test]
+    fn classify_call_args_aware_for_bash() {
+        // Showcase of the args-aware path that replaced the legacy
+        // name-only `tools::classify_tool` (deleted PR-9).
+        let catalog = ToolCatalog::new();
+        let echo = serde_json::json!({"command": "echo hi"});
+        let rm = serde_json::json!({"command": "rm -rf /tmp/foo"});
+        assert_eq!(catalog.classify_call("Bash", &echo), ToolEffect::ReadOnly);
+        assert_eq!(catalog.classify_call("Bash", &rm), ToolEffect::Destructive,);
+    }
+
+    #[test]
+    fn default_static_returns_same_instance() {
+        let a = ToolCatalog::default_static();
+        let b = ToolCatalog::default_static();
+        // Same `&'static` => same memory => `OnceLock` worked.
+        assert!(std::ptr::eq(a, b));
+        // And it actually has the built-ins.
+        assert!(a.has_tool("Read"));
+        assert!(a.has_tool("Bash"));
     }
 
     #[test]

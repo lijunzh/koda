@@ -106,7 +106,8 @@
 //! denylisting `Write`/`Edit`/`Delete` in `disallowed_tools`.
 //! Credential dirs are always blocked regardless of mode.
 
-use crate::bash_safety::classify_bash_command;
+// `classify_bash_command` no longer imported here — `BashTool::classify`
+// owns Bash's per-call effect resolution (#1265 PR-9 cleanup).
 use crate::file_tracker::FileTracker;
 use crate::tools::ToolEffect;
 use path_clean::PathClean;
@@ -804,26 +805,22 @@ fn resolve_tool_effect_inner(
     args: &serde_json::Value,
     registry: Option<&crate::tools::ToolRegistry>,
 ) -> ToolEffect {
-    // MCP tools: use registry annotations when available.
-    if crate::mcp::is_mcp_tool_name(tool_name) {
-        if let Some(reg) = registry {
-            return reg.classify_tool_with_mcp(tool_name);
-        }
-        return crate::tools::ToolEffect::RemoteAction;
+    // Single-source-of-truth dispatch (#1265 PR-9): every tool's
+    // per-call classification lives on its `Tool` impl, accessed
+    // via the catalog's `classify_call`. The MCP-aware variant
+    // here uses the registry's catalog (which carries the manager)
+    // when available; otherwise it falls back to the process-wide
+    // default catalog (no MCP context, but built-ins classify the
+    // same).
+    //
+    // Pre-#1265 this function had a hand-rolled Bash special-case
+    // and a MCP-vs-built-in dispatch ladder. Both are now unnecessary
+    // because `BashTool::classify(args)` examines the command string
+    // and MCP routing lives in the catalog.
+    match registry {
+        Some(reg) => reg.catalog().classify_call(tool_name, args),
+        None => crate::tools::ToolCatalog::default_static().classify_call(tool_name, args),
     }
-
-    let base = crate::tools::classify_tool(tool_name);
-
-    if tool_name == "Bash" {
-        let command = args
-            .get("command")
-            .or(args.get("cmd"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        return classify_bash_command(command);
-    }
-
-    base
 }
 
 /// Whether a file tool targets a path outside the project root (#218).

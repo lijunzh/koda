@@ -618,6 +618,103 @@ fn agent_wait_to_value(task_id_str: &str, outcome: WaitOutcome) -> Value {
     }
 }
 
+// ── `Tool` trait impls (placeholder cohort, #1265 PR-9) ──────────
+//
+// The bg-task tools dispatch upstream of `ToolRegistry::execute`
+// (in `tool_dispatch.rs`) because they need
+// `Arc<ChildAgentRegistry>` — a reference the registry doesn't
+// hold. Their trait impls below exist *purely* so the catalog has
+// a single source of truth for classification + metadata. The
+// `execute` arms preserve the pre-#1265 "should not be reached"
+// failure path verbatim, mirroring the InvokeAgent / AskUser
+// pattern from PR-8.
+//
+// Why ReadOnly: these tools are idempotent observation/control of
+// work the model already started. ListBackgroundTasks is a pure
+// read; CancelTask sends SIGTERM / a cancel token (no files
+// touched); WaitTask blocks. Treating them as anything else would
+// force an approval prompt every time the model checks on a bg
+// task it just spawned (#996 Layer 2 ergonomics).
+
+use crate::tools::ToolEffect;
+use crate::tools::tool_trait::{Tool, ToolExecCtx};
+
+fn placeholder_unreached(name: &str) -> ToolResult {
+    ToolResult {
+        output: format!(
+            "{name} is dispatched in `tool_dispatch.rs` upstream of \
+             the registry; reaching the trait impl indicates a \
+             routing bug."
+        ),
+        success: false,
+        full_output: None,
+    }
+}
+
+fn def_for(name: &str) -> ToolDefinition {
+    definitions()
+        .into_iter()
+        .find(|d| d.name == name)
+        .expect("definitions() must contain every bg-task tool name")
+}
+
+/// `ListBackgroundTasks` — placeholder trait impl. See module note above.
+pub struct ListBackgroundTasksTool;
+
+#[async_trait::async_trait]
+impl Tool for ListBackgroundTasksTool {
+    fn name(&self) -> &'static str {
+        "ListBackgroundTasks"
+    }
+    fn definition(&self) -> ToolDefinition {
+        def_for("ListBackgroundTasks")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, _ctx: &ToolExecCtx<'_>, _args: &serde_json::Value) -> ToolResult {
+        placeholder_unreached("ListBackgroundTasks")
+    }
+}
+
+/// `CancelTask` — placeholder trait impl. See module note above.
+pub struct CancelTaskTool;
+
+#[async_trait::async_trait]
+impl Tool for CancelTaskTool {
+    fn name(&self) -> &'static str {
+        "CancelTask"
+    }
+    fn definition(&self) -> ToolDefinition {
+        def_for("CancelTask")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, _ctx: &ToolExecCtx<'_>, _args: &serde_json::Value) -> ToolResult {
+        placeholder_unreached("CancelTask")
+    }
+}
+
+/// `WaitTask` — placeholder trait impl. See module note above.
+pub struct WaitTaskTool;
+
+#[async_trait::async_trait]
+impl Tool for WaitTaskTool {
+    fn name(&self) -> &'static str {
+        "WaitTask"
+    }
+    fn definition(&self) -> ToolDefinition {
+        def_for("WaitTask")
+    }
+    fn classify(&self, _args: &serde_json::Value) -> ToolEffect {
+        ToolEffect::ReadOnly
+    }
+    async fn execute(&self, _ctx: &ToolExecCtx<'_>, _args: &serde_json::Value) -> ToolResult {
+        placeholder_unreached("WaitTask")
+    }
+}
+
 fn process_wait_to_value(task_id_str: &str, outcome: ProcessWaitOutcome) -> Value {
     match outcome {
         ProcessWaitOutcome::Exited { code } => json!({

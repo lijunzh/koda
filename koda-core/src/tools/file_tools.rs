@@ -867,10 +867,9 @@ impl Tool for ListTool {
 }
 
 /// Pull `file_path` (or its `path` alias) out of an args object.
-/// Used by `Write`/`Edit`/`Delete`'s `extract_undo_path` — same
-/// extraction logic that lives in `undo::extract_file_path` today.
-/// In the cleanup PR, `undo::extract_file_path` will delegate here
-/// (or be deleted entirely once all mutating tools have migrated).
+/// Used by `Write`/`Edit`/`Delete`'s `extract_undo_path`. Replaces
+/// the legacy `undo::extract_file_path` free function (deleted in
+/// PR-9 of #1265 item 5).
 fn extract_file_path_arg(args: &Value) -> Option<std::path::PathBuf> {
     args.get("file_path")
         .or_else(|| args.get("path"))
@@ -1615,8 +1614,9 @@ mod tests {
 
     #[test]
     fn extract_undo_path_accepts_path_alias() {
-        // The legacy `undo::extract_file_path` accepts both
-        // `file_path` and `path`. Migrated tools must too — some
+        // The legacy `undo::extract_file_path` (deleted in PR-9)
+        // accepted both `file_path` and `path`. Migrated tools must
+        // too — some
         // older test fixtures and a few prompt examples use `path`.
         let args = serde_json::json!({"path": "lib.rs"});
         assert_eq!(
