@@ -93,6 +93,9 @@ async fn make_session_with_mcp(
     let provider = MockProvider::new(responses);
     let recorded = provider.recorded_calls_handle();
 
+    // #1325 Phase 2: per-session mailbox pair (cheap mpsc + watch).
+    let (mailbox, mailbox_rx) = koda_core::agent::Mailbox::new();
+
     let session = KodaSession {
         id: env.session_id.clone(),
         agent,
@@ -109,6 +112,9 @@ async fn make_session_with_mcp(
         // #1321: tests don't need the bg-event forwarder; production
         // (TUI / ACP) calls `attach_event_sink` to spawn it.
         event_forwarder: None,
+        mailbox,
+        mailbox_rx: Arc::new(tokio::sync::Mutex::new(mailbox_rx)),
+        idle_pending_input: Arc::new(tokio::sync::Mutex::new(Vec::new())),
     };
     (session, cancel, recorded)
 }

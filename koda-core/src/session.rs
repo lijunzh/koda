@@ -23,12 +23,16 @@
 //! (e.g., main REPL + background sub-agents) without shared mutable state.
 
 use crate::agent::KodaAgent;
+use crate::agent::inter_agent::InterAgentCommunication;
+use crate::agent::mail_message::mail_to_user_message;
+use crate::agent::mailbox::{Mailbox, MailboxReceiver};
 use crate::child_agent::{self, ChildAgentRegistry};
 use crate::config::KodaConfig;
 use crate::db::Database;
 use crate::engine::{EngineCommand, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference::InferenceContext;
+use crate::persistence::Persistence;
 use crate::providers::{self, ImageData, LlmProvider};
 use crate::sub_agent_cache::SubAgentCache;
 use crate::trust::TrustMode;
@@ -37,6 +41,7 @@ use anyhow::Result;
 use koda_sandbox::{BuiltInProxy, BuiltInSocks5Proxy, DEFAULT_DEV_ALLOWLIST, Filter, ProxyHandle};
 use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -267,6 +272,46 @@ pub struct KodaSession {
     /// `KodaSession` via struct literal and need to populate every
     /// field. Default is `None` (no forwarder spawned).
     pub event_forwarder: Option<tokio_util::task::AbortOnDropHandle<()>>,
+
+    // ── Phase 1 of #1325: peer-agent message-passing substrate. ──────────
+    //
+    // Each session owns a mailbox; mail sent here lands in the next
+    // turn's user input via `drain_mail_to_db` (called from
+    // `run_turn`). Phase 2 wires the substrate; Phase 3 exposes the
+    // peer tools (`spawn_agent`/`send_message`/`wait_agent`) that
+    // exercise it from the LLM side.
+    /// Cloneable sender handle for this session's mailbox. Hand out
+    /// clones to peer agents that need to send mail to this session.
+    pub mailbox: Mailbox,
+
+    /// Drain side of the mailbox. `tokio::sync::Mutex` because
+    /// `drain_mail_to_db` is `async` (does DB writes) and codex's
+    /// reference implementation uses the async mutex too — keeps the
+    /// concurrency contract identical. Single-consumer by
+    /// construction (`MailboxReceiver` is not `Clone`).
+    ///
+    /// Drained at the top of every `run_turn` before the inference
+    /// loop reads the conversation. **Phase 2 deferral**: codex has a
+    /// `MailboxDeliveryPhase` enum that lets late-arriving mail go to
+    /// either the current turn or the next one depending on whether
+    /// final-answer text has streamed yet. Koda always treats it as
+    /// CurrentTurn (drain at start, no mid-turn worry). When koda
+    /// adopts streaming-aware semantics, port the phase enum then.
+    pub mailbox_rx: Arc<AsyncMutex<MailboxReceiver>>,
+
+    /// Mail enqueued for the next turn while no turn is active.
+    ///
+    /// **Why a separate queue from `mailbox` itself**: the mailbox
+    /// `mpsc` lets producers fire whenever; this queue is the
+    /// drain-and-stash buffer that survives between turns so a single
+    /// drain at `run_turn` start picks up everything (including mail
+    /// that arrived between turns). Mirrors codex's
+    /// `idle_pending_input` field with identical semantics.
+    ///
+    /// Phase 2 keeps it as the raw wire format (`InterAgentCommunication`)
+    /// rather than pre-formatted strings so a future `MessagePhase`
+    /// migration can re-serialize from source without information loss.
+    pub idle_pending_input: Arc<AsyncMutex<Vec<InterAgentCommunication>>>,
 }
 
 impl KodaSession {
@@ -346,6 +391,12 @@ impl KodaSession {
             }
         };
 
+        // #1325 Phase 2: per-session mailbox pair. Producer (`Mailbox`)
+        // is cloneable; consumer (`MailboxReceiver`) is not — enforced
+        // by `mpsc` semantics. Constructed unconditionally because the
+        // substrate has zero runtime cost when no mail is sent.
+        let (mailbox, mailbox_rx) = Mailbox::new();
+
         Self {
             id,
             agent,
@@ -366,6 +417,15 @@ impl KodaSession {
             // `attach_event_sink` to spawn it. Headless paths leave
             // it `None` and rely on the legacy synchronous drain.
             event_forwarder: None,
+            // #1325 Phase 2: per-session mailbox. The substrate is
+            // wired but no LLM-facing tool produces mail yet — Phase
+            // 3 lands `spawn_agent`/`send_message`/`wait_agent`.
+            // Constructing here means the substrate is uniformly
+            // available to test code and future tools without a
+            // capability-detection branch elsewhere.
+            mailbox,
+            mailbox_rx: Arc::new(AsyncMutex::new(mailbox_rx)),
+            idle_pending_input: Arc::new(AsyncMutex::new(Vec::new())),
         }
     }
 
@@ -451,6 +511,65 @@ impl KodaSession {
         self.cancel.interrupt();
     }
 
+    // ── #1325 Phase 2: peer-agent mailbox plumbing. ────────────────────
+
+    /// Borrow the cloneable [`Mailbox`] sender. Hand `clone()`s out
+    /// to peer agents that need to mail this session.
+    ///
+    /// Phase 2 keeps this as a bare accessor; Phase 3's
+    /// `send_message` tool will wrap it with caller-spawner scoping
+    /// (Model E from #996) so an agent can only mail siblings/children
+    /// it spawned, not arbitrary peers.
+    pub fn mailbox(&self) -> &Mailbox {
+        &self.mailbox
+    }
+
+    /// Queue mail for the next turn while no turn is active.
+    ///
+    /// Mirrors codex's `queue_response_items_for_next_turn` but takes
+    /// the raw [`InterAgentCommunication`] (preserving wire fields)
+    /// rather than a pre-formatted message. Drained alongside the
+    /// mailbox itself by [`Self::drain_mail_to_db`].
+    pub async fn enqueue_for_next_turn(&self, communication: InterAgentCommunication) {
+        self.idle_pending_input.lock().await.push(communication);
+    }
+
+    /// Drain mailbox + idle queue into the session's persisted message
+    /// history as user-role messages. Called from [`Self::run_turn`]
+    /// before the inference loop reads the conversation, so any mail
+    /// in flight at turn-start lands in the next LLM call.
+    ///
+    /// Order: idle queue first (FIFO across the gap between turns),
+    /// then mailbox (FIFO within this turn-start drain). Matches
+    /// codex's `take_queued_response_items_for_next_turn` + mailbox
+    /// drain order so cross-codebase reasoning stays portable.
+    ///
+    /// **Phase 2 deferral**: codex's `MailboxDeliveryPhase` lets
+    /// late-arriving mail go to either the current turn or the next
+    /// one depending on whether final-answer text has streamed yet.
+    /// We always treat it as CurrentTurn (drain at start, no mid-turn
+    /// worry). When koda adopts streaming-aware semantics, port the
+    /// phase enum then.
+    pub async fn drain_mail_to_db(&self) -> Result<()> {
+        // Drain idle-queue first so any cross-turn FYI mail lands
+        // ahead of mid-turn deliveries that might reference it.
+        let idle: Vec<InterAgentCommunication> =
+            std::mem::take(&mut *self.idle_pending_input.lock().await);
+        let mailbox_items: Vec<InterAgentCommunication> = self.mailbox_rx.lock().await.drain();
+
+        if idle.is_empty() && mailbox_items.is_empty() {
+            return Ok(());
+        }
+
+        for mail in idle.into_iter().chain(mailbox_items) {
+            let (role, content) = mail_to_user_message(&mail);
+            self.db
+                .insert_message(&self.id, &role, Some(&content), None, None, None)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// # Per-turn cancellation (#1208)
     ///
     /// `turn_cancel` lets callers (notably the TUI) wire Ctrl+C / Esc to a
@@ -472,6 +591,29 @@ impl KodaSession {
         sink.emit(crate::engine::EngineEvent::TurnStart {
             turn_id: turn_id.clone(),
         });
+
+        // #1325 Phase 2: drain any peer-agent mail (mailbox + idle
+        // queue) into persisted user messages BEFORE the inference
+        // loop reads the conversation. This is the codex-equivalent
+        // of `take_queued_response_items_for_next_turn` +
+        // `get_pending_input` (which fold mail into `pending_input`).
+        // Koda persists the conversation, so mail-as-user-message
+        // achieves the same "LLM sees mail at turn start" semantics
+        // without an in-memory pending-input vector.
+        //
+        // No tool produces mail yet (Phase 3 lands the peer tools);
+        // the drain is a no-op until then. Failure here is fatal for
+        // the turn — a partially-drained mailbox would silently lose
+        // mail, which is worse than a visible error.
+        if let Err(e) = self.drain_mail_to_db().await {
+            sink.emit(crate::engine::EngineEvent::TurnEnd {
+                turn_id,
+                reason: crate::engine::event::TurnEndReason::Error {
+                    message: format!("failed to drain mailbox: {e}"),
+                },
+            });
+            return Err(e);
+        }
 
         // Compose the per-turn system prompt: static `agent.system_prompt`
         // plus a dynamically-rendered MCP server-instructions section. We
