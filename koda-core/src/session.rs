@@ -238,6 +238,35 @@ pub struct KodaSession {
     /// Cross-turn doesn't change that contract; it just extends the
     /// window in which a still-fresh entry can be reused.
     pub sub_agent_cache: SubAgentCache,
+
+    /// Long-lived task that drains [`Self::bg_agents`]'s status
+    /// channel and forwards every event to the user-attached
+    /// [`EngineSink`] in real time.
+    ///
+    /// **#1321**: replaces the per-iteration `drain_status_events()`
+    /// poll in `inference_loop` (and the 200ms `with_status_pump`
+    /// hotfix it briefly carried). Mirrors Codex's per-child
+    /// `forward_events` task in `codex-rs/core/src/codex_delegate.rs`
+    /// and Claude Code's `for await` over `runAgent()` async
+    /// generator. Both push events through their natural channel as
+    /// they happen — no shared queue, no pump.
+    ///
+    /// `Option` because the receiver hasn't been taken (and the task
+    /// hasn't been spawned) until the client calls
+    /// [`Self::attach_event_sink`]. Headless paths and tests that
+    /// never attach a sink stay on the legacy synchronous
+    /// [`ChildAgentRegistry::drain_status_events`] route.
+    ///
+    /// `AbortOnDropHandle` so dropping the session cleanly aborts
+    /// the forwarder; if the session outlives the sink (the channel
+    /// closes from the consumer side) the forwarder exits naturally
+    /// when its `recv()` returns `None`.
+    ///
+    /// `pub` (not `pub(crate)`) for the same reason every sibling
+    /// field is: integration tests in `koda-core/tests/` construct
+    /// `KodaSession` via struct literal and need to populate every
+    /// field. Default is `None` (no forwarder spawned).
+    pub event_forwarder: Option<tokio_util::task::AbortOnDropHandle<()>>,
 }
 
 impl KodaSession {
@@ -333,7 +362,49 @@ impl KodaSession {
             // cross-turn hits.
             bg_agents: child_agent::new_shared(),
             sub_agent_cache: SubAgentCache::new(),
+            // No forwarder yet; clients (TUI / ACP) call
+            // `attach_event_sink` to spawn it. Headless paths leave
+            // it `None` and rely on the legacy synchronous drain.
+            event_forwarder: None,
         }
+    }
+
+    /// Wire the registry's status-event channel into a long-lived
+    /// forwarder task that emits each event to `sink` the moment it
+    /// lands.
+    ///
+    /// **Idempotent across the registry's lifetime**: the receiver
+    /// is moved out of the registry exactly once via
+    /// [`ChildAgentRegistry::take_event_receiver`], so calling this
+    /// twice is a no-op (returns `false` on the second call without
+    /// spawning anything). Production wires it once at TUI / ACP
+    /// startup and forgets about it.
+    ///
+    /// Returns `true` if the forwarder was spawned, `false` if the
+    /// registry's receiver had already been taken (a previous call,
+    /// or a foreign owner) — callers can use the bool to log a
+    /// warning if double-attach is suspicious for their context.
+    ///
+    /// **Lifetime**: the spawned task lives as long as `self` lives;
+    /// the `AbortOnDropHandle` in [`Self::event_forwarder`] aborts
+    /// it on session drop. If the consumer side of `sink` closes
+    /// (TUI exits, ACP socket dies) the forwarder exits naturally
+    /// when its `recv()` next yields — the channel side stays
+    /// healthy and any future re-attach reuses it.
+    ///
+    /// See module docs on [`crate::child_agent::ChildAgentRegistry`]
+    /// for the design rationale (mirrors Codex's `forward_events`).
+    pub fn attach_event_sink(&mut self, sink: Arc<dyn crate::engine::EngineSink>) -> bool {
+        let Some(mut rx) = self.bg_agents.take_event_receiver() else {
+            return false;
+        };
+        let handle = tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                sink.emit(event);
+            }
+        });
+        self.event_forwarder = Some(tokio_util::task::AbortOnDropHandle::new(handle));
+        true
     }
 
     /// Run one inference turn: prompt → streaming → tool execution → response.

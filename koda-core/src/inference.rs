@@ -730,14 +730,24 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
     }
 
     loop {
-        // #1076: forward queued bg-task status transitions to the sink
-        // before processing anything else. Drained from the same
-        // `Arc<ChildAgentRegistry>` that owns `drain_completed`, so the
-        // ordering is: status transitions first (so clients see
-        // `Running { iter: N }` heartbeats), then completed-result
-        // injection (so the model gets the final output as a user
-        // message). FIFO inside the queue preserves transition
-        // order across batches.
+        // #1321: bg-task status events normally flow continuously
+        // through the session-spawned forwarder (see
+        // `KodaSession::attach_event_sink`). When that forwarder is
+        // active, `drain_status_events()` is a benign empty-vec
+        // no-op (the forwarder owns the receiver) and this loop
+        // does nothing.
+        //
+        // For clients that don't / can't attach a session-lifetime
+        // sink — headless mode (per-turn `HeadlessSink`), the ACP
+        // server (per-turn `AcpSink` with per-turn `session_id`),
+        // tests, and any external embedder using `inference_loop`
+        // directly — this drain is the only way bg-status events
+        // reach the sink. It still incurs the pre-#1321 latency
+        // bound (events visible only between iterations, parked
+        // for the duration of any in-flight tool call) but that's
+        // strictly no-worse than the pre-#1321 baseline for those
+        // call sites. Migrate them later by exposing a session-
+        // lifetime sink and calling `attach_event_sink`.
         for ev in bg_agents.drain_status_events() {
             sink.emit(ev);
         }

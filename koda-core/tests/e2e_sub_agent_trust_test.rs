@@ -87,6 +87,18 @@ async fn safe_trust_sub_agent_can_write_files() {
     let events = env.run_inference(&provider).await;
     runtime_env::remove("KODA_MOCK_RESPONSES");
 
+    // **#1321/#1323 deflake**: this test was racing parent-loop
+    // termination against bg-agent completion (the parent's Mock
+    // provider returns Text after InvokeAgent, terminating the loop
+    // before the bg agent's Write tool dispatches). Pre-deflake this
+    // failed roughly 4/5 on `main` and 1/3 on the #1323 branch. Wait
+    // explicitly for the bg agent to reach a terminal state — same
+    // pattern every other bg-agent e2e test in this directory uses.
+    let _bg_events = env
+        .collect_bg_events_after(events.clone(), std::time::Duration::from_secs(10))
+        .await
+        .expect("bg sub-agent never reached terminal state");
+
     // Assertion 1: the file actually exists on disk. This is the
     // strongest possible proof that the Write was approved and
     // executed end-to-end through the sub-agent dispatch loop.
