@@ -75,6 +75,76 @@ pub(crate) fn next_invocation_id() -> u32 {
     NEXT_INVOCATION_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Build a unique child [`AgentPath`] under `parent` for a sub-agent
+/// invocation (#1325 Phase 4 — commit 2 of 3).
+///
+/// **Why a helper:** the same composition (sanitize the user-supplied
+/// `agent_name`, append a unique id) is needed at both spawn sites
+/// (the `tokio::spawn(run_bg_agent(...))` block, and the inline
+/// path inside `execute_sub_agent`). Keeping the rule in one place
+/// means the bg/inline paths can never drift on uniqueness or
+/// validation semantics — and it stays unit-testable as a pure fn.
+///
+/// **Sanitization rules** match [`crate::agent::path::AgentPath`]'s
+/// `[a-z0-9_]+` segment grammar:
+///
+/// 1. Lowercase every ASCII letter.
+/// 2. Replace any other char (uppercase letters that didn't ASCII-
+///    lowercase, digits-non-ASCII, punctuation, whitespace, unicode)
+///    with `_`.
+/// 3. Collapse runs of `_` and trim leading/trailing `_`.
+/// 4. If the result is empty (e.g. `agent_name = "!!!"` — pathological
+///    but `parse_agent_name_required` would have accepted it), fall
+///    back to `agent`.
+/// 5. Append `_<unique_id>` so concurrent invocations of the same
+///    agent don't collide (`/root/explore_42`, `/root/explore_43`).
+///
+/// **Why include `unique_id` even when callers pass distinct names:**
+/// Phase 4e of #1325 introduces multi-element `InvokeAgent([...])`
+/// where the same agent name is fanned out in parallel. The id
+/// suffix is the only thing that keeps their mailbox identities
+/// distinct, and adding it unconditionally is cheaper than branching
+/// on "is this the parallel case."
+///
+/// **Future-proofing:** `parent` is taken as a borrow rather than
+/// hard-coded to [`AgentPath::root`] so when nested spawn lands
+/// (Phase 6+) the same helper builds `/root/explore_4/researcher_7`
+/// without a touch — caller passes `parent_tx.turn.agent_path`
+/// today (always `/root`) and the future nested call passes the
+/// in-flight sub-agent's path (also already plumbed by 4a).
+pub(crate) fn child_agent_path(
+    parent: &crate::agent::AgentPath,
+    agent_name: &str,
+    unique_id: u32,
+) -> anyhow::Result<crate::agent::AgentPath> {
+    let mut sanitized = String::with_capacity(agent_name.len());
+    let mut prev_underscore = false;
+    for ch in agent_name.chars() {
+        let mapped = if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            ch
+        } else if ch.is_ascii_uppercase() {
+            ch.to_ascii_lowercase()
+        } else {
+            '_'
+        };
+        if mapped == '_' {
+            if prev_underscore {
+                continue;
+            }
+            prev_underscore = true;
+        } else {
+            prev_underscore = false;
+        }
+        sanitized.push(mapped);
+    }
+    let trimmed = sanitized.trim_matches('_');
+    let base = if trimmed.is_empty() { "agent" } else { trimmed };
+    let segment = format!("{base}_{unique_id}");
+    parent
+        .join(&segment)
+        .map_err(|e| anyhow::anyhow!("failed to build child AgentPath from {agent_name:?}: {e}"))
+}
+
 /// RAII cleanup hook for #996 Phase E.
 ///
 /// On drop, cancels every bg-agent registry entry tagged with this
@@ -162,6 +232,14 @@ async fn run_bg_agent(
     // entry was reaped, in which case the queued `ChildTaskUpdate` is
     // harmless extra signal that clients can ignore.
     emitter: crate::child_agent::ChildStatusEmitter,
+    // #1325 Phase 4 (commit 2): the bg agent's identity in the spawn
+    // tree (e.g. `/root/explore_42`). Constructed by the spawn site
+    // BEFORE `tokio::spawn` so we get a path-construction error in
+    // the parent's dispatch flow rather than as a panic inside the
+    // detached task. Threaded into the bg agent's `TurnContext` so
+    // `SendMessage` from inside the bg agent stamps the right
+    // `author`, and 4c+ peer-tools route by it.
+    bg_agent_path: crate::agent::AgentPath,
 ) {
     // Layer 0 placeholder: immediately flip Pending → Running so `/agents`
     // shows the agent as active before the first LLM call. The loop inside
@@ -217,13 +295,11 @@ async fn run_bg_agent(
     // `sub_config.allowed_tools`).
     let placeholder_tools =
         crate::tools::ToolRegistry::new(project_root.clone(), parent_config.max_context_tokens);
-    // #1325 Phase 4 (commit 1 — plumbing): bg agents "are" the root
-    // for now because the spawn machinery (`SpawnAgent`, child path
-    // assignment, child mailbox registration) lands in commit 2. As
-    // soon as commit 2 ships this becomes the actual child path so
-    // `SendMessage`/`WaitForMail` from inside the child see the
-    // right inbox / `author`.
-    let bg_agent_path = crate::agent::AgentPath::root();
+    // #1325 Phase 4 (commit 2): the spawn site built our path AND
+    // moved it in via the function parameter. We can't construct it
+    // here — we'd need the parent's path AND the registry-allocated
+    // `task_id`, neither of which lives in `run_bg_agent`'s
+    // owned-data world.
     let bg_turn = crate::turn_context::TurnContext::new(
         &project_root,
         &parent_config,
@@ -636,6 +712,17 @@ pub(crate) fn execute_sub_agent<'a>(
             let bg_policy = parent_sandbox_policy.clone();
             let bg_trust = mode;
 
+            // #1325 Phase 4 (commit 2): build the child's `AgentPath`
+            // BEFORE spawning so it can be moved into the bg task.
+            // Same `parent` as inline (`parent_tx.turn.agent_path`)
+            // so when nested spawn lands the path nesting falls out
+            // for free. Failures here are programmer errors against
+            // `child_agent_path`'s `"agent"` fallback — surface them
+            // as the dispatch error rather than panicking inside the
+            // spawned task.
+            let bg_agent_path =
+                child_agent_path(parent_tx.turn.agent_path, agent_name, task_id)?;
+
             sink.emit(EngineEvent::Info {
                 message: format!(
                     "  \u{1f680} {agent_name} launched in background (task {task_id})"
@@ -654,6 +741,7 @@ pub(crate) fn execute_sub_agent<'a>(
                 bg_trust,
                 bg_policy,
                 emitter,
+                bg_agent_path,
             ));
 
             bg_agents.attach(
@@ -1115,11 +1203,15 @@ pub(crate) fn execute_sub_agent<'a>(
         // inline twice with identical args. Hoisted here because
         // `sub_config`, `sub_session`, and `tools` are all bound by
         // this point and don't change across iterations.
-        // #1325 Phase 4 (commit 1): inline-only sub-agent path
-        // (background=false). Same placeholder reasoning as the
-        // bg-agent path above — commit 2 swaps `/root` for the
-        // child's actual `/root/<name>` path.
-        let sub_agent_path = crate::agent::AgentPath::root();
+        // #1325 Phase 4 (commit 2): build this invocation's path
+        // BEFORE constructing the sub-agent's `TurnContext`.
+        // `my_invocation_id` (allocated near the top of
+        // `execute_sub_agent`) is the unique-per-invocation handle
+        // — perfect for path uniquification when multiple inline
+        // `InvokeAgent`s of the same agent name run concurrently
+        // (Phase 4e's multi-element form).
+        let sub_agent_path =
+            child_agent_path(parent_tx.turn.agent_path, agent_name, my_invocation_id)?;
         let sub_turn = crate::turn_context::TurnContext::new(
             project_root,
             &sub_config,
@@ -1631,6 +1723,99 @@ fn workspace_provision_failure_marker(agent_name: &str, reason: &str) -> String 
          resolve the workspace setup issue, retry without write tools, or attempt the work \
          directly without delegating.]"
     )
+}
+
+#[cfg(test)]
+mod child_agent_path_tests {
+    //! **#1325 Phase 4 (commit 2)** regression tests for
+    //! [`super::child_agent_path`].
+    //!
+    //! Helper is reachable via two spawn sites buried in 1100+ lines
+    //! of `execute_sub_agent`; we'd rather pin its contract here than
+    //! through a giant integration test of either site.
+
+    use super::child_agent_path;
+    use crate::agent::AgentPath;
+
+    #[test]
+    fn passthrough_for_already_valid_lowercase_name() {
+        let p = child_agent_path(&AgentPath::root(), "explore", 42).unwrap();
+        assert_eq!(p.as_str(), "/root/explore_42");
+    }
+
+    #[test]
+    fn keeps_underscores_inside_name() {
+        let p = child_agent_path(&AgentPath::root(), "code_reviewer", 7).unwrap();
+        assert_eq!(p.as_str(), "/root/code_reviewer_7");
+    }
+
+    #[test]
+    fn lowercases_uppercase_letters() {
+        let p = child_agent_path(&AgentPath::root(), "CodeReviewer", 1).unwrap();
+        assert_eq!(p.as_str(), "/root/codereviewer_1");
+    }
+
+    #[test]
+    fn replaces_punctuation_with_underscore_and_collapses_runs() {
+        let p = child_agent_path(&AgentPath::root(), "a.b/c-d", 9).unwrap();
+        assert_eq!(p.as_str(), "/root/a_b_c_d_9");
+    }
+
+    #[test]
+    fn collapses_doubled_underscores_inside_name() {
+        // "a..b" -> two punctuation chars become two underscores; we
+        // collapse to one so the segment stays readable.
+        let p = child_agent_path(&AgentPath::root(), "a..b", 3).unwrap();
+        assert_eq!(p.as_str(), "/root/a_b_3");
+    }
+
+    #[test]
+    fn trims_leading_and_trailing_underscores_from_sanitized_name() {
+        let p = child_agent_path(&AgentPath::root(), "-explore-", 5).unwrap();
+        assert_eq!(p.as_str(), "/root/explore_5");
+    }
+
+    #[test]
+    fn falls_back_to_agent_when_name_sanitizes_to_empty() {
+        // All-punctuation name. `parse_agent_name_required` only
+        // checks non-empty, so this is reachable from a real call.
+        let p = child_agent_path(&AgentPath::root(), "!!!", 12).unwrap();
+        assert_eq!(p.as_str(), "/root/agent_12");
+    }
+
+    #[test]
+    fn unicode_replaced_with_underscore() {
+        let p = child_agent_path(&AgentPath::root(), "\u{1F436}explore", 4).unwrap();
+        assert_eq!(p.as_str(), "/root/explore_4");
+    }
+
+    #[test]
+    fn nests_under_non_root_parent() {
+        // Future-proofing: when nested spawn lands, the same helper
+        // builds `/root/explore_4/researcher_7` from a parent path
+        // of `/root/explore_4`. Pinning today so the property
+        // doesn't silently regress.
+        let parent = AgentPath::root().join("explore_4").unwrap();
+        let p = child_agent_path(&parent, "researcher", 7).unwrap();
+        assert_eq!(p.as_str(), "/root/explore_4/researcher_7");
+    }
+
+    #[test]
+    fn distinct_unique_ids_produce_distinct_paths() {
+        // Phase 4e fan-out invariant: two parallel `InvokeAgent`s of
+        // the same agent name must end up with different paths so
+        // their mailbox identities don't alias.
+        let a = child_agent_path(&AgentPath::root(), "explore", 1).unwrap();
+        let b = child_agent_path(&AgentPath::root(), "explore", 2).unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn digits_in_agent_name_are_preserved() {
+        // Numeric suffixes are valid `[a-z0-9_]` chars — keep them.
+        let p = child_agent_path(&AgentPath::root(), "agent42", 99).unwrap();
+        assert_eq!(p.as_str(), "/root/agent42_99");
+    }
 }
 
 #[cfg(test)]
