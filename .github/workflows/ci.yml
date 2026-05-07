@@ -56,9 +56,28 @@ jobs:
       # tokio::spawn / BgAgentRegistry / sub-agent dispatch / watch /
       # broadcast must use flavor="multi_thread". Pure text scan, ~1s,
       # rides the fmt job because it's the cheapest place that already
-      # has Python and a checkout.
+      # has a checkout. Bash port (#1328 follow-up: kept the
+      # everything-in-Rust workspace free of one-off Python scripts).
       - name: Check tokio test flavor (#1109 F2)
-        run: python3 scripts/check_tokio_test_flavor.py
+        run: scripts/check_tokio_test_flavor.sh
+
+      # #1328 self-pin: the Test step below MUST keep `shell: bash`
+      # to enable pipefail. Without pipefail, `cargo test ... | tee`
+      # observes only tee's exit code (always 0), so test failures
+      # are silently swallowed and the bwrap-assertion downstream
+      # takes the blame. This grep guards against accidental
+      # removal in future edits. Cheap (~50ms) and lives in the
+      # workflow file it's protecting — zero new files, zero new
+      # languages.
+      - name: Pin pipefail on Test step (#1328)
+        run: |
+          if ! awk '/- name: Test$/{flag=1; next} flag && /shell: bash$/{found=1; exit} flag && /^      - name:/{exit} END{exit !found}' .github/workflows/ci.yml; then
+            echo "::error::Test step in ci.yml is missing 'shell: bash' (#1328)."
+            echo "Without it, GH Actions defaults to 'bash -e {0}' (no pipefail),"
+            echo "and 'cargo test ... | tee' silently swallows cargo's exit code."
+            echo "Re-add 'shell: bash' on the line directly above 'run: cargo test'."
+            exit 1
+          fi
 
   clippy:
     name: Clippy
@@ -129,6 +148,22 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
       - name: Test
+        # CRITICAL: `shell: bash` is load-bearing here. Without it,
+        # GH Actions defaults to `bash -e {0}` (errexit only, NO
+        # pipefail). With pipefail off, `cargo test ... | tee`
+        # observes only `tee`'s exit code (always 0), so any
+        # non-zero from cargo is silently swallowed and the step
+        # appears green even when tests failed. The downstream
+        # bwrap-assertion guard then takes the blame for the missing
+        # tests — a 30-min wild goose chase every time it happens.
+        # See #1328 for the post-mortem (PR #1326 CI run 25471442843,
+        # PR #1330 CI run 25497008448 — both blamed bwrap when the
+        # real failure was upstream in koda-core).
+        #
+        # Setting `shell: bash` makes GH Actions invoke as
+        # `bash --noprofile --norc -eo pipefail {0}` per its docs:
+        # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#defaultsrunshell
+        shell: bash
         run: cargo test --workspace --features koda-core/test-support 2>&1 | tee test-output.log
         # `tee` keeps live streaming for the GH log AND captures output
         # for the assertion step below. We pipe stderr to stdout because
