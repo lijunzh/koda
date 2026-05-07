@@ -41,6 +41,7 @@ const CANONICAL: &[&str] = &[
     "Read",
     "RecallContext",
     "SendMessage",
+    "SpawnAgent",
     "TodoWrite",
     "WaitForMail",
     "WaitTask",

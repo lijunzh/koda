@@ -61,7 +61,8 @@ use std::sync::{Arc, RwLock};
 
 use super::{
     DynTool, Tool, ToolEffect, agent, ask_user, bg_task_tools, boxed, file_tools, glob_tool, grep,
-    memory, recall, send_message, shell, skill_tools, todo, wait_for_mail, web_fetch, web_search,
+    memory, recall, send_message, shell, skill_tools, spawn_agent, todo, wait_for_mail, web_fetch,
+    web_search,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
@@ -188,6 +189,11 @@ impl ToolCatalog {
         for def in wait_for_mail::definitions() {
             definitions.insert(def.name.clone(), def);
         }
+        // #1325 Phase 5a: SpawnAgent — codex v2 compatible peer-spawn.
+        // Intercepted by `tool_dispatch.rs` like `InvokeAgent`.
+        for def in spawn_agent::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
         // RecallContext is a singleton (not a `Vec`) — it has a
         // single canonical definition and the sub-module reflects
         // that with `definition()` instead of `definitions()`.
@@ -243,6 +249,8 @@ impl ToolCatalog {
             // mailbox registry is read off ToolExecCtx.
             boxed(send_message::SendMessageTool),
             boxed(wait_for_mail::WaitForMailTool),
+            // #1325 Phase 5a: SpawnAgent — intercepted by tool_dispatch.rs.
+            boxed(spawn_agent::SpawnAgentTool),
         ] {
             tools.insert(tool.name(), tool);
         }

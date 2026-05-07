@@ -352,6 +352,61 @@ pub(crate) async fn execute_one_tool(
             // model, ask the user to check the network, ...).
             Err(e) => (format!("Error invoking sub-agent: {e:#}"), false, None),
         }
+    } else if tc.function_name == "SpawnAgent" {
+        // #1325 Phase 5a: SpawnAgent — codex v2 compatible peer-spawn.
+        //
+        // Same dispatch path as `InvokeAgent` but with a different
+        // surface shape: `task_name` + `message` → `agent_name` + `prompt`.
+        // Re-map the arguments before forwarding to `execute_sub_agent`
+        // so the existing dispatch logic is reused without duplication.
+        //
+        // Box::pin is required for the same mutual-recursion reason as
+        // `InvokeAgent` above — see that branch's comment.
+        // Parse first — explicit error rather than silently becoming Null
+        // and then getting a downstream "agent_name is required" error.
+        let mut parsed: serde_json::Value = match serde_json::from_str(&tc.arguments) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    tc.id.clone(),
+                    format!("SpawnAgent: argument JSON is malformed: {e}"),
+                    false,
+                    None,
+                );
+            }
+        };
+        if let Some(obj) = parsed.as_object_mut() {
+            if let Some(task_name) = obj.remove("task_name") {
+                obj.insert("agent_name".to_string(), task_name);
+            }
+            if let Some(message) = obj.remove("message") {
+                obj.insert("prompt".to_string(), message);
+            }
+        }
+        let remapped = serde_json::to_string(&parsed).unwrap_or_else(|_| tc.arguments.clone());
+        let remapped_tc = crate::providers::ToolCall {
+            function_name: "InvokeAgent".to_string(),
+            arguments: remapped,
+            id: tc.id.clone(),
+            thought_signature: tc.thought_signature.clone(),
+        };
+        let (_, mut dummy_rx) = mpsc::channel(1);
+        let policy = tools.sandbox_policy().clone();
+        let read_cache = tools.file_read_cache();
+        let fut = sub_agent_dispatch::execute_sub_agent(
+            tx,
+            &remapped_tc.arguments,
+            &mut dummy_rx,
+            Some(read_cache),
+            &policy,
+            None,
+            Some(&remapped_tc.id),
+            false,
+        );
+        match Box::pin(fut).await {
+            Ok(output) => (output, true, None),
+            Err(e) => (format!("Error spawning agent: {e:#}"), false, None),
+        }
     } else {
         // Invalidate sub-agent cache on file mutations.
         //
