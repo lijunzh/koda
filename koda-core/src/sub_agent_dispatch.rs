@@ -1349,7 +1349,8 @@ pub(crate) fn execute_sub_agent<'a>(
             // Filtering at the tool-def level keeps the model from
             // ever seeing the tool. The sub-agent dispatch loop also
             // contains a defense-in-depth refusal in case a rogue or
-            // scripted model emits `InvokeAgent` regardless.
+            // scripted model emits `InvokeAgent` or `SpawnAgent`
+            // regardless.
             if !denied.contains(&"InvokeAgent".to_string()) {
                 denied.push("InvokeAgent".to_string());
             }
@@ -1715,6 +1716,30 @@ pub(crate) fn execute_sub_agent<'a>(
                 // confusing `success=false` boilerplate).
                 if tc.function_name == "InvokeAgent" {
                     let refusal = "InvokeAgent is not available inside a sub-agent. \
+                                   Sub-agents are autonomous workers and cannot spawn \
+                                   further sub-agents. Complete the task directly with \
+                                   the tools you have, or report back what additional \
+                                   dispatch the parent agent should perform.";
+                    db.insert_message(
+                        &sub_session,
+                        &Role::Tool,
+                        Some(refusal),
+                        None,
+                        Some(&tc.id),
+                        None,
+                    )
+                    .await?;
+                    continue;
+                }
+                // #1325 Phase 5a: SpawnAgent re-maps to InvokeAgent at
+                // dispatch time (`tool_dispatch.rs::execute_one_tool`),
+                // so a rogue or scripted model emitting `SpawnAgent`
+                // would otherwise drive the same unbounded recursion
+                // the InvokeAgent block above prevents. Refuse with
+                // the same shape so the deny-list filter at line 1356
+                // and this defense-in-depth refusal stay symmetric.
+                if tc.function_name == "SpawnAgent" {
+                    let refusal = "SpawnAgent is not available inside a sub-agent. \
                                    Sub-agents are autonomous workers and cannot spawn \
                                    further sub-agents. Complete the task directly with \
                                    the tools you have, or report back what additional \
