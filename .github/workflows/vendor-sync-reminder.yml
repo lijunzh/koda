@@ -20,7 +20,7 @@ name: Vendor sync reminder
 #   • If a `vendor-sync` issue is already open, we skip — don't pile on.
 #   • The pinned SHAs live in the source files themselves, not a separate
 #     manifest. One source of truth, no synchronization to keep up.
-#   • The list of vendored files is hardcoded below. There are 6 of them
+#   • The list of vendored files is hardcoded below. There are 8 of them
 #     and they change roughly never; auto-discovery would be more code than
 #     it saves.
 
