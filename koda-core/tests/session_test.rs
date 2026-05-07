@@ -56,6 +56,17 @@ async fn make_session(env: &Env, provider: Box<dyn LlmProvider>) -> (KodaSession
     // everywhere so test sessions get one too — even though no Phase
     // 2 code path produces mail yet.
     let (mailbox, mailbox_rx) = koda_core::agent::Mailbox::new();
+    let mailbox = std::sync::Arc::new(mailbox);
+    // Phase 3: pre-register /root in the registry, then hand it to
+    // the tools. Mirrors KodaSession::new exactly.
+    let mailbox_registry = std::sync::Arc::new(koda_core::agent::MailboxRegistry::new());
+    mailbox_registry.register(
+        koda_core::agent::AgentPath::root(),
+        std::sync::Arc::clone(&mailbox),
+    );
+    agent
+        .tools
+        .set_mailbox_registry(std::sync::Arc::clone(&mailbox_registry));
 
     let session = KodaSession {
         id: env.session_id.clone(),
@@ -76,6 +87,7 @@ async fn make_session(env: &Env, provider: Box<dyn LlmProvider>) -> (KodaSession
         mailbox,
         mailbox_rx: std::sync::Arc::new(tokio::sync::Mutex::new(mailbox_rx)),
         idle_pending_input: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        mailbox_registry,
     };
     (session, cancel)
 }
