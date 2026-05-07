@@ -136,7 +136,10 @@ mod tests {
         let (_, body) = mail_to_user_message(&sample_mail());
         assert!(body.contains("/root"), "header missing author");
         assert!(body.contains("/root/worker"), "header missing recipient");
-        assert!(body.contains("trigger_turn=true"), "header missing trigger_turn");
+        assert!(
+            body.contains("trigger_turn=true"),
+            "header missing trigger_turn"
+        );
     }
 
     #[test]
@@ -199,10 +202,7 @@ mod tests {
         let mail = InterAgentCommunication {
             author: AgentPath::root(),
             recipient: "/root/a".parse().unwrap(),
-            other_recipients: vec![
-                "/root/b".parse().unwrap(),
-                "/root/c".parse().unwrap(),
-            ],
+            other_recipients: vec!["/root/b".parse().unwrap(), "/root/c".parse().unwrap()],
             content: "hi all".to_string(),
             trigger_turn: false,
         };

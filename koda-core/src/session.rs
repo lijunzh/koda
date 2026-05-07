@@ -561,7 +561,7 @@ impl KodaSession {
             return Ok(());
         }
 
-        for mail in idle.into_iter().chain(mailbox_items.into_iter()) {
+        for mail in idle.into_iter().chain(mailbox_items) {
             let (role, content) = mail_to_user_message(&mail);
             self.db
                 .insert_message(&self.id, &role, Some(&content), None, None, None)
