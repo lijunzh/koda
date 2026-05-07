@@ -51,6 +51,12 @@ async fn make_session(env: &Env, provider: Box<dyn LlmProvider>) -> (KodaSession
     let file_tracker =
         koda_core::file_tracker::FileTracker::new(&env.session_id, env.db.clone()).await;
 
+    // #1325 Phase 2: per-session mailbox pair. Cheap (`mpsc` +
+    // `watch::Sender<u64>`) and the substrate is uniformly available
+    // everywhere so test sessions get one too — even though no Phase
+    // 2 code path produces mail yet.
+    let (mailbox, mailbox_rx) = koda_core::agent::Mailbox::new();
+
     let session = KodaSession {
         id: env.session_id.clone(),
         agent,
@@ -67,6 +73,9 @@ async fn make_session(env: &Env, provider: Box<dyn LlmProvider>) -> (KodaSession
         // #1321: tests don't need the bg-event forwarder; production
         // (TUI / ACP) calls `attach_event_sink` to spawn it.
         event_forwarder: None,
+        mailbox,
+        mailbox_rx: std::sync::Arc::new(tokio::sync::Mutex::new(mailbox_rx)),
+        idle_pending_input: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
     };
     (session, cancel)
 }
