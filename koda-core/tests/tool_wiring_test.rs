@@ -15,20 +15,20 @@ fn all_tool_names() -> Vec<String> {
 }
 
 /// Every tool must be routable in the dispatcher.
-/// Tools handled externally (InvokeAgent) return sentinel strings.
-/// None should return "Unknown tool".
+/// Tools handled externally (InvokeAgent, SpawnAgent) return a sentinel
+/// string from `registry.execute()` that doesn't contain "Unknown tool",
+/// so the assertion below tolerates them naturally — no exclusion needed.
 ///
-/// Exception (#996 Layer 2): the background-task management tools
-/// (`ListBackgroundTasks`, `CancelTask`, `WaitTask`) are intentionally
-/// not routed through `ToolRegistry::execute()` — they need an
-/// `Arc<BgAgentRegistry>` plus the caller's spawner identity, neither
-/// of which the `ToolRegistry` holds. They're routed one layer up in
-/// `tool_dispatch::execute_one_tool` (see the early `if matches!(...)
-/// branch there). Skipping them here keeps the test honest about what
-/// `ToolRegistry::execute()` is responsible for.
+/// Pre-#1325 Phase 5b this test maintained a `HIGHER_LAYER_DISPATCH`
+/// allowlist to skip the bg-task management trio (`ListBackgroundTasks`,
+/// `CancelTask`, `WaitTask`) which had their own dispatch branch in
+/// `tool_dispatch::execute_one_tool` and never reached `registry.execute()`.
+/// Phase 5b retired those tools — the allowlist is now empty and the
+/// `if HIGHER_LAYER_DISPATCH.contains(...)` skip is dead code, but kept
+/// as the obvious extension point if a future tool needs the same bypass.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_all_tools_routable_in_dispatcher() {
-    const HIGHER_LAYER_DISPATCH: &[&str] = &["ListBackgroundTasks", "CancelTask", "WaitTask"];
+    const HIGHER_LAYER_DISPATCH: &[&str] = &[];
     let registry = koda_core::tools::ToolRegistry::new(PathBuf::from("/tmp/test"), 100_000);
     for name in all_tool_names() {
         if HIGHER_LAYER_DISPATCH.contains(&name.as_str()) {
@@ -139,14 +139,9 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         // ReadOnly; classifying it as a mutation broke Plan-mode planning
         // entirely (#1212).
         ("TodoWrite", ToolEffect::ReadOnly),
-        // Background-task management (#996 Layer 2). All three are
-        // ReadOnly: List is a pure read; Cancel/Wait signal but don't
-        // write files — idempotent control of work the model already
-        // started. See `bg_task_tools::{ListBackgroundTasksTool,
-        // CancelTaskTool, WaitTaskTool}` (PR-9 placeholder cohort).
-        ("ListBackgroundTasks", ToolEffect::ReadOnly),
-        ("CancelTask", ToolEffect::ReadOnly),
-        ("WaitTask", ToolEffect::ReadOnly),
+        // Pre-#1325 Phase 5b also pinned the bg-task management trio
+        // (`ListBackgroundTasks`, `CancelTask`, `WaitTask`) here —
+        // retired in 5b, see `tools/mod.rs` for the migration story.
         // Peer-messaging tools (#1325 Phase 3). WaitForMail is
         // ReadOnly: it observes the mailbox sequence counter
         // without mutating state. SendMessage is LocalMutation:

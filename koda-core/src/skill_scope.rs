@@ -23,9 +23,10 @@
 //! own background work even when scoped to a restricted tool set:
 //!
 //! - `ActivateSkill`, `ListSkills`
-//! - `ListAgents`, `InvokeAgent`
+//! - `ListAgents`, `InvokeAgent`, `SpawnAgent`
 //! - `AskUser`
-//! - `ListBackgroundTasks`, `CancelTask`, `WaitTask` (#996 Phase G)
+//! - `SendMessage`, `WaitForMail` (#1325 Phase 3/5a — peer messaging
+//!   replaces the retired bg-task trio for waiting on background work)
 //!
 //! ## Lifecycle
 //!
@@ -42,14 +43,12 @@ use crate::skills::SkillRegistry;
 /// help, or manage its own background work even when scoped to a
 /// restricted tool set.
 ///
-/// The bg-task management tools (`ListBackgroundTasks`, `CancelTask`,
-/// `WaitTask`) are meta because background work outlives any single
-/// `ActivateSkill` boundary: a skill that scopes to e.g. `["Read",
-/// "Grep"]` would otherwise lose the ability to wait on or cancel a
-/// shell process the agent kicked off before activation. Excluding
-/// them would force callers to either (a) re-list the bg-task tools
-/// in every skill manifest, or (b) leak background work the agent
-/// can no longer manage — both worse than allowlisting them globally.
+/// `WaitForMail` (#1325 Phase 3) is meta because the mailbox bridge
+/// from #1336 (`notify_parent_mailbox`) makes it the single tool the
+/// model needs to block on background work — every bg-agent completion
+/// arrives as mail. Pre-#1325 Phase 5b this list also included
+/// `ListBackgroundTasks` / `CancelTask` / `WaitTask`; those tools were
+/// retired together with the bg-task management cohort.
 const META_TOOLS: &[&str] = &[
     "ActivateSkill",
     "ListSkills",
@@ -60,11 +59,6 @@ const META_TOOLS: &[&str] = &[
     // without listing it in every manifest (same rationale as InvokeAgent).
     "SpawnAgent",
     "AskUser",
-    // #996 Phase G — bg-task management always-available so a
-    // skill-scoped agent can still see / wait / cancel its own work.
-    "ListBackgroundTasks",
-    "CancelTask",
-    "WaitTask",
     // #1325 Phase 3/5a: peer-messaging always-available so skill-scoped
     // agents can communicate with peers without listing them in manifests.
     "SendMessage",
@@ -272,12 +266,14 @@ mod tests {
         assert!(scope.check_tool_call("Grep").is_none());
         assert!(scope.check_tool_call("ActivateSkill").is_none()); // meta
         assert!(scope.check_tool_call("AskUser").is_none()); // meta
-        // #996 Phase G — the bg-task management trio is meta so a
-        // skill-scoped agent can still see / wait / cancel its own
-        // background work. Pin them all to prevent regression.
-        assert!(scope.check_tool_call("ListBackgroundTasks").is_none());
-        assert!(scope.check_tool_call("CancelTask").is_none());
-        assert!(scope.check_tool_call("WaitTask").is_none());
+        // #1325 Phase 5a/5b — SpawnAgent + the peer-messaging tools are
+        // meta so a skill-scoped agent can still spawn sub-agents and
+        // block on bg-agent completion mail. Pre-#1325 Phase 5b this
+        // block also pinned `ListBackgroundTasks` / `CancelTask` /
+        // `WaitTask` (#996 Phase G) — those tools were retired in 5b.
+        assert!(scope.check_tool_call("SpawnAgent").is_none());
+        assert!(scope.check_tool_call("SendMessage").is_none());
+        assert!(scope.check_tool_call("WaitForMail").is_none());
 
         let err = scope.check_tool_call("Write");
         assert!(err.is_some());

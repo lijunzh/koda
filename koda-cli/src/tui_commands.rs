@@ -189,7 +189,7 @@ pub async fn handle_slash_command(
                 if s.is_empty() {
                     None
                 } else {
-                    koda_core::tools::bg_task_tools::parse_task_id(s).ok()
+                    koda_core::tools::task_id::parse_task_id(s).ok()
                 }
             });
             crate::tui_bg_tasks::handle_cancel_background_task(

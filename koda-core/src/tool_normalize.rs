@@ -26,7 +26,6 @@ const CANONICAL: &[&str] = &[
     "ActivateSkill",
     "AskUser",
     "Bash",
-    "CancelTask",
     "Delete",
     "Edit",
     "Glob",
@@ -34,7 +33,6 @@ const CANONICAL: &[&str] = &[
     "InvokeAgent",
     "List",
     "ListAgents",
-    "ListBackgroundTasks",
     "ListSkills",
     "MemoryRead",
     "MemoryWrite",
@@ -44,7 +42,6 @@ const CANONICAL: &[&str] = &[
     "SpawnAgent",
     "TodoWrite",
     "WaitForMail",
-    "WaitTask",
     "WebFetch",
     "WebSearch",
     "Write",
@@ -145,12 +142,13 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
     m.insert("recall_context".into(), "RecallContext");
     m.insert("recall".into(), "RecallContext");
 
-    // #996 Layer 2 — background-task management
-    m.insert("list_background_tasks".into(), "ListBackgroundTasks");
-    m.insert("list_bg_tasks".into(), "ListBackgroundTasks");
-    m.insert("cancel_task".into(), "CancelTask");
-    m.insert("wait_task".into(), "WaitTask");
-    m.insert("wait_for_task".into(), "WaitTask");
+    // Pre-#1325 Phase 5b also mapped `list_background_tasks` /
+    // `list_bg_tasks` / `cancel_task` / `wait_task` / `wait_for_task`
+    // to the bg-task management trio. Phase 5b retired those LLM
+    // tools (replaced by `WaitForMail` + the mailbox bridge from
+    // #1336), so the aliases are gone too — a model emitting any
+    // of the old snake_case names will now hit the unknown-tool
+    // fallback, which is the correct signal that the tool is gone.
 
     m
 });
