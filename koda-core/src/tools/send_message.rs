@@ -246,7 +246,11 @@ mod tests {
     use crate::agent::{Mailbox, MailboxRegistry};
     use std::sync::Arc;
 
-    fn fresh_registry_with_root() -> (Arc<MailboxRegistry>, Arc<Mailbox>, crate::agent::MailboxReceiver) {
+    fn fresh_registry_with_root() -> (
+        Arc<MailboxRegistry>,
+        Arc<Mailbox>,
+        crate::agent::MailboxReceiver,
+    ) {
         let (mb, rx) = Mailbox::new();
         let mb = Arc::new(mb);
         let reg = Arc::new(MailboxRegistry::new());
@@ -315,7 +319,9 @@ mod tests {
         // assigns a sequence number we can observe.
         let (reg, _mb, mut rx) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
-        let ctx = ctx_with_registry(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg);
+        let ctx = ctx_with_registry(
+            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+        );
 
         let result = SendMessageTool
             .execute(&ctx, &json!({"target": "/root", "content": "hi self"}))
@@ -344,10 +350,15 @@ mod tests {
         // paths so the LLM can self-correct without re-trying blind.
         let (reg, _mb, _rx) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
-        let ctx = ctx_with_registry(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg);
+        let ctx = ctx_with_registry(
+            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+        );
 
         let result = SendMessageTool
-            .execute(&ctx, &json!({"target": "/root/ghost", "content": "anyone home?"}))
+            .execute(
+                &ctx,
+                &json!({"target": "/root/ghost", "content": "anyone home?"}),
+            )
             .await;
 
         assert!(!result.success);
@@ -369,7 +380,9 @@ mod tests {
         // grep-and-find working for anyone debugging from upstream.
         let (reg, _mb, _rx) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
-        let ctx = ctx_with_registry(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg);
+        let ctx = ctx_with_registry(
+            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+        );
 
         let result = SendMessageTool
             .execute(&ctx, &json!({"target": "/root", "content": "   "}))
@@ -386,7 +399,9 @@ mod tests {
     async fn invalid_path_string_returns_parse_error() {
         let (reg, _mb, _rx) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
-        let ctx = ctx_with_registry(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg);
+        let ctx = ctx_with_registry(
+            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+        );
 
         let result = SendMessageTool
             .execute(&ctx, &json!({"target": "not-a-path", "content": "hello"}))
@@ -439,7 +454,9 @@ mod tests {
     async fn missing_target_field_returns_validation_error() {
         let (reg, _mb, _rx) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
-        let ctx = ctx_with_registry(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg);
+        let ctx = ctx_with_registry(
+            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+        );
 
         let result = SendMessageTool
             .execute(&ctx, &json!({"content": "no target"}))
@@ -452,7 +469,9 @@ mod tests {
     async fn missing_content_field_returns_validation_error() {
         let (reg, _mb, _rx) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
-        let ctx = ctx_with_registry(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg);
+        let ctx = ctx_with_registry(
+            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+        );
 
         let result = SendMessageTool
             .execute(&ctx, &json!({"target": "/root"}))

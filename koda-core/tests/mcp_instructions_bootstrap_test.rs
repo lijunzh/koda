@@ -98,10 +98,7 @@ async fn make_session_with_mcp(
     let mailbox = Arc::new(mailbox);
     // Phase 3: pre-register /root → mailbox; mirror KodaSession::new.
     let mailbox_registry = Arc::new(koda_core::agent::MailboxRegistry::new());
-    mailbox_registry.register(
-        koda_core::agent::AgentPath::root(),
-        Arc::clone(&mailbox),
-    );
+    mailbox_registry.register(koda_core::agent::AgentPath::root(), Arc::clone(&mailbox));
     agent
         .tools
         .set_mailbox_registry(Arc::clone(&mailbox_registry));

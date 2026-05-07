@@ -237,7 +237,9 @@ mod naming_convention {
         "MemoryWrite",
         "Read",
         "RecallContext",
+        "SendMessage",
         "TodoWrite",
+        "WaitForMail",
         "WaitTask",
         "WebFetch",
         "WebSearch",
@@ -274,9 +276,11 @@ mod naming_convention {
 
     #[test]
     fn test_expected_tool_count() {
-        // 22 built-in tools (#996 Layer 2 added ListBackgroundTasks,
-        // CancelTask, WaitTask — bringing 19 → 22).
-        assert_eq!(BUILTIN_TOOLS.len(), 22);
+        // 24 built-in tools.
+        // - #996 Layer 2 added ListBackgroundTasks, CancelTask,
+        //   WaitTask (19 → 22).
+        // - #1325 Phase 3 added SendMessage, WaitForMail (22 → 24).
+        assert_eq!(BUILTIN_TOOLS.len(), 24);
     }
 
     /// Ensure BUILTIN_TOOLS stays in sync with the actual registry.

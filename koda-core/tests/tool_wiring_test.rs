@@ -131,10 +131,17 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         ("ListBackgroundTasks", ToolEffect::ReadOnly),
         ("CancelTask", ToolEffect::ReadOnly),
         ("WaitTask", ToolEffect::ReadOnly),
+        // Peer-messaging tools (#1325 Phase 3). WaitForMail is
+        // ReadOnly: it observes the mailbox sequence counter
+        // without mutating state. SendMessage is LocalMutation:
+        // it mutates the recipient's mailbox state. See module
+        // docs on each for the full rationale.
+        ("WaitForMail", ToolEffect::ReadOnly),
         // Local mutations
         ("Write", ToolEffect::LocalMutation),
         ("Edit", ToolEffect::LocalMutation),
         ("MemoryWrite", ToolEffect::LocalMutation),
+        ("SendMessage", ToolEffect::LocalMutation),
         // Bash with no args is the *defensive default* under per-call
         // classification (#1265 PR-6). Real call sites always pass a
         // command, which `BashTool::classify` then routes through

@@ -72,10 +72,7 @@ async fn make_session_with_recorder(
     // does. Tests that build sessions by struct-literal still need to
     // honor the substrate invariant (registry contains /root).
     let mailbox_registry = Arc::new(koda_core::agent::MailboxRegistry::new());
-    mailbox_registry.register(
-        koda_core::agent::AgentPath::root(),
-        Arc::clone(&mailbox),
-    );
+    mailbox_registry.register(koda_core::agent::AgentPath::root(), Arc::clone(&mailbox));
     agent
         .tools
         .set_mailbox_registry(Arc::clone(&mailbox_registry));
@@ -315,5 +312,81 @@ async fn session_pre_registers_root_in_mailbox_registry() {
     assert_eq!(
         drained[0].content, "via-registry",
         "the drained mail must be the one we sent through the registry"
+    );
+}
+
+/// **Phase 3 step 3 e2e**: SendMessage from inside an LLM turn lands
+/// as a user-role row that surfaces in the NEXT turn's provider call.
+///
+/// This is the load-bearing integration pin that proves the whole
+/// substrate is wired together end-to-end:
+///
+/// 1. The catalog exposes SendMessage to the model.
+/// 2. The dispatch path threads the registry through ToolExecCtx.
+/// 3. The tool resolves `/root` and calls `Mailbox::send`.
+/// 4. The session's drain hook persists the mail as a user row.
+/// 5. The next turn's `messages` argument to the provider includes it.
+///
+/// A regression that breaks any one of those steps would silently
+/// make the model's "send a note to self" no-op — a classic
+/// substrate bug that's invisible at unit-test resolution.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_message_tool_round_trips_through_two_turns() {
+    let env = Env::new().await;
+    env.insert_user_message("turn1: please mail yourself").await;
+
+    // Turn 1: model emits a SendMessage tool call, then on the
+    // tool-result follow-up returns text to end the turn.
+    // Turn 2: model returns text immediately (no tools needed).
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "SendMessage",
+            serde_json::json!({"target": "/root", "content": "ping from turn 1"}),
+        ),
+        MockResponse::Text("dispatched".to_string()),
+        MockResponse::Text("turn 2 ack".to_string()),
+    ]);
+    let (mut session, _cancel, recorded) = make_session_with_recorder(&env, provider).await;
+
+    let sink = TestSink::new();
+    let (_tx, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
+
+    // Turn 1: tool dispatch + final text.
+    session
+        .run_turn(&env.config, None, &sink, &mut cmd_rx, None)
+        .await
+        .expect("turn 1 should succeed");
+
+    // Pre-turn-2: insert a real user message so run_turn has a
+    // turn-input to process. The mailbox drain happens BEFORE the
+    // provider sees anything, so the mailed "ping" + the new user
+    // message both end up in the same provider call.
+    env.insert_user_message("turn2: did you mail yourself?")
+        .await;
+
+    session
+        .run_turn(&env.config, None, &sink, &mut cmd_rx, None)
+        .await
+        .expect("turn 2 should succeed");
+
+    // Inspect what the provider saw on its FINAL call (turn 2).
+    let calls = recorded.lock().expect("recorded calls lock");
+    let last_call_messages = calls
+        .last()
+        .expect("provider must have been called at least once");
+    let user_contents: Vec<&str> = last_call_messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .filter_map(|m| m.content.as_deref())
+        .collect();
+
+    // The mailed "ping from turn 1" must appear as a user-role
+    // message somewhere in the conversation the provider sees on
+    // turn 2. Order/exact format isn't pinned (drain layout is
+    // implementation detail) — only the presence is the contract.
+    assert!(
+        user_contents.iter().any(|c| c.contains("ping from turn 1")),
+        "turn 2 provider call must include the mailed content as a user row; \
+         got user messages: {user_contents:?}"
     );
 }

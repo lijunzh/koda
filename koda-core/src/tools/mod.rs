@@ -123,6 +123,7 @@ pub mod summary;
 pub mod todo;
 /// Pre-flight validation for tool calls (runs before approval).
 pub mod validate;
+pub mod wait_for_mail;
 /// HTTP fetch tool (`WebFetch`).
 pub mod web_fetch;
 /// Web search tool (`WebSearch`).
@@ -290,9 +291,8 @@ pub struct ToolRegistry {
     /// in standalone-`ToolRegistry` tests where there's no session).
     /// Read by the `send_message` and `wait_for_mail` peer tools —
     /// every other tool ignores it.
-    mailbox_registry: std::sync::RwLock<
-        Option<Arc<crate::agent::mailbox_registry::MailboxRegistry>>,
-    >,
+    mailbox_registry:
+        std::sync::RwLock<Option<Arc<crate::agent::mailbox_registry::MailboxRegistry>>>,
 }
 
 impl ToolRegistry {
@@ -484,9 +484,7 @@ impl ToolRegistry {
     /// Current mailbox registry, if one has been attached. Returns
     /// the `Arc` clone so the caller can hold it across `.await`
     /// boundaries without holding the registry-slot lock.
-    pub fn mailbox_registry(
-        &self,
-    ) -> Option<Arc<crate::agent::mailbox_registry::MailboxRegistry>> {
+    pub fn mailbox_registry(&self) -> Option<Arc<crate::agent::mailbox_registry::MailboxRegistry>> {
         self.mailbox_registry.read().ok().and_then(|g| g.clone())
     }
 
@@ -1418,6 +1416,20 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
                 fact.to_string()
             };
             format!("Save to memory: {preview}")
+        }
+        "SendMessage" => {
+            // #1325 Phase 3: surface the recipient + a short content
+            // preview so the user can decide whether to approve a
+            // peer-mailbox effect without expanding the args. Mirrors
+            // the preview-truncation pattern used by MemoryWrite.
+            let target = args.get("target").and_then(|v| v.as_str()).unwrap_or("?");
+            let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("?");
+            let preview = if content.len() > 60 {
+                format!("{}…", &content[..57])
+            } else {
+                content.to_string()
+            };
+            format!("Send message to {target}: {preview}")
         }
         _ => format!("Execute: {tool_name}"),
     }

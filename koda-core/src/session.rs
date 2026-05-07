@@ -439,7 +439,9 @@ impl KodaSession {
         // Hand the registry to the tool layer so peer tools can
         // resolve paths. `set_*` setters use interior mutability —
         // see ToolRegistry docs for the rationale.
-        agent.tools.set_mailbox_registry(Arc::clone(&mailbox_registry));
+        agent
+            .tools
+            .set_mailbox_registry(Arc::clone(&mailbox_registry));
 
         Self {
             id,

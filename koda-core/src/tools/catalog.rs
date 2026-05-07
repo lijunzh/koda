@@ -61,7 +61,7 @@ use std::sync::{Arc, RwLock};
 
 use super::{
     DynTool, Tool, ToolEffect, agent, ask_user, bg_task_tools, boxed, file_tools, glob_tool, grep,
-    memory, recall, send_message, shell, skill_tools, todo, web_fetch, web_search,
+    memory, recall, send_message, shell, skill_tools, todo, wait_for_mail, web_fetch, web_search,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
@@ -178,9 +178,14 @@ impl ToolCatalog {
         for def in skill_tools::definitions() {
             definitions.insert(def.name.clone(), def);
         }
-        // #1325 Phase 3: peer-tools cohort. Currently only
-        // SendMessage; wait_for_mail joins in step 4.
+        // #1325 Phase 3: peer-tools cohort. SendMessage in step 3,
+        // WaitForMail in step 4. Both use the standard ToolRegistry
+        // dispatch path — the mailbox registry is already on
+        // ToolExecCtx (step 2).
         for def in send_message::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
+        for def in wait_for_mail::definitions() {
             definitions.insert(def.name.clone(), def);
         }
         // RecallContext is a singleton (not a `Vec`) — it has a
@@ -237,6 +242,7 @@ impl ToolCatalog {
             // through the standard ToolRegistry::execute path — the
             // mailbox registry is read off ToolExecCtx.
             boxed(send_message::SendMessageTool),
+            boxed(wait_for_mail::WaitForMailTool),
         ] {
             tools.insert(tool.name(), tool);
         }

@@ -182,7 +182,10 @@ mod tests {
             reg.register(path.clone(), fresh_mailbox()),
             RegisterOutcome::Inserted
         );
-        assert!(reg.get(&path).is_some(), "registered path must be lookupable");
+        assert!(
+            reg.get(&path).is_some(),
+            "registered path must be lookupable"
+        );
     }
 
     #[test]
@@ -223,10 +226,7 @@ mod tests {
         // both break under a HashMap-iteration-order regression.
         let reg = MailboxRegistry::new();
         for name in ["worker", "alpha", "researcher"] {
-            reg.register(
-                AgentPath::root().join(name).unwrap(),
-                fresh_mailbox(),
-            );
+            reg.register(AgentPath::root().join(name).unwrap(), fresh_mailbox());
         }
         let listed = reg.list(None);
         let strs: Vec<&str> = listed.iter().map(|p| p.as_str()).collect();
@@ -244,12 +244,13 @@ mod tests {
         // the LLM.
         let reg = MailboxRegistry::new();
         reg.register(AgentPath::root(), fresh_mailbox());
+        reg.register(AgentPath::root().join("worker").unwrap(), fresh_mailbox());
         reg.register(
-            AgentPath::root().join("worker").unwrap(),
-            fresh_mailbox(),
-        );
-        reg.register(
-            AgentPath::root().join("worker").unwrap().join("nested").unwrap(),
+            AgentPath::root()
+                .join("worker")
+                .unwrap()
+                .join("nested")
+                .unwrap(),
             fresh_mailbox(),
         );
         let listed = reg.list(Some("/root/worker"));
