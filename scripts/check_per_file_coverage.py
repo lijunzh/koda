@@ -35,7 +35,7 @@ Why a Python script (not a clippy lint, not inline bash):
     1. Per-file threshold config is data, not regex. Bash arrays would
        be hard to extend; YAML would mean another parser dep.
     2. JSON parsing and percentage arithmetic want a real language.
-    3. Mirrors the existing scripts/check_tokio_test_flavor.py pattern.
+    3. Mirrors the existing scripts/check_tokio_test_flavor.sh pattern.
 
 The threshold table is small and intentionally lives in this script
 (not a separate config file) so the policy and its enforcement are

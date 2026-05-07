@@ -115,7 +115,7 @@ mod tests {
     //! **not** safe here because the axum server runs on a
     //! `tokio::spawn`'d task; current_thread silently hides
     //! spawn-related bugs. See #1109 F2 /
-    //! `scripts/check_tokio_test_flavor.py`.
+    //! `scripts/check_tokio_test_flavor.sh`.
 
     use super::*;
     use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
