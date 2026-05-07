@@ -523,28 +523,29 @@ async fn run_bg_agent(
     // or the parent already exited), we silently skip — the
     // existing drain path (`inference.rs` `drain_completed`) still
     // injects the result on the next iteration, so nothing is lost.
-    if let Some(registry) = bg_mailbox_registry.as_deref() {
-        if let Some(parent_mailbox) = registry.get(&parent_agent_path) {
-            let summary = match &result {
-                Ok(output) => format!(
-                    "Background agent '{}' completed.\n{}",
-                    bg_agent_path, output
-                ),
-                Err(e) => format!("Background agent '{}' failed: {e:#}", bg_agent_path),
-            };
-            let mail = crate::agent::inter_agent::InterAgentCommunication::new(
-                bg_agent_path.clone(),
-                parent_agent_path,
-                Vec::new(),
-                summary,
-                // trigger_turn=true: wake the parent immediately so
-                // `WaitForMail` unblocks as soon as the child exits
-                // rather than waiting for the parent's next natural turn.
-                true,
-            );
-            // `send` returns the sequence number; we don't need it.
-            let _seq = parent_mailbox.send(mail);
-        }
+    let parent_mailbox_opt = bg_mailbox_registry
+        .as_deref()
+        .and_then(|r| r.get(&parent_agent_path));
+    if let Some(parent_mailbox) = parent_mailbox_opt {
+        let summary = match &result {
+            Ok(output) => format!(
+                "Background agent '{}' completed.\n{}",
+                bg_agent_path, output
+            ),
+            Err(e) => format!("Background agent '{}' failed: {e:#}", bg_agent_path),
+        };
+        let mail = crate::agent::inter_agent::InterAgentCommunication::new(
+            bg_agent_path.clone(),
+            parent_agent_path,
+            Vec::new(),
+            summary,
+            // trigger_turn=true: wake the parent immediately so
+            // `WaitForMail` unblocks as soon as the child exits
+            // rather than waiting for the parent's next natural turn.
+            true,
+        );
+        // `send` returns the sequence number; we don't need it.
+        let _seq = parent_mailbox.send(mail);
     }
 
     let _ = match result {
