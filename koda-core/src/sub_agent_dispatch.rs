@@ -75,6 +75,179 @@ pub(crate) fn next_invocation_id() -> u32 {
     NEXT_INVOCATION_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Build a unique child [`AgentPath`] under `parent` for a sub-agent
+/// invocation (#1325 Phase 4 — used by commits 2 and 3).
+///
+/// **Why a helper:** the same composition (sanitize the user-supplied
+/// `agent_name`, append a unique id) is needed at both spawn sites
+/// (the `tokio::spawn(run_bg_agent(...))` block, and the inline
+/// path inside `execute_sub_agent`). Keeping the rule in one place
+/// means the bg/inline paths can never drift on uniqueness or
+/// validation semantics — and it stays unit-testable as a pure fn.
+///
+/// **Sanitization rules** match [`crate::agent::path::AgentPath`]'s
+/// `[a-z0-9_]+` segment grammar:
+///
+/// 1. Lowercase every ASCII letter.
+/// 2. Replace any other char (uppercase letters that didn't ASCII-
+///    lowercase, digits-non-ASCII, punctuation, whitespace, unicode)
+///    with `_`.
+/// 3. Collapse runs of `_` and trim leading/trailing `_`.
+/// 4. If the result is empty (e.g. `agent_name = "!!!"` — pathological
+///    but `parse_agent_name_required` would have accepted it), fall
+///    back to `agent`.
+/// 5. Append `_<unique_id>` so concurrent invocations of the same
+///    agent don't collide (`/root/explore_42`, `/root/explore_43`).
+///
+/// **Why include `unique_id` even when callers pass distinct names:**
+/// Phase 4e of #1325 introduces multi-element `InvokeAgent([...])`
+/// where the same agent name is fanned out in parallel. The id
+/// suffix is the only thing that keeps their mailbox identities
+/// distinct, and adding it unconditionally is cheaper than branching
+/// on "is this the parallel case."
+///
+/// **Future-proofing:** `parent` is taken as a borrow rather than
+/// hard-coded to [`AgentPath::root`] so when nested spawn lands
+/// (Phase 6+) the same helper builds `/root/explore_4/researcher_7`
+/// without a touch — caller passes `parent_tx.turn.agent_path`
+/// today (always `/root`) and the future nested call passes the
+/// in-flight sub-agent's path (also already plumbed by 4a).
+pub(crate) fn child_agent_path(
+    parent: &crate::agent::AgentPath,
+    agent_name: &str,
+    unique_id: u32,
+) -> anyhow::Result<crate::agent::AgentPath> {
+    let mut sanitized = String::with_capacity(agent_name.len());
+    let mut prev_underscore = false;
+    for ch in agent_name.chars() {
+        let mapped = if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            ch
+        } else if ch.is_ascii_uppercase() {
+            ch.to_ascii_lowercase()
+        } else {
+            '_'
+        };
+        if mapped == '_' {
+            if prev_underscore {
+                continue;
+            }
+            prev_underscore = true;
+        } else {
+            prev_underscore = false;
+        }
+        sanitized.push(mapped);
+    }
+    let trimmed = sanitized.trim_matches('_');
+    let base = if trimmed.is_empty() { "agent" } else { trimmed };
+    let segment = format!("{base}_{unique_id}");
+    parent
+        .join(&segment)
+        .map_err(|e| anyhow::anyhow!("failed to build child AgentPath from {agent_name:?}: {e}"))
+}
+
+/// RAII unregister-on-drop guard for a sub-agent's mailbox entry
+/// (#1325 Phase 4 — commit 3 of 3).
+///
+/// Holds an [`Arc`](std::sync::Arc) clone of the registry plus the
+/// path it registered itself at. On drop, calls `unregister` so the
+/// path slot becomes available for re-use (Phase 4e fan-out is the
+/// motivating case: one `explore` agent finishes and its slot opens
+/// up for the next).
+///
+/// **Why RAII rather than an explicit unregister at the bottom of
+/// `execute_sub_agent`:** every `?` inside the body would leak a
+/// dangling registry entry without it. The same reasoning drives
+/// the existing [`InvocationCleanup`] guard in this module.
+///
+/// **Idempotent:** if `unregister` returns `false` (entry already
+/// gone), drop logs at trace level and continues. Lets future code
+/// paths explicitly unregister (e.g. for hot-replace) without this
+/// guard double-warning.
+struct MailboxRegistration {
+    registry: std::sync::Arc<crate::agent::MailboxRegistry>,
+    path: crate::agent::AgentPath,
+}
+
+impl Drop for MailboxRegistration {
+    fn drop(&mut self) {
+        if !self.registry.unregister(&self.path) {
+            tracing::trace!(
+                path = %self.path,
+                "MailboxRegistration::drop: entry already gone (idempotent)"
+            );
+        }
+    }
+}
+
+/// Register a fresh mailbox at `path` in `registry` (#1325 Phase 4 —
+/// commit 3 of 3).
+///
+/// Returns the [`MailboxReceiver`] (the sub-agent drains this into
+/// its own DB session at the top of each iter) plus an RAII guard
+/// that unregisters on drop. The sender side stays in the registry
+/// so peers calling `SendMessage{target: <path>}` find a live inbox.
+///
+/// Returns `None` if the path is already registered. Because
+/// [`child_agent_path`] appends a unique `_<id>` suffix per
+/// invocation, this collision should not happen in practice; if it
+/// does, the caller is supposed to fall back to the pre-Phase-4
+/// "everything routes through `/root`" behaviour rather than
+/// silently shadowing another sub-agent's mailbox.
+fn register_sub_agent_mailbox(
+    registry: &std::sync::Arc<crate::agent::MailboxRegistry>,
+    path: &crate::agent::AgentPath,
+) -> Option<(crate::agent::MailboxReceiver, MailboxRegistration)> {
+    let (mailbox, receiver) = crate::agent::Mailbox::new();
+    let mailbox = std::sync::Arc::new(mailbox);
+    match registry.register(path.clone(), mailbox) {
+        crate::agent::RegisterOutcome::Inserted => Some((
+            receiver,
+            MailboxRegistration {
+                registry: std::sync::Arc::clone(registry),
+                path: path.clone(),
+            },
+        )),
+        crate::agent::RegisterOutcome::AlreadyRegistered => {
+            // `child_agent_path` includes a unique id, so this should
+            // never fire. Treat as a programmer error — don't shadow.
+            tracing::error!(
+                path = %path,
+                "sub-agent mailbox path collision \u{2014} registry already has an entry. \
+                 child_agent_path uniquification must be broken."
+            );
+            None
+        }
+    }
+}
+
+/// Drain a sub-agent's mailbox into its DB session as `Role::User`
+/// rows (#1325 Phase 4 — commit 3 of 3).
+///
+/// Mirrors [`crate::session::KodaSession::drain_mail_to_db`] but
+/// scoped to the per-sub-agent receiver and `session_id`. Called at
+/// the top of each iter inside the sub-agent's inline inference loop
+/// so any mail that arrived since the last iter shows up in the
+/// next LLM call's history.
+///
+/// Empty mailbox is a no-op (returns `Ok(())` without writing
+/// anything) — cheaper than guarding at every call site.
+async fn drain_sub_mailbox_into_session(
+    rx: &mut crate::agent::MailboxReceiver,
+    db: &crate::db::Database,
+    session_id: &str,
+) -> anyhow::Result<()> {
+    let items = rx.drain();
+    if items.is_empty() {
+        return Ok(());
+    }
+    for mail in items {
+        let (role, content) = crate::agent::mail_to_user_message(&mail);
+        db.insert_message(session_id, &role, Some(&content), None, None, None)
+            .await?;
+    }
+    Ok(())
+}
+
 /// RAII cleanup hook for #996 Phase E.
 ///
 /// On drop, cancels every bg-agent registry entry tagged with this
@@ -162,6 +335,22 @@ async fn run_bg_agent(
     // entry was reaped, in which case the queued `ChildTaskUpdate` is
     // harmless extra signal that clients can ignore.
     emitter: crate::child_agent::ChildStatusEmitter,
+    // #1325 Phase 4 (commit 2): the bg agent's identity in the spawn
+    // tree (e.g. `/root/explore_42`). Constructed by the spawn site
+    // BEFORE `tokio::spawn` so we get a path-construction error in
+    // the parent's dispatch flow rather than as a panic inside the
+    // detached task. Threaded into the bg agent's `TurnContext` so
+    // `SendMessage` from inside the bg agent stamps the right
+    // `author`, and 4c+ peer-tools route by it.
+    bg_agent_path: crate::agent::AgentPath,
+    // #1325 Phase 4 (commit 3): the shared mailbox registry. Cloned
+    // by the spawn site from the parent's `tools.mailbox_registry()`
+    // and threaded down so the bg agent's inner `execute_sub_agent`
+    // call sees it on `placeholder_tools.mailbox_registry()` and
+    // takes the registration branch (rather than falling back to
+    // "no per-child mailbox"). `None` propagates the
+    // no-session-context fallback unchanged.
+    bg_mailbox_registry: Option<std::sync::Arc<crate::agent::MailboxRegistry>>,
 ) {
     // Layer 0 placeholder: immediately flip Pending → Running so `/agents`
     // shows the agent as active before the first LLM call. The loop inside
@@ -213,10 +402,23 @@ async fn run_bg_agent(
     // `tokio::spawn`), so we have to construct the parent's dispatch
     // context locally from owned borrows. The `tools` field is a
     // throwaway empty registry — `execute_sub_agent` ignores the
-    // parent's tools (sub-agents always build their own from
-    // `sub_config.allowed_tools`).
+    // parent's tools for tool *execution* (sub-agents build their
+    // own from `sub_config.allowed_tools`) but it DOES read
+    // `placeholder_tools.mailbox_registry()` to find the registry
+    // it should install on the sub-agent's tools — see commit 3 of
+    // #1325 Phase 4. Install the threaded-in registry here so that
+    // lookup succeeds (otherwise the bg path silently regresses to
+    // "no per-child mailbox").
     let placeholder_tools =
         crate::tools::ToolRegistry::new(project_root.clone(), parent_config.max_context_tokens);
+    if let Some(reg) = bg_mailbox_registry.as_ref() {
+        placeholder_tools.set_mailbox_registry(std::sync::Arc::clone(reg));
+    }
+    // #1325 Phase 4 (commit 2): the spawn site built our path AND
+    // moved it in via the function parameter. We can't construct it
+    // here — we'd need the parent's path AND the registry-allocated
+    // `task_id`, neither of which lives in `run_bg_agent`'s
+    // owned-data world.
     let bg_turn = crate::turn_context::TurnContext::new(
         &project_root,
         &parent_config,
@@ -228,6 +430,7 @@ async fn run_bg_agent(
         &nested_bg,
         parent_trust,
         &placeholder_tools,
+        &bg_agent_path,
     );
     // Phase E of #996: the bg agent has no in-process parent in
     // the spawner sense — its `nested_bg` registry is fresh, and
@@ -628,6 +831,25 @@ pub(crate) fn execute_sub_agent<'a>(
             let bg_policy = parent_sandbox_policy.clone();
             let bg_trust = mode;
 
+            // #1325 Phase 4 (commit 2): build the child's `AgentPath`
+            // BEFORE spawning so it can be moved into the bg task.
+            // Same `parent` as inline (`parent_tx.turn.agent_path`)
+            // so when nested spawn lands the path nesting falls out
+            // for free. Failures here are programmer errors against
+            // `child_agent_path`'s `"agent"` fallback — surface them
+            // as the dispatch error rather than panicking inside the
+            // spawned task.
+            let bg_agent_path = child_agent_path(parent_tx.turn.agent_path, agent_name, task_id)?;
+
+            // #1325 Phase 4 (commit 3): hand the parent's registry
+            // (Arc) into the bg task so its inner `execute_sub_agent`
+            // recursion can register the bg agent's own mailbox
+            // exactly like the inline path does. `None` means the
+            // parent is itself running without a session-attached
+            // registry (test fixture); pass it through so the bg
+            // path matches the inline fallback semantics.
+            let bg_mailbox_registry = parent_tx.turn.tools.mailbox_registry();
+
             sink.emit(EngineEvent::Info {
                 message: format!(
                     "  \u{1f680} {agent_name} launched in background (task {task_id})"
@@ -646,6 +868,8 @@ pub(crate) fn execute_sub_agent<'a>(
                 bg_trust,
                 bg_policy,
                 emitter,
+                bg_agent_path,
+                bg_mailbox_registry,
             ));
 
             bg_agents.attach(
@@ -1107,6 +1331,49 @@ pub(crate) fn execute_sub_agent<'a>(
         // inline twice with identical args. Hoisted here because
         // `sub_config`, `sub_session`, and `tools` are all bound by
         // this point and don't change across iterations.
+        // #1325 Phase 4 (commit 2): build this invocation's path
+        // BEFORE constructing the sub-agent's `TurnContext`.
+        // `my_invocation_id` (allocated near the top of
+        // `execute_sub_agent`) is the unique-per-invocation handle
+        // — perfect for path uniquification when multiple inline
+        // `InvokeAgent`s of the same agent name run concurrently
+        // (Phase 4e's multi-element form).
+        let sub_agent_path =
+            child_agent_path(parent_tx.turn.agent_path, agent_name, my_invocation_id)?;
+
+        // #1325 Phase 4 (commit 3): give the sub-agent its own
+        // mailbox in the shared registry, install the registry on
+        // its tools, and keep the receiver around so we can drain
+        // it at the top of each iter.
+        //
+        // `parent_registry == None` means this dispatch path is
+        // running without a session (test fixture / no-session
+        // context). Fall back to pre-Phase-4 behaviour: no per-
+        // child mailbox, no peer-tool wiring inside the child. The
+        // child still functions; it just can't `SendMessage` /
+        // `WaitForMail` (which is the same as Phase 1-2).
+        //
+        // The guard MUST live until the end of the `async move` so
+        // the registry entry survives every iter. Binding it as
+        // `_sub_mailbox_guard` (with a leading underscore) silences
+        // the unused-variable warning while still extending the
+        // lifetime to the enclosing scope. `let _ = ...;` would
+        // drop it immediately; `let _x = ...;` keeps it alive.
+        let parent_registry = parent_tx.turn.tools.mailbox_registry();
+        let (mut sub_mailbox_rx, _sub_mailbox_guard) = match parent_registry.as_ref() {
+            Some(reg) => match register_sub_agent_mailbox(reg, &sub_agent_path) {
+                Some((rx, guard)) => (Some(rx), Some(guard)),
+                None => (None, None),
+            },
+            None => (None, None),
+        };
+        if let Some(reg) = parent_registry.as_ref() {
+            // Install the SHARED registry on the sub-agent's tools.
+            // `set_mailbox_registry` takes `&self` (interior
+            // mutability) so the immutable `tools` binding is fine.
+            tools.set_mailbox_registry(std::sync::Arc::clone(reg));
+        }
+
         let sub_turn = crate::turn_context::TurnContext::new(
             project_root,
             &sub_config,
@@ -1118,6 +1385,7 @@ pub(crate) fn execute_sub_agent<'a>(
             bg_agents,
             mode,
             &tools,
+            &sub_agent_path,
         );
         let sub_tx =
             crate::turn_context::ToolExecutionContext::new(&sub_turn, Some(my_invocation_id));
@@ -1185,6 +1453,21 @@ pub(crate) fn execute_sub_agent<'a>(
         }
 
         for iter in 1u32.. {
+            // #1325 Phase 4 (commit 3): drain any peer-agent mail
+            // that arrived since the last iter into the sub-agent's
+            // DB session BEFORE `db.load_context` reads the
+            // conversation. Mirrors `KodaSession::drain_mail_to_db`
+            // for the root session. No-op when no mailbox is wired
+            // (`sub_mailbox_rx` is `None`) or no mail has arrived.
+            //
+            // Drain failure is fatal for the iter — a partial drain
+            // would silently lose mail, and the alternative
+            // (dropping mail on error) is worse than bailing the
+            // sub-agent.
+            if let Some(rx) = sub_mailbox_rx.as_mut() {
+                drain_sub_mailbox_into_session(rx, db, &sub_session).await?;
+            }
+
             // #1110: sub-agents have no hardcoded iteration cap. Termination
             // is driven by the model (clean stop, no tool calls), `LoopDetector`
             // (consecutive identical calls -> feedback -> hard stop), parent
@@ -1617,6 +1900,306 @@ fn workspace_provision_failure_marker(agent_name: &str, reason: &str) -> String 
          resolve the workspace setup issue, retry without write tools, or attempt the work \
          directly without delegating.]"
     )
+}
+
+#[cfg(test)]
+mod child_agent_path_tests {
+    //! **#1325 Phase 4 (commit 2)** regression tests for
+    //! [`super::child_agent_path`].
+    //!
+    //! Helper is reachable via two spawn sites buried in 1100+ lines
+    //! of `execute_sub_agent`; we'd rather pin its contract here than
+    //! through a giant integration test of either site.
+
+    use super::child_agent_path;
+    use crate::agent::AgentPath;
+
+    #[test]
+    fn passthrough_for_already_valid_lowercase_name() {
+        let p = child_agent_path(&AgentPath::root(), "explore", 42).unwrap();
+        assert_eq!(p.as_str(), "/root/explore_42");
+    }
+
+    #[test]
+    fn keeps_underscores_inside_name() {
+        let p = child_agent_path(&AgentPath::root(), "code_reviewer", 7).unwrap();
+        assert_eq!(p.as_str(), "/root/code_reviewer_7");
+    }
+
+    #[test]
+    fn lowercases_uppercase_letters() {
+        let p = child_agent_path(&AgentPath::root(), "CodeReviewer", 1).unwrap();
+        assert_eq!(p.as_str(), "/root/codereviewer_1");
+    }
+
+    #[test]
+    fn replaces_punctuation_with_underscore_and_collapses_runs() {
+        let p = child_agent_path(&AgentPath::root(), "a.b/c-d", 9).unwrap();
+        assert_eq!(p.as_str(), "/root/a_b_c_d_9");
+    }
+
+    #[test]
+    fn collapses_doubled_underscores_inside_name() {
+        // "a..b" -> two punctuation chars become two underscores; we
+        // collapse to one so the segment stays readable.
+        let p = child_agent_path(&AgentPath::root(), "a..b", 3).unwrap();
+        assert_eq!(p.as_str(), "/root/a_b_3");
+    }
+
+    #[test]
+    fn trims_leading_and_trailing_underscores_from_sanitized_name() {
+        let p = child_agent_path(&AgentPath::root(), "-explore-", 5).unwrap();
+        assert_eq!(p.as_str(), "/root/explore_5");
+    }
+
+    #[test]
+    fn falls_back_to_agent_when_name_sanitizes_to_empty() {
+        // All-punctuation name. `parse_agent_name_required` only
+        // checks non-empty, so this is reachable from a real call.
+        let p = child_agent_path(&AgentPath::root(), "!!!", 12).unwrap();
+        assert_eq!(p.as_str(), "/root/agent_12");
+    }
+
+    #[test]
+    fn unicode_replaced_with_underscore() {
+        let p = child_agent_path(&AgentPath::root(), "\u{1F436}explore", 4).unwrap();
+        assert_eq!(p.as_str(), "/root/explore_4");
+    }
+
+    #[test]
+    fn nests_under_non_root_parent() {
+        // Future-proofing: when nested spawn lands, the same helper
+        // builds `/root/explore_4/researcher_7` from a parent path
+        // of `/root/explore_4`. Pinning today so the property
+        // doesn't silently regress.
+        let parent = AgentPath::root().join("explore_4").unwrap();
+        let p = child_agent_path(&parent, "researcher", 7).unwrap();
+        assert_eq!(p.as_str(), "/root/explore_4/researcher_7");
+    }
+
+    #[test]
+    fn distinct_unique_ids_produce_distinct_paths() {
+        // Phase 4e fan-out invariant: two parallel `InvokeAgent`s of
+        // the same agent name must end up with different paths so
+        // their mailbox identities don't alias.
+        let a = child_agent_path(&AgentPath::root(), "explore", 1).unwrap();
+        let b = child_agent_path(&AgentPath::root(), "explore", 2).unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn digits_in_agent_name_are_preserved() {
+        // Numeric suffixes are valid `[a-z0-9_]` chars — keep them.
+        let p = child_agent_path(&AgentPath::root(), "agent42", 99).unwrap();
+        assert_eq!(p.as_str(), "/root/agent42_99");
+    }
+}
+
+#[cfg(test)]
+mod sub_agent_mailbox_tests {
+    //! **#1325 Phase 4 (commit 3)** regression tests for the per-
+    //! sub-agent mailbox lifecycle helpers ([`super::register_sub_agent_mailbox`],
+    //! [`super::MailboxRegistration`], [`super::drain_sub_mailbox_into_session`]).
+    //!
+    //! Helpers are wired into `execute_sub_agent`, which is
+    //! a 1100+ line `async move` deep behind workspace provisioning,
+    //! provider mocking, and sandbox composition. Pure-fn /
+    //! pure-RAII tests here pin the contract that the wiring
+    //! depends on; the wiring itself is exercised by the existing
+    //! sub-agent integration tests.
+
+    use super::{MailboxRegistration, drain_sub_mailbox_into_session, register_sub_agent_mailbox};
+    use crate::agent::{AgentPath, InterAgentCommunication, MailboxRegistry};
+    use crate::db::{Database, Role};
+    use crate::persistence::Persistence;
+    use std::sync::Arc;
+
+    fn sample_mail(content: &str) -> InterAgentCommunication {
+        InterAgentCommunication {
+            author: AgentPath::root(),
+            recipient: AgentPath::root().join("explore_42").unwrap(),
+            other_recipients: Vec::new(),
+            content: content.to_string(),
+            trigger_turn: true,
+        }
+    }
+
+    #[test]
+    fn register_returns_some_for_fresh_path() {
+        // Pin: a path that's never been registered yields a
+        // receiver + guard. Without this, the sub-agent silently
+        // falls back to root — the regression we're fixing.
+        let reg = Arc::new(MailboxRegistry::new());
+        let path = AgentPath::root().join("explore_42").unwrap();
+        let result = register_sub_agent_mailbox(&reg, &path);
+        assert!(result.is_some(), "fresh path must register");
+        assert_eq!(reg.len(), 1, "registry must contain the new entry");
+    }
+
+    #[test]
+    fn register_returns_none_on_collision() {
+        // Pin: collision means uniquification is broken. The helper
+        // refuses to shadow rather than silently masking another
+        // sub-agent's mailbox — documented contract on
+        // RegisterOutcome.
+        let reg = Arc::new(MailboxRegistry::new());
+        let path = AgentPath::root().join("explore_42").unwrap();
+        let _first = register_sub_agent_mailbox(&reg, &path).expect("first register");
+        let second = register_sub_agent_mailbox(&reg, &path);
+        assert!(
+            second.is_none(),
+            "colliding register must return None, not shadow"
+        );
+        assert_eq!(reg.len(), 1, "registry must not grow on collision");
+    }
+
+    #[test]
+    fn drop_unregisters_entry() {
+        // Pin the load-bearing RAII contract: every `?` inside
+        // `execute_sub_agent` would leak a registry entry without it.
+        let reg = Arc::new(MailboxRegistry::new());
+        let path = AgentPath::root().join("explore_42").unwrap();
+        let (_rx, guard) = register_sub_agent_mailbox(&reg, &path).expect("register");
+        assert_eq!(reg.len(), 1);
+        drop(guard);
+        assert_eq!(reg.len(), 0, "drop must unregister");
+    }
+
+    #[test]
+    fn drop_is_idempotent_when_entry_already_gone() {
+        // Pin: explicit unregister followed by drop must not panic.
+        // Future code paths may explicitly unregister (e.g. for
+        // hot-replace); this test pins that the RAII guard tolerates it.
+        let reg = Arc::new(MailboxRegistry::new());
+        let path = AgentPath::root().join("explore_42").unwrap();
+        let (_rx, guard) = register_sub_agent_mailbox(&reg, &path).expect("register");
+        assert!(reg.unregister(&path), "explicit unregister succeeds");
+        // Now drop the guard — entry is already gone. Must not panic.
+        drop(guard);
+        assert_eq!(reg.len(), 0);
+    }
+
+    #[test]
+    fn manual_construction_drops_correctly() {
+        // Pin: MailboxRegistration is constructed by
+        // `register_sub_agent_mailbox` today, but the Drop impl
+        // shouldn't depend on construction path. Verify by hand-
+        // constructing one and dropping it.
+        let reg = Arc::new(MailboxRegistry::new());
+        let path = AgentPath::root().join("explore_42").unwrap();
+        let (mb, _rx) = crate::agent::Mailbox::new();
+        reg.register(path.clone(), Arc::new(mb));
+        let guard = MailboxRegistration {
+            registry: Arc::clone(&reg),
+            path: path.clone(),
+        };
+        drop(guard);
+        assert!(
+            reg.get(&path).is_none(),
+            "manually-built guard's Drop must still unregister"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drain_empty_mailbox_writes_nothing() {
+        // Pin: empty drain is a no-op (no rows inserted, no error).
+        // Called every iter — must be cheap and side-effect-free
+        // when there's no mail.
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("drain_empty.db"))
+            .await
+            .unwrap();
+        let session_id = db.create_session("test", dir.path()).await.unwrap();
+
+        let reg = Arc::new(MailboxRegistry::new());
+        let path = AgentPath::root().join("explore_42").unwrap();
+        let (mut rx, _guard) = register_sub_agent_mailbox(&reg, &path).expect("register");
+
+        drain_sub_mailbox_into_session(&mut rx, &db, &session_id)
+            .await
+            .unwrap();
+
+        let history = db.load_context(&session_id).await.unwrap();
+        assert!(history.is_empty(), "empty drain must not insert any rows");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drain_writes_one_user_row_per_mail_item() {
+        // Pin: each mail item becomes one Role::User row — the same
+        // shape `KodaSession::drain_mail_to_db` produces for the
+        // root session, so the LLM sees the same prompt structure
+        // whether mail lands in the root or in a sub-agent.
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("drain_full.db"))
+            .await
+            .unwrap();
+        let session_id = db.create_session("test", dir.path()).await.unwrap();
+
+        let reg = Arc::new(MailboxRegistry::new());
+        let path = AgentPath::root().join("explore_42").unwrap();
+        let (mut rx, _guard) = register_sub_agent_mailbox(&reg, &path).expect("register");
+
+        // Send via the registry handle so we exercise the same path
+        // peer tools use.
+        let mb = reg.get(&path).expect("registered mailbox");
+        mb.send(sample_mail("hello from peer"));
+        mb.send(sample_mail("second message"));
+
+        drain_sub_mailbox_into_session(&mut rx, &db, &session_id)
+            .await
+            .unwrap();
+
+        let history = db.load_context(&session_id).await.unwrap();
+        assert_eq!(history.len(), 2, "two mails -> two rows");
+        for msg in &history {
+            assert_eq!(
+                msg.role,
+                Role::User,
+                "mail must land as user-role to mirror KodaSession::drain_mail_to_db"
+            );
+        }
+        let bodies: Vec<&str> = history
+            .iter()
+            .filter_map(|m| m.content.as_deref())
+            .collect();
+        assert!(
+            bodies.iter().any(|b| b.contains("hello from peer")),
+            "first mail body must be persisted; got: {bodies:?}"
+        );
+        assert!(
+            bodies.iter().any(|b| b.contains("second message")),
+            "second mail body must be persisted; got: {bodies:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drain_after_unregister_still_drains_buffered_mail() {
+        // Pin: dropping the registry entry doesn't drop the receiver.
+        // A peer's send + our unregister can race; we must not lose
+        // the mail that already landed in the channel.
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(&dir.path().join("drain_after_unreg.db"))
+            .await
+            .unwrap();
+        let session_id = db.create_session("test", dir.path()).await.unwrap();
+
+        let reg = Arc::new(MailboxRegistry::new());
+        let path = AgentPath::root().join("explore_42").unwrap();
+        let (mut rx, guard) = register_sub_agent_mailbox(&reg, &path).expect("register");
+        let mb = reg.get(&path).expect("registered mailbox");
+
+        // Send, then drop the guard (unregistering the path) BEFORE
+        // draining. The mail is already in the unbounded channel.
+        mb.send(sample_mail("survives unregister"));
+        drop(guard);
+        drop(mb);
+
+        drain_sub_mailbox_into_session(&mut rx, &db, &session_id)
+            .await
+            .unwrap();
+        let history = db.load_context(&session_id).await.unwrap();
+        assert_eq!(history.len(), 1, "buffered mail must drain post-unregister");
+    }
 }
 
 #[cfg(test)]

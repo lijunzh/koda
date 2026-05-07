@@ -40,7 +40,6 @@
 //! will add a `caller_path` field and child agents will wait on
 //! their own mailbox via the same lookup.
 
-use crate::agent::AgentPath;
 use crate::providers::ToolDefinition;
 use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult};
 use async_trait::async_trait;
@@ -136,19 +135,25 @@ impl Tool for WaitForMailTool {
             }
         };
 
-        // Phase 3: caller is always /root. Phase 4 reads ctx.caller_path
-        // (or equivalent) to support child agents.
-        let own_mailbox = match registry.get(&AgentPath::root()) {
+        // #1325 Phase 4: look up the *caller's* mailbox, not always
+        // root. `caller_agent_path` is threaded down from
+        // `KodaSession::agent_path` so a spawned child blocks on
+        // its own inbox (the only one it can ever read from).
+        let own_path = ctx.caller_agent_path;
+        let own_mailbox = match registry.get(own_path) {
             Some(mb) => mb,
             None => {
                 // Substrate invariant violation — KodaSession::new
-                // pre-registers /root unconditionally. If we hit this,
-                // either the registry was rebuilt without /root or the
-                // session-construction invariant is broken.
+                // pre-registers `/root` unconditionally, and Phase 4's
+                // SpawnAgent registers child paths before yielding
+                // control. If we hit this, either the registry was
+                // rebuilt without the caller's entry or the session-
+                // construction invariant is broken.
                 return ToolResult {
-                    output: "WaitForMail: own mailbox (/root) is not registered. \
-                             This is a session-construction invariant violation."
-                        .to_string(),
+                    output: format!(
+                        "WaitForMail: own mailbox (`{own_path}`) is not registered. \
+                         This is a session-construction invariant violation."
+                    ),
                     success: false,
                     full_output: None,
                 };
@@ -214,7 +219,7 @@ impl Tool for WaitForMailTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{InterAgentCommunication, Mailbox, MailboxRegistry};
+    use crate::agent::{AgentPath, InterAgentCommunication, Mailbox, MailboxRegistry};
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -259,6 +264,7 @@ mod tests {
         policy: &'a koda_sandbox::SandboxPolicy,
         skills: &'a crate::skills::SkillRegistry,
         registry: &'a Arc<MailboxRegistry>,
+        agent_path: &'a AgentPath,
     ) -> ToolExecCtx<'a> {
         ToolExecCtx {
             project_root: root,
@@ -275,6 +281,7 @@ mod tests {
             session: None,
             skill_registry: skills,
             mailbox_registry: Some(registry),
+            caller_agent_path: agent_path,
         }
     }
 
@@ -294,8 +301,18 @@ mod tests {
         // blocked must wake the wait promptly.
         let (reg, mb) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         // Spawn a sender that waits 50ms then delivers.
@@ -332,8 +349,18 @@ mod tests {
         // (approximately) the requested duration.
         let (reg, _mb) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         let started = Instant::now();
@@ -365,8 +392,18 @@ mod tests {
         // mail immediately — the tool should still return promptly.
         let (reg, mb) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         // Send before the wait starts. The wait still needs to
@@ -400,8 +437,18 @@ mod tests {
         // its own past send as a "new" arrival, defeating the point.
         let (reg, mb) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         // Pre-existing mail.
@@ -427,8 +474,18 @@ mod tests {
     async fn timeout_zero_or_negative_returns_codex_error() {
         let (reg, _mb) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         let result = WaitForMailTool
@@ -455,8 +512,18 @@ mod tests {
         // and observing the wait completes promptly when mail arrives.
         let (reg, mb) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         let mb_for_send = Arc::clone(&mb);
@@ -480,6 +547,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn missing_registry_returns_session_required_error() {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ToolExecCtx {
             project_root: &root,
             read_cache: &cache,
@@ -495,6 +563,7 @@ mod tests {
             session: None,
             skill_registry: &skills,
             mailbox_registry: None,
+            caller_agent_path: &agent_path,
         };
 
         let result = WaitForMailTool.execute(&ctx, &json!({})).await;

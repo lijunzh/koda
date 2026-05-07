@@ -333,6 +333,21 @@ pub struct KodaSession {
     /// `Arc` to `agent.tools.set_mailbox_registry(...)` after
     /// construction.
     pub mailbox_registry: Arc<MailboxRegistry>,
+
+    /// This session's identity in the agent spawn tree. The root
+    /// user-facing session is always `/root`; spawned children
+    /// (Phase 4 of #1325) inherit a `/root/<name>` path computed
+    /// at spawn time.
+    ///
+    /// Threaded through the inference loop to `TurnContext` and
+    /// `ToolExecCtx::caller_agent_path`, so peer tools
+    /// (`SendMessage`, `WaitForMail`, the upcoming `SpawnAgent`)
+    /// can stamp the right `author` on outgoing mail and look up
+    /// the right inbox for blocking reads. Without this field,
+    /// every spawned agent would falsely claim `author = /root`
+    /// and corrupt the spawn-tree topology that mail attribution
+    /// relies on.
+    pub agent_path: AgentPath,
 }
 
 impl KodaSession {
@@ -473,6 +488,12 @@ impl KodaSession {
             mailbox_rx: Arc::new(AsyncMutex::new(mailbox_rx)),
             idle_pending_input: Arc::new(AsyncMutex::new(Vec::new())),
             mailbox_registry,
+            // The user-facing root session is always `/root`. Phase 4's
+            // spawn_agent will construct child sessions with
+            // `/root/<name>` paths via a separate constructor (or this
+            // one with an extra arg) — defer that change until the
+            // spawn machinery lands.
+            agent_path: AgentPath::root(),
         }
     }
 
@@ -719,6 +740,12 @@ impl KodaSession {
             file_tracker: &mut self.file_tracker,
             bg_agents: &self.bg_agents,
             sub_agent_cache: &self.sub_agent_cache,
+            // #1325 Phase 4: this session's identity in the spawn
+            // tree (always `/root` for the user-facing session;
+            // future spawned sessions will carry their assigned
+            // child path). Threaded into TurnContext → ToolExecCtx
+            // so peer tools can stamp the right `author` on mail.
+            agent_path: &self.agent_path,
         })
         .await;
 

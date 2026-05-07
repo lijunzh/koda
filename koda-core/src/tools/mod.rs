@@ -585,6 +585,11 @@ impl ToolRegistry {
         // entries are tagged with the calling agent's invocation id.
         // Every other tool ignores this. Top-level callers pass `None`.
         caller_spawner: Option<u32>,
+        // #1325 Phase 4: caller's identity in the agent spawn tree.
+        // Stamped into `ToolExecCtx::caller_agent_path` so peer
+        // tools can `author=`/look up `me` reliably. Top-level
+        // (root) callers pass `&AgentPath::root()`.
+        caller_agent_path: &crate::agent::AgentPath,
     ) -> ToolResult {
         let raw = arguments.trim();
         let raw = if raw.is_empty() { "{}" } else { raw };
@@ -677,6 +682,7 @@ impl ToolRegistry {
                 session,
                 skill_registry: &self.skill_registry,
                 mailbox_registry: mb_reg_arc.as_ref(),
+                caller_agent_path,
             };
             let result = tool.execute(&ctx, &args).await;
             // Post-execution registry-level recording. Lives here
@@ -1228,6 +1234,7 @@ mod tests {
                 r#"{"todos":[{"content":"Add tests","status":"pending","priority":"high"}]}"#,
                 Some((&sink, "call-1")),
                 None,
+                &crate::agent::AgentPath::root(),
             )
             .await;
         assert!(result.success, "first write must succeed: {result:?}");
@@ -1252,7 +1259,13 @@ mod tests {
         // First write: should emit.
         let sink1 = crate::engine::sink::TestSink::new();
         registry
-            .execute("TodoWrite", payload, Some((&sink1, "c1")), None)
+            .execute(
+                "TodoWrite",
+                payload,
+                Some((&sink1, "c1")),
+                None,
+                &crate::agent::AgentPath::root(),
+            )
             .await;
         assert_eq!(sink1.len(), 1);
 
@@ -1260,7 +1273,13 @@ mod tests {
         // message goes back to the model, but clients see nothing.
         let sink2 = crate::engine::sink::TestSink::new();
         let result2 = registry
-            .execute("TodoWrite", payload, Some((&sink2, "c2")), None)
+            .execute(
+                "TodoWrite",
+                payload,
+                Some((&sink2, "c2")),
+                None,
+                &crate::agent::AgentPath::root(),
+            )
             .await;
         assert!(result2.success);
         assert!(
@@ -1287,6 +1306,7 @@ mod tests {
                 r#"{"todos":[{"content":"X","status":"pending","priority":"low"}]}"#,
                 None,
                 None,
+                &crate::agent::AgentPath::root(),
             )
             .await;
         assert!(result.success);
@@ -1309,6 +1329,7 @@ mod tests {
                 ]}"#,
                 Some((&sink, "c1")),
                 None,
+                &crate::agent::AgentPath::root(),
             )
             .await;
         assert!(
