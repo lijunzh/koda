@@ -3,7 +3,8 @@
 //! Lets the LLM mail another agent (currently only `/root` —
 //! itself — until Phase 4's `spawn_agent` registers child paths).
 //! Looks the recipient's mailbox up via the per-session
-//! [`MailboxRegistry`] and calls `Mailbox::send`.
+//! [`MailboxRegistry`](crate::agent::mailbox_registry::MailboxRegistry)
+//! and calls `Mailbox::send`.
 //!
 //! # Mapping to codex
 //!

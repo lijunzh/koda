@@ -358,7 +358,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn omitted_timeout_uses_default() {
         // Pin: argument-less call uses DEFAULT_WAIT_TIMEOUT_MS. We
         // can't easily wait 30s in a unit test, so verify by sending
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(payload["timed_out"], false);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pre_subscribe_mail_does_not_falsely_complete() {
         // Pin the borrow_and_update semantics: mail that arrived
         // BEFORE the wait started is the responsibility of the
@@ -423,7 +423,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn timeout_zero_or_negative_returns_codex_error() {
         let (reg, _mb) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
@@ -447,7 +447,7 @@ mod tests {
         assert_eq!(result.output, "timeout_ms must be greater than zero");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn timeout_above_max_is_clamped_not_rejected() {
         // Pin the clamping policy: values above MAX are silently
         // clamped (matching codex). The model gets what it asked for
@@ -477,7 +477,7 @@ mod tests {
         assert_eq!(payload["timed_out"], false);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn missing_registry_returns_session_required_error() {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let ctx = ToolExecCtx {
