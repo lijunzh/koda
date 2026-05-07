@@ -86,6 +86,21 @@ impl TuiContext {
         cmd_rx: &mut mpsc::Receiver<EngineCommand>,
     ) -> anyhow::Result<()> {
         let cli_sink = crate::sink::CliSink::channel(ui_tx.clone());
+        // #1321: spawn the bg-agent event forwarder on first turn.
+        // Idempotent across the session lifetime — the registry's
+        // receiver moves out exactly once, so subsequent calls are
+        // cheap no-ops returning `false`. We attach a dedicated
+        // long-lived `CliSink` (sharing the same `ui_tx`) so bg-task
+        // status flows continuously to the TUI regardless of what
+        // tool the foreground turn is currently inside. Replaces
+        // the per-iteration `drain_status_events()` poll and the
+        // 200 ms `with_status_pump` hotfix — mirrors Codex's
+        // `forward_events` shape.
+        let _ = self
+            .session
+            .attach_event_sink(std::sync::Arc::new(crate::sink::CliSink::channel(
+                ui_tx.clone(),
+            )));
         // #1200: derive a per-turn child token instead of cloning the
         // session-lifetime root. This keeps `session.cancel` stable
         // across turn boundaries so bg agents (which call

@@ -51,7 +51,7 @@ use std::time::{Duration, Instant};
 // the critical sections are short HashMap ops with no awaits inside.
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
@@ -335,22 +335,38 @@ struct ChildAgentEntry {
 pub struct ChildAgentRegistry {
     pending: Mutex<HashMap<u32, ChildAgentEntry>>,
     next_id: Mutex<u32>,
-    /// Queue of `EngineEvent::ChildTaskUpdate` events produced by
-    /// [`ChildStatusEmitter::send`]. Drained by the inference loop
-    /// alongside [`Self::drain_completed`] and forwarded to the
-    /// active `EngineSink`.
+    /// Sender half of an unbounded mpsc that producers (every
+    /// [`ChildStatusEmitter`] clone) call to deliver status events.
     ///
-    /// **#1076**: closes the engine/UI boundary leak — prior to this
-    /// queue, bg-task status only reached the TUI by the TUI grabbing
-    /// `Arc<ChildAgentRegistry>` directly out of `KodaSession` and
-    /// polling `snapshot()`. ACP / headless clients saw nothing.
-    /// Routing through `EngineEvent` puts every client surface on
-    /// the same channel.
+    /// **#1321 architecture**: pre-#1321 koda used a
+    /// `Mutex<VecDeque<EngineEvent>>` polled once per parent
+    /// inference iteration. That left bg-agent activity invisible for
+    /// the entire duration of any long tool call (notably `WaitTask`,
+    /// up to 300s) — events sat in the queue, then flushed in a
+    /// stale flood when the wait returned.
     ///
-    /// `VecDeque` not `Vec` because we drain FIFO (transition order
-    /// matters: `Pending` → `Running` → terminal must arrive in that
-    /// order even if the inference loop drains in batches).
-    events: Mutex<std::collections::VecDeque<EngineEvent>>,
+    /// The mpsc shape mirrors Codex's `tx_event: Sender<Event>` (see
+    /// `codex-rs/core/src/session/session.rs:17`) and Claude Code's
+    /// `async function* runAgent` yield-based event flow: producers
+    /// push, a single consumer pulls continuously, no shared queue
+    /// to drain on a timer.
+    ///
+    /// **Unbounded** because bg-agent emissions are at human-readable
+    /// rates (one per tool call, not per token), the consumer is
+    /// always-on (the session-spawned forwarder), and back-pressuring
+    /// a producer would block sub-agent inference loops mid-turn for
+    /// reasons the model can't reason about.
+    event_tx: mpsc::UnboundedSender<EngineEvent>,
+    /// Receiver half. `Some` until [`Self::take_event_receiver`] hands
+    /// it to the session forwarder, then `None` forever.
+    ///
+    /// Held in `Mutex<Option<_>>` so we can move it out exactly once.
+    /// While the receiver still lives here (no forwarder attached —
+    /// the headless / test path) callers can still drain events via
+    /// [`Self::drain_status_events`] using `try_recv`. Once moved out,
+    /// `drain_status_events` returns empty because the forwarder owns
+    /// the rx and emits each event the moment it lands.
+    event_rx: Mutex<Option<mpsc::UnboundedReceiver<EngineEvent>>>,
 }
 
 /// Fan-out helper for bg-agent status transitions.
@@ -566,30 +582,82 @@ impl Drop for FgRegistrationGuard {
 impl ChildAgentRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
         Self {
             pending: Mutex::new(HashMap::new()),
             next_id: Mutex::new(1),
-            events: Mutex::new(std::collections::VecDeque::new()),
+            event_tx,
+            event_rx: Mutex::new(Some(event_rx)),
         }
     }
 
-    /// Push an event onto the status queue. Called by
+    /// Push an event onto the status channel. Called by
     /// [`ChildStatusEmitter::send`]; not part of the public API.
+    ///
+    /// Direct mpsc send — the consumer (either the session-spawned
+    /// forwarder or, in headless / test paths, [`Self::drain_status_events`])
+    /// observes the event the moment it lands. No queue, no pump,
+    /// no per-iteration drain latency.
+    ///
+    /// **Send failure** (channel closed) is logged at `debug` and
+    /// dropped on the floor. The only way to close the unbounded
+    /// channel is to drop the registry itself, in which case the
+    /// process is shutting down and no consumer cares about late
+    /// events anyway.
     pub(crate) fn push_status_event(&self, event: EngineEvent) {
-        self.events.lock().push_back(event);
+        if let Err(e) = self.event_tx.send(event) {
+            tracing::debug!("ChildAgentRegistry status channel closed; dropping event: {e}");
+        }
     }
 
-    /// Drain queued status events for forwarding to the active
-    /// `EngineSink`. Called by the inference loop alongside
-    /// [`Self::drain_completed`].
+    /// Move the receiver out of the registry so the session can spawn
+    /// a long-lived forwarder task that drives the channel directly.
     ///
-    /// Returns events in FIFO order (transition order); empty if
-    /// nothing changed since the last drain. Cheap: a single mutex
-    /// acquisition + `VecDeque::drain`. The vast majority of turns
-    /// will see 0–1 events.
+    /// Returns `Some(rx)` exactly once over the registry's lifetime;
+    /// every subsequent call returns `None`. Mirrors Codex's
+    /// `forward_events` pattern (`codex-rs/core/src/codex_delegate.rs`):
+    /// one consumer per channel, owned by a dedicated task that runs
+    /// for as long as the registry / session lives.
+    ///
+    /// **Headless / test paths** that never call this can keep using
+    /// [`Self::drain_status_events`] — the receiver stays in the
+    /// registry's `Mutex<Option<_>>` and `try_recv`-drain works as
+    /// before. Production (TUI / ACP) calls this exactly once at
+    /// session startup so events flow continuously to the user's
+    /// `EngineSink` regardless of what tool is currently in flight.
+    pub fn take_event_receiver(&self) -> Option<mpsc::UnboundedReceiver<EngineEvent>> {
+        self.event_rx.lock().take()
+    }
+
+    /// Drain queued status events synchronously.
+    ///
+    /// **Two modes**, transparent to the caller:
+    ///
+    /// 1. **Receiver still resident** (no forwarder attached yet —
+    ///    headless, tests, the gap between session construction and
+    ///    [`Self::take_event_receiver`]): pulls every queued event via
+    ///    `try_recv` until the channel is empty, returns them in FIFO
+    ///    order. Cheap: one mutex acquisition + a `try_recv` loop.
+    ///
+    /// 2. **Receiver moved to the forwarder**: returns an empty `Vec`
+    ///    — the forwarder owns the rx and is emitting each event the
+    ///    moment it lands; there is nothing left to drain here.
+    ///
+    /// Kept in the public API so existing callers (test suites, the
+    /// pre-#1321 inference-loop drain we are about to delete) keep
+    /// compiling without a rewrite. New code should rely on the
+    /// session forwarder; only call this if you know the receiver
+    /// hasn't been taken.
     pub fn drain_status_events(&self) -> Vec<EngineEvent> {
-        let mut q = self.events.lock();
-        q.drain(..).collect()
+        let mut guard = self.event_rx.lock();
+        let Some(rx) = guard.as_mut() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            out.push(ev);
+        }
+        out
     }
 
     /// Reserve a task ID and produce a oneshot sender + child cancel
@@ -2328,5 +2396,141 @@ mod tests {
             "fg emitter must produce ChildAgentActivity {{ is_background: false }}; \
              pre-PR-A this was hardcoded true and would silently mis-tag the wire"
         );
+    }
+
+    // ─── #1321: mpsc-channel receiver semantics ──────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn take_event_receiver_returns_some_then_none() {
+        // Contract: the receiver moves out of the registry exactly
+        // once. Production calls this from `KodaSession::attach_event_sink`
+        // at TUI startup; a second call must be a safe no-op (returns
+        // `None`) so accidental double-attach doesn't deadlock or
+        // panic. Mirrors Codex's `forward_events` lifecycle: spawn
+        // once, abort once.
+        let reg = ChildAgentRegistry::new();
+        let first = reg.take_event_receiver();
+        assert!(first.is_some(), "first call must yield the receiver");
+        let second = reg.take_event_receiver();
+        assert!(
+            second.is_none(),
+            "second call must return None — receiver is single-consumer"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drain_status_events_returns_empty_after_take() {
+        // After the session forwarder takes the receiver, the legacy
+        // synchronous drain path must be a benign no-op rather than
+        // panicking or returning stale events. This guarantees the
+        // headless-shaped helpers and the (now-removed) per-iteration
+        // drain in `inference_loop` keep compiling for any external
+        // caller that hasn't migrated yet.
+        let reg = ChildAgentRegistry::new();
+        // Push something *first*, then take the receiver: that event
+        // belongs to the new owner, not to a late `drain_status_events`
+        // caller.
+        reg.push_status_event(EngineEvent::ChildTaskUpdate {
+            task_id: 1,
+            spawner: None,
+            is_background: true,
+            status: AgentStatus::Pending,
+        });
+        let mut rx = reg.take_event_receiver().expect("take must succeed");
+        assert!(
+            reg.drain_status_events().is_empty(),
+            "drain after take must yield empty — events route through the receiver"
+        );
+        // The pre-take event reached the new receiver, not the void.
+        let ev = rx
+            .try_recv()
+            .expect("pre-take event must reach the new owner");
+        assert!(matches!(
+            ev,
+            EngineEvent::ChildTaskUpdate { task_id: 1, .. }
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn forwarder_emits_during_blocking_consumer() {
+        // **The actual bug fix from #1321.** Pre-#1321 a long-running
+        // tool call (e.g. `WaitTask` blocking up to 300 s) starved the
+        // bg-status drain because the drain only ran between
+        // inference-loop iterations. With the mpsc receiver owned by a
+        // dedicated forwarder task, status events reach the sink the
+        // moment `push_status_event` fires — even while the would-be
+        // drainer is parked inside an arbitrarily-long `await`.
+        //
+        // Simulates the failure shape: a fake "foreground" future that
+        // sleeps for a long time, in parallel with bg-agent status
+        // emissions. Asserts that each emission reaches the sink
+        // *before* the foreground future returns.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        struct CountingSink(Arc<AtomicUsize>);
+        impl crate::engine::EngineSink for CountingSink {
+            fn emit(&self, _ev: EngineEvent) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let reg = Arc::new(ChildAgentRegistry::new());
+        let count = Arc::new(AtomicUsize::new(0));
+        let sink: Arc<dyn crate::engine::EngineSink> = Arc::new(CountingSink(count.clone()));
+
+        // Stand up the forwarder by hand (mirrors `attach_event_sink`).
+        let mut rx = reg.take_event_receiver().unwrap();
+        let forwarder = tokio::spawn(async move {
+            while let Some(ev) = rx.recv().await {
+                sink.emit(ev);
+            }
+        });
+
+        // Foreground "tool call" that holds the loop hostage.
+        let foreground = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        });
+
+        // Producer: emits status events at intervals while the
+        // foreground task is still in its `await`. Pre-#1321 these
+        // would queue silently — invisible until the foreground
+        // returned. Post-#1321 they reach the sink immediately.
+        let reg_p = reg.clone();
+        let producer = tokio::spawn(async move {
+            for iter in 1..=5u32 {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                reg_p.push_status_event(EngineEvent::ChildTaskUpdate {
+                    task_id: 7,
+                    spawner: None,
+                    is_background: true,
+                    status: AgentStatus::Running { iter },
+                });
+            }
+        });
+
+        producer.await.unwrap();
+        // Wait for the forwarder to drain in-flight events. Cap at a
+        // value well below the foreground sleep (300 ms) so a
+        // regression — events queueing instead of streaming — fails
+        // here, not by accident from the foreground completing first.
+        let deadline = std::time::Instant::now() + Duration::from_millis(150);
+        while count.load(Ordering::SeqCst) < 5 && std::time::Instant::now() < deadline {
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let observed_before_foreground = count.load(Ordering::SeqCst);
+        foreground.await.unwrap();
+
+        assert_eq!(
+            observed_before_foreground, 5,
+            "all 5 bg-status events must reach the sink BEFORE the foreground \
+             tool call returns; pre-#1321 this was 0 (queued, not flowing)"
+        );
+
+        // Drop registry so the channel closes and the forwarder exits.
+        drop(reg);
+        let _ = forwarder.await;
     }
 }

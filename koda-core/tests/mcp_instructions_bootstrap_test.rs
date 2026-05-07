@@ -106,6 +106,9 @@ async fn make_session_with_mcp(
         socks5_proxy: None,
         bg_agents: koda_core::child_agent::new_shared(),
         sub_agent_cache: koda_core::sub_agent_cache::SubAgentCache::new(),
+        // #1321: tests don't need the bg-event forwarder; production
+        // (TUI / ACP) calls `attach_event_sink` to spawn it.
+        event_forwarder: None,
     };
     (session, cancel, recorded)
 }
