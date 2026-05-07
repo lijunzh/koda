@@ -9,6 +9,10 @@
 //     do the same wiring in Phase 2 of #1325 but expose for now to
 //     keep this PR substrate-only.
 //   - Test imports adapted (`AgentPath` from koda's path module).
+//   - Tokio test attributes use `(flavor = "multi_thread")` to satisfy
+//     koda's #1109 F2 guard (any test touching `tokio::spawn` / `watch`
+//     / `broadcast` must run on the multi-thread runtime).
+//     Codex's upstream uses the bare attribute form.
 
 //! Per-agent inbox: an unbounded mpsc backing the message buffer plus a
 //! `watch::Sender<u64>` carrying a monotonic sequence number for cheap
@@ -140,7 +144,7 @@ mod tests {
         )
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mailbox_assigns_monotonic_sequence_numbers() {
         let (mailbox, _receiver) = Mailbox::new();
         let mut seq_rx = mailbox.subscribe();
@@ -164,7 +168,7 @@ mod tests {
         assert_eq!(seq_b, 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mailbox_drains_in_delivery_order() {
         let (mailbox, mut receiver) = Mailbox::new();
         let mail_one = make_mail(
@@ -187,7 +191,7 @@ mod tests {
         assert!(!receiver.has_pending());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mailbox_tracks_pending_trigger_turn_mail() {
         let (mailbox, mut receiver) = Mailbox::new();
 
@@ -211,7 +215,7 @@ mod tests {
     // koda-added tests — exercise the parts we'll lean on in Phase 2/3
     // that codex's own tests don't cover directly.
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn watch_wakes_a_parked_subscriber_on_send() {
         // Verifies the wakeup contract: `wait_agent`-style tools that
         // park on `changed().await` MUST be woken by the next `send`.
@@ -243,7 +247,7 @@ mod tests {
         assert_eq!(observed, seq);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn drain_after_drain_is_empty() {
         let (mailbox, mut receiver) = Mailbox::new();
         mailbox.send(make_mail(

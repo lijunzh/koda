@@ -2,18 +2,18 @@
 //!
 //! ## Existing
 //!
-//! - [`koda_agent::KodaAgent`] — shared, immutable per-session agent state
+//! - `KodaAgent` — shared, immutable per-session agent state
 //!   (tools, system prompt, project root). Re-exported at this module
 //!   level for backward compatibility (`koda_core::agent::KodaAgent`).
 //!
 //! ## New (Phase 1 of #1325) — vendored from openai/codex (Apache-2.0)
 //!
-//! See top-level [`NOTICE`](../../../NOTICE) file for attribution.
+//! See the top-level `NOTICE` file at the repo root for attribution.
 //!
-//! - [`path`] — typed `AgentPath` (`/root/researcher/worker`).
-//! - [`inter_agent`] — `InterAgentCommunication` wire format.
-//! - [`mailbox`] — per-agent inbox: `mpsc` + `watch::Sender<u64>`
-//!   sequence-numbered wakeups.
+//! - `path` module — typed `AgentPath` (`/root/researcher/worker`).
+//! - `inter_agent` module — `InterAgentCommunication` wire format.
+//! - `mailbox` module — per-agent inbox: `Mailbox` + `MailboxReceiver`,
+//!   an `mpsc` + `watch::Sender<u64>` pair with sequence-numbered wakeups.
 //!
 //! Future phases (#1325):
 //! - Phase 2 — wire `Mailbox` into `KodaSession`; drain at turn start

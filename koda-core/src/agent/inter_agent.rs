@@ -10,7 +10,7 @@
 
 //! Wire format for messages exchanged between agents over their mailboxes.
 //!
-//! Author/recipient are typed [`AgentPath`]s — see [`crate::agent::path`].
+//! Author/recipient are typed `AgentPath`s — see `crate::agent::path`.
 //! `trigger_turn = true` tells the recipient's session to wake an idle
 //! turn (used for "I have something for you to act on" semantics);
 //! `false` is "FYI, fold this into your next turn whenever it happens".
