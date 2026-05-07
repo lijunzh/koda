@@ -61,7 +61,7 @@ use std::sync::{Arc, RwLock};
 
 use super::{
     DynTool, Tool, ToolEffect, agent, ask_user, bg_task_tools, boxed, file_tools, glob_tool, grep,
-    memory, recall, shell, skill_tools, todo, web_fetch, web_search,
+    memory, recall, send_message, shell, skill_tools, todo, web_fetch, web_search,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
@@ -178,6 +178,11 @@ impl ToolCatalog {
         for def in skill_tools::definitions() {
             definitions.insert(def.name.clone(), def);
         }
+        // #1325 Phase 3: peer-tools cohort. Currently only
+        // SendMessage; wait_for_mail joins in step 4.
+        for def in send_message::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
         // RecallContext is a singleton (not a `Vec`) — it has a
         // single canonical definition and the sub-module reflects
         // that with `definition()` instead of `definitions()`.
@@ -228,6 +233,10 @@ impl ToolCatalog {
             boxed(bg_task_tools::ListBackgroundTasksTool),
             boxed(bg_task_tools::CancelTaskTool),
             boxed(bg_task_tools::WaitTaskTool),
+            // #1325 Phase 3: peer-tools cohort. Real dispatch flows
+            // through the standard ToolRegistry::execute path — the
+            // mailbox registry is read off ToolExecCtx.
+            boxed(send_message::SendMessageTool),
         ] {
             tools.insert(tool.name(), tool);
         }

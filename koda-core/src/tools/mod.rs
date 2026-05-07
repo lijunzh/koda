@@ -110,6 +110,7 @@ pub mod grep;
 pub mod memory;
 /// On-demand conversation history retrieval (`RecallContext`).
 pub mod recall;
+pub mod send_message;
 /// Shell command execution tool (`Bash`).
 pub mod shell;
 /// Skill discovery and activation tools (`ListSkills`, `ActivateSkill`).
