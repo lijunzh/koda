@@ -85,7 +85,18 @@ async fn safe_trust_sub_agent_can_write_files() {
         MockResponse::Text("Sub-agent reported: Done writing.".into()),
     ]);
     let events = env.run_inference(&provider).await;
-    runtime_env::remove("KODA_MOCK_RESPONSES");
+    // **#1327 deflake** — DO NOT remove KODA_MOCK_RESPONSES here.
+    // The bg sub-agent's `MockProvider::from_env()` reads the env
+    // var lazily on the bg task, AFTER the parent's `run_inference`
+    // returns. If we `remove` before `collect_bg_events_after`
+    // confirms the bg agent has consumed the responses, we race the
+    // bg agent and it sees `[]` instead of the configured script.
+    // Empty responses → no Write call → no file on disk → the
+    // `target_path.exists()` assert below panics. This is exactly
+    // the symptom #1327 documents. The previous "#1321/#1323
+    // deflake" wait below catches the bg agent's terminal state
+    // but couldn't help if the bg agent never even got the right
+    // script to act on. Order matters: WAIT → ASSERT → REMOVE.
 
     // **#1321/#1323 deflake**: this test was racing parent-loop
     // termination against bg-agent completion (the parent's Mock
@@ -98,6 +109,11 @@ async fn safe_trust_sub_agent_can_write_files() {
         .collect_bg_events_after(events.clone(), std::time::Duration::from_secs(10))
         .await
         .expect("bg sub-agent never reached terminal state");
+
+    // Now the bg agent has reached terminal state — if it consumed
+    // KODA_MOCK_RESPONSES at all, it did so already. Safe to clean
+    // up for the next test in the binary (#1327).
+    runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // Assertion 1: the file actually exists on disk. This is the
     // strongest possible proof that the Write was approved and
@@ -186,7 +202,20 @@ async fn safe_trust_sub_agent_destructive_bash_is_still_blocked() {
         ),
         MockResponse::Text("Done.".into()),
     ]);
-    let _events = env.run_inference(&provider).await;
+    let events = env.run_inference(&provider).await;
+    // **#1327 deflake** — don't `runtime_env::remove` until AFTER
+    // we've waited for the bg sub-agent to reach terminal state.
+    // See the long-form rationale in the sibling test above. This
+    // test is "accidentally robust" to the race today (empty
+    // responses → no `rm -rf` → file survives → the file-survives
+    // assertion still passes vacuously), but the original
+    // `safe_trust_sub_agent_can_write_files` was "accidentally
+    // fragile". Same anti-pattern — fix both for consistency,
+    // because future readers will copy whichever they see first.
+    let _bg_events = env
+        .collect_bg_events_after(events.clone(), std::time::Duration::from_secs(10))
+        .await
+        .expect("bg sub-agent never reached terminal state");
     runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // The destructive op MUST have been blocked. Filesystem state
