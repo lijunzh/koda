@@ -277,7 +277,17 @@ async fn macos_kernel_blocks_direct_tcp_to_non_proxy_port() {
     let cmd = format!(
         r#"{{"command":"if exec 3<>/dev/tcp/127.0.0.1/{target_port} 2>/dev/null; then echo connected; exec 3<&-; else echo blocked; fi"}}"#,
     );
-    let result = session.agent.tools.execute("Bash", &cmd, None, None, &koda_core::agent::AgentPath::root()).await;
+    let result = session
+        .agent
+        .tools
+        .execute(
+            "Bash",
+            &cmd,
+            None,
+            None,
+            &koda_core::agent::AgentPath::root(),
+        )
+        .await;
     let combined = format!(
         "{}\n{}",
         result.output,
@@ -311,7 +321,17 @@ async fn macos_kernel_allows_tcp_to_proxy_port() {
     let cmd = format!(
         r#"{{"command":"if exec 3<>/dev/tcp/127.0.0.1/{proxy_port} 2>/dev/null; then echo connected; exec 3<&-; else echo blocked; fi"}}"#,
     );
-    let result = session.agent.tools.execute("Bash", &cmd, None, None, &koda_core::agent::AgentPath::root()).await;
+    let result = session
+        .agent
+        .tools
+        .execute(
+            "Bash",
+            &cmd,
+            None,
+            None,
+            &koda_core::agent::AgentPath::root(),
+        )
+        .await;
     let combined = format!(
         "{}\n{}",
         result.output,
@@ -379,7 +399,17 @@ async fn linux_kernel_blocks_direct_tcp_to_non_proxy_port() {
     let cmd = format!(
         r#"{{"command":"bash -c 'if exec 3<>/dev/tcp/127.0.0.1/{target_port} 2>/dev/null; then echo connected; exec 3<&-; else echo blocked; fi'"}}"#,
     );
-    let result = session.agent.tools.execute("Bash", &cmd, None, None, &koda_core::agent::AgentPath::root()).await;
+    let result = session
+        .agent
+        .tools
+        .execute(
+            "Bash",
+            &cmd,
+            None,
+            None,
+            &koda_core::agent::AgentPath::root(),
+        )
+        .await;
     let combined = format!(
         "{}\n{}",
         result.output,
@@ -431,7 +461,17 @@ async fn linux_kernel_allows_tcp_to_proxy_port() {
     // verify /dev/tcp can reach it. Bash explicitly because
     // Ubuntu's /bin/sh is dash (no /dev/tcp, no `${var##*:}`).
     let cmd = r#"{"command":"bash -c 'port=\"${HTTPS_PROXY##*:}\"; if exec 3<>/dev/tcp/127.0.0.1/$port 2>/dev/null; then echo connected; exec 3<&-; else echo blocked; fi'"}"#;
-    let result = session.agent.tools.execute("Bash", cmd, None, None, &koda_core::agent::AgentPath::root()).await;
+    let result = session
+        .agent
+        .tools
+        .execute(
+            "Bash",
+            cmd,
+            None,
+            None,
+            &koda_core::agent::AgentPath::root(),
+        )
+        .await;
     let combined = format!(
         "{}\n{}",
         result.output,

@@ -641,7 +641,17 @@ mod tests {
         let policy = koda_sandbox::SandboxPolicy::default();
         let skills = crate::skills::SkillRegistry::default();
         let agent_path = crate::agent::AgentPath::root();
-        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &agent_path);
+        let ctx = make_ctx(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &agent_path,
+        );
 
         let args = json!({"hello": "world"});
         let result = tool.execute(&ctx, &args).await;
@@ -732,7 +742,17 @@ mod tests {
         let policy = koda_sandbox::SandboxPolicy::default();
         let skills = crate::skills::SkillRegistry::default();
         let agent_path = crate::agent::AgentPath::root();
-        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &agent_path);
+        let ctx = make_ctx(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &agent_path,
+        );
 
         let r1 = tools[0].execute(&ctx, &json!({})).await;
         assert!(r1.success);
@@ -756,7 +776,17 @@ mod tests {
         let policy = koda_sandbox::SandboxPolicy::default();
         let skills = crate::skills::SkillRegistry::default();
         let agent_path = crate::agent::AgentPath::root();
-        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &agent_path);
+        let ctx = make_ctx(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &agent_path,
+        );
 
         assert_eq!(ctx.project_root(), root.as_path());
         // Cache is a single shared handle — pointer-equality check.

@@ -303,7 +303,16 @@ mod tests {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         // Spawn a sender that waits 50ms then delivers.
@@ -342,7 +351,16 @@ mod tests {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         let started = Instant::now();
@@ -376,7 +394,16 @@ mod tests {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         // Send before the wait starts. The wait still needs to
@@ -412,7 +439,16 @@ mod tests {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         // Pre-existing mail.
@@ -440,7 +476,16 @@ mod tests {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         let result = WaitForMailTool
@@ -469,7 +514,16 @@ mod tests {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         let mb_for_send = Arc::clone(&mb);

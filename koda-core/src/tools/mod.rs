@@ -1259,7 +1259,13 @@ mod tests {
         // First write: should emit.
         let sink1 = crate::engine::sink::TestSink::new();
         registry
-            .execute("TodoWrite", payload, Some((&sink1, "c1")), None, &crate::agent::AgentPath::root())
+            .execute(
+                "TodoWrite",
+                payload,
+                Some((&sink1, "c1")),
+                None,
+                &crate::agent::AgentPath::root(),
+            )
             .await;
         assert_eq!(sink1.len(), 1);
 
@@ -1267,7 +1273,13 @@ mod tests {
         // message goes back to the model, but clients see nothing.
         let sink2 = crate::engine::sink::TestSink::new();
         let result2 = registry
-            .execute("TodoWrite", payload, Some((&sink2, "c2")), None, &crate::agent::AgentPath::root())
+            .execute(
+                "TodoWrite",
+                payload,
+                Some((&sink2, "c2")),
+                None,
+                &crate::agent::AgentPath::root(),
+            )
             .await;
         assert!(result2.success);
         assert!(

@@ -839,8 +839,7 @@ pub(crate) fn execute_sub_agent<'a>(
             // `child_agent_path`'s `"agent"` fallback — surface them
             // as the dispatch error rather than panicking inside the
             // spawned task.
-            let bg_agent_path =
-                child_agent_path(parent_tx.turn.agent_path, agent_name, task_id)?;
+            let bg_agent_path = child_agent_path(parent_tx.turn.agent_path, agent_name, task_id)?;
 
             // #1325 Phase 4 (commit 3): hand the parent's registry
             // (Arc) into the bg task so its inner `execute_sub_agent`

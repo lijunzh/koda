@@ -328,7 +328,16 @@ mod tests {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         let result = SendMessageTool
@@ -394,7 +403,16 @@ mod tests {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         let result = SendMessageTool
@@ -425,7 +443,16 @@ mod tests {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         let result = SendMessageTool
@@ -445,7 +472,16 @@ mod tests {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         let result = SendMessageTool
@@ -503,7 +539,16 @@ mod tests {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         let result = SendMessageTool
@@ -519,7 +564,16 @@ mod tests {
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
         );
 
         let result = SendMessageTool

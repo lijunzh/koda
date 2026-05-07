@@ -1607,17 +1607,16 @@ mod tests {
             let _ = tx.send(StreamChunk::Done(TokenUsage::default())).await;
         });
 
-        let result =
-            collect_stream(
-                &mut rx,
-                &sink,
-                &cancel,
-                &tools,
-                TrustMode::Auto,
-                tmp.path(),
-                &crate::agent::AgentPath::root(),
-            )
-            .await;
+        let result = collect_stream(
+            &mut rx,
+            &sink,
+            &cancel,
+            &tools,
+            TrustMode::Auto,
+            tmp.path(),
+            &crate::agent::AgentPath::root(),
+        )
+        .await;
 
         assert_eq!(result.tool_calls.len(), 1, "tool call should be recorded");
         assert_eq!(result.eager_results.len(), 1, "should have 1 eager result");
