@@ -386,7 +386,7 @@ impl KodaSession {
     /// warning if double-attach is suspicious for their context.
     ///
     /// **Lifetime**: the spawned task lives as long as `self` lives;
-    /// the [`AbortOnDropHandle`] in [`Self::event_forwarder`] aborts
+    /// the `AbortOnDropHandle` in [`Self::event_forwarder`] aborts
     /// it on session drop. If the consumer side of `sink` closes
     /// (TUI exits, ACP socket dies) the forwarder exits naturally
     /// when its `recv()` next yields — the channel side stays
