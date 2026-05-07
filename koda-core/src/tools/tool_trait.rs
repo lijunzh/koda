@@ -89,6 +89,7 @@ use crate::tools::ToolEffect;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Result returned by every built-in tool's execution path.
 ///
@@ -227,6 +228,18 @@ pub struct ToolExecCtx<'a> {
     /// Skill registry for `ListSkills` / `ActivateSkill`. Other
     /// tools ignore this. Added in PR-8 of #1265 item 5.
     pub skill_registry: &'a crate::skills::SkillRegistry,
+
+    /// Per-session path → mailbox registry (#1325 Phase 3). `None`
+    /// when running outside a session (standalone-`ToolRegistry`
+    /// tests). Read by the `send_message` and `wait_for_mail` peer
+    /// tools — every other tool ignores it.
+    ///
+    /// Borrowed (`&'a Arc`) rather than cloned so the per-call
+    /// dispatch path doesn't pay an `Arc::clone` for every tool
+    /// that doesn't need the registry. Peer tools that hold the
+    /// registry across `.await` should clone the `Arc` themselves
+    /// at the use site — explicit beats hidden cost.
+    pub mailbox_registry: Option<&'a Arc<crate::agent::mailbox_registry::MailboxRegistry>>,
 }
 
 /// A self-contained built-in tool.
@@ -446,6 +459,10 @@ impl<'a> ToolExecCtx<'a> {
             socks5_port: None,
             session: None,
             skill_registry,
+            // for_test default: no peer-tools registry. Tests that
+            // exercise send_message / wait_for_mail must construct
+            // their context manually with a real registry.
+            mailbox_registry: None,
         }
     }
 }
@@ -580,6 +597,7 @@ mod tests {
             socks5_port: None,
             session: None,
             skill_registry: skills,
+            mailbox_registry: None,
         }
     }
 

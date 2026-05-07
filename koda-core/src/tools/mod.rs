@@ -283,6 +283,15 @@ pub struct ToolRegistry {
     /// also route through the hostname-filtered proxy. Independent
     /// from `proxy_port` so tests can attach one without the other.
     socks5_port: std::sync::RwLock<Option<u16>>,
+    /// Phase 3 of #1325 — per-session path → mailbox lookup. Set
+    /// by [`crate::session::KodaSession::new`] after constructing
+    /// the registry. `None` until that wiring runs (and stays `None`
+    /// in standalone-`ToolRegistry` tests where there's no session).
+    /// Read by the `send_message` and `wait_for_mail` peer tools —
+    /// every other tool ignores it.
+    mailbox_registry: std::sync::RwLock<
+        Option<Arc<crate::agent::mailbox_registry::MailboxRegistry>>,
+    >,
 }
 
 impl ToolRegistry {
@@ -330,6 +339,7 @@ impl ToolRegistry {
             sandbox_policy: koda_sandbox::SandboxPolicy::strict_default(),
             proxy_port: std::sync::RwLock::new(None),
             socks5_port: std::sync::RwLock::new(None),
+            mailbox_registry: std::sync::RwLock::new(None),
         }
     }
 
@@ -447,6 +457,36 @@ impl ToolRegistry {
     /// spawned `Command`'s env.
     pub fn socks5_port(&self) -> Option<u16> {
         self.socks5_port.read().ok().and_then(|guard| *guard)
+    }
+
+    /// Attach the per-session mailbox registry (#1325 Phase 3).
+    ///
+    /// Called once from [`crate::session::KodaSession::new`] right
+    /// after the registry is constructed and the root path is
+    /// pre-registered. Read by the `send_message` and `wait_for_mail`
+    /// peer tools — every other tool ignores it.
+    ///
+    /// Lock-poisoning silently keeps the previous value (matching
+    /// the precedent set by `set_proxy_port` / `set_session`). If
+    /// poisoning ever happens here in production it'd mean a
+    /// concurrent panic during session construction — the session
+    /// is already toast and there's no useful recovery.
+    pub fn set_mailbox_registry(
+        &self,
+        registry: Arc<crate::agent::mailbox_registry::MailboxRegistry>,
+    ) {
+        if let Ok(mut guard) = self.mailbox_registry.write() {
+            *guard = Some(registry);
+        }
+    }
+
+    /// Current mailbox registry, if one has been attached. Returns
+    /// the `Arc` clone so the caller can hold it across `.await`
+    /// boundaries without holding the registry-slot lock.
+    pub fn mailbox_registry(
+        &self,
+    ) -> Option<Arc<crate::agent::mailbox_registry::MailboxRegistry>> {
+        self.mailbox_registry.read().ok().and_then(|g| g.clone())
     }
 
     /// Borrow the underlying read-only metadata catalog.
@@ -617,6 +657,12 @@ impl ToolRegistry {
                 (Some(db), Some(sid)) => Some((db, sid)),
                 _ => None,
             };
+            // Snapshot the mailbox-registry slot once per dispatch —
+            // the read-guard is held only long enough to clone the
+            // `Arc`, then dropped before the `.await` below. The
+            // local `mb_reg_arc` keeps the `Arc` alive across the
+            // `.await`; the borrow handed to the tool is `Option<&'_ Arc<_>>`.
+            let mb_reg_arc = self.mailbox_registry.read().ok().and_then(|g| g.clone());
             let ctx = tool_trait::ToolExecCtx {
                 project_root: &self.project_root,
                 read_cache: &self.read_cache,
@@ -631,6 +677,7 @@ impl ToolRegistry {
                 socks5_port,
                 session,
                 skill_registry: &self.skill_registry,
+                mailbox_registry: mb_reg_arc.as_ref(),
             };
             let result = tool.execute(&ctx, &args).await;
             // Post-execution registry-level recording. Lives here

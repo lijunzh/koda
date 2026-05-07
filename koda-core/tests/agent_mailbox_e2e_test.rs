@@ -67,6 +67,18 @@ async fn make_session_with_recorder(
         koda_core::file_tracker::FileTracker::new(&env.session_id, env.db.clone()).await;
 
     let (mailbox, mailbox_rx) = Mailbox::new();
+    let mailbox = Arc::new(mailbox);
+    // Phase 3: pre-register /root → mailbox; mirror what KodaSession::new
+    // does. Tests that build sessions by struct-literal still need to
+    // honor the substrate invariant (registry contains /root).
+    let mailbox_registry = Arc::new(koda_core::agent::MailboxRegistry::new());
+    mailbox_registry.register(
+        koda_core::agent::AgentPath::root(),
+        Arc::clone(&mailbox),
+    );
+    agent
+        .tools
+        .set_mailbox_registry(Arc::clone(&mailbox_registry));
 
     let session = KodaSession {
         id: env.session_id.clone(),
@@ -85,6 +97,7 @@ async fn make_session_with_recorder(
         mailbox,
         mailbox_rx: Arc::new(AsyncMutex::new(mailbox_rx)),
         idle_pending_input: Arc::new(AsyncMutex::new(Vec::new())),
+        mailbox_registry,
     };
     (session, cancel, recorded)
 }
@@ -259,5 +272,48 @@ async fn empty_mailbox_does_not_create_user_row() {
         user_msgs[0].content.as_deref(),
         Some("real user input"),
         "the only user row must be the real one"
+    );
+}
+
+/// **Phase 3 substrate pin**: every constructed session must have its
+/// own mailbox registered at `/root` in the registry, and the entry
+/// must point at the same `Mailbox` the session exposes via
+/// `mailbox()`. Without this, the LLM-facing `send_message` /
+/// `wait_for_mail` tools would have nowhere to route mail.
+///
+/// This is a load-bearing pin: a regression that breaks the
+/// pre-registration silently makes peer tools see an empty registry
+/// and respond with "no such recipient" — confusing the LLM, but
+/// not failing any non-peer test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_pre_registers_root_in_mailbox_registry() {
+    let env = Env::new().await;
+    let provider = MockProvider::new(vec![MockResponse::Text("ack".to_string())]);
+    let (session, _cancel, _recorded) = make_session_with_recorder(&env, provider).await;
+
+    // Registry has exactly one entry, /root, after construction.
+    assert_eq!(
+        session.mailbox_registry.len(),
+        1,
+        "freshly-constructed session must have exactly /root registered"
+    );
+    let registered = session
+        .mailbox_registry
+        .get(&koda_core::agent::AgentPath::root())
+        .expect("/root must resolve in the registry");
+
+    // Round-trip: send via the registry's Arc<Mailbox>, drain via
+    // the session's mailbox_rx — if these aren't the same channel,
+    // the receiver sees nothing.
+    registered.send(sample_mail("via-registry"));
+    let drained = session.mailbox_rx.lock().await.drain();
+    assert_eq!(
+        drained.len(),
+        1,
+        "registry's /root entry must be the same channel the session drains"
+    );
+    assert_eq!(
+        drained[0].content, "via-registry",
+        "the drained mail must be the one we sent through the registry"
     );
 }

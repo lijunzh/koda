@@ -26,6 +26,8 @@ use crate::agent::KodaAgent;
 use crate::agent::inter_agent::InterAgentCommunication;
 use crate::agent::mail_message::mail_to_user_message;
 use crate::agent::mailbox::{Mailbox, MailboxReceiver};
+use crate::agent::mailbox_registry::MailboxRegistry;
+use crate::agent::path::AgentPath;
 use crate::child_agent::{self, ChildAgentRegistry};
 use crate::config::KodaConfig;
 use crate::db::Database;
@@ -282,7 +284,15 @@ pub struct KodaSession {
     // exercise it from the LLM side.
     /// Cloneable sender handle for this session's mailbox. Hand out
     /// clones to peer agents that need to send mail to this session.
-    pub mailbox: Mailbox,
+    ///
+    /// Stored as `Arc<Mailbox>` (not bare `Mailbox`) because
+    /// `Mailbox` itself isn't `Clone` — the per-mailbox `AtomicU64`
+    /// sequence counter would diverge across clones. The `Arc` is
+    /// the substrate's documented sharing pattern; the
+    /// `mailbox_registry` (Phase 3) hands out clones of this same
+    /// `Arc` so all peer-tool callers send into the one true
+    /// counter.
+    pub mailbox: Arc<Mailbox>,
 
     /// Drain side of the mailbox. `tokio::sync::Mutex` because
     /// `drain_mail_to_db` is `async` (does DB writes) and codex's
@@ -312,6 +322,17 @@ pub struct KodaSession {
     /// rather than pre-formatted strings so a future `MessagePhase`
     /// migration can re-serialize from source without information loss.
     pub idle_pending_input: Arc<AsyncMutex<Vec<InterAgentCommunication>>>,
+
+    /// Phase 3 of #1325 — path → mailbox lookup, the substrate
+    /// under the `send_message` and `wait_for_mail` peer tools.
+    ///
+    /// Pre-populated with `AgentPath::root() → self.mailbox` at
+    /// construction so the LLM can mail itself (the only valid
+    /// recipient until Phase 4's `spawn_agent` lands and starts
+    /// registering child paths). Exposed to tools by handing the
+    /// `Arc` to `agent.tools.set_mailbox_registry(...)` after
+    /// construction.
+    pub mailbox_registry: Arc<MailboxRegistry>,
 }
 
 impl KodaSession {
@@ -396,6 +417,29 @@ impl KodaSession {
         // by `mpsc` semantics. Constructed unconditionally because the
         // substrate has zero runtime cost when no mail is sent.
         let (mailbox, mailbox_rx) = Mailbox::new();
+        let mailbox = Arc::new(mailbox);
+
+        // #1325 Phase 3: per-session path → mailbox registry. Pre-
+        // register `/root → self.mailbox` so peer tools can find this
+        // session by canonical path. Future spawned children
+        // (Phase 4) register their own `/root/<name>` entries here.
+        let mailbox_registry = Arc::new(MailboxRegistry::new());
+        // Double-register would be a programmer error here (we just
+        // built an empty registry); panic if it happens because it
+        // means the substrate's invariants are wrong.
+        match mailbox_registry.register(AgentPath::root(), Arc::clone(&mailbox)) {
+            crate::agent::mailbox_registry::RegisterOutcome::Inserted => {}
+            crate::agent::mailbox_registry::RegisterOutcome::AlreadyRegistered => {
+                unreachable!(
+                    "freshly-constructed MailboxRegistry already had /root registered — \
+                     MailboxRegistry::new() invariants are broken"
+                );
+            }
+        }
+        // Hand the registry to the tool layer so peer tools can
+        // resolve paths. `set_*` setters use interior mutability —
+        // see ToolRegistry docs for the rationale.
+        agent.tools.set_mailbox_registry(Arc::clone(&mailbox_registry));
 
         Self {
             id,
@@ -426,6 +470,7 @@ impl KodaSession {
             mailbox,
             mailbox_rx: Arc::new(AsyncMutex::new(mailbox_rx)),
             idle_pending_input: Arc::new(AsyncMutex::new(Vec::new())),
+            mailbox_registry,
         }
     }
 

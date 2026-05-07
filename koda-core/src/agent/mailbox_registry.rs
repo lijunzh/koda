@@ -5,20 +5,39 @@
 //! to find the mailbox of an agent given its path; with it, every
 //! peer tool reduces to "look up by path, do the thing".
 //!
-//! # Why a separate type (vs. extending `ChildAgentRegistry`)
+//! # Relationship to codex's `AgentRegistry`
 //!
-//! `ChildAgentRegistry` is 1300+ lines of bg-task lifecycle: status
-//! events, foreground/background bookkeeping, undo coordination,
-//! reservation guards. Mailbox lookup is **none of those things** —
-//! it's a flat dictionary. Wedging it into the existing registry
-//! would couple two unrelated concerns and make the eventual Phase
-//! 4-5 unification (where bg agents become first-class peers with
-//! mailboxes) harder to reason about.
+//! Codex's upstream pattern (`codex-rs/core/src/agent/registry.rs`,
+//! ~344 lines) is a richer `AgentRegistry` that tracks per-thread
+//! metadata (nickname, role, last task, agent_id), reserves spawn
+//! slots with depth limits, and pools nicknames — then routes mail
+//! indirectly via `agent_id_for_path` → thread → session → mailbox.
 //!
-//! Phase 4-5 will likely fuse this with `ChildAgentRegistry` — at
-//! which point the `Arc<MailboxRegistry>` field on `KodaSession`
-//! becomes a thin facade over the unified type. For now: keep them
-//! separate, keep the diff small, keep the contracts orthogonal.
+//! Koda doesn't have `ThreadId`, `SessionSource`, depth limits, or
+//! a thread-keyed session lookup yet. Vendoring the full codex
+//! `AgentRegistry` would force vendoring `AgentControl` (1246 lines)
+//! and large chunks of session plumbing too — way over-scoped for
+//! Phase 3, where the only goal is "give the LLM a way to send and
+//! receive mail through real tools".
+//!
+//! `MailboxRegistry` is the lean koda equivalent: a direct
+//! `path → mailbox` shortcut that compresses codex's two-hop
+//! resolution into one. Phase 4 (when `spawn_agent` lands) will
+//! either grow this type to absorb thread/nickname/depth concerns,
+//! or vendor codex's `AgentRegistry` alongside it and demote this
+//! one to a thin lookup cache. Either way, the public surface
+//! (`get`/`register`/`unregister`/`list`) stays — callers won't
+//! notice.
+//!
+//! # Why not extend `ChildAgentRegistry`
+//!
+//! Koda's existing `ChildAgentRegistry` is 1300+ lines of bg-task
+//! lifecycle (status events, fg/bg bookkeeping, undo coordination,
+//! reservation guards). Mailbox lookup is none of those things —
+//! it's a flat dictionary. Wedging it in would couple unrelated
+//! concerns and make the eventual Phase 4-5 substrate unification
+//! (where bg agents become first-class peers with mailboxes)
+//! harder to reason about.
 //!
 //! # Concurrency
 //!
