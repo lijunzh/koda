@@ -55,12 +55,20 @@ const META_TOOLS: &[&str] = &[
     "ListSkills",
     "ListAgents",
     "InvokeAgent",
+    // #1325 Phase 5a: SpawnAgent is the codex v2 peer-spawn shape;
+    // always available so skill-scoped agents can spawn sub-agents
+    // without listing it in every manifest (same rationale as InvokeAgent).
+    "SpawnAgent",
     "AskUser",
     // #996 Phase G — bg-task management always-available so a
     // skill-scoped agent can still see / wait / cancel its own work.
     "ListBackgroundTasks",
     "CancelTask",
     "WaitTask",
+    // #1325 Phase 3/5a: peer-messaging always-available so skill-scoped
+    // agents can communicate with peers without listing them in manifests.
+    "SendMessage",
+    "WaitForMail",
 ];
 
 /// Tracks the active skill's tool scope during an inference loop.

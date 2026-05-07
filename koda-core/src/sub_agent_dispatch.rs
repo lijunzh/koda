@@ -351,6 +351,13 @@ async fn run_bg_agent(
     // "no per-child mailbox"). `None` propagates the
     // no-session-context fallback unchanged.
     bg_mailbox_registry: Option<std::sync::Arc<crate::agent::MailboxRegistry>>,
+    // #1325 Phase 5a: the parent's `AgentPath`. At task completion we
+    // send the result to the parent's mailbox so `WaitForMail` can
+    // unblock on child completion. `bg_agent_path` is the author;
+    // `parent_agent_path` is the recipient. Separate from
+    // `bg_mailbox_registry` (which serves the child's own mailbox
+    // registration) so the two concerns don't conflate.
+    parent_agent_path: crate::agent::AgentPath,
 ) {
     // Layer 0 placeholder: immediately flip Pending → Running so `/agents`
     // shows the agent as active before the first LLM call. The loop inside
@@ -500,6 +507,43 @@ async fn run_bg_agent(
                 }
             };
             emitter.send(status);
+        }
+    }
+
+    // #1325 Phase 5a: notify the parent via its mailbox so any
+    // `WaitForMail` call in the parent session can unblock on child
+    // completion. This fires *before* the oneshot so the watch
+    // sequence increment is visible before the drain-injection
+    // path adds the `Role::Tool` row — ordering that avoids the
+    // race where `WaitForMail` wakes, calls `drain_completed` and
+    // finds nothing yet.
+    //
+    // Send is best-effort: if the registry has no entry for the
+    // parent (e.g. top-level session running without a registry,
+    // or the parent already exited), we silently skip — the
+    // existing drain path (`inference.rs` `drain_completed`) still
+    // injects the result on the next iteration, so nothing is lost.
+    if let Some(registry) = bg_mailbox_registry.as_deref() {
+        if let Some(parent_mailbox) = registry.get(&parent_agent_path) {
+            let summary = match &result {
+                Ok(output) => format!(
+                    "Background agent '{}' completed.\n{}",
+                    bg_agent_path, output
+                ),
+                Err(e) => format!("Background agent '{}' failed: {e:#}", bg_agent_path),
+            };
+            let mail = crate::agent::inter_agent::InterAgentCommunication::new(
+                bg_agent_path.clone(),
+                parent_agent_path,
+                Vec::new(),
+                summary,
+                // trigger_turn=true: wake the parent immediately so
+                // `WaitForMail` unblocks as soon as the child exits
+                // rather than waiting for the parent's next natural turn.
+                true,
+            );
+            // `send` returns the sequence number; we don't need it.
+            let _seq = parent_mailbox.send(mail);
         }
     }
 
@@ -856,6 +900,10 @@ pub(crate) fn execute_sub_agent<'a>(
                 ),
             });
 
+            // #1325 Phase 5a: clone the parent's path so the bg task
+            // can send the completion mail to the parent's mailbox.
+            let parent_path_for_bg = parent_tx.turn.agent_path.clone();
+
             let handle = tokio::spawn(run_bg_agent(
                 project_root_owned,
                 parent_config_owned,
@@ -870,6 +918,7 @@ pub(crate) fn execute_sub_agent<'a>(
                 emitter,
                 bg_agent_path,
                 bg_mailbox_registry,
+                parent_path_for_bg,
             ));
 
             bg_agents.attach(
