@@ -292,6 +292,49 @@ impl Drop for InvocationCleanup<'_> {
 
 /// Run a sub-agent in the background. Owns all data (no borrows).
 ///
+/// Send a completion notification to the parent's mailbox.
+///
+/// **#1325 Phase 5a — bridge**: fires *before* the result oneshot in
+/// `run_bg_agent` so the parent's mailbox watch-sequence increments
+/// before the drain-injection path adds the `Role::Tool` row. This
+/// ordering ensures `WaitForMail`'s watch wakeup happens before the
+/// drain loop could race to inject the result — the parent wakes and
+/// reads a populated mailbox.
+///
+/// **Best-effort**: if the registry is `None` or holds no entry for
+/// `parent_path`, we skip silently. The existing `drain_completed`
+/// loop in `inference.rs` still injects the result on the next
+/// iteration, so nothing is lost — the parent just doesn't wake
+/// immediately.
+///
+/// Extracted from `run_bg_agent` so the three core behaviors
+/// (completion mail content, error-path format, silent-skip) can be
+/// pinned by unit tests without standing up the full bg-agent machinery.
+pub(crate) fn notify_parent_mailbox(
+    registry: Option<&crate::agent::MailboxRegistry>,
+    child_path: &crate::agent::AgentPath,
+    parent_path: &crate::agent::AgentPath,
+    result: &Result<String, anyhow::Error>,
+) {
+    let parent_mailbox_opt = registry.and_then(|r| r.get(parent_path));
+    if let Some(parent_mailbox) = parent_mailbox_opt {
+        let summary = match result {
+            Ok(output) => format!("Background agent '{child_path}' completed.\n{output}"),
+            Err(e) => format!("Background agent '{child_path}' failed: {e:#}"),
+        };
+        let mail = crate::agent::inter_agent::InterAgentCommunication::new(
+            child_path.clone(),
+            parent_path.clone(),
+            Vec::new(),
+            summary,
+            // trigger_turn=true: wake an idle parent immediately so
+            // `WaitForMail` unblocks as soon as the child exits.
+            true,
+        );
+        let _seq = parent_mailbox.send(mail);
+    }
+}
+
 /// **Phase 2 of #1022 (B5 complete):** uses the multi-thread runtime
 /// via `tokio::spawn`. This requires `execute_sub_agent`'s future to
 /// be `Send`, which we enforce explicitly via the `+ Send` bound on
@@ -512,41 +555,14 @@ async fn run_bg_agent(
 
     // #1325 Phase 5a: notify the parent via its mailbox so any
     // `WaitForMail` call in the parent session can unblock on child
-    // completion. This fires *before* the oneshot so the watch
-    // sequence increment is visible before the drain-injection
-    // path adds the `Role::Tool` row — ordering that avoids the
-    // race where `WaitForMail` wakes, calls `drain_completed` and
-    // finds nothing yet.
-    //
-    // Send is best-effort: if the registry has no entry for the
-    // parent (e.g. top-level session running without a registry,
-    // or the parent already exited), we silently skip — the
-    // existing drain path (`inference.rs` `drain_completed`) still
-    // injects the result on the next iteration, so nothing is lost.
-    let parent_mailbox_opt = bg_mailbox_registry
-        .as_deref()
-        .and_then(|r| r.get(&parent_agent_path));
-    if let Some(parent_mailbox) = parent_mailbox_opt {
-        let summary = match &result {
-            Ok(output) => format!(
-                "Background agent '{}' completed.\n{}",
-                bg_agent_path, output
-            ),
-            Err(e) => format!("Background agent '{}' failed: {e:#}", bg_agent_path),
-        };
-        let mail = crate::agent::inter_agent::InterAgentCommunication::new(
-            bg_agent_path.clone(),
-            parent_agent_path,
-            Vec::new(),
-            summary,
-            // trigger_turn=true: wake the parent immediately so
-            // `WaitForMail` unblocks as soon as the child exits
-            // rather than waiting for the parent's next natural turn.
-            true,
-        );
-        // `send` returns the sequence number; we don't need it.
-        let _seq = parent_mailbox.send(mail);
-    }
+    // completion. Fires *before* the oneshot — see `notify_parent_mailbox`
+    // for the ordering rationale and test coverage.
+    notify_parent_mailbox(
+        bg_mailbox_registry.as_deref(),
+        &bg_agent_path,
+        &parent_agent_path,
+        &result,
+    );
 
     let _ = match result {
         Ok(output) => tx.send(Ok((output, events))),
@@ -1336,6 +1352,14 @@ pub(crate) fn execute_sub_agent<'a>(
             // scripted model emits `InvokeAgent` regardless.
             if !denied.contains(&"InvokeAgent".to_string()) {
                 denied.push("InvokeAgent".to_string());
+            }
+            // #1325 Phase 5a: SpawnAgent re-maps to InvokeAgent at dispatch
+            // time, so it must be denied here too. Without this a sub-agent
+            // could call SpawnAgent → tool_dispatch re-maps → execute_sub_agent
+            // → unbounded mutual recursion, silently bypassing the flat-design
+            // invariant above. Deny both names so the model never sees either.
+            if !denied.contains(&"SpawnAgent".to_string()) {
+                denied.push("SpawnAgent".to_string());
             }
             // #1022 B8: AskUser requires a live `cmd_rx` connected to the
             // user. Sub-agents have a detached channel (foreground sub-agents
@@ -2665,5 +2689,135 @@ mod error_chain_format_tests {
             "LLM API returned 400 Bad Request: {{\"error\":\"Context size has been exceeded.\"}}"
         );
         assert_eq!(format!("{e}"), format!("{e:#}"));
+    }
+}
+
+/// Tests for the `notify_parent_mailbox` bridge (#1325 Phase 5a).
+///
+/// Pins three behaviors:
+/// 1. Completion mail lands in the parent mailbox (content + `trigger_turn`).
+/// 2. Missing parent registry entry → silent skip, no panic.
+/// 3. Error result is formatted as "failed: …" and still delivered.
+#[cfg(test)]
+mod notify_parent_mailbox_tests {
+    use super::notify_parent_mailbox;
+    use crate::agent::mailbox::Mailbox;
+    use crate::agent::mailbox_registry::RegisterOutcome;
+    use crate::agent::{AgentPath, MailboxRegistry};
+    use std::sync::Arc;
+
+    fn child_path() -> AgentPath {
+        AgentPath::root().join("worker_1").unwrap()
+    }
+    fn parent_path() -> AgentPath {
+        AgentPath::root()
+    }
+
+    /// Register `path` in `reg` and return the `MailboxReceiver` for drain.
+    fn register(reg: &MailboxRegistry, path: AgentPath) -> crate::agent::mailbox::MailboxReceiver {
+        let (mb, rx) = Mailbox::new();
+        let outcome = reg.register(path, Arc::new(mb));
+        assert_eq!(outcome, RegisterOutcome::Inserted);
+        rx
+    }
+
+    // ── 1. Completion mail content + ordering ────────────────────────────
+
+    #[test]
+    fn success_mail_lands_in_parent_mailbox() {
+        // Pin: Ok result → mail lands in parent mailbox with the
+        // expected content prefix and trigger_turn=true.
+        let reg = MailboxRegistry::new();
+        let mut rx = register(&reg, parent_path());
+
+        let result: Result<String, anyhow::Error> = Ok("the answer is 42".to_string());
+        notify_parent_mailbox(Some(&reg), &child_path(), &parent_path(), &result);
+
+        let items = rx.drain();
+        assert_eq!(items.len(), 1, "exactly one mail must be delivered");
+        let mail = &items[0];
+        assert_eq!(mail.author, child_path());
+        assert_eq!(mail.recipient, parent_path());
+        assert!(
+            mail.trigger_turn,
+            "trigger_turn must be true to wake WaitForMail"
+        );
+        assert!(
+            mail.content.contains("completed"),
+            "success mail must say 'completed'; got: {}",
+            mail.content
+        );
+        assert!(
+            mail.content.contains("the answer is 42"),
+            "success mail must include the agent output"
+        );
+    }
+
+    #[test]
+    fn error_mail_formats_as_failed_and_is_delivered() {
+        // Pin: Err result → mail says "failed: …" and is still
+        // delivered (not swallowed).
+        let reg = MailboxRegistry::new();
+        let mut rx = register(&reg, parent_path());
+
+        let err = anyhow::anyhow!("connection refused").context("Failed to call LLM API");
+        let result: Result<String, anyhow::Error> = Err(err);
+        notify_parent_mailbox(Some(&reg), &child_path(), &parent_path(), &result);
+
+        let items = rx.drain();
+        assert_eq!(items.len(), 1);
+        let mail = &items[0];
+        assert!(
+            mail.content.contains("failed"),
+            "error mail must say 'failed'; got: {}",
+            mail.content
+        );
+        // {:#} chains the context — both layers must appear.
+        assert!(
+            mail.content.contains("Failed to call LLM API"),
+            "error mail must include outer context"
+        );
+        assert!(
+            mail.content.contains("connection refused"),
+            "error mail must include root cause via anyhow alternate format"
+        );
+        assert!(mail.trigger_turn, "trigger_turn must be true even on error");
+    }
+
+    // ── 2. Silent skip when registry/parent missing ──────────────────────
+
+    #[test]
+    fn none_registry_skips_silently() {
+        // Pin: None registry → no panic, nothing delivered.
+        // (The oneshot path continues regardless.)
+        let result: Result<String, anyhow::Error> = Ok("done".to_string());
+        // Should not panic.
+        notify_parent_mailbox(None, &child_path(), &parent_path(), &result);
+    }
+
+    #[test]
+    fn missing_parent_entry_skips_silently() {
+        // Pin: registry exists but parent is NOT registered (e.g.
+        // top-level session without its own mailbox slot). No panic,
+        // no delivery.
+        let reg = MailboxRegistry::new();
+        // Do NOT register the parent — it's intentionally absent.
+        let result: Result<String, anyhow::Error> = Ok("done".to_string());
+        notify_parent_mailbox(Some(&reg), &child_path(), &parent_path(), &result);
+        // If we got here without panic, the contract holds.
+    }
+
+    #[test]
+    fn child_not_registered_does_not_affect_delivery() {
+        // Pin: only the *parent* mailbox needs to be registered for
+        // delivery. The child may or may not have a slot — irrelevant.
+        let reg = MailboxRegistry::new();
+        let mut rx = register(&reg, parent_path());
+        // child is NOT registered — that's the common case (the child
+        // finishes and its RAII guard has already unregistered it).
+        let result: Result<String, anyhow::Error> = Ok("work done".to_string());
+        notify_parent_mailbox(Some(&reg), &child_path(), &parent_path(), &result);
+
+        assert_eq!(rx.drain().len(), 1, "mail must still arrive");
     }
 }

@@ -362,18 +362,28 @@ pub(crate) async fn execute_one_tool(
         //
         // Box::pin is required for the same mutual-recursion reason as
         // `InvokeAgent` above — see that branch's comment.
-        let remapped = {
-            let mut v: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
-            if let Some(obj) = v.as_object_mut() {
-                if let Some(task_name) = obj.remove("task_name") {
-                    obj.insert("agent_name".to_string(), task_name);
-                }
-                if let Some(message) = obj.remove("message") {
-                    obj.insert("prompt".to_string(), message);
-                }
+        // Parse first — explicit error rather than silently becoming Null
+        // and then getting a downstream "agent_name is required" error.
+        let mut parsed: serde_json::Value = match serde_json::from_str(&tc.arguments) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    tc.id.clone(),
+                    format!("SpawnAgent: argument JSON is malformed: {e}"),
+                    false,
+                    None,
+                );
             }
-            serde_json::to_string(&v).unwrap_or_else(|_| tc.arguments.clone())
         };
+        if let Some(obj) = parsed.as_object_mut() {
+            if let Some(task_name) = obj.remove("task_name") {
+                obj.insert("agent_name".to_string(), task_name);
+            }
+            if let Some(message) = obj.remove("message") {
+                obj.insert("prompt".to_string(), message);
+            }
+        }
+        let remapped = serde_json::to_string(&parsed).unwrap_or_else(|_| tc.arguments.clone());
         let remapped_tc = crate::providers::ToolCall {
             function_name: "InvokeAgent".to_string(),
             arguments: remapped,

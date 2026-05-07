@@ -153,6 +153,10 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         // it mutates the recipient's mailbox state. See module
         // docs on each for the full rationale.
         ("WaitForMail", ToolEffect::ReadOnly),
+        // #1325 Phase 5a: SpawnAgent re-maps to InvokeAgent at dispatch
+        // time; ReadOnly for the same reason InvokeAgent is ReadOnly
+        // (sub-agents inherit the parent's approval mode).
+        ("SpawnAgent", ToolEffect::ReadOnly),
         // Local mutations
         ("Write", ToolEffect::LocalMutation),
         ("Edit", ToolEffect::LocalMutation),
