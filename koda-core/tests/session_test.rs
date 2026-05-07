@@ -88,6 +88,7 @@ async fn make_session(env: &Env, provider: Box<dyn LlmProvider>) -> (KodaSession
         mailbox_rx: std::sync::Arc::new(tokio::sync::Mutex::new(mailbox_rx)),
         idle_pending_input: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
         mailbox_registry,
+        agent_path: koda_core::agent::AgentPath::root(),
     };
     (session, cancel)
 }

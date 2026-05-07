@@ -95,6 +95,7 @@ async fn make_session_with_recorder(
         mailbox_rx: Arc::new(AsyncMutex::new(mailbox_rx)),
         idle_pending_input: Arc::new(AsyncMutex::new(Vec::new())),
         mailbox_registry,
+        agent_path: koda_core::agent::AgentPath::root(),
     };
     (session, cancel, recorded)
 }

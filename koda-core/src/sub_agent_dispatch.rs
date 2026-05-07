@@ -217,6 +217,13 @@ async fn run_bg_agent(
     // `sub_config.allowed_tools`).
     let placeholder_tools =
         crate::tools::ToolRegistry::new(project_root.clone(), parent_config.max_context_tokens);
+    // #1325 Phase 4 (commit 1 — plumbing): bg agents "are" the root
+    // for now because the spawn machinery (`SpawnAgent`, child path
+    // assignment, child mailbox registration) lands in commit 2. As
+    // soon as commit 2 ships this becomes the actual child path so
+    // `SendMessage`/`WaitForMail` from inside the child see the
+    // right inbox / `author`.
+    let bg_agent_path = crate::agent::AgentPath::root();
     let bg_turn = crate::turn_context::TurnContext::new(
         &project_root,
         &parent_config,
@@ -228,6 +235,7 @@ async fn run_bg_agent(
         &nested_bg,
         parent_trust,
         &placeholder_tools,
+        &bg_agent_path,
     );
     // Phase E of #996: the bg agent has no in-process parent in
     // the spawner sense — its `nested_bg` registry is fresh, and
@@ -1107,6 +1115,11 @@ pub(crate) fn execute_sub_agent<'a>(
         // inline twice with identical args. Hoisted here because
         // `sub_config`, `sub_session`, and `tools` are all bound by
         // this point and don't change across iterations.
+        // #1325 Phase 4 (commit 1): inline-only sub-agent path
+        // (background=false). Same placeholder reasoning as the
+        // bg-agent path above — commit 2 swaps `/root` for the
+        // child's actual `/root/<name>` path.
+        let sub_agent_path = crate::agent::AgentPath::root();
         let sub_turn = crate::turn_context::TurnContext::new(
             project_root,
             &sub_config,
@@ -1118,6 +1131,7 @@ pub(crate) fn execute_sub_agent<'a>(
             bg_agents,
             mode,
             &tools,
+            &sub_agent_path,
         );
         let sub_tx =
             crate::turn_context::ToolExecutionContext::new(&sub_turn, Some(my_invocation_id));

@@ -123,6 +123,7 @@ async fn make_session_with_mcp(
         mailbox_rx: Arc::new(tokio::sync::Mutex::new(mailbox_rx)),
         idle_pending_input: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         mailbox_registry,
+        agent_path: koda_core::agent::AgentPath::root(),
     };
     (session, cancel, recorded)
 }

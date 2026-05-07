@@ -257,6 +257,7 @@ pub(crate) async fn execute_one_tool(
         ..
     } = *tx.turn;
     let caller_spawner = tx.caller_spawner;
+    let caller_agent_path = tx.turn.agent_path;
     let _session_id = session_id; // mirror the existing `_session_id` arg name
     let (result, success, full_output) = if matches!(
         tc.function_name.as_str(),
@@ -367,7 +368,13 @@ pub(crate) async fn execute_one_tool(
             None
         };
         let r = tools
-            .execute(&tc.function_name, &tc.arguments, streaming, caller_spawner)
+            .execute(
+                &tc.function_name,
+                &tc.arguments,
+                streaming,
+                caller_spawner,
+                caller_agent_path,
+            )
             .await;
         (r.output, r.success, r.full_output)
     };

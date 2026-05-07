@@ -217,12 +217,16 @@ impl Tool for SendMessageTool {
             }
         };
 
-        // Phase 3 has no per-spawner caller identity yet, so author
-        // is always `/root`. Phase 4 will plumb the real spawner's
-        // path here (mirrors codex's
-        // `turn.session_source.get_agent_path()` lookup).
+        // #1325 Phase 4: stamp the real caller's identity as `author`.
+        // Pre-Phase-4 this was hardcoded to `/root` because every
+        // session pretended to be the root. Now `caller_agent_path`
+        // carries the spawn-tree position threaded down from
+        // `KodaSession::agent_path` → `TurnContext.agent_path`
+        // → `ToolExecCtx.caller_agent_path`, so spawned children
+        // produce attributable mail without colliding with root's
+        // identity (the bug Phase 4 of #1325 exists to close).
         let comm = InterAgentCommunication {
-            author: AgentPath::root(),
+            author: ctx.caller_agent_path.clone(),
             recipient: target_path.clone(),
             other_recipients: Vec::new(),
             content: content.to_string(),
@@ -273,6 +277,7 @@ mod tests {
         policy: &'a koda_sandbox::SandboxPolicy,
         skills: &'a crate::skills::SkillRegistry,
         registry: &'a Arc<MailboxRegistry>,
+        agent_path: &'a AgentPath,
     ) -> ToolExecCtx<'a> {
         ToolExecCtx {
             project_root: root,
@@ -289,6 +294,7 @@ mod tests {
             session: None,
             skill_registry: skills,
             mailbox_registry: Some(registry),
+            caller_agent_path: agent_path,
         }
     }
 
@@ -320,8 +326,9 @@ mod tests {
         // assigns a sequence number we can observe.
         let (reg, _mb, mut rx) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
         );
 
         let result = SendMessageTool
@@ -345,14 +352,49 @@ mod tests {
         );
     }
 
+    /// #1325 Phase 4: when a child agent (non-root caller) sends mail,
+    /// the delivered envelope's `author` field MUST equal the child's
+    /// path, not a hard-coded `/root`. Regression guard for the bug
+    /// the whole phase exists to fix — without this, peer agents
+    /// can't tell who's talking and the spawn-tree degenerates back
+    /// into a flat namespace.
+    #[tokio::test]
+    async fn child_agent_send_stamps_author_with_child_path() {
+        let (reg, _mb, mut rx) = fresh_registry_with_root();
+        let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        // Simulate dispatch from a child agent: `/root/researcher`.
+        let child = "/root/researcher".parse::<AgentPath>().unwrap();
+        let ctx = ctx_with_registry(
+            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &child,
+        );
+
+        let result = SendMessageTool
+            .execute(
+                &ctx,
+                &json!({"target": "/root", "content": "status update"}),
+            )
+            .await;
+
+        assert!(result.success, "expected success, got: {}", result.output);
+        let drained = rx.drain();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(
+            drained[0].author.as_str(),
+            "/root/researcher",
+            "author must reflect the caller's spawn-tree path, not /root"
+        );
+        assert_eq!(drained[0].recipient.as_str(), "/root");
+    }
+
     #[tokio::test]
     async fn missing_target_path_returns_helpful_error() {
         // Pin: model-visible error includes the list of available
         // paths so the LLM can self-correct without re-trying blind.
         let (reg, _mb, _rx) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
         );
 
         let result = SendMessageTool
@@ -381,8 +423,9 @@ mod tests {
         // grep-and-find working for anyone debugging from upstream.
         let (reg, _mb, _rx) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
         );
 
         let result = SendMessageTool
@@ -400,8 +443,9 @@ mod tests {
     async fn invalid_path_string_returns_parse_error() {
         let (reg, _mb, _rx) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
         );
 
         let result = SendMessageTool
@@ -422,6 +466,7 @@ mod tests {
         // (standalone-ToolRegistry tests, or future contexts where
         // peer-messaging is not configured).
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ToolExecCtx {
             project_root: &root,
             read_cache: &cache,
@@ -437,6 +482,7 @@ mod tests {
             session: None,
             skill_registry: &skills,
             mailbox_registry: None,
+            caller_agent_path: &agent_path,
         };
 
         let result = SendMessageTool
@@ -455,8 +501,9 @@ mod tests {
     async fn missing_target_field_returns_validation_error() {
         let (reg, _mb, _rx) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
         );
 
         let result = SendMessageTool
@@ -470,8 +517,9 @@ mod tests {
     async fn missing_content_field_returns_validation_error() {
         let (reg, _mb, _rx) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
         let ctx = ctx_with_registry(
-            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg,
+            &root, &cache, &fs, &caps, &bg, &trust, &policy, &skills, &reg, &agent_path,
         );
 
         let result = SendMessageTool

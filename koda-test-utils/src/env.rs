@@ -290,6 +290,11 @@ impl Env {
             file_tracker: &mut file_tracker,
             bg_agents: &bg_agents,
             sub_agent_cache: &sub_agent_cache,
+            // #1325 Phase 4: test envs are always the user-facing
+            // root agent. SpawnAgent-driven children get their own
+            // path injected by the spawn machinery and don't reach
+            // here.
+            agent_path: &koda_core::agent::AgentPath::root(),
         })
         .await;
 

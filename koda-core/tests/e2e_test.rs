@@ -174,6 +174,7 @@ async fn test_provider_error_emits_error_event() {
         file_tracker: &mut file_tracker,
         bg_agents: &koda_core::child_agent::new_shared(),
         sub_agent_cache: &koda_core::sub_agent_cache::SubAgentCache::new(),
+        agent_path: &koda_core::agent::AgentPath::root(),
     })
     .await;
 
@@ -298,6 +299,7 @@ async fn test_cancel_during_streaming() {
         file_tracker: &mut file_tracker,
         bg_agents: &koda_core::child_agent::new_shared(),
         sub_agent_cache: &koda_core::sub_agent_cache::SubAgentCache::new(),
+        agent_path: &koda_core::agent::AgentPath::root(),
     })
     .await;
 
