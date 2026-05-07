@@ -26,10 +26,12 @@
 
 pub mod inter_agent;
 pub mod koda_agent;
+pub mod mail_message;
 pub mod mailbox;
 pub mod path;
 
 pub use inter_agent::InterAgentCommunication;
 pub use koda_agent::KodaAgent;
+pub use mail_message::mail_to_user_message;
 pub use mailbox::{Mailbox, MailboxReceiver};
 pub use path::AgentPath;
