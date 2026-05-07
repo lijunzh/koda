@@ -1,18 +1,4 @@
-// Vendored from openai/codex (Apache-2.0) — see top-level NOTICE.
-// Source: codex-rs/core/src/agent/mailbox.rs
-// Local modifications:
-//   - Updated import path for `InterAgentCommunication` to point at
-//     `crate::agent::inter_agent` (koda's vendored location).
-//   - `pub(crate)` visibility raised to `pub` so the rest of koda-core
-//     and downstream tools can construct/consume mailboxes. Codex
-//     keeps this internal because their session module owns it; we'll
-//     do the same wiring in Phase 2 of #1325 but expose for now to
-//     keep this PR substrate-only.
-//   - Test imports adapted (`AgentPath` from koda's path module).
-//   - Tokio test attributes use `(flavor = "multi_thread")` to satisfy
-//     koda's #1109 F2 guard (any test touching `tokio::spawn` / `watch`
-//     / `broadcast` must run on the multi-thread runtime).
-//     Codex's upstream uses the bare attribute form.
+// Apache-2.0 vendored module — see top-level NOTICE.
 
 //! Per-agent inbox: an unbounded mpsc backing the message buffer plus a
 //! `watch::Sender<u64>` carrying a monotonic sequence number for cheap
@@ -27,6 +13,36 @@
 //! `pending_mails` on the receiver lets `has_pending` / `drain` give a
 //! consistent view of "everything sent up to this point" without a race
 //! against a producer that fired between `try_recv` and the next call.
+//!
+//! # Provenance
+//!
+//! Ported from `codex-rs/core/src/agent/mailbox.rs` at upstream commit
+//! `213756c9ab22b567d426fe1be9757705fb5862c9` (codex `main` as of
+//! 2026-05-05; the file's only commit — it was added in
+//! `feat: add mailbox concept for wait (#16010)` and has not been
+//! touched since).
+//!
+//! ## Local modifications
+//!
+//! - Updated import path for `InterAgentCommunication` to point at
+//!   `crate::agent::inter_agent` (koda's vendored location).
+//! - `pub(crate)` visibility raised to `pub` so the rest of koda-core
+//!   and downstream tools can construct/consume mailboxes. Codex
+//!   keeps this internal because their session module owns it; we'll
+//!   do the same wiring in Phase 2 of #1325 but expose for now to
+//!   keep this PR substrate-only.
+//! - Test imports adapted (`AgentPath` from koda's path module).
+//! - Tokio test attributes use `(flavor = "multi_thread")` to satisfy
+//!   koda's #1109 F2 guard (any test touching `tokio::spawn` / `watch`
+//!   / `broadcast` must run on the multi-thread runtime).
+//!   Codex's upstream uses the bare attribute form.
+//! - Added 2 koda-extra tests (`watch_wakes_a_parked_subscriber_on_send`
+//!   exercises the parking contract Phase 3 will rely on;
+//!   `drain_after_drain_is_empty` is a regression net).
+//!
+//! ## Vendor-sync skips
+//!
+//! (None.)
 
 use crate::agent::inter_agent::InterAgentCommunication;
 use std::collections::VecDeque;

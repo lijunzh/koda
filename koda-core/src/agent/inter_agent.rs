@@ -1,12 +1,4 @@
-// Vendored from openai/codex (Apache-2.0) — see top-level NOTICE.
-// Source: codex-rs/protocol/src/protocol.rs (`InterAgentCommunication`)
-// Local modifications:
-//   - Dropped `to_response_input_item` / `from_message_content` /
-//     `is_message_content` helpers — those depend on Codex's
-//     `ResponseInputItem` / `ContentItem` / `MessagePhase` types.
-//     The equivalent koda mapping (mailbox → next-turn user message)
-//     is Phase 2 of #1325; until then this is just the wire shape.
-//   - Dropped `JsonSchema`/`TS` derives.
+// Apache-2.0 vendored module — see top-level NOTICE.
 
 //! Wire format for messages exchanged between agents over their mailboxes.
 //!
@@ -14,6 +6,47 @@
 //! `trigger_turn = true` tells the recipient's session to wake an idle
 //! turn (used for "I have something for you to act on" semantics);
 //! `false` is "FYI, fold this into your next turn whenever it happens".
+//!
+//! # Provenance
+//!
+//! Ported from `codex-rs/protocol/src/protocol.rs` (the
+//! `InterAgentCommunication` struct and `impl`) at upstream commit
+//! `05fd90457263834535d85995023102e98f9a8be8` (codex `main` as of
+//! 2026-05-05; latest commit touching the symbol).
+//!
+//! ## Local modifications
+//!
+//! - Dropped `to_response_input_item` / `from_message_content` /
+//!   `is_message_content` helpers — those depend on Codex's
+//!   `ResponseInputItem` / `ContentItem` / `MessagePhase` types.
+//!   The equivalent koda mapping (mailbox → next-turn user message)
+//!   is Phase 2 of #1325; until then this is just the wire shape.
+//! - Dropped `JsonSchema`/`TS` derives.
+//! - Added 3 koda-extra serde tests (codex tests this through its
+//!   own protocol layer rather than direct serde roundtrips).
+//!
+//! ## Vendor-sync skips
+//!
+//! This file is intentionally NOT registered in the
+//! `vendor-sync-reminder.yml` workflow because its upstream source
+//! (`codex-rs/protocol/src/protocol.rs`) is a 4000-line file that
+//! churns weekly for unrelated reasons. Whole-file drift detection
+//! would drown the report. To check for symbol-level drift manually:
+//!
+//! ```bash
+//! cd ../codex && git log <pinned-sha>..HEAD -G InterAgentCommunication \
+//!     -- codex-rs/protocol/src/protocol.rs
+//! ```
+//!
+//! Skips below are kept for the manual-check workflow.
+//!
+//! - skip 05fd904572: test protocol: lock inter-agent commentary phase
+//!   (#20046) — adds a regression test for `to_response_input_item`,
+//!   the helper koda explicitly dropped (it depends on codex's
+//!   `ResponseInputItem` types). The test will become relevant when
+//!   Phase 2 of #1325 implements koda's equivalent mailbox-to-message
+//!   mapping; at that point unskip and port the test (with appropriate
+//!   adaptations for koda's message types).
 
 use serde::Deserialize;
 use serde::Serialize;

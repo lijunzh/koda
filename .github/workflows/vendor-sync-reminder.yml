@@ -71,6 +71,18 @@ jobs:
             ["koda-cli/src/composer/paste_burst.rs"]="codex-rs/tui/src/bottom_pane/paste_burst.rs"
             ["koda-cli/src/composer/text_element.rs"]="codex-rs/protocol/src/user_input.rs"
             ["koda-cli/src/composer/wrapping.rs"]="codex-rs/tui/src/wrapping.rs"
+            # #1325 Phase 1: peer-agent message-passing substrate.
+            #
+            # `koda-core/src/agent/inter_agent.rs` is intentionally NOT
+            # registered here even though it's vendored — its upstream
+            # source is `codex-rs/protocol/src/protocol.rs`, a 4000-line
+            # file that churns weekly for unrelated reasons. Whole-file
+            # drift detection would drown the report. The header in
+            # `inter_agent.rs` documents how to check for symbol-level
+            # drift manually (one `git log -G InterAgentCommunication`
+            # invocation).
+            ["koda-core/src/agent/path.rs"]="codex-rs/protocol/src/agent_path.rs"
+            ["koda-core/src/agent/mailbox.rs"]="codex-rs/core/src/agent/mailbox.rs"
           )
 
           report=""

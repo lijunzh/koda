@@ -1,10 +1,4 @@
-// Vendored from openai/codex (Apache-2.0) — see top-level NOTICE.
-// Source: codex-rs/protocol/src/agent_path.rs
-// Local modifications:
-//   - Dropped the `/morpheus` special-case path (Codex-specific feature).
-//   - Dropped `JsonSchema` and `TS` derives (koda doesn't currently depend
-//     on `schemars` or `ts-rs`; can be added later if we expose this over
-//     the ACP wire protocol).
+// Apache-2.0 vendored module — see top-level NOTICE.
 
 //! Typed absolute path identifying an agent in the spawn tree.
 //!
@@ -14,6 +8,38 @@
 //! This is the `AgentPath` from Codex's mailbox/peer-agent design: every
 //! agent (including the root user-facing one) has a stable path that
 //! `InterAgentCommunication` uses for `author` / `recipient`.
+//!
+//! # Provenance
+//!
+//! Ported from `codex-rs/protocol/src/agent_path.rs` at upstream commit
+//! `b528ff02b6504e8399a5826900ada9a392e6bb48` (codex `main` as of
+//! 2026-05-05).
+//!
+//! ## Local modifications
+//!
+//! - Dropped the `/morpheus` special-case path (Codex-specific feature).
+//! - Dropped `JsonSchema` and `TS` derives (koda doesn't currently
+//!   depend on `schemars` or `ts-rs`; can be added later if we expose
+//!   this over the ACP wire protocol).
+//! - Added 5 koda-extra tests (`nested_join_builds_grandchild_paths`,
+//!   `empty_name_rejected`, `root_name_reserved`, `serde_roundtrip`,
+//!   `serde_rejects_invalid_path`) for behavior we lean on.
+//!
+//! ## Vendor-sync skips
+//!
+//! The vendor-sync workflow reads `skip <SHA>` lines below and excludes
+//! those upstream commits from drift reports. Each entry must justify
+//! WHY koda intentionally does not port the commit. To unskip, delete
+//! the line and re-port the commit.
+//!
+//! - skip b528ff02b6: chore: morpheus to path (#18353) — adds the
+//!   `/morpheus` constant + constructor + validation special case.
+//!   Koda explicitly dropped the morpheus concept (it's a codex-specific
+//!   phase-2 memories agent), so this commit is the modification we
+//!   already wrote into our local copy. The pinned SHA above is THIS
+//!   commit, so this skip is the boundary condition: we're aware of
+//!   it, we declined to port it, and the drift checker should not
+//!   re-surface it on every run.
 
 use serde::Deserialize;
 use serde::Serialize;
