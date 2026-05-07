@@ -91,13 +91,15 @@ impl ToolEffect {
 pub mod agent;
 pub mod ask_user;
 pub mod bg_process;
-/// Background-task management tools — `ListBackgroundTasks`,
-/// `CancelTask`, `WaitTask` (Layer 2 of #996).
-pub mod task_id;
 /// Read-only tool metadata catalog (#1265 item 5, PR-1/N).
 /// Owns built-in definitions + the MCP manager slot. `ToolRegistry`
 /// composes one of these and delegates the read-only methods.
 pub mod catalog;
+/// Background-task ID parser shared between the TUI's `/cancel <id>`
+/// slash command and the underlying `ChildAgentRegistry` / `BgRegistry`.
+/// Pre-#1325 Phase 5b this module was `bg_task_tools` and housed the
+/// retired `ListBackgroundTasks` / `CancelTask` / `WaitTask` LLM tools.
+pub mod task_id;
 pub use catalog::ToolCatalog;
 /// `Tool` trait + `ToolExecCtx` (#1265 item 5, PR-3/N). The seam for
 /// the per-tool migration that follows in PR-4..PR-N. Each migrated

@@ -60,9 +60,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use super::{
-    DynTool, Tool, ToolEffect, agent, ask_user, boxed, file_tools, glob_tool, grep,
-    memory, recall, send_message, shell, skill_tools, spawn_agent, todo, wait_for_mail, web_fetch,
-    web_search,
+    DynTool, Tool, ToolEffect, agent, ask_user, boxed, file_tools, glob_tool, grep, memory, recall,
+    send_message, shell, skill_tools, spawn_agent, todo, wait_for_mail, web_fetch, web_search,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
