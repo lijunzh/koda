@@ -37,3 +37,14 @@ docs/book/
 # Python bytecode (scripts/ contains a few helper scripts)
 __pycache__/
 *.pyc
+
+# peers/ — local symlinks + clones to reference projects (Codex, Claude
+# Code, Gemini CLI, Zed) used during koda development. The meta-files
+# (manifest, bootstrap script, README) are checked in so contributors
+# can run `./peers/bootstrap.sh` on a fresh laptop; the symlinks and
+# clones stay strictly local. See peers/README.md for the design.
+peers/*
+!peers/.gitkeep
+!peers/README.md
+!peers/peers.txt
+!peers/bootstrap.sh
