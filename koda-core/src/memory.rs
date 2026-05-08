@@ -86,8 +86,15 @@ fn read_through_cache(path: &Path) -> Result<(String, bool)> {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
     // Fast path: cache hit.
+    //
+    // We use `unwrap_or_else(|p| p.into_inner())` instead of `expect()`
+    // so a panic in one test that happened to be holding this lock
+    // doesn't cascade-fail every other memory test in the same process
+    // with `PoisonError`. See #1333. In production this branch is
+    // unreachable (no test-only code calls `panic!()` while holding the
+    // cache mutex) so the change is a defensive no-op outside tests.
     {
-        let map = cache().lock().expect("memory cache mutex poisoned");
+        let map = cache().lock().unwrap_or_else(|p| p.into_inner());
         if let Some(entry) = map.get(&canonical)
             && entry.mtime == mtime
             && entry.len == len
@@ -105,7 +112,7 @@ fn read_through_cache(path: &Path) -> Result<(String, bool)> {
     // readers of OTHER paths aren't blocked on disk I/O.
     let content = std::fs::read_to_string(path)?;
     {
-        let mut map = cache().lock().expect("memory cache mutex poisoned");
+        let mut map = cache().lock().unwrap_or_else(|p| p.into_inner());
         map.insert(
             canonical,
             CachedEntry {
@@ -127,9 +134,41 @@ fn read_through_cache(path: &Path) -> Result<(String, bool)> {
 #[cfg(test)]
 pub(crate) fn clear_cache_for_tests() {
     if let Some(m) = MEMORY_CACHE.get() {
-        m.lock().expect("memory cache mutex poisoned").clear();
+        m.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
 }
+
+/// Test-only serialization mutex for memory tests.
+///
+/// Why this exists (#1333):
+///
+/// `memory::tests::*` and `tools::memory::tests::*` share a single
+/// process-wide [`MEMORY_CACHE`]. They mutate it via
+/// [`clear_cache_for_tests`] and snapshot it via direct
+/// `cache().lock()` calls. Under `cargo test` (parallel by default)
+/// one test could clear the cache between another test's
+/// `load()`+`cache().lock().get(...).expect(...)` sequence, panicking
+/// **while holding the lock** and poisoning it for every subsequent
+/// test in the process.
+///
+/// Acquire this lock at the top of every memory test that touches
+/// the cache:
+///
+/// ```ignore
+/// let _guard = MEMORY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+/// clear_cache_for_tests();
+/// // ... test body ...
+/// ```
+///
+/// The `unwrap_or_else(|p| p.into_inner())` makes acquisition
+/// poison-resilient — if a prior test panicked while holding it, the
+/// next test still proceeds (so genuine bugs surface as their own
+/// assertion failures, not as N cascading `PoisonError`s).
+///
+/// Mirrors `koda_test_utils::ENV_MUTEX` (the canonical pattern for
+/// env-var test isolation).
+#[cfg(test)]
+pub(crate) static MEMORY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// Load memory from both global and project-local sources.
 ///
@@ -583,6 +622,7 @@ mod tests {
     /// entry (we'd see a different mtime if it were).
     #[test]
     fn test_cache_hit_skips_disk_reread() {
+        let _guard = MEMORY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_cache_for_tests();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("CLAUDE.md");
@@ -603,7 +643,7 @@ mod tests {
         // exactly one entry for this canonical path (i.e. didn't
         // re-insert on every call).
         let canonical = path.canonicalize().unwrap();
-        let map = cache().lock().unwrap();
+        let map = cache().lock().unwrap_or_else(|p| p.into_inner());
         let entry = map.get(&canonical).expect("path must be cached");
         assert_eq!(entry.content, "# pinned content\n- entry one");
         assert_eq!(entry.len, std::fs::metadata(&path).unwrap().len());
@@ -614,6 +654,7 @@ mod tests {
     /// the change and refresh.
     #[test]
     fn test_cache_invalidates_on_append() {
+        let _guard = MEMORY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_cache_for_tests();
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("MEMORY.md"), "## Initial\n- one\n").unwrap();
@@ -645,6 +686,7 @@ mod tests {
     /// even if mtime didn't, so the cache MUST refresh.
     #[test]
     fn test_cache_invalidates_on_size_change() {
+        let _guard = MEMORY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_cache_for_tests();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("CLAUDE.md");
@@ -669,6 +711,7 @@ mod tests {
     /// cross-contaminate.
     #[test]
     fn test_cache_isolates_by_path() {
+        let _guard = MEMORY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_cache_for_tests();
         let proj_a = TempDir::new().unwrap();
         let proj_b = TempDir::new().unwrap();
@@ -695,6 +738,7 @@ mod tests {
     /// `memory::load` from N tokio tasks.
     #[test]
     fn test_concurrent_loads_share_cache() {
+        let _guard = MEMORY_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_cache_for_tests();
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("CLAUDE.md");
@@ -721,7 +765,7 @@ mod tests {
 
         // Exactly one cache entry exists for this canonical path.
         let canonical = path.canonicalize().unwrap();
-        let map = cache().lock().unwrap();
+        let map = cache().lock().unwrap_or_else(|p| p.into_inner());
         assert!(
             map.contains_key(&canonical),
             "cache must contain entry for {canonical:?}"
