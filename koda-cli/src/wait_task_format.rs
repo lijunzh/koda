@@ -318,6 +318,147 @@ pub fn try_render_list_bg_tasks_lines(payload: &str) -> Option<Vec<Line<'static>
     Some(lines)
 }
 
+/// Render a `WaitForMail` JSON payload (#1336, enriched in #1343).
+///
+/// Shape contract (see `koda-core::tools::wait_for_mail`):
+///
+/// 1. **Completed (mail arrived)** — emitted whenever the mailbox
+///    delivered at least one message before the deadline:
+///
+///    ```json
+///    {"message": "Wait completed.", "timed_out": false}
+///    ```
+///
+/// 2. **Timed out, legacy minimal** — emitted when no mailbox
+///    registry is attached (rare; older session DBs / test
+///    fixtures):
+///
+///    ```json
+///    {"message": "Wait timed out.", "timed_out": true}
+///    ```
+///
+/// 3. **Timed out, rich** — the standard timeout payload after
+///    #1343. Includes a per-agent in-flight summary plus an
+///    actionable hint string so the model can decide what to do
+///    next without re-querying:
+///
+///    ```json
+///    {
+///      "message": "Wait timed out.",
+///      "timed_out": true,
+///      "bg_agents_in_flight": 1,
+///      "bg_agents": [
+///        {"task_id": "agent:1", "agent_name": "explore",
+///         "status": "running", "age_secs": 41}
+///      ],
+///      "hint": "1 background sub-agent(s) still running. Consider …"
+///    }
+///    ```
+///
+/// Output shape (matches the `ListBackgroundTasks` per-task style
+/// so eye-sweeps between the two tools see the same vocabulary):
+///
+/// ```text
+///   │ ✅ Wait completed (mail arrived).
+/// ```
+///
+/// ```text
+///   │ ⏱  Wait timed out. 1 sub-agent still running:
+///   │   ▶ agent:1  explore  (running, 41s)
+///   │ 💡 1 background sub-agent(s) still running. Consider doing …
+/// ```
+///
+/// Returns `None` on any shape mismatch (missing `message` / wrong
+/// types) so the caller's generic raw-render path takes over —
+/// content is never silently dropped, which is the same fail-safe
+/// stance as `try_render_wait_task_lines`.
+#[must_use]
+pub fn try_render_wait_for_mail_lines(payload: &str) -> Option<Vec<Line<'static>>> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    // Required discriminator. If `timed_out` isn't present the payload
+    // is some other tool's output and we bail to the generic render.
+    let timed_out = v.get("timed_out")?.as_bool()?;
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    if !timed_out {
+        lines.push(Line::from(vec![
+            Span::styled("  \u{2502} ", TOOL_PREFIX),
+            Span::raw(format!("{} ", wait_status_icon("completed"))),
+            Span::styled("Wait completed (mail arrived).".to_string(), BOLD),
+        ]));
+        return Some(lines);
+    }
+
+    // Timed out. Header summarises in-flight count when available;
+    // legacy minimal payload (no `bg_agents_in_flight` field) just
+    // says "Wait timed out." with no per-agent rows.
+    let in_flight = v.get("bg_agents_in_flight").and_then(|x| x.as_u64());
+    let bg_agents = v.get("bg_agents").and_then(|x| x.as_array());
+    let hint = v.get("hint").and_then(|x| x.as_str());
+
+    let header = match in_flight {
+        None => "Wait timed out.".to_string(),
+        Some(0) => "Wait timed out. No background sub-agents in flight.".to_string(),
+        Some(1) => "Wait timed out. 1 sub-agent still running:".to_string(),
+        Some(n) => format!("Wait timed out. {n} sub-agents still running:"),
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  \u{2502} ", TOOL_PREFIX),
+        Span::raw(format!("{} ", wait_status_icon("timed_out"))),
+        Span::styled(header, BOLD),
+    ]));
+
+    // Per-agent rows. Same icon palette + spacing as
+    // `try_render_list_bg_tasks_lines` so the live overlay,
+    // ListBackgroundTasks render, and WaitForMail timeout render
+    // all show in-flight agents identically.
+    if let Some(arr) = bg_agents {
+        for entry in arr {
+            let task_id = entry.get("task_id").and_then(|v| v.as_str()).unwrap_or("?");
+            let status = entry.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+            let age_secs = entry.get("age_secs").and_then(|v| v.as_u64()).unwrap_or(0);
+            let agent_name = entry
+                .get("agent_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let icon = wait_status_icon(status);
+            let status_tail = format!("({status}, {age_secs}s)");
+
+            let mut spans: Vec<Span<'static>> = vec![
+                Span::styled("  \u{2502} ", TOOL_PREFIX),
+                Span::raw(format!("  {icon} ")),
+                Span::styled(task_id.to_string(), BOLD),
+            ];
+            if !agent_name.is_empty() {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(agent_name.to_string(), DIM));
+            }
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(status_tail, DIM));
+            lines.push(Line::from(spans));
+        }
+    }
+
+    // Hint line. Always present in the rich payload — gives the
+    // human reader the same actionable nudge the model received,
+    // so transcript readers can see *why* the model picked its next
+    // move. Dim italic to read as commentary, not content.
+    if let Some(h) = hint {
+        let dim_italic = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC);
+        lines.push(Line::from(vec![
+            Span::styled("  \u{2502} ", TOOL_PREFIX),
+            Span::raw("\u{1F4A1} "), // 💡
+            Span::styled(h.to_string(), dim_italic),
+        ]));
+    }
+
+    Some(lines)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,5 +679,138 @@ mod tests {
         // Non-array payload — fall back to generic render path.
         assert!(try_render_list_bg_tasks_lines("{}").is_none());
         assert!(try_render_list_bg_tasks_lines("not json").is_none());
+    }
+
+    // --- WaitForMail renderer (#1336 / #1343 / #1344) ----------------------
+
+    #[test]
+    fn wait_for_mail_renders_completed_payload() {
+        // Shape 1: mailbox delivered — single-line success render.
+        let payload = serde_json::json!({
+            "message": "Wait completed.",
+            "timed_out": false,
+        });
+        let lines = try_render_wait_for_mail_lines(&payload.to_string()).expect("renders");
+        assert_eq!(lines.len(), 1, "completed render is exactly one line");
+        let all = collect(&lines);
+        assert!(
+            all.contains("Wait completed (mail arrived)."),
+            "missing success header: {all}"
+        );
+        assert!(all.contains('\u{2705}'), "missing ✅ icon: {all}");
+    }
+
+    #[test]
+    fn wait_for_mail_renders_legacy_minimal_timeout() {
+        // Shape 2: timeout with no registry attached. No per-agent
+        // rows, no hint — just the header.
+        let payload = serde_json::json!({
+            "message": "Wait timed out.",
+            "timed_out": true,
+        });
+        let lines = try_render_wait_for_mail_lines(&payload.to_string()).expect("renders");
+        assert_eq!(lines.len(), 1, "legacy timeout is exactly one line");
+        let all = collect(&lines);
+        assert!(all.contains("Wait timed out."), "missing header: {all}");
+        assert!(all.contains('\u{23F1}'), "missing ⏱ icon: {all}");
+    }
+
+    #[test]
+    fn wait_for_mail_renders_rich_timeout_with_in_flight() {
+        // Shape 3: rich timeout payload — header pluralised, per-agent
+        // row uses ListBackgroundTasks vocabulary, hint line follows.
+        let payload = serde_json::json!({
+            "message": "Wait timed out.",
+            "timed_out": true,
+            "bg_agents_in_flight": 1,
+            "bg_agents": [{
+                "task_id": "agent:1",
+                "agent_name": "explore",
+                "status": "running",
+                "age_secs": 41,
+            }],
+            "hint": "1 background sub-agent(s) still running. Consider doing other useful work.",
+        });
+        let lines = try_render_wait_for_mail_lines(&payload.to_string()).expect("renders");
+        // header + 1 agent row + hint = 3 lines.
+        assert_eq!(lines.len(), 3, "expected 3 lines, got {}", lines.len());
+        let all = collect(&lines);
+        assert!(
+            all.contains("1 sub-agent still running"),
+            "missing singular header phrasing: {all}"
+        );
+        assert!(all.contains("agent:1"), "missing task_id: {all}");
+        assert!(all.contains("explore"), "missing agent_name: {all}");
+        assert!(all.contains("(running, 41s)"), "missing status tail: {all}");
+        assert!(all.contains("\u{1F4A1}"), "missing 💡 hint marker: {all}");
+        assert!(
+            all.contains("Consider doing other useful work"),
+            "missing hint text: {all}"
+        );
+    }
+
+    #[test]
+    fn wait_for_mail_pluralises_multiple_in_flight() {
+        // 2+ agents — header switches to plural, both rows render.
+        let payload = serde_json::json!({
+            "message": "Wait timed out.",
+            "timed_out": true,
+            "bg_agents_in_flight": 2,
+            "bg_agents": [
+                {"task_id": "agent:1", "agent_name": "explore",
+                 "status": "running", "age_secs": 41},
+                {"task_id": "agent:2", "agent_name": "verify",
+                 "status": "pending", "age_secs": 3},
+            ],
+            "hint": "keep working",
+        });
+        let lines = try_render_wait_for_mail_lines(&payload.to_string()).expect("renders");
+        assert_eq!(lines.len(), 4, "header + 2 rows + hint");
+        let all = collect(&lines);
+        assert!(
+            all.contains("2 sub-agents still running"),
+            "missing plural header: {all}"
+        );
+        assert!(all.contains("agent:1") && all.contains("agent:2"));
+        assert!(all.contains("verify") && all.contains("explore"));
+    }
+
+    #[test]
+    fn wait_for_mail_handles_zero_in_flight_timeout() {
+        // Edge case: timeout fired but no bg-agents present — the
+        // header narrates this so the user can see why the wait
+        // was issued without obvious work behind it. Hint still
+        // renders since it carries the actionable nudge.
+        let payload = serde_json::json!({
+            "message": "Wait timed out.",
+            "timed_out": true,
+            "bg_agents_in_flight": 0,
+            "bg_agents": [],
+            "hint": "No background sub-agents are in flight. ...",
+        });
+        let lines = try_render_wait_for_mail_lines(&payload.to_string()).expect("renders");
+        assert_eq!(lines.len(), 2, "header + hint, no agent rows");
+        let all = collect(&lines);
+        assert!(
+            all.contains("No background sub-agents in flight"),
+            "missing zero-in-flight phrasing: {all}"
+        );
+    }
+
+    #[test]
+    fn wait_for_mail_returns_none_for_unrelated_payloads() {
+        // No `timed_out` discriminator — some other tool's output.
+        // Returning None keeps the caller's generic raw render alive
+        // so we never silently swallow content.
+        assert!(try_render_wait_for_mail_lines("not json").is_none());
+        assert!(try_render_wait_for_mail_lines("{}").is_none());
+        assert!(
+            try_render_wait_for_mail_lines(r#"{"tasks":[]}"#).is_none(),
+            "WaitTask payload should not match"
+        );
+        assert!(
+            try_render_wait_for_mail_lines(r#"{"timed_out":"yes"}"#).is_none(),
+            "non-bool timed_out should fall through"
+        );
     }
 }
