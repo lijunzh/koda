@@ -808,6 +808,21 @@ async fn handle_debug_bundle(
         }
     };
 
+    // #1344 issue A: load persisted sub-agent events so the bundle's
+    // `conversation.md` can fold them under each parent `InvokeAgent`
+    // tool result. DB hiccup is non-fatal — ship a bundle without
+    // sub-agent activity blocks rather than failing the whole export.
+    let events = session
+        .db
+        .load_session_events(&session.id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, session_id = %session.id,
+                "failed to load session_events for debug bundle; \
+                 sub-agent activity blocks will be omitted");
+            Vec::new()
+        });
+
     let (session_title, session_started_at): (Option<String>, Option<String>) = match session
         .db
         .list_sessions(200, std::path::Path::new("/"))
@@ -842,6 +857,7 @@ async fn handle_debug_bundle(
         provider: Some(session.provider.provider_name()),
         context_window: None, // PR α: not surfacing yet; PR β can wire from provider
         messages: &messages,
+        events: &events,
         config_dir: &config_dir,
         current_pid: std::process::id(),
         captured_at: &captured_at,

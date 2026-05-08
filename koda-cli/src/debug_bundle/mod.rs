@@ -54,6 +54,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use koda_core::persistence::Message;
+use koda_core::persistence::SessionEvent;
 use ratatui::text::Line;
 use serde_json::{Value, json};
 use zip::CompressionMethod;
@@ -75,6 +76,14 @@ pub struct BundleInput<'a> {
     pub provider: Option<&'a str>,
     pub context_window: Option<u64>,
     pub messages: &'a [Message],
+    /// Persisted sub-agent narrative trace events (#1108 P2a). Empty
+    /// for sessions with no sub-agent activity. Folded into the
+    /// rendered transcript under each parent `InvokeAgent` tool
+    /// result by `history_render::render_history` (#1344 issue A).
+    /// Optional via empty-slice default so legacy call sites compile
+    /// unchanged — they just produce a bundle without sub-agent
+    /// activity blocks, same as before.
+    pub events: &'a [SessionEvent],
     /// Used for log discovery (`<config_dir>/logs/koda-<PID>.log`).
     /// Passed as a parameter rather than read from the live process so
     /// tests can point at a temp dir.
@@ -116,7 +125,7 @@ pub fn write_bundle(input: &BundleInput<'_>) -> std::io::Result<PathBuf> {
     add_file_to_zip(
         &mut zip,
         "conversation.md",
-        render_conversation(input.messages).as_bytes(),
+        render_conversation(input.messages, input.events).as_bytes(),
     )?;
     add_file_to_zip(
         &mut zip,
@@ -273,9 +282,11 @@ fn compute_totals(messages: &[Message]) -> Totals {
 /// — single renderer) and flattening to plain text via `lines_to_text`.
 ///
 /// This is the function that makes the bundle's `conversation.md` match
-/// the user's screen byte-for-byte (modulo styling).
-fn render_conversation(messages: &[Message]) -> String {
-    let lines = crate::history_render::render_history_messages(messages);
+/// the user's screen byte-for-byte (modulo styling). Sub-agent events
+/// (when present) are folded under their parent `InvokeAgent` tool
+/// result via `render_history` (#1344 issue A).
+fn render_conversation(messages: &[Message], events: &[SessionEvent]) -> String {
+    let lines = crate::history_render::render_history(messages, events);
     lines_to_text(&lines)
 }
 
@@ -434,6 +445,7 @@ mod tests {
             provider: None,
             context_window: None,
             messages: &messages,
+            events: &[],
             config_dir: &config_dir,
             current_pid: 1234,
             captured_at: "2026-04-30T22:48:43Z",
@@ -458,6 +470,7 @@ mod tests {
             provider: None,
             context_window: None,
             messages: &messages,
+            events: &[],
             config_dir: &config_dir,
             current_pid: 1234,
             captured_at: "2026-04-30T22:48:43Z",
@@ -530,6 +543,7 @@ mod tests {
             provider: Some("test-provider"),
             context_window: Some(200_000),
             messages: &messages,
+            events: &[],
             config_dir: &config_dir,
             current_pid: 9999,
             captured_at: "2026-04-30T11:00:00Z",
@@ -635,6 +649,7 @@ mod tests {
             provider: None,
             context_window: None,
             messages: &messages,
+            events: &[],
             config_dir: &config_dir,
             current_pid: 1,
             captured_at: "2026-04-30T11:00:00Z",
@@ -665,6 +680,7 @@ mod tests {
             provider: None,
             context_window: None,
             messages: &messages,
+            events: &[],
             config_dir: &config_dir,
             current_pid: 1,
             captured_at: "2026-04-30T11:00:00Z",

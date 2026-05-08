@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use koda_core::persistence::{Message, Role};
+use koda_core::persistence::{Message, Role, SessionEvent};
 use koda_core::tools::{ToolCatalog, ToolEffect};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -21,12 +21,63 @@ const TOOL_OUTPUT_PREVIEW_LINES: usize = 3;
 
 /// Convert a slice of historical messages into styled `Line`s.
 ///
+/// Back-compat shim: renders messages without folding any sub-agent
+/// activity. Prefer [`render_history`] for new call sites — it
+/// additionally folds persisted `SessionEvent`s under their parent
+/// `InvokeAgent` tool call so resumed transcripts and debug bundles
+/// can show what each sub-agent did. Kept as a thin wrapper so the
+/// existing test suite (and any external callers) doesn't churn.
+pub fn render_history_messages(messages: &[Message]) -> Vec<Line<'static>> {
+    render_history(messages, &[])
+}
+
+/// Convert historical messages **plus** persisted sub-agent events
+/// into styled `Line`s.
+///
+/// Sub-agent activity is persisted as `SessionEvent` rows of kind
+/// `sub_agent_event` keyed by the spawning `InvokeAgent` call's
+/// `tool_call_id` (#1108 P2a). This renderer folds those events
+/// inline under the corresponding parent tool result so the
+/// transcript reader can see what the sub-agent actually did instead
+/// of just "Background agent 'X' started" followed by a black box
+/// (#1344 issue A).
+///
+/// Visual treatment is gemini-cli inspired: an indented activity
+/// block opened with a `┌── X (sub-agent activity) ──` header,
+/// the pre-formatted event lines (which already carry their own
+/// emoji prefix from `BufferingSink::classify_for_persist`), and
+/// a closing `└──` bar. Distinct enough from the parent's `│`
+/// gutter that eye-sweeps can tell whose activity each line
+/// belongs to.
+///
 /// Renders user messages with a `❯` prompt, assistant text with a `───`
 /// separator, tool calls as `● ToolName detail`, and tool results as
 /// abbreviated summaries. Tool result styling is differentiated by tool type:
 /// read-only tools (Read, Grep, List…) render their content in a readable
 /// light color; mutating tools (Bash, Write, Edit…) stay dim.
-pub fn render_history_messages(messages: &[Message]) -> Vec<Line<'static>> {
+pub fn render_history(messages: &[Message], events: &[SessionEvent]) -> Vec<Line<'static>> {
+    // Index sub-agent events by their parent InvokeAgent tool_call_id
+    // so we can fold them in O(1) when we hit the matching tool
+    // result during the message walk. Empty when no sub-agents ran
+    // — the inner loop just won't find any matches and renders
+    // exactly as before. Order within each call_id is preserved
+    // (events are loaded ASC by id from `load_session_events`), so
+    // sub-agent activity appears in chronological emit order.
+    let mut events_by_parent: HashMap<&str, Vec<&SessionEvent>> = HashMap::new();
+    use koda_core::persistence::session_event_kind as sek;
+    for ev in events {
+        if ev.kind != sek::SUB_AGENT_EVENT {
+            // Other event kinds (Info, BgTaskUpdate) aren't part of
+            // this fold — they belong to the parent's own narrative
+            // and are out of scope for #1344-A. Future work could
+            // surface them as their own row type.
+            continue;
+        }
+        if let Some(parent) = ev.parent_tool_call_id.as_deref() {
+            events_by_parent.entry(parent).or_default().push(ev);
+        }
+    }
+
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     // tool_call_id → tool_name mapping for result correlation, populated
@@ -75,6 +126,22 @@ pub fn render_history_messages(messages: &[Message]) -> Vec<Line<'static>> {
                     .map(|s| s.as_str())
                     .unwrap_or("");
                 render_tool_result(&mut lines, msg, tool_name);
+
+                // #1344 issue A: fold persisted sub-agent events under
+                // the parent's `InvokeAgent` tool result. Pre-this the
+                // resumed transcript / debug bundle showed the spawn
+                // line and a black box — the trace lines lived in the
+                // DB (since #1108 P2a) but no renderer consumed them.
+                // Restricted to `InvokeAgent` for now: that's the only
+                // tool whose results have correlated sub-agent events.
+                // Other tools fall through unchanged.
+                if tool_name == "InvokeAgent"
+                    && let Some(call_id) = msg.tool_call_id.as_deref()
+                    && let Some(child_events) = events_by_parent.get(call_id)
+                    && !child_events.is_empty()
+                {
+                    render_sub_agent_activity(&mut lines, child_events);
+                }
             }
         }
     }
@@ -299,6 +366,55 @@ fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message, tool_name: 
             Span::styled(format!("... {hidden} more line(s)"), DIM),
         ]));
     }
+}
+
+/// Render persisted sub-agent activity events as an indented block
+/// under the parent's `InvokeAgent` tool result.
+///
+/// Visual shape — gemini-cli inspired but plain-text-friendly so it
+/// survives `lines_to_text` flattening into `conversation.md`:
+///
+/// ```text
+///   │ ┌── sub-agent activity ──
+///   │   🔧 List
+///   │   🔧 Read koda-core/src/lib.rs
+///   │   🔧 Grep
+///   │ └──
+/// ```
+///
+/// Each event line is already pre-formatted with its own emoji prefix
+/// (`🔧` tool, `⎘` auto-rejected approval, raw text for Info) by
+/// `BufferingSink::classify_for_persist`. We just box it.
+///
+/// Header intentionally generic: a future iteration can derive the
+/// agent name from the spawn arguments. The activity block itself is
+/// the visual win — distinguishing parent from sub-agent work —
+/// and that doesn't depend on knowing the name.
+fn render_sub_agent_activity(lines: &mut Vec<Line<'static>>, events: &[&SessionEvent]) {
+    // Opening frame.
+    lines.push(Line::from(vec![
+        Span::styled("  \u{2502} ", TOOL_PREFIX),
+        Span::styled(
+            "\u{250c}\u{2500}\u{2500} sub-agent activity \u{2500}\u{2500}".to_string(),
+            DIM,
+        ),
+    ]));
+
+    // Event lines. Each event payload already starts with its own
+    // 2-space indent + emoji (`  \u{1f527} ToolName`) so we just
+    // prepend the gutter prefix and ship it.
+    for ev in events {
+        lines.push(Line::from(vec![
+            Span::styled("  \u{2502} ", TOOL_PREFIX),
+            Span::styled(ev.payload.clone(), READ_CONTENT),
+        ]));
+    }
+
+    // Closing frame.
+    lines.push(Line::from(vec![
+        Span::styled("  \u{2502} ", TOOL_PREFIX),
+        Span::styled("\u{2514}\u{2500}\u{2500}".to_string(), DIM),
+    ]));
 }
 
 #[cfg(test)]
@@ -634,5 +750,215 @@ mod tests {
             "OpenAI shape must also work; got: {all}"
         );
         assert!(!all.contains("unknown"), "got: {all}");
+    }
+
+    // --- #1344 issue A: sub-agent activity folding -------------------------
+
+    /// Build an `InvokeAgent` assistant message + tool result pair
+    /// with a stable `tool_call_id` so events can be correlated.
+    /// Returns the (assistant_msg, tool_result_msg) pair plus the
+    /// `tool_call_id` for use in event fixtures.
+    fn invoke_agent_pair(call_id: &str, agent_name: &str) -> (Message, Message, String) {
+        let assistant = Message {
+            tool_calls: Some(format!(
+                r#"[{{"id":"{call_id}","function":{{"name":"InvokeAgent","arguments":"{{\"agent\":\"{agent_name}\"}}"}}}}]"#
+            )),
+            ..msg(Role::Assistant, "")
+        };
+        let tool_result = Message {
+            tool_call_id: Some(call_id.to_string()),
+            ..msg(
+                Role::Tool,
+                &format!("Background agent '{agent_name}' started (agent:1)."),
+            )
+        };
+        (assistant, tool_result, call_id.to_string())
+    }
+
+    fn sub_agent_event(parent_call_id: &str, payload: &str) -> SessionEvent {
+        use koda_core::persistence::session_event_kind as sek;
+        SessionEvent {
+            id: 0,
+            session_id: "test".into(),
+            kind: sek::SUB_AGENT_EVENT.to_string(),
+            payload: payload.to_string(),
+            parent_tool_call_id: Some(parent_call_id.to_string()),
+            created_at: None,
+        }
+    }
+
+    fn collect_text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn sub_agent_events_fold_under_invoke_agent_result() {
+        let (assistant, tool_result, call_id) = invoke_agent_pair("call_1", "explore");
+        let messages = vec![assistant, tool_result];
+        let events = vec![
+            sub_agent_event(&call_id, "  \u{1f527} List"),
+            sub_agent_event(&call_id, "  \u{1f527} Read koda-core/src/lib.rs"),
+            sub_agent_event(&call_id, "  \u{1f527} Grep"),
+        ];
+        let lines = render_history(&messages, &events);
+        let all = collect_text(&lines);
+
+        // Opening + closing frame markers.
+        assert!(
+            all.contains("sub-agent activity"),
+            "missing activity block header: {all}"
+        );
+        assert!(
+            all.contains("\u{250c}\u{2500}\u{2500}"),
+            "missing opening corner: {all}"
+        );
+        assert!(
+            all.contains("\u{2514}\u{2500}\u{2500}"),
+            "missing closing corner: {all}"
+        );
+
+        // Each event payload appears verbatim with its preformatted prefix.
+        assert!(all.contains("\u{1f527} List"), "missing List event: {all}");
+        assert!(
+            all.contains("\u{1f527} Read koda-core/src/lib.rs"),
+            "missing Read event: {all}"
+        );
+        assert!(all.contains("\u{1f527} Grep"), "missing Grep event: {all}");
+    }
+
+    #[test]
+    fn no_events_means_no_activity_block() {
+        // Same shape as the fold test but with empty events. The
+        // InvokeAgent result still renders, but the activity frame
+        // must not appear — a black-box experience for sessions
+        // pre-#1108 or sessions where no sub-agents ran.
+        let (assistant, tool_result, _) = invoke_agent_pair("call_1", "explore");
+        let messages = vec![assistant, tool_result];
+        let lines = render_history(&messages, &[]);
+        let all = collect_text(&lines);
+        assert!(
+            !all.contains("sub-agent activity"),
+            "unexpected activity block: {all}"
+        );
+    }
+
+    #[test]
+    fn events_only_fold_under_their_own_invoke_agent_call() {
+        // Two InvokeAgent calls in the transcript; events keyed to
+        // call_1 must NOT bleed into call_2's render. Guards against
+        // a global last-write-wins bug similar to the one that
+        // motivated the per-walk tool_id_to_name map.
+        let (a1, t1, _) = invoke_agent_pair("call_1", "explore");
+        let (a2, t2, _) = invoke_agent_pair("call_2", "verify");
+        let messages = vec![a1, t1, a2, t2];
+        let events = vec![sub_agent_event("call_1", "  \u{1f527} ExploreOnly")];
+        let lines = render_history(&messages, &events);
+        let all = collect_text(&lines);
+
+        // ExploreOnly must appear once — under call_1's result, not call_2's.
+        let occurrences = all.matches("ExploreOnly").count();
+        assert_eq!(occurrences, 1, "event should fold once only: {all}");
+
+        // Locate ExploreOnly relative to the two spawn results to
+        // confirm placement: it should appear *before* the second
+        // "started (agent:1)" line, i.e. inside call_1's block.
+        let explore_idx = all.find("ExploreOnly").expect("event present");
+        let second_started_idx = all
+            .match_indices("started (agent:1)")
+            .nth(1)
+            .map(|(i, _)| i)
+            .expect("two spawn results expected");
+        assert!(
+            explore_idx < second_started_idx,
+            "event should fold under call_1, not call_2: {all}"
+        );
+    }
+
+    #[test]
+    fn non_invoke_agent_tool_results_are_unaffected() {
+        // A `Read` tool result with sub-agent events keyed to its id
+        // (which would never happen in practice — only InvokeAgent
+        // produces sub-agent events) must NOT trigger the fold,
+        // because we gate on `tool_name == "InvokeAgent"`. Belt-and-
+        // suspenders test for the gate.
+        let assistant = Message {
+            tool_calls: Some(
+                r#"[{"id":"call_1","function":{"name":"Read","arguments":"{}"}}]"#.to_string(),
+            ),
+            ..msg(Role::Assistant, "")
+        };
+        let tool_result = Message {
+            tool_call_id: Some("call_1".to_string()),
+            ..msg(Role::Tool, "file contents...")
+        };
+        let messages = vec![assistant, tool_result];
+        let events = vec![sub_agent_event("call_1", "  \u{1f527} Should not appear")];
+        let lines = render_history(&messages, &events);
+        let all = collect_text(&lines);
+        assert!(
+            !all.contains("sub-agent activity"),
+            "non-InvokeAgent tool must not fold events: {all}"
+        );
+        assert!(
+            !all.contains("Should not appear"),
+            "event payload must not leak: {all}"
+        );
+    }
+
+    #[test]
+    fn non_sub_agent_event_kinds_are_ignored() {
+        // The events vec carries multiple kinds (Info, BgTaskUpdate,
+        // SubAgentEvent). Only sub_agent_event entries should fold;
+        // other kinds are out of scope for #1344-A. Guards against
+        // an over-eager match dropping every persisted event into
+        // every InvokeAgent block.
+        use koda_core::persistence::session_event_kind as sek;
+        let (assistant, tool_result, call_id) = invoke_agent_pair("call_1", "explore");
+        let messages = vec![assistant, tool_result];
+        let events = vec![
+            // Wrong kind — must be ignored.
+            SessionEvent {
+                id: 0,
+                session_id: "test".into(),
+                kind: sek::INFO.to_string(),
+                payload: "top-level info, not folded".to_string(),
+                parent_tool_call_id: Some(call_id.clone()),
+                created_at: None,
+            },
+            // Right kind — must fold.
+            sub_agent_event(&call_id, "  \u{1f527} RealEvent"),
+        ];
+        let lines = render_history(&messages, &events);
+        let all = collect_text(&lines);
+        assert!(
+            all.contains("RealEvent"),
+            "sub_agent_event must fold: {all}"
+        );
+        assert!(
+            !all.contains("top-level info, not folded"),
+            "info events must not leak into activity block: {all}"
+        );
+    }
+
+    #[test]
+    fn render_history_messages_remains_back_compat() {
+        // The shim must keep working with no events — same output
+        // as render_history(msgs, &[]).
+        let (assistant, tool_result, _) = invoke_agent_pair("call_1", "explore");
+        let messages = vec![assistant, tool_result];
+        let via_shim = render_history_messages(&messages);
+        let via_new = render_history(&messages, &[]);
+        let shim_text = collect_text(&via_shim);
+        let new_text = collect_text(&via_new);
+        assert_eq!(shim_text, new_text, "shim and new fn must agree");
     }
 }
