@@ -7,6 +7,7 @@
 //! - **menus.rs** — dropdown pickers, menu navigation, wizard state machines
 
 mod events;
+mod idle_ui_events;
 mod menus;
 
 use crate::input;
@@ -131,6 +132,19 @@ pub(crate) struct TuiContext {
     /// `widgets::child_activity_overlay` rendered above the status bar.
     /// See [`crate::child_activity::ChildActivityTracker`].
     pub child_activity: crate::child_activity::ChildActivityTracker,
+
+    /// #1349 Bug 2 — set when a `ChildTaskUpdate` reports a terminal
+    /// status while the TUI is idle AND no other bg agents are still
+    /// in flight. Read at the top of [`Self::run_event_loop`] to
+    /// synthesize an empty user turn, which calls
+    /// [`koda_core::session::KodaSession::drain_mail_to_db`] at
+    /// `run_turn` start and surfaces the bg-agent's mailbox payload to
+    /// the model without the user having to type anything.
+    ///
+    /// The flag is the simple, codex-equivalent of
+    /// `maybe_start_turn_for_pending_work` — see #1349 for the full
+    /// rationale and the alternatives weighed.
+    pub(crate) auto_resume_pending: bool,
 }
 
 /// Outcome of dispatching a single command.
@@ -432,6 +446,7 @@ impl TuiContext {
             frame_requester,
             draw_rx,
             child_activity: crate::child_activity::ChildActivityTracker::default(),
+            auto_resume_pending: false,
         })
     }
 
@@ -543,6 +558,30 @@ impl TuiContext {
                 break;
             }
 
+            // ── Auto-resume after bg-agent completion (#1349 Bug 2) ──
+            //
+            // If a `ChildTaskUpdate` terminal status arrived while idle
+            // and the registry now reports zero non-terminal bg agents,
+            // synthesize an empty turn. `KodaSession::run_turn` calls
+            // `drain_mail_to_db` at its top, which folds any mailbox
+            // payloads into the conversation as user-role messages so
+            // the model sees them on its very next inference call.
+            //
+            // Gated on `Idle` + no pending input so the user's own
+            // typing always wins over auto-resume — if they typed
+            // something while the bg agent was finishing, that's the
+            // higher-priority signal.
+            if self.tui_state == TuiState::Idle
+                && self.auto_resume_pending
+                && self.pending_command.is_none()
+                && self.later_queue.is_empty()
+            {
+                self.auto_resume_pending = false;
+                self.run_inference_turn(None, ui_tx, ui_rx, cmd_tx, cmd_rx)
+                    .await?;
+                continue;
+            }
+
             // ── Dispatch queued / pending commands ───────────
             if self.tui_state == TuiState::Idle
                 && let Some(raw) = self.dequeue_input()
@@ -565,7 +604,7 @@ impl TuiContext {
             // Redraw viewport (resize if textarea grew/shrank)
             self.draw()?;
 
-            // ── Idle: wait for keyboard input ────────────────
+            // ── Idle: wait for keyboard input or bg-agent activity ──
             //
             // The optional paste-burst flush arm (#1186) only races the
             // event branch when a non-bracketed paste is currently being
@@ -574,9 +613,24 @@ impl TuiContext {
             // common case (idle waiting for the user). When a burst IS
             // active and the user stops typing, the timer fires and we
             // commit the buffered text into the textarea as one insert.
+            //
+            // The `ui_rx.recv()` arm (#1349 Bugs 1+2) drains engine
+            // events while idle so that:
+            //  - `ChildAgentActivity` keeps the bg-task overlay live
+            //    (Bug 1 — frozen pill).
+            //  - `ChildTaskUpdate { Completed/Errored/Cancelled }` can
+            //    set `auto_resume_pending` so the loop synthesizes an
+            //    empty turn and the model sees the bg agent's mail
+            //    without the user having to type anything (Bug 2).
+            //  - `Info` / `Warn` / `Error` and other narrative events
+            //    flow through the renderer into the scroll buffer so
+            //    bg-agent narration doesn't silently disappear.
             tokio::select! {
                 Some(Ok(ev)) = self.crossterm_events.next() => {
                     self.handle_idle_event(ev).await?;
+                }
+                Some(ui_event) = ui_rx.recv() => {
+                    self.handle_idle_ui_event(ui_event);
                 }
                 _ = tokio::time::sleep(
                     crate::composer::paste_burst::PasteBurst::recommended_flush_delay(),
