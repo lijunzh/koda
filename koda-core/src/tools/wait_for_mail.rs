@@ -73,7 +73,25 @@ pub fn definitions() -> Vec<ToolDefinition> {
              \n\nDefault timeout: {}ms ({}s). Max: {}ms ({}s). Min: {}ms.\
              \n\nThe mail itself surfaces as user-role messages at the top of your \
              NEXT turn — this tool only signals arrival so you can end your current \
-             turn cleanly. Use it after `SendMessage` if you expect a peer to reply.",
+             turn cleanly.\
+             \n\nWHEN TO USE\
+             \n- After `SendMessage` if you expect a peer to reply.\
+             \n- After `InvokeAgent` / `SpawnAgent` ONLY if (1) you have genuinely run \
+             out of useful concurrent work AND (2) the next step strictly depends on \
+             the sub-agent's output. Every bg-agent exit sends a completion mail \
+             via the `notify_parent_mailbox` bridge, so this tool will unblock the \
+             instant the first sub-agent finishes.\
+             \n\nWHEN NOT TO USE (anti-pattern)\
+             \n- Immediately after spawning a sub-agent with no other work queued. This \
+             defeats the purpose of background execution — you serialize what was \
+             supposed to run in parallel and burn real wall-clock waiting on a \
+             timeout when you could have been doing follow-up reads, searches, or \
+             edits. See `InvokeAgent`'s description for the full guidance.\
+             \n- As a general 'pause and think' mechanism. There is no mail-less wakeup \
+             — if no mail arrives this tool blocks for the full `timeout_ms`.\
+             \n\nResults still inject automatically on a future iteration via auto-drain; \
+             you do NOT need to call `WaitForMail` to receive them. Use it only when \
+             you cannot make forward progress without the reply.",
             DEFAULT_WAIT_TIMEOUT_MS,
             DEFAULT_WAIT_TIMEOUT_MS / 1000,
             MAX_WAIT_TIMEOUT_MS,
@@ -624,5 +642,61 @@ mod tests {
         assert!(desc.contains(&DEFAULT_WAIT_TIMEOUT_MS.to_string()));
         assert!(desc.contains(&MAX_WAIT_TIMEOUT_MS.to_string()));
         assert!(desc.contains(&MIN_WAIT_TIMEOUT_MS.to_string()));
+    }
+
+    #[test]
+    fn definition_reinforces_anti_pattern_and_use_cases() {
+        // #1338 Issue #2: defense-in-depth. `InvokeAgent`'s description
+        // already warns against spawn-then-immediately-wait. The
+        // contract has two endpoints though, and the model may be
+        // looking at `WaitForMail`'s description (not `InvokeAgent`'s)
+        // when it decides to call this tool. So `WaitForMail` must
+        // *also* surface:
+        //
+        //   1. The bg-agent-completion mail use case (post-Phase 5b
+        //      this is one of the two main reasons to call this tool).
+        //   2. A pointer to the `notify_parent_mailbox` bridge so
+        //      the model knows mail will arrive on bg-agent exit.
+        //   3. The spawn-then-immediately-wait anti-pattern (mirroring
+        //      `InvokeAgent`'s own warning).
+        //   4. The original `SendMessage`-reply use case (must NOT
+        //      regress — the previous description's only stated use
+        //      case must still be present).
+        let def = &definitions()[0];
+        let desc = &def.description;
+
+        // (1) bg-agent completion mail surfaced.
+        assert!(
+            desc.contains("InvokeAgent") || desc.contains("SpawnAgent"),
+            "description must mention the spawn tool(s) so the model knows \
+             bg-agent completion is a wait trigger; got:\n{desc}"
+        );
+        assert!(
+            desc.contains("sub-agent") || desc.contains("bg-agent"),
+            "description must reference sub-agents as a mail source; got:\n{desc}"
+        );
+
+        // (2) bridge pointer.
+        assert!(
+            desc.contains("notify_parent_mailbox") || desc.contains("completion mail"),
+            "description must reference the bridge or completion-mail mechanism so \
+             the model knows bg-agent exit unblocks this tool; got:\n{desc}"
+        );
+
+        // (3) anti-pattern explicit.
+        assert!(
+            desc.to_lowercase().contains("anti-pattern") || desc.contains("defeats the purpose"),
+            "description must explicitly call out the spawn-then-immediately-wait \
+             anti-pattern; got:\n{desc}"
+        );
+
+        // (4) inverted regression: original `SendMessage` use case
+        //     must NOT be lost in the rewrite.
+        assert!(
+            desc.contains("SendMessage"),
+            "description must still reference SendMessage — the original \
+             peer-reply use case predates the bg-agent guidance and remains \
+             valid. Do not regress it; got:\n{desc}"
+        );
     }
 }
