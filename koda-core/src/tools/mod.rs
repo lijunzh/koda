@@ -19,15 +19,22 @@
 //! | **WebSearch** | `web_search` | RemoteAction | Web search via DuckDuckGo |
 //! | **InvokeAgent** | `agent` | LocalMutation | Delegate task to a sub-agent |
 //! | **ListAgents** | `agent` | ReadOnly | List available sub-agents |
+//! | **SpawnAgent** | `spawn_agent` | LocalMutation | Codex-compatible peer-spawn (synonym for InvokeAgent) |
 //! | **MemoryRead** | `memory` | ReadOnly | Read project/global memory |
 //! | **MemoryWrite** | `memory` | LocalMutation | Save facts to memory |
 //! | **TodoWrite** | `todo` | ReadOnly | Update session task list (no FS impact) |
 //! | **AskUser** | `ask_user` | ReadOnly | Ask the user a question |
 //! | **ActivateSkill** | `skills` | ReadOnly | Load a skill's instructions |
 //! | **ListSkills** | `skills` | ReadOnly | List available skills |
-//! | **ListBackgroundTasks** | `bg_task_tools` | ReadOnly | Snapshot background tasks owned by the caller |
-//! | **CancelTask** | `bg_task_tools` | ReadOnly | Cancel a background agent or process |
-//! | **WaitTask** | `bg_task_tools` | ReadOnly | Block until a background task finishes (max 300 s) |
+//!
+//! Pre-#1325 Phase 5b also exposed `ListBackgroundTasks` / `CancelTask` /
+//! `WaitTask` (the bg-task management trio). Phase 5b retired them in
+//! favor of `WaitForMail` (the mailbox bridge from #1336 means every
+//! bg-agent completion now lands as mail). The underlying registries
+//! (`ChildAgentRegistry`, `BgRegistry`) are still used by the TUI
+//! overlay and the `notify_parent_mailbox` path — only the LLM-facing
+//! tool wrappers went away. See `tools::task_id` for the surviving
+//! `parse_task_id` helper used by TUI slash commands.
 //!
 //! ## Safety model
 //!
@@ -84,13 +91,15 @@ impl ToolEffect {
 pub mod agent;
 pub mod ask_user;
 pub mod bg_process;
-/// Background-task management tools — `ListBackgroundTasks`,
-/// `CancelTask`, `WaitTask` (Layer 2 of #996).
-pub mod bg_task_tools;
 /// Read-only tool metadata catalog (#1265 item 5, PR-1/N).
 /// Owns built-in definitions + the MCP manager slot. `ToolRegistry`
 /// composes one of these and delegates the read-only methods.
 pub mod catalog;
+/// Background-task ID parser shared between the TUI's `/cancel <id>`
+/// slash command and the underlying `ChildAgentRegistry` / `BgRegistry`.
+/// Pre-#1325 Phase 5b this module was `bg_task_tools` and housed the
+/// retired `ListBackgroundTasks` / `CancelTask` / `WaitTask` LLM tools.
+pub mod task_id;
 pub use catalog::ToolCatalog;
 /// `Tool` trait + `ToolExecCtx` (#1265 item 5, PR-3/N). The seam for
 /// the per-tool migration that follows in PR-4..PR-N. Each migrated

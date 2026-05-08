@@ -46,6 +46,7 @@
 
 use crate::agent::inter_agent::InterAgentCommunication;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use tokio::sync::mpsc;
@@ -58,6 +59,17 @@ pub struct Mailbox {
     tx: mpsc::UnboundedSender<InterAgentCommunication>,
     next_seq: AtomicU64,
     seq_tx: watch::Sender<u64>,
+    /// Total mails the receiver has ack'd via [`MailboxReceiver::drain`].
+    /// Lets sender-side callers (notably [`Self::has_pending`], used by
+    /// `WaitForMail`'s fast path) tell whether mail has arrived since
+    /// the last drain WITHOUT having to subscribe to the watch and
+    /// race the publisher (the bug behind the
+    /// `test_sub_agent_cache_hit_skips_llm` flake — #1325 Phase 5b
+    /// follow-up).
+    ///
+    /// Shared `Arc` so the receiver can write to it from the other
+    /// half of the pair after `Mailbox::new` splits them.
+    drained_count: Arc<AtomicU64>,
 }
 
 /// Receive-side handle for an agent's inbox. Single-consumer (matches
@@ -65,6 +77,10 @@ pub struct Mailbox {
 pub struct MailboxReceiver {
     rx: mpsc::UnboundedReceiver<InterAgentCommunication>,
     pending_mails: VecDeque<InterAgentCommunication>,
+    /// Shared with [`Mailbox::drained_count`]. Bumped by `drain` to
+    /// the cumulative number of mails the receiver has taken, so the
+    /// sender-side `has_pending` view stays consistent.
+    drained_count: Arc<AtomicU64>,
 }
 
 impl Mailbox {
@@ -73,15 +89,18 @@ impl Mailbox {
     pub fn new() -> (Self, MailboxReceiver) {
         let (tx, rx) = mpsc::unbounded_channel();
         let (seq_tx, _) = watch::channel(0);
+        let drained_count = Arc::new(AtomicU64::new(0));
         (
             Self {
                 tx,
                 next_seq: AtomicU64::new(0),
                 seq_tx,
+                drained_count: Arc::clone(&drained_count),
             },
             MailboxReceiver {
                 rx,
                 pending_mails: VecDeque::new(),
+                drained_count,
             },
         )
     }
@@ -90,6 +109,24 @@ impl Mailbox {
     /// returns when `send` next bumps the sequence.
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.seq_tx.subscribe()
+    }
+
+    /// True iff at least one mail has been sent that the owning
+    /// receiver has not yet drained. Sender-side equivalent of
+    /// [`MailboxReceiver::has_pending`] — useful when only a clone
+    /// of the [`Mailbox`] (e.g. via [`crate::agent::MailboxRegistry`])
+    /// is reachable. Used by `WaitForMail`'s fast path to short-
+    /// circuit when mail arrived BEFORE the wait was issued (the
+    /// codex `has_pending_mailbox_items` path; was incorrectly
+    /// dropped during the koda port).
+    ///
+    /// `Relaxed` ordering is fine: the only invariant is monotonic
+    /// growth, and a stale read just falls through to the watch
+    /// subscribe path which is itself the source of truth.
+    pub fn has_pending(&self) -> bool {
+        let sent = self.next_seq.load(Ordering::Relaxed);
+        let drained = self.drained_count.load(Ordering::Relaxed);
+        sent > drained
     }
 
     /// Deliver one mail and bump the wakeup sequence. Returns the
@@ -132,7 +169,15 @@ impl MailboxReceiver {
     /// `has_pending` is false until new mail arrives.
     pub fn drain(&mut self) -> Vec<InterAgentCommunication> {
         self.sync_pending_mails();
-        self.pending_mails.drain(..).collect()
+        let drained: Vec<_> = self.pending_mails.drain(..).collect();
+        // Publish the drain to the sender-side `Mailbox::has_pending`
+        // view. `fetch_add` keeps `drained_count` monotonic even if a
+        // future receiver adds non-drain take paths.
+        if !drained.is_empty() {
+            self.drained_count
+                .fetch_add(drained.len() as u64, Ordering::Relaxed);
+        }
+        drained
     }
 }
 
@@ -275,5 +320,61 @@ mod tests {
         assert_eq!(receiver.drain().len(), 1);
         assert_eq!(receiver.drain().len(), 0);
         assert!(!receiver.has_pending());
+    }
+
+    /// Sender-side `has_pending` (used by `WaitForMail`'s fast
+    /// path — see `tools::wait_for_mail`) must stay in sync with the
+    /// receiver's drain. This is the regression net for the
+    /// `test_sub_agent_cache_hit_skips_llm` flake (#1325 Phase 5b
+    /// follow-up): pre-fix, `Mailbox` had no sender-side view of
+    /// pending mail, so `WaitForMail` raced the publisher via the
+    /// watch channel and silently lost wakeups.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sender_side_has_pending_tracks_drain() {
+        let (mailbox, mut receiver) = Mailbox::new();
+        assert!(
+            !mailbox.has_pending(),
+            "fresh mailbox must report no pending"
+        );
+
+        mailbox.send(make_mail(
+            AgentPath::root(),
+            AgentPath::try_from("/root/w").expect("path"),
+            "a",
+            false,
+        ));
+        assert!(
+            mailbox.has_pending(),
+            "after send, sender-side view must report pending"
+        );
+
+        let _ = receiver.drain();
+        assert!(
+            !mailbox.has_pending(),
+            "after receiver drain, sender-side view must clear"
+        );
+
+        mailbox.send(make_mail(
+            AgentPath::root(),
+            AgentPath::try_from("/root/w").expect("path"),
+            "b",
+            false,
+        ));
+        mailbox.send(make_mail(
+            AgentPath::root(),
+            AgentPath::try_from("/root/w").expect("path"),
+            "c",
+            false,
+        ));
+        assert!(
+            mailbox.has_pending(),
+            "sequence of sends must remain visible until drained"
+        );
+
+        assert_eq!(receiver.drain().len(), 2);
+        assert!(
+            !mailbox.has_pending(),
+            "sender-side view clears once all messages drained"
+        );
     }
 }

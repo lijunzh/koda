@@ -1,8 +1,10 @@
 //! Sub-agent invocation and discovery tools.
 //!
 //! Exposes `InvokeAgent` and `ListAgents` as tools the LLM can call.
-//! Actual sub-agent execution is handled by the event loop since it needs
-//! access to config, DB, and the provider.
+//! `SpawnAgent` (the codex-v2 peer-spawn shape) is a synonym defined
+//! in `tools/spawn_agent.rs`; both names route through the same
+//! dispatch path. Actual sub-agent execution is handled by the event
+//! loop since it needs access to config, DB, and the provider.
 //!
 //! ## Usage patterns
 //!
@@ -13,13 +15,21 @@
 //!
 //! All sub-agents run in the **background**. The tool returns IMMEDIATELY
 //! with a task_id; results auto-inject as a user message on a future
-//! iteration. Use `WaitTask([task_id, ...])` only when you have no useful
-//! concurrent work and the next step strictly depends on the result.
+//! iteration. If you genuinely need to block until completion, call
+//! `WaitForMail` — every bg-agent exit sends a completion mail to the
+//! parent's mailbox via the bridge from #1336 (`notify_parent_mailbox`),
+//! so `WaitForMail` is the single tool the model needs to wait on
+//! background work.
 //!
 //! `agent_name` is **required** — see #1232 §5 for rationale. The previous
 //! `background:bool` flag was removed in #1163 (Lean A: koda matches
 //! Codex's `spawn_agent` and Claude Code's `TaskCreate` model — one shape
 //! per call, no foreground / blocking variant).
+//!
+//! Pre-#1325 Phase 5b also exposed `WaitTask` / `ListBackgroundTasks` /
+//! `CancelTask` for managing in-flight bg work; Phase 5b retired the
+//! trio in favor of `WaitForMail`. See `tools/mod.rs` for the migration
+//! story.
 //!
 //! ## When to use sub-agents
 //!
@@ -47,7 +57,7 @@ pub fn definitions() -> Vec<ToolDefinition> {
 Returns IMMEDIATELY with a task_id. The sub-agent runs concurrently; \
 you keep working in parallel. Results inject as a user message at the \
 start of a future iteration via auto-drain \u{2014} you do NOT need to call \
-`WaitTask` unless you have nothing else useful to do.
+`WaitForMail` unless you have nothing else useful to do.
 
 EXECUTION MODEL
 
@@ -55,16 +65,23 @@ EXECUTION MODEL
   mode \u{2014} spawn the agent, get a task_id back, and continue your own reasoning. \
   This matches Codex's `spawn_agent` and Claude Code's `TaskCreate` model: one \
   shape per call, no `background:bool` flag to think about.
+- `SpawnAgent` is an alias for `InvokeAgent` with a codex-compatible argument \
+  shape (`task_name` + `message` instead of `agent_name` + `prompt`). Same \
+  dispatch path, same execution model. Use whichever your skill manifest \
+  exposes.
 - Emit multiple `InvokeAgent` calls in the same assistant message to fan out \
   N agents in parallel. Each write-capable agent gets its own isolated \
   workspace, so parallel write-agents cannot trample each other.
 - After spawning, KEEP WORKING. Do follow-up searches, edit files, summarize \
   progress \u{2014} anything useful. Results inject naturally on a future iteration. \
-  Calling `WaitTask` immediately after spawning defeats the purpose.
-- Use `WaitTask([task_id, ...])` ONLY when:
+  Calling `WaitForMail` immediately after spawning defeats the purpose.
+- Use `WaitForMail` ONLY when:
     1. You have genuinely run out of useful concurrent work, AND
     2. The next step strictly depends on the sub-agent's output.
-  Otherwise let auto-drain do its job.
+  Otherwise let auto-drain do its job. `WaitForMail` blocks the current \
+  turn until any mail arrives in your mailbox \u{2014} every bg-agent exit \
+  sends a completion mail (the bridge from #1336), so it will unblock as \
+  soon as the first sub-agent finishes.
 - `agent_name='fork'` inherits your full conversation context. Useful when \
   the sub-agent needs everything you've already loaded.
 
@@ -503,8 +520,12 @@ mod tests {
     ///
     /// **#1163 (Lean A)**: koda no longer has a foreground/blocking mode.
     /// All sub-agents run in the background. The description must say so
-    /// clearly, surface the auto-drain mechanic, and explain when WaitTask
-    /// IS appropriate (rather than its old role as a foreground replacement).
+    /// clearly, surface the auto-drain mechanic, and explain when the
+    /// blocking tool IS appropriate (rather than its old role as a
+    /// foreground replacement).
+    ///
+    /// **#1325 Phase 5b**: the blocking tool is now `WaitForMail`
+    /// (mailbox bridge from #1336), not the retired `WaitTask`.
     #[test]
     fn test_invoke_agent_description_documents_spawn_only_model() {
         let defs = definitions();
@@ -639,21 +660,34 @@ mod tests {
     ///
     /// **#1163 (Lean A) update**: with the `background` parameter deleted,
     /// the nudge can only live in the top-level description. Both the
-    /// WaitTask reference and the auto-drain mechanic must remain there.
+    /// blocking-tool reference and the auto-drain mechanic must remain
+    /// there.
+    ///
+    /// **#1325 Phase 5b update**: the blocking tool is now `WaitForMail`,
+    /// not `WaitTask` (the bg-task management trio was retired — see
+    /// `tools/mod.rs` for the migration story). The anti-pattern the
+    /// description guards against is identical ("spawn then immediately
+    /// block"); only the tool name changed.
     #[test]
-    fn test_invoke_agent_description_discourages_immediate_wait_task() {
+    fn test_invoke_agent_description_discourages_immediate_wait() {
         let defs = definitions();
         let desc = &defs[0].description;
         assert!(
-            desc.contains("WaitTask"),
-            "top-level description must reference WaitTask by name so the \
+            desc.contains("WaitForMail"),
+            "top-level description must reference WaitForMail by name so the \
              model can recognize the spawn-then-immediately-wait \
-             anti-pattern (#1201 A1)"
+             anti-pattern (#1201 A1 / #1325 Phase 5b)"
+        );
+        assert!(
+            !desc.contains("WaitTask"),
+            "top-level description must NOT reference WaitTask \u{2014} that tool \
+             was retired in #1325 Phase 5b. A regression that re-introduces \
+             the name would route the model to a tool that no longer exists."
         );
         assert!(
             desc.contains("auto-drain"),
             "top-level description must name the auto-drain path so the \
-             model knows results arrive without WaitTask (#1201 A1)"
+             model knows results arrive without explicit waiting (#1201 A1)"
         );
     }
 

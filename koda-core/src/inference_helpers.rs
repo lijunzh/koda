@@ -260,13 +260,55 @@ pub fn is_server_error(err: &anyhow::Error) -> bool {
 /// ```
 pub fn is_rate_limit_error(err: &anyhow::Error) -> bool {
     let msg = format!("{err:#}").to_lowercase();
-    msg.contains("429")
-        || msg.contains("529")          // Anthropic: API overloaded
+    // Bare numeric HTTP codes need word-boundary checks: a substring
+    // match like `contains("429")` false-positives on ephemeral ports
+    // (e.g. wiremock binding 127.0.0.1:14290 makes a totally-unrelated
+    // timeout error look rate-limited). The original predicate caused
+    // a Linux-only flake in `read_timeout_triggers_auto_retry_not_hard_failure`
+    // because Linux's ephemeral port range overlaps the danger zone
+    // ~1% of the time. We require the code to appear in a textual
+    // status-line context (`status: 429`, `429 too many`, ` 429 `).
+    let has_status_429 = has_http_status(&msg, "429");
+    let has_status_529 = has_http_status(&msg, "529"); // Anthropic: API overloaded
+    has_status_429
+        || has_status_529
         || msg.contains("rate limit")
         || msg.contains("rate_limit")
         || msg.contains("too many requests")
         || msg.contains("quota exceeded")
         || msg.contains("overloaded") // Anthropic overload text
+}
+
+/// True iff `code` appears in `msg` (already lowercased) in a context
+/// that's plausibly an HTTP status code rather than (e.g.) a port
+/// number embedded in a URL. Cheap heuristic: look for the canonical
+/// shapes — `"status: 429"`, `"429 too many"`, or surrounded by ASCII
+/// whitespace / punctuation that bare port numbers don't produce.
+fn has_http_status(msg: &str, code: &str) -> bool {
+    // Common shapes from reqwest / hyper / openai / anthropic.
+    if msg.contains(&format!("status: {code}"))
+        || msg.contains(&format!("status code: {code}"))
+        || msg.contains(&format!("http {code}"))
+        || msg.contains(&format!("{code} too many"))
+        || msg.contains(&format!("{code} overloaded"))
+        || msg.contains(&format!("\"{code}\""))
+    {
+        return true;
+    }
+    // Generic word-boundary fallback: `code` flanked by non-digit
+    // characters on both sides. Rules out port numbers (`:14290`,
+    // `42935/`) and other digit-runs that happen to contain `code`.
+    msg.split(code).enumerate().any(|(i, segment)| {
+        if i == 0 {
+            return false;
+        }
+        let left_ok = msg[..msg.len() - segment.len() - code.len()]
+            .chars()
+            .last()
+            .is_none_or(|c| !c.is_ascii_digit());
+        let right_ok = segment.chars().next().is_none_or(|c| !c.is_ascii_digit());
+        left_ok && right_ok
+    })
 }
 
 /// Maximum number of retries for rate-limited requests.
@@ -558,6 +600,34 @@ mod tests {
 
         assert!(!is_rate_limit_error(&anyhow::anyhow!("prompt is too long")));
         assert!(!is_rate_limit_error(&anyhow::anyhow!("connection refused")));
+
+        // Regression: ephemeral port numbers must NOT trip the
+        // bare-numeric matchers. wiremock's `MockServer` binds to
+        // 127.0.0.1:<random> and Linux's range overlaps the danger
+        // zone roughly 1% of the time — caused intermittent CI
+        // failures in `read_timeout_triggers_auto_retry_not_hard_failure`
+        // before the word-boundary fix.
+        assert!(
+            !is_rate_limit_error(&anyhow::anyhow!(
+                "error sending request for url (http://127.0.0.1:14290/v1/chat/completions): \
+                 operation timed out"
+            )),
+            "port containing 429 must NOT classify as rate-limit"
+        );
+        assert!(
+            !is_rate_limit_error(&anyhow::anyhow!(
+                "http://127.0.0.1:42935/path: connection reset by peer"
+            )),
+            "port containing 429 anywhere must NOT classify as rate-limit"
+        );
+        assert!(
+            !is_rate_limit_error(&anyhow::anyhow!("http://127.0.0.1:5295/foo: timed out")),
+            "port containing 529 must NOT classify as rate-limit"
+        );
+        // But a real status line with the port in it is still a hit.
+        assert!(is_rate_limit_error(&anyhow::anyhow!(
+            "POST http://api.example.com:14290/v1/chat returned status: 429"
+        )));
     }
 
     #[test]

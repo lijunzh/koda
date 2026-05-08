@@ -59,11 +59,11 @@
 //! - Status-bar pill — Layer 3 / PR #1044.
 //! - Per-iter `iter` updates — Layer 4 / PR #1058 (landed).
 //!
-//! [`parse_task_id`]: koda_core::tools::bg_task_tools::parse_task_id
+//! [`parse_task_id`]: koda_core::tools::task_id::parse_task_id
 
 use crate::scroll_buffer::ScrollBuffer;
 use crate::tui_output;
-use koda_core::tools::bg_task_tools::TaskId;
+use koda_core::tools::task_id::TaskId;
 
 /// Render `/cancel <id>`. Routes to the right registry based on the
 /// parsed [`TaskId`]:

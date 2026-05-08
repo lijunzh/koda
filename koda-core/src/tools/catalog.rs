@@ -60,9 +60,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use super::{
-    DynTool, Tool, ToolEffect, agent, ask_user, bg_task_tools, boxed, file_tools, glob_tool, grep,
-    memory, recall, send_message, shell, skill_tools, spawn_agent, todo, wait_for_mail, web_fetch,
-    web_search,
+    DynTool, Tool, ToolEffect, agent, ask_user, boxed, file_tools, glob_tool, grep, memory, recall,
+    send_message, shell, skill_tools, spawn_agent, todo, wait_for_mail, web_fetch, web_search,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
@@ -155,9 +154,9 @@ impl ToolCatalog {
         for def in agent::definitions() {
             definitions.insert(def.name.clone(), def);
         }
-        for def in bg_task_tools::definitions() {
-            definitions.insert(def.name.clone(), def);
-        }
+        // Pre-#1325 Phase 5b also registered `bg_task_tools::definitions()`
+        // (ListBackgroundTasks/CancelTask/WaitTask). Phase 5b retired
+        // those LLM-facing tools — see `tools/mod.rs` for the rationale.
         for def in ask_user::definitions() {
             definitions.insert(def.name.clone(), def);
         }
@@ -237,13 +236,14 @@ impl ToolCatalog {
             boxed(skill_tools::ListSkillsTool),
             boxed(skill_tools::ActivateSkillTool),
             boxed(ask_user::AskUserTool),
-            // PR-9 cohort: bg-task tools as placeholder trait impls.
-            // Real dispatch lives in `tool_dispatch.rs` (they need
-            // `Arc<ChildAgentRegistry>`); these exist so the catalog
-            // is the single source of truth for classification.
-            boxed(bg_task_tools::ListBackgroundTasksTool),
-            boxed(bg_task_tools::CancelTaskTool),
-            boxed(bg_task_tools::WaitTaskTool),
+            // Pre-#1325 Phase 5b also registered the bg-task trio
+            // (ListBackgroundTasks/CancelTask/WaitTask) as placeholder
+            // trait impls — dispatch went through a special branch in
+            // `tool_dispatch.rs::execute_one_tool` because they needed
+            // `Arc<ChildAgentRegistry>` not held by ToolRegistry. Phase
+            // 5b retired the trio (replaced by `WaitForMail` + the
+            // mailbox bridge from #1336); registries themselves are
+            // still used by the TUI overlay and `notify_parent_mailbox`.
             // #1325 Phase 3: peer-tools cohort. Real dispatch flows
             // through the standard ToolRegistry::execute path — the
             // mailbox registry is read off ToolExecCtx.
@@ -496,9 +496,6 @@ mod tests {
             "Glob",
             "Bash",
             "InvokeAgent",
-            "ListBackgroundTasks",
-            "CancelTask",
-            "WaitTask",
             "AskUser",
             "WebFetch",
             "WebSearch",

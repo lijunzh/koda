@@ -252,34 +252,22 @@ pub(crate) async fn execute_one_tool(
         tools,
         sink,
         sub_agent_cache,
-        bg_agents,
-        ref cancel,
         ..
     } = *tx.turn;
     let caller_spawner = tx.caller_spawner;
     let caller_agent_path = tx.turn.agent_path;
     let _session_id = session_id; // mirror the existing `_session_id` arg name
-    let (result, success, full_output) = if matches!(
-        tc.function_name.as_str(),
-        "ListBackgroundTasks" | "CancelTask" | "WaitTask"
-    ) {
-        // Layer 2 of #996 — background-task management tools.
-        //
-        // These need the `Arc<ChildAgentRegistry>` (not held by the
-        // ToolRegistry) plus the caller's spawner identity (now
-        // threaded as `caller_spawner`), so they can't go through
-        // the generic `tools.execute()` path.
-        let r = crate::tools::bg_task_tools::execute(
-            &tc.function_name,
-            &tc.arguments,
-            bg_agents,
-            &tools.bg_registry,
-            caller_spawner,
-            cancel,
-        )
-        .await;
-        (r.output, r.success, r.full_output)
-    } else if tc.function_name == "InvokeAgent" {
+    // Pre-#1325 Phase 5b this dispatch had a leading branch for
+    // `ListBackgroundTasks` / `CancelTask` / `WaitTask` that called
+    // `bg_task_tools::execute` directly (Layer 2 of #996 — those
+    // tools needed the `Arc<ChildAgentRegistry>` and the caller's
+    // spawner identity, neither held by `ToolRegistry`). Phase 5b
+    // retired the LLM-facing trio in favor of `WaitForMail` (the
+    // mailbox bridge from #1336 means every bg-agent completion
+    // lands as mail), so the special branch is gone too. The
+    // registries themselves are still alive — the TUI overlay reads
+    // them and `notify_parent_mailbox` walks them on bg-agent exit.
+    let (result, success, full_output) = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
         //
         // Runtime invariant: the sub-agent dispatch loop short-circuits

@@ -223,7 +223,6 @@ mod naming_convention {
         "ActivateSkill",
         "AskUser",
         "Bash",
-        "CancelTask",
         "Delete",
         "Edit",
         "Glob",
@@ -231,7 +230,6 @@ mod naming_convention {
         "InvokeAgent",
         "List",
         "ListAgents",
-        "ListBackgroundTasks",
         "ListSkills",
         "MemoryRead",
         "MemoryWrite",
@@ -241,7 +239,6 @@ mod naming_convention {
         "SpawnAgent",
         "TodoWrite",
         "WaitForMail",
-        "WaitTask",
         "WebFetch",
         "WebSearch",
         "Write",
@@ -277,12 +274,15 @@ mod naming_convention {
 
     #[test]
     fn test_expected_tool_count() {
-        // 25 built-in tools.
+        // 22 built-in tools.
         // - #996 Layer 2 added ListBackgroundTasks, CancelTask,
         //   WaitTask (19 → 22).
         // - #1325 Phase 3 added SendMessage, WaitForMail (22 → 24).
         // - #1325 Phase 5a added SpawnAgent (24 → 25).
-        assert_eq!(BUILTIN_TOOLS.len(), 25);
+        // - #1325 Phase 5b retired ListBackgroundTasks, CancelTask,
+        //   WaitTask (25 → 22) — superseded by WaitForMail + the
+        //   mailbox bridge from #1336.
+        assert_eq!(BUILTIN_TOOLS.len(), 22);
     }
 
     /// Ensure BUILTIN_TOOLS stays in sync with the actual registry.

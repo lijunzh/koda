@@ -505,15 +505,19 @@ where models silently default to blocking and serialize parallel
 fan-out into sequential calls (#1232 origin issue). Two execution
 shapes remain, distinguished only by what the model writes:
 
-1. **Single dispatch** (`InvokeAgent { agent_name, prompt }`) —
-   spawned via `tokio::spawn` onto the multi-thread runtime, with the
-   resulting `JoinHandle` held by `BgAgentRegistry` as an
-   `AbortOnDropHandle`. Returns a `task_id` synchronously; the
+1. **Single dispatch** (`InvokeAgent { agent_name, prompt }` or its
+   codex-compatible synonym `SpawnAgent { task_name, message }` from
+   #1325 Phase 5a) — spawned via `tokio::spawn` onto the multi-thread
+   runtime, with the resulting `JoinHandle` held by `BgAgentRegistry`
+   as an `AbortOnDropHandle`. Returns a `task_id` synchronously; the
    sub-agent's final output auto-drains as a synthetic user message
-   on a future parent iteration. The model uses `WaitTask([task_id])`
-   only when it has no useful concurrent work AND the next step
-   strictly depends on the result; otherwise the auto-drain delivers
-   the result without a blocking wait.
+   on a future parent iteration. The model uses `WaitForMail` only
+   when it has no useful concurrent work AND the next step strictly
+   depends on the result; otherwise the auto-drain delivers the
+   result without a blocking wait. (Pre-#1325 Phase 5b the blocking
+   tool was `WaitTask([task_id])` — retired in favor of `WaitForMail`
+   once the mailbox bridge from #1336 made every bg-agent completion
+   visible as mail. See "Background-task management surface" below.)
 2. **Parallel fan-out** (multiple `InvokeAgent` calls in one assistant
    message) — `tool_dispatch::execute_tools_parallel` spawns each via
    `tokio::spawn` and returns an array of `task_id`s. Each sub-agent
@@ -586,25 +590,34 @@ now-deleted `InvokeAgent.background` — #1163 only collapsed sub-agent
 dispatch shapes; spawning long-running shell processes is a
 different concern with a different runtime model.)
 
-Four layers, all on `main`:
+Four layers, all on `main`. **Phase 5b of #1325 retired the LLM-facing
+layer** (the `ListBackgroundTasks` / `CancelTask` / `WaitTask` trio) in
+favor of `WaitForMail` once the mailbox bridge from #1336 made every
+bg-agent completion visible as mail — see "#1325 mailbox surface"
+below. The TUI slash commands (`/agents`, `/cancel`) and the underlying
+registries (`BgAgentRegistry`, `BgRegistry`, `ChildAgentRegistry`)
+stayed; only the model-facing tools went away.
 
 - **Layer 0** (#1041): `AgentStatus` enum + `tokio::sync::watch`
   channel per task + per-task `CancellationToken`. Foundation; no
   user-visible change.
 - **Layer 1** (#1042): `/agents` and `/cancel <id>` slash commands
-  for sub-agents only. Closes #996 P0 for the TUI.
-- **Layer 2** (#1043): `ListBackgroundTasks`, `CancelTask`,
-  `WaitTask` LLM tools so the model can manage *its own* background
-  work (spawner-scoped via `caller_spawner: Option<u32>`). Adds
-  shared `parse_task_id` accepting `agent:N` / `process:N` /
-  bare-numeric.
-- **Phase F** (this PR): `/agents` and `/cancel` extended to cover
+  for sub-agents only. Closes #996 P0 for the TUI. Still active.
+- **Layer 2** (#1043, retired #1325 Phase 5b): `ListBackgroundTasks`,
+  `CancelTask`, `WaitTask` LLM tools so the model could manage *its
+  own* background work (spawner-scoped via `caller_spawner:
+  Option<u32>`). Added shared `parse_task_id` accepting `agent:N` /
+  `process:N` / bare-numeric — the parser survives in `tools/task_id.rs`
+  for the TUI slash commands.
+- **Phase F** (#1058): `/agents` and `/cancel` extended to cover
   background processes too — same parser, same registry-routing
-  logic as the LLM tools, one unified table in the TUI.
-- **Phase G** (this PR): `ListBackgroundTasks`, `CancelTask`,
-  `WaitTask` added to `META_TOOLS` in `skill_scope` so a
-  skill-scoped agent can still see / wait / cancel its own
-  background work; docs updated.
+  logic as the LLM tools, one unified table in the TUI. Still active.
+- **Phase G** (#1058, retired #1325 Phase 5b): `ListBackgroundTasks`,
+  `CancelTask`, `WaitTask` added to `META_TOOLS` in `skill_scope` so
+  a skill-scoped agent could still see / wait / cancel its own
+  background work. Removed alongside the tools themselves; the
+  meta-tool slot now belongs to `WaitForMail` / `SendMessage` /
+  `SpawnAgent` from #1325 Phases 3 and 5a.
 
 **Spawner scoping** (Layer 2). Each bg-task entry carries an
 `Option<u32>` spawner id — the sub-agent invocation id of whoever
@@ -632,15 +645,16 @@ who memorized the old UX don't break. The LLM tool descriptions
 workflows, but the shared parser tolerates the bare form for the
 TUI path.
 
-**Why bg-task tools are meta** (Phase G). `ListBackgroundTasks`,
-`CancelTask`, and `WaitTask` are added to `skill_scope::META_TOOLS`
-alongside `ActivateSkill` / `InvokeAgent` / `AskUser`. Background
-work outlives any single `ActivateSkill` boundary: a skill that
-scopes to e.g. `["Read", "Grep"]` would otherwise lose the ability
-to wait on or cancel a process the agent kicked off before
-activation. Excluding them would force callers to either re-list
-the tools in every skill manifest, or leak background work the
-agent can no longer manage.
+**Why bg-task tools were meta** (Phase G, retired #1325 Phase 5b).
+`ListBackgroundTasks`, `CancelTask`, and `WaitTask` were added to
+`skill_scope::META_TOOLS` alongside `ActivateSkill` / `InvokeAgent` /
+`AskUser` because background work outlives any single `ActivateSkill`
+boundary: a skill that scoped to e.g. `["Read", "Grep"]` would
+otherwise lose the ability to wait on or cancel a process the agent
+kicked off before activation. After Phase 5b the meta slot belongs to
+`WaitForMail` (every bg-agent completion arrives as mail via the
+#1336 bridge), `SendMessage`, and `SpawnAgent` — same rationale,
+different set.
 
 **Invariants** — enforced consistently across all four modes:
 
@@ -754,14 +768,24 @@ agent can no longer manage.
 
 - **Codex's collab v2 surface** (`spawn_agent`/`send_input`/`wait_agent`/
   `close_agent`/`resume_agent`, persistent ThreadId-addressed agents,
-  inter-agent mailboxes). ~3,000 LOC for a workflow that's rare in personal
-  use. P2 says no. Post-#1163 (Lean A) koda's `InvokeAgent` matches
-  Codex's `spawn_agent` shape almost exactly — spawn-and-return with a
-  `task_id`, paired with `WaitTask` for explicit join. The drain-on-next-
-  iteration mechanic covers the same ground as Codex's mailbox model
-  in a single registry (`bg_agent.rs`, ~830 production LOC — grew from
-  ~200 as concurrency invariants got hardened in #1022). If the model
-  wants more work it just calls `InvokeAgent` again.
+  inter-agent mailboxes). Originally rejected as ~3,000 LOC for a
+  workflow that's rare in personal use — koda relied on `InvokeAgent` +
+  `WaitTask` + drain-on-next-iteration to cover the same ground.
+  **#1325 reversed that decision and selectively adopted the mailbox
+  half**: Phases 1–2 vendored Codex's `mailbox.rs` substrate and wired
+  it into `KodaSession`; Phase 3 shipped `SendMessage` + `WaitForMail`
+  as peer-tools; Phase 4 added per-agent paths and a mailbox registry;
+  Phase 5a added `SpawnAgent` (codex-compatible synonym for
+  `InvokeAgent`) plus a completion-mail bridge from `bg_agent.rs` so
+  every bg-agent exit lands in the parent's mailbox
+  (`notify_parent_mailbox`); Phase 5b retired the legacy
+  `ListBackgroundTasks` / `CancelTask` / `WaitTask` trio now that
+  `WaitForMail` covers their use case unified with peer messaging.
+  What's still rejected: `close_agent` / `resume_agent` and persistent
+  ThreadId-addressed agents — koda agents stay session-scoped, no
+  cross-session resume. Net adopted footprint is closer to ~1,500 LOC
+  than the original 3,000 estimate because the mailbox machinery is
+  shared between peer messaging and bg-completion delivery.
 - **Codex's `agent_max_depth` + `agent_max_threads` atomic CAS reservations**.
   Koda hardcodes "sub-agents cannot spawn sub-agents" (depth = exactly 1
   for any worker) and adds a per-agent iteration cap. Removes the entire

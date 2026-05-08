@@ -1,6 +1,14 @@
 //! Shared formatting primitives for `WaitTask` aggregated results.
 //!
-//! `WaitTask` (#1157) returns a JSON envelope with N sub-task results
+//! **Post-#1325 Phase 5b:** the `WaitTask` LLM tool is retired (replaced
+//! by `WaitForMail` + the mailbox bridge from #1336), so this module is
+//! no longer triggered by *new* assistant messages. It stays alive
+//! purely to render `WaitTask` tool rows persisted in pre-5b session
+//! DBs — resuming an old session must still render its history correctly.
+//! Same holds for the `ListBackgroundTasks` rendering wired through the
+//! shared status palette here.
+//!
+//! `WaitTask` (#1157) returned a JSON envelope with N sub-task results
 //! (`{tasks: [...], summary: {total, completed, ...}}`). Two rendering
 //! surfaces consume this same payload:
 //!
