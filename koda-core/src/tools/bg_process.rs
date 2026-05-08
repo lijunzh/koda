@@ -43,11 +43,11 @@ use tokio::process::Child;
 
 /// Outcome of [`BgRegistry::wait_for_exit_as_caller`].
 ///
-/// Mirrors [`crate::child_agent::WaitOutcome`] but carries process-specific
-/// terminal info (exit code) instead of an agent result. The two enums
-/// stay separate because they really are different things — forcing one
-/// to wear the other's shape would mean optionalizing fields that aren't
-/// optional in their natural domain.
+/// Carries process-specific terminal info (exit code) for shell-style
+/// background processes. Distinct from agent-completion outcomes
+/// (those flow through the mailbox bridge — see #1325 Phase 5a)
+/// because exit-code semantics don't translate cleanly to agent
+/// `BgAgentResult` shape and vice-versa.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessWaitOutcome {
     /// Process has exited — either naturally or as a result of an
