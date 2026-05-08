@@ -18,7 +18,7 @@
 //! | codex | koda |
 //! |---|---|
 //! | `session.subscribe_mailbox_seq()` | `MailboxRegistry::get(/root)` then `Mailbox::subscribe` |
-//! | `session.has_pending_mailbox_items().await` (fast path) | omitted — the watch's `borrow_and_update` does the equivalent |
+//! | `session.has_pending_mailbox_items().await` (fast path) | `Mailbox::has_pending()` — sender-side check via shared drained-count |
 //! | `session.send_event(CollabWaitingBegin/End)` | dropped — koda has no peer-event channel yet |
 //! | `turn.config.multi_agent_v2.min_wait_timeout_ms` | hard-coded to 1ms (no per-config override yet) |
 //! | per-agent status snapshots in result | dropped — no agent-status registry yet |
@@ -184,6 +184,29 @@ impl Tool for WaitForMailTool {
         // borrow_and_update, the watch starts in an "unseen" state
         // and `changed()` would return immediately on the first poll
         // even if no new mail had arrived since subscribe.
+        //
+        // Fast path (codex parity — #1325 Phase 5b follow-up): if mail
+        // arrived BEFORE this tool was invoked but AFTER the parent's
+        // last drain, the watch's `borrow_and_update` would mark that
+        // already-published seq as seen and the subsequent `changed()`
+        // would block until the next mail (often timing out at 30s).
+        // The fix mirrors codex's `wait_agent`: short-circuit when
+        // `Mailbox::has_pending` reports unread mail. Without this,
+        // a parent that calls `WaitForMail` immediately after a fast
+        // bg-agent (the `test_sub_agent_cache_hit_skips_llm` shape)
+        // hangs for the full timeout.
+        if own_mailbox.has_pending() {
+            let payload = json!({
+                "message": "Wait completed.",
+                "timed_out": false,
+            });
+            return ToolResult {
+                output: payload.to_string(),
+                success: true,
+                full_output: None,
+            };
+        }
+
         let mut seq_rx = own_mailbox.subscribe();
         let _ = seq_rx.borrow_and_update();
 
@@ -428,13 +451,17 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn pre_subscribe_mail_does_not_falsely_complete() {
-        // Pin the borrow_and_update semantics: mail that arrived
-        // BEFORE the wait started is the responsibility of the
-        // previous turn's drain (or the next turn's drain). It must
-        // NOT cause the wait to falsely return "completed" —
-        // otherwise an LLM that sends-then-waits would always see
-        // its own past send as a "new" arrival, defeating the point.
+    async fn pre_subscribe_mail_completes_immediately() {
+        // Codex parity (was inverted in the original koda port —
+        // see #1325 Phase 5b follow-up): mail that arrived BEFORE
+        // the wait started but AFTER the parent's last drain MUST
+        // trigger immediate completion. Otherwise an LLM that
+        // dispatches a fast bg-agent and then calls WaitForMail
+        // races the publisher via the watch channel and silently
+        // loses the wakeup, hanging for the full timeout (30s
+        // default). The fast path uses `Mailbox::has_pending`
+        // (sender-side count delta vs. receiver's `drain`) so it
+        // stays correct even after the receiver drains.
         let (reg, mb) = fresh_registry_with_root();
         let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
         let agent_path = AgentPath::root();
@@ -451,22 +478,26 @@ mod tests {
             &agent_path,
         );
 
-        // Pre-existing mail.
+        // Pre-existing, undrained mail.
         mb.send(sample_mail());
         mb.send(sample_mail());
 
-        // Tiny timeout — if the wait fires on pre-existing mail,
-        // it'll return completed=true. Correct behavior is timed_out=true.
+        let start = Instant::now();
         let result = WaitForMailTool
-            .execute(&ctx, &json!({"timeout_ms": 30}))
+            .execute(&ctx, &json!({"timeout_ms": 30_000}))
             .await;
+        let elapsed = start.elapsed();
 
         assert!(result.success);
         let payload: serde_json::Value = serde_json::from_str(&result.output).unwrap();
         assert_eq!(
-            payload["timed_out"], true,
-            "pre-existing mail must NOT wake a new wait; got: {}",
+            payload["timed_out"], false,
+            "pre-existing mail must complete immediately (codex parity); got: {}",
             result.output
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "fast-path check must short-circuit — elapsed {elapsed:?}"
         );
     }
 
