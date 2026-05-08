@@ -246,6 +246,21 @@ fn render_tool_result(lines: &mut Vec<Line<'static>>, msg: &Message, tool_name: 
         return;
     }
 
+    // WaitForMail (#1336, enriched in #1343) returns a structured
+    // JSON envelope that's borderline unreadable when dumped raw —
+    // particularly the timeout case with the rich `bg_agents` array
+    // and `hint` text. Pretty-print it as a header + per-agent rows
+    // + hint line, matching the per-task style of the two siblings
+    // above so the three tools share one visual vocabulary.
+    // Same fail-safe: fall through to the generic render on any
+    // shape mismatch (#1344 issue B).
+    if tool_name == "WaitForMail"
+        && let Some(rendered) = crate::wait_task_format::try_render_wait_for_mail_lines(content)
+    {
+        lines.extend(rendered);
+        return;
+    }
+
     let total_lines = content.lines().count();
 
     let content_style =

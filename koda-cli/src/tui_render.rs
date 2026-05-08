@@ -451,6 +451,21 @@ fn render_tool_output(
         return;
     }
 
+    // WaitForMail (#1336, enriched in #1343) — timeout payloads in
+    // particular are JSON soup with a long `hint` string that's
+    // borderline unreadable when dumped raw. Pretty-print to match
+    // the two siblings above (#1344 issue B). Falls back to the
+    // generic render path on any parse failure so we never lose
+    // the raw content.
+    if name == "WaitForMail"
+        && let Some(lines) = crate::wait_task_format::try_render_wait_for_mail_lines(output)
+    {
+        for line in lines {
+            tui_output::emit_line(buffer, line);
+        }
+        return;
+    }
+
     // Collapse consecutive blank lines (3+ → 1) to reduce visual noise,
     // especially from WebFetch HTML-to-text conversion.
     let collapsed = collapse_blank_lines(output);
