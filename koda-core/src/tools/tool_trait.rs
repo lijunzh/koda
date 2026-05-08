@@ -241,6 +241,19 @@ pub struct ToolExecCtx<'a> {
     /// at the use site — explicit beats hidden cost.
     pub mailbox_registry: Option<&'a Arc<crate::agent::mailbox_registry::MailboxRegistry>>,
 
+    /// Per-session bg-agent registry (#1338 Issue #3). `None` when
+    /// running outside a session (standalone-`ToolRegistry` tests).
+    /// Today only [`crate::tools::wait_for_mail::WaitForMailTool`]
+    /// reads it \u2014 specifically on the timeout path, to enrich the
+    /// returned payload with `bg_agents_in_flight` and per-task
+    /// snapshots so the model can decide what to do next without
+    /// guessing whether sub-agents are still working.
+    ///
+    /// Borrowed (`&'a Arc`) for the same zero-clone-per-dispatch
+    /// reason as [`Self::mailbox_registry`]. Peer tools that hold
+    /// the registry across `.await` should `Arc::clone` themselves.
+    pub bg_agents: Option<&'a Arc<crate::child_agent::ChildAgentRegistry>>,
+
     /// Caller's identity in the agent spawn tree (#1325 Phase 4).
     /// Source of truth: `TurnContext::agent_path`. Defaults to
     /// `&AgentPath::root()` for the user-facing session and for
@@ -488,6 +501,7 @@ impl<'a> ToolExecCtx<'a> {
             // exercise send_message / wait_for_mail must construct
             // their context manually with a real registry.
             mailbox_registry: None,
+            bg_agents: None,
             caller_agent_path: agent_path,
         }
     }
@@ -625,6 +639,7 @@ mod tests {
             session: None,
             skill_registry: skills,
             mailbox_registry: None,
+            bg_agents: None,
             caller_agent_path: agent_path,
         }
     }

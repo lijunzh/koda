@@ -294,6 +294,7 @@ mod tests {
             session: None,
             skill_registry: skills,
             mailbox_registry: Some(registry),
+            bg_agents: None,
             caller_agent_path: agent_path,
         }
     }
@@ -518,6 +519,7 @@ mod tests {
             session: None,
             skill_registry: &skills,
             mailbox_registry: None,
+            bg_agents: None,
             caller_agent_path: &agent_path,
         };
 

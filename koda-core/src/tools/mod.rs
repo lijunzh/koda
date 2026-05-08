@@ -304,6 +304,15 @@ pub struct ToolRegistry {
     /// every other tool ignores it.
     mailbox_registry:
         std::sync::RwLock<Option<Arc<crate::agent::mailbox_registry::MailboxRegistry>>>,
+
+    /// #1338 Issue #3 — per-session bg-agent registry. Set by
+    /// [`crate::session::KodaSession::new`] (and the test-utils
+    /// `Env`) so [`crate::tools::wait_for_mail::WaitForMailTool`]
+    /// can enrich its timeout payload with the caller's in-flight
+    /// bg-agents. `None` in standalone-`ToolRegistry` tests, in
+    /// which case `WaitForMail`'s timeout payload silently falls
+    /// back to the legacy minimal shape (`{message, timed_out}`).
+    bg_agents: std::sync::RwLock<Option<Arc<crate::child_agent::ChildAgentRegistry>>>,
 }
 
 impl ToolRegistry {
@@ -352,6 +361,7 @@ impl ToolRegistry {
             proxy_port: std::sync::RwLock::new(None),
             socks5_port: std::sync::RwLock::new(None),
             mailbox_registry: std::sync::RwLock::new(None),
+            bg_agents: std::sync::RwLock::new(None),
         }
     }
 
@@ -497,6 +507,26 @@ impl ToolRegistry {
     /// boundaries without holding the registry-slot lock.
     pub fn mailbox_registry(&self) -> Option<Arc<crate::agent::mailbox_registry::MailboxRegistry>> {
         self.mailbox_registry.read().ok().and_then(|g| g.clone())
+    }
+
+    /// Attach a bg-agent registry (#1338 Issue #3). Mirrors
+    /// [`Self::set_mailbox_registry`]: same interior-mutability
+    /// rationale, same poison-tolerance (silently keep the prior
+    /// value if the lock is poisoned). Called by
+    /// [`crate::session::KodaSession::new`] after the registry is
+    /// minted; standalone-`ToolRegistry` tests skip this and
+    /// `WaitForMail` falls back to the minimal timeout payload.
+    pub fn set_bg_agents(&self, registry: Arc<crate::child_agent::ChildAgentRegistry>) {
+        if let Ok(mut guard) = self.bg_agents.write() {
+            *guard = Some(registry);
+        }
+    }
+
+    /// Current bg-agent registry, if one has been attached.
+    /// Returns the `Arc` clone so the caller can hold it across
+    /// `.await` boundaries without holding the registry-slot lock.
+    pub fn bg_agents(&self) -> Option<Arc<crate::child_agent::ChildAgentRegistry>> {
+        self.bg_agents.read().ok().and_then(|g| g.clone())
     }
 
     /// Borrow the underlying read-only metadata catalog.
@@ -678,6 +708,10 @@ impl ToolRegistry {
             // local `mb_reg_arc` keeps the `Arc` alive across the
             // `.await`; the borrow handed to the tool is `Option<&'_ Arc<_>>`.
             let mb_reg_arc = self.mailbox_registry.read().ok().and_then(|g| g.clone());
+            // Same snapshot pattern for the bg-agent registry — clone
+            // the `Arc` once per dispatch so the borrow handed to the
+            // tool stays valid through `tool.execute(...).await`.
+            let bg_agents_arc = self.bg_agents.read().ok().and_then(|g| g.clone());
             let ctx = tool_trait::ToolExecCtx {
                 project_root: &self.project_root,
                 read_cache: &self.read_cache,
@@ -693,6 +727,7 @@ impl ToolRegistry {
                 session,
                 skill_registry: &self.skill_registry,
                 mailbox_registry: mb_reg_arc.as_ref(),
+                bg_agents: bg_agents_arc.as_ref(),
                 caller_agent_path,
             };
             let result = tool.execute(&ctx, &args).await;
