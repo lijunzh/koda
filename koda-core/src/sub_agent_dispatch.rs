@@ -401,6 +401,19 @@ async fn run_bg_agent(
     // `bg_mailbox_registry` (which serves the child's own mailbox
     // registration) so the two concerns don't conflate.
     parent_agent_path: crate::agent::AgentPath,
+    // #1344 follow-up: the parent's `InvokeAgent` tool_call_id, used
+    // to wrap the bg agent's sink stack with `PersistingSink` so each
+    // tool call / info event is persisted to `session_events` AS IT
+    // HAPPENS, with `parent_tool_call_id = Some(this)`. Pre-fix the
+    // narrative trace was only persisted at COMPLETION time as a
+    // batch dump from `BufferingSink::take_lines`, so the user got
+    // no mid-flight visibility — a bg agent that ran for 2+ minutes
+    // (see #1344 repro) showed up as a black box. Live persistence
+    // means `conversation.md` and the resumed-history TUI can fold
+    // the activity in real-time. `None` for foreground sub-agents
+    // (their events flow inline through the parent's sink, no
+    // correlation needed).
+    parent_tool_call_id: Option<String>,
 ) {
     // Layer 0 placeholder: immediately flip Pending → Running so `/agents`
     // shows the agent as active before the first LLM call. The loop inside
@@ -430,6 +443,36 @@ async fn run_bg_agent(
         crate::engine::sink::BufferingSink::new(),
         emitter.clone(),
     );
+    // #1344 follow-up: wrap the buffering+forwarding stack with
+    // `PersistingSink(parent_tool_call_id=Some(...))` so each
+    // `Info` / `ToolCallStart` event lands in `session_events`
+    // AS IT HAPPENS (not at completion-time batch dump). The
+    // PersistingSink infrastructure has existed since #1108 P1b
+    // but was never wired for sub-agents — the doc on
+    // `PersistingSink::new` literally says "Sub-agent (P2a): wrap
+    // the BufferingSink with parent_tool_call_id = Some(invoke_agent_call_id)"
+    // and yet the inline path used `BufferingSink` bare. Fixing
+    // that here. Foreground sub-agents (no `parent_tool_call_id`)
+    // pass the bare BufferingSink — same as before.
+    //
+    // Lifetime shape: `buffering_sink` outlives `persisting_sink`
+    // because we call `take_lines()` on it after the recursive
+    // execute_sub_agent returns. `persisting_sink` borrows it for
+    // the duration of the call. `sink_for_turn` selects which one
+    // the TurnContext sees — the wrapper if we have a tool_call_id
+    // to correlate against, the bare buffer otherwise.
+    let persisting_sink = parent_tool_call_id.as_deref().map(|call_id| {
+        crate::engine::sink::PersistingSink::new(
+            &buffering_sink as &dyn crate::engine::sink::EngineSink,
+            std::sync::Arc::new(db.clone()) as std::sync::Arc<dyn crate::persistence::Persistence>,
+            parent_session.clone(),
+            Some(call_id.to_string()),
+        )
+    });
+    let sink_for_turn: &dyn crate::engine::sink::EngineSink = match &persisting_sink {
+        Some(p) => p,
+        None => &buffering_sink,
+    };
     let nested_bg = crate::child_agent::new_shared();
 
     // **#1163 (Lean A)**: pre-#1163 we had to inject
@@ -474,7 +517,7 @@ async fn run_bg_agent(
         &parent_config,
         &db,
         &parent_session,
-        &buffering_sink,
+        sink_for_turn,
         cancel,
         &sub_agent_cache,
         &nested_bg,
@@ -936,6 +979,7 @@ pub(crate) fn execute_sub_agent<'a>(
                 bg_agent_path,
                 bg_mailbox_registry,
                 parent_path_for_bg,
+                parent_tool_call_id.map(str::to_string),
             ));
 
             bg_agents.attach(

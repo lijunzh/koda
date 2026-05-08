@@ -203,6 +203,21 @@ impl Tool for WaitForMailTool {
                 };
             }
             Some(ms) => (ms as u64).clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
+            // #1344 follow-up: when caller omits `timeout_ms` AND a
+            // sub-agent is already in flight, default to MAX (10 min)
+            // instead of the 30s deadlock-detection default. The model
+            // already chose to wait — a 30s nudge just makes it loop
+            // (4x WaitForMail in the bundle from this issue's repro,
+            // each timing out at 30s while the actual sub-agent
+            // happily ran for 125s+ in the background). The 30s
+            // default still applies when no bg-agent is in flight,
+            // since *that* is genuinely a deadlock signal: nothing's
+            // running, so blocking longer accomplishes nothing. The
+            // explicit-override path always wins; this only changes
+            // the implicit-default behaviour. Cap remains MAX (10 min)
+            // — indefinite blocks are footgun-y under unforeseen
+            // failure modes (zombie sub-agent process, etc).
+            None if has_bg_agents_in_flight(ctx) => MAX_WAIT_TIMEOUT_MS,
             None => DEFAULT_WAIT_TIMEOUT_MS,
         };
 
@@ -286,6 +301,38 @@ impl Tool for WaitForMailTool {
     }
 }
 
+/// Snapshot of bg-agents in flight (Pending/Running) for the given
+/// caller. Shared by [`build_timed_out_payload`] and the implicit
+/// timeout-default selection in `execute`. Pulled out so the
+/// scoping and terminal-status filter live in one definition (DRY)
+/// and the empty/non-empty test in `has_bg_agents_in_flight`
+/// doesn't have to allocate a `Vec` it never reads.
+fn in_flight_for_caller(
+    registry: &crate::child_agent::ChildAgentRegistry,
+    caller_spawner: Option<u32>,
+) -> Vec<crate::child_agent::ChildTaskSnapshot> {
+    let mut snapshots = registry.snapshot_for_caller(caller_spawner);
+    snapshots.retain(|s| {
+        matches!(
+            s.status,
+            crate::child_agent::AgentStatus::Pending
+                | crate::child_agent::AgentStatus::Running { .. }
+        )
+    });
+    snapshots
+}
+
+/// True iff at least one bg-agent (scoped to this caller) is
+/// currently `Pending` or `Running`. Used to pick the implicit
+/// timeout default in `execute` — see the `None if has_bg_agents_in_flight(ctx)`
+/// arm of the timeout-parsing match for the rationale.
+fn has_bg_agents_in_flight(ctx: &ToolExecCtx<'_>) -> bool {
+    match ctx.bg_agents {
+        Some(registry) => !in_flight_for_caller(registry.as_ref(), ctx.caller_spawner).is_empty(),
+        None => false,
+    }
+}
+
 /// Construct the rich timeout payload (#1338 Issue #3).
 ///
 /// Reads the bg-agent registry off `ctx.bg_agents` and scopes the
@@ -311,18 +358,7 @@ fn build_timed_out_payload(ctx: &ToolExecCtx<'_>) -> Value {
     // Scope to caller. A top-level wait sees its own bg-agents;
     // a sub-agent waiter sees only its own children. Mirrors the
     // scoping rules of `ListBackgroundTasks`.
-    let mut snapshots = registry.snapshot_for_caller(ctx.caller_spawner);
-    // Drop terminal entries — once a bg-agent has Completed/Errored/
-    // Cancelled it's no longer "in flight" and reporting it would
-    // mislead the model into waiting for something that's already
-    // done. Keep `Pending` and `Running { .. }` only.
-    snapshots.retain(|s| {
-        matches!(
-            s.status,
-            crate::child_agent::AgentStatus::Pending
-                | crate::child_agent::AgentStatus::Running { .. }
-        )
-    });
+    let snapshots = in_flight_for_caller(registry.as_ref(), ctx.caller_spawner);
     let in_flight = snapshots.len();
 
     // Per-task summary. `prompt` is intentionally omitted — it can be
@@ -357,11 +393,24 @@ fn build_timed_out_payload(ctx: &ToolExecCtx<'_>) -> Value {
          yourself."
             .to_string()
     } else {
+        // #1344 follow-up: anti-poll language adopted from Claude
+        // Code's `AgentTool` prompt ("Don't peek. Don't race. Trust
+        // the notification."). The repro that motivated this PR was
+        // a 4x WaitForMail loop with placeholder text in between
+        // (see #1344 debug bundle koda-debug-20260508-120443) —
+        // gemini-flash didn't trust the auto-drain bridge and
+        // burned wall-clock + tokens polling. CC's prompt is the
+        // most-tested guidance against this exact failure mode and
+        // gemini-flash recognized the cadence in local testing.
         format!(
-            "{in_flight} background sub-agent(s) still running. Consider \
-             doing other useful work (reads, searches, edits) and re-checking \
-             with a shorter timeout next turn — or end your turn now and \
-             let auto-drain inject results on a future iteration."
+            "{in_flight} background sub-agent(s) still running. DO NOT call \
+             WaitForMail again immediately \u{2014} that just burns wall-clock. \
+             End your turn cleanly: auto-drain WILL inject the result as a \
+             user-role message in a future iteration. The bridge is reliable; \
+             trust it. If you have unrelated useful work to do (reads, \
+             searches, summarization), do that instead and let the result \
+             arrive when it arrives. Do not predict or fabricate what the \
+             sub-agent will return."
         )
     };
 
@@ -1167,5 +1216,186 @@ mod tests {
         );
         assert!(payload.get("bg_agents").is_none());
         assert!(payload.get("hint").is_none());
+    }
+
+    // ── #1344 follow-up tests: implicit-timeout switching + anti-poll hint ──
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn has_bg_agents_in_flight_true_when_pending_or_running_present() {
+        // Pin: the helper that drives the implicit-timeout choice in
+        // `execute` reports true when at least one Pending/Running
+        // entry exists in the caller's scope. Pure-logic test — no
+        // tokio sleep, no risk of flake.
+        let (reg, _mb) = fresh_registry_with_root();
+        let bg_agents = crate::child_agent::new_shared();
+        let (_id, _tx) = bg_agents.register_test("explore", "find usages");
+        let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
+        let ctx = ctx_with_bg_agents(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &bg_agents,
+            &agent_path,
+        );
+        assert!(
+            super::has_bg_agents_in_flight(&ctx),
+            "helper must report in-flight when a Pending/Running task exists"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn has_bg_agents_in_flight_false_on_empty_registry() {
+        // Pin: empty registry means no work in flight — the implicit
+        // timeout falls back to the deadlock-detection default (30s),
+        // not the long blocking default (10 min). Without this guard
+        // a model that calls WaitForMail with no agents running
+        // would block for the full 10 min, which is exactly the
+        // "infinite hang" case the cap was designed to prevent.
+        let (reg, _mb) = fresh_registry_with_root();
+        let bg_agents = crate::child_agent::new_shared();
+        let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
+        let ctx = ctx_with_bg_agents(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &bg_agents,
+            &agent_path,
+        );
+        assert!(
+            !super::has_bg_agents_in_flight(&ctx),
+            "helper must report NOT in-flight when no tasks registered"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn has_bg_agents_in_flight_false_when_no_registry_attached() {
+        // Pin: standalone-`ToolRegistry` shape (`bg_agents == None`)
+        // must report NOT in-flight. Otherwise the unwrap in
+        // `execute` would never reach the deadlock-detection arm and
+        // unit tests with no registry would inherit the long-block
+        // default unintentionally.
+        let (reg, _mb) = fresh_registry_with_root();
+        let (root, cache, fs, caps, _bg_unused, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
+        let ctx = ctx_with_registry(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &_bg_unused,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
+        );
+        assert!(
+            !super::has_bg_agents_in_flight(&ctx),
+            "helper must report NOT in-flight when registry is absent"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timeout_hint_uses_anti_poll_language_when_bg_in_flight() {
+        // Pin: the new hint adopted from CC's AgentTool prompt
+        // ("Don't peek. Don't race. Trust the notification.") must
+        // appear in the timeout payload when bg agents are in flight.
+        // Verifies the wording change in #1344 follow-up — if a
+        // future cleanup waters down the language back to the soft
+        // "consider doing other useful work" form, this test fails
+        // and forces a deliberate decision.
+        let (reg, _mb) = fresh_registry_with_root();
+        let bg_agents = crate::child_agent::new_shared();
+        let (_id, _tx) = bg_agents.register_test("explore", "find usages");
+        let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
+        let ctx = ctx_with_bg_agents(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &bg_agents,
+            &agent_path,
+        );
+
+        let result = WaitForMailTool
+            .execute(&ctx, &json!({"timeout_ms": 50}))
+            .await;
+        let payload: Value = serde_json::from_str(&result.output).unwrap();
+        let hint = payload["hint"].as_str().unwrap();
+        assert!(
+            hint.contains("DO NOT"),
+            "hint must use emphatic anti-poll language; got: {hint}"
+        );
+        assert!(
+            hint.contains("trust") || hint.contains("Trust"),
+            "hint must invoke trust in the auto-drain bridge; got: {hint}"
+        );
+        assert!(
+            hint.contains("fabricate") || hint.contains("predict"),
+            "hint must warn against fabricating sub-agent results; got: {hint}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn explicit_timeout_respected_even_with_bg_in_flight() {
+        // Pin: when caller passes an explicit `timeout_ms`, that
+        // value wins regardless of in-flight bg-agent state. Only
+        // the IMPLICIT default switches to MAX. Without this
+        // invariant a model that wanted a short re-poll could not
+        // get one once any bg agent was running.
+        let (reg, _mb) = fresh_registry_with_root();
+        let bg_agents = crate::child_agent::new_shared();
+        let (_id, _tx) = bg_agents.register_test("explore", "find usages");
+        let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
+        let ctx = ctx_with_bg_agents(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &bg_agents,
+            &agent_path,
+        );
+
+        // 50ms explicit timeout — should return as timed_out in well
+        // under a second even though a bg agent is in flight (which
+        // would otherwise pick MAX = 10 min if the timeout were
+        // omitted).
+        let start = std::time::Instant::now();
+        let result = WaitForMailTool
+            .execute(&ctx, &json!({"timeout_ms": 50}))
+            .await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "explicit 50ms timeout was ignored; elapsed: {elapsed:?}"
+        );
+        let payload: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(payload["timed_out"], true);
     }
 }
