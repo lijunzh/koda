@@ -804,35 +804,25 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
                 msg.push_str(&bg_result.events.join("\n"));
             }
             sink.emit(EngineEvent::Info { message: msg });
-            // #1108 P2a: persist each captured bg-agent trace line as
-            // a `sub_agent_event` row keyed by the parent's
-            // `InvokeAgent` tool_call_id. Pre-#1108 the trace was
-            // sink-only — the markdown transcript export had no
-            // record of what the bg agent did. With this in place the
-            // transcript renderer can fold the trace under the
-            // parent's `InvokeAgent` tool result.
-            if let Some(parent_call_id) = bg_result.parent_tool_call_id.as_deref() {
-                use crate::persistence::session_event_kind as sek;
-                for line in &bg_result.events {
-                    // Fire-and-forget: a DB hiccup must not crash a
-                    // turn just because we couldn't persist a trace
-                    // line. Same policy as `PersistingSink::persist`.
-                    if let Err(e) = db
-                        .insert_session_event(
-                            session_id,
-                            sek::SUB_AGENT_EVENT,
-                            line,
-                            Some(parent_call_id),
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            error = %e, session_id, parent_call_id,
-                            "failed to persist bg-agent trace line"
-                        );
-                    }
-                }
-            }
+            // #1344 follow-up: the batch-persist loop that used to live
+            // here is GONE — the sub-agent's sink stack is now wrapped
+            // with `PersistingSink(parent_tool_call_id=Some(...))` (see
+            // `sub_agent_dispatch::run_bg_agent`), so each event lands
+            // in `session_events` AS IT HAPPENS, mid-flight. Keeping
+            // the batch loop would double-write every row (no unique
+            // index on `session_events` to dedupe).
+            //
+            // Pre-#1344 the user got zero mid-flight visibility into a
+            // bg agent that ran for 2+ minutes; events only landed in
+            // the DB at the end. Live persistence makes
+            // `conversation.md` and the resumed-history TUI fold the
+            // activity in real-time — critical for debug bundles when
+            // a bg agent is stuck or being cancelled.
+            //
+            // `bg_result.events` is still computed and surfaced via
+            // the user-facing `Info` message above (the "✅ Background
+            // agent X completed\n  🔧 Tool1..." dump); only the
+            // per-line DB writes are removed.
             // #1159: write the completion as a `Role::Tool` row keyed on the
             // parent's `InvokeAgent` tool_call_id, NOT as a synthetic
             // `Role::User` message.
