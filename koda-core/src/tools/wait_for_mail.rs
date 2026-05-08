@@ -89,6 +89,16 @@ pub fn definitions() -> Vec<ToolDefinition> {
              edits. See `InvokeAgent`'s description for the full guidance.\
              \n- As a general 'pause and think' mechanism. There is no mail-less wakeup \
              — if no mail arrives this tool blocks for the full `timeout_ms`.\
+             \n\nRETURN PAYLOAD\
+             \n- On mail arrival: `{{\"message\": \"Wait completed.\", \"timed_out\": false}}`. \
+             End your turn so the next iteration drains the mailbox.\
+             \n- On timeout: `{{\"message\": \"Wait timed out.\", \"timed_out\": true, \
+             \"bg_agents_in_flight\": <N>, \"bg_agents\": [...], \"hint\": \"...\"}}`. \
+             Use `bg_agents_in_flight` and the per-task `bg_agents` summary \
+             (task_id, agent_name, status, age_secs) to decide what to do next: \
+             if N > 0, sub-agents are still working — do useful concurrent work \
+             and re-check; if N = 0, no work was queued — proceed yourself. The \
+             `hint` string spells out the recommendation.\
              \n\nResults still inject automatically on a future iteration via auto-drain; \
              you do NOT need to call `WaitForMail` to receive them. Use it only when \
              you cannot make forward progress without the reply.",
@@ -245,15 +255,141 @@ impl Tool for WaitForMailTool {
         // human-readable `message` string + a structured `timed_out`
         // bool. Returned as JSON so downstream tooling (and the
         // model) can branch on the bool without parsing prose.
-        let payload = json!({
-            "message": if timed_out { "Wait timed out." } else { "Wait completed." },
-            "timed_out": timed_out,
-        });
+        //
+        // #1338 Issue #3: on the timeout path the bare `{message,
+        // timed_out}` payload told the model nothing about WHY the
+        // wait failed (was a bg-agent still running? was no agent
+        // ever spawned?). Without that signal the model's recovery
+        // was correct-but-slow: "timeout \u2192 do exploration myself \u2192
+        // re-wait \u2192 timeout again". Burning real wall-clock for no
+        // good reason.
+        //
+        // We now enrich the timeout payload with `bg_agents_in_flight`
+        // (count) plus a per-task `bg_agents` summary (task_id,
+        // agent_name, status, age_secs) and a `hint` string nudging
+        // the model toward the right next move. The success payload
+        // stays minimal because there's nothing useful to say beyond
+        // "go drain your mailbox on the next iteration".
+        let payload = if timed_out {
+            build_timed_out_payload(ctx)
+        } else {
+            json!({
+                "message": "Wait completed.",
+                "timed_out": false,
+            })
+        };
         ToolResult {
             output: payload.to_string(),
             success: true,
             full_output: None,
         }
+    }
+}
+
+/// Construct the rich timeout payload (#1338 Issue #3).
+///
+/// Reads the bg-agent registry off `ctx.bg_agents` and scopes the
+/// snapshot to the caller via `ctx.caller_spawner` (so a sub-agent
+/// only sees its own children, not its siblings'). Falls back to
+/// the legacy minimal payload when no registry is attached —
+/// preserves bytewise behavior for standalone-`ToolRegistry` tests
+/// and any future caller that wires `WaitForMail` without the
+/// registry.
+///
+/// Pure function (no async, no I/O beyond cloning snapshots) so it
+/// can be tested in isolation.
+fn build_timed_out_payload(ctx: &ToolExecCtx<'_>) -> Value {
+    let Some(registry) = ctx.bg_agents else {
+        // Legacy minimal payload — standalone-`ToolRegistry` tests
+        // and any caller that hasn't wired `set_bg_agents`.
+        return json!({
+            "message": "Wait timed out.",
+            "timed_out": true,
+        });
+    };
+
+    // Scope to caller. A top-level wait sees its own bg-agents;
+    // a sub-agent waiter sees only its own children. Mirrors the
+    // scoping rules of `ListBackgroundTasks`.
+    let mut snapshots = registry.snapshot_for_caller(ctx.caller_spawner);
+    // Drop terminal entries — once a bg-agent has Completed/Errored/
+    // Cancelled it's no longer "in flight" and reporting it would
+    // mislead the model into waiting for something that's already
+    // done. Keep `Pending` and `Running { .. }` only.
+    snapshots.retain(|s| {
+        matches!(
+            s.status,
+            crate::child_agent::AgentStatus::Pending
+                | crate::child_agent::AgentStatus::Running { .. }
+        )
+    });
+    let in_flight = snapshots.len();
+
+    // Per-task summary. `prompt` is intentionally omitted — it can be
+    // very long and the model already saw it when it spawned the agent.
+    // `age_secs` rounds to whole seconds; sub-second precision would be
+    // noise in a payload aimed at human-scale recovery decisions.
+    let bg_agents_summary: Vec<Value> = snapshots
+        .iter()
+        .map(|s| {
+            json!({
+                "task_id": s.task_id,
+                "agent_name": s.agent_name,
+                "status": agent_status_label(&s.status),
+                "age_secs": s.age.as_secs(),
+            })
+        })
+        .collect();
+
+    // Hint string. Three cases:
+    //   1. No bg-agents in flight → the wait timed out for some
+    //      OTHER reason (a peer that was supposed to reply didn't,
+    //      or the model called WaitForMail speculatively). Tell it
+    //      to make forward progress on its own.
+    //   2. ≥1 bg-agent in flight → they're still working; nudge
+    //      toward useful concurrent work + shorter re-poll.
+    //   3. (Implicit) no registry attached → we already returned
+    //      the legacy minimal payload above.
+    let hint = if in_flight == 0 {
+        "No background sub-agents are in flight. The wait timed out \
+         because no mail arrived; consider whether the work you were \
+         waiting on was actually started, or proceed with the task \
+         yourself."
+            .to_string()
+    } else {
+        format!(
+            "{in_flight} background sub-agent(s) still running. Consider \
+             doing other useful work (reads, searches, edits) and re-checking \
+             with a shorter timeout next turn — or end your turn now and \
+             let auto-drain inject results on a future iteration."
+        )
+    };
+
+    json!({
+        "message": "Wait timed out.",
+        "timed_out": true,
+        "bg_agents_in_flight": in_flight,
+        "bg_agents": bg_agents_summary,
+        "hint": hint,
+    })
+}
+
+/// Stable, lowercase string label for an [`AgentStatus`].
+///
+/// Lives here (rather than as `Display` on `AgentStatus`) because
+/// the canonical `Display` impl on `AgentStatus` doesn't exist and
+/// adding one feels like API-surface bloat for a single payload
+/// consumer. The labels match the JSON serde representation
+/// (`#[serde(tag = "kind", rename_all = "snake_case")]`) so consumers
+/// can correlate with the `ChildTaskUpdate` engine event stream.
+fn agent_status_label(status: &crate::child_agent::AgentStatus) -> &'static str {
+    use crate::child_agent::AgentStatus::*;
+    match status {
+        Pending => "pending",
+        Running { .. } => "running",
+        Cancelled => "cancelled",
+        Completed { .. } => "completed",
+        Errored { .. } => "errored",
     }
 }
 
@@ -322,6 +458,7 @@ mod tests {
             session: None,
             skill_registry: skills,
             mailbox_registry: Some(registry),
+            bg_agents: None,
             caller_agent_path: agent_path,
         }
     }
@@ -612,6 +749,7 @@ mod tests {
             session: None,
             skill_registry: &skills,
             mailbox_registry: None,
+            bg_agents: None,
             caller_agent_path: &agent_path,
         };
 
@@ -698,5 +836,336 @@ mod tests {
              peer-reply use case predates the bg-agent guidance and remains \
              valid. Do not regress it; got:\n{desc}"
         );
+    }
+
+    // ── #1338 Issue #3: rich timeout payload ──────────────────────
+    //
+    // Tests for the bg_agents-aware timeout payload. They use the
+    // same `ctx_with_registry` helper as the existing tests but
+    // attach a real `ChildAgentRegistry` so we can exercise the
+    // snapshot path. Each test pins exactly ONE behavior so failure
+    // messages stay focused.
+
+    /// Build a `ToolExecCtx` with both mailbox and bg-agent
+    /// registries attached. Callers that need to scope to a specific
+    /// caller (sub-agent test) override `caller_spawner` after.
+    #[allow(clippy::too_many_arguments)]
+    fn ctx_with_bg_agents<'a>(
+        root: &'a std::path::Path,
+        cache: &'a crate::tools::FileReadCache,
+        fs: &'a dyn koda_sandbox::fs::FileSystem,
+        caps: &'a crate::output_caps::OutputCaps,
+        bg: &'a crate::tools::bg_process::BgRegistry,
+        trust: &'a crate::trust::TrustMode,
+        policy: &'a koda_sandbox::SandboxPolicy,
+        skills: &'a crate::skills::SkillRegistry,
+        registry: &'a Arc<MailboxRegistry>,
+        bg_agents: &'a Arc<crate::child_agent::ChildAgentRegistry>,
+        agent_path: &'a AgentPath,
+    ) -> ToolExecCtx<'a> {
+        ToolExecCtx {
+            project_root: root,
+            read_cache: cache,
+            fs,
+            caps,
+            sink: None,
+            caller_spawner: None,
+            bg_registry: bg,
+            trust,
+            sandbox_policy: policy,
+            proxy_port: None,
+            socks5_port: None,
+            session: None,
+            skill_registry: skills,
+            mailbox_registry: Some(registry),
+            bg_agents: Some(bg_agents),
+            caller_agent_path: agent_path,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timeout_payload_includes_bg_agents_in_flight() {
+        // Pin: when bg-agents are registered, the timeout payload
+        // must include `bg_agents_in_flight` (count) plus a
+        // `bg_agents` array with one entry per non-terminal task.
+        // Without these the model has no signal to differentiate
+        // "timed out, work in progress" from "timed out, nothing
+        // running" — see #1338 Issue #3 for the diagnosis.
+        let (reg, _mb) = fresh_registry_with_root();
+        let bg_agents = crate::child_agent::new_shared();
+        // Two in-flight bg-agents at the top-level scope. We don't
+        // care about the senders here — letting them drop is fine,
+        // the registry entries persist until explicitly drained.
+        let (_id_a, _tx_a) = bg_agents.register_test("explore", "find usages of Foo");
+        let (_id_b, _tx_b) = bg_agents.register_test("verify", "check tests pass");
+        let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
+        let ctx = ctx_with_bg_agents(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &bg_agents,
+            &agent_path,
+        );
+
+        let result = WaitForMailTool
+            .execute(&ctx, &json!({"timeout_ms": 50}))
+            .await;
+        assert!(result.success);
+        let payload: Value = serde_json::from_str(&result.output).unwrap();
+
+        assert_eq!(payload["timed_out"], true);
+        assert_eq!(
+            payload["bg_agents_in_flight"], 2,
+            "in-flight count must reflect the two registered tasks; got: {payload}"
+        );
+        let entries = payload["bg_agents"].as_array().expect("bg_agents array");
+        assert_eq!(
+            entries.len(),
+            2,
+            "per-task summary length mismatch: {payload}"
+        );
+        // Pin the per-entry shape so a future renamer doesn't
+        // silently change the contract the model relies on.
+        for entry in entries {
+            assert!(entry.get("task_id").and_then(|v| v.as_u64()).is_some());
+            assert!(entry.get("agent_name").and_then(|v| v.as_str()).is_some());
+            assert!(entry.get("status").and_then(|v| v.as_str()).is_some());
+            assert!(entry.get("age_secs").and_then(|v| v.as_u64()).is_some());
+        }
+        // Hint must reference the in-flight count (so the model
+        // sees a concrete number, not just a generic nudge).
+        let hint = payload["hint"].as_str().expect("hint string");
+        assert!(
+            hint.contains("2"),
+            "hint must mention the in-flight count; got: {hint}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timeout_payload_zero_in_flight_when_no_bg_agents() {
+        // Pin: registry attached but empty → in_flight=0, empty
+        // array, hint suggests proceeding solo. Inverted form of
+        // the previous test; both shapes are part of the contract.
+        let (reg, _mb) = fresh_registry_with_root();
+        let bg_agents = crate::child_agent::new_shared();
+        let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
+        let ctx = ctx_with_bg_agents(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &bg_agents,
+            &agent_path,
+        );
+
+        let result = WaitForMailTool
+            .execute(&ctx, &json!({"timeout_ms": 50}))
+            .await;
+        let payload: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(payload["timed_out"], true);
+        assert_eq!(payload["bg_agents_in_flight"], 0);
+        assert!(payload["bg_agents"].as_array().unwrap().is_empty());
+        let hint = payload["hint"].as_str().unwrap();
+        assert!(
+            hint.to_lowercase().contains("no background") || hint.to_lowercase().contains("no bg"),
+            "hint must call out the empty-queue case so the model proceeds solo; got: {hint}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timeout_payload_falls_back_when_no_registry_attached() {
+        // Pin: when `ctx.bg_agents` is `None` (standalone-`ToolRegistry`
+        // tests, or any caller that hasn't wired `set_bg_agents`),
+        // the payload must fall back to the legacy minimal
+        // `{message, timed_out}` shape — keys for the rich payload
+        // must not appear at all (so the model can rely on their
+        // absence to detect 'no signal available').
+        let (reg, _mb) = fresh_registry_with_root();
+        let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
+        let ctx = ctx_with_registry(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &agent_path,
+        );
+
+        let result = WaitForMailTool
+            .execute(&ctx, &json!({"timeout_ms": 50}))
+            .await;
+        let payload: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(payload["timed_out"], true);
+        assert_eq!(payload["message"], "Wait timed out.");
+        assert!(
+            payload.get("bg_agents_in_flight").is_none(),
+            "fallback payload must not include rich-payload keys; got: {payload}"
+        );
+        assert!(payload.get("bg_agents").is_none());
+        assert!(payload.get("hint").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timeout_payload_terminal_bg_agents_excluded() {
+        // Pin: a bg-agent that has Completed/Errored is no longer
+        // 'in flight' and must not appear in the timeout payload.
+        // Reporting it would mislead the model into waiting for
+        // something already done.
+        let (reg, _mb) = fresh_registry_with_root();
+        let bg_agents = crate::child_agent::new_shared();
+        let (_id_running, _tx_r) = bg_agents.register_test("explore", "still working");
+        let (_id_done, _tx_d, status_tx, _cancel) =
+            bg_agents.register_test_with_status("verify", "already done", None);
+        // Drive the second task to a terminal state.
+        status_tx
+            .send(crate::child_agent::AgentStatus::Completed {
+                summary: "all good".to_string(),
+            })
+            .unwrap();
+
+        let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
+        let ctx = ctx_with_bg_agents(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &bg_agents,
+            &agent_path,
+        );
+
+        let result = WaitForMailTool
+            .execute(&ctx, &json!({"timeout_ms": 50}))
+            .await;
+        let payload: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(
+            payload["bg_agents_in_flight"], 1,
+            "terminal bg-agents must be excluded; got: {payload}"
+        );
+        let names: Vec<&str> = payload["bg_agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["agent_name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["explore"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timeout_payload_scoped_to_caller_spawner() {
+        // Pin: a sub-agent that calls WaitForMail must only see ITS
+        // OWN child bg-agents — not its siblings'. Mirrors the
+        // scoping rules of `ListBackgroundTasks` / Model E in #996.
+        // Without this a sub-agent would learn about other agents'
+        // work, which is both a leak and a source of confusion.
+        let (reg, _mb) = fresh_registry_with_root();
+        let bg_agents = crate::child_agent::new_shared();
+        // Caller is sub-agent with id=42. Its child has spawner=Some(42).
+        // A sibling agent's child has spawner=Some(99) — must be hidden.
+        let (_id_mine, _tx_mine, _, _) =
+            bg_agents.register_test_with_status("mine", "my work", Some(42));
+        let (_id_sibling, _tx_sib, _, _) =
+            bg_agents.register_test_with_status("sibling", "not mine", Some(99));
+        let (_id_top, _tx_top, _, _) =
+            bg_agents.register_test_with_status("top", "top-level", None);
+
+        let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
+        let mut ctx = ctx_with_bg_agents(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &bg_agents,
+            &agent_path,
+        );
+        ctx.caller_spawner = Some(42);
+
+        let result = WaitForMailTool
+            .execute(&ctx, &json!({"timeout_ms": 50}))
+            .await;
+        let payload: Value = serde_json::from_str(&result.output).unwrap();
+        let names: Vec<&str> = payload["bg_agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["agent_name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["mine"],
+            "sub-agent caller must only see its own children; got: {payload}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn success_payload_remains_minimal_on_mail_arrival() {
+        // Pin: the rich payload is timeout-path-only. The success
+        // path stays as `{message, timed_out: false}` because there's
+        // nothing useful to add (the next iteration drains the
+        // mailbox; bg-agent state is irrelevant). Inverted regression
+        // for the timeout enrichment.
+        let (reg, mb) = fresh_registry_with_root();
+        let bg_agents = crate::child_agent::new_shared();
+        let (_id, _tx) = bg_agents.register_test("explore", "work");
+        let (root, cache, fs, caps, bg, trust, policy, skills) = make_test_fixtures();
+        let agent_path = AgentPath::root();
+        let ctx = ctx_with_bg_agents(
+            &root,
+            &cache,
+            &fs,
+            &caps,
+            &bg,
+            &trust,
+            &policy,
+            &skills,
+            &reg,
+            &bg_agents,
+            &agent_path,
+        );
+
+        // Pre-publish mail so the wait completes immediately.
+        mb.send(sample_mail());
+
+        let result = WaitForMailTool
+            .execute(&ctx, &json!({"timeout_ms": 50}))
+            .await;
+        let payload: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(payload["timed_out"], false);
+        assert_eq!(payload["message"], "Wait completed.");
+        assert!(
+            payload.get("bg_agents_in_flight").is_none(),
+            "success payload must NOT include rich-payload keys; got: {payload}"
+        );
+        assert!(payload.get("bg_agents").is_none());
+        assert!(payload.get("hint").is_none());
     }
 }

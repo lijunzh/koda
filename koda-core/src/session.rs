@@ -458,6 +458,15 @@ impl KodaSession {
             .tools
             .set_mailbox_registry(Arc::clone(&mailbox_registry));
 
+        // #1338 Issue #3: hand the bg-agent registry to the tool
+        // layer so `WaitForMail`'s timeout payload can list which
+        // sub-agents are still running. Constructed here (instead of
+        // inline in the `Self { bg_agents: ... }` literal below) so we
+        // can `Arc::clone` it into both places without touching the
+        // shape of the struct constructor.
+        let bg_agents = child_agent::new_shared();
+        agent.tools.set_bg_agents(Arc::clone(&bg_agents));
+
         Self {
             id,
             agent,
@@ -472,7 +481,7 @@ impl KodaSession {
             // #1022 B12: registry + cache live on the session so bg
             // agents survive across turns and the cache yields
             // cross-turn hits.
-            bg_agents: child_agent::new_shared(),
+            bg_agents,
             sub_agent_cache: SubAgentCache::new(),
             // No forwarder yet; clients (TUI / ACP) call
             // `attach_event_sink` to spawn it. Headless paths leave

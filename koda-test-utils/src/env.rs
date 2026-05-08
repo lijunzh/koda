@@ -142,6 +142,12 @@ impl EnvBuilder {
         );
         tools.set_mailbox_registry(Arc::clone(&mailbox_registry));
 
+        // #1338 Issue #3: mirror `KodaSession::new` — hand the
+        // bg-agent registry to the tool layer so `WaitForMail`'s
+        // timeout payload sees in-flight bg-agents in tests too.
+        let bg_agents = koda_core::child_agent::new_shared();
+        tools.set_bg_agents(Arc::clone(&bg_agents));
+
         Env {
             _tmp: tmp,
             root,
@@ -150,7 +156,7 @@ impl EnvBuilder {
             config,
             tools,
             trust: self.trust,
-            bg_agents: koda_core::child_agent::new_shared(),
+            bg_agents,
             _mailbox_rx: Arc::new(tokio::sync::Mutex::new(mailbox_rx)),
         }
     }
