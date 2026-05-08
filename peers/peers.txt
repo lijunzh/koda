@@ -1,0 +1,14 @@
+# Peer projects manifest.
+#
+# Format: <name><whitespace><git URL>
+# Lines starting with # are ignored. Blank lines OK.
+#
+# Each entry is cloned into ../<name> (sibling of this repo) by
+# peers/sync.sh, which then symlinks peers/<name> -> ../../<name>.
+# This keeps koda's clone footprint tiny while making peer source
+# always reachable from inside the repo for grep/rg/IDE jump-to-def.
+
+codex            https://github.com/openai/codex.git
+claude_code_src  https://github.com/ponponon/claude_code_src.git
+gemini-cli       https://github.com/google-gemini/gemini-cli.git
+zed              https://github.com/zed-industries/zed.git
