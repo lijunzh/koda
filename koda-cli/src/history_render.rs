@@ -59,7 +59,7 @@ pub fn render_history_messages(messages: &[Message]) -> Vec<Line<'static>> {
                 {
                     for call in calls {
                         if let (Some(id), Some(name)) =
-                            (call["id"].as_str(), call["function"]["name"].as_str())
+                            (call["id"].as_str(), tool_call_field(&call, "name"))
                         {
                             tool_id_to_name.insert(id.to_string(), name.to_string());
                         }
@@ -169,19 +169,49 @@ fn render_assistant_message(lines: &mut Vec<Line<'static>>, msg: &Message) {
 /// and history replay produce identical span sequences for the same
 /// `(name, args)` input.
 fn render_tool_call_headers(lines: &mut Vec<Line<'static>>, tc_json: &str) {
-    // Tool calls are stored as JSON arrays (OpenAI format)
+    // Tool calls are persisted as `serde_json::to_string(&Vec<ToolCall>)`
+    // — see `koda_core::providers::ToolCall`. The struct serializes flat:
+    // `{"id":"…","function_name":"…","arguments":"…"}`. Pre-#1340 this
+    // function read `call["function"]["name"]` (the OpenAI wire shape
+    // we never persist), so every header rendered as `● unknown` in
+    // resumed-session history and debug-bundle replays — the bug filed
+    // as R7 of #1324. The `tool_call_field` helper accepts both shapes
+    // for forward-compat with any external tooling that hand-builds the
+    // legacy shape, but the canonical shape is the flat one.
     let calls: Vec<serde_json::Value> = match serde_json::from_str(tc_json) {
         Ok(v) => v,
         Err(_) => return,
     };
 
     for call in &calls {
-        let name = call["function"]["name"].as_str().unwrap_or("unknown");
-        let args = call["function"]["arguments"].as_str().unwrap_or("{}");
+        let name = tool_call_field(call, "name").unwrap_or("unknown");
+        let args = tool_call_field(call, "arguments").unwrap_or("{}");
         lines.push(crate::tool_header::build_header_line_from_str(
             "", name, args,
         ));
     }
+}
+
+/// Read a logical tool-call field from either persistence shape.
+///
+/// Production code persists [`koda_core::providers::ToolCall`] flat
+/// (`{"function_name":"…","arguments":"…"}`), but for forward-compat
+/// we also accept the OpenAI wire shape (`{"function":{"name":"…",
+/// "arguments":"…"}}`) so external bundles or hand-crafted history
+/// files render correctly too.
+///
+/// `field` is the *logical* name: `"name"` or `"arguments"`.
+fn tool_call_field<'a>(call: &'a serde_json::Value, field: &str) -> Option<&'a str> {
+    let canonical = match field {
+        "name" => "function_name",
+        "arguments" => "arguments",
+        _ => field,
+    };
+    call.get(canonical).and_then(|v| v.as_str()).or_else(|| {
+        call.get("function")
+            .and_then(|f| f.get(field))
+            .and_then(|v| v.as_str())
+    })
 }
 
 /// Render a tool result message (abbreviated).
@@ -397,11 +427,13 @@ mod tests {
     }
 
     /// Helper: build an Assistant message with a synthetic tool_calls
-    /// JSON declaring one tool call. Used by both regression tests below.
+    /// JSON declaring one tool call. Uses the canonical persistence
+    /// shape (`function_name` flat) — see [`koda_core::providers::ToolCall`].
     fn assistant_calling(name: &str, call_id: &str) -> Message {
         let calls = serde_json::json!([{
             "id": call_id,
-            "function": {"name": name, "arguments": "{}"}
+            "function_name": name,
+            "arguments": "{}"
         }]);
         let mut m = msg(Role::Assistant, "");
         m.tool_calls = Some(calls.to_string());
@@ -512,5 +544,80 @@ mod tests {
             all.contains("fn main()"),
             "Read result must still render: {all}"
         );
+    }
+
+    /// R7 of #1324: pre-#1340, `render_tool_call_headers` read tool
+    /// calls assuming the OpenAI wire shape (`call["function"]["name"]`)
+    /// while production persisted them flat (`call["function_name"]`).
+    /// Every tool call in resumed history / debug-bundle replay
+    /// rendered as `● unknown`. This test serializes a real `ToolCall`
+    /// (the same path production uses) and asserts the rendered name
+    /// is the actual tool name, not `"unknown"`.
+    #[test]
+    fn render_uses_canonical_tool_call_persistence_shape() {
+        use koda_core::providers::ToolCall;
+
+        let tcs = vec![ToolCall {
+            id: "call_abc".into(),
+            function_name: "WebFetch".into(),
+            arguments: r#"{"url":"https://example.com"}"#.into(),
+            thought_signature: None,
+        }];
+        let tc_json = serde_json::to_string(&tcs).expect("ToolCall must serialize");
+
+        let mut assistant = msg(Role::Assistant, "");
+        assistant.tool_calls = Some(tc_json);
+
+        let lines = render_history_messages(&[assistant]);
+        let all: String = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            all.contains("WebFetch"),
+            "tool name must render from canonical shape; got: {all}"
+        );
+        assert!(
+            !all.contains("unknown"),
+            "the '\u{25cf} unknown' bug from #1324 R7 must not regress; got: {all}"
+        );
+    }
+
+    /// Forward-compat: external bundles may use the OpenAI wire shape
+    /// (`{"function":{"name":"…"}}`). The renderer accepts both shapes
+    /// so hand-crafted history files don't render as `● unknown` either.
+    #[test]
+    fn render_also_accepts_legacy_openai_wire_shape() {
+        let calls = serde_json::json!([{
+            "id": "call_xyz",
+            "function": {"name": "Grep", "arguments": "{}"}
+        }]);
+        let mut assistant = msg(Role::Assistant, "");
+        assistant.tool_calls = Some(calls.to_string());
+
+        let lines = render_history_messages(&[assistant]);
+        let all: String = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            all.contains("Grep"),
+            "OpenAI shape must also work; got: {all}"
+        );
+        assert!(!all.contains("unknown"), "got: {all}");
     }
 }
