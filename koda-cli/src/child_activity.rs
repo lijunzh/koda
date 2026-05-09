@@ -225,24 +225,48 @@ impl ChildActivityTracker {
     }
 }
 
-/// Format an age into the compact 3-cell-wide string the overlay
-/// expects (`"<1s"`, `" 4s"`, `"42s"`, `" 2m"`, `"15m"`, `" 1h"`).
+/// Format an age into a compact string suitable for the overlay's
+/// age column. Always includes sub-unit precision so the value
+/// changes at least once per second while the sub-agent is alive
+/// (#1360 \u2014 was `"1m"` for a full 60s interval, leaving the user
+/// unable to tell if the pill was frozen).
 ///
-/// Caller is responsible for any further padding alignment; this
-/// helper just keeps the textual width to <=3 graphemes so the
-/// `(AGE)` parens align across rows of mixed magnitudes.
+/// | Duration       | Format    | Example   |
+/// |----------------|-----------|-----------|
+/// | `< 1s`         | `<1s`     | `<1s`     |
+/// | `< 60s`        | `XXs`     | `42s`     |
+/// | `< 10m`        | `XmXXs`   | `1m43s`   |
+/// | `< 60m`        | `XXmXXs`  | `15m23s`  |
+/// | `< 10h`        | `XhXXm`   | `1h23m`   |
+/// | `\u{2265} 10h`        | `XXhXXm`  | `25h59m`  |
+///
+/// Width varies from 3 to 6 graphemes; the overlay's column is
+/// padded to 6 cells so the `(AGE)` parens align across rows.
 fn format_age(d: Duration) -> String {
     let secs = d.as_secs();
     if secs == 0 {
         "<1s".to_string()
     } else if secs < 60 {
+        // Right-pad to 2 digits so single-digit seconds align with
+        // double-digit ones (`\" 4s\"` vs `\"42s\"`).
         format!("{secs:>2}s")
     } else if secs < 3600 {
+        // Always include the seconds component so the value ticks
+        // every second (the whole point of #1360). Width is 5 chars
+        // for single-digit minutes (`1m43s`), 6 for double-digit
+        // (`15m23s`).
         let m = secs / 60;
-        format!("{m:>2}m")
+        let s = secs % 60;
+        format!("{m}m{s:02}s")
     } else {
+        // At hour scale, second precision is irrelevant for the
+        // "is it alive?" feedback loop \u2014 minutes still tick visibly
+        // every 60s, and longer-running agents are usually waiting
+        // on a slow tool (e.g. cargo build) where the user already
+        // knows the situation. Drop seconds; keep minutes.
         let h = secs / 3600;
-        format!("{h:>2}h")
+        let m = (secs % 3600) / 60;
+        format!("{h}h{m:02}m")
     }
 }
 
@@ -483,15 +507,55 @@ mod tests {
         assert_eq!(format_age(Duration::from_secs(42)), "42s");
     }
 
+    /// #1360 regression: minute-scale ages MUST include the seconds
+    /// component so the value ticks every second. Pre-fix, this
+    /// returned `" 1m"` and `"15m"` \u2014 frozen for a full 60s interval
+    /// while the user wondered if the sub-agent was alive.
     #[test]
-    fn format_age_minutes_padded() {
-        assert_eq!(format_age(Duration::from_secs(60)), " 1m");
-        assert_eq!(format_age(Duration::from_secs(15 * 60)), "15m");
+    fn format_age_minutes_include_seconds() {
+        assert_eq!(format_age(Duration::from_secs(60)), "1m00s");
+        assert_eq!(format_age(Duration::from_secs(60 + 43)), "1m43s");
+        assert_eq!(format_age(Duration::from_secs(9 * 60 + 59)), "9m59s");
+        assert_eq!(format_age(Duration::from_secs(15 * 60 + 23)), "15m23s");
+        assert_eq!(format_age(Duration::from_secs(59 * 60 + 59)), "59m59s");
     }
 
+    /// #1360: at hour scale we drop seconds (irrelevant to the
+    /// "is it alive?" feedback loop) but keep minutes so the value
+    /// still ticks visibly every 60 seconds.
     #[test]
-    fn format_age_hours_padded() {
-        assert_eq!(format_age(Duration::from_secs(3600)), " 1h");
+    fn format_age_hours_include_minutes_drop_seconds() {
+        assert_eq!(format_age(Duration::from_secs(3600)), "1h00m");
+        assert_eq!(format_age(Duration::from_secs(3600 + 23 * 60)), "1h23m");
+        assert_eq!(format_age(Duration::from_secs(9 * 3600 + 59 * 60)), "9h59m");
+        assert_eq!(
+            format_age(Duration::from_secs(25 * 3600 + 59 * 60)),
+            "25h59m"
+        );
+    }
+
+    /// #1360: width contract the overlay column relies on. Widest
+    /// possible output must fit the 6-cell padding in
+    /// `child_activity_overlay`'s `format!(\" ({:>6}) \", row.age)`.
+    #[test]
+    fn format_age_width_never_exceeds_six_chars() {
+        // Sample boundary values across all branches.
+        for d in [
+            Duration::from_millis(500),
+            Duration::from_secs(1),
+            Duration::from_secs(59),
+            Duration::from_secs(60),
+            Duration::from_secs(9 * 60 + 59),
+            Duration::from_secs(59 * 60 + 59),
+            Duration::from_secs(3600),
+            Duration::from_secs(99 * 3600 + 59 * 60),
+        ] {
+            let s = format_age(d);
+            assert!(
+                s.chars().count() <= 6,
+                "format_age({d:?}) = {s:?} exceeds 6-cell column width"
+            );
+        }
     }
 
     // ── PR-A of #1232 §1: foreground sub-agent overlay rows ─────────────

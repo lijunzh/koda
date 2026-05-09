@@ -141,12 +141,13 @@ impl Widget for ChildActivityOverlay<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Reserve space for the leading "  ICON LABEL  AGE  · " prefix.
         // Worked example: "  " (2) + icon+space (2 cells: emoji is
-        // 2-cell wide) + label padded to 10 (10) + " (AGE) " (7) +
-        // "· " (2) = 23 cells. Add 3 cells of slack so the trailing
+        // 2-cell wide) + label padded to 10 (10) + " (AGE) " (10
+        // — 6-cell age column per #1360 + 4 surrounding chars) +
+        // "· " (2) = 26 cells. Add 3 cells of slack so the trailing
         // ellipsis always survives buffer-clipping when activity
         // overruns. Empirically: under-budget here means the `…`
         // gets clipped and the row looks like raw truncation.
-        let prefix_w = 26usize;
+        let prefix_w = 29usize;
         let max_activity_w = (area.width as usize).saturating_sub(prefix_w);
 
         for (row_idx, row) in self.rows.iter().enumerate() {
@@ -171,7 +172,11 @@ impl Widget for ChildActivityOverlay<'_> {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" ({:>3}) ", row.age),
+                    // 6-cell width accommodates the widest `format_age`
+                    // output (`15m23s`, `25h59m`); narrower values
+                    // right-pad with spaces so the `(AGE)` parens
+                    // align across rows of mixed magnitudes (#1360).
+                    format!(" ({:>6}) ", row.age),
                     Style::default().fg(Color::DarkGray),
                 ),
             ];
