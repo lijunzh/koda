@@ -237,6 +237,59 @@ mod event_loop_structure {
              frozen (v0.1.11 bug)."
         );
     }
+
+    /// #1354: the bg-activity overlay self-perpetuates its draw
+    /// loop via `schedule_frame_in(1 s)` so the age column ticks
+    /// and the activity pill stays live without depending on user
+    /// keystrokes or new engine events. Pre-fix, `schedule_frame_in`
+    /// was marked `#[allow(dead_code)]` with a TODO and the pill
+    /// froze for minutes between sub-agent tool calls.
+    ///
+    /// Source-level guard: both draw paths (idle + inference) must
+    /// schedule the next tick when there's non-terminal bg work.
+    #[test]
+    fn both_draw_paths_self_perpetuate_when_bg_work_exists() {
+        let idle_src = include_str!("../src/tui_context/mod.rs");
+        let inference_src = include_str!("../src/inference/select_loop.rs");
+
+        for (label, src) in [("idle", idle_src), ("inference", inference_src)] {
+            assert!(
+                src.contains("schedule_frame_in"),
+                "#1354 regression: {label} draw path must call \
+                 frame_requester.schedule_frame_in(...) when child_activity_total > 0 \
+                 so the bg-activity pill ticks between engine events. Without this \
+                 the pill freezes the moment the sub-agent stops emitting tool calls."
+            );
+        }
+
+        // Idle select! must consume the resulting notifications via
+        // `draw_rx.recv()` \u2014 otherwise schedule_frame_in queues a
+        // notification nobody reads, and the loop only wakes on
+        // keystrokes anyway (the original bug presentation).
+        let body_start = idle_src
+            .find("async fn run_event_loop")
+            .expect("run_event_loop not found");
+        // Bound the search to `run_event_loop`'s body \u2014 the next
+        // `\n    pub `/`\n    fn `/`\n    async fn ` at the same
+        // 4-space indent marks the next item in the impl block.
+        let body = &idle_src[body_start..];
+        let body_end = body[1..]
+            .find("\n    pub ")
+            .or_else(|| body[1..].find("\n    fn "))
+            .or_else(|| body[1..].find("\n    async fn "))
+            .map(|i| i + 1)
+            .unwrap_or(body.len());
+        let run_event_loop_body = &body[..body_end];
+        assert!(
+            run_event_loop_body.contains("draw_rx.recv()"),
+            "#1354 regression: idle tokio::select! must include a \
+             `Some(()) = self.draw_rx.recv()` arm so frame-scheduler \
+             notifications wake the loop and trigger the next \
+             `self.draw()` at the top of the iteration. Without it the \
+             schedule_frame_in tick has no consumer and the bg-activity \
+             pill freezes between keystrokes."
+        );
+    }
 }
 
 mod provider_key_flow {

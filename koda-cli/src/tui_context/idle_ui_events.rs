@@ -56,6 +56,12 @@ impl TuiContext {
     pub(super) fn handle_idle_ui_event(&mut self, ui_event: UiEvent) {
         match ui_event {
             UiEvent::Engine(EngineEvent::ChildAgentActivity { task_id, kind, .. }) => {
+                tracing::debug!(
+                    target: "koda_cli::diag::child_activity",
+                    stage = "idle_handler",
+                    task_id = task_id,
+                    "ChildAgentActivity received in IDLE path -> record_activity"
+                );
                 self.child_activity.record_activity(task_id, &kind);
                 // Frame redraw happens at top of next loop iteration.
             }

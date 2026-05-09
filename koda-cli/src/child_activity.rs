@@ -81,6 +81,13 @@ impl ChildActivityTracker {
                 // the post-completion bullets. Successes leave the
                 // existing ToolStart in place.
                 if *success {
+                    tracing::debug!(
+                        target: "koda_cli::diag::child_activity",
+                        stage = "record_activity",
+                        task_id = task_id,
+                        kind = "ToolEnd(success)",
+                        "no-op (preserving prior ToolStart)"
+                    );
                     return;
                 }
                 format!("{tool_name} \u{2717}")
@@ -89,8 +96,23 @@ impl ChildActivityTracker {
             // Forward-compat: future activity kinds are dropped from
             // the live overlay until we know how to render them. Same
             // shape as the success ToolEnd case above (#1224).
-            _ => return,
+            _ => {
+                tracing::debug!(
+                    target: "koda_cli::diag::child_activity",
+                    stage = "record_activity",
+                    task_id = task_id,
+                    "unknown ChildAgentActivityKind variant \u{2014} dropping"
+                );
+                return;
+            }
         };
+        tracing::debug!(
+            target: "koda_cli::diag::child_activity",
+            stage = "record_activity",
+            task_id = task_id,
+            description = %description,
+            "per_agent updated"
+        );
         self.per_agent.insert(task_id, LastActivity { description });
     }
 
@@ -221,6 +243,16 @@ impl ChildActivityTracker {
 
         let total = all.len();
         all.truncate(MAX_VISIBLE);
+        tracing::debug!(
+            target: "koda_cli::diag::child_activity",
+            stage = "build_rows",
+            agent_snapshot_len = agents.len(),
+            tracker_state_len = self.per_agent.len(),
+            total = total,
+            visible = all.len(),
+            first_activity = all.first().and_then(|r| r.activity.as_deref()).unwrap_or("<none>"),
+            "build_rows result"
+        );
         (all, total)
     }
 }
@@ -377,6 +409,37 @@ mod tests {
         let snap = vec![agent(1, "explore", 5, AgentStatus::Running { iter: 2 })];
         let (rows, _) = t.build_rows(&snap, &[]);
         assert_eq!(rows[0].activity.as_deref(), Some("Cache hit, skipping"));
+    }
+
+    /// #1354: tracker must accept the user's observed Info\u2192ToolStart
+    /// sequence (worktree-isolation `Info` event followed by sub-agent
+    /// `Glob`/`Read` ToolStart events). Bug 1 of #1349 reported the
+    /// pill freezing on the `Info` text \u2014 if this test passes, the
+    /// tracker logic is correct and the bug is downstream of
+    /// `record_activity` (event delivery, not state mutation).
+    #[test]
+    fn tool_start_event_overrides_previous_info() {
+        let mut t = ChildActivityTracker::default();
+        t.record_activity(
+            1,
+            &ChildAgentActivityKind::Info {
+                message: "explore: isolated in worktree".into(),
+            },
+        );
+        t.record_activity(
+            1,
+            &ChildAgentActivityKind::ToolStart {
+                tool_name: "Glob".into(),
+                summary: "Glob src/**/*.rs".into(),
+            },
+        );
+        let snap = vec![agent(1, "explore", 5, AgentStatus::Running { iter: 1 })];
+        let (rows, _) = t.build_rows(&snap, &[]);
+        assert_eq!(
+            rows[0].activity.as_deref(),
+            Some("Glob src/**/*.rs"),
+            "#1354: ToolStart after Info must override the Info text in the pill"
+        );
     }
 
     #[test]

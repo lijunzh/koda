@@ -533,12 +533,35 @@ impl KodaSession {
     /// for the design rationale (mirrors Codex's `forward_events`).
     pub fn attach_event_sink(&mut self, sink: Arc<dyn crate::engine::EngineSink>) -> bool {
         let Some(mut rx) = self.bg_agents.take_event_receiver() else {
+            tracing::debug!(
+                target: "koda_core::diag::child_activity",
+                stage = "attach_event_sink",
+                "event_receiver already taken \u{2014} forwarder NOT spawned"
+            );
             return false;
         };
+        tracing::debug!(
+            target: "koda_core::diag::child_activity",
+            stage = "attach_event_sink",
+            "forwarder task spawned"
+        );
         let handle = tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
+                if let crate::engine::EngineEvent::ChildAgentActivity { task_id, .. } = &event {
+                    tracing::debug!(
+                        target: "koda_core::diag::child_activity",
+                        stage = "forwarder_task",
+                        task_id = task_id,
+                        "forwarding ChildAgentActivity to sink.emit"
+                    );
+                }
                 sink.emit(event);
             }
+            tracing::debug!(
+                target: "koda_core::diag::child_activity",
+                stage = "forwarder_task",
+                "forwarder loop exited (channel closed)"
+            );
         });
         self.event_forwarder = Some(tokio_util::task::AbortOnDropHandle::new(handle));
         true
@@ -795,7 +818,7 @@ mod b22_tests {
     fn dev_allowlist_filter_is_singleton() {
         let a = dev_allowlist_filter();
         let b = dev_allowlist_filter();
-        // Same `&'static` reference \u2014 not just equal contents.
+        // Same `&'static` reference \u{2014} not just equal contents.
         // OnceLock guarantees this; if someone refactors to a Box
         // and clones, this fails fast.
         assert!(

@@ -214,6 +214,11 @@ impl TuiContext {
 
                 match select_result {
                     SelectArm::Draw => {
+                        tracing::debug!(
+                            target: "koda_cli::diag::child_activity",
+                            stage = "inference_draw_arm",
+                            "SelectArm::Draw -> terminal.draw()"
+                        );
                         // The actual `terminal.draw()` happens here — nowhere
                         // else in the inference loop. We can't call
                         // `self.draw()` directly because `turn` holds a
@@ -275,6 +280,19 @@ impl TuiContext {
                                 child_activity_total,
                             );
                         });
+                        // #1354: self-perpetuating draw loop. While any
+                        // non-terminal bg agent or process exists, schedule
+                        // the next frame ~1 s out so the age column ticks
+                        // and the activity pill stays live without
+                        // depending on user keystrokes or new engine
+                        // events. `child_activity_total` is already
+                        // computed only over non-terminal entries (see
+                        // `ChildActivityTracker::build_rows`), so the
+                        // ticker auto-stops the moment work drains.
+                        if child_activity_total > 0 {
+                            self.frame_requester
+                                .schedule_frame_in(std::time::Duration::from_secs(1));
+                        }
                     }
                     SelectArm::Crossterm(ev) => {
                         super::crossterm_handler::handle_crossterm_event_inline(
@@ -348,6 +366,11 @@ impl TuiContext {
                         // One coalesced redraw per drain batch — not per
                         // event — keeps redraw cost bounded under streaming
                         // floods (#1138).
+                        tracing::debug!(
+                            target: "koda_cli::diag::child_activity",
+                            stage = "ui_arm_schedule_frame",
+                            "Ui arm completed -> schedule_frame()"
+                        );
                         self.frame_requester.schedule_frame();
                     }
                     SelectArm::TurnDone(result) => {

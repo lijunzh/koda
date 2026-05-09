@@ -452,6 +452,11 @@ impl TuiContext {
 
     /// Draw the fullscreen viewport.
     pub fn draw(&mut self) -> Result<()> {
+        tracing::debug!(
+            target: "koda_cli::diag::child_activity",
+            stage = "draw",
+            "TuiContext::draw() invoked"
+        );
         // Clamp scroll offset to valid bounds before rendering.
         // Necessary after terminal resize changes wrapping math.
         // Use history panel height, not full terminal height — otherwise
@@ -530,6 +535,17 @@ impl TuiContext {
         if let Some(rect) = history_rect {
             self.history_area_y = rect.y;
             self.history_area_height = rect.height;
+        }
+        // #1354: self-perpetuating draw loop. While any non-terminal
+        // bg agent or process exists, schedule the next frame ~1 s out
+        // so the age column ticks and the activity pill stays live
+        // even when the user is idle and no engine events are
+        // arriving. `child_activity_total` is already filtered to
+        // non-terminal entries by `ChildActivityTracker::build_rows`,
+        // so the ticker auto-stops the moment work drains.
+        if child_activity_total > 0 {
+            self.frame_requester
+                .schedule_frame_in(std::time::Duration::from_secs(1));
         }
         Ok(())
     }
@@ -631,6 +647,18 @@ impl TuiContext {
                 }
                 Some(ui_event) = ui_rx.recv() => {
                     self.handle_idle_ui_event(ui_event);
+                }
+                // #1354: bg-activity overlay self-perpetuating tick.
+                // `TuiContext::draw()` calls `schedule_frame_in(1 s)`
+                // whenever there's non-terminal bg work, so this arm
+                // wakes the loop on each tick \u2014 the loop iterates,
+                // calls `draw()` again at the top, and the cycle
+                // continues until work drains. Without this arm the
+                // notification would queue with no consumer and the
+                // pill freezes between engine events / keystrokes.
+                Some(()) = self.draw_rx.recv() => {
+                    // No body needed: redraw happens via `self.draw()?`
+                    // at the top of the next loop iteration.
                 }
                 _ = tokio::time::sleep(
                     crate::composer::paste_burst::PasteBurst::recommended_flush_delay(),
