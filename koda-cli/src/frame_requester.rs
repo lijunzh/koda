@@ -56,9 +56,11 @@ impl FrameRequester {
 
     /// Request a redraw at least `dur` from now.
     ///
-    /// Useful for animations and time-based UI (e.g. a spinner that should
-    /// tick on the next frame boundary).
-    #[allow(dead_code)] // wired up in follow-up issues; keep the API symmetric.
+    /// Used by the bg-activity overlay's self-perpetuating draw loop
+    /// (#1354): each draw schedules the next one ~1 s out as long as
+    /// there's a non-terminal bg agent or process running, so the age
+    /// column ticks and the pill stays live without depending on the
+    /// user pressing keys. Stops automatically when `total == 0`.
     pub(crate) fn schedule_frame_in(&self, dur: Duration) {
         let _ = self.tx.send(Instant::now() + dur);
     }

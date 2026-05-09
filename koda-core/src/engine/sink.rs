@@ -210,6 +210,12 @@ impl EngineSink for ForwardingChildSink {
         // authoritative.
         match &event {
             EngineEvent::ToolCallStart { name, args, .. } => {
+                tracing::debug!(
+                    target: "koda_core::diag::child_activity",
+                    stage = "forwarding_child_sink",
+                    tool_name = %name,
+                    "emit ToolCallStart -> send_activity ToolStart"
+                );
                 self.emitter.send_activity(
                     crate::engine::event::ChildAgentActivityKind::ToolStart {
                         tool_name: name.clone(),
@@ -332,9 +338,24 @@ fn summarize_tool_call(name: &str, args: &serde_json::Value) -> String {
     /// bg-task spawn cell where horizontal real estate is tight.
     const MAX_LEN: usize = 80;
 
+    /// Helper: tools accept either `file_path` (canonical, see #1354)
+    /// or legacy `path`. Mirror the tolerance the dispatchers use
+    /// (e.g. `koda-core/src/tools/file_tools.rs` does
+    /// `args["file_path"].as_str().or_else(args["path"].as_str())`).
+    /// Without this fallback the live overlay shows just bare tool
+    /// names (`"Read"` instead of `"Read src/main.rs"`) \u2014 the cosmetic
+    /// half of #1354 Bug 1.
+    fn path_arg(args: &serde_json::Value) -> Option<String> {
+        args.get("file_path")
+            .and_then(|v| v.as_str())
+            .or_else(|| args.get("path").and_then(|v| v.as_str()))
+            .map(str::to_string)
+    }
+
     let body = match name {
-        "Read" | "Edit" | "Write" | "Delete" => args
-            .get("path")
+        "Read" | "Edit" | "Write" | "Delete" | "List" => path_arg(args),
+        "Glob" => args
+            .get("pattern")
             .and_then(|v| v.as_str())
             .map(str::to_string),
         "Bash" => args
@@ -1002,6 +1023,102 @@ mod tests {
             summaries[1]
         );
         assert!(summaries[2].contains("reviewer"), "got: {}", summaries[2]);
+    }
+
+    /// #1354 regression: tool schemas declare `file_path` (not `path`)
+    /// for Read/Write/Edit/Delete/List, and `pattern` for Glob.
+    /// `summarize_tool_call` originally only checked `path` for the
+    /// first group and didn't handle Glob/List at all, so the live
+    /// activity pill always rendered just the bare tool name (e.g.
+    /// `"Read"` instead of `"Read src/main.rs"`). This test pins the
+    /// fix to prevent silent regression if either the tool schemas
+    /// or the summariser drift apart again.
+    #[test]
+    fn forwarding_child_sink_extracts_file_path_for_filesystem_tools() {
+        let (registry, emitter) = make_test_emitter(1);
+        let sink = ForwardingChildSink::new(BufferingSink::new(), emitter);
+
+        for (name, args, expected_substr) in [
+            (
+                "Read",
+                serde_json::json!({"file_path": "src/main.rs"}),
+                "src/main.rs",
+            ),
+            (
+                "Write",
+                serde_json::json!({"file_path": "out.txt", "content": "x"}),
+                "out.txt",
+            ),
+            (
+                "Edit",
+                serde_json::json!({"file_path": "a.rs", "replacements": []}),
+                "a.rs",
+            ),
+            (
+                "Delete",
+                serde_json::json!({"file_path": "old.log"}),
+                "old.log",
+            ),
+            (
+                "List",
+                serde_json::json!({"file_path": "koda-core/src"}),
+                "koda-core/src",
+            ),
+            ("Glob", serde_json::json!({"pattern": "**/*.rs"}), "**/*.rs"),
+        ] {
+            sink.emit(EngineEvent::ToolCallStart {
+                id: name.to_string(),
+                name: name.to_string(),
+                args,
+                is_sub_agent: false,
+            });
+            let drained = registry.drain_status_events();
+            let summary = drained
+                .iter()
+                .find_map(|e| match e {
+                    EngineEvent::ChildAgentActivity {
+                        kind:
+                            crate::engine::event::ChildAgentActivityKind::ToolStart { summary, .. },
+                        ..
+                    } => Some(summary.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no ToolStart activity recorded for {name}"));
+            assert!(
+                summary.contains(expected_substr),
+                "summary for {name} should contain {expected_substr:?}, got {summary:?}"
+            );
+        }
+    }
+
+    /// #1354 regression: legacy callers that pass `path` instead of
+    /// `file_path` must still get a meaningful summary. Mirrors the
+    /// dispatcher fallback in `koda-core/src/tools/file_tools.rs`.
+    #[test]
+    fn forwarding_child_sink_falls_back_to_legacy_path_arg() {
+        let (registry, emitter) = make_test_emitter(1);
+        let sink = ForwardingChildSink::new(BufferingSink::new(), emitter);
+        sink.emit(EngineEvent::ToolCallStart {
+            id: "x".into(),
+            name: "Read".into(),
+            args: serde_json::json!({"path": "legacy/key.rs"}),
+            is_sub_agent: false,
+        });
+        let drained = registry.drain_status_events();
+        let summary = drained
+            .iter()
+            .find_map(|e| match e {
+                EngineEvent::ChildAgentActivity {
+                    kind: crate::engine::event::ChildAgentActivityKind::ToolStart { summary, .. },
+                    ..
+                } => Some(summary.clone()),
+                _ => None,
+            })
+            .expect("summary present");
+        assert!(
+            summary.contains("legacy/key.rs"),
+            "legacy `path` arg must still produce a path-bearing summary, got {summary:?}"
+        );
     }
 
     #[test]
