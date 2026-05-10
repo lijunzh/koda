@@ -306,23 +306,37 @@ pub(crate) async fn execute_one_tool(
             // Phase 5 PR-4 of #934: hand the parent's effective policy
             // to the child so `compose()` can stack restrictions.
             &policy,
-            // Layer 4 of #996 + #1076: foreground sub-agents are not
-            // tracked in the bg-agent registry, so there is no
-            // `ChildStatusEmitter` to fan out per-iteration heartbeats
-            // to. Pass `None` to skip the per-iteration emit.
+            // Layer 4 of #996 + #1076: sync sub-agents are not tracked
+            // in the bg-agent registry. Pass `None` to skip the per-
+            // iteration emit — the FG path at sub_agent_dispatch.rs
+            // documents this as deliberate. Live activity flows
+            // through `ChildAgentActivity` events on the parent's
+            // `EngineSink` instead.
             None,
-            // #1108 P2a: pass the InvokeAgent tool_call_id so any
-            // bg-sub-agent reservation can record it. The drain
-            // hook in the inference loop will persist the bg sub-
-            // agent's narrative trace to `session_events` keyed by
-            // this id, so the transcript renderer can fold it under
-            // the parent's `InvokeAgent` tool result.
+            // #1108 P2a: pass the InvokeAgent tool_call_id so the
+            // narrative trace rows are folded under the parent's
+            // `InvokeAgent` tool result in the persisted transcript.
             Some(&tc.id),
-            // **#1163 (Lean A)**: `inline_only=false` is the public
-            // dispatch path — every InvokeAgent call spawns a bg
-            // task and returns its task_id immediately. The `true`
-            // value is reserved for `run_bg_agent`'s recursion guard.
-            false,
+            // **#1366 phase 1**: sub-agents are now synchronous
+            // delegations. `inline_only=true` selects the FG path that
+            // drives the sub-agent's inference loop inline and returns
+            // its final output as the tool result — no more bg-spawn-
+            // and-poll round-trip via task_id + WaitForMail.
+            //
+            // Architectural rationale: the LLM API caps throughput,
+            // not concurrency, so async dispatch buys little while
+            // costing a lot of surface area (mailbox / WaitForMail /
+            // pill / overlay). Sub-agents' real value is context
+            // isolation + tool restriction + specialization, all of
+            // which work fine with sync delegation.
+            //
+            // Pre-#1366 this was `false` (bg-spawn) and `true` was
+            // reserved for `run_bg_agent`'s recursion guard. With
+            // bg-spawn dead from the public surface, `true` IS the
+            // public path; phase 2 deletes the now-unreachable bg
+            // branch + mailbox + activity-pill UI in one large
+            // deletion PR.
+            true,
         );
         match Box::pin(fut).await {
             Ok(output) => (output, true, None),
@@ -389,7 +403,10 @@ pub(crate) async fn execute_one_tool(
             &policy,
             None,
             Some(&remapped_tc.id),
-            false,
+            // **#1366 phase 1**: SpawnAgent is the codex-v2 surface
+            // alias for InvokeAgent; both paths share the sync swap.
+            // See InvokeAgent branch above for the full rationale.
+            true,
         );
         match Box::pin(fut).await {
             Ok(output) => (output, true, None),

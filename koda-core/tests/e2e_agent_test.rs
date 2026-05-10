@@ -1,8 +1,6 @@
 //! E2E tests: sub-agent invocation and caching.
 
-use koda_core::{
-    child_agent::AgentStatus, engine::EngineEvent, persistence::Persistence, runtime_env,
-};
+use koda_core::{engine::EngineEvent, persistence::Persistence, runtime_env};
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 use std::time::Duration;
 
@@ -44,46 +42,34 @@ async fn test_sub_agent_invocation_e2e() {
     ]);
     let events = env.run_inference(&provider).await;
 
-    // **#1163 (Lean A)**: every InvokeAgent dispatch returns a task_id
-    // immediately. The sub-agent's actual output reaches the parent
-    // via:
-    //  (a) the per-task `ChildTaskUpdate` stream (`AgentStatus::Completed`
-    //      carries `summary`, which IS the sub-agent's final output),
-    //  (b) auto-drain on a future parent iteration, which injects the
-    //      summary as a synthetic user message.
-    // Pre-#1163 there was a third path — the sub-agent's output came
-    // back in the `ToolCallResult.output` of the InvokeAgent call —
-    // and the test asserted on that path. With the fg execution mode
-    // deleted, `ToolCallResult.output` is now the spawn confirmation
-    // string ("Background agent '...' started (agent:N)..."). We
-    // pivot the assertion to path (a) since it's the most direct.
+    // **#1366 phase 1 (sync sub-agent dispatch)**: with the bg-spawn
+    // path retired, the sub-agent's final output flows back the same
+    // way every other tool's output does — as `ToolCallResult.output`
+    // on the parent's `InvokeAgent` call. No more polling on
+    // `ChildTaskUpdate` terminal status, no more `collect_bg_events_after`
+    // race window. The pre-#1163 assertion shape is back, simpler.
+    runtime_env::remove("KODA_MOCK_RESPONSES");
     assert!(
         events.iter().any(
             |e| matches!(e, EngineEvent::SubAgentStart { agent_name } if agent_name == "echo-agent")
         ),
-        "expected SubAgentStart for echo-agent (now hoisted to dispatch \
-         time, fires regardless of inline-vs-spawn path), got: {events:#?}"
+        "expected SubAgentStart for echo-agent (hoisted to dispatch \
+         time, fires regardless of dispatch model), got: {events:#?}"
     );
 
-    let bg_events = env
-        .collect_bg_events_after(events, Duration::from_secs(10))
-        .await
-        .expect("echo-agent never reached terminal state within 10s");
-    runtime_env::remove("KODA_MOCK_RESPONSES");
-
-    let completed_summary = bg_events.iter().find_map(|e| match e {
-        EngineEvent::ChildTaskUpdate {
-            status: koda_core::child_agent::AgentStatus::Completed { summary },
-            ..
-        } => Some(summary.clone()),
-        _ => None,
-    });
+    let invoke_output = events
+        .iter()
+        .find_map(|e| match e {
+            EngineEvent::ToolCallResult { name, output, .. } if name == "InvokeAgent" => {
+                Some(output.clone())
+            }
+            _ => None,
+        })
+        .expect("InvokeAgent must produce a ToolCallResult on the sync dispatch path");
     assert!(
-        completed_summary
-            .as_deref()
-            .is_some_and(|s| s.contains("Echo: review the auth module")),
-        "echo-agent's Completed summary should carry its echoed output; \
-         got summary = {completed_summary:?}, bg_events = {bg_events:#?}"
+        invoke_output.contains("Echo: review the auth module"),
+        "echo-agent's final output should land in the InvokeAgent tool \
+         result; got = {invoke_output:?}, events = {events:#?}"
     );
 
     // The parent's second mock response ("Sub-agent says: ...") still
@@ -175,18 +161,15 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     ]);
     let events = env.run_inference(&provider).await;
 
-    // **#1163 (Lean A)**: dispatch is now spawn-and-return, so
-    // `run_inference` returns BEFORE the sub-agent has created its
-    // DB session and finished writing assistant rows. Wait for
-    // terminal status before reading DB state — otherwise the
-    // `list_sessions` lookup races the sub-agent's session insert
-    // and finds only the parent. (Pre-#1163 the foreground inline
-    // path made this race-free "by accident" — dispatch blocked
-    // until the sub-agent fully completed.)
-    let _bg_events = env
-        .collect_bg_events_after(events, Duration::from_secs(10))
-        .await
-        .expect("loop-test-agent never reached terminal state within 10s");
+    // **#1366 phase 1 (sync sub-agent dispatch)**: dispatch is
+    // synchronous — by the time `run_inference` returns the sub-
+    // agent has already created its DB session and persisted its
+    // assistant rows. No need to wait on terminal `ChildTaskUpdate`
+    // events anymore (the FG path doesn't emit them anyway). The
+    // pre-#1163 wait-free assertion shape is back. We do still want
+    // to confirm the sub-agent's session exists so the DB checks
+    // below have something to read.
+    let _ = events; // events vec retained only for symmetry / debug.
     runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // Find the sub-agent's session. `list_sessions` returns newest-first,
@@ -478,137 +461,6 @@ async fn sub_agent_invoke_agent_is_refused_with_clear_message() {
     );
 }
 
-// ── QA-001: background agent iter-counter status advances (#1045) ───────────
-//
-// Verifies that when InvokeAgent dispatches with `background: true`,
-// the status channel progresses through at least one full inference
-// iteration.  `Completed` is the only terminal state that proves the
-// loop actually ran; reaching it implies `iter ≥ 1` was sent because
-// `run_bg_agent` sends `Running { iter: n }` at the top of each
-// iteration and `Completed` is only emitted after the loop exits.
-//
-// **Runtime flavor**: the production code path uses `tokio::spawn` for
-// background sub-agents (see `sub_agent_dispatch::run_bg_agent` and the
-// B5 comment block). On `current_thread` runtimes (the `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`
-// default) `tokio::spawn` queues the future but it can ONLY make
-// progress when the test task explicitly yields. The dispatch path
-// itself is fully synchronous between `reserve()` and `attach()`, but
-// the spawned future's first poll happens lazily — and on macOS CI
-// runners we observed cases where the test's polling loop spun on a
-// snapshot that never updated, suggesting the dispatch future itself
-// hadn't completed before the test resumed. Pinning to `multi_thread`
-// matches production semantics and gives the spawned task a dedicated
-// worker, eliminating the scheduling pathology. See #1090.
-
-#[cfg(feature = "test-support")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn bg_agent_iter_counter_advances_via_status_channel() {
-    let _lock = ENV_MUTEX.lock().await;
-    let env = Env::new().await;
-
-    write_agent_config(&env, "bg-counter-agent", /* skip_memory */ true);
-
-    // Give the background agent's mock provider a single text response.
-    runtime_env::set(
-        "KODA_MOCK_RESPONSES",
-        r#"[{"text": "background work done"}]"#,
-    );
-
-    env.insert_user_message("launch background agent").await;
-
-    // Parent calls InvokeAgent with background:true, then returns immediately.
-    let provider = MockProvider::new(vec![
-        MockResponse::tool_call(
-            "InvokeAgent",
-            serde_json::json!({
-                "agent_name": "bg-counter-agent",
-                "prompt": "do some work",
-                "background": true
-            }),
-        ),
-        MockResponse::Text("parent done".into()),
-    ]);
-
-    // Use the `collect_bg_events_after` helper from koda-test-utils
-    // — it merges the events vec from `run_inference` (what the
-    // parent's inference_loop drained into the sink) with the
-    // registry's `drain_status_events()` queue (whatever was emitted
-    // after parent finished). See the helper's docs for the full
-    // race-condition rationale (#1109, PR #1113).
-    use koda_core::engine::EngineEvent;
-    let events_from_sink = env.run_inference(&provider).await;
-    let bg_events = env
-        .collect_bg_events_after(events_from_sink, Duration::from_secs(10))
-        .await
-        .unwrap_or_else(|partial| {
-            panic!(
-                "bg task never reached a terminal state within 10s.\n\
-                 bg_events ({} total): {partial:#?}",
-                partial.len()
-            )
-        });
-
-    let bg_updates: Vec<&AgentStatus> = bg_events
-        .iter()
-        .filter_map(|ev| match ev {
-            EngineEvent::ChildTaskUpdate { status, .. } => Some(status),
-            _ => None,
-        })
-        .collect();
-
-    assert!(
-        !bg_updates.is_empty(),
-        "expected at least one ChildTaskUpdate event; bg_events ({} total): {bg_events:#?}",
-        bg_events.len()
-    );
-
-    // QA-001 core: the loop ran ≥ 1 full iteration. The engine emits
-    // Running {{ iter }} at the TOP of each iteration, so iter ≥ 1
-    // proves the loop body completed at least once.
-    let max_iter_seen = bg_updates
-        .iter()
-        .filter_map(|s| match s {
-            AgentStatus::Running { iter } => Some(*iter),
-            _ => None,
-        })
-        .max();
-    assert!(
-        matches!(max_iter_seen, Some(n) if n >= 1),
-        "expected Running {{ iter >= 1 }}; saw max iter = {max_iter_seen:?}.\nbg_events: {bg_events:#?}"
-    );
-
-    let final_status = bg_updates
-        .iter()
-        .rev()
-        .find(|s| {
-            matches!(
-                s,
-                AgentStatus::Completed { .. }
-                    | AgentStatus::Errored { .. }
-                    | AgentStatus::Cancelled
-            )
-        })
-        .copied()
-        .unwrap_or_else(|| {
-            panic!("bg task never reached a terminal state.\nbg_updates: {bg_updates:#?}")
-        });
-
-    match final_status {
-        AgentStatus::Completed { summary } => {
-            assert!(
-                !summary.is_empty(),
-                "bg agent completed with empty summary — \
-                 execute_sub_agent output was not captured"
-            );
-        }
-        AgentStatus::Errored { error } => panic!("bg agent errored: {error}"),
-        AgentStatus::Cancelled => panic!("bg agent was unexpectedly cancelled"),
-        _ => unreachable!("filter above only keeps terminal states"),
-    }
-    // Removed only after the bg task has finished reading it.
-    runtime_env::remove("KODA_MOCK_RESPONSES");
-}
-
 // ── #1135: sub-agent max_turns + grace turn (gemini pattern) ────────────────
 
 /// #1135 regression: a sub-agent that keeps calling tools past its
@@ -682,28 +534,24 @@ async fn test_sub_agent_grace_turn_terminates_runaway_explorer() {
     ]);
     let events = env.run_inference(&provider).await;
 
-    // **#1163 (Lean A)**: pre-#1163 the sub-agent ran inline on the
-    // foreground path, so its `Info`, `ToolCallStart`, and final
-    // `ToolCallResult` events all landed on the parent's sink and
-    // could be inspected directly. Now the sub-agent runs inside a
-    // `tokio::spawn`-ed `run_bg_agent`, with a `BufferingSink` wrapped
-    // in a `ForwardingChildSink` (#1201 B). Live tool/info events
-    // surface as `ChildAgentActivity` on the parent's sink (drained
-    // via the registry's status-event queue), and the final output
-    // surfaces as the `summary` on `AgentStatus::Completed`. We
-    // collect both before asserting.
-    let bg_events = env
-        .collect_bg_events_after(events.clone(), Duration::from_secs(10))
-        .await
-        .expect("spinner never reached terminal state within 10s");
+    // **#1366 phase 1 (sync sub-agent dispatch)**: the sub-agent runs
+    // inline on the parent's task. The FG path still wraps the sub-
+    // agent's sink with `FgForwardingSink`, so its tool/info events
+    // surface as `ChildAgentActivity` on the parent's sink (same as
+    // pre-#1366 bg behavior). The sub-agent's final output now flows
+    // back as `ToolCallResult.output` on the parent's `InvokeAgent`
+    // call instead of `AgentStatus::Completed.summary` — the FG path
+    // deliberately doesn't emit terminal `ChildTaskUpdate` events
+    // (sub_agent_dispatch.rs:1075 documents the rationale). All
+    // assertions below pivot to the sync-path event shape.
     runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // The visible UX signal of a triggered grace turn: an `Info` line
-    // with the "reached max turns" message. Pre-#1163 it was a raw
-    // `EngineEvent::Info`; now it's wrapped as `ChildAgentActivity
-    // { kind: Info { message } }`. If neither fires, the grace-turn
-    // code path was skipped — #1135 regression.
-    let grace_event_seen = bg_events.iter().chain(events.iter()).any(|e| match e {
+    // with the "reached max turns" message. Forwarded as
+    // `ChildAgentActivity { kind: Info { message } }` on the FG path.
+    // If neither raw nor forwarded form fires, the grace-turn code
+    // path was skipped — #1135 regression.
+    let grace_event_seen = events.iter().any(|e| match e {
         EngineEvent::ChildAgentActivity {
             kind: koda_core::engine::event::ChildAgentActivityKind::Info { message },
             ..
@@ -714,37 +562,32 @@ async fn test_sub_agent_grace_turn_terminates_runaway_explorer() {
     assert!(
         grace_event_seen,
         "expected an Info line announcing the grace turn (raw or forwarded as \
-         ChildAgentActivity); got bg_events: {bg_events:#?}"
+         ChildAgentActivity); got events: {events:#?}"
     );
 
-    // The sub-agent's final output (grace-turn text) used to flow
-    // back via `ToolCallResult.output`; post-#1163 it's the `summary`
-    // on `AgentStatus::Completed`. Asserting on the partial-findings
-    // string locks in the expected happy path.
-    let summary = bg_events
+    // The sub-agent's final output (grace-turn text) flows back via
+    // `ToolCallResult.output` on the parent's `InvokeAgent` call.
+    let invoke_output = events
         .iter()
         .find_map(|e| match e {
-            EngineEvent::ChildTaskUpdate {
-                status: koda_core::child_agent::AgentStatus::Completed { summary },
-                ..
-            } => Some(summary.clone()),
+            EngineEvent::ToolCallResult { name, output, .. } if name == "InvokeAgent" => {
+                Some(output.clone())
+            }
             _ => None,
         })
-        .expect("spinner must reach Completed status with a summary");
+        .expect("InvokeAgent must produce a ToolCallResult on the sync dispatch path");
     assert!(
-        summary.contains("Partial findings"),
-        "sub-agent should return the grace-turn text in summary; got: {summary}"
+        invoke_output.contains("Partial findings"),
+        "sub-agent should return the grace-turn text as its tool result; got: {invoke_output}"
     );
 
     // Belt-and-suspenders: verify the loop did NOT issue a 4th
-    // `Glob` tool-call. Pre-#1163 these were `ToolCallStart` events
-    // with `is_sub_agent: true`; now they're forwarded as
+    // `Glob` tool-call. Tool calls are forwarded as
     // `ChildAgentActivity { kind: ToolStart { tool_name: "Glob", .. } }`.
     // Counts >= 4 mean the grace turn's own tool call leaked through
     // to dispatch.
-    let glob_call_count = bg_events
+    let glob_call_count = events
         .iter()
-        .chain(events.iter())
         .filter(|e| {
             matches!(
                 e,
@@ -758,7 +601,7 @@ async fn test_sub_agent_grace_turn_terminates_runaway_explorer() {
     assert_eq!(
         glob_call_count, 3,
         "expected exactly 3 Glob dispatches (iters 1-3); grace turn must not dispatch tools. \
-         got {glob_call_count} ChildAgentActivity::ToolStart(Glob) events; bg_events: {bg_events:#?}"
+         got {glob_call_count} ChildAgentActivity::ToolStart(Glob) events; events: {events:#?}"
     );
 }
 
@@ -812,39 +655,34 @@ async fn test_sub_agent_grace_turn_drops_tool_calls_when_model_defies() {
     ]);
     let events = env.run_inference(&provider).await;
 
-    // **#1163 (Lean A)**: see sister test for the migration rationale.
-    // The sub-agent's final marker now lives on `AgentStatus::Completed.summary`
-    // and its `Glob` tool calls are forwarded as `ChildAgentActivity`.
-    let bg_events = env
-        .collect_bg_events_after(events.clone(), Duration::from_secs(10))
-        .await
-        .expect("defiant never reached terminal state within 10s");
+    // **#1366 phase 1 (sync sub-agent dispatch)**: see sister test
+    // (`test_sub_agent_grace_turn_terminates_runaway_explorer`) for
+    // the migration rationale. The sub-agent's final marker now
+    // lives on `ToolCallResult.output`, and its `Glob` tool calls
+    // are still forwarded as `ChildAgentActivity` by the FG path's
+    // sink wrapper.
     runtime_env::remove("KODA_MOCK_RESPONSES");
 
-    // Marker present in the bg agent's Completed summary.
-    let summary = bg_events
+    // Marker present in the InvokeAgent tool result.
+    let invoke_output = events
         .iter()
         .find_map(|e| match e {
-            EngineEvent::ChildTaskUpdate {
-                status: koda_core::child_agent::AgentStatus::Completed { summary },
-                ..
-            } => Some(summary.clone()),
+            EngineEvent::ToolCallResult { name, output, .. } if name == "InvokeAgent" => {
+                Some(output.clone())
+            }
             _ => None,
         })
-        .expect("defiant must reach Completed status with a summary");
+        .expect("InvokeAgent must produce a ToolCallResult on the sync dispatch path");
     assert!(
-        summary.contains("[max_turns reached"),
-        "expected marker for defiant grace turn in summary; got: {summary}"
+        invoke_output.contains("[max_turns reached"),
+        "expected marker for defiant grace turn in tool result; got: {invoke_output}"
     );
 
     // Only 2 Glob dispatches (iter 1-2). Iter 3 was the grace turn —
     // its tool call must be dropped, not dispatched. Counts via the
-    // forwarded `ChildAgentActivity::ToolStart` (post-#1163) since
-    // sub-agent tool events no longer surface as raw `ToolCallStart`
-    // on the parent sink.
-    let glob_call_count = bg_events
+    // forwarded `ChildAgentActivity::ToolStart`.
+    let glob_call_count = events
         .iter()
-        .chain(events.iter())
         .filter(|e| {
             matches!(
                 e,
@@ -858,7 +696,7 @@ async fn test_sub_agent_grace_turn_drops_tool_calls_when_model_defies() {
     assert_eq!(
         glob_call_count, 2,
         "expected exactly 2 Glob dispatches; the grace turn's tool call \
-         must be dropped, not executed. got: {glob_call_count}; bg_events: {bg_events:#?}"
+         must be dropped, not executed. got: {glob_call_count}; events: {events:#?}"
     );
 }
 
@@ -938,24 +776,20 @@ async fn sub_agent_preflight_bails_when_context_exceeds_window() {
     ]);
     let events = env.run_inference(&provider).await;
 
-    // **#1163 (Lean A)**: pre-flight runs inside `run_bg_agent`'s
-    // spawned task now (not on the parent's inline path), so the
-    // `Info { "context pre-flight failed" }` event lands on the bg
-    // agent's `BufferingSink` and is forwarded as `ChildAgentActivity
-    // { kind: Info { message } }`. Final output (the actionable
-    // error) lands on `AgentStatus::Errored.error` (preflight bails
-    // with `Err`, not `Ok`). Wait for terminal status before asserting.
-    let bg_events = env
-        .collect_bg_events_after(events.clone(), Duration::from_secs(10))
-        .await
-        .expect("over-budget-agent never reached terminal state within 10s");
+    // **#1366 phase 1 (sync sub-agent dispatch)**: pre-flight runs
+    // inline on the parent's task. The `Info { "context pre-flight
+    // failed" }` event surfaces as `ChildAgentActivity { kind: Info
+    // { message } }` via the FG path's `FgForwardingSink`. The
+    // actionable error itself flows back as `ToolCallResult.output`
+    // on the parent's `InvokeAgent` call — the dispatcher's `Err(e)`
+    // arm formats it as `"Error invoking sub-agent: {chain}"`.
     runtime_env::remove("KODA_MOCK_RESPONSES");
 
     // 1. The pre-flight Info event must surface so the overlay shows
     //    the failure reason. Pin substrings the dispatcher emits.
     //    Accept either the raw form (legacy parent-sink path, kept as
     //    a defensive check) OR the forwarded ChildAgentActivity form.
-    let preflight_signal = bg_events.iter().chain(events.iter()).any(|e| match e {
+    let preflight_signal = events.iter().any(|e| match e {
         EngineEvent::ChildAgentActivity {
             kind: koda_core::engine::event::ChildAgentActivityKind::Info { message },
             ..
@@ -966,31 +800,24 @@ async fn sub_agent_preflight_bails_when_context_exceeds_window() {
     assert!(
         preflight_signal,
         "expected pre-flight failed Info event (raw or forwarded as \
-         ChildAgentActivity); got bg_events: {bg_events:#?}"
+         ChildAgentActivity); got events: {events:#?}"
     );
 
-    // 2. The sub-agent's actionable error must land on the bg agent's
-    //    terminal status — either as `Errored.error` (the typical
-    //    bail path) or as the `Completed.summary` (if the dispatcher
-    //    chose to surface it as a graceful completion). Accept both.
-    let terminal_text = bg_events
+    // 2. The sub-agent's actionable error must land on the parent's
+    //    `InvokeAgent` tool result.
+    let invoke_output = events
         .iter()
         .find_map(|e| match e {
-            EngineEvent::ChildTaskUpdate {
-                status: koda_core::child_agent::AgentStatus::Errored { error },
-                ..
-            } => Some(error.clone()),
-            EngineEvent::ChildTaskUpdate {
-                status: koda_core::child_agent::AgentStatus::Completed { summary },
-                ..
-            } => Some(summary.clone()),
+            EngineEvent::ToolCallResult { name, output, .. } if name == "InvokeAgent" => {
+                Some(output.clone())
+            }
             _ => None,
         })
-        .expect("over-budget-agent must reach a terminal status with surfaced text");
+        .expect("InvokeAgent must produce a ToolCallResult on the sync dispatch path");
     assert!(
-        terminal_text.contains("context exceeds model window")
-            || terminal_text.contains("pre-flight"),
-        "terminal text must surface the pre-flight bail; got: {terminal_text}"
+        invoke_output.contains("context exceeds model window")
+            || invoke_output.contains("pre-flight"),
+        "InvokeAgent tool result must surface the pre-flight bail; got: {invoke_output}"
     );
 
     // 3. The sub-agent's MockProvider must NOT have been hit. If our
