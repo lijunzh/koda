@@ -13,23 +13,20 @@
 //! - **Fork context**: `InvokeAgent { agent_name: "fork", prompt: "..." }`
 //!   (inherits parent's full conversation)
 //!
-//! All sub-agents run in the **background**. The tool returns IMMEDIATELY
-//! with a task_id; results auto-inject as a user message on a future
-//! iteration. If you genuinely need to block until completion, call
-//! `WaitForMail` — every bg-agent exit sends a completion mail to the
-//! parent's mailbox via the bridge from #1336 (`notify_parent_mailbox`),
-//! so `WaitForMail` is the single tool the model needs to wait on
-//! background work.
+//! All sub-agents run **synchronously** as tool delegations. The
+//! `InvokeAgent` tool BLOCKS until the sub-agent's loop completes
+//! and returns the sub-agent's final answer as the tool result —
+//! the same shape as any other tool call. Multiple `InvokeAgent`
+//! calls in the same assistant message fan out concurrently on the
+//! dispatch path; that's the supported scale-out pattern.
 //!
-//! `agent_name` is **required** — see #1232 §5 for rationale. The previous
-//! `background:bool` flag was removed in #1163 (Lean A: koda matches
-//! Codex's `spawn_agent` and Claude Code's `TaskCreate` model — one shape
-//! per call, no foreground / blocking variant).
-//!
-//! Pre-#1325 Phase 5b also exposed `WaitTask` / `ListBackgroundTasks` /
-//! `CancelTask` for managing in-flight bg work; Phase 5b retired the
-//! trio in favor of `WaitForMail`. See `tools/mod.rs` for the migration
-//! story.
+//! `agent_name` is **required** — see #1232 §5 for rationale. The
+//! `background:bool` flag was removed in #1163 (Lean A); #1366
+//! removed the bg-spawn dispatch path itself in favor of sync
+//! delegation, matching Codex's ExecCell semantics and Gemini-CLI's
+//! `SubagentGroupDisplay` model. The retired async surface
+//! (`WaitForMail` / mailbox / activity pill / overlay) is being
+//! deleted across phases 2–5 of #1366.
 //!
 //! ## When to use sub-agents
 //!
@@ -52,56 +49,35 @@ pub fn definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "InvokeAgent".to_string(),
-            description: "Spawn a sub-agent to work on a task in the background.
+            description: "Delegate a task to a sub-agent and get its final answer back as the tool result.
 
-Returns IMMEDIATELY with a task_id. The sub-agent runs concurrently; \
-you keep working in parallel. Results inject as a user message at the \
-start of a future iteration via auto-drain \u{2014} you do NOT need to call \
-`WaitForMail` unless you have nothing else useful to do.
+The call BLOCKS until the sub-agent finishes \u{2014} same shape as any other tool. \
+When this tool returns, `output` IS the sub-agent's final answer; act on it directly.
 
 EXECUTION MODEL
 
-- All sub-agents run in the **background**. There is no foreground / blocking \
-  mode \u{2014} spawn the agent, get a task_id back, and continue your own reasoning. \
-  This matches Codex's `spawn_agent` and Claude Code's `TaskCreate` model: one \
-  shape per call, no `background:bool` flag to think about.
+- Sub-agents run **synchronously** on your task. Dispatching one pauses your \
+  reasoning until the sub-agent's loop completes; you resume with its final \
+  output as the tool result. There is no separate handle to poll, no inbox \
+  to drain.
 - `SpawnAgent` is an alias for `InvokeAgent` with a codex-compatible argument \
   shape (`task_name` + `message` instead of `agent_name` + `prompt`). Same \
   dispatch path, same execution model. Use whichever your skill manifest \
   exposes.
 - Emit multiple `InvokeAgent` calls in the same assistant message to fan out \
-  N agents in parallel. Each write-capable agent gets its own isolated \
-  workspace, so parallel write-agents cannot trample each other.
-- After spawning, KEEP WORKING. Do follow-up searches, edit files, summarize \
-  progress \u{2014} anything useful. Results inject naturally on a future iteration. \
-  Calling `WaitForMail` immediately after spawning defeats the purpose.
-- **Don't peek. Don't race. Trust the notification.** (Pattern adopted from \
-  Claude Code's `AgentTool`.) After spawning a background sub-agent, you \
-  know nothing about what it found. Never fabricate or predict its results \
-  in any format \u{2014} not as prose, summary, or structured output. The \
-  notification arrives as a user-role message in a later turn; it is never \
-  silently filled in. If the user asks mid-wait \"what did the agent find?\", \
-  give status (\"Still running, last status was X\"), not a fabricated answer.
-- Use `WaitForMail` ONLY when:
-    1. You have genuinely run out of useful concurrent work, AND
-    2. The next step strictly depends on the sub-agent's output.
-  Otherwise let auto-drain do its job. `WaitForMail` blocks the current \
-  turn until any mail arrives in your mailbox \u{2014} every bg-agent exit \
-  sends a completion mail (the bridge from #1336), so it will unblock as \
-  soon as the first sub-agent finishes.
-- **NEVER call `WaitForMail` twice in a row.** If the first call timed out \
-  with `bg_agents_in_flight > 0`, end your turn cleanly. The bridge is \
-  reliable; auto-drain WILL deliver the result on a future iteration. \
-  Repeated polling burns wall-clock + tokens and serializes work that was \
-  supposed to run in parallel.
+  N agents in parallel. The dispatcher runs them concurrently on the same \
+  turn; each write-capable agent gets its own isolated workspace, so \
+  parallel write-agents cannot trample each other. Use this when fan-out \
+  is genuinely useful \u{2014} a single sub-agent invocation is just a function \
+  call with extra context isolation.
 - `agent_name='fork'` inherits your full conversation context. Useful when \
   the sub-agent needs everything you've already loaded.
 
 WHEN TO USE InvokeAgent
 
 - The task requires exploring many files or running many searches that would pollute your context
-- Work is independent and can run in parallel with your current reasoning
 - A specialist persona adds value (`explore` for search, `plan` for architecture, `verify` for testing)
+- You want isolated tool restrictions (e.g., a read-only sub-agent for analysis)
 
 AGENT SELECTION
 
@@ -123,9 +99,10 @@ KEY RULES
   the `InvokeAgent` tool is filtered from every sub-agent's tool set.
 - Identical (agent_name, prompt) pairs hit a cache and skip the LLM call. \
   Cheap to retry idempotent tasks; no need to memoize yourself.
-- A task_id starting with '[ERROR: sub-agent ...]' is a structural failure \
-  (e.g. workspace setup, isolation issue), not a model answer. Re-strategize \
-  rather than treat as content.
+- A tool result starting with '[ERROR: sub-agent ...]' or 'Error invoking \
+  sub-agent: ...' is a structural failure (workspace setup, isolation issue, \
+  pre-flight bail), not a model answer. Re-strategize rather than treat as \
+  content.
 - Always write a clear, self-contained prompt \u{2014} the sub-agent hasn't seen \
   your conversation. Include specific file paths, function names, and success criteria.
 - `agent_name` is REQUIRED. Pick a specialist from the 'Available Sub-Agents' \
@@ -530,39 +507,48 @@ mod tests {
     /// needs to dispatch correctly. We don't pin exact wording — just the
     /// concepts that have engineering meaning behind them.
     ///
-    /// **#1163 (Lean A)**: koda no longer has a foreground/blocking mode.
-    /// All sub-agents run in the background. The description must say so
-    /// clearly, surface the auto-drain mechanic, and explain when the
-    /// blocking tool IS appropriate (rather than its old role as a
-    /// foreground replacement).
-    ///
-    /// **#1325 Phase 5b**: the blocking tool is now `WaitForMail`
-    /// (mailbox bridge from #1336), not the retired `WaitTask`.
+    /// **#1366 phase 1**: koda's sub-agents are now synchronous tool
+    /// delegations — dispatch blocks until the sub-agent's loop
+    /// completes and returns its final answer as the tool result. The
+    /// description must declare that shape clearly so the model doesn't
+    /// hallucinate the old async / task_id / mailbox semantics.
     #[test]
-    fn test_invoke_agent_description_documents_spawn_only_model() {
+    fn test_invoke_agent_description_documents_sync_dispatch_model() {
         let defs = definitions();
         let desc = &defs[0].description;
-        // The spawn-only execution model — no fg / blocking variant.
+        // The sync execution model.
         assert!(
-            desc.contains("background") || desc.contains("Background"),
-            "description must declare sub-agents run in the background"
+            desc.contains("synchronous")
+                || desc.contains("synchronously")
+                || desc.contains("BLOCKS"),
+            "description must declare sub-agents run synchronously / block until done"
         );
+        // The tool result IS the answer.
         assert!(
-            !desc.contains("Sequential foreground")
-                && !desc.contains("Parallel foreground")
-                && !desc.contains("foreground (default)"),
-            "description must NOT name foreground modes — #1163 deleted them"
+            desc.contains("final answer") || desc.contains("final output"),
+            "description must say the tool result IS the sub-agent's final answer"
         );
+        // No async-era ghosts — these terms describe a model that no
+        // longer exists, so a regression that re-introduces them would
+        // mislead the model about the dispatch shape.
         assert!(
-            desc.contains("task_id") || desc.contains("task ID"),
-            "description must surface the task_id return contract so the \
-             model knows it's spawn-and-poll, not blocking"
+            !desc.contains("task_id")
+                && !desc.contains("task ID")
+                && !desc.contains("WaitForMail")
+                && !desc.contains("auto-drain")
+                && !desc.contains("in the background"),
+            "description must NOT name retired async-era concepts \
+             (task_id / WaitForMail / auto-drain / background spawn) \
+             \u{2014} #1366 deleted them."
         );
+        // Parallel fan-out via multiple calls in one assistant message
+        // is still a thing on the c path — the dispatcher runs them
+        // concurrently. The model needs to know that's how it scales out.
         assert!(
             desc.contains("parallel") || desc.contains("concurrent"),
             "description must explain that multiple InvokeAgent calls in \
-             one assistant message fan out concurrently — the only way to \
-             parallelize after the fg mode was removed"
+             one assistant message fan out concurrently \u{2014} the supported \
+             scale-out pattern on the sync dispatch model"
         );
         // Fork is still a thing.
         assert!(
@@ -586,14 +572,20 @@ mod tests {
 
     #[test]
     fn test_invoke_agent_description_explains_error_marker_convention() {
-        // The [ERROR: ...] marker (B18, B21) is structural failure metadata,
-        // not a model answer. The model needs to know that so it
+        // Structural failures (workspace setup, isolation, pre-flight
+        // bail) surface either as a `[ERROR: sub-agent ...]` marker
+        // (legacy from B18/B21, kept by `execute_sub_agent`) or via
+        // the dispatcher's `Err` arm formatted as `Error invoking
+        // sub-agent: ...`. The model needs to recognize either form
+        // as a structural failure rather than a model answer so it
         // re-strategizes instead of treating the marker as content.
         let defs = definitions();
         let desc = &defs[0].description;
         assert!(
-            desc.contains("[ERROR: sub-agent"),
-            "description must explain the [ERROR: marker so the model knows to re-strategize"
+            desc.contains("[ERROR: sub-agent") && desc.contains("Error invoking sub-agent"),
+            "description must name BOTH structural-failure markers \
+             (`[ERROR: sub-agent` and `Error invoking sub-agent:`) \
+             so the model recognizes either form"
         );
     }
 
@@ -610,30 +602,13 @@ mod tests {
         );
     }
 
-    /// **#1163 (Lean A)**: drain semantics now live in the top-level
-    /// description (since there's no `background` parameter to anchor
-    /// them to). The drain-on-future-iteration timing is still load-
-    /// bearing — the model shouldn't expect mid-iteration results from
-    /// a freshly-spawned sub-agent.
-    #[test]
-    fn test_invoke_agent_top_level_documents_drain_semantics() {
-        let defs = definitions();
-        let desc = &defs[0].description;
-        assert!(
-            desc.contains("future iteration") || desc.contains("next iteration"),
-            "description must explain drain-on-next-iteration timing; \
-             post-#1163 wording uses 'future iteration' since the drain \
-             can land any iteration after the spawn, not strictly the next one"
-        );
-    }
-
-    /// **#1163 (Lean A)**: the schema must NOT carry a `background`
-    /// property anymore. Pre-#1163 the field was `required`; removing
-    /// it from the schema is the API contract change models will see
-    /// first. A regression that re-adds `background` (e.g. a copy-paste
-    /// from the v0.3 schema) would re-introduce the asymmetric
-    /// foreground/background behaviour this PR was specifically built to
-    /// delete.
+    /// **#1366 phase 1**: the schema must NOT carry a `background`
+    /// property anymore. Pre-#1163 the field was `required`; #1163
+    /// removed it because everything was bg; #1366 keeps it removed
+    /// because everything is now sync. A regression that re-adds
+    /// `background` (e.g. a copy-paste from the v0.3 schema) would
+    /// re-introduce the asymmetric foreground/background behaviour
+    /// both #1163 and #1366 worked to delete.
     #[test]
     fn test_invoke_agent_schema_does_not_carry_background_param() {
         let defs = definitions();
@@ -644,8 +619,8 @@ mod tests {
             .expect("InvokeAgent schema must declare /properties");
         assert!(
             !props.contains_key("background"),
-            "#1163: `background` parameter was deleted — sub-agents always \
-             run in the background. Found properties: {:?}",
+            "#1366: `background` parameter must stay deleted \u{2014} sub-agents \
+             always run synchronously now. Found properties: {:?}",
             props.keys().collect::<Vec<_>>()
         );
         let required = defs[0]
@@ -661,45 +636,8 @@ mod tests {
         );
         assert!(
             !names.contains(&"background"),
-            "#1163: `background` must NOT be in the required list — the \
-             field was deleted. Got required = {names:?}"
-        );
-    }
-
-    /// #1201 A1: nudge the model away from "spawn agent → immediately
-    /// WaitTask". That pattern silences the parent for the entire wait
-    /// and turns the non-blocking dispatch back into a blocking call.
-    ///
-    /// **#1163 (Lean A) update**: with the `background` parameter deleted,
-    /// the nudge can only live in the top-level description. Both the
-    /// blocking-tool reference and the auto-drain mechanic must remain
-    /// there.
-    ///
-    /// **#1325 Phase 5b update**: the blocking tool is now `WaitForMail`,
-    /// not `WaitTask` (the bg-task management trio was retired — see
-    /// `tools/mod.rs` for the migration story). The anti-pattern the
-    /// description guards against is identical ("spawn then immediately
-    /// block"); only the tool name changed.
-    #[test]
-    fn test_invoke_agent_description_discourages_immediate_wait() {
-        let defs = definitions();
-        let desc = &defs[0].description;
-        assert!(
-            desc.contains("WaitForMail"),
-            "top-level description must reference WaitForMail by name so the \
-             model can recognize the spawn-then-immediately-wait \
-             anti-pattern (#1201 A1 / #1325 Phase 5b)"
-        );
-        assert!(
-            !desc.contains("WaitTask"),
-            "top-level description must NOT reference WaitTask \u{2014} that tool \
-             was retired in #1325 Phase 5b. A regression that re-introduces \
-             the name would route the model to a tool that no longer exists."
-        );
-        assert!(
-            desc.contains("auto-drain"),
-            "top-level description must name the auto-drain path so the \
-             model knows results arrive without explicit waiting (#1201 A1)"
+            "#1366: `background` must NOT be in the required list. \
+             Got required = {names:?}"
         );
     }
 
