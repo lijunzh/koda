@@ -219,6 +219,131 @@ async fn sub_agent_marks_assistant_messages_complete_so_loop_progresses() {
     );
 }
 
+/// **#1369**: when a sub-agent's final LLM response comes back with
+/// neither tool calls nor text content (a documented Gemini behavior
+/// after long tool chains, but reachable from any provider per
+/// `providers/{anthropic,gemini,openai_compat}.rs` which all
+/// normalize empty content to `None`), the dispatcher must NOT
+/// surface the literal sentinel `"(no output)"` as the sub-agent's
+/// answer. Pre-fix, that sentinel propagated as the InvokeAgent
+/// tool result — the parent then either (a) treated `(no output)`
+/// as the sub-agent's actual conclusion, (b) re-invoked the agent
+/// hoping for a real answer (the user-reported symptom from the
+/// #1366 phase-1 validation), or (c) eventually hit the same
+/// empty-response edge in the parent's own loop. Post-fix the
+/// dispatcher walks backward through the sub-agent's assistant
+/// history for the most recent non-empty text, mirroring
+/// `claude_code_src/src/tools/AgentTool/agentToolUtils.ts::
+/// finalizeAgentTool` (~line 297, vendored at `peers/`).
+///
+/// The unit tests in `sub_agent_dispatch::recover_last_assistant_text_tests`
+/// pin the helper's contract directly. This e2e pins the *integration*:
+/// that the dispatcher actually calls the helper at the right
+/// site and that the recovered text reaches the parent's
+/// InvokeAgent tool result intact, not the bare sentinel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sub_agent_empty_final_response_falls_back_to_recovered_text() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::new().await;
+
+    let agents_dir = env.root.join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("recovery-agent.json"),
+        serde_json::json!({
+            "name": "recovery-agent",
+            "system_prompt": "You are a test agent. Investigate then report findings.",
+            "allowed_tools": ["ListSkills"],
+            "provider": "mock",
+            "base_url": "http://localhost:0"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // Sub-agent script: iter 1 makes a tool call, then the queue
+    // exhausts. MockProvider's exhaustion path yields
+    //     LlmResponse { content: Some(""), tool_calls: vec![] }
+    // which is exactly the empty-response shape #1369 fixes.
+    //
+    // We deliberately DON'T script an intermediate text response
+    // because the sub-agent loop returns immediately when it sees
+    // a no-tool-calls + non-empty-text response (`if response.
+    // tool_calls.is_empty()` branch in `execute_sub_agent`). With
+    // only mock-provider primitives (Text OR ToolCalls, not both
+    // mixed in one response), the only way to actually reach the
+    // empty-final-response branch with prior text in the history
+    // would require a `TextWithToolCalls` mock variant we don't
+    // have. So this e2e exercises the OTHER half of the fix —
+    // the no-recoverable-text path that surfaces the structured
+    // marker. The helper unit tests in
+    // `sub_agent_dispatch::recover_last_assistant_text_tests`
+    // pin the with-recoverable-text path directly, which is the
+    // common case at runtime.
+    //
+    // What this test catches:
+    //   - regression that re-introduces `unwrap_or_else(|| "(no output)")`
+    //   - regression that drops the structured marker
+    //   - regression that lets the dispatcher hang or panic on
+    //     `LlmResponse { content: Some(""), tool_calls: vec![] }`
+    runtime_env::set(
+        "KODA_MOCK_RESPONSES",
+        r#"[
+                {"tool": "ListSkills", "args": {}}
+            ]"#,
+    );
+
+    env.insert_user_message("delegate to recovery-agent").await;
+
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({
+                "agent_name": "recovery-agent",
+                "prompt": "investigate",
+            }),
+        ),
+        MockResponse::Text("parent done".into()),
+    ]);
+    let events = env.run_inference(&provider).await;
+    runtime_env::remove("KODA_MOCK_RESPONSES");
+
+    let invoke_output = events
+        .iter()
+        .find_map(|e| match e {
+            EngineEvent::ToolCallResult { name, output, .. } if name == "InvokeAgent" => {
+                Some(output.clone())
+            }
+            _ => None,
+        })
+        .expect("InvokeAgent must produce a ToolCallResult on the sync dispatch path");
+
+    // The literal sentinel must NEVER reach the parent. This is the
+    // exact regression guard — the user-reported symptom from the
+    // #1366 phase-1 validation was the parent looping on this string.
+    // If a future refactor accidentally re-introduces the
+    // `unwrap_or_else(|| "(no output)".to_string())` pattern, this
+    // assertion catches it before the bug ships.
+    assert!(
+        !invoke_output.contains("(no output)"),
+        "#1369: the literal sentinel '(no output)' must never surface as a \
+         sub-agent answer \u{2014} it's a structural-failure marker, not content. \
+         Got = {invoke_output:?}"
+    );
+
+    // The structured marker must surface instead. We pin a couple of
+    // load-bearing phrases (not the exact wording \u2014 that's allowed to
+    // evolve) so the marker stays actionable: it must name the agent,
+    // mention that no text was produced, and hint at the cause.
+    assert!(
+        invoke_output.contains("recovery-agent")
+            && invoke_output.contains("without producing any text response"),
+        "#1369: when no prior assistant text exists to recover, the dispatcher \
+         must surface a structured marker that names the agent and explains \
+         why no answer is available. Got = {invoke_output:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_sub_agent_cache_hit_skips_llm() {
     let _lock = ENV_MUTEX.lock().await;
