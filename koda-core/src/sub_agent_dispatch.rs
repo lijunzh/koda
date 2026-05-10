@@ -1723,9 +1723,43 @@ pub(crate) fn execute_sub_agent<'a>(
             }
 
             if response.tool_calls.is_empty() {
-                let result = response
-                    .content
-                    .unwrap_or_else(|| "(no output)".to_string());
+                // **#1369**: pre-fix this branch did
+                //     `response.content.unwrap_or_else(|| "(no output)".to_string())`
+                // and returned. That worked when the model produced a
+                // final summary, but a sub-agent loop can also exit
+                // here with `content == None` (or `Some("")`) when the
+                // model emits a bare stop signal after a long tool
+                // chain — a documented Gemini behavior, and reachable
+                // from any provider per `providers/{anthropic,gemini,
+                // openai_compat}.rs` which all normalize empty text
+                // to `None`. The literal sentinel `"(no output)"`
+                // then surfaced as the sub-agent's "answer", and the
+                // parent (especially after #1366 phase 1's sync
+                // dispatch) treated that string as the agent's
+                // conclusion — either re-invoking in a loop or acting
+                // on garbage. Fix mirrors `claude_code_src/src/tools/
+                // AgentTool/agentToolUtils.ts::finalizeAgentTool`
+                // (~line 297, also vendored under `peers/`): if the
+                // final assistant turn is empty, walk backward through
+                // history for the most recent assistant text. Falls
+                // through to a structured marker only if the entire
+                // run produced no assistant text at all (which means
+                // something is genuinely wrong, not just a quiet last
+                // turn). #1370 will layer a stricter `complete_task`
+                // contract on top of this; the scan-back stays as the
+                // robust fallback.
+                let result = match response.content.as_deref() {
+                    Some(text) if !text.trim().is_empty() => text.to_string(),
+                    _ => recover_last_assistant_text(&messages).unwrap_or_else(|| {
+                        format!(
+                            "[sub-agent '{agent_name}' finished after {iter} turn(s) without \
+                             producing any text response. The model may have hit a \
+                             provider-specific stop condition (e.g. Gemini's bare-stop after \
+                             long tool chains). Try rephrasing the prompt, simplifying the \
+                             task, or switching models.]"
+                        )
+                    }),
+                };
                 // Cache the result for future identical calls
                 sub_agent_cache.put(agent_name, prompt, &result);
                 // Release workspace; surface branch hint if agent left changes.
@@ -2043,6 +2077,209 @@ fn workspace_provision_failure_marker(agent_name: &str, reason: &str) -> String 
          resolve the workspace setup issue, retry without write tools, or attempt the work \
          directly without delegating.]"
     )
+}
+
+/// Walk `messages` backward and return the most recent assistant
+/// message's non-empty trimmed text content, if any.
+///
+/// **#1369**: used as a fallback when the final LLM response in a
+/// sub-agent loop comes back with neither tool calls nor text
+/// content (a documented Gemini behavior, but reachable from any
+/// provider per `providers/{anthropic,gemini,openai_compat}.rs`
+/// which all normalize empty content to `None`). Pre-fix the
+/// dispatch loop returned the literal sentinel `"(no output)"`
+/// here, which the parent then mis-treated as the sub-agent's
+/// actual answer.
+///
+/// Mirrors the pattern from `claude_code_src/src/tools/AgentTool/
+/// agentToolUtils.ts::finalizeAgentTool` (~line 297, also vendored
+/// at `peers/claude_code_src/`):
+///
+/// > *"If the final assistant message is a pure tool_use block
+/// > (loop exited mid-turn), fall back to the most recent
+/// > assistant message that has text content."*
+///
+/// Filters out empty / whitespace-only content so a `Some("")`
+/// row from the DB doesn't shadow earlier real text. Stops at
+/// the first hit (most recent, which is what the model is most
+/// likely treating as its conclusion).
+///
+/// Returns `None` only if the entire run produced no assistant
+/// text — which means something is genuinely wrong (e.g. the
+/// model never said anything, only called tools). Caller surfaces
+/// a structured error in that case rather than an empty string.
+fn recover_last_assistant_text(messages: &[ChatMessage]) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == "assistant")
+        .find_map(|m| {
+            m.content
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(|t| t.to_string())
+        })
+}
+
+#[cfg(test)]
+mod recover_last_assistant_text_tests {
+    //! **#1369** regression tests for [`super::recover_last_assistant_text`].
+    //!
+    //! The helper guards the post-#1366-phase-1 sub-agent dispatch
+    //! path: when the final LLM response in a sub-agent loop comes
+    //! back with neither tool calls nor text content, the dispatcher
+    //! falls back to scanning prior assistant turns for the most
+    //! recent useful text. Pre-#1369 this branch returned the bare
+    //! sentinel `"(no output)"`, which the parent (post-sync-dispatch)
+    //! treated as the sub-agent's actual answer — producing the
+    //! parent-loops-on-junk behavior reported in the #1366 phase-1
+    //! validation. Pinning the helper directly is much cheaper and
+    //! more legible than an end-to-end dispatch test, since the
+    //! actual integration sits inside the 1300-line
+    //! `execute_sub_agent` loop and would need a mock provider that
+    //! returns `LlmResponse { content: None, tool_calls: vec![] }`.
+
+    use super::recover_last_assistant_text;
+    use crate::providers::ChatMessage;
+
+    fn assistant(text: &str) -> ChatMessage {
+        ChatMessage::text("assistant", text)
+    }
+
+    fn user(text: &str) -> ChatMessage {
+        ChatMessage::text("user", text)
+    }
+
+    fn system(text: &str) -> ChatMessage {
+        ChatMessage::text("system", text)
+    }
+
+    fn assistant_no_content() -> ChatMessage {
+        // Mirrors what the DB-load path produces for a tool-call-only
+        // assistant turn: role is "assistant" but `content` is `None`.
+        ChatMessage {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            images: None,
+        }
+    }
+
+    /// Happy path: most recent assistant turn has text — use it.
+    /// This shouldn't actually be hit by the dispatcher (the dispatcher
+    /// only calls the helper when the LATEST response is empty), but
+    /// pinning it keeps the helper's contract self-consistent: "return
+    /// the most recent assistant text" with no special edge for
+    /// position.
+    #[test]
+    fn returns_most_recent_assistant_text_when_present() {
+        let messages = vec![
+            system("you are an explorer agent"),
+            user("explore the repo"),
+            assistant("I'll start by listing files."),
+            assistant("I found three Rust crates."),
+        ];
+        assert_eq!(
+            recover_last_assistant_text(&messages),
+            Some("I found three Rust crates.".to_string())
+        );
+    }
+
+    /// The bug we're actually fixing: latest assistant turn is
+    /// content-less (a pure tool-call row from the DB load path),
+    /// so we walk further back and surface the prior turn's text.
+    /// Mirrors claude_code_src's framing: "If the final assistant
+    /// message is a pure tool_use block (loop exited mid-turn),
+    /// fall back to the most recent assistant message that has
+    /// text content."
+    #[test]
+    fn skips_content_less_assistant_turns_and_finds_earlier_text() {
+        let messages = vec![
+            system("you are an explorer agent"),
+            user("explore the repo"),
+            assistant("I see three crates: koda-core, koda-cli, koda-sandbox."),
+            assistant_no_content(), // pure tool-call turn
+            assistant_no_content(), // another pure tool-call turn
+        ];
+        assert_eq!(
+            recover_last_assistant_text(&messages),
+            Some("I see three crates: koda-core, koda-cli, koda-sandbox.".to_string())
+        );
+    }
+
+    /// Whitespace-only content must NOT shadow earlier real text.
+    /// Without the `.trim().is_empty()` guard, a `Some("   \n")` row
+    /// from a quirky provider would short-circuit the scan and
+    /// surface a useless string — same UX failure as the original
+    /// `(no output)` bug, just in disguise.
+    #[test]
+    fn whitespace_only_content_does_not_shadow_earlier_real_text() {
+        let messages = vec![
+            user("explore"),
+            assistant("Found Cargo.toml and src/lib.rs."),
+            assistant("   \n  \t  "), // whitespace-only — must be skipped
+        ];
+        assert_eq!(
+            recover_last_assistant_text(&messages),
+            Some("Found Cargo.toml and src/lib.rs.".to_string())
+        );
+    }
+
+    /// Returned text must come back trimmed. The dispatcher uses the
+    /// return value verbatim as the sub-agent's tool-result string;
+    /// leading/trailing whitespace would render oddly in the parent's
+    /// transcript and burn tokens for nothing.
+    #[test]
+    fn returned_text_is_trimmed() {
+        let messages = vec![
+            user(""),
+            assistant("   final answer with surrounding whitespace.   "),
+        ];
+        assert_eq!(
+            recover_last_assistant_text(&messages),
+            Some("final answer with surrounding whitespace.".to_string())
+        );
+    }
+
+    /// User and system turns with text are NOT recovery candidates.
+    /// Surfacing the user's prompt back to the parent as the sub-agent's
+    /// "answer" would be actively misleading — the parent might think
+    /// the sub-agent agreed with the prompt verbatim. System turns
+    /// (including the grace-turn warning at #1135) are scaffolding,
+    /// not content. Both must be filtered.
+    #[test]
+    fn ignores_user_and_system_messages() {
+        let messages = vec![
+            system("You are explorer. You MUST summarize at the end."),
+            user("please explore the repo and tell me what you find"),
+            // No assistant text at all.
+        ];
+        assert_eq!(recover_last_assistant_text(&messages), None);
+    }
+
+    /// No assistant text anywhere → caller surfaces a structured
+    /// marker. The helper signals this case with `None`, NOT with an
+    /// empty `Some("")` (which would re-introduce the bug).
+    #[test]
+    fn returns_none_when_no_assistant_text_anywhere() {
+        let messages = vec![
+            system("explorer prompt"),
+            user("explore"),
+            assistant_no_content(),
+            assistant_no_content(),
+        ];
+        assert_eq!(recover_last_assistant_text(&messages), None);
+    }
+
+    /// Empty input slice → `None`. Pin the obvious edge so a future
+    /// refactor that swaps `iter().rev()` for some indexed access
+    /// doesn't panic in the wild.
+    #[test]
+    fn returns_none_for_empty_messages() {
+        assert_eq!(recover_last_assistant_text(&[]), None);
+    }
 }
 
 #[cfg(test)]
