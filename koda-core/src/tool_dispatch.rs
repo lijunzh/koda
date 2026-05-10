@@ -297,34 +297,53 @@ pub(crate) async fn execute_one_tool(
         let (_, mut dummy_rx) = mpsc::channel(1);
         let policy = tools.sandbox_policy().clone();
         let read_cache = tools.file_read_cache();
-        let fut = sub_agent_dispatch::execute_sub_agent(
-            tx,
-            &tc.arguments,
-            // Sub-agents get a fresh command channel (they auto-approve in all modes)
-            &mut dummy_rx,
-            Some(read_cache),
-            // Phase 5 PR-4 of #934: hand the parent's effective policy
-            // to the child so `compose()` can stack restrictions.
-            &policy,
-            // Layer 4 of #996 + #1076: foreground sub-agents are not
-            // tracked in the bg-agent registry, so there is no
-            // `ChildStatusEmitter` to fan out per-iteration heartbeats
-            // to. Pass `None` to skip the per-iteration emit.
-            None,
-            // #1108 P2a: pass the InvokeAgent tool_call_id so any
-            // bg-sub-agent reservation can record it. The drain
-            // hook in the inference loop will persist the bg sub-
-            // agent's narrative trace to `session_events` keyed by
-            // this id, so the transcript renderer can fold it under
-            // the parent's `InvokeAgent` tool result.
-            Some(&tc.id),
-            // **#1163 (Lean A)**: `inline_only=false` is the public
-            // dispatch path — every InvokeAgent call spawns a bg
-            // task and returns its task_id immediately. The `true`
-            // value is reserved for `run_bg_agent`'s recursion guard.
-            false,
-        );
-        match Box::pin(fut).await {
+        // **#1366 phase 1**: select dispatch mode at runtime.
+        // `KODA_SUBAGENT_SYNC=1` opts into the new sync streaming path
+        // (codex-style channel-streamed delegation, returns the sub-
+        // agent's final output directly as the tool result). Default
+        // is the legacy bg-spawn path from #1163. Phase 2 flips the
+        // default; phase 3 deletes the legacy branch entirely.
+        let dispatch_result = if sub_agent_dispatch::subagent_sync_enabled() {
+            let fut = sub_agent_dispatch::execute_sub_agent_sync(
+                tx,
+                &tc.arguments,
+                &mut dummy_rx,
+                Some(read_cache),
+                &policy,
+                Some(&tc.id),
+            );
+            Box::pin(fut).await
+        } else {
+            let fut = sub_agent_dispatch::execute_sub_agent(
+                tx,
+                &tc.arguments,
+                // Sub-agents get a fresh command channel (they auto-approve in all modes)
+                &mut dummy_rx,
+                Some(read_cache),
+                // Phase 5 PR-4 of #934: hand the parent's effective policy
+                // to the child so `compose()` can stack restrictions.
+                &policy,
+                // Layer 4 of #996 + #1076: foreground sub-agents are not
+                // tracked in the bg-agent registry, so there is no
+                // `ChildStatusEmitter` to fan out per-iteration heartbeats
+                // to. Pass `None` to skip the per-iteration emit.
+                None,
+                // #1108 P2a: pass the InvokeAgent tool_call_id so any
+                // bg-sub-agent reservation can record it. The drain
+                // hook in the inference loop will persist the bg sub-
+                // agent's narrative trace to `session_events` keyed by
+                // this id, so the transcript renderer can fold it under
+                // the parent's `InvokeAgent` tool result.
+                Some(&tc.id),
+                // **#1163 (Lean A)**: `inline_only=false` is the public
+                // dispatch path — every InvokeAgent call spawns a bg
+                // task and returns its task_id immediately. The `true`
+                // value is reserved for `run_bg_agent`'s recursion guard.
+                false,
+            );
+            Box::pin(fut).await
+        };
+        match dispatch_result {
             Ok(output) => (output, true, None),
             // **#1232 §4**: format with `{:#}` (anyhow's "alternate" Display)
             // so the entire context chain lands in the tool result string.
@@ -381,17 +400,34 @@ pub(crate) async fn execute_one_tool(
         let (_, mut dummy_rx) = mpsc::channel(1);
         let policy = tools.sandbox_policy().clone();
         let read_cache = tools.file_read_cache();
-        let fut = sub_agent_dispatch::execute_sub_agent(
-            tx,
-            &remapped_tc.arguments,
-            &mut dummy_rx,
-            Some(read_cache),
-            &policy,
-            None,
-            Some(&remapped_tc.id),
-            false,
-        );
-        match Box::pin(fut).await {
+        // **#1366 phase 1**: same env-var gate as InvokeAgent above.
+        // SpawnAgent is the codex-v2 surface alias for the same
+        // dispatch; both paths share the migration switch so a single
+        // env var flips the entire sub-agent surface to sync.
+        let dispatch_result = if sub_agent_dispatch::subagent_sync_enabled() {
+            let fut = sub_agent_dispatch::execute_sub_agent_sync(
+                tx,
+                &remapped_tc.arguments,
+                &mut dummy_rx,
+                Some(read_cache),
+                &policy,
+                Some(&remapped_tc.id),
+            );
+            Box::pin(fut).await
+        } else {
+            let fut = sub_agent_dispatch::execute_sub_agent(
+                tx,
+                &remapped_tc.arguments,
+                &mut dummy_rx,
+                Some(read_cache),
+                &policy,
+                None,
+                Some(&remapped_tc.id),
+                false,
+            );
+            Box::pin(fut).await
+        };
+        match dispatch_result {
             Ok(output) => (output, true, None),
             Err(e) => (format!("Error spawning agent: {e:#}"), false, None),
         }

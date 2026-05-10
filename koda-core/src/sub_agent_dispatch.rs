@@ -1973,6 +1973,145 @@ pub(crate) fn execute_sub_agent<'a>(
     }
 }
 
+// ── Sync-dispatch entry point (#1366 phase 1) ───────────────────────────────
+//
+// **Epic #1366 — lean sub-agent rewrite.** This is the public entry
+// point for the *new* synchronous, channel-streamed sub-agent dispatch
+// model that replaces the bg-spawn-and-mailbox pattern from #1163
+// (Lean A).
+//
+// The function is currently a thin wrapper over
+// [`execute_sub_agent`] with `inline_only = true`, which skips the
+// bg-spawn early-return and drives the inference loop synchronously,
+// returning the sub-agent's final output as the function's `Result`.
+// Subsequent phases of #1366 will:
+//
+//   * Phase 2 — flip [`crate::tool_dispatch`] to call this wrapper
+//     instead of `execute_sub_agent(..., inline_only=false)`.
+//   * Phase 3+ — delete the bg-spawn branch and its mailbox / pill /
+//     overlay surface area entirely; the `inline_only` flag becomes
+//     the only behavior and can be inlined out.
+//
+// Adding the wrapper as a separate symbol *before* the dispatcher flip
+// keeps phase 1 purely additive (no behavior change) and lets phase 2
+// be a one-line callsite swap that's trivial to review and revert.
+//
+// The naming differs from `execute_sub_agent` to make it obvious at
+// callsites which dispatch model is being used during the migration
+// window. Once phase 3 deletes the bg path, this wrapper is the only
+// public entry point and `execute_sub_agent` collapses into it.
+//
+// All other arguments mirror [`execute_sub_agent`] verbatim so the
+// callsite swap in phase 2 is a pure rename.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_sub_agent_sync<'a>(
+    parent_tx: ToolExecutionContext<'a>,
+    arguments: &'a str,
+    cmd_rx: &'a mut mpsc::Receiver<EngineCommand>,
+    parent_cache: Option<crate::tools::FileReadCache>,
+    parent_sandbox_policy: &'a koda_sandbox::SandboxPolicy,
+    parent_tool_call_id: Option<&'a str>,
+) -> impl std::future::Future<Output = Result<String>> + Send + 'a {
+    // Sync dispatch never registers with the bg-agent emitter — there
+    // is no bg task to heartbeat. Pass `None`, mirroring the current
+    // foreground recursion-guard call from `run_bg_agent`.
+    execute_sub_agent(
+        parent_tx,
+        arguments,
+        cmd_rx,
+        parent_cache,
+        parent_sandbox_policy,
+        None,
+        parent_tool_call_id,
+        true,
+    )
+}
+
+/// Returns `true` when the sub-agent dispatcher should use the new
+/// sync streaming path (#1366) instead of the legacy bg-spawn path
+/// from #1163.
+///
+/// Controlled by the `KODA_SUBAGENT_SYNC` env var:
+///
+/// | Value | Behavior |
+/// |-------|----------|
+/// | unset / empty / `0` / `false` | Legacy bg-spawn (current default) |
+/// | `1` / `true` | New sync streaming dispatch |
+///
+/// The flag exists for the migration window only. Phase 2 of #1366
+/// flips the default to sync; phase 3 deletes the legacy path and
+/// this helper along with it.
+///
+/// Read on every dispatch (not cached) so an interactive user can
+/// flip the flag mid-session via a debug command without restarting
+/// the process. The cost is one `std::env::var` lookup per
+/// `InvokeAgent` call — negligible against the LLM round-trip that
+/// follows.
+pub fn subagent_sync_enabled() -> bool {
+    matches!(
+        std::env::var("KODA_SUBAGENT_SYNC")
+            .unwrap_or_default()
+            .as_str(),
+        "1" | "true" | "TRUE" | "True"
+    )
+}
+
+#[cfg(test)]
+mod sync_dispatch_tests {
+    use super::*;
+
+    /// Single test, not two. Cargo runs tests in parallel by default,
+    /// and `KODA_SUBAGENT_SYNC` is process-global — splitting the
+    /// truthy / falsy / unset cases into separate tests races them
+    /// against each other on the same env slot. Serializing inside
+    /// one test is simpler than pulling in `serial_test` for one flag.
+    #[test]
+    fn subagent_sync_env_var_parsing() {
+        let prior = std::env::var("KODA_SUBAGENT_SYNC").ok();
+
+        // Unset — default is legacy bg-spawn (the kill-switch is opt-in).
+        // SAFETY: this test owns the env var slot for its duration via
+        // the parent module's serial-by-construction design.
+        unsafe {
+            std::env::remove_var("KODA_SUBAGENT_SYNC");
+        }
+        assert!(
+            !subagent_sync_enabled(),
+            "unset env var must keep legacy bg-spawn dispatch as the default"
+        );
+
+        // Truthy values enable sync.
+        for truthy in ["1", "true", "TRUE", "True"] {
+            unsafe {
+                std::env::set_var("KODA_SUBAGENT_SYNC", truthy);
+            }
+            assert!(
+                subagent_sync_enabled(),
+                "value {truthy:?} should enable sync dispatch"
+            );
+        }
+
+        // Falsy / nonsense stays off — the flag is a kill switch, not
+        // a fuzzy match. Matches the convention used by other KODA_*
+        // env vars.
+        for falsy in ["0", "false", "no", "", "yes", "on"] {
+            unsafe {
+                std::env::set_var("KODA_SUBAGENT_SYNC", falsy);
+            }
+            assert!(
+                !subagent_sync_enabled(),
+                "value {falsy:?} should keep dispatch on legacy bg-spawn"
+            );
+        }
+
+        // Restore.
+        match prior {
+            Some(v) => unsafe { std::env::set_var("KODA_SUBAGENT_SYNC", v) },
+            None => unsafe { std::env::remove_var("KODA_SUBAGENT_SYNC") },
+        }
+    }
+}
+
 // ── Workspace provider selection ────────────────────────────────────────────
 //
 // Two cfg-gated definitions of `pick_write_provider` rather than
