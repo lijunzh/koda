@@ -75,7 +75,7 @@ futures-util = { workspace = true }
 anyhow = { workspace = true }
 
 # MCP client — connect to external MCP servers (#662)
-rmcp = { version = "1.5", default-features = false, features = [
+rmcp = { version = "1.7", default-features = false, features = [
     "client",
     "base64",
     "transport-child-process",
@@ -101,7 +101,7 @@ test-support = []
 
 [dev-dependencies]
 # MCP HTTP integration test: rmcp server-side HTTP transport + axum
-rmcp = { version = "1.5", features = [
+rmcp = { version = "1.7", features = [
     "server",
     "macros",
     "transport-streamable-http-server",
