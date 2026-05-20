@@ -57,7 +57,7 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 
 # POSIX shell tokenization (bash safety classification — replaces substring matching, #807)
-shlex = "1"
+shlex = "2"
 
 # Sync mutex without poisoning (#1022 B16: BgAgentRegistry needs
 # a non-poisoning sync mutex to survive a panic-while-held without
