@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout koda
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Clone upstream codex
         # Full history so `git log <pinned>..HEAD -- <path>` works for any
