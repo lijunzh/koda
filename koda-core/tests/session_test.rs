@@ -436,3 +436,94 @@ async fn session_persists_messages_across_two_turns() {
         "DB should contain second assistant response"
     );
 }
+
+/// Run one turn against a provider that fails the way `response` says and
+/// return the `TurnEnd` reason, asserting that `run_turn` itself still
+/// returns `Ok` (the TUI relies on that) and that the user saw `warn_text`.
+async fn early_stop_turn_end(
+    response: MockResponse,
+    images: Option<Vec<koda_core::providers::ImageData>>,
+    warn_text: &str,
+) -> TurnEndReason {
+    let env = Env::new().await;
+    env.insert_user_message("hello").await;
+
+    let provider = Box::new(MockProvider::new(vec![response]));
+    let (mut session, _cancel) = make_session(&env, provider).await;
+
+    let sink = TestSink::new();
+    let (_, mut cmd_rx) = mpsc::channel::<EngineCommand>(1);
+    let result = session
+        .run_turn(&env.config, images, &sink, &mut cmd_rx, None)
+        .await;
+    assert!(result.is_ok(), "early stop stays Ok: {:?}", result.err());
+
+    let events = sink.events();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, EngineEvent::Warn { message } if message.contains(warn_text))),
+        "expected a warning containing {warn_text:?}: {events:?}"
+    );
+    match events.last() {
+        Some(EngineEvent::TurnEnd { reason, .. }) => reason.clone(),
+        other => panic!("last event must be TurnEnd, got {other:?}"),
+    }
+}
+
+/// A provider server error ends the turn on a warning. `TurnEnd` must say
+/// `Error` with that message so headless reports `success: false`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_server_error_turn_ends_with_error() {
+    let reason = early_stop_turn_end(
+        MockResponse::Error("LLM API returned 500: Internal Server Error".into()),
+        None,
+        "server error",
+    )
+    .await;
+    match reason {
+        TurnEndReason::Error { message } => assert!(message.contains("server error"), "{message}"),
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+/// An image the model can't take ends the turn on a warning, also an `Error`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_image_rejection_turn_ends_with_error() {
+    let image = koda_core::providers::ImageData {
+        media_type: "image/png".into(),
+        base64: "AAAA".into(),
+    };
+    let reason = early_stop_turn_end(
+        MockResponse::Error("this model does not support image input".into()),
+        Some(vec![image]),
+        "rejected the image",
+    )
+    .await;
+    match reason {
+        TurnEndReason::Error { message } => {
+            assert!(message.contains("rejected the image"), "{message}")
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+/// A connection dropped mid-stream discards the turn: also an `Error`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_network_drop_turn_ends_with_error() {
+    let reason = early_stop_turn_end(
+        MockResponse::NetworkError {
+            partial_text: "partial".into(),
+            error: "connection reset".into(),
+        },
+        None,
+        "Connection lost",
+    )
+    .await;
+    match reason {
+        TurnEndReason::Error { message } => {
+            assert!(message.contains("connection reset"), "{message}")
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
