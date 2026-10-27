@@ -81,9 +81,12 @@ pub async fn handle_slash_command(
                         config.model_settings.model = config.model.clone();
                         config.recalculate_model_derived();
                         *provider.write().await = koda_core::providers::create_provider(config);
-                        {
+                        let source = {
                             let prov = provider.read().await;
-                            config.query_and_apply_capabilities(prov.as_ref()).await;
+                            config.query_and_apply_capabilities(prov.as_ref()).await
+                        };
+                        if let Some(notice) = config.assumed_context_notice(source) {
+                            tui_output::warn_msg(buffer, notice);
                         }
                         crate::tui_wizards::save_provider(config, &session.db).await;
                         tui_output::ok_msg(
@@ -99,9 +102,12 @@ pub async fn handle_slash_command(
                     config.model = model.to_string();
                     config.model_settings.model = model.to_string();
                     config.recalculate_model_derived();
-                    {
+                    let source = {
                         let prov = provider.read().await;
-                        config.query_and_apply_capabilities(prov.as_ref()).await;
+                        config.query_and_apply_capabilities(prov.as_ref()).await
+                    };
+                    if let Some(notice) = config.assumed_context_notice(source) {
+                        tui_output::warn_msg(buffer, notice);
                     }
                     crate::tui_wizards::save_provider(config, &session.db).await;
                     tui_output::ok_msg(buffer, format!("Model set to: {model}"));

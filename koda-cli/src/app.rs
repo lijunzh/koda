@@ -26,6 +26,7 @@ Configuration precedence (highest wins):
   1. CLI flags     --model, --provider, --base-url
   2. Env vars      KODA_MODEL, KODA_PROVIDER, KODA_BASE_URL
   3. Saved config  set interactively with /model, /provider, /key
+                   (a --base-url used in the TUI is remembered too)
   4. Built-in defaults
 
 API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, …)
@@ -91,7 +92,7 @@ struct Cli {
     #[arg(long, env = "KODA_MODEL")]
     model: Option<String>,
 
-    /// LLM provider (openai, anthropic, lmstudio, gemini, groq, grok, ollama)
+    /// LLM provider (openai, anthropic, lmstudio, llama-cpp, gemini, groq, grok, ollama)
     #[arg(long, env = "KODA_PROVIDER")]
     provider: Option<String>,
 

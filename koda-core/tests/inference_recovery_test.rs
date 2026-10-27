@@ -289,3 +289,101 @@ async fn test_ctrl_c_next_turn_excludes_partial_response() {
         }
     }
 }
+
+// ── Learning the server's window from its overflow error ─────
+
+/// llama-server's 400 body, as the OpenAI-compat provider reports it.
+fn llama_cpp_overflow(n_ctx: usize) -> MockResponse {
+    MockResponse::Error(format!(
+        r#"LLM API returned 400 Bad Request: {{"error":{{"code":400,"message":"request (40000 tokens) exceeds the available context size ({n_ctx} tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":40000,"n_ctx":{n_ctx}}}}}"#
+    ))
+}
+
+#[tokio::test]
+async fn test_overflow_with_stated_limit_adopts_it_and_retries() {
+    let env = Env::builder().max_context_tokens(100_000).build().await;
+    env.insert_message(&Role::User, "first question").await;
+    env.insert_message(&Role::Assistant, "first answer").await;
+    env.insert_message(&Role::User, "second question").await;
+    env.insert_message(&Role::Assistant, "second answer").await;
+    env.insert_message(&Role::User, "third question that overflows")
+        .await;
+
+    let provider = MockProvider::new(vec![
+        llama_cpp_overflow(32_768),
+        MockResponse::Text("Summary: user asked three questions.".into()),
+        MockResponse::Text("recovered after compaction".into()),
+    ]);
+
+    let (result, events) = env.run_inference_result(&provider).await;
+    assert!(result.is_ok(), "should recover: {:?}", result.err());
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, EngineEvent::ContextWindowChanged { tokens: 32_768 })),
+        "expected ContextWindowChanged: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            EngineEvent::Warn { message }
+                if message.contains("32768 tokens, not the 100000")
+        )),
+        "expected a notice naming both windows: {events:?}"
+    );
+    // The meter switches to the learned window for the rest of the turn.
+    let last_max = events.iter().rev().find_map(|e| match e {
+        EngineEvent::ContextUsage { max, .. } => Some(*max),
+        _ => None,
+    });
+    assert_eq!(last_max, Some(32_768));
+
+    let last = env
+        .db
+        .last_assistant_message(&env.session_id)
+        .await
+        .unwrap();
+    assert!(last.contains("recovered after compaction"), "{last}");
+}
+
+#[tokio::test]
+async fn test_overflow_below_prompt_floor_says_restart_without_compacting() {
+    // 16 is also the window Koda assumed (as when `/props` reported it):
+    // the restart notice must not depend on the limit being new.
+    let env = Env::builder().max_context_tokens(16).build().await;
+    env.insert_message(&Role::User, "first question").await;
+    env.insert_message(&Role::Assistant, "first answer").await;
+    env.insert_message(&Role::User, "second question").await;
+    env.insert_message(&Role::Assistant, "second answer").await;
+    env.insert_message(&Role::User, "third question").await;
+
+    // 16 tokens can't hold even the system prompt: compacting history
+    // wouldn't help, so the turn ends with the fix instead.
+    let provider = MockProvider::new(vec![
+        llama_cpp_overflow(16),
+        MockResponse::Text("must not be requested".into()),
+    ]);
+
+    let (result, events) = env.run_inference_result(&provider).await;
+    assert!(result.is_ok(), "ends the turn cleanly: {:?}", result.err());
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            EngineEvent::Warn { message }
+                if message.contains("16 tokens") && message.contains("larger context")
+        )),
+        "expected the restart notice: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, EngineEvent::Info { message } if message.contains("Compacted"))),
+        "must not compact: {events:?}"
+    );
+    assert_eq!(
+        provider.recorded_calls().len(),
+        1,
+        "no compaction or retry call"
+    );
+}

@@ -54,9 +54,13 @@ pub async fn run_headless(
 ) -> Result<i32> {
     // Query actual model capabilities from the provider API before building agent.
     let tmp_provider = koda_core::providers::create_provider(&config);
-    config
+    let source = config
         .query_and_apply_capabilities(tmp_provider.as_ref())
         .await;
+    // stderr, like every other notice: stdout carries only the answer or JSON.
+    if let Some(notice) = config.assumed_context_notice(source) {
+        eprintln!("\x1b[33m  \u{26a0} {notice}\x1b[0m");
+    }
 
     let mut agent = KodaAgent::new(&config, project_root.clone(), &[]).await?;
     crate::builtin_skills::inject_builtin_skills(&mut agent);
@@ -435,6 +439,8 @@ impl HeadlessSink {
             EngineEvent::SpinnerStop => {}
             EngineEvent::StatusUpdate { .. } => {}
             EngineEvent::ContextUsage { .. } => {}
+            // One run; the engine already uses the learned window.
+            EngineEvent::ContextWindowChanged { .. } => {}
             EngineEvent::TurnStart { .. } => {}
             EngineEvent::TurnEnd { .. } => {}
             // (#1076) Bg-task lifecycle in headless: render as a short

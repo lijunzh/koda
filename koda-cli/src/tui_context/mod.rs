@@ -85,6 +85,10 @@ pub(crate) struct TuiContext {
     pub inference_start: Option<std::time::Instant>,
     /// Context window usage percentage (0-100), updated via EngineEvent::ContextUsage.
     pub context_pct: u32,
+    /// The server's real context window, learned mid-turn from an overflow
+    /// error (`EngineEvent::ContextWindowChanged`). The turn borrows
+    /// `config`, so it is adopted after the turn (`post_turn_cleanup`).
+    pub learned_context_window: Option<usize>,
     pub history: Vec<String>,
     pub history_idx: Option<usize>,
     pub completer: crate::completer::InputCompleter,
@@ -225,8 +229,9 @@ pub(crate) struct ProviderOverrides {
 ///   for a different provider nothing is restored.
 /// - A field the user set (`--base-url`, `--model`) is never replaced.
 ///
-/// Nothing is written back: CLI flags are per-run, and only `/model` and
-/// `/provider` update the saved row (`tui_wizards::save_provider`).
+/// Flags are not written back here. `/model` and `/provider` update the saved
+/// row (`tui_wizards::save_provider`), and so does a `--base-url` given to the
+/// TUI (see `remembers_endpoint`), so a URL given once sticks.
 pub(crate) fn apply_last_provider(
     config: &mut KodaConfig,
     last: &koda_core::last_provider::LastProvider,
@@ -249,6 +254,14 @@ pub(crate) fn apply_last_provider(
         config.model_settings.model = last.model.clone();
     }
     config.recalculate_model_derived();
+}
+
+/// Whether a `--base-url` / `KODA_BASE_URL` given to the TUI is saved as the
+/// last-used provider. Only once the server has answered: a mistyped URL
+/// shouldn't stick, and the placeholder model names below must never be
+/// restored as the saved model.
+fn remembers_endpoint(overrides: ProviderOverrides, model: &str) -> bool {
+    overrides.base_url && model != "(no model loaded)" && model != "(connection failed)"
 }
 
 impl TuiContext {
@@ -295,14 +308,24 @@ impl TuiContext {
             }
         }
 
+        let mut context_source = None;
         if config.model != "(no model loaded)" && config.model != "(connection failed)" {
             let prov = provider.read().await;
-            config.query_and_apply_capabilities(prov.as_ref()).await;
+            context_source = Some(config.query_and_apply_capabilities(prov.as_ref()).await);
+        }
+
+        // A URL given on the command line or in KODA_BASE_URL sticks.
+        // Headless runs never get here, so they stay stateless.
+        if remembers_endpoint(overrides, &config.model) {
+            crate::tui_wizards::save_provider(&config, &db).await;
         }
 
         // Collect startup lines (will be pushed into scroll buffer after init)
         let recent = db.recent_user_messages(3).await.unwrap_or_default();
         let mut startup_lines = crate::startup::collect_startup_lines(&config, &recent);
+        if let Some(notice) = context_source.and_then(|s| config.assumed_context_notice(s)) {
+            startup_lines.push(crate::startup::warning_line(notice));
+        }
         startup_lines.extend(crate::startup::home_dir_warning_lines(&project_root));
 
         if let Ok(Some(latest)) = version_check.await
@@ -488,6 +511,7 @@ impl TuiContext {
             silent_compact_deferred: false,
             inference_start: None,
             context_pct: 0,
+            learned_context_window: None,
             history: db.history_load().await.unwrap_or_default(),
             history_idx: None,
             completer,
@@ -810,8 +834,33 @@ impl TuiContext {
             self.open_provider_picker();
             return CommandOutcome::Handled;
         }
-        if let Some(name) = input.trim().strip_prefix("/provider ") {
-            self.start_provider_wizard(name.trim());
+        if let Some(arg) = input.trim().strip_prefix("/provider ") {
+            let arg = arg.trim();
+            if menus::is_provider_url(arg) {
+                // A URL is the endpoint itself: re-detect the provider type
+                // from it and save the choice, like a name picked from the
+                // wizard.
+                let ptype = koda_core::config::ProviderType::from_url_or_name(arg, None);
+                if ptype.requires_api_key() && !koda_core::runtime_env::is_set(ptype.env_key_name())
+                {
+                    self.scroll_buffer.push(Line::styled(
+                        format!(
+                            "  \u{2716} {} not set. Run /key to configure.",
+                            ptype.env_key_name()
+                        ),
+                        Style::default().fg(Color::Red),
+                    ));
+                } else {
+                    if let Some(source) = self
+                        .apply_provider(ptype, arg.trim_end_matches('/').to_string())
+                        .await
+                    {
+                        self.show_context_notice(source);
+                    }
+                }
+            } else {
+                self.start_provider_wizard(arg);
+            }
             return CommandOutcome::Handled;
         }
         if input.trim() == "/sessions" {
@@ -1078,7 +1127,7 @@ mod tests {
     // row. Each test saves a row to a real SQLite DB and reads it back the
     // way `TuiContext::new` does.
     mod last_provider {
-        use super::super::{ProviderOverrides, apply_last_provider};
+        use super::super::{ProviderOverrides, apply_last_provider, remembers_endpoint};
         use koda_core::config::{KodaConfig, ProviderType};
         use koda_core::last_provider::{LastProvider, load_last_provider, save_last_provider};
 
@@ -1112,6 +1161,29 @@ mod tests {
                 provider.map(str::to_string),
             );
             (config, overrides)
+        }
+
+        #[test]
+        fn a_command_line_url_is_remembered_once_the_server_answered() {
+            let url = ProviderOverrides {
+                base_url: true,
+                ..Default::default()
+            };
+            assert!(remembers_endpoint(url, "Qwen3.8-27B-Q4_K_M.gguf"));
+            // A model typed with the URL counts the same.
+            assert!(remembers_endpoint(url, "my-model"));
+            // The server never answered: placeholders must not be saved.
+            assert!(!remembers_endpoint(url, "(connection failed)"));
+            assert!(!remembers_endpoint(url, "(no model loaded)"));
+            // No URL given: nothing new to remember.
+            let none = ProviderOverrides::default();
+            assert!(!remembers_endpoint(none, "Qwen3.8-27B-Q4_K_M.gguf"));
+            let provider_only = ProviderOverrides {
+                provider: true,
+                model: true,
+                ..Default::default()
+            };
+            assert!(!remembers_endpoint(provider_only, "m"));
         }
 
         #[tokio::test]
