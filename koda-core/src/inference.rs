@@ -643,6 +643,37 @@ pub struct InferenceContext<'a> {
 /// zero file mutations don't grow the undo stack.
 #[tracing::instrument(skip_all, fields(session_id = %ctx.session_id, agent = %ctx.config.agent_name))]
 pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
+    inference_loop_outcome(ctx).await.map(|_| ())
+}
+
+/// How a turn that didn't return `Err` ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnOutcome {
+    /// The loop ran to its normal end (or was cancelled by the user).
+    Finished,
+    /// The turn stopped early after a warning the user can read (provider
+    /// server error, image rejection, dropped connection). No reply was
+    /// produced. The TUI shows the warning and carries on; headless
+    /// reports the turn as failed with this message.
+    Aborted(String),
+}
+
+/// Marker error for the early-stop paths: [`inference_loop_outcome`]
+/// turns it back into [`TurnOutcome::Aborted`], so it never reaches callers.
+#[derive(Debug)]
+struct TurnAborted(String);
+
+impl std::fmt::Display for TurnAborted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TurnAborted {}
+
+/// Like [`inference_loop`], but says whether the turn stopped early on a
+/// warning. `inference_loop` keeps returning `Ok(())` for those turns.
+pub async fn inference_loop_outcome(ctx: InferenceContext<'_>) -> Result<TurnOutcome> {
     // `&ToolRegistry` is `Copy`, so capturing here doesn't move `ctx`.
     // We need this handle to call `commit_turn` after the inner
     // function returns and releases its borrow on `ctx.tools`.
@@ -651,7 +682,13 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     if let Ok(mut undo) = tools.undo.lock() {
         undo.commit_turn();
     }
-    result
+    match result {
+        Ok(()) => Ok(TurnOutcome::Finished),
+        Err(e) => match e.downcast::<TurnAborted>() {
+            Ok(TurnAborted(message)) => Ok(TurnOutcome::Aborted(message)),
+            Err(e) => Err(e),
+        },
+    }
 }
 
 async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
@@ -1034,26 +1071,28 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
             }
             Err(e) if is_server_error(&e) => {
                 sink.emit(EngineEvent::SpinnerStop);
+                let message = format!(
+                    "Provider returned a server error: {e:#}. \
+                     This often means the model can't handle the current \
+                     conversation state. Try a different model or start a new session."
+                );
                 sink.emit(EngineEvent::Warn {
-                    message: format!(
-                        "Provider returned a server error: {e:#}. \
-                         This often means the model can't handle the current \
-                         conversation state. Try a different model or start a new session."
-                    ),
+                    message: message.clone(),
                 });
-                return Ok(());
+                return Err(TurnAborted(message).into());
             }
             Err(e) if had_images && is_image_rejection_error(&e) => {
                 sink.emit(EngineEvent::SpinnerStop);
+                let message = format!(
+                    "⚠ This model rejected the image attachment — \
+                     it likely does not support vision input. \
+                     Switch to a vision-capable model such as \
+                     claude-sonnet, gemini-flash, or gpt-6-astra. ({e})"
+                );
                 sink.emit(EngineEvent::Warn {
-                    message: format!(
-                        "⚠ This model rejected the image attachment — \
-                         it likely does not support vision input. \
-                         Switch to a vision-capable model such as \
-                         claude-sonnet, gemini-flash, or gpt-6-astra. ({e})"
-                    ),
+                    message: message.clone(),
                 });
-                return Ok(());
+                return Err(TurnAborted(message).into());
             }
             Err(e) => {
                 return Err(e).context("LLM inference failed");
@@ -1104,9 +1143,12 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
 
         // Network drop: warning already emitted by collect_stream.
         // Discard the partial response — storing it would corrupt the session.
-        if stream_result.network_error.is_some() {
+        if let Some(err) = stream_result.network_error {
             sse_handle.abort();
-            return Ok(());
+            return Err(TurnAborted(format!(
+                "Connection lost mid-stream — turn discarded ({err})"
+            ))
+            .into());
         }
 
         let full_text = stream_result.text;

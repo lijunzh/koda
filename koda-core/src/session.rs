@@ -33,7 +33,7 @@ use crate::config::KodaConfig;
 use crate::db::Database;
 use crate::engine::{EngineCommand, EngineSink};
 use crate::file_tracker::FileTracker;
-use crate::inference::InferenceContext;
+use crate::inference::{InferenceContext, TurnOutcome};
 use crate::persistence::Persistence;
 use crate::providers::{self, ImageData, LlmProvider};
 use crate::sub_agent_cache::SubAgentCache;
@@ -751,7 +751,7 @@ impl KodaSession {
         // don't have this problem (they're not swapped) but we capture
         // uniformly for symmetry.
         let effective_cancel = turn_cancel.clone().unwrap_or_else(|| self.cancel_token());
-        let result = crate::inference::inference_loop(InferenceContext {
+        let result = crate::inference::inference_loop_outcome(InferenceContext {
             project_root: &self.agent.project_root,
             config,
             db: &self.db,
@@ -781,18 +781,24 @@ impl KodaSession {
         })
         .await;
 
+        // An early stop on a warning is `Ok` for the caller (the TUI has
+        // already shown the warning and keeps going) but not a completed
+        // turn, so `TurnEnd` says `Error` for headless and other clients.
         let reason = match &result {
-            Ok(()) if effective_cancel.is_cancelled() => {
+            Ok(TurnOutcome::Aborted(message)) => crate::engine::event::TurnEndReason::Error {
+                message: message.clone(),
+            },
+            Ok(TurnOutcome::Finished) if effective_cancel.is_cancelled() => {
                 crate::engine::event::TurnEndReason::Cancelled
             }
-            Ok(()) => crate::engine::event::TurnEndReason::Complete,
+            Ok(TurnOutcome::Finished) => crate::engine::event::TurnEndReason::Complete,
             Err(e) => crate::engine::event::TurnEndReason::Error {
                 message: e.to_string(),
             },
         };
         sink.emit(crate::engine::EngineEvent::TurnEnd { turn_id, reason });
 
-        result
+        result.map(|_| ())
     }
 
     /// Replace the provider (e.g., after switching models or providers).
