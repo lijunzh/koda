@@ -1056,6 +1056,36 @@ pub async fn run_cargo(
     socks5_port: Option<u16>,
     sink: Option<(&dyn EngineSink, &str)>,
 ) -> Result<CargoOutput> {
+    run_cargo_with_env(
+        project_root,
+        args,
+        trust,
+        policy,
+        proxy_port,
+        socks5_port,
+        sink,
+        &[],
+    )
+    .await
+}
+
+/// [`run_cargo`] plus extra environment variables for the child, set after
+/// the sandbox's env scrub. Production passes none. The end-to-end test
+/// uses it to cut the nested cargo off from the env of the cargo that is
+/// running the tests: under `cargo llvm-cov`, `RUSTC_WRAPPER` points at
+/// the coverage binary, which the env allowlist forwards to the child,
+/// where it fails with "expected subcommand 'llvm-cov'".
+#[allow(clippy::too_many_arguments)] // the seven of run_cargo, plus the env
+async fn run_cargo_with_env(
+    project_root: &Path,
+    args: &Value,
+    trust: &crate::trust::TrustMode,
+    policy: &koda_sandbox::SandboxPolicy,
+    proxy_port: Option<u16>,
+    socks5_port: Option<u16>,
+    sink: Option<(&dyn EngineSink, &str)>,
+    extra_env: &[(&str, &Path)],
+) -> Result<CargoOutput> {
     let parsed = CargoArgs::parse(args)?;
     let command = parsed.command_line();
     tracing::info!("Running {command}");
@@ -1070,6 +1100,7 @@ pub async fn run_cargo(
         socks5_port,
     )?;
     cmd.env("CARGO_TERM_COLOR", "never")
+        .envs(extra_env.iter().copied())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1806,7 +1837,12 @@ mod tests {
         )
         .unwrap();
 
-        let out = run_cargo(
+        // Hermetic against the cargo that is running this test: an empty
+        // RUSTC_WRAPPER disables any wrapper it set (cargo-llvm-cov, sccache),
+        // and a private target dir keeps the throwaway build out of the
+        // outer one.
+        let target = tmp.path().join("target");
+        let out = run_cargo_with_env(
             tmp.path(),
             &json!({"subcommand": "test"}),
             &crate::trust::TrustMode::Safe,
@@ -1814,6 +1850,10 @@ mod tests {
             None,
             None,
             None,
+            &[
+                ("RUSTC_WRAPPER", Path::new("")),
+                ("CARGO_TARGET_DIR", target.as_path()),
+            ],
         )
         .await
         .expect("run_cargo should complete");
