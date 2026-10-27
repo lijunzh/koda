@@ -59,6 +59,8 @@ Inside the TUI, type `/help` to see all commands and keyboard shortcuts.
 |---|---|
 | [**koda-cli**](koda-cli/) | Terminal frontend (TUI + headless + ACP server) |
 | [**koda-core**](koda-core/) | Engine library — providers, tools, inference loop |
+| [**koda-sandbox**](koda-sandbox/) | Capability-aware sandbox layer — kernel-enforced FS/net/exec policies |
+| [**koda-test-utils**](koda-test-utils/) | Test utilities — mock providers, test sinks, and E2E harness |
 
 ## Documentation
 
@@ -67,7 +69,7 @@ Inside the TUI, type `/help` to see all commands and keyboard shortcuts.
 | [**User Manual**](https://lijunzh.github.io/koda/) | CLI reference, slash commands, trust modes, and custom agents |
 | [**Engine API**](https://docs.rs/koda-core) | Developer docs for embedding `koda-core` |
 | [**Design**](DESIGN.md) | Architecture principles and philosophies |
-| [**Contributing**](CLAUDE.md) | Workspace layout, coding conventions, and tests |
+| [**Contributing**](CONTRIBUTING.md) | Workspace layout, coding conventions, and tests |
 | [**Changelog**](CHANGELOG.md) | Version history |
 
 ## License
