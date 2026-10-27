@@ -30,7 +30,7 @@ use rmcp::transport::{
 use rmcp::{
     ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, Content, ServerCapabilities, ServerInfo},
+    model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig},
     schemars, tool, tool_handler, tool_router,
     transport::streamable_http_client::StreamableHttpClientTransportConfig,
 };
@@ -61,14 +61,14 @@ impl EchoServer {
 impl EchoServer {
     #[tool(description = "Echo the message back")]
     fn echo(&self, Parameters(EchoParams { message }): Parameters<EchoParams>) -> CallToolResult {
-        CallToolResult::success(vec![Content::text(message)])
+        CallToolResult::success(vec![ContentBlock::text(message)])
     }
 }
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for EchoServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions("A minimal echo server for integration tests")
     }
 }
@@ -109,7 +109,7 @@ async fn spawn_echo_server() -> (String, CancellationToken, CapturedHeaders) {
             || Ok(EchoServer::new()),
             Default::default(),
             StreamableHttpServerConfig::default()
-                .with_stateful_mode(false)
+                .with_legacy_session_mode(false)
                 .with_json_response(true)
                 .with_sse_keep_alive(None)
                 .with_cancellation_token(ct.child_token()),

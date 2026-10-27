@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rmcp::ServiceExt;
-use rmcp::model::CallToolRequestParams;
-use rmcp::service::RunningService;
+use rmcp::model::{CallToolRequestParams, ClientConfig, ProtocolVersion};
+use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::child_process::TokioChildProcess;
 use serde_json::Value;
@@ -51,7 +51,7 @@ pub struct McpClient {
     /// Server configuration.
     config: McpServerConfig,
     /// Running rmcp service (None when disconnected).
-    service: Option<RunningService<rmcp::service::RoleClient, ()>>,
+    service: Option<RunningService<RoleClient, ClientConfig>>,
     /// Discovered tools after connection.
     tools: Vec<DiscoveredTool>,
     /// Current connection status.
@@ -192,7 +192,10 @@ impl McpClient {
 
         let transport =
             TokioChildProcess::new(cmd).context("failed to spawn MCP server process")?;
-        let service = ().serve(transport).await.context("MCP handshake failed")?;
+        let service = client_config()
+            .serve(transport)
+            .await
+            .context("MCP handshake failed")?;
         self.finish_handshake(service).await
     }
 
@@ -203,9 +206,6 @@ impl McpClient {
         bearer_token: Option<&str>,
         headers: &std::collections::HashMap<String, String>,
     ) -> Result<()> {
-        use http::{HeaderName, HeaderValue};
-        use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-
         // SSRF protection: reject private/internal URLs before opening any connection.
         if !is_safe_url(url) {
             anyhow::bail!(
@@ -213,6 +213,20 @@ impl McpClient {
                  addresses are blocked to prevent SSRF attacks"
             );
         }
+
+        self.connect_http_unchecked(url, bearer_token, headers)
+            .await
+    }
+
+    /// Streamable HTTP connect after the SSRF check.
+    async fn connect_http_unchecked(
+        &mut self,
+        url: &str,
+        bearer_token: Option<&str>,
+        headers: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        use http::{HeaderName, HeaderValue};
+        use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 
         // Warn if sending a bearer token over plaintext HTTP.
         if bearer_token.is_some() && url.starts_with("http://") {
@@ -248,8 +262,11 @@ impl McpClient {
         // Enable session recovery for remote servers.
         config.reinit_on_expired_session = true;
 
-        let transport = StreamableHttpClientTransport::from_config(config);
-        let service = ().serve(transport).await.context("MCP HTTP handshake failed")?;
+        let transport = StreamableHttpClientTransport::with_client(mcp_http_client()?, config);
+        let service = client_config()
+            .serve(transport)
+            .await
+            .context("MCP HTTP handshake failed")?;
         self.finish_handshake(service).await
     }
 
@@ -257,7 +274,7 @@ impl McpClient {
     /// Captures the server's `instructions` (#922) and discovers tools.
     async fn finish_handshake(
         &mut self,
-        service: RunningService<rmcp::service::RoleClient, ()>,
+        service: RunningService<RoleClient, ClientConfig>,
     ) -> Result<()> {
         // Capture server-provided instructions before storing the service so
         // we don't have to re-borrow it. Filter empties to keep prompt clean.
@@ -381,6 +398,79 @@ impl McpClient {
     pub fn set_tools_for_test(&mut self, tools: Vec<DiscoveredTool>) {
         self.tools = tools;
     }
+
+    /// Connect an HTTP server without the SSRF check (test-only).
+    ///
+    /// Everything else matches [`connect`](Self::connect): the same
+    /// transport, redirect policy and handshake, so tests can run them
+    /// against servers on loopback.
+    #[cfg(feature = "test-support")]
+    pub async fn connect_http_without_ssrf_guard_for_test(&mut self) -> Result<()> {
+        let McpTransport::Http {
+            url,
+            bearer_token,
+            headers,
+        } = self.config.transport.clone()
+        else {
+            anyhow::bail!("not an HTTP MCP server config");
+        };
+        self.connect_http_unchecked(&url, bearer_token.as_deref(), &headers)
+            .await?;
+        self.status = McpClientStatus::Connected;
+        Ok(())
+    }
+}
+
+/// Client side of the MCP handshake, shared by stdio and HTTP.
+///
+/// Koda starts every server with the legacy `initialize` handshake and
+/// offers the newest protocol version that still has one (2025-11-25).
+/// The server answers with the version it speaks, so older servers
+/// negotiate down. rmcp 3.x defaults to 2026-07-28, which drops
+/// `initialize`; offering it there would ask legacy servers for a version
+/// they don't know.
+fn client_config() -> ClientConfig {
+    ClientConfig::default().with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
+}
+
+/// HTTP client for Streamable HTTP MCP servers.
+///
+/// Redirect policy, chosen here rather than inherited from rmcp: follow
+/// only same-origin 307 and 308 redirects (they keep the method and the
+/// JSON-RPC body), up to 10 hops. Any other redirect is handed back to
+/// rmcp unfollowed and the request fails. Following a cross-origin
+/// redirect would send the bearer token and custom headers to another
+/// host (GHSA-9g45-5xwm-f3wc) and skip the SSRF check on the configured
+/// URL; following a 301, 302 or 303 would turn the POST into a bodyless
+/// GET.
+fn mcp_http_client() -> Result<reqwest::Client> {
+    const MAX_REDIRECTS: usize = 10;
+
+    let policy = reqwest::redirect::Policy::custom(|attempt| {
+        let preserves_body = matches!(
+            attempt.status(),
+            reqwest::StatusCode::TEMPORARY_REDIRECT | reqwest::StatusCode::PERMANENT_REDIRECT
+        );
+        let same_origin = attempt
+            .previous()
+            .first()
+            .is_some_and(|original| original.origin() == attempt.url().origin());
+        if !preserves_body || !same_origin {
+            attempt.stop()
+        } else if attempt.previous().len() > MAX_REDIRECTS {
+            attempt.error(format!("exceeded {MAX_REDIRECTS} redirects"))
+        } else {
+            attempt.follow()
+        }
+    });
+
+    reqwest::Client::builder()
+        // Matches rmcp's default client: idle pooled connections stall
+        // ~40 ms on Linux delayed ACKs when a body wasn't fully read.
+        .pool_max_idle_per_host(0)
+        .redirect(policy)
+        .build()
+        .context("failed to build MCP HTTP client")
 }
 
 impl Drop for McpClient {
