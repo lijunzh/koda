@@ -94,17 +94,7 @@ impl BuiltInProxy {
         // well-behaved clients on every backend; we just lose the
         // kernel-enforced tier on Linux for this session.
         #[cfg(target_os = "linux")]
-        let handle = match attach_uds_bridge(handle, port).await {
-            Ok(h) => h,
-            Err((h, e)) => {
-                tracing::warn!(
-                    "koda-sandbox: UDS bridge spawn failed: {e}. Linux kernel-enforced \
-                     egress unavailable for this session; well-behaved clients still \
-                     route through the env-var tier."
-                );
-                h
-            }
-        };
+        let handle = attach_uds_bridge(handle, port).await;
 
         Ok(handle)
     }
@@ -112,19 +102,25 @@ impl BuiltInProxy {
 
 /// Attach the Linux UDS bridge to a freshly-spawned `ProxyHandle`.
 ///
-/// Returns the (possibly-decorated) handle. On bridge spawn failure,
-/// returns the original handle unchanged together with the error so
-/// the caller can log + degrade rather than fail the whole session.
+/// Returns the decorated handle, or the original handle unchanged if
+/// the bridge fails to spawn. The failure is logged here and the session
+/// degrades instead of failing. Handling it in place (rather than
+/// returning `Err((handle, error))` to the caller) also keeps the large
+/// handle out of an error type (clippy `result_large_err`).
 #[cfg(target_os = "linux")]
-async fn attach_uds_bridge(
-    handle: ProxyHandle,
-    tcp_port: u16,
-) -> std::result::Result<ProxyHandle, (ProxyHandle, anyhow::Error)> {
+async fn attach_uds_bridge(handle: ProxyHandle, tcp_port: u16) -> ProxyHandle {
     let pid = std::process::id();
     let uds_path = crate::bwrap_proxy::proxy_uds_path(pid, tcp_port);
     match crate::bwrap_proxy::spawn_uds_bridge(uds_path.clone(), tcp_port).await {
-        Ok(task) => Ok(handle.with_uds_bridge(uds_path, task)),
-        Err(e) => Err((handle, e)),
+        Ok(task) => handle.with_uds_bridge(uds_path, task),
+        Err(e) => {
+            tracing::warn!(
+                "koda-sandbox: UDS bridge spawn failed: {e}. Linux kernel-enforced \
+                 egress unavailable for this session; well-behaved clients still \
+                 route through the env-var tier."
+            );
+            handle
+        }
     }
 }
 
