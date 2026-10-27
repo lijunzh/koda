@@ -834,6 +834,20 @@ different set.
 
 ## Documentation
 
+### Development Docs Live in the Maintainer's Notes
+
+From March to October 2026, the GitHub issue tracker was Koda's design
+record ([#212](https://github.com/lijunzh/koda/issues/212): "GitHub issues
+are the source of truth for development docs"). Since 2026-10-27, design
+docs, plans, reviews and decisions are kept in the maintainer's private
+notes instead.
+
+- This file keeps the public principles and architecture decisions.
+- GitHub issues are for bug reports and feature requests from users, and
+  for the issues CI workflows manage.
+- The issue links throughout this file still point at the history behind
+  each decision.
+
 ### docs.rs as the Documentation Site (P1, P2)
 
 Koda uses `cargo doc` / docs.rs as its documentation site. There is no

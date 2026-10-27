@@ -39,6 +39,9 @@ everything else (`cargo check`, full test matrix on Linux + macOS, `cargo doc`,
 The easiest contribution is
 [reporting a bug](https://github.com/lijunzh/koda/issues/new).
 
+Issues are for bug reports and feature requests. Koda's design discussion
+happens in the maintainer's own notes, not in the issue tracker.
+
 ## License
 
 [MIT](LICENSE)
