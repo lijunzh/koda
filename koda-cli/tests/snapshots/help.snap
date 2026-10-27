@@ -38,9 +38,13 @@ Options:
 
       --output-format <OUTPUT_FORMAT>
           Output format for headless mode
+
+          Possible values:
+          - text:        Streamed reply on stdout, decorations on stderr
+          - json:        One run-summary JSON object on stdout after the turn
+          - stream-json: NDJSON on stdout: every engine event, then the run summary
           
           [default: text]
-          [possible values: text, json]
 
   -a, --agent <AGENT>
           Agent to use (matches a JSON file in agents/)

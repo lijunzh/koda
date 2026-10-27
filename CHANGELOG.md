@@ -6,11 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Headless `--output-format stream-json`, plus run metrics in `json`.** The module docs in `headless.rs` always advertised `stream-json`, but clap only accepted `text` and `json`.
+  - `stream-json` writes newline-delimited JSON to stdout: one line per `EngineEvent` as it happens (the existing serde shape, e.g. `{"type":"tool_call_start",...}`), then a final `{"type":"run_summary",...}` line. Nothing else goes to stdout.
+  - `json` now prints that same summary object. The four legacy keys (`success`, `response`, `session_id`, `model`) keep their meaning. New keys: `type`, `error`, `provider`, `turn_end`, `elapsed_ms`, `usage`, `usage_by_agent`, `tool_calls` and `sub_agent_tool_calls`.
+  - Token usage is summed from the session's stored messages rather than the `Footer` event. It therefore includes sub-agent calls and stays correct when the turn errors or is cancelled; the footer only fires on a clean finish.
+  - `--output-format` is now a typed clap `ValueEnum`.
+  - This is the machine interface the planned eval harness reads. Approval behavior is unchanged in every format (non-destructive approved, destructive auto-rejected, AskUser answered empty, loop cap continued); a new unit test pins that.
+
 ### Security
 
 - **`cargo audit` is clean again: 16 vulnerabilities and 8 denied warnings resolved.** Advisories published since the last lockfile refresh turned the CI `Security Audit` job (`cargo audit --deny unsound --deny yanked`) red on every PR. The ones that matter most for koda are on the WebFetch / provider HTTP path: rustls 0.23.40 → 0.23.46 (RUSTSEC-2026-0285, -0346, -0348, -0349: cross-encryption-level handshake acceptance, secrets in `Debug`, pre-auth 1 GiB Brotli allocation, ServerHello key-exchange downgrade), rustls-webpki 0.103.13 → 0.103.16 and webpki-root-certs 1.0.7 → 1.0.11 (RUSTSEC-2026-0382, -0383: distrusted intermediates accepted), h2 0.4.13 → 0.4.20 (RUSTSEC-2026-0258) and quinn-proto 0.11.14 → 0.11.19 (RUSTSEC-2026-0185, -0338, -0339, -0340, -0342: remote panics and memory exhaustion). Also crossbeam-epoch 0.9.18 → 0.9.21 (RUSTSEC-2026-0204). All of those, plus the unsound anyhow 1.0.104, event-listener 5.4.2 and tokio 1.54.1, and the yanked chacha20 / clipboard-win / spin releases, are semver-compatible lockfile bumps. Three needed more: `zip` 8 → 9 in `koda-cli` (RUSTSEC-2026-0367, -0368, -0369, all extraction-side; `/debug-bundle` only writes zips, and the only API change hit was `ZipFile::name()` now returning `Result` in a test); `lru` 0.16 → 0.18.5 (RUSTSEC-2026-0253) via ratatui-core 0.1.0 → 0.1.2; and `scc` (RUSTSEC-2026-0205) is gone entirely because the `serial_test` dev-dependency 3.4 → 3.5 dropped it. No `audit.toml` ignores were added.
 
 ### Fixed
+
+- **`--output-format json` stdout is valid JSON again.** The streamed reply was printed to stdout ahead of the JSON object, so a consumer had to search for the first `{`; the smoke tests' `extract_json` helper did exactly that. In `json` mode the streamed reply now goes to stderr, and stdout carries only the summary object. A smoke test parses the whole of stdout as a single JSON value.
 
 - **OSC 8 file-path hyperlinks keep redrawing correctly on ratatui-core 0.1.2** (#995 regression guard). The lockfile bump above pulls in ratatui-core's rewritten `Buffer::diff`, which steps over a cell's *whole* `width()`. A hyperlinked path's head cell carries the OSC 8 payload, whose printable URI bytes inflate that width to ~30 columns, so the diff silently dropped every cell after the path: text changing next to a path (`a.rs (12 lines)` → `(99 lines)`) never reached the terminal, and a path that shrank between frames left stale characters behind. This is the "two layers of garbled text" symptom from #995 again, caught by the existing `osc8_wrap_clears_leftover_when_path_shrinks` test. `hyperlink.rs` now marks the head cell `CellDiffOption::ForcedWidth(run width)`, the 0.1.2 API for escape-sequence cells, so the diff steps over exactly the run. Trailing cells move from the now-deprecated `set_skip(true)` to `set_diff_option(CellDiffOption::Skip)`. New test `osc8_wrap_diffs_changed_text_after_run` pins the changed-text-after-path case.
 
