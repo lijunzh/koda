@@ -53,9 +53,21 @@ where
     for (line_index, line) in textwrap::wrap(text, &opts).iter().enumerate() {
         match line {
             std::borrow::Cow::Borrowed(slice) => {
-                // SAFETY: `slice` is a sub-slice of `text` (Cow::Borrowed
-                // implies same allocation), so the offset_from is well-defined.
-                let start = unsafe { slice.as_ptr().offset_from(text.as_ptr()) as usize };
+                // `Cow::Borrowed` does not guarantee a sub-slice of `text`:
+                // at width 0 textwrap returns a static `""` for every empty
+                // hard line. Such a line starts on the next hard line.
+                let Some(start) = subslice_offset(text, slice).or_else(|| {
+                    slice
+                        .is_empty()
+                        .then(|| next_hard_line_start(text, cursor, line_index))
+                }) else {
+                    let mapped = map_owned_wrapped_line_to_range(text, cursor, slice, "");
+                    let trailing_spaces =
+                        text[mapped.end..].chars().take_while(|c| *c == ' ').count();
+                    lines.push(mapped.start..mapped.end + trailing_spaces + 1);
+                    cursor = mapped.end + trailing_spaces;
+                    continue;
+                };
                 let end = start + slice.len();
                 let trailing_spaces = text[end..].chars().take_while(|c| *c == ' ').count();
                 lines.push(start..end + trailing_spaces + 1);
@@ -75,6 +87,25 @@ where
         }
     }
     lines
+}
+
+/// Byte offset of `slice` within `text`, or `None` when `slice` does not
+/// lie inside `text`. Compares addresses only, so it needs no `unsafe`.
+fn subslice_offset(text: &str, slice: &str) -> Option<usize> {
+    let start = (slice.as_ptr() as usize).checked_sub(text.as_ptr() as usize)?;
+    (start + slice.len() <= text.len()).then_some(start)
+}
+
+/// Start of the hard line that follows `cursor`, for an empty wrapped line
+/// textwrap did not borrow from `text`. The first wrapped line always
+/// starts at 0.
+fn next_hard_line_start(text: &str, cursor: usize, line_index: usize) -> usize {
+    if line_index == 0 {
+        return 0;
+    }
+    text[cursor..]
+        .find('\n')
+        .map_or(text.len(), |newline| cursor + newline + 1)
 }
 
 /// Maps an owned (materialized) wrapped line back to a byte range in `text`.
@@ -146,4 +177,46 @@ fn map_owned_wrapped_line_to_range(
     }
 
     start..end
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wrap_first_fit(text: &str, width: usize) -> Vec<Range<usize>> {
+        wrap_ranges(
+            text,
+            Options::new(width).wrap_algorithm(textwrap::WrapAlgorithm::FirstFit),
+        )
+    }
+
+    // Regression: a pty with no size gave the composer width 0, and typing a
+    // newline panicked with an out-of-bounds start index computed from a
+    // static `""` that textwrap returns for empty lines at width 0.
+    #[test]
+    fn width_zero_with_newline_maps_empty_lines() {
+        assert_eq!(wrap_first_fit("\n", 0), vec![0..1, 1..2]);
+        assert_eq!(wrap_first_fit("a\n", 0), vec![0..2, 2..3]);
+        assert_eq!(wrap_first_fit("a\n\nb", 0), vec![0..2, 2..3, 3..5]);
+        assert_eq!(wrap_first_fit("\n\n", 0), vec![0..1, 1..2, 2..3]);
+    }
+
+    #[test]
+    fn width_zero_matches_normal_width_for_short_lines() {
+        for text in ["\n", "a\n", "a\n\nb", "\n\n", "", "a"] {
+            assert_eq!(
+                wrap_first_fit(text, 0),
+                wrap_first_fit(text, 80),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn subslice_offset_rejects_foreign_slices() {
+        let text = String::from("hello");
+        assert_eq!(subslice_offset(&text, &text[1..3]), Some(1));
+        assert_eq!(subslice_offset(&text, &text[5..]), Some(5));
+        assert_eq!(subslice_offset(&text, "elsewhere"), None);
+    }
 }
