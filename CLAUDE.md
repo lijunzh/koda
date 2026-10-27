@@ -412,13 +412,17 @@ For capabilities that ship in the koda workspace (same release cycle):
 
 ## CI Workflows
 
-Four workflows live in `.github/workflows/`:
+Seven workflows live in `.github/workflows/`:
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `ci.yml` | Pull requests to `main` | Gate PRs — lint, cross-platform check, test, doc, audit |
-| `coverage.yml` | Push to `main` | Post-merge coverage tracking with auto issue creation |
+| `ci.yml` | PRs to `main`, push to `main` | Gate PRs: format, lint, compile, test, doc, dependency audit |
+| `audit.yml` | Weekly (Mon 13:00 UTC) + manual | `cargo audit` of `main`; manages the `security-audit` issue |
+| `coverage.yml` | Push to `main`; PRs touching `koda-core/` or `koda-sandbox/` | Coverage thresholds, with auto issue creation on `main` |
 | `release.yml` | Tag `v*` | Version verify, cross-platform test + build, publish, Homebrew |
+| `docs.yml` | Push to `main` (docs/ changes) | Build + deploy mdBook to GitHub Pages |
+| `auto-merge-dependabot.yml` | Dependabot PRs | Enables squash auto-merge; merges once required checks pass |
+| `vendor-sync-reminder.yml` | Weekly + manual | Files an issue when vendored `openai/codex` files drift upstream |
 
 Release job chain:
 ```
@@ -429,35 +433,64 @@ crates.io and Homebrew are independent distribution channels — both fan
 out from `github-release` in parallel. Publishing to crates.io only after
 `github-release` ensures binaries are confirmed good before committing to
 an immutable version number; it does not need to wait for Homebrew.
-| `docs.yml` | Push to `main` (docs/ changes) | Build + deploy mdBook to GitHub Pages |
 
-### CI job DAG (`ci.yml`)
+### CI jobs (`ci.yml`)
 
-```
-test (fmt → clippy → check → test)   single container, compile once
-doc        (independent)              catches broken rustdoc regardless of test
-audit      (independent)              reads Cargo.lock against advisories — orthogonal to code quality
-```
+Six independent jobs run in parallel, one responsibility each, so a red check
+names what broke. Wall-clock is set by the slowest (Test).
 
-- `test` runs all checks sequentially in one container: `cargo fmt --check` → `cargo clippy`
-  → `cargo check --all-targets` (no features, catches cfg-gated gaps) → `cargo test`.
-  A failure in any step aborts the rest — fast-fail is preserved within the job.
-- One container = one compile chain = no redundant recompilation across separate runners.
-  The pre-push hook locally runs only `cargo fmt --check` + `cargo clippy --workspace`
-  (the two cheap checks) — CI is the source of truth for tests, doc, and audit.
-- `doc`, `audit` run unconditionally in parallel — independent signals, fast enough that
-  cancelling them on test failure would lose information, not save time.
+| Job | Check name(s) | Runs |
+|---|---|---|
+| `fmt` | `Format` | `cargo fmt --check`, plus text guards: tokio test flavor (#1109), `shell: bash` on the Test step (#1328), toolchain pin |
+| `clippy` | `Clippy` | `cargo clippy --workspace --all-targets --features koda-core/test-support -- -D warnings` |
+| `check` | `Check (no features)` | `cargo check --workspace --all-targets` (the crates.io shape, no test-support) |
+| `test` | `Test (ubuntu-latest)`, `Test (macos-latest)` | `cargo test --workspace --features koda-core/test-support`, then asserts the security-boundary tests ran |
+| `doc` | `Docs` | `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-Dwarnings` |
+| `audit` | `Security Audit` | `cargo audit --deny unsound --deny yanked`, gated on dependency changes (below) |
 
-**Branch ruleset required gates: `Test` and `Docs` only.**
-`Docs` is required separately because it is independent of the `test` job.
+The pre-push hook (`.githooks/pre-push`) runs only `cargo fmt --check` and
+`cargo clippy`, the two cheap checks. CI is the source of truth for the rest.
+
+**Branch ruleset required checks:** `Format`, `Clippy`, `Check (no features)`,
+`Test (ubuntu-latest)`, `Test (macos-latest)`, `Docs`, `Security Audit`, i.e.
+every `ci.yml` check (verify with `gh api repos/lijunzh/koda/rules/branches/main`).
+A required check that never reports blocks merging forever, so **never add a
+workflow-level `paths:` filter to `ci.yml`**. Skip work inside a job instead,
+as `audit` does.
+
+### Security audit (`ci.yml` `audit` + `audit.yml`)
+
+`cargo audit` goes red for two different reasons: a PR adds a vulnerable or
+yanked crate, or RustSec publishes an advisory against a crate `main` already
+uses. Only the first is the PR's doing, so the gate is split:
+
+- **PRs:** `Security Audit` runs the audit only when the PR's diff (the
+  test-merge commit against its first parent) touches `Cargo.lock`, any
+  `Cargo.toml`, or `.cargo/audit.toml`. Otherwise its audit steps are skipped
+  and the job still reports success. The check stays required because
+  `auto-merge-dependabot.yml` merges every Dependabot PR as soon as required
+  checks pass, and a dependency PR must not merge unaudited. The skip is
+  step-level on purpose: a job-level `if:` fed by another job would turn a
+  failure in that job into a skipped, and therefore passing, required check.
+- **Push to `main`:** always audits.
+- **Weekly (`audit.yml`):** audits `main` every Monday. On failure it opens a
+  `security-audit` issue, or comments on the open one; when the audit passes
+  again it closes the issue. A setup failure (e.g. `cargo install` flaking)
+  touches no issue. Same fix-forward model and dedup as `coverage-regression`.
+  **The `security-audit` label is owned by `audit.yml` alone**; applying it by
+  hand breaks the dedup.
 
 ### Coverage workflow (`coverage.yml`)
 
-Coverage is **not** a PR gate — it runs post-merge on `main` and is informational.
+Coverage is **not** a required check. On `main` it tracks the crate thresholds
+below and manages issues. PRs touching `koda-core/` or `koda-sandbox/` also run it
+for per-file thresholds on security-boundary files (#1265 item 8c), but those PRs
+never open or close issues.
 
 | Crate | Threshold |
 |---|---|
 | `koda-core` | ≥ 80% line coverage |
+| `koda-sandbox` | ≥ 80% line coverage |
 
 **Regression handling** — when any crate drops below threshold:
 1. Workflow run turns red → GitHub notifies via email.
@@ -468,8 +501,8 @@ Coverage is **not** a PR gate — it runs post-merge on `main` and is informatio
    do not apply it manually or from another workflow, as this breaks deduplication.**
 4. When coverage recovers, the open issue is auto-closed with a comment.
 
-**Why not a PR gate?** Coverage reruns the full test suite with instrumentation
-(2–5× slower). Blocking PRs doubles the test cost and slows feedback. The
+**Why not required?** Coverage reruns the full test suite with instrumentation
+(2–5× slower). Requiring it would put that cost on every PR's merge path. The
 fix-forward model (merge → notify → fix PR) keeps PRs fast while maintaining
 accountability on `main`.
 

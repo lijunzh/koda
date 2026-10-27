@@ -1,0 +1,125 @@
+name: Weekly Security Audit
+
+# Why this exists
+# ───────────────
+# ci.yml's `Security Audit` check runs `cargo audit` on a PR only when
+# the PR changes Cargo.lock, a Cargo.toml or .cargo/audit.toml. But
+# RustSec publishes advisories against crates main already depends on,
+# with no change on our side. Between June and October 2026 nothing
+# audited main, and the first sign of new advisories was every PR going
+# red at once.
+#
+# This workflow audits main once a week and fixes forward, the same
+# model as coverage.yml's `coverage-regression`:
+#   • audit fails      → open a `security-audit` issue, or comment on
+#                        the one already open (never more than one)
+#   • audit passes     → close the open issue with a comment
+#   • setup fails      → touch no issue (the red run still notifies);
+#                        we never measured, so we can't say main is clean
+#                        or dirty
+# The `security-audit` label is owned by this workflow alone. Applying
+# it by hand breaks the dedup.
+
+on:
+  schedule:
+    # Mondays 13:00 UTC, after Dependabot's weekly cargo run.
+    - cron: '0 13 * * 1'
+  workflow_dispatch:  # also runnable on demand from the Actions tab
+
+permissions:
+  contents: read
+
+# A manual run racing the scheduled one could open two issues.
+concurrency:
+  group: weekly-security-audit
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: Audit main
+    runs-on: ubuntu-latest
+    outputs:
+      # success / failure when cargo audit ran; skipped when setup failed.
+      audit: ${{ steps.audit.outcome }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run audit
+        id: audit
+        run: cargo audit --deny unsound --deny yanked
+
+  report:
+    name: Manage security-audit issue
+    needs: audit
+    # always(): this job exists to react to the audit job failing.
+    if: always() && (needs.audit.outputs.audit == 'failure' || needs.audit.outputs.audit == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write   # only this job touches issues; the audit job runs third-party build scripts
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      AUDIT: ${{ needs.audit.outputs.audit }}
+      COMMIT: ${{ github.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - name: Open, update or close the issue
+        run: |
+          set -euo pipefail
+          SHORT="${COMMIT:0:7}"
+
+          EXISTING=$(gh issue list \
+            --label "security-audit" \
+            --state open \
+            --json number \
+            --jq '.[0].number')
+
+          if [ "$AUDIT" = "success" ]; then
+            if [ -n "$EXISTING" ]; then
+              gh issue close "$EXISTING" \
+                --comment "\`cargo audit\` is clean on \`main\` again at commit \`$SHORT\` ($RUN_URL)."
+            fi
+            exit 0
+          fi
+
+          {
+            printf '## `cargo audit` fails on `main`\n\n'
+            printf 'Commit: [`%s`](%s/commit/%s)\nRun: %s\n\n' "$SHORT" "$REPO_URL" "$COMMIT" "$RUN_URL"
+            cat <<'EOF'
+          RustSec has advisories against crates in `main`'s `Cargo.lock`. PRs that
+          don't change dependencies are not blocked by this; PRs that do will fail
+          `Security Audit` until it's fixed.
+
+          ### Next steps
+          1. Run `cargo audit --deny unsound --deny yanked` locally, or read the run above.
+          2. Bump the affected crates (`cargo update -p <crate>`), or add a justified
+             ignore to `.cargo/audit.toml`.
+          3. This issue closes automatically on the next green run of `audit.yml`
+             (weekly, or trigger it by hand from the Actions tab).
+          EOF
+          } > body.md
+
+          # Ensure the label exists (idempotent).
+          gh label create "security-audit" \
+            --description "cargo audit fails on main (managed by audit.yml)" \
+            --color "b60205" 2>/dev/null || true
+
+          # Dedup: comment on the open issue, or open a fresh one.
+          if [ -n "$EXISTING" ]; then
+            echo "security-audit issue #$EXISTING already open; adding comment."
+            gh issue comment "$EXISTING" --body-file body.md
+          else
+            gh issue create \
+              --title "cargo audit fails on main ($SHORT)" \
+              --label "security-audit" \
+              --body-file body.md
+          fi

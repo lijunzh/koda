@@ -29,7 +29,7 @@ env:
 #   check   → compile sanity WITHOUT features (what crates.io users see)
 #   test    → behaviour, matrix on (ubuntu, macos)
 #   doc     → doc compile + intra-doc links + -Dwarnings
-#   audit   → dependency vulnerabilities
+#   audit   → dependency advisories (on PRs, only when deps change)
 #
 # All jobs run in parallel; wall-clock is gated by the slowest (test ≈ 3min).
 #
@@ -336,16 +336,70 @@ jobs:
         env:
           RUSTDOCFLAGS: -Dwarnings
 
+  # Audit gating: on pull_request, cargo audit runs only when the PR
+  # changes a dependency manifest. A PR that leaves them alone can't add
+  # or fix an advisory, so a newly published RustSec advisory against
+  # main's existing Cargo.lock must not turn unrelated PRs red. Weekly
+  # audit.yml catches those on main and files a `security-audit` issue.
+  #
+  # The check stays required because auto-merge-dependabot.yml merges
+  # every Dependabot PR once required checks pass; dependency PRs must
+  # not merge unaudited. So the skip is step-level: the job always runs
+  # and reports success. Never move this to a workflow-level `paths:`
+  # filter (a required check that never reports blocks merge forever)
+  # or to a job-level `if:` fed by another job (if that job fails, this
+  # one is skipped, and a skipped required check counts as passing).
+  #
+  # push to main and workflow_call from a non-PR caller always audit.
+  # github.event_name is the caller's event under workflow_call, so a
+  # PR-triggered caller gets the same gating as a PR here.
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # On pull_request this checks out GitHub's test-merge commit
+          # (refs/pull/N/merge): first parent = base branch tip, second
+          # parent = PR head. Depth 2 fetches both parents, so diffing
+          # against the first parent shows exactly what the merge changes.
+          fetch-depth: 2
+      - name: Decide whether to audit
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "Event '$EVENT': auditing unconditionally."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Fail closed: without a test-merge commit, HEAD^1 would be the
+          # PR's own previous commit and the diff would silently shrink.
+          if ! git rev-parse --verify --quiet 'HEAD^2' > /dev/null; then
+            echo "::error::Expected the pull_request test-merge commit at HEAD (two parents)."
+            exit 1
+          fi
+          changed=$(git diff --name-only 'HEAD^1' HEAD)
+          deps=$(printf '%s\n' "$changed" | grep -E '(^|/)Cargo\.(toml|lock)$|^\.cargo/audit\.toml$' || true)
+          if [ -n "$deps" ]; then
+            echo "Dependency manifests changed; auditing:"
+            printf '%s\n' "$deps" | sed 's/^/  /'
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Security Audit skipped::No Cargo.lock, Cargo.toml or .cargo/audit.toml change in this PR. main is audited weekly by audit.yml."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        if: steps.scope.outputs.run == 'true'
         with:
           toolchain: 1.99.1 # = rust-toolchain.toml (pin guarded in ci.yml)
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+        if: steps.scope.outputs.run == 'true'
       - name: Install cargo-audit
+        if: steps.scope.outputs.run == 'true'
         run: cargo install cargo-audit --locked
       - name: Run audit
+        if: steps.scope.outputs.run == 'true'
         run: cargo audit --deny unsound --deny yanked
