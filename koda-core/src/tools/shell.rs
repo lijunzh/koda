@@ -528,7 +528,7 @@ fn format_full_output(
 /// formatters carry it through unchanged. Violations are also recorded
 /// in the process-wide [`koda_sandbox::global_store`] for `/sandbox
 /// status` to surface later.
-fn annotate_violations(exit_code: i32, command: &str, stderr_lines: &mut Vec<String>) {
+pub(crate) fn annotate_violations(exit_code: i32, command: &str, stderr_lines: &mut Vec<String>) {
     if exit_code == 0 {
         return;
     }

@@ -12,6 +12,7 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 | `Edit` | Mutating | Targeted text replacement within a file |
 | `Delete` | Destructive | Delete a file or directory |
 | `Bash` | Varies | Run a shell command |
+| `Cargo` | Mutating | `cargo check`, `clippy`, `test` or `build` from the project root, with one line per compiler diagnostic and, for `test`, the failing tests with panic locations |
 | `Grep` | Read-only | Search for patterns across files (ripgrep) |
 | `Glob` | Read-only | List files matching a glob pattern |
 | `WebFetch` | Read-only | Fetch a URL and return its text content |
@@ -36,7 +37,7 @@ prompt. See [Trust modes](./approval.md) for the canonical matrix.
 |----------|-------|------|------|------|
 | Read-only | Read, Grep, Glob, ListFiles, WebFetch, WebSearch, RecallContext, TodoWrite | ✅ Auto | ✅ Auto | ✅ Auto |
 | Internal | Think, ActivateSkill | ✅ Auto | ✅ Auto | ✅ Auto |
-| Mutations | Write, Edit, MemoryWrite | ❌ Deny | ⏸ Prompt | ✅ Auto |
+| Mutations | Write, Edit, MemoryWrite, Cargo | ❌ Deny | ⏸ Prompt | ✅ Auto |
 | Destructive | Delete | ❌ Deny | ⏸ Prompt | ⏸ Prompt |
 | Agent calls | InvokeAgent | ✅ Auto | ✅ Auto | ✅ Auto |
 | Background tasks | ListBackgroundTasks, CancelTask, WaitTask | ✅ Auto | ✅ Auto | ✅ Auto |

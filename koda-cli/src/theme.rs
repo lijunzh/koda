@@ -111,7 +111,7 @@ pub fn tool_dot_color(name: &str) -> Color {
     match name {
         "WebFetch" | "WebSearch" => return ACCENT_NETWORK,
         "Task" | "Agent" | "InvokeAgent" => return ACCENT_AGENT,
-        "Bash" => return ACCENT_BASH,
+        "Bash" | "Cargo" => return ACCENT_BASH,
         "Delete" => return ACCENT_DELETE,
         _ => {}
     }

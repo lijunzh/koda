@@ -26,6 +26,7 @@ const CANONICAL: &[&str] = &[
     "ActivateSkill",
     "AskUser",
     "Bash",
+    "Cargo",
     "Delete",
     "Edit",
     "Glob",

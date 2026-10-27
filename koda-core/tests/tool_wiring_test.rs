@@ -157,6 +157,9 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         ("Edit", ToolEffect::LocalMutation),
         ("MemoryWrite", ToolEffect::LocalMutation),
         ("SendMessage", ToolEffect::LocalMutation),
+        // Cargo runs build scripts, proc macros and tests, whatever the
+        // subcommand: same verdict the Bash classifier gives `cargo build`.
+        ("Cargo", ToolEffect::LocalMutation),
         // Bash with no args is the *defensive default* under per-call
         // classification (#1265 PR-6). Real call sites always pass a
         // command, which `BashTool::classify` then routes through

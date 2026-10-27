@@ -223,6 +223,7 @@ mod naming_convention {
         "ActivateSkill",
         "AskUser",
         "Bash",
+        "Cargo",
         "Delete",
         "Edit",
         "Glob",
@@ -282,7 +283,8 @@ mod naming_convention {
         // - #1325 Phase 5b retired ListBackgroundTasks, CancelTask,
         //   WaitTask (25 → 22) — superseded by WaitForMail + the
         //   mailbox bridge from #1336.
-        assert_eq!(BUILTIN_TOOLS.len(), 22);
+        // - The Cargo tool (22 → 23).
+        assert_eq!(BUILTIN_TOOLS.len(), 23);
     }
 
     /// Ensure BUILTIN_TOOLS stays in sync with the actual registry.
