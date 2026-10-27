@@ -1,0 +1,7 @@
+   Compiling beta v0.1.0 (/home/user/ws/beta)
+   Compiling alpha v0.1.0 (/home/user/ws/alpha)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (target/debug/deps/alpha-5d90deb6483bb9d2)
+     Running unittests src/lib.rs (target/debug/deps/beta-97496e59aaa5259f)
+   Doc-tests alpha
+   Doc-tests beta

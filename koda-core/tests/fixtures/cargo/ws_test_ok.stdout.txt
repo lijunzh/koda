@@ -1,0 +1,27 @@
+{"reason":"compiler-artifact","package_id":"path+file:///home/user/ws/beta#0.1.0","manifest_path":"/home/user/ws/beta/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"beta","src_path":"/home/user/ws/beta/src/lib.rs","edition":"2024","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/home/user/ws/target/debug/deps/libbeta-2b211e4443b4cccb.rlib","/home/user/ws/target/debug/deps/libbeta-2b211e4443b4cccb.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"path+file:///home/user/ws/alpha#0.1.0","manifest_path":"/home/user/ws/alpha/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"alpha","src_path":"/home/user/ws/alpha/src/lib.rs","edition":"2024","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/home/user/ws/target/debug/deps/libalpha-8e9c2dc5c71d089f.rlib","/home/user/ws/target/debug/deps/libalpha-8e9c2dc5c71d089f.rmeta"],"executable":null,"fresh":true}
+{"reason":"compiler-artifact","package_id":"path+file:///home/user/ws/alpha#0.1.0","manifest_path":"/home/user/ws/alpha/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"alpha","src_path":"/home/user/ws/alpha/src/lib.rs","edition":"2024","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true},"features":[],"filenames":["/home/user/ws/target/debug/deps/alpha-5d90deb6483bb9d2"],"executable":"/home/user/ws/target/debug/deps/alpha-5d90deb6483bb9d2","fresh":false}
+{"reason":"compiler-artifact","package_id":"path+file:///home/user/ws/beta#0.1.0","manifest_path":"/home/user/ws/beta/Cargo.toml","target":{"kind":["lib"],"crate_types":["lib"],"name":"beta","src_path":"/home/user/ws/beta/src/lib.rs","edition":"2024","doc":true,"doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":2,"debug_assertions":true,"overflow_checks":true,"test":true},"features":[],"filenames":["/home/user/ws/target/debug/deps/beta-97496e59aaa5259f"],"executable":"/home/user/ws/target/debug/deps/beta-97496e59aaa5259f","fresh":false}
+{"reason":"build-finished","success":true}
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+test t::also_ok ... ok
+test t::ok ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

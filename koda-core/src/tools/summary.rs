@@ -131,11 +131,17 @@ impl ToolCallSummary {
     /// | `Glob`                      | `file_path`, `path`, `directory`       | `pattern`                     |
     /// | `List`                      | `file_path`, `path`, `directory`       | —                             |
     /// | `Bash`                      | —                                      | `command`, `cmd`              |
+    /// | `Cargo`                     | —                                      | `subcommand`, `package`, `test_filter` (rendered as a command line) |
     /// | `WebFetch`                  | —                                      | `url`                         |
     pub fn from_call(name: &str, args: &Value) -> Self {
         let kind = match name {
             "Bash" => ToolCallKind::Bash {
                 command: first_string(args, &["command", "cmd"]).unwrap_or_default(),
+            },
+            // Shown like a shell command (`cargo test -p koda-core`): the
+            // model's arguments are the subcommand and its options.
+            "Cargo" => ToolCallKind::Bash {
+                command: super::cargo::describe(args),
             },
             "Read" | "Write" | "Edit" | "Delete" => ToolCallKind::Path {
                 path: first_string(args, &["file_path", "path"]).unwrap_or_default(),

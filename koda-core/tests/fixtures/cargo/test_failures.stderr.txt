@@ -1,0 +1,4 @@
+   Compiling probe v0.1.0 (/home/user/probe)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/lib.rs (target/debug/deps/probe-f271a4624f392828)
+error: test failed, to rerun pass `--lib`
