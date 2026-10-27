@@ -93,6 +93,12 @@ cargo check --workspace --all-targets                                       # Co
 cargo doc --workspace --no-deps                                             # Build docs
 ```
 
+**Toolchain is pinned** in `rust-toolchain.toml` (rustup honors it automatically).
+CI installs the same version via an explicit `toolchain:` input on every
+`dtolnay/rust-toolchain` step, and ci.yml's "Check toolchain pin" step fails
+if any workflow drifts from the file. To bump: edit both in one PR and fix
+whatever new lints the new toolchain surfaces.
+
 ## Architecture
 
 ### Workspace
