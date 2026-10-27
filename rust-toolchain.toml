@@ -7,13 +7,15 @@
 # upgrade. With the pin, toolchain bumps are a deliberate one-line PR
 # that fixes whatever new lints the bump surfaces.
 #
-# To bump: change `channel` here AND the `toolchain:` input on every
-# `dtolnay/rust-toolchain` step in `.github/workflows/`. The
-# "Check toolchain pin" step in ci.yml's Format job fails if they drift.
+# To bump: change `channel` here, the `toolchain:` input on every
+# `dtolnay/rust-toolchain` step in `.github/workflows/`, and
+# `rust-version` in the workspace Cargo.toml. The "Check toolchain pin"
+# step in ci.yml's Format job fails if the workflows drift.
 #
-# This is NOT the MSRV. `rust-version` in the workspace Cargo.toml stays
-# the minimum for crates.io consumers; clippy's `incompatible_msrv` lint
-# keeps code honest against it.
+# This is also the MSRV. `rust-version` in the workspace Cargo.toml
+# equals this channel and moves with it: koda supports one environment,
+# its author's, so there is no separate floor for other consumers
+# (DESIGN.md P1).
 [toolchain]
 channel = "1.99.1"
 components = ["clippy", "rustfmt"]
