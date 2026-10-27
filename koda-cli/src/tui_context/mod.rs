@@ -1135,8 +1135,8 @@ mod tests {
             assert_eq!(config.model, "claude-sonnet-4-6");
             assert_eq!(config.model_settings.model, "claude-sonnet-4-6");
             assert_eq!(
-                config.max_context_tokens, 200_000,
-                "derived settings follow the restored model"
+                config.max_context_tokens, 1_000_000,
+                "derived settings follow the restored model (Sonnet 4.6 has a 1M window by default)"
             );
         }
 
