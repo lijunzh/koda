@@ -9,14 +9,17 @@
 
 Koda is a personal AI assistant that you own. Not a product from a large
 company. Not a platform that locks you into one provider. A tool built for
-one person — the author — that works with any API, any local model, and
-expands to cover whatever that person needs: coding today, email and
-calendar tomorrow, knowledge management next.
+one person — the author — that works with any API and any local model.
 
-The goal is not to build another Claude Code or Cursor. Those are products
-designed for broad adoption with configuration surfaces for many users.
-Koda is the opposite: hyper-specific, opinionated, and changeable with a
-few prompts and a recompile.
+Koda is three things: a coding agent shaped for one person, a platform for
+trying agentic-framework ideas and measuring them, and a Rust development
+platform where agents do much of the work. It works with local models and
+remote APIs alike.
+
+The goal is a Claude Code shaped for one person, not a product. Claude
+Code, Codex and Cursor are designed for broad adoption with configuration
+surfaces for many users. Koda is the opposite: hyper-specific, opinionated,
+and changeable with a few prompts and a recompile.
 
 What koda specifically rejects from existing tools:
 
@@ -32,9 +35,10 @@ What koda specifically rejects from existing tools:
   that adds process management overhead for frontends that don't get
   used. Koda keeps the conversation as the primary surface and ships
   one binary (P2)
-- **Aider**: Git-centric workflow that couples the tool to a specific
-  development methodology. Koda is a general assistant, not a git
-  workflow tool (P3)
+- **Aider**: A git-centric workflow imposed on the user. Koda imposes no
+  workflow on its user. Its own machinery is git-native — experiments are
+  branches, the eval harness compares refs, sub-agents work in worktrees
+  (P1)
 
 These aren't aesthetic preferences — each rejection traces to a
 principle.
@@ -85,6 +89,18 @@ and a recompile.
   decision because it obscures what the system actually does. No
   "extensibility for later" — trait abstractions and plugin systems have a
   cost even when idle
+- **Decide on data.** An idea is a branch. The eval harness measures it on
+  koda's own tasks against `main`, and the branch ends merged or deleted
+  with its number recorded. Nothing earns complexity by argument
+- **Behavior is code; endpoints are data.** What koda does is compiled.
+  Where it talks to, which model id it asks for, and how it authenticates
+  are data: the keystore, the MCP table, `--provider`, `--model`,
+  `--base-url`
+- **Latest dependencies, one environment.** Koda runs on its author's
+  machine and owes no compatibility to anyone else's. Every dependency and
+  the toolchain default to the latest version; an older one needs a stated
+  reason. Major bumps are done promptly, by hand. The minimum supported
+  Rust version is the pinned toolchain
 
 ### P2: Simple enough to own alone
 
@@ -92,12 +108,13 @@ One person builds it, one person maintains it, one person debugs it.
 This is the principle that prevents koda from becoming Cursor. Cursor is
 capable but complex — extension systems, agent modes, model routing
 tiers, configuration surfaces. Koda chooses simplicity: fewer concepts,
-one binary, match dispatch, two approval modes. We'd rather be slightly
+one binary, match dispatch, three trust modes. We'd rather be slightly
 less capable than incomprehensible.
 
-- **Easy to reason about.** If you can't hold the component's behavior in
-  your head, it's too complex. Clear component boundaries — engine, UI,
-  model, provider — are a consequence of this, not a goal in themselves
+- **Easy to reason about.** If a reader, human or agent, can't understand
+  a unit from one bounded read, it's too complex. Clear component
+  boundaries — engine, UI, model, provider — are a consequence of this, not
+  a goal in themselves
 - **Make it work first.** Ship working code, refactor to clean design
   second, optimize for performance only when measured. A personal tool
   doesn't need the polish of a product — it needs to work
@@ -105,6 +122,9 @@ less capable than incomprehensible.
   Don't add a trait just because you might have a second implementation.
   An 800-line file with one cohesive flow beats two 400-line files that
   require cross-file context-switching
+- **Copied code passes the same bar.** A component copied from a peer is
+  read in full, small enough to rewrite, and adapted to koda's shape on the
+  way in. No upstream tracking
 
 ### P3: Build for the world six months from now
 
@@ -115,7 +135,10 @@ limitations — they'll be obsolete before they're stable.
 - **Let the model drive.** The model plans, reasons, and decides which tools
   to call. The engine executes — it does not reimplement planning,
   verification, or decision-making in application code. Today's model
-  limitations are tomorrow's non-issues
+  limitations are tomorrow's non-issues. Evidence is not scaffolding:
+  tools and post-edit checks that hand the model compiler output, test
+  results or diagnostics give it what it needs to drive. The engine
+  deciding, retrying or planning on the model's behalf is scaffolding
 - **Don't scaffold around weakness.** Model tiers, capability probes, and
   verbose fallback prompts are building for today. Delete them
 - **Frontier models, standard APIs.** Koda targets frontier-class models
@@ -125,10 +148,13 @@ limitations — they'll be obsolete before they're stable.
   workarounds for individual models' non-conforming behavior. If a model
   emits malformed output, the fix belongs upstream. See
   [#831](https://github.com/lijunzh/koda/issues/831) for rationale
-- **Don't over-compensate for weak models.** If a model emits 66 identical
-  tool calls, the answer is "use a better model," not a dedup layer that
-  silently papers over the problem. Safety mechanisms should match what
-  frontier agents actually ship — not what we imagine might go wrong.
+- **Adapt to a server, not to a model.** A server's protocol, think-tag
+  format, context limits and timeouts are data koda conforms to. A model's
+  weakness is not compensated for in the engine: if a model emits 66
+  identical tool calls, the answer is not a dedup layer that silently
+  papers over the problem. Any mechanism that only helps models koda
+  doesn't target is deleted. Safety mechanisms should match what frontier
+  agents actually ship — not what we imagine might go wrong.
   A code review of Claude Code (zero loop detection), Codex (zero), and
   Gemini CLI (consecutive-call detection + feedback injection) informed
   our approach: consecutive identical calls → feedback injection → hard
@@ -136,17 +162,21 @@ limitations — they'll be obsolete before they're stable.
   no tool-name saturation, no tool-only suppression, no per-turn caps.
   See [#823](https://github.com/lijunzh/koda/issues/823) for the full
   analysis
-- **Expand the surface.** Email, calendar, knowledge management — these
-  are bets on where AI will be, not where it is
+- **The bets.** Local models reach frontier class on coding tasks. Agents
+  do most of the editing and reading. Delegation between agents becomes
+  routine. Design for these, not for today's limits
 
 ### When principles conflict
 
-P1 says "build only what we need." P3 says "expand the surface." These
+P1 says "build only what we need." P3 says design for the bets. These
 can conflict. When they do: P1 wins on **timing** (don't build it yet),
 but P3 wins on **architecture** (design so it's easy to add). The
 `Persistence` trait exists because P3 says the storage backend will
 change — but there's only one implementation because P1 says we don't
 need a second one yet.
+
+When P2 and P3 conflict, or a principle conflicts with a stated goal,
+build it on a branch and let the eval harness decide.
 
 ---
 

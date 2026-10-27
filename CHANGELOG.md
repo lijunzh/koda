@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - `--output-format` is now a typed clap `ValueEnum`.
   - This is the machine interface the planned eval harness reads. Approval behavior is unchanged in every format (non-destructive approved, destructive auto-rejected, AskUser answered empty, loop cap continued); a new unit test pins that.
 
+### Changed
+
+- **MSRV is now the pinned toolchain: `rust-version` 1.88 → 1.99.1.** Koda supports one environment, its author's, so it no longer keeps a lower floor for other consumers. `rust-version` moves with `rust-toolchain.toml` from now on. `DESIGN.md`'s principles are updated for the October 2026 goals at the same time: the Vision names the three goals (a coding agent shaped for one person, a measured platform for agentic-framework experiments, a Rust development platform where agents do much of the work); P1 gains "decide on data" (an idea is a branch, measured by the eval harness), "behavior is code; endpoints are data", and "latest dependencies, one environment"; P2 says three trust modes, makes the readability test cover agents as readers, and adds the bar for code copied from peers; P3 separates evidence for the model from decisions made for it, adapts to servers rather than models, and replaces the email/calendar bets with the current ones; the conflict rule sends P2-vs-P3 conflicts to the harness.
+
 ### Security
 
 - **`rmcp` 1.7.0 → 3.8.0, clearing four GitHub advisories against the MCP SDK.** None is in the RustSec database, so `cargo audit` never reported them; Dependabot did. Koda skips the 2.x line (it stopped at 2.2.0, and Dependabot's grouped minor/patch updates keep a `rmcp = "3"` requirement current).
