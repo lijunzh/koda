@@ -289,3 +289,43 @@ async fn test_ctrl_c_next_turn_excludes_partial_response() {
         }
     }
 }
+
+// ── Compaction vs. concurrent event persistence ──────────────
+
+/// `PersistingSink` writes `Info`/`Warn` events on fire-and-forget tasks.
+/// A burst of them must not make a concurrent `compact_session` fail with
+/// "database is locked": compaction reads then writes, and a deferred
+/// transaction upgraded after another connection committed gets
+/// SQLITE_BUSY immediately, bypassing `busy_timeout`.
+#[tokio::test]
+async fn test_compaction_survives_concurrent_event_inserts() {
+    let env = Env::builder().max_context_tokens(100_000).build().await;
+    for i in 0..6 {
+        env.insert_message(&Role::User, &format!("question {i}"))
+            .await;
+        env.insert_message(&Role::Assistant, &format!("answer {i}"))
+            .await;
+    }
+
+    let writers: Vec<_> = (0..40)
+        .map(|i| {
+            let db = env.db.clone();
+            let sid = env.session_id.clone();
+            tokio::spawn(async move {
+                db.insert_session_event(&sid, "info", &format!("event {i}"), None)
+                    .await
+            })
+        })
+        .collect();
+
+    let compacted = env
+        .db
+        .compact_session(&env.session_id, "summary", 2)
+        .await
+        .expect("compaction must not fail while events are being persisted");
+    assert!(compacted > 0, "expected messages to be archived");
+
+    for w in writers {
+        w.await.unwrap().expect("event insert should succeed");
+    }
+}

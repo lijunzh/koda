@@ -763,7 +763,15 @@ impl Persistence for Database {
         summary: &str,
         preserve_count: usize,
     ) -> Result<usize> {
-        let mut tx = self.pool.begin().await?;
+        // `BEGIN IMMEDIATE`, not the default deferred `BEGIN`: this
+        // transaction reads first and writes later. In WAL mode a
+        // deferred read that is upgraded to a write after another
+        // connection committed fails at once with SQLITE_BUSY
+        // ("database is locked"); `busy_timeout` does not apply to
+        // that upgrade. Taking the write lock up front makes the
+        // wait honour the timeout, so concurrent event inserts
+        // (`PersistingSink`) and sub-agent writes queue behind it.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
 
         // Get active (non-compacted) message IDs ordered oldest→newest
         let all_ids: Vec<(i64,)> = sqlx::query_as(
