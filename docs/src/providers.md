@@ -18,9 +18,36 @@
 | LM Studio | `lm-studio` | — | auto-detect | ✗ |
 | Ollama | `ollama` | — | auto-detect | ✗ |
 | vLLM | `vllm` | — | auto-detect | ✗ |
+| llama.cpp | `llama-cpp` | — | auto-detect | ✗ |
 
-Local providers (LM Studio, Ollama, vLLM) are auto-detected on first run
-and require no API key. The model is discovered from the running server.
+Local providers (LM Studio, Ollama, vLLM, llama.cpp) are auto-detected on
+first run and require no API key. The model is discovered from the running
+server. The names are shortcuts for a default URL (`lm-studio` is
+`http://localhost:1234/v1`, `llama-cpp` is `http://localhost:8080/v1`).
+
+## Any OpenAI-compatible server
+
+A server that speaks the OpenAI chat-completions API works with no provider
+entry and no config file: point Koda at its `/v1` URL with `--base-url` or
+`KODA_BASE_URL`.
+
+```bash
+llama-server -m model.gguf -c 32768 --port 8080
+koda --base-url http://127.0.0.1:8080/v1
+# or: export KODA_BASE_URL=http://127.0.0.1:8080/v1
+```
+
+- Koda lists the server's models and picks the loaded one, and reads the
+  context window from llama-server's `/props` (LM Studio and Ollama report
+  theirs through their own endpoints).
+- **Give llama-server enough context.** Koda's system prompt and tool schemas
+  are about 8K tokens, so start it with `-c 16384` or more. The llama-server
+  default of 4096 fails with a 400.
+- Inside the TUI, `/provider http://127.0.0.1:8080/v1` switches to a URL, and
+  a URL passed with `--base-url` or `KODA_BASE_URL` is remembered for the
+  next session. Headless runs (`-p`) never save anything.
+- [mistral.rs](https://github.com/EricLBuehler/mistral.rs) serves the same
+  API, so the same route should work. It hasn't been tested.
 
 ## Model aliases
 

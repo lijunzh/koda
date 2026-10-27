@@ -11,6 +11,7 @@ use super::*;
 pub(crate) const PROVIDERS: &[(&str, &str)] = &[
     ("lmstudio", "LM Studio"),
     ("ollama", "Ollama"),
+    ("llamacpp", "llama.cpp"),
     ("openai", "OpenAI"),
     ("anthropic", "Anthropic"),
     ("deepseek", "DeepSeek"),
@@ -24,6 +25,13 @@ pub(crate) const PROVIDERS: &[(&str, &str)] = &[
     ("fireworks", "Fireworks"),
     ("vllm", "vLLM"),
 ];
+
+/// Whether a `/provider` argument is an endpoint URL rather than a provider
+/// name. A URL sets `base_url` and the provider type is re-detected from it.
+pub(crate) fn is_provider_url(arg: &str) -> bool {
+    let arg = arg.trim();
+    arg.starts_with("http://") || arg.starts_with("https://")
+}
 
 // ── History search helpers ────────────────────────────────────────────────────
 
@@ -686,7 +694,7 @@ impl TuiContext {
         self.menu = MenuContent::None;
     }
 
-    async fn apply_provider(
+    pub(crate) async fn apply_provider(
         &mut self,
         provider_type: koda_core::config::ProviderType,
         base_url: String,
@@ -737,10 +745,19 @@ impl TuiContext {
 
 #[cfg(test)]
 mod tests {
-    use super::history_search_matches;
+    use super::{history_search_matches, is_provider_url};
 
     fn hist(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn provider_url_is_told_from_a_name() {
+        assert!(is_provider_url("http://127.0.0.1:8080/v1"));
+        assert!(is_provider_url("  https://api.example.com/v1 "));
+        for name in ["llama-cpp", "ollama", "localhost:8080", ""] {
+            assert!(!is_provider_url(name), "{name:?}");
+        }
     }
 
     #[test]

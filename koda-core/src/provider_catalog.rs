@@ -75,6 +75,8 @@ pub enum ProviderType {
     Fireworks,
     /// vLLM (local, OpenAI-compatible).
     Vllm,
+    /// llama.cpp's `llama-server` (local, OpenAI-compatible).
+    LlamaCpp,
     /// Mock provider for testing (reads KODA_MOCK_RESPONSES env var).
     #[cfg(any(test, feature = "test-support"))]
     Mock,
@@ -182,6 +184,13 @@ impl ProviderType {
                 env_key: "KODA_API_KEY",
                 api_key: false,
             },
+            Self::LlamaCpp => ProviderMeta {
+                name: "llama-cpp",
+                url: "http://localhost:8080/v1",
+                model: "auto-detect",
+                env_key: "KODA_API_KEY",
+                api_key: false,
+            },
             #[cfg(any(test, feature = "test-support"))]
             Self::Mock => ProviderMeta {
                 name: "mock",
@@ -227,6 +236,7 @@ impl ProviderType {
                 "together" => Self::Together,
                 "fireworks" => Self::Fireworks,
                 "vllm" => Self::Vllm,
+                "llama-cpp" | "llamacpp" | "llama.cpp" => Self::LlamaCpp,
                 #[cfg(any(test, feature = "test-support"))]
                 "mock" => Self::Mock,
                 _ => Self::OpenAI,
@@ -240,6 +250,8 @@ impl ProviderType {
             Self::Ollama
         } else if url.contains("localhost:8000") || url.contains("127.0.0.1:8000") {
             Self::Vllm
+        } else if url.contains("localhost:8080") || url.contains("127.0.0.1:8080") {
+            Self::LlamaCpp
         } else if url.contains("localhost") || url.contains("127.0.0.1") {
             Self::LMStudio
         } else if url.contains("generativelanguage.googleapis.com") {

@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **llama.cpp: context window from `/props`, a `llama-cpp` provider name, and URLs that stick.** Prompted by issue #1391. Koda already worked with any OpenAI-compatible server through `--base-url`; three rough edges are gone and the route is documented (`docs/src/providers.md`).
+  - `model_capabilities` now probes llama-server's `GET /props` (server root, `/v1` stripped) and reads `default_generation_settings.n_ctx`, after LM Studio and before Ollama; a 404 or a body without `n_ctx` falls through. Before, a llama-server fell to the lookup table's "auto-detect" 4K and warned about compaction on every turn.
+  - New provider `llama-cpp` (`llamacpp` and `llama.cpp` also accepted): `http://localhost:8080/v1`, model `auto-detect`, no key. A `localhost:8080` / `127.0.0.1:8080` URL is classified as it; other local ports stay LM Studio. It is in the `/provider` picker and, being keyless, not in `/key`.
+  - `/provider <url>` sets the endpoint directly, re-detects the provider type from the URL and saves the choice. A `--base-url` / `KODA_BASE_URL` given to the TUI is saved too, once the server has answered, so a URL given once sticks; a flag still beats the saved row on the next start, and headless runs stay stateless.
+
 - **Headless `--output-format stream-json`, plus run metrics in `json`.** The module docs in `headless.rs` always advertised `stream-json`, but clap only accepted `text` and `json`.
   - `stream-json` writes newline-delimited JSON to stdout: one line per `EngineEvent` as it happens (the existing serde shape, e.g. `{"type":"tool_call_start",...}`), then a final `{"type":"run_summary",...}` line. Nothing else goes to stdout.
   - `json` now prints that same summary object. The four legacy keys (`success`, `response`, `session_id`, `model`) keep their meaning. New keys: `type`, `error`, `provider`, `turn_end`, `elapsed_ms`, `usage`, `usage_by_agent`, `tool_calls` and `sub_agent_tool_calls`.

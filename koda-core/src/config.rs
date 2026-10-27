@@ -1057,6 +1057,22 @@ mod tests {
     }
 
     #[test]
+    fn test_provider_from_url_llama_cpp() {
+        for url in ["http://localhost:8080/v1", "http://127.0.0.1:8080/v1"] {
+            assert_eq!(
+                ProviderType::from_url_or_name(url, None),
+                ProviderType::LlamaCpp,
+                "{url}"
+            );
+        }
+        // Other localhost ports keep the LM Studio default.
+        assert_eq!(
+            ProviderType::from_url_or_name("http://127.0.0.1:8085/v1", None),
+            ProviderType::LMStudio
+        );
+    }
+
+    #[test]
     fn test_provider_from_url_gemini() {
         assert_eq!(
             ProviderType::from_url_or_name(
@@ -1136,6 +1152,10 @@ mod tests {
             ("together", ProviderType::Together),
             ("fireworks", ProviderType::Fireworks),
             ("vllm", ProviderType::Vllm),
+            ("llama-cpp", ProviderType::LlamaCpp),
+            ("llamacpp", ProviderType::LlamaCpp),
+            ("llama.cpp", ProviderType::LlamaCpp),
+            ("LLAMA-CPP", ProviderType::LlamaCpp),
             ("groq", ProviderType::Groq),
             ("mock", ProviderType::Mock),
         ];
@@ -1157,6 +1177,7 @@ mod tests {
         assert!(!ProviderType::Ollama.requires_api_key());
         assert!(!ProviderType::Mock.requires_api_key());
         assert!(!ProviderType::Vllm.requires_api_key());
+        assert!(!ProviderType::LlamaCpp.requires_api_key());
     }
 
     #[test]
