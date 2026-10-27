@@ -58,7 +58,9 @@ Add an **HTTP** MCP server using the MCP 2025-03-26 Streamable HTTP transport.
 
 > **Security note:** Bearer tokens sent over plaintext `http://` are logged as
 > a warning. Use `https://` in production. Koda also blocks connections to
-> private/loopback addresses (SSRF protection).
+> private/loopback addresses (SSRF protection), and follows only same-origin
+> `307`/`308` redirects. A redirect to another host, port or scheme fails the
+> connection instead of sending the token and custom headers there.
 
 ### `/mcp reconnect <name>`
 
@@ -102,6 +104,11 @@ set, `enabled_tools` wins.
 |-----------|-------------|-------------|
 | `stdio`   | Koda spawns a child process and communicates over stdin/stdout | Local tools, CLI-wrapped servers |
 | `http`    | Koda connects to a running HTTP endpoint (MCP 2025-03-26 spec) | Remote or shared servers, cloud APIs |
+
+Both transports start with the `initialize` handshake and offer MCP
+2025-11-25. Servers on an older version (back to 2024-11-05) answer with
+their own and Koda uses it. Koda doesn't use the stateless
+`server/discover` lifecycle from MCP 2026-07-28 yet.
 
 ## Timeouts
 

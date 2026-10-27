@@ -368,8 +368,8 @@ fn call_tool_result_to_string(result: &rmcp::model::CallToolResult) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     for content in &result.content {
-        match &content.raw {
-            rmcp::model::RawContent::Text(text) => {
+        match content {
+            rmcp::model::ContentBlock::Text(text) => {
                 parts.push(text.text.clone());
             }
             other => {
@@ -611,8 +611,11 @@ mod tests {
 
     #[test]
     fn result_to_string_text_content() {
-        use rmcp::model::{CallToolResult, Content};
-        let result = CallToolResult::success(vec![Content::text("hello"), Content::text("world")]);
+        use rmcp::model::{CallToolResult, ContentBlock};
+        let result = CallToolResult::success(vec![
+            ContentBlock::text("hello"),
+            ContentBlock::text("world"),
+        ]);
         assert_eq!(call_tool_result_to_string(&result), "hello\nworld");
     }
 
@@ -624,9 +627,9 @@ mod tests {
 
     #[test]
     fn result_to_string_non_text_content() {
-        use rmcp::model::{CallToolResult, Content};
+        use rmcp::model::{CallToolResult, ContentBlock};
         // Image content is non-text — should produce a descriptive placeholder.
-        let result = CallToolResult::success(vec![Content::image("iVBOR", "image/png")]);
+        let result = CallToolResult::success(vec![ContentBlock::image("iVBOR", "image/png")]);
         let output = call_tool_result_to_string(&result);
         assert!(
             output.contains("non-text content"),
