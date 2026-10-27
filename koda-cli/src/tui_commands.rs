@@ -88,7 +88,12 @@ pub async fn handle_slash_command(
                         if let Some(notice) = config.assumed_context_notice(source) {
                             tui_output::warn_msg(buffer, notice);
                         }
-                        crate::tui_wizards::save_provider(config, &session.db).await;
+                        crate::tui_wizards::save_provider(
+                            config,
+                            &session.db,
+                            Some(resolved.alias),
+                        )
+                        .await;
                         tui_output::ok_msg(
                             buffer,
                             format!(
@@ -109,7 +114,7 @@ pub async fn handle_slash_command(
                     if let Some(notice) = config.assumed_context_notice(source) {
                         tui_output::warn_msg(buffer, notice);
                     }
-                    crate::tui_wizards::save_provider(config, &session.db).await;
+                    crate::tui_wizards::save_provider(config, &session.db, None).await;
                     tui_output::ok_msg(buffer, format!("Model set to: {model}"));
                 }
                 SlashAction::Continue

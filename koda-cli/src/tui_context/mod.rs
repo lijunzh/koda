@@ -228,6 +228,10 @@ pub(crate) struct ProviderOverrides {
 ///   effect (a `/model` choice or custom endpoint for the same provider);
 ///   for a different provider nothing is restored.
 /// - A field the user set (`--base-url`, `--model`) is never replaced.
+/// - A restored model chosen as an alias is resolved again
+///   ([`koda_core::model_alias::resolve_saved`]), so a newer release in the
+///   alias's line takes over; `live` is this run's Models API answer. When
+///   there is no answer the saved id stands.
 ///
 /// Flags are not written back here. `/model` and `/provider` update the saved
 /// row (`tui_wizards::save_provider`), and so does a `--base-url` given to the
@@ -236,6 +240,7 @@ pub(crate) fn apply_last_provider(
     config: &mut KodaConfig,
     last: &koda_core::last_provider::LastProvider,
     overrides: ProviderOverrides,
+    live: Option<&koda_core::model_alias::ClaudeLineIds>,
 ) {
     let saved_provider =
         koda_core::config::ProviderType::from_url_or_name("", Some(&last.provider_type));
@@ -250,8 +255,21 @@ pub(crate) fn apply_last_provider(
         config.base_url = last.base_url.clone();
     }
     if !overrides.model {
-        config.model = last.model.clone();
-        config.model_settings.model = last.model.clone();
+        let model = last
+            .alias
+            .as_deref()
+            .and_then(|alias| koda_core::model_alias::resolve_saved(alias, live))
+            .filter(|resolved| resolved.provider == saved_provider)
+            .map_or_else(|| last.model.clone(), |resolved| resolved.model_id);
+        if model != last.model {
+            tracing::info!(
+                "Saved alias {} now resolves to {model} (was {})",
+                last.alias.as_deref().unwrap_or_default(),
+                last.model
+            );
+        }
+        config.model_settings.model = model.clone();
+        config.model = model;
     }
     config.recalculate_model_derived();
 }
@@ -281,7 +299,17 @@ impl TuiContext {
         // Restore last-used provider from DB (#693), except where the user
         // chose on the command line.
         if let Ok(Some(last)) = koda_core::last_provider::load_last_provider(&db).await {
-            apply_last_provider(&mut config, &last, overrides);
+            // A saved Claude alias follows the Models API: one capped
+            // lookup, only when the saved model is about to be restored.
+            let live = match last.alias.as_deref() {
+                Some(alias)
+                    if !overrides.model && koda_core::model_alias::follows_models_api(alias) =>
+                {
+                    koda_core::model_alias::ensure_live_claude_ids().await
+                }
+                _ => None,
+            };
+            apply_last_provider(&mut config, &last, overrides, live);
         }
 
         let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
@@ -1130,11 +1158,21 @@ mod tests {
         use super::super::{ProviderOverrides, apply_last_provider, remembers_endpoint};
         use koda_core::config::{KodaConfig, ProviderType};
         use koda_core::last_provider::{LastProvider, load_last_provider, save_last_provider};
+        use koda_core::model_alias::{ClaudeLine, ClaudeLineIds};
 
         async fn saved(provider: ProviderType, base_url: &str, model: &str) -> LastProvider {
+            saved_as(provider, base_url, model, None).await
+        }
+
+        async fn saved_as(
+            provider: ProviderType,
+            base_url: &str,
+            model: &str,
+            alias: Option<&str>,
+        ) -> LastProvider {
             let tmp = tempfile::tempdir().unwrap();
             let db = koda_core::db::Database::init(tmp.path()).await.unwrap();
-            save_last_provider(&db, &provider.to_string(), base_url, model)
+            save_last_provider(&db, &provider.to_string(), base_url, model, alias)
                 .await
                 .unwrap();
             load_last_provider(&db)
@@ -1200,7 +1238,7 @@ mod tests {
                 "LM Studio auto-detect floor"
             );
 
-            apply_last_provider(&mut config, &last, overrides);
+            apply_last_provider(&mut config, &last, overrides, None);
 
             assert_eq!(config.provider_type, ProviderType::Anthropic);
             assert_eq!(config.base_url, "https://api.anthropic.com");
@@ -1225,7 +1263,7 @@ mod tests {
                 loaded(None, Some("claude-sonnet-5-5"), Some("anthropic"));
             let url_from_flags = config.base_url.clone();
 
-            apply_last_provider(&mut config, &last, overrides);
+            apply_last_provider(&mut config, &last, overrides, None);
 
             assert_eq!(config.provider_type, ProviderType::Anthropic);
             assert_eq!(config.model, "claude-sonnet-5-5");
@@ -1241,7 +1279,7 @@ mod tests {
             let last = saved(ProviderType::Ollama, "http://localhost:11434/v1", "llama3").await;
             let (mut config, overrides) = loaded(None, Some("qwen3:32b"), None);
 
-            apply_last_provider(&mut config, &last, overrides);
+            apply_last_provider(&mut config, &last, overrides, None);
 
             assert_eq!(config.provider_type, ProviderType::Ollama);
             assert_eq!(config.base_url, "http://localhost:11434/v1");
@@ -1261,7 +1299,7 @@ mod tests {
             let url_from_flags = config.base_url.clone();
             let model_from_agent = config.model.clone();
 
-            apply_last_provider(&mut config, &last, overrides);
+            apply_last_provider(&mut config, &last, overrides, None);
 
             assert_eq!(config.provider_type, ProviderType::Anthropic);
             assert_eq!(config.base_url, url_from_flags);
@@ -1281,7 +1319,7 @@ mod tests {
             .await;
             let (mut config, overrides) = loaded(None, None, Some("anthropic"));
 
-            apply_last_provider(&mut config, &last, overrides);
+            apply_last_provider(&mut config, &last, overrides, None);
 
             assert_eq!(config.provider_type, ProviderType::Anthropic);
             assert_eq!(config.base_url, "https://proxy.example/anthropic");
@@ -1298,7 +1336,7 @@ mod tests {
                 "re-detected from the URL"
             );
 
-            apply_last_provider(&mut config, &last, overrides);
+            apply_last_provider(&mut config, &last, overrides, None);
 
             assert_eq!(config.base_url, "http://127.0.0.1:11434/v1");
             assert_eq!(config.model, "llama3");
@@ -1306,10 +1344,97 @@ mod tests {
             // Same flag, but the URL belongs to another provider: nothing applies.
             let (mut config, overrides) = loaded(Some("https://api.anthropic.com"), None, None);
             let model_from_agent = config.model.clone();
-            apply_last_provider(&mut config, &last, overrides);
+            apply_last_provider(&mut config, &last, overrides, None);
             assert_eq!(config.provider_type, ProviderType::Anthropic);
             assert_eq!(config.base_url, "https://api.anthropic.com");
             assert_eq!(config.model, model_from_agent);
+        }
+        fn live_haiku(id: &str) -> ClaudeLineIds {
+            ClaudeLineIds::from([(ClaudeLine::Haiku, id.to_string())])
+        }
+
+        #[tokio::test]
+        async fn a_saved_alias_follows_a_newer_release() {
+            // The reported case: `claude-haiku` was picked when it meant 4.5.
+            let last = saved_as(
+                ProviderType::Anthropic,
+                "https://api.anthropic.com",
+                "claude-haiku-4-5-20251001",
+                Some("claude-haiku"),
+            )
+            .await;
+            let (mut config, overrides) = loaded(None, None, None);
+
+            apply_last_provider(
+                &mut config,
+                &last,
+                overrides,
+                Some(&live_haiku("claude-haiku-5-5")),
+            );
+
+            assert_eq!(config.model, "claude-haiku-5-5");
+            assert_eq!(config.model_settings.model, "claude-haiku-5-5");
+            assert_eq!(config.base_url, "https://api.anthropic.com");
+        }
+
+        #[tokio::test]
+        async fn a_saved_alias_keeps_its_id_without_a_live_answer() {
+            let last = saved_as(
+                ProviderType::Anthropic,
+                "https://api.anthropic.com",
+                "claude-haiku-6",
+                Some("claude-haiku"),
+            )
+            .await;
+            let (mut config, overrides) = loaded(None, None, None);
+
+            apply_last_provider(&mut config, &last, overrides, None);
+
+            assert_eq!(
+                config.model, "claude-haiku-6",
+                "offline, the saved id beats the older pinned fallback"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_literal_saved_id_is_never_re_resolved() {
+            let last = saved(
+                ProviderType::Anthropic,
+                "https://api.anthropic.com",
+                "claude-haiku-4-5-20251001",
+            )
+            .await;
+            let (mut config, overrides) = loaded(None, None, None);
+
+            apply_last_provider(
+                &mut config,
+                &last,
+                overrides,
+                Some(&live_haiku("claude-haiku-5-5")),
+            );
+
+            assert_eq!(config.model, "claude-haiku-4-5-20251001");
+        }
+
+        #[tokio::test]
+        async fn model_flag_beats_a_saved_alias() {
+            let last = saved_as(
+                ProviderType::Anthropic,
+                "https://api.anthropic.com",
+                "claude-haiku-4-5-20251001",
+                Some("claude-haiku"),
+            )
+            .await;
+            let (mut config, overrides) = loaded(None, Some("claude-opus-5-5"), None);
+
+            apply_last_provider(
+                &mut config,
+                &last,
+                overrides,
+                Some(&live_haiku("claude-haiku-5-5")),
+            );
+
+            assert_eq!(config.model, "claude-opus-5-5");
         }
     }
 }
