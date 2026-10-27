@@ -57,6 +57,9 @@ pub async fn handle_slash_command(
 
         "/model" => match arg {
             Some(model) => {
+                // Claude aliases follow the Models API once per run (see
+                // `model_alias::ensure_live_claude_ids`).
+                koda_core::model_alias::ensure_live_claude_ids().await;
                 if let Some(resolved) = koda_core::model_alias::resolve(model) {
                     let ptype = resolved.provider;
                     if ptype.requires_api_key()

@@ -394,12 +394,34 @@ hardcoded lookup table (`model_context.rs`) is the fallback.
 Hardcoded values go stale and are wrong for local models where the user
 controls context size. LM Studio's `/api/v0/models` reports
 `max_context_length`; Gemini's `/v1beta/models/{id}` reports
-`inputTokenLimit` and `outputTokenLimit`.
+`inputTokenLimit` and `outputTokenLimit`; Anthropic's `/v1/models/{id}`
+reports `max_input_tokens` and `max_tokens` (a missing, `null` or `0`
+value counts as unknown).
 
 **Precedence**: API value > hardcoded lookup > MIN_CONTEXT (4096).
 
 `query_and_apply_capabilities()` runs in all entry points (TUI, headless,
 ACP server, model switch, provider setup).
+
+### Claude Family Aliases Follow the Models API (P1, P3)
+
+`claude-haiku`, `claude-sonnet` and `claude-opus` are resolved at runtime
+from Anthropic's `GET /v1/models`: the newest `created_at` whose `line` is
+`haiku`, `sonnet` or `opus`. The pinned ids in `model_alias.rs` are the
+offline fallback (no key, no network, timeout, API error).
+
+Anthropic has no floating family alias; every id from the 4.6 generation
+on is a pinned snapshot, so an alias table moves only by hand and goes
+stale between releases (P1: latest dependencies, one environment). The
+API knows the lines, so Koda asks it rather than guessing from the id
+(P3: adapt to servers rather than models).
+
+**When**: on first use, not at startup. The TUI asks once per process the
+first time it shows or resolves an alias (`/model`), capped at 5 s, and
+keeps the outcome, success or failure, for the run. Startup already has
+the saved pinned id, headless never resolves aliases, and users of other
+providers should not pay for an Anthropic request. One request per run;
+a second `/model` costs nothing.
 
 ### Rate Limit Retry (P2)
 

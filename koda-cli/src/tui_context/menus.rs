@@ -75,6 +75,9 @@ impl TuiContext {
     pub(crate) async fn open_model_picker(&mut self) {
         // Try to auto-detect local model for the "local" alias
         let local_model = self.detect_local_model().await;
+        // Resolve the Claude line aliases against the Models API (once per
+        // run, only with an Anthropic key) so the picker shows the live ids.
+        koda_core::model_alias::ensure_live_claude_ids().await;
         let items =
             crate::widgets::model_menu::build_items(&self.config.model, local_model.as_deref());
         let mut dd =
