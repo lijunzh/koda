@@ -189,6 +189,68 @@ pub(crate) fn resolve_initial_trust_mode(
     Ok((mode, warning))
 }
 
+/// Which of `--provider`, `--base-url` and `--model` (or `KODA_PROVIDER`,
+/// `KODA_BASE_URL`, `KODA_MODEL`) the user set for this run.
+///
+/// `KodaConfig::with_overrides` has already applied the values by the time
+/// the TUI starts. The TUI only needs to know which fields are the user's
+/// explicit choice, so that the saved last-used provider (#693) fills in
+/// the rest without replacing them. `app.rs` documents the precedence: CLI
+/// flags beat env vars, which beat saved config, which beats built-in
+/// defaults.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ProviderOverrides {
+    /// `--provider` / `KODA_PROVIDER` was given.
+    pub provider: bool,
+    /// `--base-url` / `KODA_BASE_URL` was given.
+    pub base_url: bool,
+    /// `--model` / `KODA_MODEL` was given.
+    pub model: bool,
+}
+
+/// Fill the saved last-used provider (#693) into `config` wherever the
+/// command line left the choice open.
+///
+/// `config` already carries the CLI/env overrides. Before this function
+/// existed the TUI overwrote provider, base URL and model from the saved
+/// row unconditionally, so `koda --provider anthropic --model
+/// claude-sonnet-5-5` started on whatever `/model` had last picked.
+///
+/// - Nothing overridden: restore provider, base URL and model, as before.
+/// - `--model` alone: restore the saved provider and base URL, keep the model.
+/// - `--provider` or `--base-url`: the endpoint is the user's choice. The
+///   saved URL and model were picked for the saved provider, so they still
+///   count as saved config only when that provider is the one now in
+///   effect (a `/model` choice or custom endpoint for the same provider);
+///   for a different provider nothing is restored.
+/// - A field the user set (`--base-url`, `--model`) is never replaced.
+///
+/// Nothing is written back: CLI flags are per-run, and only `/model` and
+/// `/provider` update the saved row (`tui_wizards::save_provider`).
+pub(crate) fn apply_last_provider(
+    config: &mut KodaConfig,
+    last: &koda_core::last_provider::LastProvider,
+    overrides: ProviderOverrides,
+) {
+    let saved_provider =
+        koda_core::config::ProviderType::from_url_or_name("", Some(&last.provider_type));
+    if overrides.provider || overrides.base_url {
+        if config.provider_type != saved_provider {
+            return;
+        }
+    } else {
+        config.provider_type = saved_provider;
+    }
+    if !overrides.base_url {
+        config.base_url = last.base_url.clone();
+    }
+    if !overrides.model {
+        config.model = last.model.clone();
+        config.model_settings.model = last.model.clone();
+    }
+    config.recalculate_model_derived();
+}
+
 impl TuiContext {
     /// Initialize all TUI state. Call before entering the event loop.
     ///
@@ -197,20 +259,16 @@ impl TuiContext {
     pub async fn new(
         project_root: PathBuf,
         mut config: KodaConfig,
+        overrides: ProviderOverrides,
         db: koda_core::db::Database,
         session_id: String,
         version_check: tokio::task::JoinHandle<Option<String>>,
         first_run: bool,
     ) -> Result<Self> {
-        // Restore last-used provider from DB (#693)
+        // Restore last-used provider from DB (#693), except where the user
+        // chose on the command line.
         if let Ok(Some(last)) = koda_core::last_provider::load_last_provider(&db).await {
-            let ptype =
-                koda_core::config::ProviderType::from_url_or_name("", Some(&last.provider_type));
-            config.provider_type = ptype;
-            config.base_url = last.base_url.clone();
-            config.model = last.model.clone();
-            config.model_settings.model = last.model.clone();
-            config.recalculate_model_derived();
+            apply_last_provider(&mut config, &last, overrides);
         }
 
         let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
@@ -1009,5 +1067,177 @@ mod tests {
                 .0,
             TrustMode::Safe,
         );
+    }
+
+    // ── Saved last-used provider vs. CLI overrides ───────────────────────
+    //
+    // `apply_last_provider` is the seam between `with_overrides` (CLI and
+    // env, applied in `app.rs`) and the #693 restore in `TuiContext::new`.
+    // The bug: the restore overwrote every field, so `koda --provider
+    // anthropic --model claude-sonnet-5-5` started on the saved LM Studio
+    // row. Each test saves a row to a real SQLite DB and reads it back the
+    // way `TuiContext::new` does.
+    mod last_provider {
+        use super::super::{ProviderOverrides, apply_last_provider};
+        use koda_core::config::{KodaConfig, ProviderType};
+        use koda_core::last_provider::{LastProvider, load_last_provider, save_last_provider};
+
+        async fn saved(provider: ProviderType, base_url: &str, model: &str) -> LastProvider {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = koda_core::db::Database::init(tmp.path()).await.unwrap();
+            save_last_provider(&db, &provider.to_string(), base_url, model)
+                .await
+                .unwrap();
+            load_last_provider(&db)
+                .await
+                .unwrap()
+                .expect("row was just saved")
+        }
+
+        /// The config `app.rs` hands the TUI: the agent's default (LM Studio
+        /// here) with the given flags applied by `with_overrides`.
+        fn loaded(
+            base_url: Option<&str>,
+            model: Option<&str>,
+            provider: Option<&str>,
+        ) -> (KodaConfig, ProviderOverrides) {
+            let overrides = ProviderOverrides {
+                provider: provider.is_some(),
+                base_url: base_url.is_some(),
+                model: model.is_some(),
+            };
+            let config = KodaConfig::default_for_testing(ProviderType::LMStudio).with_overrides(
+                base_url.map(str::to_string),
+                model.map(str::to_string),
+                provider.map(str::to_string),
+            );
+            (config, overrides)
+        }
+
+        #[tokio::test]
+        async fn no_overrides_restores_the_saved_row() {
+            let last = saved(
+                ProviderType::Anthropic,
+                "https://api.anthropic.com",
+                "claude-sonnet-4-6",
+            )
+            .await;
+            let (mut config, overrides) = loaded(None, None, None);
+            assert_eq!(
+                config.max_context_tokens, 4_096,
+                "LM Studio auto-detect floor"
+            );
+
+            apply_last_provider(&mut config, &last, overrides);
+
+            assert_eq!(config.provider_type, ProviderType::Anthropic);
+            assert_eq!(config.base_url, "https://api.anthropic.com");
+            assert_eq!(config.model, "claude-sonnet-4-6");
+            assert_eq!(config.model_settings.model, "claude-sonnet-4-6");
+            assert_eq!(
+                config.max_context_tokens, 200_000,
+                "derived settings follow the restored model"
+            );
+        }
+
+        #[tokio::test]
+        async fn explicit_provider_and_model_beat_the_saved_row() {
+            // The exact bug: the DB remembers LM Studio, the user passes both flags.
+            let last = saved(
+                ProviderType::LMStudio,
+                "http://lmstudio.local:1234/v1",
+                "qwen3-local",
+            )
+            .await;
+            let (mut config, overrides) =
+                loaded(None, Some("claude-sonnet-5-5"), Some("anthropic"));
+            let url_from_flags = config.base_url.clone();
+
+            apply_last_provider(&mut config, &last, overrides);
+
+            assert_eq!(config.provider_type, ProviderType::Anthropic);
+            assert_eq!(config.model, "claude-sonnet-5-5");
+            assert_eq!(config.model_settings.model, "claude-sonnet-5-5");
+            assert_eq!(
+                config.base_url, url_from_flags,
+                "the saved LM Studio URL must not replace what the flags produced"
+            );
+        }
+
+        #[tokio::test]
+        async fn model_alone_keeps_the_saved_provider_and_url() {
+            let last = saved(ProviderType::Ollama, "http://localhost:11434/v1", "llama3").await;
+            let (mut config, overrides) = loaded(None, Some("qwen3:32b"), None);
+
+            apply_last_provider(&mut config, &last, overrides);
+
+            assert_eq!(config.provider_type, ProviderType::Ollama);
+            assert_eq!(config.base_url, "http://localhost:11434/v1");
+            assert_eq!(config.model, "qwen3:32b");
+            assert_eq!(config.model_settings.model, "qwen3:32b");
+        }
+
+        #[tokio::test]
+        async fn provider_alone_for_a_different_provider_restores_nothing() {
+            let last = saved(
+                ProviderType::LMStudio,
+                "http://lmstudio.local:1234/v1",
+                "qwen3-local",
+            )
+            .await;
+            let (mut config, overrides) = loaded(None, None, Some("anthropic"));
+            let url_from_flags = config.base_url.clone();
+            let model_from_agent = config.model.clone();
+
+            apply_last_provider(&mut config, &last, overrides);
+
+            assert_eq!(config.provider_type, ProviderType::Anthropic);
+            assert_eq!(config.base_url, url_from_flags);
+            assert_eq!(config.model, model_from_agent);
+            assert_eq!(config.model_settings.model, model_from_agent);
+        }
+
+        #[tokio::test]
+        async fn provider_alone_for_the_saved_provider_keeps_its_saved_url_and_model() {
+            // A /model choice and a custom endpoint for the same provider are
+            // saved config, which the precedence puts above built-in defaults.
+            let last = saved(
+                ProviderType::Anthropic,
+                "https://proxy.example/anthropic",
+                "claude-opus-4-6",
+            )
+            .await;
+            let (mut config, overrides) = loaded(None, None, Some("anthropic"));
+
+            apply_last_provider(&mut config, &last, overrides);
+
+            assert_eq!(config.provider_type, ProviderType::Anthropic);
+            assert_eq!(config.base_url, "https://proxy.example/anthropic");
+            assert_eq!(config.model, "claude-opus-4-6");
+        }
+
+        #[tokio::test]
+        async fn base_url_alone_is_kept_and_the_saved_model_applies_to_the_same_provider() {
+            let last = saved(ProviderType::Ollama, "http://localhost:11434/v1", "llama3").await;
+            let (mut config, overrides) = loaded(Some("http://127.0.0.1:11434/v1"), None, None);
+            assert_eq!(
+                config.provider_type,
+                ProviderType::Ollama,
+                "re-detected from the URL"
+            );
+
+            apply_last_provider(&mut config, &last, overrides);
+
+            assert_eq!(config.base_url, "http://127.0.0.1:11434/v1");
+            assert_eq!(config.model, "llama3");
+
+            // Same flag, but the URL belongs to another provider: nothing applies.
+            let (mut config, overrides) = loaded(Some("https://api.anthropic.com"), None, None);
+            let model_from_agent = config.model.clone();
+            apply_last_provider(&mut config, &last, overrides);
+            assert_eq!(config.provider_type, ProviderType::Anthropic);
+            assert_eq!(config.base_url, "https://api.anthropic.com");
+            assert_eq!(config.model, model_from_agent);
+        }
     }
 }
