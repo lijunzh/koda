@@ -502,8 +502,15 @@ impl TuiContext {
                                 self.config.model_settings.model = actual_model.clone();
                                 self.config.recalculate_model_derived();
                                 self.query_model_capabilities().await;
-                                crate::tui_wizards::save_provider(&self.config, &self.session.db)
-                                    .await;
+                                // `local` names no model; its detected id is the choice.
+                                let alias =
+                                    (!resolved.needs_auto_detect()).then_some(resolved.alias);
+                                crate::tui_wizards::save_provider(
+                                    &self.config,
+                                    &self.session.db,
+                                    alias,
+                                )
+                                .await;
                                 self.renderer.model = actual_model.clone();
                                 self.scroll_buffer.push(Line::styled(
                                     format!("  \u{2714} Model: {label} ({actual_model})"),
@@ -516,7 +523,8 @@ impl TuiContext {
                             self.config.model_settings.model = model_id.clone();
                             self.config.recalculate_model_derived();
                             self.query_model_capabilities().await;
-                            crate::tui_wizards::save_provider(&self.config, &self.session.db).await;
+                            crate::tui_wizards::save_provider(&self.config, &self.session.db, None)
+                                .await;
                             self.renderer.model = model_id.clone();
                             self.scroll_buffer.push(Line::styled(
                                 format!("  \u{2714} Model set to: {model_id}"),
@@ -593,7 +601,7 @@ impl TuiContext {
                     self.config.model_settings.model = model_id.clone();
                     self.config.recalculate_model_derived();
                     self.query_model_capabilities().await;
-                    crate::tui_wizards::save_provider(&self.config, &self.session.db).await;
+                    crate::tui_wizards::save_provider(&self.config, &self.session.db, None).await;
                     self.renderer.model = model_id.clone();
                     self.scroll_buffer.push(Line::styled(
                         format!("  \u{2714} Model set to: {model_id} ({ptype})"),
@@ -697,7 +705,7 @@ impl TuiContext {
         self.config.model_settings.model = self.config.model.clone();
         self.config.recalculate_model_derived();
         *self.provider.write().await = koda_core::providers::create_provider(&self.config);
-        crate::tui_wizards::save_provider(&self.config, &self.session.db).await;
+        crate::tui_wizards::save_provider(&self.config, &self.session.db, None).await;
 
         let prov = self.provider.read().await;
         if let Ok(models) = prov.list_models().await {
