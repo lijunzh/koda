@@ -184,6 +184,14 @@ fn provider_metadata_all() {
             "KODA_API_KEY",
             false,
         ),
+        (
+            ProviderType::LlamaCpp,
+            "llama-cpp",
+            "http://localhost:8080/v1",
+            "auto-detect",
+            "KODA_API_KEY",
+            false,
+        ),
     ];
 
     for (provider, name, url, model, env_key, api_key) in cases {

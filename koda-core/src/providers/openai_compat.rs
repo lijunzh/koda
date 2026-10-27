@@ -498,6 +498,15 @@ impl LlmProvider for OpenAiCompatProvider {
             return Ok(caps);
         }
 
+        // llama.cpp: GET /props → default_generation_settings.n_ctx.
+        // A plain GET that other servers answer with a 404, so it costs
+        // little before the Ollama POST.
+        if let Ok(caps) = self.query_llama_cpp_capabilities(base).await
+            && caps.context_window.is_some()
+        {
+            return Ok(caps);
+        }
+
         // Ollama: POST /api/show → model_info.general.context_length
         if let Ok(caps) = self.query_ollama_capabilities(base, model).await
             && caps.context_window.is_some()
@@ -543,6 +552,29 @@ impl OpenAiCompatProvider {
         Ok(super::ModelCapabilities::default())
     }
 
+    /// Query llama.cpp's `llama-server` for its context window via `/props`.
+    ///
+    /// The server is started with `-c <n>` and enforces that limit, so the
+    /// reported `n_ctx` is the one that matters. Any other answer (404, a
+    /// body without `n_ctx`) falls through to the next probe.
+    async fn query_llama_cpp_capabilities(&self, base: &str) -> Result<super::ModelCapabilities> {
+        let resp = self.client.get(format!("{base}/props")).send().await?;
+
+        if !resp.status().is_success() {
+            return Ok(super::ModelCapabilities::default());
+        }
+
+        let body: serde_json::Value = resp.json().await?;
+        let ctx = llama_cpp_n_ctx(&body);
+        if let Some(c) = ctx {
+            tracing::info!("llama.cpp reports context window: {c} tokens");
+        }
+        Ok(super::ModelCapabilities {
+            context_window: ctx,
+            max_output_tokens: None,
+        })
+    }
+
     /// Query Ollama for model context window via `/api/show`.
     async fn query_ollama_capabilities(
         &self,
@@ -577,6 +609,16 @@ impl OpenAiCompatProvider {
         })
     }
 }
+/// `default_generation_settings.n_ctx` from a llama-server `/props` body.
+///
+/// Zero is treated as absent: a value of 0 would make the window useless.
+fn llama_cpp_n_ctx(props: &serde_json::Value) -> Option<usize> {
+    props["default_generation_settings"]["n_ctx"]
+        .as_u64()
+        .filter(|&n| n > 0)
+        .map(|n| n as usize)
+}
+
 /// Convert OpenAI usage response to our TokenUsage, extracting reasoning_tokens.
 fn usage_from_response(u: &UsageResponse) -> TokenUsage {
     TokenUsage {
@@ -768,5 +810,85 @@ mod tests {
         assert!(result.is_ok());
         let resp = result.unwrap();
         assert!(resp.choices.is_empty());
+    }
+
+    #[test]
+    fn llama_cpp_props_reads_n_ctx() {
+        let props = serde_json::json!({
+            "default_generation_settings": { "n_ctx": 32768, "params": { "temperature": 0.8 } },
+            "total_slots": 1,
+            "model_path": "Qwen3.8-27B-Q4_K_M.gguf"
+        });
+        assert_eq!(llama_cpp_n_ctx(&props), Some(32768));
+    }
+
+    #[test]
+    fn llama_cpp_props_ignores_other_shapes() {
+        for body in [
+            serde_json::json!({}),
+            serde_json::json!({ "default_generation_settings": {} }),
+            serde_json::json!({ "default_generation_settings": { "n_ctx": 0 } }),
+            serde_json::json!({ "default_generation_settings": { "n_ctx": "32768" } }),
+            serde_json::json!({ "data": [{ "max_context_length": 4096 }] }),
+        ] {
+            assert_eq!(llama_cpp_n_ctx(&body), None, "{body}");
+        }
+    }
+
+    /// `model_capabilities` against loopback servers, the `http.rs` test
+    /// pattern. Multi-thread flavor because the server is `tokio::spawn`ed.
+    mod capability_probes {
+        use super::super::*;
+        use axum::Router;
+        use axum::routing::get;
+        use tokio_util::sync::CancellationToken;
+
+        async fn spawn(app: Router) -> (OpenAiCompatProvider, CancellationToken) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            // The `/v1` suffix is what users pass; probes strip it.
+            let url = format!("http://{}/v1", listener.local_addr().unwrap());
+            let ct = CancellationToken::new();
+            let ct_server = ct.clone();
+            tokio::spawn(async move {
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async move { ct_server.cancelled_owned().await })
+                    .await
+                    .ok();
+            });
+            (OpenAiCompatProvider::new(&url, None), ct)
+        }
+
+        const PROPS: &str = r#"{"default_generation_settings":{"n_ctx":32768},"total_slots":1}"#;
+        const LMSTUDIO: &str = r#"{"data":[{"id":"m","max_context_length":131072}]}"#;
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn llama_server_context_comes_from_props() {
+            // Like llama-server: /props answers, the LM Studio and Ollama
+            // routes do not exist (axum answers 404).
+            let app = Router::new().route("/props", get(|| async { PROPS }));
+            let (provider, ct) = spawn(app).await;
+            let caps = provider.model_capabilities("qwen").await.unwrap();
+            assert_eq!(caps.context_window, Some(32768));
+            ct.cancel();
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn lm_studio_still_wins_when_it_answers() {
+            let app = Router::new()
+                .route("/api/v0/models", get(|| async { LMSTUDIO }))
+                .route("/props", get(|| async { PROPS }));
+            let (provider, ct) = spawn(app).await;
+            let caps = provider.model_capabilities("m").await.unwrap();
+            assert_eq!(caps.context_window, Some(131072));
+            ct.cancel();
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn unknown_server_falls_through_to_defaults() {
+            let (provider, ct) = spawn(Router::new()).await;
+            let caps = provider.model_capabilities("m").await.unwrap();
+            assert_eq!(caps.context_window, None);
+            ct.cancel();
+        }
     }
 }

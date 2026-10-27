@@ -42,8 +42,9 @@ use crate::engine::{EngineCommand, EngineEvent, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference_helpers::{
     AUTO_COMPACT_THRESHOLD, CONTEXT_WARN_THRESHOLD, RATE_LIMIT_MAX_RETRIES, assemble_messages,
-    estimate_tokens, is_context_overflow_error, is_image_rejection_error,
-    is_network_transient_error, is_rate_limit_error, is_server_error, rate_limit_backoff,
+    context_limit_from_error, estimate_subagent_preflight, estimate_tokens,
+    is_context_overflow_error, is_image_rejection_error, is_network_transient_error,
+    is_rate_limit_error, is_server_error, rate_limit_backoff,
 };
 use crate::loop_guard::{LoopAction, LoopDetector};
 use crate::persistence::Persistence;
@@ -80,6 +81,9 @@ struct TurnState<'a> {
     pending_images: Option<&'a [ImageData]>,
     iteration: u32,
     config: &'a KodaConfig,
+    /// Context window for this iteration: `config.max_context_tokens`, or
+    /// the server's real limit once an overflow error has stated it.
+    max_context_tokens: usize,
     provider: &'a dyn LlmProvider,
     tool_defs: &'a [ToolDefinition],
     sink: &'a dyn EngineSink,
@@ -153,10 +157,10 @@ async fn assemble_context(turn: &TurnState<'_>) -> Result<Vec<ChatMessage>> {
     }
 
     let context_used = estimate_tokens(&messages);
-    crate::context::update(context_used, turn.config.max_context_tokens);
+    crate::context::update(context_used, turn.max_context_tokens);
     turn.sink.emit(EngineEvent::ContextUsage {
         used: context_used,
-        max: turn.config.max_context_tokens,
+        max: turn.max_context_tokens,
     });
 
     // Warn users when approaching the context limit (headless mode silently
@@ -211,7 +215,7 @@ async fn preflight_compact_if_needed(
     match crate::compact::compact_session_with_provider(
         turn.db,
         turn.session_id,
-        turn.config.max_context_tokens,
+        turn.max_context_tokens,
         &turn.config.model_settings,
         turn.provider,
     )
@@ -327,19 +331,38 @@ async fn try_with_rate_limit(
 async fn try_overflow_recovery(
     turn: &TurnState<'_>,
     original_err: anyhow::Error,
+    learned_context: Option<usize>,
 ) -> Result<Option<(SseCollector, Vec<ChatMessage>)>> {
+    // One Warn, not a Warn plus an Info: the persisting sink writes each
+    // one to the DB fire-and-forget, and a second write raced the
+    // compaction transaction below ("database is locked").
+    let learned_note = learned_context
+        .map(|n| {
+            format!(
+                " The server's context window is {n} tokens, not the {} Koda assumed; \
+                 using {n} from now on.",
+                turn.max_context_tokens
+            )
+        })
+        .unwrap_or_default();
+    // Compact and re-measure against the limit the server stated, if any.
+    let turn = &TurnState {
+        max_context_tokens: learned_context.unwrap_or(turn.max_context_tokens),
+        ..*turn
+    };
     turn.sink.emit(EngineEvent::SpinnerStop);
     turn.sink.emit(EngineEvent::Warn {
-        message: "\u{26a0}\u{fe0f} Provider rejected request (context overflow). \
+        message: format!(
+            "\u{26a0}\u{fe0f} Provider rejected request (context overflow).{learned_note} \
              Compacting and retrying..."
-            .to_string(),
+        ),
     });
     tracing::warn!("Context overflow from provider: {original_err:#}");
 
     match crate::compact::compact_session_with_provider(
         turn.db,
         turn.session_id,
-        turn.config.max_context_tokens,
+        turn.max_context_tokens,
         &turn.config.model_settings,
         turn.provider,
     )
@@ -371,6 +394,15 @@ async fn try_overflow_recovery(
         _ = turn.cancel.cancelled() => return Ok(None),
     };
     Ok(Some((collector, messages)))
+}
+
+/// The notice when the server's window can't hold Koda's own prompt.
+fn context_too_small_message(limit: usize, needed: usize) -> String {
+    format!(
+        "The server's context window is {limit} tokens, but Koda's system prompt and \
+         tools alone need about {needed}. Restart the server with a larger context \
+         (for llama-server, -c 16384 or more)."
+    )
 }
 
 /// Collect a streamed LLM response, executing read-only tools eagerly.
@@ -643,6 +675,37 @@ pub struct InferenceContext<'a> {
 /// zero file mutations don't grow the undo stack.
 #[tracing::instrument(skip_all, fields(session_id = %ctx.session_id, agent = %ctx.config.agent_name))]
 pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
+    inference_loop_outcome(ctx).await.map(|_| ())
+}
+
+/// How a turn that didn't return `Err` ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnOutcome {
+    /// The loop ran to its normal end (or was cancelled by the user).
+    Finished,
+    /// The turn stopped early after a warning the user can read (provider
+    /// server error, image rejection, dropped connection). No reply was
+    /// produced. The TUI shows the warning and carries on; headless
+    /// reports the turn as failed with this message.
+    Aborted(String),
+}
+
+/// Marker error for the early-stop paths: [`inference_loop_outcome`]
+/// turns it back into [`TurnOutcome::Aborted`], so it never reaches callers.
+#[derive(Debug)]
+struct TurnAborted(String);
+
+impl std::fmt::Display for TurnAborted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TurnAborted {}
+
+/// Like [`inference_loop`], but says whether the turn stopped early on a
+/// warning. `inference_loop` keeps returning `Ok(())` for those turns.
+pub async fn inference_loop_outcome(ctx: InferenceContext<'_>) -> Result<TurnOutcome> {
     // `&ToolRegistry` is `Copy`, so capturing here doesn't move `ctx`.
     // We need this handle to call `commit_turn` after the inner
     // function returns and releases its borrow on `ctx.tools`.
@@ -651,7 +714,13 @@ pub async fn inference_loop(ctx: InferenceContext<'_>) -> Result<()> {
     if let Ok(mut undo) = tools.undo.lock() {
         undo.commit_turn();
     }
-    result
+    match result {
+        Ok(()) => Ok(TurnOutcome::Finished),
+        Err(e) => match e.downcast::<TurnAborted>() {
+            Ok(TurnAborted(message)) => Ok(TurnOutcome::Aborted(message)),
+            Err(e) => Err(e),
+        },
+    }
 }
 
 async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
@@ -713,6 +782,10 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
 
     // Hard cap is configurable per-agent; user can extend it interactively.
     let mut hard_cap = config.max_iterations;
+    // The server's real context window, once an overflow error states it
+    // (`context_limit_from_error`). Replaces `config.max_context_tokens`
+    // for the rest of the turn.
+    let mut learned_context: Option<usize> = None;
     let mut iteration = 0u32;
     let mut made_tool_calls = false;
     let mut retried_empty = false;
@@ -966,6 +1039,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
             pending_images: pending_images.as_deref(),
             iteration,
             config,
+            max_context_tokens: learned_context.unwrap_or(config.max_context_tokens),
             provider,
             tool_defs: active_tool_defs,
             sink,
@@ -1021,7 +1095,32 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
         } = match stream_result {
             Ok(c) => c,
             Err(e) if is_context_overflow_error(&e) => {
-                match try_overflow_recovery(&turn, e).await? {
+                let stated = context_limit_from_error(&e);
+                if let Some(limit) = stated {
+                    let floor = estimate_subagent_preflight(
+                        &system_prompt_full,
+                        active_tool_defs,
+                        "",
+                        limit,
+                    );
+                    if floor.is_over_budget() {
+                        // Compaction only shortens history; it can't help
+                        // when the system prompt and tools alone don't fit.
+                        // Checked whether or not the limit is new: a probe
+                        // may already have reported the same small window.
+                        sink.emit(EngineEvent::SpinnerStop);
+                        sink.emit(EngineEvent::Warn {
+                            message: context_too_small_message(limit, floor.total_tokens),
+                        });
+                        return Ok(());
+                    }
+                }
+                let learned = stated.filter(|&n| n != turn.max_context_tokens);
+                if let Some(limit) = learned {
+                    sink.emit(EngineEvent::ContextWindowChanged { tokens: limit });
+                    learned_context = Some(limit);
+                }
+                match try_overflow_recovery(&turn, e, learned).await? {
                     Some((rx, _updated)) => rx,
                     None => {
                         sink.emit(EngineEvent::SpinnerStop);
@@ -1034,26 +1133,28 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
             }
             Err(e) if is_server_error(&e) => {
                 sink.emit(EngineEvent::SpinnerStop);
+                let message = format!(
+                    "Provider returned a server error: {e:#}. \
+                     This often means the model can't handle the current \
+                     conversation state. Try a different model or start a new session."
+                );
                 sink.emit(EngineEvent::Warn {
-                    message: format!(
-                        "Provider returned a server error: {e:#}. \
-                         This often means the model can't handle the current \
-                         conversation state. Try a different model or start a new session."
-                    ),
+                    message: message.clone(),
                 });
-                return Ok(());
+                return Err(TurnAborted(message).into());
             }
             Err(e) if had_images && is_image_rejection_error(&e) => {
                 sink.emit(EngineEvent::SpinnerStop);
+                let message = format!(
+                    "⚠ This model rejected the image attachment — \
+                     it likely does not support vision input. \
+                     Switch to a vision-capable model such as \
+                     claude-sonnet, gemini-flash, or gpt-6-astra. ({e})"
+                );
                 sink.emit(EngineEvent::Warn {
-                    message: format!(
-                        "⚠ This model rejected the image attachment — \
-                         it likely does not support vision input. \
-                         Switch to a vision-capable model such as \
-                         claude-sonnet, gemini-flash, or gpt-6-astra. ({e})"
-                    ),
+                    message: message.clone(),
                 });
-                return Ok(());
+                return Err(TurnAborted(message).into());
             }
             Err(e) => {
                 return Err(e).context("LLM inference failed");
@@ -1104,9 +1205,12 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
 
         // Network drop: warning already emitted by collect_stream.
         // Discard the partial response — storing it would corrupt the session.
-        if stream_result.network_error.is_some() {
+        if let Some(err) = stream_result.network_error {
             sse_handle.abort();
-            return Ok(());
+            return Err(TurnAborted(format!(
+                "Connection lost mid-stream — turn discarded ({err})"
+            ))
+            .into());
         }
 
         let full_text = stream_result.text;
@@ -1229,10 +1333,11 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
             // meter measures *current context-window occupancy*, not cumulative
             // billing. Summing iterations would double-count the shared history
             // and let the meter exceed 100% on multi-tool-call turns (#946).
-            crate::context::update(last_prompt_tokens as usize, config.max_context_tokens);
+            let max_context = learned_context.unwrap_or(config.max_context_tokens);
+            crate::context::update(last_prompt_tokens as usize, max_context);
             sink.emit(EngineEvent::ContextUsage {
                 used: last_prompt_tokens as usize,
-                max: config.max_context_tokens,
+                max: max_context,
             });
 
             sink.emit(EngineEvent::Footer {

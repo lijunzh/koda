@@ -279,6 +279,7 @@ impl TuiRenderer {
             | EngineEvent::AskUserRequest { .. }
             | EngineEvent::StatusUpdate { .. }
             | EngineEvent::ContextUsage { .. }
+            | EngineEvent::ContextWindowChanged { .. }
             | EngineEvent::TurnStart { .. }
             | EngineEvent::TurnEnd { .. }
             | EngineEvent::LoopCapReached { .. }

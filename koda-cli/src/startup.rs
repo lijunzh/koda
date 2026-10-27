@@ -128,6 +128,14 @@ pub fn purge_nudge_lines(size_str: &str) -> Vec<Line<'static>> {
     ])]
 }
 
+/// A yellow `⚠` startup line.
+pub fn warning_line(message: String) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("  \u{26a0} ", Style::new().fg(Color::Yellow)),
+        Span::styled(message, Style::new().fg(Color::Yellow)),
+    ])
+}
+
 /// Build home-directory footgun warning lines.
 ///
 /// Returns empty vec when project root is NOT the home directory.

@@ -32,7 +32,7 @@ write there.
 - **Don't open GitHub issues for design discussion, plans or reviews.** Write
   or update the vault note instead.
 - **GitHub issues are for** bug reports and feature requests from users, and
-  for the `coverage-regression`, `security-audit` and vendor-sync issues the
+  for the `coverage-regression` and `security-audit` issues the
   workflows manage.
 - **Existing issue links stay.** Issues #21–#1391 (March–October 2026) were the
   design record. They remain the history behind the links in code comments,
@@ -444,7 +444,6 @@ Seven workflows live in `.github/workflows/`:
 | `release.yml` | Tag `v*` | Version verify, cross-platform test + build, publish, Homebrew |
 | `docs.yml` | Push to `main` (docs/ changes) | Build + deploy mdBook to GitHub Pages |
 | `auto-merge-dependabot.yml` | Dependabot PRs | Enables squash auto-merge; merges once required checks pass |
-| `vendor-sync-reminder.yml` | Weekly + manual | Files an issue when vendored `openai/codex` files drift upstream |
 
 Release job chain:
 ```

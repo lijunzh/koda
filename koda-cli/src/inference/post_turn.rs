@@ -67,6 +67,9 @@ impl TuiContext {
                     0
                 };
             }
+            if let EngineEvent::ContextWindowChanged { tokens } = &e {
+                self.learned_context_window = Some(*tokens);
+            }
             // Tap activity events into the bg-activity tracker even
             // during post-turn drain — a fan-out agent emitting a
             // ToolStart milliseconds before the turn future resolves
@@ -75,6 +78,14 @@ impl TuiContext {
                 self.child_activity.record_activity(*task_id, kind);
             }
             self.renderer.render_to_buffer(e, &mut self.scroll_buffer);
+        }
+
+        // Keep the server's real window for the rest of the session, so
+        // the meter, auto-compact and the next turns use it. Not saved:
+        // the server may be restarted with another size.
+        if let Some(tokens) = self.learned_context_window.take() {
+            self.config.max_context_tokens = tokens;
+            self.config.model_settings.max_context_tokens = tokens;
         }
 
         // Auto-compact

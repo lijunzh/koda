@@ -332,6 +332,11 @@ impl TuiContext {
                                 0
                             };
                         }
+                        if let UiEvent::Engine(EngineEvent::ContextWindowChanged { tokens }) =
+                            &ui_event
+                        {
+                            self.learned_context_window = Some(*tokens);
+                        }
                         super::ui_handler::handle_inference_ui_inline(
                             ui_event,
                             &mut self.scroll_buffer,
@@ -353,6 +358,11 @@ impl TuiContext {
                                 } else {
                                     0
                                 };
+                            }
+                            if let UiEvent::Engine(EngineEvent::ContextWindowChanged { tokens }) =
+                                &extra
+                            {
+                                self.learned_context_window = Some(*tokens);
                             }
                             super::ui_handler::handle_inference_ui_inline(
                                 extra,

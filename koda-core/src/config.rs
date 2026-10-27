@@ -204,6 +204,15 @@ pub struct KodaConfig {
     pub trust: crate::trust::TrustMode,
 }
 
+/// Where the context window in force came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextSource {
+    /// Reported by the provider (`LlmProvider::model_capabilities`).
+    Provider,
+    /// The `model_context` lookup table: the server didn't say.
+    Lookup,
+}
+
 impl KodaConfig {
     /// Load config from the agent JSON file.
     /// Search order: project agents/ → user ~/.config/koda/agents/ → built-in (embedded).
@@ -473,15 +482,19 @@ impl KodaConfig {
     /// Query the provider API for model capabilities and apply them.
     ///
     /// Convenience wrapper: queries `model_capabilities()` on the provider
-    /// and applies the result. Logs a debug message if the API doesn't
-    /// report capabilities (falls back to hardcoded lookup).
+    /// and applies the result. When the API doesn't report a context window,
+    /// the lookup-table value stays; the return value says which one is in
+    /// force, so callers can tell the user with [`Self::assumed_context_notice`].
     pub async fn query_and_apply_capabilities(
         &mut self,
         provider: &dyn crate::providers::LlmProvider,
-    ) {
+    ) -> ContextSource {
         match provider.model_capabilities(&self.model).await {
             Ok(caps) if caps.context_window.is_some() || caps.max_output_tokens.is_some() => {
                 self.apply_provider_capabilities(&caps);
+                if caps.context_window.is_some() {
+                    return ContextSource::Provider;
+                }
             }
             Ok(_) => {
                 tracing::debug!(
@@ -494,6 +507,23 @@ impl KodaConfig {
                 tracing::debug!("Could not query model capabilities: {e:#}");
             }
         }
+        ContextSource::Lookup
+    }
+
+    /// A one-line notice for the user when the context window is a guess.
+    ///
+    /// Only for keyless (self-hosted) providers: there the window is whatever
+    /// the server was started with, so a lookup-table value is unconfirmed.
+    /// Cloud models' table entries come from their vendors' docs.
+    pub fn assumed_context_notice(&self, source: ContextSource) -> Option<String> {
+        if source == ContextSource::Provider || self.provider_type.requires_api_key() {
+            return None;
+        }
+        Some(format!(
+            "{} didn't report its context window; assuming {} tokens for {}. \
+             If the server's limit is smaller, Koda adopts it from the first rejected request.",
+            self.base_url, self.max_context_tokens, self.model
+        ))
     }
 
     /// Built-in agent configs, embedded at compile time.
@@ -1057,6 +1087,49 @@ mod tests {
     }
 
     #[test]
+    fn assumed_context_notice_only_for_unconfirmed_local_windows() {
+        use super::ContextSource;
+        let local = KodaConfig::default_for_testing(ProviderType::LlamaCpp);
+        let notice = local
+            .assumed_context_notice(ContextSource::Lookup)
+            .expect("a local guess is announced");
+        assert!(notice.contains(&local.base_url), "{notice}");
+        assert!(
+            notice.contains(&local.max_context_tokens.to_string()),
+            "{notice}"
+        );
+        // The server reported its window: nothing to say.
+        assert!(
+            local
+                .assumed_context_notice(ContextSource::Provider)
+                .is_none()
+        );
+        // Cloud table entries come from vendor docs, not a guess.
+        let cloud = KodaConfig::default_for_testing(ProviderType::Anthropic);
+        assert!(
+            cloud
+                .assumed_context_notice(ContextSource::Lookup)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_provider_from_url_llama_cpp() {
+        for url in ["http://localhost:8080/v1", "http://127.0.0.1:8080/v1"] {
+            assert_eq!(
+                ProviderType::from_url_or_name(url, None),
+                ProviderType::LlamaCpp,
+                "{url}"
+            );
+        }
+        // Other localhost ports keep the LM Studio default.
+        assert_eq!(
+            ProviderType::from_url_or_name("http://127.0.0.1:8085/v1", None),
+            ProviderType::LMStudio
+        );
+    }
+
+    #[test]
     fn test_provider_from_url_gemini() {
         assert_eq!(
             ProviderType::from_url_or_name(
@@ -1136,6 +1209,10 @@ mod tests {
             ("together", ProviderType::Together),
             ("fireworks", ProviderType::Fireworks),
             ("vllm", ProviderType::Vllm),
+            ("llama-cpp", ProviderType::LlamaCpp),
+            ("llamacpp", ProviderType::LlamaCpp),
+            ("llama.cpp", ProviderType::LlamaCpp),
+            ("LLAMA-CPP", ProviderType::LlamaCpp),
             ("groq", ProviderType::Groq),
             ("mock", ProviderType::Mock),
         ];
@@ -1157,6 +1234,7 @@ mod tests {
         assert!(!ProviderType::Ollama.requires_api_key());
         assert!(!ProviderType::Mock.requires_api_key());
         assert!(!ProviderType::Vllm.requires_api_key());
+        assert!(!ProviderType::LlamaCpp.requires_api_key());
     }
 
     #[test]
