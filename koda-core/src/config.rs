@@ -369,21 +369,34 @@ impl KodaConfig {
     }
 
     /// Apply CLI/env overrides on top of the loaded config.
+    ///
+    /// `--base-url` alone re-detects the provider from the URL. `--provider`
+    /// alone also moves `base_url` to that provider's default endpoint, unless
+    /// the loaded URL already belongs to that provider, so a custom endpoint
+    /// for the same provider is kept. Both together are taken as given.
     pub fn with_overrides(
         mut self,
         base_url: Option<String>,
         model: Option<String>,
         provider: Option<String>,
     ) -> Self {
-        if let Some(ref url) = base_url {
-            self.base_url = url.clone();
-        }
-        if let Some(ref p) = provider {
-            self.provider_type = ProviderType::from_url_or_name(&self.base_url, Some(p));
-        }
-        if base_url.is_some() && provider.is_none() {
-            // Re-detect provider from new URL
-            self.provider_type = ProviderType::from_url_or_name(&self.base_url, None);
+        match (base_url, provider) {
+            (Some(url), Some(p)) => {
+                self.base_url = url;
+                self.provider_type = ProviderType::from_url_or_name(&self.base_url, Some(&p));
+            }
+            (Some(url), None) => {
+                self.base_url = url;
+                self.provider_type = ProviderType::from_url_or_name(&self.base_url, None);
+            }
+            (None, Some(p)) => {
+                let provider_type = ProviderType::from_url_or_name("", Some(&p));
+                if ProviderType::from_url_or_name(&self.base_url, None) != provider_type {
+                    self.base_url = provider_type.default_base_url().to_string();
+                }
+                self.provider_type = provider_type;
+            }
+            (None, None) => {}
         }
         if let Some(m) = model {
             self.model = m.clone();
@@ -948,6 +961,44 @@ mod tests {
             Some("anthropic".into()),
         );
         assert_eq!(config.provider_type, ProviderType::Anthropic);
+        assert_eq!(config.base_url, "https://my-proxy.com");
+    }
+
+    /// `--provider` alone must move `base_url` to that provider's default.
+    /// `default_for_testing(LMStudio)` is what `load` yields on a fresh config
+    /// directory. Before the fix `--provider anthropic` kept the LM Studio URL,
+    /// so every Anthropic request went to `localhost:1234` and failed.
+    #[test]
+    fn test_with_overrides_provider_alone_uses_provider_default_url() {
+        let config = KodaConfig::default_for_testing(ProviderType::LMStudio);
+        assert_eq!(config.base_url, "http://localhost:1234/v1");
+
+        let config = config.with_overrides(None, None, Some("anthropic".into()));
+        assert_eq!(config.provider_type, ProviderType::Anthropic);
+        assert_eq!(config.base_url, "https://api.anthropic.com");
+    }
+
+    /// A loaded URL that belongs to a different cloud provider is replaced too.
+    #[test]
+    fn test_with_overrides_provider_alone_replaces_other_providers_url() {
+        let config = KodaConfig::default_for_testing(ProviderType::OpenAI).with_overrides(
+            None,
+            None,
+            Some("gemini".into()),
+        );
+        assert_eq!(config.provider_type, ProviderType::Gemini);
+        assert_eq!(config.base_url, "https://generativelanguage.googleapis.com");
+    }
+
+    /// A custom endpoint for the *same* provider survives `--provider`.
+    #[test]
+    fn test_with_overrides_provider_alone_keeps_custom_url_for_same_provider() {
+        let mut config = KodaConfig::default_for_testing(ProviderType::Ollama);
+        config.base_url = "http://127.0.0.1:11434/v1".to_string();
+
+        let config = config.with_overrides(None, None, Some("ollama".into()));
+        assert_eq!(config.provider_type, ProviderType::Ollama);
+        assert_eq!(config.base_url, "http://127.0.0.1:11434/v1");
     }
 
     #[test]
