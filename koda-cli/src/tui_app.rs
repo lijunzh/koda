@@ -15,7 +15,7 @@
 //! See #209 for the refactoring plan.
 
 use crate::sink::UiEvent;
-use crate::tui_context::TuiContext;
+use crate::tui_context::{ProviderOverrides, TuiContext};
 
 use anyhow::Result;
 use koda_core::config::KodaConfig;
@@ -32,6 +32,7 @@ use tokio::sync::mpsc;
 pub async fn run(
     project_root: PathBuf,
     config: KodaConfig,
+    overrides: ProviderOverrides,
     db: Database,
     session_id: String,
     version_check: tokio::task::JoinHandle<Option<String>>,
@@ -40,6 +41,7 @@ pub async fn run(
     let mut ctx = TuiContext::new(
         project_root,
         config,
+        overrides,
         db,
         session_id,
         version_check,

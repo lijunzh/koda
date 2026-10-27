@@ -304,7 +304,13 @@ pub(crate) async fn run() -> Result<()> {
     // Detect first run (onboarding happens inside the TUI now)
     let first_run = onboarding::is_first_run();
 
-    // Load configuration
+    // Load configuration. The TUI also restores the last-used provider from
+    // the DB, but only for the fields these flags leave unset.
+    let overrides = tui_context::ProviderOverrides {
+        provider: cli.provider.is_some(),
+        base_url: cli.base_url.is_some(),
+        model: cli.model.is_some(),
+    };
     let config = koda_core::config::KodaConfig::load(&project_root, &cli.agent)?;
     let config = config
         .with_overrides(cli.base_url, cli.model, cli.provider)
@@ -328,6 +334,7 @@ pub(crate) async fn run() -> Result<()> {
     tui_app::run(
         project_root,
         config,
+        overrides,
         db,
         session_id,
         version_check,
