@@ -203,6 +203,7 @@ pub(crate) struct VimNormalKeymap {
     pub(crate) move_line_end: Vec<KeyBinding>,
     pub(crate) delete_char: Vec<KeyBinding>,
     pub(crate) delete_to_line_end: Vec<KeyBinding>,
+    pub(crate) change_to_line_end: Vec<KeyBinding>,
     pub(crate) yank_line: Vec<KeyBinding>,
     pub(crate) paste_after: Vec<KeyBinding>,
     pub(crate) start_delete_operator: Vec<KeyBinding>,
@@ -437,6 +438,10 @@ impl RuntimeKeymap {
                 delete_to_line_end: default_bindings![
                     shift(KeyCode::Char('d')),
                     plain(KeyCode::Char('D'))
+                ],
+                change_to_line_end: default_bindings![
+                    shift(KeyCode::Char('c')),
+                    plain(KeyCode::Char('C'))
                 ],
                 yank_line: default_bindings![shift(KeyCode::Char('y')), plain(KeyCode::Char('Y'))],
                 paste_after: default_bindings![plain(KeyCode::Char('p'))],

@@ -130,6 +130,7 @@ use super::keymap::VimNormalKeymap;
 use super::keymap::VimOperatorKeymap;
 use super::text_element::ByteRange;
 use super::text_element::TextElement as UserTextElement;
+use super::wrapping::display_width;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -139,17 +140,30 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::StatefulWidget;
 use ratatui::widgets::Widget;
+use std::borrow::Cow;
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::ops::Range;
 use textwrap::Options;
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 
 fn is_word_separator(ch: char) -> bool {
     WORD_SEPARATORS.contains(ch)
+}
+
+/// Replace tabs with the one-column representation used for rendering and
+/// wrapping (upstream openai/codex#33239).
+///
+/// A tab and a space are both one byte, so ranges computed from this text
+/// still index the original editable text.
+fn text_for_display(text: &str) -> Cow<'_, str> {
+    if text.contains('\t') {
+        Cow::Owned(text.replace('\t', " "))
+    } else {
+        Cow::Borrowed(text)
+    }
 }
 
 fn split_word_pieces(run: &str) -> Vec<(usize, &str)> {
@@ -559,11 +573,16 @@ impl TextArea {
 
     /// Compute the on-screen cursor position taking scrolling into account.
     pub fn cursor_pos_with_state(&self, area: Rect, state: TextAreaState) -> Option<(u16, u16)> {
+        if area.is_empty() {
+            return None;
+        }
+
         let lines = self.wrapped_lines(area.width);
         let effective_scroll = self.effective_scroll(area.height, &lines, state.scroll);
         let i = Self::wrapped_line_index_by_start(&lines, self.cursor_pos)?;
         let ls = &lines[i];
-        let col = self.text[ls.start..self.cursor_pos].width() as u16;
+        let col = display_width(&self.text[ls.start..self.cursor_pos])
+            .min(usize::from(area.width.saturating_sub(1))) as u16;
         let screen_row = i
             .saturating_sub(effective_scroll as usize)
             .try_into()
@@ -577,7 +596,7 @@ impl TextArea {
 
     fn current_display_col(&self) -> usize {
         let bol = self.beginning_of_current_line();
-        self.text[bol..self.cursor_pos].width()
+        display_width(&self.text[bol..self.cursor_pos])
     }
 
     fn wrapped_line_index_by_start(lines: &[Range<usize>], pos: usize) -> Option<usize> {
@@ -595,7 +614,7 @@ impl TextArea {
     ) {
         let mut width_so_far = 0usize;
         for (i, g) in self.text[line_start..line_end].grapheme_indices(true) {
-            width_so_far += g.width();
+            width_so_far += display_width(g);
             if width_so_far > target_col {
                 self.cursor_pos = line_start + i;
                 // Avoid landing inside an element; round to nearest boundary
@@ -809,9 +828,13 @@ impl TextArea {
         }
         if self.vim_normal_keymap.open_line_below.is_pressed(event) {
             let eol = self.end_of_current_line();
-            let insert_at = if eol < self.text.len() { eol + 1 } else { eol };
+            // Measured before the insert: afterwards `eol < len` always
+            // holds and `o` on the last line left the cursor on the old
+            // line (upstream openai/codex#25022).
+            let old_len = self.text.len();
+            let insert_at = if eol < old_len { eol + 1 } else { eol };
             self.insert_str_at(insert_at, "\n");
-            let cursor = if eol < self.text.len() {
+            let cursor = if eol < old_len {
                 insert_at
             } else {
                 insert_at + 1
@@ -868,7 +891,12 @@ impl TextArea {
             return;
         }
         if self.vim_normal_keymap.delete_to_line_end.is_pressed(event) {
-            self.kill_to_end_of_line();
+            self.vim_kill_to_end_of_line();
+            return;
+        }
+        if self.vim_normal_keymap.change_to_line_end.is_pressed(event) {
+            self.vim_kill_to_end_of_line();
+            self.vim_mode = VimMode::Insert;
             return;
         }
         if self.vim_normal_keymap.yank_line.is_pressed(event) {
@@ -1027,7 +1055,7 @@ impl TextArea {
             VimMotion::Down => self.move_cursor_down(),
             VimMotion::WordForward => self.set_cursor(self.beginning_of_next_word()),
             VimMotion::WordBackward => self.set_cursor(self.beginning_of_previous_word()),
-            VimMotion::WordEnd => self.set_cursor(self.end_of_next_word()),
+            VimMotion::WordEnd => self.set_cursor(self.vim_word_end_exclusive()),
             VimMotion::LineStart => self.set_cursor(self.beginning_of_current_line()),
             VimMotion::LineEnd => self.set_cursor(self.end_of_current_line()),
         }
@@ -1117,6 +1145,15 @@ impl TextArea {
 
         if let Some(range) = range {
             self.kill_range(range);
+        }
+    }
+
+    /// Vim `D` / `C`: kill to the end of the line, keeping the newline when
+    /// the cursor is already at the line end (upstream openai/codex#24380).
+    fn vim_kill_to_end_of_line(&mut self) {
+        let eol = self.end_of_current_line();
+        if self.cursor_pos < eol {
+            self.kill_range(self.cursor_pos..eol);
         }
     }
 
@@ -1266,13 +1303,18 @@ impl TextArea {
                 let lines = &cache.lines;
                 if let Some(idx) = Self::wrapped_line_index_by_start(lines, self.cursor_pos) {
                     let cur_range = &lines[idx];
-                    let target_col = self
-                        .preferred_col
-                        .unwrap_or_else(|| self.text[cur_range.start..self.cursor_pos].width());
+                    let target_col = self.preferred_col.unwrap_or_else(|| {
+                        display_width(&self.text[cur_range.start..self.cursor_pos])
+                    });
                     if idx > 0 {
                         let prev = &lines[idx - 1];
                         let line_start = prev.start;
-                        let line_end = prev.end.saturating_sub(1);
+                        let mut line_end = prev.end.saturating_sub(1);
+                        // A reserved continuation row starts where this row
+                        // ends; land before it, not on it.
+                        if line_end == cur_range.start {
+                            line_end = self.prev_atomic_boundary(line_end).max(line_start);
+                        }
                         Some((target_col, Some((line_start, line_end))))
                     } else {
                         Some((target_col, None))
@@ -1329,13 +1371,19 @@ impl TextArea {
                 let lines = &cache.lines;
                 if let Some(idx) = Self::wrapped_line_index_by_start(lines, self.cursor_pos) {
                     let cur_range = &lines[idx];
-                    let target_col = self
-                        .preferred_col
-                        .unwrap_or_else(|| self.text[cur_range.start..self.cursor_pos].width());
+                    let target_col = self.preferred_col.unwrap_or_else(|| {
+                        display_width(&self.text[cur_range.start..self.cursor_pos])
+                    });
                     if idx + 1 < lines.len() {
                         let next = &lines[idx + 1];
                         let line_start = next.start;
-                        let line_end = next.end.saturating_sub(1);
+                        let mut line_end = next.end.saturating_sub(1);
+                        if lines
+                            .get(idx + 2)
+                            .is_some_and(|following| following.start == line_end)
+                        {
+                            line_end = self.prev_atomic_boundary(line_end).max(line_start);
+                        }
                         Some((target_col, Some((line_start, line_end))))
                     } else {
                         Some((target_col, None))
@@ -1847,7 +1895,11 @@ impl TextArea {
     }
 
     pub(crate) fn end_of_next_word(&self) -> usize {
-        let suffix = &self.text[self.cursor_pos..];
+        self.end_of_next_word_from(self.cursor_pos)
+    }
+
+    fn end_of_next_word_from(&self, cursor_pos: usize) -> usize {
+        let suffix = &self.text[cursor_pos..];
         let Some(first_non_ws) = suffix.find(|ch: char| !ch.is_whitespace()) else {
             return self.text.len();
         };
@@ -1855,16 +1907,16 @@ impl TextArea {
         let run = &run[..run.find(char::is_whitespace).unwrap_or(run.len())];
         let mut pieces = split_word_pieces(run).into_iter().peekable();
         let Some((start, piece)) = pieces.next() else {
-            return self.cursor_pos + first_non_ws;
+            return cursor_pos + first_non_ws;
         };
-        let word_start = self.cursor_pos + first_non_ws + start;
+        let word_start = cursor_pos + first_non_ws + start;
         let mut end = word_start + piece.len();
         if piece.chars().all(is_word_separator) {
             while let Some((idx, piece)) = pieces.peek() {
                 if !piece.chars().all(is_word_separator) {
                     break;
                 }
-                end = self.cursor_pos + first_non_ws + *idx + piece.len();
+                end = cursor_pos + first_non_ws + *idx + piece.len();
                 pieces.next();
             }
         }
@@ -1872,8 +1924,24 @@ impl TextArea {
         self.adjust_pos_out_of_elements(end, /*prefer_start*/ false)
     }
 
-    fn vim_word_end_cursor(&self) -> usize {
+    /// Exclusive end for Vim `e`: from a word end, advance to the next word
+    /// end instead of staying put (upstream openai/codex#24380).
+    fn vim_word_end_exclusive(&self) -> usize {
         let end = self.end_of_next_word();
+        let target = if end > self.cursor_pos {
+            self.prev_atomic_boundary(end)
+        } else {
+            end
+        };
+        if target == self.cursor_pos && end < self.text.len() {
+            self.end_of_next_word_from(end)
+        } else {
+            end
+        }
+    }
+
+    fn vim_word_end_cursor(&self) -> usize {
+        let end = self.vim_word_end_exclusive();
         if end > self.cursor_pos {
             self.prev_atomic_boundary(end)
         } else {
@@ -1937,10 +2005,44 @@ impl TextArea {
                 // textwrap degenerates to one character per line. Wrap at
                 // 1 column instead; the wrap functions also cope with 0.
                 let wrap_width = usize::from(width.max(1));
-                let lines = super::wrapping::wrap_ranges(
-                    &self.text,
+                let display_text = text_for_display(&self.text);
+                let mut lines = super::wrapping::wrap_ranges(
+                    display_text.as_ref(),
                     Options::new(wrap_width).wrap_algorithm(textwrap::WrapAlgorithm::FirstFit),
                 );
+                // Split rows wider than the area (overflowing spaces) and give a
+                // logical line that exactly fills the width a continuation row,
+                // so the insertion point stays visible (upstream
+                // openai/codex#37166).
+                if width > 0 {
+                    let wrapped_lines = lines;
+                    lines = Vec::with_capacity(wrapped_lines.len());
+                    for wrapped_line in wrapped_lines {
+                        let line_end = wrapped_line.end.saturating_sub(1);
+                        let mut line_start = wrapped_line.start;
+                        let mut line_width = 0;
+
+                        for (offset, grapheme) in display_text[wrapped_line.start..line_end]
+                            .grapheme_indices(/*is_extended*/ true)
+                        {
+                            let grapheme_width = display_width(grapheme);
+                            if line_width > 0 && line_width + grapheme_width > usize::from(width) {
+                                let next_line_start = wrapped_line.start + offset;
+                                lines.push(line_start..next_line_start + 1);
+                                line_start = next_line_start;
+                                line_width = 0;
+                            }
+                            line_width += grapheme_width;
+                        }
+
+                        lines.push(line_start..line_end + 1);
+                        if line_width >= usize::from(width)
+                            && matches!(display_text.as_bytes().get(line_end), None | Some(b'\n'))
+                        {
+                            lines.push(line_end..line_end + 1);
+                        }
+                    }
+                }
                 *cache = Some(WrapCache { width, lines });
             }
         }
@@ -1986,7 +2088,14 @@ impl TextArea {
 impl Widget for &TextArea {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let lines = self.wrapped_lines(area.width);
-        self.render_lines(area, buf, &lines, 0..lines.len(), Style::default(), &[]);
+        self.render_lines(
+            area,
+            buf,
+            &lines,
+            0..lines.len().min(usize::from(area.height)),
+            Style::default(),
+            &[],
+        );
     }
 }
 
@@ -2076,7 +2185,13 @@ impl TextArea {
             let line_range = r.start..r.end - 1;
             buf.set_style(Rect::new(area.x, y, area.width, 1), base_style);
             // Draw base line with the provided style.
-            buf.set_string(area.x, y, &self.text[line_range.clone()], base_style);
+            buf.set_stringn(
+                area.x,
+                y,
+                text_for_display(&self.text[line_range.clone()]),
+                usize::from(area.width),
+                base_style,
+            );
 
             // Overlay styled segments for elements that intersect this line.
             for elem in &self.elements {
@@ -2087,9 +2202,15 @@ impl TextArea {
                     continue;
                 }
                 let styled = &self.text[overlap_start..overlap_end];
-                let x_off = self.text[line_range.start..overlap_start].width() as u16;
+                let x_off = display_width(&self.text[line_range.start..overlap_start]) as u16;
                 let style = base_style.fg(ratatui::style::Color::Cyan);
-                buf.set_string(area.x + x_off, y, styled, style);
+                buf.set_stringn(
+                    area.x + x_off,
+                    y,
+                    text_for_display(styled),
+                    usize::from(area.width.saturating_sub(x_off)),
+                    style,
+                );
             }
 
             // Overlay render-only highlight ranges last so transient search highlighting remains
@@ -2101,8 +2222,14 @@ impl TextArea {
                     continue;
                 }
                 let highlighted = &self.text[overlap_start..overlap_end];
-                let x_off = self.text[line_range.start..overlap_start].width() as u16;
-                buf.set_string(area.x + x_off, y, highlighted, *style);
+                let x_off = display_width(&self.text[line_range.start..overlap_start]) as u16;
+                buf.set_stringn(
+                    area.x + x_off,
+                    y,
+                    text_for_display(highlighted),
+                    usize::from(area.width.saturating_sub(x_off)),
+                    *style,
+                );
             }
         }
     }
@@ -2122,10 +2249,10 @@ impl TextArea {
             let line_range = r.start..r.end - 1;
             buf.set_style(Rect::new(area.x, y, area.width, 1), base_style);
             let masked = self.text[line_range.clone()]
-                .chars()
-                .map(|_| mask_char)
+                .graphemes(/*is_extended*/ true)
+                .flat_map(|grapheme| std::iter::repeat_n(mask_char, display_width(grapheme)))
                 .collect::<String>();
-            buf.set_string(area.x, y, &masked, base_style);
+            buf.set_stringn(area.x, y, &masked, usize::from(area.width), base_style);
         }
     }
 }
@@ -2497,6 +2624,133 @@ mod tests {
 
         assert_eq!(t.text(), "ab");
         assert_eq!(t.kill_buffer, "c");
+    }
+
+    // Upstream openai/codex#24380: `e` from a word end advances to the next
+    // word end, `C` changes to the line end, and `D`/`C` at the line end
+    // keep the newline.
+    #[test]
+    fn vim_e_advances_from_each_word_end() {
+        let mut t = ta_with("alpha beta gamma");
+        t.set_cursor("alph".len());
+        t.set_vim_enabled(/*enabled*/ true);
+        let mut cursors = Vec::new();
+        for _ in 0..3 {
+            t.input(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+            cursors.push(t.cursor());
+        }
+        assert_eq!(
+            cursors,
+            vec![
+                "alpha bet".len(),
+                "alpha beta gamm".len(),
+                "alpha beta gamm".len()
+            ]
+        );
+    }
+
+    #[test]
+    fn vim_delete_to_word_end_advances_from_existing_word_end() {
+        let mut t = ta_with("alpha beta gamma");
+        t.set_cursor("alph".len());
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        t.input(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+
+        assert_eq!(t.text(), "alph gamma");
+        assert_eq!(t.kill_buffer, "a beta");
+    }
+
+    #[test]
+    fn vim_e_from_word_end_can_land_on_trailing_space() {
+        let mut t = ta_with("alpha   ");
+        t.set_cursor("alph".len());
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+
+        assert_eq!(t.cursor(), "alpha  ".len());
+    }
+
+    #[test]
+    fn vim_e_advances_across_atomic_element_word_ends() {
+        let mut t = TextArea::new();
+        t.insert_str("alpha ");
+        t.insert_element("<element>");
+        t.insert_str(" gamma");
+        let element_start = t.elements[0].range.start;
+        t.set_cursor("alph".len());
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(t.cursor(), element_start);
+
+        t.input(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(t.cursor(), "alpha <element> gamm".len());
+    }
+
+    #[test]
+    fn vim_shift_c_changes_to_line_end_and_enters_insert_mode() {
+        for event in [
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('C'), KeyModifiers::NONE),
+        ] {
+            let mut t = ta_with("hello world\nnext line");
+            t.set_cursor(/*pos*/ 6);
+            t.set_vim_enabled(/*enabled*/ true);
+
+            t.input(event);
+
+            assert_eq!(t.text(), "hello \nnext line");
+            assert_eq!(t.vim_mode_label(), Some("Insert"));
+            assert_eq!(t.cursor(), 6);
+            assert_eq!(t.kill_buffer, "world");
+        }
+    }
+
+    #[test]
+    fn vim_d_at_line_end_does_not_remove_newline() {
+        let mut t = ta_with("hello\nworld");
+        t.set_cursor(/*pos*/ "hello".len());
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE));
+
+        assert_eq!(t.text(), "hello\nworld");
+        assert_eq!(t.vim_mode_label(), Some("Normal"));
+        assert_eq!(t.kill_buffer, "");
+    }
+
+    #[test]
+    fn vim_c_at_line_end_enters_insert_without_removing_newline() {
+        let mut t = ta_with("hello\nworld");
+        t.set_cursor(/*pos*/ "hello".len());
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::NONE));
+
+        assert_eq!(t.text(), "hello\nworld");
+        assert_eq!(t.vim_mode_label(), Some("Insert"));
+        assert_eq!(t.cursor(), "hello".len());
+        assert_eq!(t.kill_buffer, "");
+    }
+
+    // Upstream openai/codex#25022: `o` on the last line puts the cursor on
+    // the new blank line, not at the end of the old one.
+    #[test]
+    fn vim_o_on_last_line_moves_to_new_blank_line() {
+        let mut t = ta_with("hello");
+        t.set_cursor(/*pos*/ 0);
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        assert_eq!(t.text(), "hello\n");
+        assert_eq!(t.cursor(), "hello\n".len());
+        assert_eq!(t.vim_mode_label(), Some("Insert"));
+
+        t.input(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(t.text(), "hello\nx");
     }
 
     #[test]
@@ -3165,6 +3419,227 @@ mod tests {
         assert!(state.scroll < effective_lines);
     }
 
+    // Upstream openai/codex#33239: a tab is drawn as one column, so the
+    // cursor and wrapping must count it as one column too.
+    #[test]
+    fn tabs_render_as_spaces_and_align_with_cursor() {
+        let text = "x\tSimulation\tformatter\t7.4 ms\t-8.29%";
+        let mut t = ta_with(text);
+        t.set_cursor(text.len());
+        let area = Rect::new(0, 0, /*width*/ 100, /*height*/ 1);
+        let mut buf = Buffer::empty(area);
+
+        ratatui::widgets::Widget::render(&t, area, &mut buf);
+
+        let cursor = t.cursor_pos(area).unwrap();
+        assert_eq!(buf[(cursor.0 - 1, cursor.1)].symbol(), "%");
+        assert_eq!(buf[(1, 0)].symbol(), " ", "the tab is drawn as a space");
+    }
+
+    #[test]
+    fn tabs_wrap_at_their_rendered_width() {
+        let text = "1234\t5";
+        let mut t = ta_with(text);
+        t.set_cursor(text.len());
+        let area = Rect::new(0, 0, /*width*/ 5, /*height*/ 2);
+        let mut buf = Buffer::empty(area);
+
+        ratatui::widgets::Widget::render(&t, area, &mut buf);
+
+        assert_eq!(t.desired_height(area.width), 2);
+        assert_eq!(t.cursor_pos(area), Some((1, 1)));
+        assert_eq!(buf[(0, 1)].symbol(), "5");
+    }
+
+    // Upstream openai/codex#35962: halfwidth sound marks (U+FF9E / U+FF9F)
+    // have Unicode width 0 but Ratatui draws each in its own cell, so
+    // wrapping, the cursor and the mask must count them as one column.
+    #[test]
+    fn halfwidth_sound_marks_wrap_and_align_with_the_cursor() {
+        // A full final row reserves a continuation row for the cursor
+        // (openai/codex#37166), hence height 3 for the last two cases.
+        for (label, text, width, height, cursor, cells) in [
+            ("dakuten", "12ｶﾞx", 4, 2, (1, 1), [(2, 0, "ｶﾞ"), (0, 1, "x")]),
+            (
+                "handakuten",
+                "abﾊﾟc",
+                3,
+                3,
+                (0, 2),
+                [(0, 1, "ﾊﾟ"), (2, 1, "c")],
+            ),
+            ("standalone", "a ﾞb", 2, 3, (0, 2), [(0, 1, "ﾞ"), (1, 1, "b")]),
+        ] {
+            let mut t = ta_with(text);
+            t.set_cursor(text.len());
+            let area = Rect::new(0, 0, width, height);
+            let mut buf = Buffer::empty(area);
+            ratatui::widgets::Widget::render(&t, area, &mut buf);
+
+            assert_eq!(t.desired_height(area.width), height, "{label}");
+            assert_eq!(t.cursor_pos(area), Some(cursor), "{label}");
+            for (x, y, expected) in cells {
+                assert_eq!(buf[(x, y)].symbol(), expected, "{label} cell ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn masked_graphemes_align_with_the_cursor() {
+        let text = "界ﾞa";
+        let mut t = ta_with(text);
+        t.set_cursor(text.len());
+        let area = Rect::new(0, 0, /*width*/ 4, /*height*/ 2);
+        let mut buf = Buffer::empty(area);
+        let mut state = TextAreaState::default();
+        t.render_ref_masked(area, &mut buf, &mut state, '*', Style::default());
+
+        // The masked row is full, so the cursor sits on the reserved row.
+        assert_eq!(t.cursor_pos(area), Some((0, 1)));
+        let masked: String = (0..4).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(masked, "****", "one mask cell per display column");
+    }
+
+    #[test]
+    fn overwide_halfwidth_sound_marks_keep_the_final_cursor_visible() {
+        let area = Rect::new(0, 0, /*width*/ 2, /*height*/ 3);
+
+        for grapheme in ["ｶﾞﾞ", "界ﾞ"] {
+            let text = format!("{grapheme}ab");
+            let mut t = ta_with(&text);
+            t.set_cursor(text.len());
+
+            assert_eq!(t.desired_height(area.width), 3, "{grapheme}");
+            assert_eq!(t.cursor_pos(area), Some((0, 2)), "{grapheme}");
+
+            t.set_cursor(grapheme.len());
+            assert_eq!(t.cursor_pos(area), Some((0, 1)), "{grapheme}");
+        }
+    }
+
+    // Upstream openai/codex#37166: a line that exactly fills the width gets
+    // a continuation row for the insertion point, overflowing spaces wrap,
+    // and nothing is drawn or placed outside the textarea.
+    #[test]
+    fn cursor_wraps_after_filling_the_final_line() {
+        for text in ["abad", "界界", "abｶﾞ"] {
+            let mut t = ta_with(text);
+            t.set_cursor(t.text().len());
+            let area = Rect::new(2, 3, /*width*/ 4, /*height*/ 2);
+
+            assert_eq!(t.desired_height(area.width), 2, "{text}");
+            assert_eq!(t.cursor_pos(area), Some((2, 4)), "{text}");
+        }
+    }
+
+    #[test]
+    fn full_non_final_lines_reserve_visible_cursor_rows() {
+        for text in ["abad\nef", "界界\nef", "abｶﾞ\nef"] {
+            let mut t = ta_with(text);
+            let area = Rect::new(0, 0, /*width*/ 4, /*height*/ 3);
+            let newline = text.find('\n').unwrap();
+
+            assert_eq!(t.desired_height(area.width), 3, "{text}");
+
+            t.set_cursor(newline);
+            assert_eq!(t.cursor_pos(area), Some((0, 1)), "{text}");
+
+            t.set_cursor(newline + 1);
+            assert_eq!(t.cursor_pos(area), Some((0, 2)), "{text}");
+        }
+    }
+
+    #[test]
+    fn trailing_spaces_wrap_without_letting_the_cursor_escape() {
+        let mut t = ta_with("abad        ");
+        t.set_cursor(t.text().len());
+        let area = Rect::new(0, 0, /*width*/ 5, /*height*/ 3);
+        let mut buf = Buffer::empty(area);
+        let mut state = TextAreaState::default();
+        ratatui::widgets::StatefulWidget::render(&t, area, &mut buf, &mut state);
+
+        assert_eq!(t.desired_height(area.width), 3);
+        let (x, y) = t.cursor_pos_with_state(area, state).unwrap();
+        assert!(
+            x < area.right() && y < area.bottom(),
+            "cursor ({x}, {y}) escaped"
+        );
+    }
+
+    #[test]
+    fn space_runs_wrap_before_later_text() {
+        let mut t = ta_with("abad     next");
+        let area = Rect::new(0, 0, /*width*/ 4, /*height*/ 5);
+
+        assert_eq!(t.desired_height(area.width), 5);
+
+        for (cursor, expected) in [(4, (0, 1)), (6, (2, 1)), (8, (0, 2)), (9, (0, 3))] {
+            t.set_cursor(cursor);
+            assert_eq!(t.cursor_pos(area), Some(expected), "cursor {cursor}");
+        }
+    }
+
+    #[test]
+    fn full_final_line_scrolls_to_its_visible_cursor_row() {
+        let mut t = ta_with("abcdefgh");
+        t.set_cursor(t.text().len());
+        let area = Rect::new(0, 0, /*width*/ 4, /*height*/ 2);
+        let mut buf = Buffer::empty(area);
+        let mut state = TextAreaState::default();
+        ratatui::widgets::StatefulWidget::render(&t, area, &mut buf, &mut state);
+
+        assert_eq!(t.desired_height(area.width), 3);
+        assert_eq!(state.scroll, 1);
+        assert_eq!(t.cursor_pos_with_state(area, state), Some((0, 1)));
+        assert_eq!(buf[(0, 0)].symbol(), "e");
+    }
+
+    #[test]
+    fn cursor_pos_is_none_for_an_empty_viewport() {
+        let t = ta_with("abc");
+        assert_eq!(t.cursor_pos(Rect::new(0, 0, 0, 3)), None);
+        assert_eq!(t.cursor_pos(Rect::new(0, 0, 4, 0)), None);
+    }
+
+    #[test]
+    fn rendering_does_not_overwrite_cells_outside_the_textarea() {
+        for overlay in ["plain", "element", "highlight", "masked"] {
+            let mut t = ta_with("abad     next");
+            if overlay == "element" {
+                t.add_element_range(0..9);
+            }
+            let area = Rect::new(0, 0, /*width*/ 4, /*height*/ 3);
+            let mut state = TextAreaState::default();
+            let mut buf = Buffer::empty(Rect::new(0, 0, /*width*/ 8, /*height*/ 3));
+            let protected_style = Style::default().fg(ratatui::style::Color::Red);
+            buf.set_style(Rect::new(4, 0, /*width*/ 4, /*height*/ 3), protected_style);
+            let protected: Vec<_> = (4..8)
+                .flat_map(|x| (0..3).map(move |y| (x, y)))
+                .map(|cell| buf[cell].clone())
+                .collect();
+
+            match overlay {
+                "highlight" => t.render_ref_styled_with_highlights(
+                    area,
+                    &mut buf,
+                    &mut state,
+                    Style::default(),
+                    &[(0..9, Style::default().fg(ratatui::style::Color::Magenta))],
+                ),
+                "masked" => {
+                    t.render_ref_masked(area, &mut buf, &mut state, '*', Style::default());
+                }
+                _ => ratatui::widgets::StatefulWidget::render(&t, area, &mut buf, &mut state),
+            }
+
+            let after: Vec<_> = (4..8)
+                .flat_map(|x| (0..3).map(move |y| (x, y)))
+                .map(|cell| buf[cell].clone())
+                .collect();
+            assert_eq!(after, protected, "{overlay} drew outside the textarea");
+        }
+    }
+
     #[test]
     fn render_highlights_apply_style_without_mutating_text() {
         let t = ta_with("hello world");
@@ -3342,18 +3817,24 @@ mod tests {
     fn wrapped_navigation_with_newlines_and_spaces() {
         // Include spaces and an explicit newline to exercise boundaries
         let mut t = ta_with("word1  word2\nword3");
-        // Width 6 will wrap "word1  " and then "word2" before the newline
+        // Width 6 wraps "word1 ", its remaining space, and then "word2" before the newline.
         let _ = t.desired_height(/*width*/ 6);
 
-        // Put cursor on the second wrapped line before the newline, at column 1 of "word2"
+        // Put the cursor at column 1 of "word2".
         let start_word2 = t.text().find("word2").unwrap();
         t.set_cursor(start_word2 + 1);
 
-        // Up should go to first wrapped line, column 1 -> index 1
+        // Up first lands on the short whitespace continuation instead of skipping it.
+        t.move_cursor_up();
+        assert_eq!(t.cursor(), start_word2 - 1);
+
+        // A second Up preserves the preferred column on the first wrapped line.
         t.move_cursor_up();
         assert_eq!(t.cursor(), 1);
 
-        // Down should return to the same visual column on "word2"
+        // Down visits the whitespace continuation before returning to "word2".
+        t.move_cursor_down();
+        assert_eq!(t.cursor(), start_word2 - 1);
         t.move_cursor_down();
         assert_eq!(t.cursor(), start_word2 + 1);
 

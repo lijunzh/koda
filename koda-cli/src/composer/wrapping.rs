@@ -34,6 +34,208 @@
 
 use std::ops::Range;
 use textwrap::Options;
+use textwrap::core::Word;
+use textwrap::word_splitters::split_words;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
+
+/// Halfwidth katakana voiced and semi-voiced sound marks.
+const HALFWIDTH_SOUND_MARKS: [char; 2] = ['\u{FF9E}', '\u{FF9F}'];
+
+/// Display width as Ratatui draws it (upstream openai/codex#35962).
+///
+/// Unicode gives the halfwidth sound marks width 0, but Ratatui draws each
+/// in its own cell; counting them keeps wrapping, the cursor and the mask
+/// in step with what is on screen.
+pub(crate) fn display_width(text: &str) -> usize {
+    text.width() + text.matches(HALFWIDTH_SOUND_MARKS).count()
+}
+
+/// Projected text keeps source-offset lookup separate from legal grapheme
+/// split points.
+struct ProjectedText {
+    text: String,
+    source_boundaries: Vec<(usize, usize)>,
+    grapheme_boundaries: Vec<usize>,
+}
+
+/// Replaces halfwidth sound-mark graphemes with equally wide, textwrap-safe
+/// placeholders, since textwrap measures them as width 0.
+///
+/// Source boundaries recover original byte offsets, while grapheme
+/// boundaries keep placeholders indivisible and preserve leading whitespace
+/// as a wrapping opportunity.
+fn project_halfwidth_sound_marks(text: &str) -> Option<ProjectedText> {
+    if !text.contains(HALFWIDTH_SOUND_MARKS) {
+        return None;
+    }
+
+    let mut projected = String::with_capacity(text.len());
+    let mut source_boundaries = vec![(0, 0)];
+    let mut grapheme_boundaries = vec![0];
+    for (source_start, grapheme) in text.grapheme_indices(/*is_extended*/ true) {
+        if grapheme.contains(HALFWIDTH_SOUND_MARKS) {
+            let source_end = source_start + grapheme.len();
+            let content_start = grapheme
+                .find(|ch: char| !ch.is_whitespace())
+                .unwrap_or(grapheme.len());
+            let (whitespace, content) = grapheme.split_at(content_start);
+            for (offset, ch) in whitespace.char_indices() {
+                projected.push(ch);
+                source_boundaries.push((projected.len(), source_start + offset + ch.len_utf8()));
+                grapheme_boundaries.push(projected.len());
+            }
+
+            // Two-column and one-column placeholders joined by WORD JOINER so
+            // textwrap never breaks inside one source grapheme.
+            let width = display_width(content);
+            let projected_start = projected.len();
+            for _ in 0..width / 2 {
+                if projected.len() > projected_start {
+                    projected.push('\u{2060}');
+                }
+                projected.push('界');
+                source_boundaries.push((projected.len(), source_end));
+            }
+            if width % 2 == 1 {
+                if projected.len() > projected_start {
+                    projected.push('\u{2060}');
+                }
+                projected.push('a');
+                source_boundaries.push((projected.len(), source_end));
+            }
+        } else {
+            for (offset, ch) in grapheme.char_indices() {
+                projected.push(ch);
+                source_boundaries.push((projected.len(), source_start + offset + ch.len_utf8()));
+            }
+        }
+        grapheme_boundaries.push(projected.len());
+    }
+
+    Some(ProjectedText {
+        text: projected,
+        source_boundaries,
+        grapheme_boundaries,
+    })
+}
+
+/// Maps a projected byte offset back to the corresponding original-text
+/// boundary.
+fn source_offset(boundaries: &[(usize, usize)], projected_offset: usize) -> usize {
+    boundaries
+        .binary_search_by_key(&projected_offset, |(offset, _)| *offset)
+        .map(|index| boundaries[index].1)
+        .unwrap_or(projected_offset)
+}
+
+/// Splits oversized projected words without separating placeholders for one
+/// source grapheme.
+fn break_projected_words<'a>(
+    words: impl Iterator<Item = Word<'a>>,
+    projected: &'a ProjectedText,
+    line_width: usize,
+) -> Vec<Word<'a>> {
+    let projected_start = projected.text.as_ptr() as usize;
+    let mut pieces = Vec::new();
+
+    for word in words {
+        if display_width(word.word) <= line_width {
+            pieces.push(word);
+            continue;
+        }
+
+        let word_start = word.word.as_ptr() as usize - projected_start;
+        let word_end = word_start + word.word.len();
+        let mut piece_start = word_start;
+        let mut piece_width = 0;
+        let mut atom_start = word_start;
+        let boundary_start = projected
+            .grapheme_boundaries
+            .partition_point(|atom_end| *atom_end <= word_start);
+
+        for atom_end in projected
+            .grapheme_boundaries
+            .iter()
+            .copied()
+            .skip(boundary_start)
+        {
+            if atom_end > word_end {
+                break;
+            }
+
+            let atom_width = display_width(&projected.text[atom_start..atom_end]);
+            if piece_width > 0 && piece_width + atom_width > line_width {
+                pieces.push(Word::from(&projected.text[piece_start..atom_start]));
+                piece_start = atom_start;
+                piece_width = 0;
+            }
+            piece_width += atom_width;
+            atom_start = atom_end;
+        }
+
+        let mut last = Word::from(&projected.text[piece_start..word_end]);
+        last.whitespace = word.whitespace;
+        last.penalty = word.penalty;
+        pieces.push(last);
+    }
+
+    pieces
+}
+
+/// Wraps projected text and translates the resulting ranges back to source
+/// byte offsets, in the same shape as [`wrap_ranges`].
+fn wrap_projected_ranges(projected: &ProjectedText, opts: &Options<'_>) -> Vec<Range<usize>> {
+    let line_widths = [
+        opts.width
+            .saturating_sub(display_width(opts.initial_indent)),
+        opts.width
+            .saturating_sub(display_width(opts.subsequent_indent)),
+    ];
+    let line_ending = opts.line_ending.as_str();
+    let mut ranges = Vec::new();
+    let mut line_start = 0;
+
+    for line in projected.text.split(line_ending) {
+        let words = opts.word_separator.find_words(line);
+        let split_words = split_words(words, &opts.word_splitter);
+        let mut broken_words = if opts.break_words {
+            break_projected_words(split_words, projected, line_widths[1])
+        } else {
+            split_words.collect()
+        };
+        if opts.break_words && !opts.initial_indent.is_empty() {
+            broken_words.insert(0, Word::from(""));
+        }
+
+        let wrapped_words = opts.wrap_algorithm.wrap(&broken_words, &line_widths);
+        let mut cursor = line_start;
+        for words in wrapped_words {
+            let Some(last_word) = words.last() else {
+                let source = source_offset(&projected.source_boundaries, cursor);
+                ranges.push(source..source + 1);
+                continue;
+            };
+            let len = words
+                .iter()
+                .map(|word| word.word.len() + word.whitespace.len())
+                .sum::<usize>()
+                - last_word.whitespace.len();
+            let end = cursor + len;
+            let trailing_spaces = projected.text[end..]
+                .chars()
+                .take_while(|ch| *ch == ' ')
+                .count();
+            let source_start = source_offset(&projected.source_boundaries, cursor);
+            let source_end = source_offset(&projected.source_boundaries, end + trailing_spaces);
+            ranges.push(source_start..source_end + 1);
+            cursor = end + last_word.whitespace.len();
+        }
+        line_start += line.len() + line_ending.len();
+    }
+
+    ranges
+}
 
 /// Returns byte-ranges into `text` for each wrapped line, including
 /// trailing whitespace and a +1 sentinel byte. Used by the textarea
@@ -48,6 +250,9 @@ where
     O: Into<Options<'a>>,
 {
     let opts = width_or_options.into();
+    if let Some(projected) = project_halfwidth_sound_marks(text) {
+        return wrap_projected_ranges(&projected, &opts);
+    }
     let mut lines: Vec<Range<usize>> = Vec::new();
     let mut cursor = 0usize;
     for (line_index, line) in textwrap::wrap(text, &opts).iter().enumerate() {
@@ -209,6 +414,31 @@ mod tests {
                 wrap_first_fit(text, 80),
                 "{text:?}"
             );
+        }
+    }
+
+    // Upstream openai/codex#35962: halfwidth sound marks count as one column
+    // and stay with their base character; byte offsets are unchanged.
+    #[test]
+    fn wrap_ranges_count_halfwidth_sound_marks_without_changing_byte_offsets() {
+        for (text, width, expected) in [
+            ("abｶﾞc", 4, &["abｶﾞ", "c"][..]),
+            ("abｶﾞc", 3, &["ab", "ｶﾞc"][..]),
+            ("ﾞab", 2, &["ﾞa", "b"][..]),
+            ("a ﾞb", 2, &["a", "ﾞb"][..]),
+            ("a ﾟb", 2, &["a", "ﾟb"][..]),
+            ("ｶﾞﾞx", 3, &["ｶﾞﾞ", "x"][..]),
+            ("界ﾞx", 3, &["界ﾞ", "x"][..]),
+            ("ｶﾞﾞab", 2, &["ｶﾞﾞ", "ab"][..]),
+            ("界ﾞab", 2, &["界ﾞ", "ab"][..]),
+            ("abｶﾞﾞcd", 2, &["ab", "ｶﾞﾞ", "cd"][..]),
+            ("ab界ﾞcd", 2, &["ab", "界ﾞ", "cd"][..]),
+        ] {
+            let wrapped: Vec<&str> = wrap_first_fit(text, width)
+                .into_iter()
+                .map(|range| text[range.start..range.end - 1].trim_end_matches(' '))
+                .collect();
+            assert_eq!(wrapped, expected, "{text:?} at width {width}");
         }
     }
 
