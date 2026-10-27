@@ -40,7 +40,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
         with:
           shared-key: coverage-${{ runner.os }}
-      - uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2
         id: install
         # The action's CDN download already retries 11 times. We tolerate the
         # remaining 0.x% of cases (GitHub releases CDN returning sustained
