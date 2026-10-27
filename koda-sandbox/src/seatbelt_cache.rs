@@ -130,6 +130,9 @@ where
 /// this because key invalidation is handled implicitly (a different
 /// policy hashes to a different key). Useful in test setUp/tearDown
 /// to keep one test's pollution from biasing another's miss/hit ratio.
+///
+/// It also wipes entries that tests running in parallel may be relying
+/// on, so callers must hold `tests::CACHE_TEST_LOCK` (see there).
 #[cfg(test)]
 pub fn clear() {
     cache()
@@ -151,7 +154,30 @@ pub fn len() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::MutexGuard;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Tests share the single process-wide cache and cargo runs them in
+    /// parallel, so two kinds of interference are possible:
+    ///
+    /// - Racing inserts. Harmless: every test uses its own root path, so
+    ///   no two tests share a key.
+    /// - A sibling's `clear()`. This wipes *every* key, this test's
+    ///   included, so a test asserting a hit between two
+    ///   `get_or_compute` calls sees a rebuild instead. Unique keys
+    ///   can't prevent that: without this lock, ~2% of runs of this
+    ///   module failed one of the two hit assertions below.
+    ///
+    /// So any test that calls `clear()` or asserts a cache hit holds this
+    /// lock for its whole body. Tests that only check what each call
+    /// returns don't need it: a wiped entry rebuilds to the same value.
+    static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_cache_for_test() -> MutexGuard<'static, ()> {
+        // A failing test poisons the lock while holding it; recover so
+        // one failure doesn't cascade into PoisonErrors in its siblings.
+        CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     fn key_with_root(root: &str) -> ProfileKey {
         ProfileKey {
@@ -162,14 +188,9 @@ mod tests {
         }
     }
 
-    /// Tests share a single static cache, so they MUST clear it on
-    /// entry — otherwise test ordering changes the hit/miss counts.
-    /// Cargo runs tests in parallel by default; the mutex is the only
-    /// synchronization point. We accept that two tests interleaving
-    /// could race their inserts, so each test uses a unique root path
-    /// to keep its keys disjoint from siblings.
     #[test]
     fn build_runs_exactly_once_per_unique_key() {
+        let _guard = lock_cache_for_test();
         clear();
         let calls = AtomicUsize::new(0);
         let key = key_with_root("/test/once-per-key");
@@ -293,6 +314,7 @@ mod tests {
         // Belt-and-suspenders for the test helper itself: if clear()
         // ever stops working, every other cache test in the suite
         // becomes order-dependent and flaky.
+        let _guard = lock_cache_for_test();
         let key = key_with_root("/test/clear-resets");
 
         // Seed an entry.
