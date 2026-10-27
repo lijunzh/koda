@@ -130,6 +130,7 @@ use super::keymap::VimNormalKeymap;
 use super::keymap::VimOperatorKeymap;
 use super::text_element::ByteRange;
 use super::text_element::TextElement as UserTextElement;
+use super::wrapping::display_width;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -145,7 +146,6 @@ use std::cell::RefCell;
 use std::ops::Range;
 use textwrap::Options;
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 
@@ -577,7 +577,7 @@ impl TextArea {
         let effective_scroll = self.effective_scroll(area.height, &lines, state.scroll);
         let i = Self::wrapped_line_index_by_start(&lines, self.cursor_pos)?;
         let ls = &lines[i];
-        let col = self.text[ls.start..self.cursor_pos].width() as u16;
+        let col = display_width(&self.text[ls.start..self.cursor_pos]) as u16;
         let screen_row = i
             .saturating_sub(effective_scroll as usize)
             .try_into()
@@ -591,7 +591,7 @@ impl TextArea {
 
     fn current_display_col(&self) -> usize {
         let bol = self.beginning_of_current_line();
-        self.text[bol..self.cursor_pos].width()
+        display_width(&self.text[bol..self.cursor_pos])
     }
 
     fn wrapped_line_index_by_start(lines: &[Range<usize>], pos: usize) -> Option<usize> {
@@ -609,7 +609,7 @@ impl TextArea {
     ) {
         let mut width_so_far = 0usize;
         for (i, g) in self.text[line_start..line_end].grapheme_indices(true) {
-            width_so_far += g.width();
+            width_so_far += display_width(g);
             if width_so_far > target_col {
                 self.cursor_pos = line_start + i;
                 // Avoid landing inside an element; round to nearest boundary
@@ -1298,9 +1298,9 @@ impl TextArea {
                 let lines = &cache.lines;
                 if let Some(idx) = Self::wrapped_line_index_by_start(lines, self.cursor_pos) {
                     let cur_range = &lines[idx];
-                    let target_col = self
-                        .preferred_col
-                        .unwrap_or_else(|| self.text[cur_range.start..self.cursor_pos].width());
+                    let target_col = self.preferred_col.unwrap_or_else(|| {
+                        display_width(&self.text[cur_range.start..self.cursor_pos])
+                    });
                     if idx > 0 {
                         let prev = &lines[idx - 1];
                         let line_start = prev.start;
@@ -1361,9 +1361,9 @@ impl TextArea {
                 let lines = &cache.lines;
                 if let Some(idx) = Self::wrapped_line_index_by_start(lines, self.cursor_pos) {
                     let cur_range = &lines[idx];
-                    let target_col = self
-                        .preferred_col
-                        .unwrap_or_else(|| self.text[cur_range.start..self.cursor_pos].width());
+                    let target_col = self.preferred_col.unwrap_or_else(|| {
+                        display_width(&self.text[cur_range.start..self.cursor_pos])
+                    });
                     if idx + 1 < lines.len() {
                         let next = &lines[idx + 1];
                         let line_start = next.start;
@@ -2145,7 +2145,7 @@ impl TextArea {
                     continue;
                 }
                 let styled = &self.text[overlap_start..overlap_end];
-                let x_off = self.text[line_range.start..overlap_start].width() as u16;
+                let x_off = display_width(&self.text[line_range.start..overlap_start]) as u16;
                 let style = base_style.fg(ratatui::style::Color::Cyan);
                 buf.set_string(area.x + x_off, y, text_for_display(styled), style);
             }
@@ -2159,7 +2159,7 @@ impl TextArea {
                     continue;
                 }
                 let highlighted = &self.text[overlap_start..overlap_end];
-                let x_off = self.text[line_range.start..overlap_start].width() as u16;
+                let x_off = display_width(&self.text[line_range.start..overlap_start]) as u16;
                 buf.set_string(area.x + x_off, y, text_for_display(highlighted), *style);
             }
         }
@@ -2180,8 +2180,8 @@ impl TextArea {
             let line_range = r.start..r.end - 1;
             buf.set_style(Rect::new(area.x, y, area.width, 1), base_style);
             let masked = self.text[line_range.clone()]
-                .chars()
-                .map(|_| mask_char)
+                .graphemes(/*is_extended*/ true)
+                .flat_map(|grapheme| std::iter::repeat_n(mask_char, display_width(grapheme)))
                 .collect::<String>();
             buf.set_string(area.x, y, &masked, base_style);
         }
@@ -3380,6 +3380,62 @@ mod tests {
         assert_eq!(t.desired_height(area.width), 2);
         assert_eq!(t.cursor_pos(area), Some((1, 1)));
         assert_eq!(buf[(0, 1)].symbol(), "5");
+    }
+
+    // Upstream openai/codex#35962: halfwidth sound marks (U+FF9E / U+FF9F)
+    // have Unicode width 0 but Ratatui draws each in its own cell, so
+    // wrapping, the cursor and the mask must count them as one column.
+    #[test]
+    fn halfwidth_sound_marks_wrap_and_align_with_the_cursor() {
+        for (label, text, width, cursor, cells) in [
+            ("dakuten", "12ｶﾞx", 4, (1, 1), [(2, 0, "ｶﾞ"), (0, 1, "x")]),
+            ("handakuten", "abﾊﾟc", 3, (3, 1), [(0, 1, "ﾊﾟ"), (2, 1, "c")]),
+            ("standalone", "a ﾞb", 2, (2, 1), [(0, 1, "ﾞ"), (1, 1, "b")]),
+        ] {
+            let mut t = ta_with(text);
+            t.set_cursor(text.len());
+            let area = Rect::new(0, 0, width, /*height*/ 2);
+            let mut buf = Buffer::empty(area);
+            ratatui::widgets::Widget::render(&t, area, &mut buf);
+
+            assert_eq!(t.desired_height(area.width), 2, "{label}");
+            assert_eq!(t.cursor_pos(area), Some(cursor), "{label}");
+            for (x, y, expected) in cells {
+                assert_eq!(buf[(x, y)].symbol(), expected, "{label} cell ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn masked_graphemes_align_with_the_cursor() {
+        let text = "界ﾞa";
+        let mut t = ta_with(text);
+        t.set_cursor(text.len());
+        let area = Rect::new(0, 0, /*width*/ 4, /*height*/ 1);
+        let mut buf = Buffer::empty(area);
+        let mut state = TextAreaState::default();
+        t.render_ref_masked(area, &mut buf, &mut state, '*', Style::default());
+
+        assert_eq!(t.cursor_pos(area), Some((4, 0)));
+        let masked: String = (0..4).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(masked, "****", "one mask cell per display column");
+    }
+
+    #[test]
+    fn overwide_halfwidth_sound_marks_do_not_add_a_phantom_cursor_row() {
+        let area = Rect::new(0, 0, /*width*/ 2, /*height*/ 2);
+
+        for grapheme in ["ｶﾞﾞ", "界ﾞ"] {
+            let text = format!("{grapheme}ab");
+            let mut t = ta_with(&text);
+            t.set_cursor(text.len());
+
+            assert_eq!(t.desired_height(area.width), 2, "{grapheme}");
+            assert_eq!(t.cursor_pos(area), Some((2, 1)), "{grapheme}");
+
+            t.set_cursor(grapheme.len());
+            assert_eq!(t.cursor_pos(area), Some((0, 1)), "{grapheme}");
+        }
     }
 
     #[test]
