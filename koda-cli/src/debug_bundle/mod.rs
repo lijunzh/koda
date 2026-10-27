@@ -560,7 +560,7 @@ mod tests {
         let mut found: std::collections::HashMap<String, Vec<u8>> = Default::default();
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i).unwrap();
-            let path = entry.name().to_string();
+            let path = entry.name().unwrap().to_string();
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf).unwrap();
             found.insert(path, buf);

@@ -26,12 +26,15 @@
 //!
 //! Fix: put the *entire* visible text of the run plus a single OSC 8
 //! pair in the run's first cell, and mark the trailing cells with
-//! `set_skip(true)` so the diff leaves them alone. The terminal renders
-//! the visible text in one go (cursor advances by the visible width,
-//! not the symbol byte count), correctly painting over every column the
-//! run occupies. The width inflation is now contained to one cell, and
-//! the trailing cells are explicitly skipped \u2014 not implicitly via
-//! `to_skip`/`invalidated` arithmetic ratatui can't reason about.
+//! `CellDiffOption::Skip` so the diff leaves them alone. The terminal
+//! renders the visible text in one go (cursor advances by the visible
+//! width, not the symbol byte count), correctly painting over every
+//! column the run occupies. The head cell also carries
+//! `CellDiffOption::ForcedWidth(run width)`, so the diff steps over
+//! exactly the run instead of the payload's inflated `width()`. Since
+//! ratatui-core 0.1.2 the diff jumps a cell's whole width, so without
+//! the forced width every cell after the run would drop out of the
+//! update set again.
 //!
 //! ## Why no terminal-support probe
 //!
@@ -49,9 +52,10 @@
 //! knob.
 
 use crate::theme;
-use ratatui::buffer::{Buffer, Cell};
+use ratatui::buffer::{Buffer, Cell, CellDiffOption};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
+use std::num::NonZeroU16;
 use std::path::Path;
 
 /// Post-process `area` of `buf`: turn runs of [`theme::PATH`]-styled
@@ -172,10 +176,11 @@ fn escape_url(raw: &str) -> String {
 /// Wrap a contiguous PATH-styled run with a single OSC 8 hyperlink.
 ///
 /// The run's first cell carries the full payload
-/// (`OSC8_OPEN <uri> BEL <visible text> OSC8_CLOSE BEL`); trailing
-/// cells in the run are cleared and marked `skip = true` so ratatui's
-/// diff won't push them to the terminal. See the module-level rationale
-/// (#995) for why this asymmetric layout is required.
+/// (`OSC8_OPEN <uri> BEL <visible text> OSC8_CLOSE BEL`) and a forced
+/// width of the run's column count; trailing cells in the run are
+/// cleared and marked `CellDiffOption::Skip` so ratatui's diff won't
+/// push them to the terminal. See the module-level rationale (#995)
+/// for why this asymmetric layout is required.
 fn wrap_run_with_osc8(buf: &mut Buffer, y: u16, start: u16, end: u16, uri: &str) {
     // Concatenate the visible text from each cell in the run.
     let mut visible = String::new();
@@ -190,7 +195,13 @@ fn wrap_run_with_osc8(buf: &mut Buffer, y: u16, start: u16, end: u16, uri: &str)
     // the OSC 8 hyperlink and let attacker-controlled bytes execute as
     // terminal control sequences.
     let safe_visible = escape_url(&visible);
-    buf[(start, y)].set_symbol(&format!("\x1B]8;;{uri}\x07{safe_visible}\x1B]8;;\x07"));
+    let head = &mut buf[(start, y)];
+    head.set_symbol(&format!("\x1B]8;;{uri}\x07{safe_visible}\x1B]8;;\x07"));
+    // The payload's printable bytes inflate `width()` far past the run;
+    // tell the diff the head really spans `end - start` columns.
+    if let Some(width) = NonZeroU16::new(end - start) {
+        head.set_diff_option(CellDiffOption::ForcedWidth(width));
+    }
     // Clear the trailing cells and mark them skip. The first cell's wide
     // symbol already paints these columns visually \u2014 keeping stale
     // per-cell symbols here would mislead callers that read the buffer
@@ -199,7 +210,7 @@ fn wrap_run_with_osc8(buf: &mut Buffer, y: u16, start: u16, end: u16, uri: &str)
     for x in (start + 1)..end {
         let cell = &mut buf[(x, y)];
         cell.set_symbol("");
-        cell.set_skip(true);
+        cell.set_diff_option(CellDiffOption::Skip);
     }
 }
 
@@ -438,8 +449,8 @@ mod tests {
     /// bug report.
     ///
     /// The fix: only the run's *first* cell carries the OSC 8 payload,
-    /// trailing cells are cleared and `set_skip(true)`'d so the diff
-    /// doesn't skip beyond the run.
+    /// trailing cells are cleared and marked `CellDiffOption::Skip` so
+    /// the diff doesn't skip beyond the run.
     #[test]
     fn osc8_wrap_does_not_inflate_diff_skip_beyond_run() {
         use ratatui::text::{Line, Span};
@@ -541,6 +552,41 @@ mod tests {
         assert!(
             !trailing_clears.is_empty(),
             "shrinking path must produce trailing clear updates, got: {updates:?}"
+        );
+    }
+
+    /// Regression for #995 under ratatui-core 0.1.2: its `BufferDiff`
+    /// jumps over a cell's *whole* width, so an unchanged head cell
+    /// whose OSC 8 payload inflates `width()` would hide every changed
+    /// cell after the run. `ForcedWidth` pins the jump to the run.
+    #[test]
+    fn osc8_wrap_diffs_changed_text_after_run() {
+        use ratatui::text::{Line, Span};
+        use ratatui::widgets::{Paragraph, Widget};
+
+        let area = Rect::new(0, 0, 40, 1);
+        let render = |tail: &'static str| {
+            let mut buf = Buffer::empty(area);
+            Paragraph::new(Line::from(vec![
+                Span::styled("a.rs", theme::PATH),
+                Span::raw(tail),
+            ]))
+            .render(area, &mut buf);
+            link_paths_in_buffer(&mut buf, area, Path::new("/p"));
+            buf
+        };
+
+        // Same path both frames; only the plain text after it changes.
+        let prev = render(" (12 lines)");
+        let next = render(" (99 lines)");
+        let updates = prev.diff(&next);
+
+        // " (12 lines)" starts at col 4; the digits sit at cols 6..8.
+        let xs: Vec<u16> = updates.iter().map(|(x, _, _)| *x).collect();
+        assert_eq!(
+            xs,
+            vec![6, 7],
+            "changed cells after the path run must be diffed: {updates:?}"
         );
     }
 }
