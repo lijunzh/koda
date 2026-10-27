@@ -233,6 +233,9 @@ pub(crate) struct ProviderOverrides {
 ///   alias's line takes over; `live` is this run's Models API answer. When
 ///   there is no answer the saved id stands.
 ///
+/// Returns the saved alias when the model was restored from the saved row,
+/// so a later save of that row keeps it.
+///
 /// Flags are not written back here. `/model` and `/provider` update the saved
 /// row (`tui_wizards::save_provider`), and so does a `--base-url` given to the
 /// TUI (see `remembers_endpoint`), so a URL given once sticks.
@@ -241,12 +244,12 @@ pub(crate) fn apply_last_provider(
     last: &koda_core::last_provider::LastProvider,
     overrides: ProviderOverrides,
     live: Option<&koda_core::model_alias::ClaudeLineIds>,
-) {
+) -> Option<String> {
     let saved_provider =
         koda_core::config::ProviderType::from_url_or_name("", Some(&last.provider_type));
     if overrides.provider || overrides.base_url {
         if config.provider_type != saved_provider {
-            return;
+            return None;
         }
     } else {
         config.provider_type = saved_provider;
@@ -254,6 +257,7 @@ pub(crate) fn apply_last_provider(
     if !overrides.base_url {
         config.base_url = last.base_url.clone();
     }
+    let mut restored_alias = None;
     if !overrides.model {
         let model = last
             .alias
@@ -270,8 +274,10 @@ pub(crate) fn apply_last_provider(
         }
         config.model_settings.model = model.clone();
         config.model = model;
+        restored_alias = last.alias.clone();
     }
     config.recalculate_model_derived();
+    restored_alias
 }
 
 /// Whether a `--base-url` / `KODA_BASE_URL` given to the TUI is saved as the
@@ -298,6 +304,7 @@ impl TuiContext {
     ) -> Result<Self> {
         // Restore last-used provider from DB (#693), except where the user
         // chose on the command line.
+        let mut restored_alias = None;
         if let Ok(Some(last)) = koda_core::last_provider::load_last_provider(&db).await {
             // A saved Claude alias follows the Models API: one capped
             // lookup, only when the saved model is about to be restored.
@@ -309,7 +316,7 @@ impl TuiContext {
                 }
                 _ => None,
             };
-            apply_last_provider(&mut config, &last, overrides, live);
+            restored_alias = apply_last_provider(&mut config, &last, overrides, live);
         }
 
         let provider: Arc<RwLock<Box<dyn LlmProvider>>> =
@@ -343,9 +350,10 @@ impl TuiContext {
         }
 
         // A URL given on the command line or in KODA_BASE_URL sticks.
-        // Headless runs never get here, so they stay stateless.
+        // Headless runs never get here, so they stay stateless. A model
+        // restored from a saved alias keeps that alias.
         if remembers_endpoint(overrides, &config.model) {
-            crate::tui_wizards::save_provider(&config, &db).await;
+            crate::tui_wizards::save_provider(&config, &db, restored_alias.as_deref()).await;
         }
 
         // Collect startup lines (will be pushed into scroll buffer after init)
@@ -1435,6 +1443,37 @@ mod tests {
             );
 
             assert_eq!(config.model, "claude-opus-5-5");
+        }
+
+        #[tokio::test]
+        async fn a_restored_alias_is_returned_for_the_endpoint_save() {
+            // `--base-url` alone saves the row again (`remembers_endpoint`);
+            // the restored model's alias must survive that save.
+            let last = saved_as(
+                ProviderType::Anthropic,
+                "https://api.anthropic.com",
+                "claude-haiku-4-5-20251001",
+                Some("claude-haiku"),
+            )
+            .await;
+
+            let (mut config, overrides) =
+                loaded(Some("https://proxy.example/v1"), None, Some("anthropic"));
+            let alias = apply_last_provider(&mut config, &last, overrides, None);
+            assert_eq!(alias.as_deref(), Some("claude-haiku"));
+            assert_eq!(config.base_url, "https://proxy.example/v1");
+
+            let (mut config, overrides) = loaded(
+                Some("https://proxy.example/v1"),
+                Some("claude-opus-5-5"),
+                Some("anthropic"),
+            );
+            let alias = apply_last_provider(&mut config, &last, overrides, None);
+            assert_eq!(alias, None, "a --model choice is not the alias's model");
+
+            let (mut config, overrides) = loaded(Some("http://localhost:1234/v1"), None, None);
+            let alias = apply_last_provider(&mut config, &last, overrides, None);
+            assert_eq!(alias, None, "a different provider restores nothing");
         }
     }
 }
