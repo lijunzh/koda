@@ -18,6 +18,28 @@ Two-crate workspace:
 
 See [DESIGN.md](DESIGN.md) for architectural decisions. See [#70](https://github.com/lijunzh/koda/issues/70) for the TUI design.
 
+### Development docs live in the maintainer's notes, not GitHub issues
+
+Since 2026-10-27, design docs, plans, reviews and decisions are kept in the
+maintainer's private notes. On the maintainer's machine they are in
+`~/repo/notes/10-projects/Koda/`:
+- Start at `Koda.md`: current status, open decisions and the work sequence.
+- Then read the `Koda - <Topic>` note for the area you're changing.
+
+That folder is an Obsidian vault with its own `CLAUDE.md`. Follow it when you
+write there.
+
+- **Don't open GitHub issues for design discussion, plans or reviews.** Write
+  or update the vault note instead.
+- **GitHub issues are for** bug reports and feature requests from users, and
+  for the `coverage-regression`, `security-audit` and vendor-sync issues the
+  workflows manage.
+- **Existing issue links stay.** Issues #21–#1391 (March–October 2026) were the
+  design record. They remain the history behind the links in code comments,
+  DESIGN.md and CHANGELOG.md.
+- **The notes are private.** Don't copy them into commits, PRs or public docs;
+  state what the change itself needs.
+
 ### Current Architecture
 
 Simple inference loop: stream LLM response → execute tool calls → repeat.
