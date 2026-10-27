@@ -54,9 +54,13 @@ pub async fn run_headless(
 ) -> Result<i32> {
     // Query actual model capabilities from the provider API before building agent.
     let tmp_provider = koda_core::providers::create_provider(&config);
-    config
+    let source = config
         .query_and_apply_capabilities(tmp_provider.as_ref())
         .await;
+    // stderr, like every other notice: stdout carries only the answer or JSON.
+    if let Some(notice) = config.assumed_context_notice(source) {
+        eprintln!("\x1b[33m  \u{26a0} {notice}\x1b[0m");
+    }
 
     let mut agent = KodaAgent::new(&config, project_root.clone(), &[]).await?;
     crate::builtin_skills::inject_builtin_skills(&mut agent);
@@ -151,7 +155,8 @@ pub async fn run_headless(
     }
 
     match result {
-        Ok(()) => Ok(0),
+        // An early stop already printed its warning; just fail the exit code.
+        Ok(()) => Ok(i32::from(run_failure(&Ok(()), &cli_sink.stats()).is_some())),
         Err(e) => {
             eprintln!("Error: {e}");
             Ok(1)
@@ -198,11 +203,23 @@ fn usage_json(usage: &SessionUsage) -> serde_json::Value {
     })
 }
 
+/// Why the run failed, if it did. A turn the engine cut short on a warning
+/// (provider server error, image rejection, dropped connection) returns
+/// `Ok` but ends with `TurnEnd::Error` and no reply, so it counts too.
+fn run_failure(result: &Result<()>, stats: &RunStats) -> Option<String> {
+    match (result, &stats.turn_end) {
+        (Err(e), _) => Some(format!("{e:#}")),
+        (Ok(()), Some(TurnEndReason::Error { message })) => Some(message.clone()),
+        (Ok(()), _) => None,
+    }
+}
+
 /// Build the run summary. `success`, `response`, `session_id` and
 /// `model` keep the shape the `json` format always had; the rest is
 /// additive. `"type": "run_summary"` doesn't collide with any
 /// `EngineEvent` tag, so `stream-json` consumers can tell it apart.
 fn run_summary(outcome: RunOutcome<'_>) -> serde_json::Value {
+    let failure = run_failure(outcome.result, outcome.stats);
     let usage_by_agent: serde_json::Map<String, serde_json::Value> = outcome
         .usage_by_agent
         .iter()
@@ -210,8 +227,8 @@ fn run_summary(outcome: RunOutcome<'_>) -> serde_json::Value {
         .collect();
     serde_json::json!({
         "type": "run_summary",
-        "success": outcome.result.is_ok(),
-        "error": outcome.result.as_ref().err().map(|e| format!("{e:#}")),
+        "success": failure.is_none(),
+        "error": failure,
         "session_id": outcome.session_id,
         "provider": outcome.provider,
         "model": outcome.model,
@@ -435,6 +452,8 @@ impl HeadlessSink {
             EngineEvent::SpinnerStop => {}
             EngineEvent::StatusUpdate { .. } => {}
             EngineEvent::ContextUsage { .. } => {}
+            // One run; the engine already uses the learned window.
+            EngineEvent::ContextWindowChanged { .. } => {}
             EngineEvent::TurnStart { .. } => {}
             EngineEvent::TurnEnd { .. } => {}
             // (#1076) Bg-task lifecycle in headless: render as a short
@@ -715,5 +734,49 @@ mod tests {
         assert_eq!(summary["success"], false);
         assert_eq!(summary["error"], "provider exploded");
         assert_eq!(summary["turn_end"], serde_json::Value::Null);
+    }
+
+    /// A turn the engine ended early on a warning returns `Ok` but carries
+    /// `TurnEnd::Error`; the summary must report failure with that message
+    /// (server error, image rejection, dropped connection all take this path).
+    #[test]
+    fn run_summary_reports_early_stop_as_failure() {
+        for message in [
+            "Provider returned a server error: 500",
+            "This model rejected the image attachment",
+            "Connection lost mid-stream \u{2014} turn discarded (reset)",
+        ] {
+            let stats = RunStats {
+                turn_end: Some(TurnEndReason::Error {
+                    message: message.to_string(),
+                }),
+                ..Default::default()
+            };
+            let result: Result<()> = Ok(());
+            let summary = run_summary(RunOutcome {
+                result: &result,
+                session_id: "s1",
+                provider: "mock",
+                model: "mock-model",
+                response: "",
+                elapsed_ms: 0,
+                usage: &SessionUsage::default(),
+                usage_by_agent: &[],
+                stats: &stats,
+            });
+            assert_eq!(summary["success"], false, "{message}");
+            assert_eq!(summary["error"], message);
+            assert_eq!(summary["turn_end"]["kind"], "error");
+            assert_eq!(run_failure(&result, &stats).as_deref(), Some(message));
+        }
+    }
+
+    #[test]
+    fn cancelled_turn_is_not_a_failure() {
+        let stats = RunStats {
+            turn_end: Some(TurnEndReason::Cancelled),
+            ..Default::default()
+        };
+        assert_eq!(run_failure(&Ok(()), &stats), None);
     }
 }

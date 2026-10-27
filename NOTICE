@@ -17,6 +17,21 @@ Vendored modules (see per-file headers for upstream paths and local diffs):
       from codex-rs/protocol/src/protocol.rs (InterAgentCommunication)
   koda-core/src/agent/mailbox.rs
       from codex-rs/core/src/agent/mailbox.rs
+  koda-cli/src/composer/textarea.rs
+      from codex-rs/tui/src/bottom_pane/textarea.rs
+  koda-cli/src/composer/keymap.rs
+      from codex-rs/tui/src/keymap.rs
+  koda-cli/src/composer/key_hint.rs
+      from codex-rs/tui/src/key_hint.rs
+  koda-cli/src/composer/paste_burst.rs
+      from codex-rs/tui/src/bottom_pane/paste_burst.rs
+  koda-cli/src/composer/text_element.rs
+      from codex-rs/protocol/src/user_input.rs
+  koda-cli/src/composer/wrapping.rs
+      from codex-rs/tui/src/wrapping.rs
+
+These are owned copies: koda does not track upstream changes to them
+(decided 2026-10-27). The upstream paths above are for diffing on demand.
 
 Upstream license text:
 

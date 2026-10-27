@@ -25,7 +25,7 @@ With an argument: switches immediately.
 The new model is persisted to the keystore and used for all future
 sessions until changed again. See [Providers & model aliases](./providers.md).
 
-## `/provider [<name>]`
+## `/provider [<name or URL>]`
 
 Without an argument: opens a two-step picker — choose provider, then
 browse and pick one of its available models.
@@ -36,7 +36,14 @@ With an argument: jumps straight to that provider's model list.
 /provider                  ← open the picker
 /provider anthropic        ← go straight to Anthropic models
 /provider ollama           ← browse locally running Ollama models
+/provider http://127.0.0.1:8080/v1   ← any OpenAI-compatible server
 ```
+
+A URL sets the endpoint directly. Koda detects the provider type from it
+(`http://localhost:8080/v1` is llama.cpp, other local ports are LM Studio),
+picks up the loaded model and remembers the choice. Starting the TUI with
+`--base-url` or `KODA_BASE_URL` is remembered the same way; headless runs
+(`-p`) never save anything.
 
 ## `/key`
 
