@@ -57,7 +57,7 @@ pub fn map_tool_kind(name: &str) -> acp::ToolKind {
     match name {
         "Read" => acp::ToolKind::Read,
         "Write" | "Edit" | "NotebookEdit" => acp::ToolKind::Edit,
-        "Bash" | "Shell" => acp::ToolKind::Execute,
+        "Bash" | "Shell" | "Cargo" => acp::ToolKind::Execute,
         "Grep" | "Glob" => acp::ToolKind::Search,
         "Delete" => acp::ToolKind::Delete,
         "WebFetch" => acp::ToolKind::Fetch,

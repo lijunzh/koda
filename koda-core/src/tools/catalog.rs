@@ -60,8 +60,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use super::{
-    DynTool, Tool, ToolEffect, agent, ask_user, boxed, file_tools, glob_tool, grep, memory, recall,
-    send_message, shell, skill_tools, spawn_agent, todo, wait_for_mail, web_fetch, web_search,
+    DynTool, Tool, ToolEffect, agent, ask_user, boxed, cargo, file_tools, glob_tool, grep, memory,
+    recall, send_message, shell, skill_tools, spawn_agent, todo, wait_for_mail, web_fetch,
+    web_search,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
@@ -151,6 +152,10 @@ impl ToolCatalog {
         for def in shell::definitions() {
             definitions.insert(def.name.clone(), def);
         }
+        // Rust tooling: structured `cargo` output for the coding-agent loop.
+        for def in cargo::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
         for def in agent::definitions() {
             definitions.insert(def.name.clone(), def);
         }
@@ -220,6 +225,7 @@ impl ToolCatalog {
             boxed(glob_tool::GlobTool),
             // PR-6: shell.
             boxed(shell::BashTool),
+            boxed(cargo::CargoTool),
             // PR-7: misc cohort.
             boxed(web_fetch::WebFetchTool),
             boxed(web_search::WebSearchTool),
@@ -495,6 +501,7 @@ mod tests {
             "Grep",
             "Glob",
             "Bash",
+            "Cargo",
             "InvokeAgent",
             "AskUser",
             "WebFetch",

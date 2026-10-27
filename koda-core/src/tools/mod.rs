@@ -13,6 +13,7 @@
 //! | **Delete** | `file_tools` | Destructive | Delete a file |
 //! | **List** | `file_tools` | ReadOnly | List files and directories |
 //! | **Bash** | `shell` | LocalMutation | Execute shell commands (with background mode) |
+//! | **Cargo** | `cargo` | LocalMutation | `cargo check`/`clippy`/`test`/`build` with parsed diagnostics |
 //! | **Grep** | `grep` | ReadOnly | Recursive text search (respects .gitignore) |
 //! | **Glob** | `glob_tool` | ReadOnly | Find files by glob pattern |
 //! | **WebFetch** | `web_fetch` | RemoteAction | Fetch URL content (HTML→text) |
@@ -91,6 +92,8 @@ impl ToolEffect {
 pub mod agent;
 pub mod ask_user;
 pub mod bg_process;
+/// `Cargo` tool: sandboxed cargo runs with parsed compiler and test output.
+pub mod cargo;
 /// Read-only tool metadata catalog (#1265 item 5, PR-1/N).
 /// Owns built-in definitions + the MCP manager slot. `ToolRegistry`
 /// composes one of these and delegates the read-only methods.
@@ -1412,6 +1415,7 @@ pub fn describe_action(tool_name: &str, args: &serde_json::Value) -> String {
                 cmd.to_string()
             }
         }
+        "Cargo" => cargo::describe(args),
         "Delete" => {
             let path = args
                 .get("file_path")
@@ -1511,6 +1515,17 @@ mod describe_action_tests {
     fn test_describe_bash() {
         let desc = describe_action("Bash", &json!({"command": "cargo build"}));
         assert!(desc.contains("cargo build"));
+    }
+
+    #[test]
+    fn test_describe_cargo_shows_the_command_line() {
+        let desc = describe_action(
+            "Cargo",
+            &json!({"subcommand": "test", "package": "koda-core", "test_filter": "parse"}),
+        );
+        assert_eq!(desc, "cargo test -p koda-core parse");
+        // Malformed args still read as a cargo call, not "Execute: Cargo".
+        assert_eq!(describe_action("Cargo", &json!({})), "cargo ?");
     }
 
     #[test]

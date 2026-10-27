@@ -18,6 +18,7 @@
 //! 11. MemoryWrite
 //! 12. WebFetch (GET)
 //! 13. gh issue create (LocalMutation bash)
+//! 14. Cargo tool (LocalMutation, every subcommand)
 //!
 //! Columns: Auto, Safe
 //!
@@ -187,6 +188,21 @@ fn matrix_gh_issue_create() {
     let (auto, confirm) = check_both("Bash", &args);
     assert_eq!(auto, auto_mutation_expected());
     assert_eq!(confirm, ToolApproval::NeedsConfirmation);
+}
+
+// ── Row 14: Cargo tool ──
+
+#[test]
+fn matrix_cargo_tool() {
+    // Every subcommand executes code (build scripts, proc macros, tests),
+    // so Cargo is a LocalMutation like `cargo build` through Bash: auto in
+    // Auto (sandbox permitting), prompt in Safe.
+    for sub in ["check", "clippy", "test", "build"] {
+        let args = serde_json::json!({"subcommand": sub});
+        let (auto, confirm) = check_both("Cargo", &args);
+        assert_eq!(auto, auto_mutation_expected(), "{sub}");
+        assert_eq!(confirm, ToolApproval::NeedsConfirmation, "{sub}");
+    }
 }
 
 // ── B19 regression: child trust clamped to parent *runtime* mode (#1022) ──

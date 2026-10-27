@@ -1,0 +1,2 @@
+    Checking probe v0.1.0 (/home/user/probe)
+error: could not compile `probe` (lib) due to 1 previous error; 2 warnings emitted
