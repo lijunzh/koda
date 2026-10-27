@@ -809,9 +809,13 @@ impl TextArea {
         }
         if self.vim_normal_keymap.open_line_below.is_pressed(event) {
             let eol = self.end_of_current_line();
-            let insert_at = if eol < self.text.len() { eol + 1 } else { eol };
+            // Measured before the insert: afterwards `eol < len` always
+            // holds and `o` on the last line left the cursor on the old
+            // line (upstream openai/codex#25022).
+            let old_len = self.text.len();
+            let insert_at = if eol < old_len { eol + 1 } else { eol };
             self.insert_str_at(insert_at, "\n");
-            let cursor = if eol < self.text.len() {
+            let cursor = if eol < old_len {
                 insert_at
             } else {
                 insert_at + 1
@@ -868,7 +872,12 @@ impl TextArea {
             return;
         }
         if self.vim_normal_keymap.delete_to_line_end.is_pressed(event) {
-            self.kill_to_end_of_line();
+            self.vim_kill_to_end_of_line();
+            return;
+        }
+        if self.vim_normal_keymap.change_to_line_end.is_pressed(event) {
+            self.vim_kill_to_end_of_line();
+            self.vim_mode = VimMode::Insert;
             return;
         }
         if self.vim_normal_keymap.yank_line.is_pressed(event) {
@@ -1027,7 +1036,7 @@ impl TextArea {
             VimMotion::Down => self.move_cursor_down(),
             VimMotion::WordForward => self.set_cursor(self.beginning_of_next_word()),
             VimMotion::WordBackward => self.set_cursor(self.beginning_of_previous_word()),
-            VimMotion::WordEnd => self.set_cursor(self.end_of_next_word()),
+            VimMotion::WordEnd => self.set_cursor(self.vim_word_end_exclusive()),
             VimMotion::LineStart => self.set_cursor(self.beginning_of_current_line()),
             VimMotion::LineEnd => self.set_cursor(self.end_of_current_line()),
         }
@@ -1117,6 +1126,15 @@ impl TextArea {
 
         if let Some(range) = range {
             self.kill_range(range);
+        }
+    }
+
+    /// Vim `D` / `C`: kill to the end of the line, keeping the newline when
+    /// the cursor is already at the line end (upstream openai/codex#24380).
+    fn vim_kill_to_end_of_line(&mut self) {
+        let eol = self.end_of_current_line();
+        if self.cursor_pos < eol {
+            self.kill_range(self.cursor_pos..eol);
         }
     }
 
@@ -1847,7 +1865,11 @@ impl TextArea {
     }
 
     pub(crate) fn end_of_next_word(&self) -> usize {
-        let suffix = &self.text[self.cursor_pos..];
+        self.end_of_next_word_from(self.cursor_pos)
+    }
+
+    fn end_of_next_word_from(&self, cursor_pos: usize) -> usize {
+        let suffix = &self.text[cursor_pos..];
         let Some(first_non_ws) = suffix.find(|ch: char| !ch.is_whitespace()) else {
             return self.text.len();
         };
@@ -1855,16 +1877,16 @@ impl TextArea {
         let run = &run[..run.find(char::is_whitespace).unwrap_or(run.len())];
         let mut pieces = split_word_pieces(run).into_iter().peekable();
         let Some((start, piece)) = pieces.next() else {
-            return self.cursor_pos + first_non_ws;
+            return cursor_pos + first_non_ws;
         };
-        let word_start = self.cursor_pos + first_non_ws + start;
+        let word_start = cursor_pos + first_non_ws + start;
         let mut end = word_start + piece.len();
         if piece.chars().all(is_word_separator) {
             while let Some((idx, piece)) = pieces.peek() {
                 if !piece.chars().all(is_word_separator) {
                     break;
                 }
-                end = self.cursor_pos + first_non_ws + *idx + piece.len();
+                end = cursor_pos + first_non_ws + *idx + piece.len();
                 pieces.next();
             }
         }
@@ -1872,8 +1894,24 @@ impl TextArea {
         self.adjust_pos_out_of_elements(end, /*prefer_start*/ false)
     }
 
-    fn vim_word_end_cursor(&self) -> usize {
+    /// Exclusive end for Vim `e`: from a word end, advance to the next word
+    /// end instead of staying put (upstream openai/codex#24380).
+    fn vim_word_end_exclusive(&self) -> usize {
         let end = self.end_of_next_word();
+        let target = if end > self.cursor_pos {
+            self.prev_atomic_boundary(end)
+        } else {
+            end
+        };
+        if target == self.cursor_pos && end < self.text.len() {
+            self.end_of_next_word_from(end)
+        } else {
+            end
+        }
+    }
+
+    fn vim_word_end_cursor(&self) -> usize {
+        let end = self.vim_word_end_exclusive();
         if end > self.cursor_pos {
             self.prev_atomic_boundary(end)
         } else {
@@ -2497,6 +2535,133 @@ mod tests {
 
         assert_eq!(t.text(), "ab");
         assert_eq!(t.kill_buffer, "c");
+    }
+
+    // Upstream openai/codex#24380: `e` from a word end advances to the next
+    // word end, `C` changes to the line end, and `D`/`C` at the line end
+    // keep the newline.
+    #[test]
+    fn vim_e_advances_from_each_word_end() {
+        let mut t = ta_with("alpha beta gamma");
+        t.set_cursor("alph".len());
+        t.set_vim_enabled(/*enabled*/ true);
+        let mut cursors = Vec::new();
+        for _ in 0..3 {
+            t.input(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+            cursors.push(t.cursor());
+        }
+        assert_eq!(
+            cursors,
+            vec![
+                "alpha bet".len(),
+                "alpha beta gamm".len(),
+                "alpha beta gamm".len()
+            ]
+        );
+    }
+
+    #[test]
+    fn vim_delete_to_word_end_advances_from_existing_word_end() {
+        let mut t = ta_with("alpha beta gamma");
+        t.set_cursor("alph".len());
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        t.input(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+
+        assert_eq!(t.text(), "alph gamma");
+        assert_eq!(t.kill_buffer, "a beta");
+    }
+
+    #[test]
+    fn vim_e_from_word_end_can_land_on_trailing_space() {
+        let mut t = ta_with("alpha   ");
+        t.set_cursor("alph".len());
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+
+        assert_eq!(t.cursor(), "alpha  ".len());
+    }
+
+    #[test]
+    fn vim_e_advances_across_atomic_element_word_ends() {
+        let mut t = TextArea::new();
+        t.insert_str("alpha ");
+        t.insert_element("<element>");
+        t.insert_str(" gamma");
+        let element_start = t.elements[0].range.start;
+        t.set_cursor("alph".len());
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(t.cursor(), element_start);
+
+        t.input(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(t.cursor(), "alpha <element> gamm".len());
+    }
+
+    #[test]
+    fn vim_shift_c_changes_to_line_end_and_enters_insert_mode() {
+        for event in [
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('C'), KeyModifiers::NONE),
+        ] {
+            let mut t = ta_with("hello world\nnext line");
+            t.set_cursor(/*pos*/ 6);
+            t.set_vim_enabled(/*enabled*/ true);
+
+            t.input(event);
+
+            assert_eq!(t.text(), "hello \nnext line");
+            assert_eq!(t.vim_mode_label(), Some("Insert"));
+            assert_eq!(t.cursor(), 6);
+            assert_eq!(t.kill_buffer, "world");
+        }
+    }
+
+    #[test]
+    fn vim_d_at_line_end_does_not_remove_newline() {
+        let mut t = ta_with("hello\nworld");
+        t.set_cursor(/*pos*/ "hello".len());
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE));
+
+        assert_eq!(t.text(), "hello\nworld");
+        assert_eq!(t.vim_mode_label(), Some("Normal"));
+        assert_eq!(t.kill_buffer, "");
+    }
+
+    #[test]
+    fn vim_c_at_line_end_enters_insert_without_removing_newline() {
+        let mut t = ta_with("hello\nworld");
+        t.set_cursor(/*pos*/ "hello".len());
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::NONE));
+
+        assert_eq!(t.text(), "hello\nworld");
+        assert_eq!(t.vim_mode_label(), Some("Insert"));
+        assert_eq!(t.cursor(), "hello".len());
+        assert_eq!(t.kill_buffer, "");
+    }
+
+    // Upstream openai/codex#25022: `o` on the last line puts the cursor on
+    // the new blank line, not at the end of the old one.
+    #[test]
+    fn vim_o_on_last_line_moves_to_new_blank_line() {
+        let mut t = ta_with("hello");
+        t.set_cursor(/*pos*/ 0);
+        t.set_vim_enabled(/*enabled*/ true);
+
+        t.input(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        assert_eq!(t.text(), "hello\n");
+        assert_eq!(t.cursor(), "hello\n".len());
+        assert_eq!(t.vim_mode_label(), Some("Insert"));
+
+        t.input(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(t.text(), "hello\nx");
     }
 
     #[test]
