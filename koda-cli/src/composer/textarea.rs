@@ -1933,9 +1933,13 @@ impl TextArea {
                 None => true,
             };
             if needs_recalc {
+                // A terminal that reports no size gives width 0, where
+                // textwrap degenerates to one character per line. Wrap at
+                // 1 column instead; the wrap functions also cope with 0.
+                let wrap_width = usize::from(width.max(1));
                 let lines = super::wrapping::wrap_ranges(
                     &self.text,
-                    Options::new(width as usize).wrap_algorithm(textwrap::WrapAlgorithm::FirstFit),
+                    Options::new(wrap_width).wrap_algorithm(textwrap::WrapAlgorithm::FirstFit),
                 );
                 *cache = Some(WrapCache { width, lines });
             }
@@ -3237,6 +3241,19 @@ mod tests {
         };
         let (_x, y) = t.cursor_pos_with_state(area, state).unwrap();
         assert_eq!(y, area.y);
+    }
+
+    // Regression: a pty with no size gives the composer width 0; typing a
+    // newline then panicked inside `wrap_ranges`.
+    #[test]
+    fn zero_width_with_newline_does_not_panic() {
+        let t = ta_with("\n");
+        assert_eq!(t.desired_height(/*width*/ 0), 2);
+        let area = Rect::new(0, 0, 0, 0);
+        let _ = t.cursor_pos_with_state(area, TextAreaState::default());
+        let mut buf = Buffer::empty(area);
+        let mut state = TextAreaState::default();
+        t.render_ref_styled(area, &mut buf, &mut state, Style::default());
     }
 
     #[test]
