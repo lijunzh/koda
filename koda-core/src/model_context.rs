@@ -25,7 +25,8 @@ const MIN_CONTEXT: usize = 4_096;
 /// ```
 /// use koda_core::model_context::context_window_for_model;
 ///
-/// assert_eq!(context_window_for_model("claude-sonnet-4-6"), 200_000);
+/// assert_eq!(context_window_for_model("claude-sonnet-5-5"), 1_000_000);
+/// assert_eq!(context_window_for_model("claude-haiku-4-5"), 200_000);
 /// assert_eq!(context_window_for_model("gpt-4o"), 128_000);
 /// assert_eq!(context_window_for_model("gemini-2.5-pro"), 1_048_576);
 ///
@@ -36,45 +37,42 @@ pub fn context_window_for_model(model: &str) -> usize {
     let m = model.to_lowercase();
 
     // ── Anthropic ─────────────────────────────────────
-    // Default context window for all Claude models is 200K tokens.
+    // Checked 2026-10-27 against
+    // https://platform.claude.com/docs/en/build-with-claude/context-windows:
+    // every 5.x model (Fable/Mythos 5, Opus 5, Sonnet 5, Haiku 5.5), Opus
+    // 4.6/4.7/4.8 and Sonnet 4.6 have a 1M-token window by default, with
+    // no beta header. Opus 4.5, Haiku 4.5, Sonnet 4.5, Sonnet 4 and
+    // Claude 3.x have 200K.
     //
-    // Claude 4.x models (opus-4-6, sonnet-4-6, sonnet-4-5, sonnet-4)
-    // support 1M context via opt-in beta header:
-    //   anthropic-beta: context-1m-2025-08-07
-    // Virtual "-1m" suffix (e.g. claude-sonnet-4-6-1m) selects the
-    // extended context variant. Only eligible models get 1M;
-    // ineligible models with -1m fall through to their normal 200K.
-    if m.ends_with("-1m") && m.contains("claude") {
-        let base = &m[..m.len() - 3]; // strip "-1m"
-        if base.starts_with("claude-opus-4-6")
-            || base.starts_with("claude-sonnet-4-6")
-            || base.starts_with("claude-sonnet-4-5")
-            || base.starts_with("claude-sonnet-4-2")
-            || base.starts_with("claude-sonnet-4")
-        {
+    // The virtual "-1m" suffix predates native 1M: it opts Sonnet 4.5 / 4
+    // into the `context-1m-2025-08-07` beta (see providers/anthropic.rs).
+    // On a natively-1M model the suffix is accepted and means nothing; on
+    // any other model it falls through to that model's 200K.
+    if m.contains("claude") {
+        let base = m.strip_suffix("-1m").unwrap_or(&m);
+        if has_native_1m_context(base) {
             return 1_000_000;
         }
-        // Ineligible model with -1m suffix — fall through to 200K
-        tracing::warn!(
-            "Model '{}' does not support 1M extended context; using 200K.",
-            model
-        );
-        return 200_000;
-    }
-    if m.starts_with("claude-opus-4")
-        || m.starts_with("claude-sonnet-4")
-        || m.starts_with("claude-haiku-4")
-    {
-        return 200_000;
-    }
-    if m.starts_with("claude-3.5") || m.starts_with("claude-3-5") {
-        return 200_000;
-    }
-    if m.starts_with("claude-3") {
-        return 200_000;
-    }
-    // Catch-all for future Claude models we haven't seen yet.
-    if m.contains("claude") {
+        if base.len() != m.len() {
+            // "-1m" requested on a model without native 1M. Sonnet 4.5 and
+            // the dated Sonnet 4 snapshots take the beta header.
+            if base.starts_with("claude-sonnet-4") {
+                return 1_000_000;
+            }
+            tracing::warn!(
+                "Model '{}' does not support 1M extended context; using 200K.",
+                model
+            );
+            return 200_000;
+        }
+        if base.starts_with("claude-opus-4")
+            || base.starts_with("claude-sonnet-4")
+            || base.starts_with("claude-haiku-4")
+            || base.starts_with("claude-3")
+        {
+            return 200_000;
+        }
+        // Catch-all for Claude models this table hasn't seen yet.
         tracing::warn!(
             "Unknown Claude model '{}' — assuming 200K context. \
              Update model_context.rs if this model has a different context window.",
@@ -84,6 +82,12 @@ pub fn context_window_for_model(model: &str) -> usize {
     }
 
     // ── OpenAI ────────────────────────────────────────────
+    // GPT-6 family (gpt-6-astra, gpt-6.1-sol, gpt-6.1-terra, gpt-6-luna):
+    // 1,050,000 tokens per https://developers.openai.com/api/docs/models
+    // (checked 2026-10-27).
+    if m.starts_with("gpt-6") {
+        return 1_050_000;
+    }
     if m.starts_with("gpt-4o") || m.starts_with("gpt-4.1") || m.starts_with("chatgpt-4o") {
         return 128_000;
     }
@@ -121,6 +125,14 @@ pub fn context_window_for_model(model: &str) -> usize {
     }
 
     // ── Grok (xAI) ────────────────────────────────────────
+    // Per https://docs.x.ai/docs/models (checked 2026-10-27): grok-4.5,
+    // 4.6 and 4.7 have 500K; grok-4.3 and grok-4.20 have 1M.
+    if m.starts_with("grok-4.5") || m.starts_with("grok-4.6") || m.starts_with("grok-4.7") {
+        return 500_000;
+    }
+    if m.starts_with("grok-4.3") || m.starts_with("grok-4.20") {
+        return 1_000_000;
+    }
     if m.starts_with("grok-3") {
         return 131_072;
     }
@@ -174,19 +186,52 @@ pub fn context_window_for_model(model: &str) -> usize {
     DEFAULT_CONTEXT
 }
 
+/// Whether a Claude model has a 1M-token context window by default, with
+/// no beta header.
+///
+/// Takes the real API model id, without the virtual `-1m` suffix. The
+/// prefixes were checked on 2026-10-27 against
+/// <https://platform.claude.com/docs/en/build-with-claude/context-windows>;
+/// add one when a new family ships with 1M.
+pub fn has_native_1m_context(model: &str) -> bool {
+    const NATIVE_1M: &[&str] = &[
+        "claude-fable-5",
+        "claude-mythos-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-5",
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-sonnet-4-6",
+    ];
+    let m = model.to_lowercase();
+    NATIVE_1M.iter().any(|prefix| m.starts_with(prefix))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_claude_models() {
-        // Claude 4.x: 200K default (1M available via beta header opt-in)
-        assert_eq!(context_window_for_model("claude-sonnet-4-6"), 200_000);
-        assert_eq!(context_window_for_model("claude-opus-4-6"), 200_000);
+        // 5.x, Opus 4.6+ and Sonnet 4.6: 1M by default, no beta header
+        assert_eq!(context_window_for_model("claude-haiku-5-5"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-sonnet-5-5"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-opus-5-5"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-opus-5"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-sonnet-5"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-fable-5-1"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-opus-4-8"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-opus-4-7"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-opus-4-6"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-sonnet-4-6"), 1_000_000);
+        // Older 4.x: 200K
         assert_eq!(
             context_window_for_model("claude-opus-4-5-20251101"),
             200_000
         );
+        assert_eq!(context_window_for_model("claude-haiku-4-5"), 200_000);
         assert_eq!(
             context_window_for_model("claude-haiku-4-5-20251001"),
             200_000
@@ -210,10 +255,26 @@ mod tests {
     }
 
     #[test]
+    fn test_unknown_claude_model_assumes_200k() {
+        // A family this table hasn't seen gets the conservative window.
+        assert_eq!(context_window_for_model("claude-sonnet-7"), 200_000);
+    }
+
+    #[test]
+    fn test_native_1m_prefixes() {
+        assert!(has_native_1m_context("claude-sonnet-5-5"));
+        assert!(has_native_1m_context("claude-haiku-5-5"));
+        assert!(has_native_1m_context("claude-opus-4-6"));
+        assert!(has_native_1m_context("Claude-Sonnet-4-6"));
+        assert!(!has_native_1m_context("claude-haiku-4-5"));
+        assert!(!has_native_1m_context("claude-opus-4-5-20251101"));
+        assert!(!has_native_1m_context("claude-sonnet-4-5-20250929"));
+        assert!(!has_native_1m_context("claude-3-opus-20240229"));
+    }
+
+    #[test]
     fn test_claude_1m_virtual_models() {
-        // Eligible models with -1m suffix get 1M
-        assert_eq!(context_window_for_model("claude-sonnet-4-6-1m"), 1_000_000);
-        assert_eq!(context_window_for_model("claude-opus-4-6-1m"), 1_000_000);
+        // Beta-eligible models with -1m suffix get 1M
         assert_eq!(
             context_window_for_model("claude-sonnet-4-5-20250929-1m"),
             1_000_000
@@ -222,6 +283,10 @@ mod tests {
             context_window_for_model("claude-sonnet-4-20250514-1m"),
             1_000_000
         );
+        // Natively-1M models accept the suffix as a no-op
+        assert_eq!(context_window_for_model("claude-sonnet-4-6-1m"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-opus-4-6-1m"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-sonnet-5-5-1m"), 1_000_000);
     }
 
     #[test]
@@ -239,6 +304,13 @@ mod tests {
             context_window_for_model("claude-3-opus-20240229-1m"),
             200_000
         );
+    }
+
+    #[test]
+    fn test_gpt6_models() {
+        assert_eq!(context_window_for_model("gpt-6-astra"), 1_050_000);
+        assert_eq!(context_window_for_model("gpt-6.1-sol"), 1_050_000);
+        assert_eq!(context_window_for_model("gpt-6-luna"), 1_050_000);
     }
 
     #[test]
@@ -276,6 +348,18 @@ mod tests {
     }
 
     #[test]
+    fn test_grok_models() {
+        assert_eq!(context_window_for_model("grok-4.7"), 500_000);
+        assert_eq!(context_window_for_model("grok-4.5"), 500_000);
+        assert_eq!(context_window_for_model("grok-4.3"), 1_000_000);
+        assert_eq!(
+            context_window_for_model("grok-4.20-0309-reasoning"),
+            1_000_000
+        );
+        assert_eq!(context_window_for_model("grok-3"), 131_072);
+    }
+
+    #[test]
     fn test_deepseek() {
         assert_eq!(context_window_for_model("deepseek-chat"), 128_000);
         assert_eq!(context_window_for_model("deepseek-coder"), 128_000);
@@ -302,7 +386,8 @@ mod tests {
 
     #[test]
     fn test_case_insensitive() {
-        assert_eq!(context_window_for_model("Claude-Sonnet-4-6"), 200_000);
+        assert_eq!(context_window_for_model("Claude-Sonnet-5-5"), 1_000_000);
+        assert_eq!(context_window_for_model("Claude-Haiku-4-5"), 200_000);
         assert_eq!(context_window_for_model("GPT-4O"), 128_000);
     }
 }

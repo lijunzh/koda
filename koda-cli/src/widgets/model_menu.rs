@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn build_items_marks_current_by_model_id() {
-        let items = build_items("claude-sonnet-4-6", None);
+        let items = build_items("claude-sonnet-5-5", None);
         let current = items.iter().find(|i| i.is_current);
         assert!(current.is_some());
         assert_eq!(current.unwrap().label, "claude-sonnet");

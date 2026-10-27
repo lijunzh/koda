@@ -87,14 +87,14 @@ impl ProviderType {
             Self::OpenAI => ProviderMeta {
                 name: "openai",
                 url: "https://api.openai.com/v1",
-                model: "gpt-4o",
+                model: "gpt-6-astra",
                 env_key: "OPENAI_API_KEY",
                 api_key: true,
             },
             Self::Anthropic => ProviderMeta {
                 name: "anthropic",
                 url: "https://api.anthropic.com",
-                model: "claude-sonnet-4-6",
+                model: "claude-sonnet-5-5",
                 env_key: "ANTHROPIC_API_KEY",
                 api_key: true,
             },
@@ -122,7 +122,7 @@ impl ProviderType {
             Self::Grok => ProviderMeta {
                 name: "grok",
                 url: "https://api.x.ai/v1",
-                model: "grok-3",
+                model: "grok-4.7",
                 env_key: "XAI_API_KEY",
                 api_key: true,
             },
@@ -157,7 +157,7 @@ impl ProviderType {
             Self::OpenRouter => ProviderMeta {
                 name: "openrouter",
                 url: "https://openrouter.ai/api/v1",
-                model: "anthropic/claude-3.5-sonnet",
+                model: "anthropic/claude-sonnet-5.5",
                 env_key: "OPENROUTER_API_KEY",
                 api_key: true,
             },

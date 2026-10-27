@@ -1050,7 +1050,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
                         "⚠ This model rejected the image attachment — \
                          it likely does not support vision input. \
                          Switch to a vision-capable model such as \
-                         claude-sonnet, gemini-flash, or gpt-4o. ({e})"
+                         claude-sonnet, gemini-flash, or gpt-6-astra. ({e})"
                     ),
                 });
                 return Ok(());

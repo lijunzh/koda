@@ -1017,14 +1017,14 @@ mod tests {
         let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
         assert_eq!(config.max_context_tokens, 4_096); // MIN_CONTEXT for auto-detect
 
-        // Switch to Claude Sonnet
-        config.model = "claude-sonnet-4-6".to_string();
+        // Switch to Claude Sonnet (1M window by default)
+        config.model = "claude-sonnet-5-5".to_string();
         config.model_settings.model = config.model.clone();
         config.provider_type = ProviderType::Anthropic;
         config.recalculate_model_derived();
 
-        assert_eq!(config.max_context_tokens, 200_000);
-        assert_eq!(config.model_settings.max_context_tokens, 200_000);
+        assert_eq!(config.max_context_tokens, 1_000_000);
+        assert_eq!(config.model_settings.max_context_tokens, 1_000_000);
         assert_eq!(config.max_iterations, 200);
     }
 

@@ -23,19 +23,23 @@ const EXTENDED_CONTEXT_BETA: &str = "context-1m-2025-08-07";
 /// Virtual model name suffix that opts into 1M extended context.
 const EXTENDED_CONTEXT_SUFFIX: &str = "-1m";
 
-/// Models eligible for 1M extended context (per Anthropic docs).
-/// Only Claude 4.6 family and Sonnet 4.5/4.0 support the beta header.
+/// Models that need the beta header to get 1M context. Claude 4.6 and
+/// later have 1M by default (see
+/// [`crate::model_context::has_native_1m_context`]), so only Sonnet 4.5
+/// and the dated Sonnet 4 snapshots remain here.
 const EXTENDED_CONTEXT_ELIGIBLE: &[&str] = &[
-    "claude-opus-4-6",
-    "claude-sonnet-4-6",
     "claude-sonnet-4-5",
     "claude-sonnet-4-2", // dated variant
     "claude-sonnet-4",
 ];
 
-/// Check whether a base model ID (without `-1m` suffix) is eligible
-/// for 1M extended context.
+/// Check whether a base model ID (without `-1m` suffix) takes the
+/// extended-context beta header. False for models whose window is
+/// already 1M, so `/model` doesn't list a pointless `-1m` variant.
 fn is_extended_context_eligible(base_model: &str) -> bool {
+    if crate::model_context::has_native_1m_context(base_model) {
+        return false;
+    }
     let m = base_model.to_lowercase();
     EXTENDED_CONTEXT_ELIGIBLE
         .iter()
@@ -47,7 +51,10 @@ fn is_extended_context_eligible(base_model: &str) -> bool {
 /// Returns an error message if the model isn't eligible for 1M.
 fn resolve_model(model: &str) -> (&str, bool) {
     if let Some(base) = model.strip_suffix(EXTENDED_CONTEXT_SUFFIX) {
-        if is_extended_context_eligible(base) {
+        if crate::model_context::has_native_1m_context(base) {
+            // 1M is this model's default; nothing to opt into.
+            (base, false)
+        } else if is_extended_context_eligible(base) {
             (base, true)
         } else {
             tracing::warn!(
@@ -1082,21 +1089,29 @@ mod tests {
 
     #[test]
     fn test_resolve_model_standard() {
-        let (model, ext) = resolve_model("claude-sonnet-4-6");
+        let (model, ext) = resolve_model("claude-sonnet-5-5");
+        assert_eq!(model, "claude-sonnet-5-5");
+        assert!(!ext);
+    }
+
+    #[test]
+    fn test_resolve_model_1m_native_is_noop() {
+        // 1M is the default on these; the suffix is stripped, no header.
+        let (model, ext) = resolve_model("claude-sonnet-4-6-1m");
         assert_eq!(model, "claude-sonnet-4-6");
+        assert!(!ext);
+
+        let (model, ext) = resolve_model("claude-opus-4-6-1m");
+        assert_eq!(model, "claude-opus-4-6");
+        assert!(!ext);
+
+        let (model, ext) = resolve_model("claude-sonnet-5-5-1m");
+        assert_eq!(model, "claude-sonnet-5-5");
         assert!(!ext);
     }
 
     #[test]
     fn test_resolve_model_1m_eligible() {
-        let (model, ext) = resolve_model("claude-sonnet-4-6-1m");
-        assert_eq!(model, "claude-sonnet-4-6");
-        assert!(ext);
-
-        let (model, ext) = resolve_model("claude-opus-4-6-1m");
-        assert_eq!(model, "claude-opus-4-6");
-        assert!(ext);
-
         let (model, ext) = resolve_model("claude-sonnet-4-5-20250929-1m");
         assert_eq!(model, "claude-sonnet-4-5-20250929");
         assert!(ext);
@@ -1120,10 +1135,14 @@ mod tests {
 
     #[test]
     fn test_is_eligible() {
-        assert!(is_extended_context_eligible("claude-sonnet-4-6"));
-        assert!(is_extended_context_eligible("claude-opus-4-6"));
         assert!(is_extended_context_eligible("claude-sonnet-4-5-20250929"));
         assert!(is_extended_context_eligible("claude-sonnet-4-20250514"));
+
+        // Natively 1M: no header, no -1m variant in /model
+        assert!(!is_extended_context_eligible("claude-sonnet-4-6"));
+        assert!(!is_extended_context_eligible("claude-opus-4-6"));
+        assert!(!is_extended_context_eligible("claude-sonnet-5-5"));
+        assert!(!is_extended_context_eligible("claude-haiku-5-5"));
 
         assert!(!is_extended_context_eligible("claude-opus-4-5-20251101"));
         assert!(!is_extended_context_eligible("claude-haiku-4-5-20251001"));
