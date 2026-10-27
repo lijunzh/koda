@@ -67,9 +67,9 @@ struct Cli {
     #[arg(value_name = "PROMPT", conflicts_with = "prompt")]
     positional_prompt: Option<String>,
 
-    /// Output format for headless mode.
-    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
-    output_format: String,
+    /// Output format for headless mode
+    #[arg(long, value_enum, default_value_t = headless::OutputFormat::Text)]
+    output_format: headless::OutputFormat,
 
     /// Agent to use (matches a JSON file in agents/)
     #[arg(short, long, default_value = "default")]
@@ -292,7 +292,7 @@ pub(crate) async fn run() -> Result<()> {
             db,
             session_id,
             prompt,
-            &cli.output_format,
+            cli.output_format,
         )
         .await?;
         std::process::exit(exit_code);

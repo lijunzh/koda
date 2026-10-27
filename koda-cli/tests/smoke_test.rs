@@ -171,6 +171,95 @@ fn mock_tool_use_read_file() {
     );
 }
 
+/// Run a read-then-answer mock session in `format`, with `hello.txt`
+/// in the project root. Returns (stdout, stderr, success).
+fn run_mock_read_session(format: &str) -> (String, String, bool) {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("hello.txt"), "mock test content").unwrap();
+    let responses = r#"[
+        {"tool":"Read","args":{"path":"hello.txt"}},
+        {"text":"I read the file."}
+    ]"#;
+    let output = Command::new(koda_bin())
+        .args([
+            "-p",
+            "read hello.txt",
+            "--provider",
+            "mock",
+            "--output-format",
+            format,
+            "--project-root",
+        ])
+        .arg(tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("KODA_MOCK_RESPONSES", responses)
+        .output()
+        .expect("Failed to run koda");
+    (
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+        output.status.success(),
+    )
+}
+
+#[test]
+fn mock_json_stdout_is_exactly_one_summary_object() {
+    // Regression: the streamed reply used to land on stdout ahead of
+    // the JSON object, so stdout as a whole wasn't valid JSON.
+    let (stdout, stderr, success) = run_mock_read_session("json");
+    assert!(success, "Failed.\nstderr: {stderr}");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is not one JSON object: {e}\nstdout:\n{stdout}"));
+    assert_eq!(json["type"], "run_summary");
+    assert_eq!(json["success"], true);
+    assert_eq!(json["tool_calls"]["Read"], 1, "summary: {json}");
+    assert_eq!(json["turn_end"]["kind"], "complete", "summary: {json}");
+    assert!(json["usage"].is_object(), "summary: {json}");
+    assert!(json["elapsed_ms"].is_u64(), "summary: {json}");
+}
+
+#[test]
+fn mock_stream_json_emits_only_json_lines_ending_in_summary() {
+    let (stdout, stderr, success) = run_mock_read_session("stream-json");
+    assert!(success, "Failed.\nstderr: {stderr}");
+
+    let lines: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("non-JSON stdout line ({e}): {line:?}"))
+        })
+        .collect();
+    let types: Vec<&str> = lines
+        .iter()
+        .map(|v| {
+            v["type"]
+                .as_str()
+                .unwrap_or_else(|| panic!("line without type: {v}"))
+        })
+        .collect();
+
+    assert!(types.contains(&"turn_start"), "types: {types:?}");
+    assert!(types.contains(&"text_delta"), "types: {types:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|v| v["type"] == "tool_call_start" && v["name"] == "Read"),
+        "no Read tool_call_start in: {types:?}"
+    );
+    assert_eq!(
+        types.iter().filter(|t| **t == "run_summary").count(),
+        1,
+        "types: {types:?}"
+    );
+    let summary = lines.last().unwrap();
+    assert_eq!(summary["type"], "run_summary", "types: {types:?}");
+    assert_eq!(summary["success"], true);
+    assert_eq!(summary["tool_calls"]["Read"], 1);
+    let response = summary["response"].as_str().unwrap_or("");
+    assert!(response.contains("read the file"), "summary: {summary}");
+}
+
 #[test]
 fn mock_error_response_handled() {
     let (stdout, _stderr, _success) = run_mock("say hi", r#"[{"error":"Simulated LLM failure"}]"#);
