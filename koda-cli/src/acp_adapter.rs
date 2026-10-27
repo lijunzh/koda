@@ -256,6 +256,7 @@ pub fn engine_event_to_acp(
 
         EngineEvent::StatusUpdate { .. } => None,
         EngineEvent::ContextUsage { .. } => None,
+        EngineEvent::ContextWindowChanged { .. } => None,
         EngineEvent::Footer { .. } => None,
         EngineEvent::SpinnerStart { .. } => None,
         EngineEvent::SpinnerStop => None,

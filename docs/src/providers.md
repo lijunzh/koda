@@ -39,7 +39,9 @@ koda --base-url http://127.0.0.1:8080/v1
 
 - Koda lists the server's models and picks the loaded one, and reads the
   context window from llama-server's `/props` (LM Studio and Ollama report
-  theirs through their own endpoints).
+  theirs through their own endpoints). For a server that reports none, Koda
+  prints the size it assumed, and if the server rejects a request with a
+  stated limit (llama.cpp, vLLM, OpenAI), Koda adopts that limit and says so.
 - **Give llama-server enough context.** Koda's system prompt and tool schemas
   are about 8K tokens, so start it with `-c 16384` or more. The llama-server
   default of 4096 fails with a 400.

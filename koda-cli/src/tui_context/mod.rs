@@ -85,6 +85,10 @@ pub(crate) struct TuiContext {
     pub inference_start: Option<std::time::Instant>,
     /// Context window usage percentage (0-100), updated via EngineEvent::ContextUsage.
     pub context_pct: u32,
+    /// The server's real context window, learned mid-turn from an overflow
+    /// error (`EngineEvent::ContextWindowChanged`). The turn borrows
+    /// `config`, so it is adopted after the turn (`post_turn_cleanup`).
+    pub learned_context_window: Option<usize>,
     pub history: Vec<String>,
     pub history_idx: Option<usize>,
     pub completer: crate::completer::InputCompleter,
@@ -304,9 +308,10 @@ impl TuiContext {
             }
         }
 
+        let mut context_source = None;
         if config.model != "(no model loaded)" && config.model != "(connection failed)" {
             let prov = provider.read().await;
-            config.query_and_apply_capabilities(prov.as_ref()).await;
+            context_source = Some(config.query_and_apply_capabilities(prov.as_ref()).await);
         }
 
         // A URL given on the command line or in KODA_BASE_URL sticks.
@@ -318,6 +323,9 @@ impl TuiContext {
         // Collect startup lines (will be pushed into scroll buffer after init)
         let recent = db.recent_user_messages(3).await.unwrap_or_default();
         let mut startup_lines = crate::startup::collect_startup_lines(&config, &recent);
+        if let Some(notice) = context_source.and_then(|s| config.assumed_context_notice(s)) {
+            startup_lines.push(crate::startup::warning_line(notice));
+        }
         startup_lines.extend(crate::startup::home_dir_warning_lines(&project_root));
 
         if let Ok(Some(latest)) = version_check.await
@@ -503,6 +511,7 @@ impl TuiContext {
             silent_compact_deferred: false,
             inference_start: None,
             context_pct: 0,
+            learned_context_window: None,
             history: db.history_load().await.unwrap_or_default(),
             history_idx: None,
             completer,
@@ -842,8 +851,12 @@ impl TuiContext {
                         Style::default().fg(Color::Red),
                     ));
                 } else {
-                    self.apply_provider(ptype, arg.trim_end_matches('/').to_string())
-                        .await;
+                    if let Some(source) = self
+                        .apply_provider(ptype, arg.trim_end_matches('/').to_string())
+                        .await
+                    {
+                        self.show_context_notice(source);
+                    }
                 }
             } else {
                 self.start_provider_wizard(arg);

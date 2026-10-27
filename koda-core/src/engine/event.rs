@@ -276,6 +276,17 @@ pub enum EngineEvent {
         max: usize,
     },
 
+    /// The server's real context window differs from the one Koda assumed,
+    /// learned from its context-overflow error.
+    ///
+    /// The engine uses `tokens` for the rest of the turn. Clients that keep
+    /// a config across turns (the TUI) adopt it too; the notice for the user
+    /// arrives as a separate `Info` / `Warn`.
+    ContextWindowChanged {
+        /// The server's context window, in tokens.
+        tokens: usize,
+    },
+
     /// Progress/status update for the persistent status bar.
     StatusUpdate {
         /// Current model identifier.

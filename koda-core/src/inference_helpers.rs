@@ -381,6 +381,7 @@ pub fn rate_limit_backoff(attempt: u32) -> std::time::Duration {
 /// Checks for common error patterns across providers:
 /// - Anthropic: "prompt is too long", "input is too long"
 /// - OpenAI: "maximum context length exceeded", "context_length_exceeded"
+/// - llama.cpp: "exceeds the available context size" (`exceed_context_size_error`)
 /// - Generic: HTTP 400/413 with size-related messages
 ///
 /// # Examples
@@ -400,7 +401,44 @@ pub fn is_context_overflow_error(err: &anyhow::Error) -> bool {
         || msg.contains("token limit")
         || msg.contains("exceeds the model")
         || msg.contains("request too large")
+        || msg.contains("exceeds the available context size")
+        || msg.contains("exceed_context_size_error")
         || (msg.contains("413") && msg.contains("too large"))
+}
+
+/// The server's context window, when its overflow error states one.
+///
+/// Lets Koda learn the real limit from a rejected request instead of
+/// trusting a guess the server never confirmed:
+/// - llama.cpp: `{"error":{"type":"exceed_context_size_error","n_ctx":4096,…}}`
+/// - OpenAI and vLLM: "This model's maximum context length is 8192 tokens."
+///
+/// Returns `None` when no limit is stated (Anthropic's "prompt is too long",
+/// LM Studio) or the number is zero.
+///
+/// # Examples
+///
+/// ```
+/// use koda_core::inference_helpers::context_limit_from_error;
+///
+/// let body = r#"LLM API returned 400: {"error":{"n_prompt_tokens":6052,"n_ctx":4096}}"#;
+/// let e = anyhow::anyhow!("{body}");
+/// assert_eq!(context_limit_from_error(&e), Some(4096));
+/// assert_eq!(context_limit_from_error(&anyhow::anyhow!("prompt is too long")), None);
+/// ```
+pub fn context_limit_from_error(err: &anyhow::Error) -> Option<usize> {
+    static PATTERNS: std::sync::LazyLock<[regex::Regex; 3]> = std::sync::LazyLock::new(|| {
+        [
+            regex::Regex::new(r#""n_ctx"\s*:\s*(\d+)"#).unwrap(),
+            regex::Regex::new(r"maximum context length is (\d+)").unwrap(),
+            regex::Regex::new(r"available context size \((\d+) tokens\)").unwrap(),
+        ]
+    });
+    let msg = format!("{err:#}");
+    PATTERNS
+        .iter()
+        .find_map(|re| re.captures(&msg)?.get(1)?.as_str().parse::<usize>().ok())
+        .filter(|&n| n > 0)
 }
 
 /// Detect if an error is a provider rejection of image / vision input.
@@ -559,6 +597,35 @@ mod tests {
         assert_eq!(out[1].role, "user");
     }
 
+    /// llama-server's body for a 6,052-token request against `-c 4096`.
+    const LLAMA_CPP_OVERFLOW: &str = r#"LLM API returned 400 Bad Request: {"error":{"code":400,"message":"request (6052 tokens) exceeds the available context size (4096 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":6052,"n_ctx":4096}}"#;
+
+    #[test]
+    fn context_limit_is_read_from_overflow_errors() {
+        let cases = [
+            (LLAMA_CPP_OVERFLOW, Some(4096)),
+            // The message alone, without the JSON fields.
+            (
+                "request (6052 tokens) exceeds the available context size (8192 tokens)",
+                Some(8192),
+            ),
+            (
+                "This model's maximum context length is 32768 tokens. However, you requested 40000 tokens.",
+                Some(32768),
+            ),
+            ("Anthropic API returned 400: prompt is too long", None),
+            ("context_length_exceeded", None),
+            (r#"{"n_ctx":0}"#, None),
+        ];
+        for (msg, want) in cases {
+            assert_eq!(
+                context_limit_from_error(&anyhow::anyhow!("{msg}")),
+                want,
+                "{msg}"
+            );
+        }
+    }
+
     #[test]
     fn test_is_context_overflow_error() {
         // Should match
@@ -573,6 +640,11 @@ mod tests {
         )));
         assert!(is_context_overflow_error(&anyhow::anyhow!(
             "request exceeds the model's input limit"
+        )));
+        // llama-server, verbatim from a real 400 on 2026-10-27.
+        assert!(is_context_overflow_error(&anyhow::anyhow!(
+            "{}",
+            LLAMA_CPP_OVERFLOW
         )));
 
         // Should NOT match

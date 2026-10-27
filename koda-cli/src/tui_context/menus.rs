@@ -660,7 +660,9 @@ impl TuiContext {
                             Style::default().fg(Color::Green),
                         ));
                     }
-                    self.apply_provider(provider_type, base_url).await;
+                    if let Some(source) = self.apply_provider(provider_type, base_url).await {
+                        self.show_context_notice(source);
+                    }
                 }
                 ProviderWizard::ApiKeyOnly { env_name } => {
                     if value.is_empty() && !koda_core::runtime_env::is_set(&env_name) {
@@ -686,7 +688,9 @@ impl TuiContext {
                     } else {
                         value
                     };
-                    self.apply_provider(provider_type, url).await;
+                    if let Some(source) = self.apply_provider(provider_type, url).await {
+                        self.show_context_notice(source);
+                    }
                 }
             }
         }
@@ -694,11 +698,17 @@ impl TuiContext {
         self.menu = MenuContent::None;
     }
 
+    /// Switch to `provider_type` at `base_url` and save the choice.
+    ///
+    /// Returns where the context window came from, or `None` when the
+    /// server didn't answer and nothing was queried. Callers that switch
+    /// the model again afterwards ignore it; the rest pass it to
+    /// [`Self::show_context_notice`].
     pub(crate) async fn apply_provider(
         &mut self,
         provider_type: koda_core::config::ProviderType,
         base_url: String,
-    ) {
+    ) -> Option<koda_core::config::ContextSource> {
         self.config.provider_type = provider_type;
         self.config.base_url = base_url;
         self.config.model = provider_type.default_model().to_string();
@@ -708,18 +718,22 @@ impl TuiContext {
         crate::tui_wizards::save_provider(&self.config, &self.session.db).await;
 
         let prov = self.provider.read().await;
+        let mut source = None;
         if let Ok(models) = prov.list_models().await {
             if let Some(first) = models.first() {
                 self.config.model = first.id.clone();
                 self.config.model_settings.model = self.config.model.clone();
                 self.config.recalculate_model_derived();
             }
-            self.config
-                .query_and_apply_capabilities(prov.as_ref())
-                .await;
+            source = Some(
+                self.config
+                    .query_and_apply_capabilities(prov.as_ref())
+                    .await,
+            );
             self.completer
                 .set_model_names(models.iter().map(|m| m.id.clone()).collect());
         }
+        drop(prov);
         self.renderer.model = self.config.model.clone();
         self.scroll_buffer.push(Line::styled(
             format!(
@@ -728,6 +742,15 @@ impl TuiContext {
             ),
             Style::default().fg(Color::Green),
         ));
+        source
+    }
+
+    /// Tell the user when the context window is a guess the server didn't
+    /// confirm (`KodaConfig::assumed_context_notice`).
+    pub(crate) fn show_context_notice(&mut self, source: koda_core::config::ContextSource) {
+        if let Some(notice) = self.config.assumed_context_notice(source) {
+            crate::tui_output::warn_msg(&mut self.scroll_buffer, notice);
+        }
     }
 
     /// Query the provider API for context window and apply it.
@@ -737,9 +760,12 @@ impl TuiContext {
     /// window instead of using the lookup table.
     async fn query_model_capabilities(&mut self) {
         let prov = self.provider.read().await;
-        self.config
+        let source = self
+            .config
             .query_and_apply_capabilities(prov.as_ref())
             .await;
+        drop(prov);
+        self.show_context_notice(source);
     }
 }
 
