@@ -139,6 +139,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::StatefulWidget;
 use ratatui::widgets::Widget;
+use std::borrow::Cow;
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::ops::Range;
@@ -150,6 +151,19 @@ const WORD_SEPARATORS: &str = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
 
 fn is_word_separator(ch: char) -> bool {
     WORD_SEPARATORS.contains(ch)
+}
+
+/// Replace tabs with the one-column representation used for rendering and
+/// wrapping (upstream openai/codex#33239).
+///
+/// A tab and a space are both one byte, so ranges computed from this text
+/// still index the original editable text.
+fn text_for_display(text: &str) -> Cow<'_, str> {
+    if text.contains('\t') {
+        Cow::Owned(text.replace('\t', " "))
+    } else {
+        Cow::Borrowed(text)
+    }
 }
 
 fn split_word_pieces(run: &str) -> Vec<(usize, &str)> {
@@ -1975,8 +1989,9 @@ impl TextArea {
                 // textwrap degenerates to one character per line. Wrap at
                 // 1 column instead; the wrap functions also cope with 0.
                 let wrap_width = usize::from(width.max(1));
+                let display_text = text_for_display(&self.text);
                 let lines = super::wrapping::wrap_ranges(
-                    &self.text,
+                    display_text.as_ref(),
                     Options::new(wrap_width).wrap_algorithm(textwrap::WrapAlgorithm::FirstFit),
                 );
                 *cache = Some(WrapCache { width, lines });
@@ -2114,7 +2129,12 @@ impl TextArea {
             let line_range = r.start..r.end - 1;
             buf.set_style(Rect::new(area.x, y, area.width, 1), base_style);
             // Draw base line with the provided style.
-            buf.set_string(area.x, y, &self.text[line_range.clone()], base_style);
+            buf.set_string(
+                area.x,
+                y,
+                text_for_display(&self.text[line_range.clone()]),
+                base_style,
+            );
 
             // Overlay styled segments for elements that intersect this line.
             for elem in &self.elements {
@@ -2127,7 +2147,7 @@ impl TextArea {
                 let styled = &self.text[overlap_start..overlap_end];
                 let x_off = self.text[line_range.start..overlap_start].width() as u16;
                 let style = base_style.fg(ratatui::style::Color::Cyan);
-                buf.set_string(area.x + x_off, y, styled, style);
+                buf.set_string(area.x + x_off, y, text_for_display(styled), style);
             }
 
             // Overlay render-only highlight ranges last so transient search highlighting remains
@@ -2140,7 +2160,7 @@ impl TextArea {
                 }
                 let highlighted = &self.text[overlap_start..overlap_end];
                 let x_off = self.text[line_range.start..overlap_start].width() as u16;
-                buf.set_string(area.x + x_off, y, highlighted, *style);
+                buf.set_string(area.x + x_off, y, text_for_display(highlighted), *style);
             }
         }
     }
@@ -3328,6 +3348,38 @@ mod tests {
         // After render, state.scroll should be adjusted so cursor row fits
         let effective_lines = t.desired_height(small_area.width);
         assert!(state.scroll < effective_lines);
+    }
+
+    // Upstream openai/codex#33239: a tab is drawn as one column, so the
+    // cursor and wrapping must count it as one column too.
+    #[test]
+    fn tabs_render_as_spaces_and_align_with_cursor() {
+        let text = "x\tSimulation\tformatter\t7.4 ms\t-8.29%";
+        let mut t = ta_with(text);
+        t.set_cursor(text.len());
+        let area = Rect::new(0, 0, /*width*/ 100, /*height*/ 1);
+        let mut buf = Buffer::empty(area);
+
+        ratatui::widgets::Widget::render(&t, area, &mut buf);
+
+        let cursor = t.cursor_pos(area).unwrap();
+        assert_eq!(buf[(cursor.0 - 1, cursor.1)].symbol(), "%");
+        assert_eq!(buf[(1, 0)].symbol(), " ", "the tab is drawn as a space");
+    }
+
+    #[test]
+    fn tabs_wrap_at_their_rendered_width() {
+        let text = "1234\t5";
+        let mut t = ta_with(text);
+        t.set_cursor(text.len());
+        let area = Rect::new(0, 0, /*width*/ 5, /*height*/ 2);
+        let mut buf = Buffer::empty(area);
+
+        ratatui::widgets::Widget::render(&t, area, &mut buf);
+
+        assert_eq!(t.desired_height(area.width), 2);
+        assert_eq!(t.cursor_pos(area), Some((1, 1)));
+        assert_eq!(buf[(0, 1)].symbol(), "5");
     }
 
     #[test]
