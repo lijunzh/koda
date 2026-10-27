@@ -7,8 +7,9 @@
 //! on is a pinned snapshot), so the Claude family aliases are resolved
 //! at runtime from `GET /v1/models`: the newest `created_at` in each
 //! `line` (`haiku` / `sonnet` / `opus`) wins. That lookup happens once
-//! per process, the first time an alias is shown or chosen, and only
-//! when an Anthropic key is configured. The pinned ids in the alias
+//! per process, the first time an alias is shown, chosen or restored at
+//! startup (a Claude alias saved by `/model`), and only when an Anthropic
+//! key is configured. The pinned ids in the alias
 //! table are the offline fallback: no key, no network, a timeout or an
 //! API error leaves them in force.
 //!
@@ -255,6 +256,29 @@ pub fn resolve_with(name: &str, live: Option<&ClaudeLineIds>) -> Option<Resolved
         .map(|a| a.resolved(live))
 }
 
+/// True if `name` is a Claude alias that follows the Models API, so
+/// resolving it needs [`ensure_live_claude_ids`] first.
+pub fn follows_models_api(name: &str) -> bool {
+    ALIASES.iter().any(|a| a.alias == name && a.line.is_some())
+}
+
+/// Resolve an alias saved by `/model`, for startup.
+///
+/// Unlike [`resolve_with`], this returns `None` when the answer would only
+/// be a guess: a Claude alias the Models API didn't answer for this run,
+/// `local` (its model is detected, not named) or an unknown name. The
+/// saved id then stands; it is at least as new as the pinned fallback was
+/// when it was chosen.
+pub fn resolve_saved(name: &str, live: Option<&ClaudeLineIds>) -> Option<ResolvedAlias> {
+    let alias = ALIASES.iter().find(|a| a.alias == name)?;
+    if let Some(line) = alias.line
+        && !live.is_some_and(|ids| ids.contains_key(&line))
+    {
+        return None;
+    }
+    Some(alias.resolved(live))
+}
+
 /// Result of resolving an alias.
 #[derive(Debug, Clone)]
 pub struct ResolvedAlias {
@@ -382,6 +406,36 @@ mod tests {
         assert_eq!(haiku.model_id, "claude-haiku-9");
         let gemini = items.iter().find(|a| a.alias == "gemini-pro").unwrap();
         assert_eq!(gemini.model_id, "gemini-pro-latest");
+    }
+
+    #[test]
+    fn resolve_saved_follows_the_line_only_with_a_live_answer() {
+        let ids = live(&[(ClaudeLine::Haiku, "claude-haiku-9")]);
+        let r = resolve_saved("claude-haiku", Some(&ids)).unwrap();
+        assert_eq!(r.model_id, "claude-haiku-9");
+        assert_eq!(r.provider, ProviderType::Anthropic);
+
+        // No live answer, or none for this line: the saved id stands.
+        assert!(resolve_saved("claude-haiku", None).is_none());
+        assert!(resolve_saved("claude-opus", Some(&ids)).is_none());
+    }
+
+    #[test]
+    fn resolve_saved_resolves_static_aliases_and_skips_local_and_unknown() {
+        assert_eq!(
+            resolve_saved("gemini-flash", None).unwrap().model_id,
+            "gemini-flash-latest"
+        );
+        assert!(resolve_saved(LOCAL_ALIAS, None).is_none());
+        assert!(resolve_saved("claude-haiku-4-5-20251001", None).is_none());
+    }
+
+    #[test]
+    fn follows_models_api_is_true_only_for_claude_line_aliases() {
+        assert!(follows_models_api("claude-sonnet"));
+        assert!(!follows_models_api("gemini-pro"));
+        assert!(!follows_models_api(LOCAL_ALIAS));
+        assert!(!follows_models_api("claude-sonnet-5-5"));
     }
 
     #[test]
