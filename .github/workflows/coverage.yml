@@ -13,7 +13,7 @@ on:
       - 'koda-core/**'
       - 'koda-sandbox/**'
       - '.github/workflows/coverage.yml'
-      - 'scripts/check_per_file_coverage.py'
+      - 'scripts/check_per_file_coverage.sh'
 
 permissions:
   contents: read
@@ -132,7 +132,7 @@ jobs:
       # security-critical file can regress while the crate average stays
       # above the bar (hundreds of low-risk files dilute the signal).
       # This step gates each file enumerated in
-      # scripts/check_per_file_coverage.py at its measured baseline
+      # scripts/check_per_file_coverage.sh at its measured baseline
       # minus a small buffer. Files that don't compile on this platform
       # (bwrap.rs on macOS, seatbelt.rs on Linux) are skipped — the
       # other platform's run gates them.
@@ -141,7 +141,7 @@ jobs:
         if: steps.core_json.outcome == 'success' && steps.sandbox_json.outcome == 'success'
         continue-on-error: true
         run: |
-          python3 scripts/check_per_file_coverage.py cov-core.json cov-sandbox.json
+          scripts/check_per_file_coverage.sh cov-core.json cov-sandbox.json
 
       # Drop a marker so the report job can distinguish "tooling broken,
       # never measured coverage" from "actually measured, dropped below
