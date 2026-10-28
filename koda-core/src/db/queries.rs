@@ -804,7 +804,7 @@ impl Persistence for Database {
                 "UPDATE messages SET compacted_at = datetime('now') \
                  WHERE session_id = ? AND id IN ({placeholders})"
             );
-            let mut query = sqlx::query(&sql).bind(session_id);
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(session_id);
             for id in chunk {
                 query = query.bind(id);
             }
@@ -877,7 +877,7 @@ impl Persistence for Database {
         for chunk in message_ids.chunks(500) {
             let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let sql = format!("UPDATE messages SET content = ? WHERE id IN ({placeholders})");
-            let mut query = sqlx::query(&sql).bind(stub);
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(stub);
             for id in chunk {
                 query = query.bind(id);
             }
