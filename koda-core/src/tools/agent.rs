@@ -25,8 +25,8 @@
 //! removed the bg-spawn dispatch path itself in favor of sync
 //! delegation, matching Codex's ExecCell semantics and Gemini-CLI's
 //! `SubagentGroupDisplay` model. The retired async surface
-//! (`WaitForMail` / mailbox / activity pill / overlay) is being
-//! deleted across phases 2–5 of #1366.
+//! (`WaitForMail` / mailbox, now deleted; activity pill / overlay,
+//! still to go) belonged to the old dispatch model.
 //!
 //! ## When to use sub-agents
 //!
@@ -475,7 +475,6 @@ mod tests {
         let trust = crate::trust::TrustMode::Safe;
         let policy = koda_sandbox::SandboxPolicy::default();
         let skills = crate::skills::SkillRegistry::default();
-        let agent_path = crate::agent::AgentPath::root();
         let ctx = crate::tools::ToolExecCtx::for_test(
             tmp.path(),
             &cache,
@@ -485,7 +484,6 @@ mod tests {
             &trust,
             &policy,
             &skills,
-            &agent_path,
         );
         let r = t.execute(&ctx, &serde_json::json!({})).await;
         assert!(!r.success);

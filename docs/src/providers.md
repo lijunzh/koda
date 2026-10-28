@@ -4,15 +4,15 @@
 
 | Provider name | `--provider` value | API key env var | Default model | Needs key |
 |---|---|---|---|---|
-| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | ✓ |
-| OpenAI | `openai` | `OPENAI_API_KEY` | gpt-4o | ✓ |
+| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | claude-sonnet-5-5 | ✓ |
+| OpenAI | `openai` | `OPENAI_API_KEY` | gpt-6-astra | ✓ |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` | gemini-flash-latest | ✓ |
 | Groq | `groq` | `GROQ_API_KEY` | llama-3.3-70b-versatile | ✓ |
-| Grok / xAI | `grok` | `XAI_API_KEY` | grok-3 | ✓ |
+| Grok / xAI | `grok` | `XAI_API_KEY` | grok-4.7 | ✓ |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | deepseek-chat | ✓ |
 | Mistral | `mistral` | `MISTRAL_API_KEY` | mistral-large-latest | ✓ |
 | MiniMax | `minimax` | `MINIMAX_API_KEY` | minimax-text-01 | ✓ |
-| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | anthropic/claude-3.5-sonnet | ✓ |
+| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | anthropic/claude-sonnet-5.5 | ✓ |
 | Together AI | `together` | `TOGETHER_API_KEY` | Llama-3.3-70B-Instruct-Turbo | ✓ |
 | Fireworks AI | `fireworks` | `FIREWORKS_API_KEY` | llama-v3p3-70b-instruct | ✓ |
 | LM Studio | `lm-studio` | — | auto-detect | ✗ |
@@ -61,10 +61,17 @@ in the `/model` picker and accepted by `--model` and `/model`.
 | `gemini-flash-lite` | Gemini | `gemini-flash-lite-latest` |
 | `gemini-flash` | Gemini | `gemini-flash-latest` |
 | `gemini-pro` | Gemini | `gemini-pro-latest` |
-| `claude-haiku` | Anthropic | `claude-haiku-4-5-20251001` |
-| `claude-sonnet` | Anthropic | `claude-sonnet-4-6` |
-| `claude-opus` | Anthropic | `claude-opus-4-6` |
+| `claude-haiku` | Anthropic | `claude-haiku-5-5` |
+| `claude-sonnet` | Anthropic | `claude-sonnet-5-5` |
+| `claude-opus` | Anthropic | `claude-opus-5-5` |
 | `local` | LM Studio | auto-detect at runtime |
+
+The three Claude aliases follow the Anthropic Models API: when an API key is
+set, the first time you open `/model` (or pick an alias) Koda asks for the
+newest model in each line and uses it, with a 5-second cap. The ids above are
+the offline fallback, used with no key, no network or an API error. A model
+picked by alias is remembered as the alias, so a newer release is picked up on
+the next start.
 
 You can also use **any literal model ID** your provider supports — aliases
 are just shortcuts. `koda --model gpt-4o-mini` or `/model o3` both work.

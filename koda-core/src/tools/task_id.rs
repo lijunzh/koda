@@ -2,9 +2,8 @@
 //!
 //! Pre-#1325 Phase 5b this module was `bg_task_tools.rs` and housed
 //! the `ListBackgroundTasks` / `CancelTask` / `WaitTask` LLM tool
-//! implementations. Phase 5b retired those tools in favor of
-//! `SpawnAgent` (peer-spawn) + `WaitForMail` (mailbox bridge from
-//! #1336), so the dispatch surface is gone — but the TUI still needs
+//! implementations. Phase 5b retired those tools (and sub-agents later
+//! became synchronous, #1366), so the dispatch surface is gone — but the TUI still needs
 //! to parse user-typed task IDs for slash commands like `/cancel 5`,
 //! and the underlying `ChildAgentRegistry` / `BgRegistry` still issue
 //! them. That parsing is the only thing left here.

@@ -23,18 +23,12 @@
 //! (e.g., main REPL + background sub-agents) without shared mutable state.
 
 use crate::agent::KodaAgent;
-use crate::agent::inter_agent::InterAgentCommunication;
-use crate::agent::mail_message::mail_to_user_message;
-use crate::agent::mailbox::{Mailbox, MailboxReceiver};
-use crate::agent::mailbox_registry::MailboxRegistry;
-use crate::agent::path::AgentPath;
 use crate::child_agent::{self, ChildAgentRegistry};
 use crate::config::KodaConfig;
 use crate::db::Database;
 use crate::engine::{EngineCommand, EngineSink};
 use crate::file_tracker::FileTracker;
 use crate::inference::{InferenceContext, TurnOutcome};
-use crate::persistence::Persistence;
 use crate::providers::{self, ImageData, LlmProvider};
 use crate::sub_agent_cache::SubAgentCache;
 use crate::trust::TrustMode;
@@ -43,7 +37,6 @@ use anyhow::Result;
 use koda_sandbox::{BuiltInProxy, BuiltInSocks5Proxy, DEFAULT_DEV_ALLOWLIST, Filter, ProxyHandle};
 use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
-use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -274,80 +267,6 @@ pub struct KodaSession {
     /// `KodaSession` via struct literal and need to populate every
     /// field. Default is `None` (no forwarder spawned).
     pub event_forwarder: Option<tokio_util::task::AbortOnDropHandle<()>>,
-
-    // ── Phase 1 of #1325: peer-agent message-passing substrate. ──────────
-    //
-    // Each session owns a mailbox; mail sent here lands in the next
-    // turn's user input via `drain_mail_to_db` (called from
-    // `run_turn`). Phase 2 wires the substrate; Phase 3 exposes the
-    // peer tools (`spawn_agent`/`send_message`/`wait_agent`) that
-    // exercise it from the LLM side.
-    /// Cloneable sender handle for this session's mailbox. Hand out
-    /// clones to peer agents that need to send mail to this session.
-    ///
-    /// Stored as `Arc<Mailbox>` (not bare `Mailbox`) because
-    /// `Mailbox` itself isn't `Clone` — the per-mailbox `AtomicU64`
-    /// sequence counter would diverge across clones. The `Arc` is
-    /// the substrate's documented sharing pattern; the
-    /// `mailbox_registry` (Phase 3) hands out clones of this same
-    /// `Arc` so all peer-tool callers send into the one true
-    /// counter.
-    pub mailbox: Arc<Mailbox>,
-
-    /// Drain side of the mailbox. `tokio::sync::Mutex` because
-    /// `drain_mail_to_db` is `async` (does DB writes) and codex's
-    /// reference implementation uses the async mutex too — keeps the
-    /// concurrency contract identical. Single-consumer by
-    /// construction (`MailboxReceiver` is not `Clone`).
-    ///
-    /// Drained at the top of every `run_turn` before the inference
-    /// loop reads the conversation. **Phase 2 deferral**: codex has a
-    /// `MailboxDeliveryPhase` enum that lets late-arriving mail go to
-    /// either the current turn or the next one depending on whether
-    /// final-answer text has streamed yet. Koda always treats it as
-    /// CurrentTurn (drain at start, no mid-turn worry). When koda
-    /// adopts streaming-aware semantics, port the phase enum then.
-    pub mailbox_rx: Arc<AsyncMutex<MailboxReceiver>>,
-
-    /// Mail enqueued for the next turn while no turn is active.
-    ///
-    /// **Why a separate queue from `mailbox` itself**: the mailbox
-    /// `mpsc` lets producers fire whenever; this queue is the
-    /// drain-and-stash buffer that survives between turns so a single
-    /// drain at `run_turn` start picks up everything (including mail
-    /// that arrived between turns). Mirrors codex's
-    /// `idle_pending_input` field with identical semantics.
-    ///
-    /// Phase 2 keeps it as the raw wire format (`InterAgentCommunication`)
-    /// rather than pre-formatted strings so a future `MessagePhase`
-    /// migration can re-serialize from source without information loss.
-    pub idle_pending_input: Arc<AsyncMutex<Vec<InterAgentCommunication>>>,
-
-    /// Phase 3 of #1325 — path → mailbox lookup, the substrate
-    /// under the `send_message` and `wait_for_mail` peer tools.
-    ///
-    /// Pre-populated with `AgentPath::root() → self.mailbox` at
-    /// construction so the LLM can mail itself (the only valid
-    /// recipient until Phase 4's `spawn_agent` lands and starts
-    /// registering child paths). Exposed to tools by handing the
-    /// `Arc` to `agent.tools.set_mailbox_registry(...)` after
-    /// construction.
-    pub mailbox_registry: Arc<MailboxRegistry>,
-
-    /// This session's identity in the agent spawn tree. The root
-    /// user-facing session is always `/root`; spawned children
-    /// (Phase 4 of #1325) inherit a `/root/<name>` path computed
-    /// at spawn time.
-    ///
-    /// Threaded through the inference loop to `TurnContext` and
-    /// `ToolExecCtx::caller_agent_path`, so peer tools
-    /// (`SendMessage`, `WaitForMail`, the upcoming `SpawnAgent`)
-    /// can stamp the right `author` on outgoing mail and look up
-    /// the right inbox for blocking reads. Without this field,
-    /// every spawned agent would falsely claim `author = /root`
-    /// and corrupt the spawn-tree topology that mail attribution
-    /// relies on.
-    pub agent_path: AgentPath,
 }
 
 impl KodaSession {
@@ -427,45 +346,7 @@ impl KodaSession {
             }
         };
 
-        // #1325 Phase 2: per-session mailbox pair. Producer (`Mailbox`)
-        // is cloneable; consumer (`MailboxReceiver`) is not — enforced
-        // by `mpsc` semantics. Constructed unconditionally because the
-        // substrate has zero runtime cost when no mail is sent.
-        let (mailbox, mailbox_rx) = Mailbox::new();
-        let mailbox = Arc::new(mailbox);
-
-        // #1325 Phase 3: per-session path → mailbox registry. Pre-
-        // register `/root → self.mailbox` so peer tools can find this
-        // session by canonical path. Future spawned children
-        // (Phase 4) register their own `/root/<name>` entries here.
-        let mailbox_registry = Arc::new(MailboxRegistry::new());
-        // Double-register would be a programmer error here (we just
-        // built an empty registry); panic if it happens because it
-        // means the substrate's invariants are wrong.
-        match mailbox_registry.register(AgentPath::root(), Arc::clone(&mailbox)) {
-            crate::agent::mailbox_registry::RegisterOutcome::Inserted => {}
-            crate::agent::mailbox_registry::RegisterOutcome::AlreadyRegistered => {
-                unreachable!(
-                    "freshly-constructed MailboxRegistry already had /root registered — \
-                     MailboxRegistry::new() invariants are broken"
-                );
-            }
-        }
-        // Hand the registry to the tool layer so peer tools can
-        // resolve paths. `set_*` setters use interior mutability —
-        // see ToolRegistry docs for the rationale.
-        agent
-            .tools
-            .set_mailbox_registry(Arc::clone(&mailbox_registry));
-
-        // #1338 Issue #3: hand the bg-agent registry to the tool
-        // layer so `WaitForMail`'s timeout payload can list which
-        // sub-agents are still running. Constructed here (instead of
-        // inline in the `Self { bg_agents: ... }` literal below) so we
-        // can `Arc::clone` it into both places without touching the
-        // shape of the struct constructor.
         let bg_agents = child_agent::new_shared();
-        agent.tools.set_bg_agents(Arc::clone(&bg_agents));
 
         Self {
             id,
@@ -487,22 +368,6 @@ impl KodaSession {
             // `attach_event_sink` to spawn it. Headless paths leave
             // it `None` and rely on the legacy synchronous drain.
             event_forwarder: None,
-            // #1325 Phase 2: per-session mailbox. The substrate is
-            // wired but no LLM-facing tool produces mail yet — Phase
-            // 3 lands `spawn_agent`/`send_message`/`wait_agent`.
-            // Constructing here means the substrate is uniformly
-            // available to test code and future tools without a
-            // capability-detection branch elsewhere.
-            mailbox,
-            mailbox_rx: Arc::new(AsyncMutex::new(mailbox_rx)),
-            idle_pending_input: Arc::new(AsyncMutex::new(Vec::new())),
-            mailbox_registry,
-            // The user-facing root session is always `/root`. Phase 4's
-            // spawn_agent will construct child sessions with
-            // `/root/<name>` paths via a separate constructor (or this
-            // one with an extra arg) — defer that change until the
-            // spawn machinery lands.
-            agent_path: AgentPath::root(),
         }
     }
 
@@ -611,65 +476,6 @@ impl KodaSession {
         self.cancel.interrupt();
     }
 
-    // ── #1325 Phase 2: peer-agent mailbox plumbing. ────────────────────
-
-    /// Borrow the cloneable [`Mailbox`] sender. Hand `clone()`s out
-    /// to peer agents that need to mail this session.
-    ///
-    /// Phase 2 keeps this as a bare accessor; Phase 3's
-    /// `send_message` tool will wrap it with caller-spawner scoping
-    /// (Model E from #996) so an agent can only mail siblings/children
-    /// it spawned, not arbitrary peers.
-    pub fn mailbox(&self) -> &Mailbox {
-        &self.mailbox
-    }
-
-    /// Queue mail for the next turn while no turn is active.
-    ///
-    /// Mirrors codex's `queue_response_items_for_next_turn` but takes
-    /// the raw [`InterAgentCommunication`] (preserving wire fields)
-    /// rather than a pre-formatted message. Drained alongside the
-    /// mailbox itself by [`Self::drain_mail_to_db`].
-    pub async fn enqueue_for_next_turn(&self, communication: InterAgentCommunication) {
-        self.idle_pending_input.lock().await.push(communication);
-    }
-
-    /// Drain mailbox + idle queue into the session's persisted message
-    /// history as user-role messages. Called from [`Self::run_turn`]
-    /// before the inference loop reads the conversation, so any mail
-    /// in flight at turn-start lands in the next LLM call.
-    ///
-    /// Order: idle queue first (FIFO across the gap between turns),
-    /// then mailbox (FIFO within this turn-start drain). Matches
-    /// codex's `take_queued_response_items_for_next_turn` + mailbox
-    /// drain order so cross-codebase reasoning stays portable.
-    ///
-    /// **Phase 2 deferral**: codex's `MailboxDeliveryPhase` lets
-    /// late-arriving mail go to either the current turn or the next
-    /// one depending on whether final-answer text has streamed yet.
-    /// We always treat it as CurrentTurn (drain at start, no mid-turn
-    /// worry). When koda adopts streaming-aware semantics, port the
-    /// phase enum then.
-    pub async fn drain_mail_to_db(&self) -> Result<()> {
-        // Drain idle-queue first so any cross-turn FYI mail lands
-        // ahead of mid-turn deliveries that might reference it.
-        let idle: Vec<InterAgentCommunication> =
-            std::mem::take(&mut *self.idle_pending_input.lock().await);
-        let mailbox_items: Vec<InterAgentCommunication> = self.mailbox_rx.lock().await.drain();
-
-        if idle.is_empty() && mailbox_items.is_empty() {
-            return Ok(());
-        }
-
-        for mail in idle.into_iter().chain(mailbox_items) {
-            let (role, content) = mail_to_user_message(&mail);
-            self.db
-                .insert_message(&self.id, &role, Some(&content), None, None, None)
-                .await?;
-        }
-        Ok(())
-    }
-
     /// # Per-turn cancellation (#1208)
     ///
     /// `turn_cancel` lets callers (notably the TUI) wire Ctrl+C / Esc to a
@@ -691,29 +497,6 @@ impl KodaSession {
         sink.emit(crate::engine::EngineEvent::TurnStart {
             turn_id: turn_id.clone(),
         });
-
-        // #1325 Phase 2: drain any peer-agent mail (mailbox + idle
-        // queue) into persisted user messages BEFORE the inference
-        // loop reads the conversation. This is the codex-equivalent
-        // of `take_queued_response_items_for_next_turn` +
-        // `get_pending_input` (which fold mail into `pending_input`).
-        // Koda persists the conversation, so mail-as-user-message
-        // achieves the same "LLM sees mail at turn start" semantics
-        // without an in-memory pending-input vector.
-        //
-        // No tool produces mail yet (Phase 3 lands the peer tools);
-        // the drain is a no-op until then. Failure here is fatal for
-        // the turn — a partially-drained mailbox would silently lose
-        // mail, which is worse than a visible error.
-        if let Err(e) = self.drain_mail_to_db().await {
-            sink.emit(crate::engine::EngineEvent::TurnEnd {
-                turn_id,
-                reason: crate::engine::event::TurnEndReason::Error {
-                    message: format!("failed to drain mailbox: {e}"),
-                },
-            });
-            return Err(e);
-        }
 
         // Compose the per-turn system prompt: static `agent.system_prompt`
         // plus a dynamically-rendered MCP server-instructions section. We
@@ -772,12 +555,6 @@ impl KodaSession {
             file_tracker: &mut self.file_tracker,
             bg_agents: &self.bg_agents,
             sub_agent_cache: &self.sub_agent_cache,
-            // #1325 Phase 4: this session's identity in the spawn
-            // tree (always `/root` for the user-facing session;
-            // future spawned sessions will carry their assigned
-            // child path). Threaded into TurnContext → ToolExecCtx
-            // so peer tools can stamp the right `author` on mail.
-            agent_path: &self.agent_path,
         })
         .await;
 

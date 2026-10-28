@@ -11,12 +11,6 @@ openai/codex (Apache License 2.0)
 
 Vendored modules (see per-file headers for upstream paths and local diffs):
 
-  koda-core/src/agent/path.rs
-      from codex-rs/protocol/src/agent_path.rs
-  koda-core/src/agent/inter_agent.rs
-      from codex-rs/protocol/src/protocol.rs (InterAgentCommunication)
-  koda-core/src/agent/mailbox.rs
-      from codex-rs/core/src/agent/mailbox.rs
   koda-cli/src/composer/textarea.rs
       from codex-rs/tui/src/bottom_pane/textarea.rs
   koda-cli/src/composer/keymap.rs

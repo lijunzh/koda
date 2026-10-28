@@ -41,7 +41,7 @@ const AFTER_HELP: &str = "Examples:
   koda -p -                           # read prompt from stdin
   git diff | koda                     # pipe diff as the prompt
   koda \"refactor\" --model o3         # one-shot with a specific model
-  KODA_MODEL=gemini-flash koda \"...\" # env-var model override
+  KODA_MODEL=gemini-flash-latest koda \"...\" # env-var model override
   koda server --stdio                 # ACP stdio server for editor plugins
   koda -s abc123 \"continue\"          # resume a saved session";
 
