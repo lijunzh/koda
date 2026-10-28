@@ -89,7 +89,7 @@ anyhow = { workspace = true }
 time = "0.3"
 
 # Base64 encoding (for image input)
-base64 = "0.22"
+base64 = "0.23"
 agent-client-protocol-schema = { version = "0.11", features = ["unstable_session_model", "unstable_session_list", "unstable"] }
 futures-util = { workspace = true }
 
