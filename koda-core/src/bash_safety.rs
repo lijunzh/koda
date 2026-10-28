@@ -485,37 +485,33 @@ fn matches_prefix_list(seg: &str, prefixes: &[&str]) -> bool {
 /// assert_eq!(split_command_segments("a && b || c"), vec!["a ", " b ", " c"]);
 /// ```
 pub fn split_command_segments(command: &str) -> Vec<&str> {
+    // Track byte offsets (not char indices) so slicing `command` stays on
+    // char boundaries when the command contains multibyte text. All the
+    // characters we act on are ASCII, so each is one byte wide.
     let mut segments = Vec::new();
     let mut start = 0;
-    let chars: Vec<char> = command.chars().collect();
-    let mut i = 0;
     let mut in_single_quote = false;
     let mut in_double_quote = false;
+    let mut iter = command.char_indices().peekable();
 
-    while i < chars.len() {
-        let c = chars[i];
+    while let Some((i, c)) = iter.next() {
         if c == '\'' && !in_double_quote {
             in_single_quote = !in_single_quote;
         } else if c == '"' && !in_single_quote {
             in_double_quote = !in_double_quote;
         } else if !in_single_quote && !in_double_quote {
-            let sep_len = if (c == '|' || c == '&') && i + 1 < chars.len() && chars[i + 1] == c {
-                2 // || or &&
-            } else if c == '|' || c == ';' {
-                1
-            } else {
-                0
-            };
-            if sep_len > 0 {
+            let doubled = (c == '|' || c == '&') && iter.peek().is_some_and(|&(_, n)| n == c);
+            if doubled || c == '|' || c == ';' {
                 segments.push(&command[start..i]);
-                i += sep_len;
-                start = i;
-                continue;
+                start = i + 1;
+                if doubled {
+                    iter.next(); // || or &&
+                    start += 1;
+                }
             }
         }
-        i += 1;
     }
-    if start < chars.len() {
+    if start < command.len() {
         segments.push(&command[start..]);
     }
     segments
@@ -608,11 +604,11 @@ fn strip_redirections(segment: &str) -> String {
     result
 }
 
-/// Position of the first unquoted space in `s`.
+/// Byte offset of the first unquoted space in `s`.
 fn find_unquoted_space(s: &str) -> Option<usize> {
     let mut in_sq = false;
     let mut in_dq = false;
-    for (i, c) in s.chars().enumerate() {
+    for (i, c) in s.char_indices() {
         match c {
             '\'' if !in_dq => in_sq = !in_sq,
             '"' if !in_sq => in_dq = !in_dq,
@@ -703,6 +699,87 @@ mod tests {
         let segs = split_command_segments("echo 'a | b' | grep x");
         assert_eq!(segs.len(), 2);
         assert!(segs[0].contains("'a | b'"));
+    }
+
+    // Multibyte text (CJK, accented, emoji) must not panic and must split
+    // and classify like the ASCII equivalent. The splitter once used char
+    // indices as byte offsets and panicked on `你好 | ...`.
+
+    const MULTIBYTE: &[&str] = &["你好", "café", "🦀", "naïve 世界 🎉"];
+    const SEPARATORS: &[&str] = &["|", ";", "&&", "||"];
+    /// `{t}` is replaced by the text, `{sep}` by the separator.
+    const MULTIBYTE_TEMPLATES: &[&str] = &[
+        "echo {t} {sep} ls {t}",
+        "echo {t}{sep}ls",
+        "echo {t} {sep} rm -rf /tmp/{t}",
+        "cat {t}.txt {sep} git push --force",
+        "echo '{t} {sep} rm -rf /' {sep} ls {t}",
+        "echo \"{t} {sep} rm -rf /\" {sep} grep {t}",
+        "grep \"{t}\" a.txt {sep} echo '{t}'",
+        "FOO='{t}' ls {sep} echo {t}",
+        "FOO=\"{t} x\" ls {sep} rm -rf {t}",
+        "{t} {sep} {t}",
+    ];
+
+    /// `(command, ASCII equivalent, text)`. The ASCII stand-in is `X`, which
+    /// appears nowhere else in the templates.
+    fn multibyte_cases() -> Vec<(String, String, &'static str)> {
+        let mut cases = Vec::new();
+        for tpl in MULTIBYTE_TEMPLATES {
+            for sep in SEPARATORS {
+                let fill = |t: &str| tpl.replace("{t}", t).replace("{sep}", sep);
+                for t in MULTIBYTE {
+                    cases.push((fill(t), fill("X"), *t));
+                }
+            }
+        }
+        cases
+    }
+
+    #[test]
+    fn test_split_multibyte_matches_ascii() {
+        for (cmd, ascii, t) in multibyte_cases() {
+            let segs = split_command_segments(&cmd);
+            let expected: Vec<String> = split_command_segments(&ascii)
+                .iter()
+                .map(|seg| seg.replace('X', t))
+                .collect();
+            assert_eq!(segs, expected, "segments of {cmd:?}");
+        }
+    }
+
+    #[test]
+    fn test_split_multibyte_segments_exact() {
+        assert_eq!(
+            split_command_segments("echo 你好 | grep 好"),
+            vec!["echo 你好 ", " grep 好"]
+        );
+        assert_eq!(
+            split_command_segments("echo café&&ls🦀||echo 'é;é';true"),
+            vec!["echo café", "ls🦀", "echo 'é;é'", "true"]
+        );
+        assert_eq!(
+            split_command_segments("echo \"好 | 好\""),
+            vec!["echo \"好 | 好\""]
+        );
+    }
+
+    #[test]
+    fn test_classify_multibyte_matches_ascii() {
+        for (cmd, ascii, _) in multibyte_cases() {
+            assert_eq!(
+                classify_bash_command(&cmd),
+                classify_bash_command(&ascii),
+                "{cmd:?} should classify like {ascii:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_strip_env_vars_multibyte() {
+        assert_eq!(strip_env_vars("FOO=好 ls"), "ls");
+        assert_eq!(strip_env_vars("FOO=\"你好 世界\" BAR=é cat a"), "cat a");
+        assert_eq!(strip_env_vars("FOO=🦀"), "FOO=🦀");
     }
 
     // strip_quoted_strings

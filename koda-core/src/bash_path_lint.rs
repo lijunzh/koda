@@ -527,4 +527,31 @@ mod tests {
             "/var/log/* must remain gated — only /var/folders/* is scratch"
         );
     }
+
+    /// Multibyte text around separators must not panic and must lint like
+    /// the ASCII equivalent.
+    #[test]
+    fn test_lint_multibyte_matches_ascii() {
+        for t in ["你好", "café", "🦀"] {
+            for sep in ["|", ";", "&&", "||"] {
+                for tpl in [
+                    "echo {t} {sep} cd /etc",
+                    "FOO={t} cd .. {sep} ls {t}",
+                    "echo '{t} {sep} cd /etc' {sep} cat /etc/{t}",
+                    "cd src/{t} {sep} echo {t}",
+                ] {
+                    let fill = |t: &str| tpl.replace("{t}", t).replace("{sep}", sep);
+                    let lint = lint_bash_paths(&fill(t), &project());
+                    let ascii = lint_bash_paths(&fill("x"), &project());
+                    assert_eq!(lint.home_escape, ascii.home_escape, "{}", fill(t));
+                    assert_eq!(
+                        lint.outside_paths.len(),
+                        ascii.outside_paths.len(),
+                        "{}",
+                        fill(t)
+                    );
+                }
+            }
+        }
+    }
 }
