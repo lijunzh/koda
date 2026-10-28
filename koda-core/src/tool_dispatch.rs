@@ -255,18 +255,15 @@ pub(crate) async fn execute_one_tool(
         ..
     } = *tx.turn;
     let caller_spawner = tx.caller_spawner;
-    let caller_agent_path = tx.turn.agent_path;
     let _session_id = session_id; // mirror the existing `_session_id` arg name
     // Pre-#1325 Phase 5b this dispatch had a leading branch for
     // `ListBackgroundTasks` / `CancelTask` / `WaitTask` that called
     // `bg_task_tools::execute` directly (Layer 2 of #996 — those
     // tools needed the `Arc<ChildAgentRegistry>` and the caller's
     // spawner identity, neither held by `ToolRegistry`). Phase 5b
-    // retired the LLM-facing trio in favor of `WaitForMail` (the
-    // mailbox bridge from #1336 means every bg-agent completion
-    // lands as mail), so the special branch is gone too. The
-    // registries themselves are still alive — the TUI overlay reads
-    // them and `notify_parent_mailbox` walks them on bg-agent exit.
+    // retired the LLM-facing trio, so the special branch is gone
+    // too. The registries themselves are still alive — the TUI
+    // overlay reads them.
     let (result, success, full_output) = if tc.function_name == "InvokeAgent" {
         // Sub-agents inherit the parent's approval mode.
         //
@@ -326,16 +323,16 @@ pub(crate) async fn execute_one_tool(
             // Architectural rationale: the LLM API caps throughput,
             // not concurrency, so async dispatch buys little while
             // costing a lot of surface area (mailbox / WaitForMail /
-            // pill / overlay). Sub-agents' real value is context
+            // pill / overlay; the mailbox and its tools are gone now).
+            // Sub-agents' real value is context
             // isolation + tool restriction + specialization, all of
             // which work fine with sync delegation.
             //
             // Pre-#1366 this was `false` (bg-spawn) and `true` was
             // reserved for `run_bg_agent`'s recursion guard. With
             // bg-spawn dead from the public surface, `true` IS the
-            // public path; phase 2 deletes the now-unreachable bg
-            // branch + mailbox + activity-pill UI in one large
-            // deletion PR.
+            // public path. The now-unreachable bg branch and the
+            // activity-pill UI are still to be deleted.
             true,
         );
         match Box::pin(fut).await {
@@ -428,13 +425,7 @@ pub(crate) async fn execute_one_tool(
             None
         };
         let r = tools
-            .execute(
-                &tc.function_name,
-                &tc.arguments,
-                streaming,
-                caller_spawner,
-                caller_agent_path,
-            )
+            .execute(&tc.function_name, &tc.arguments, streaming, caller_spawner)
             .await;
         (r.output, r.success, r.full_output)
     };

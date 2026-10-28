@@ -140,10 +140,9 @@ pub(crate) struct TuiContext {
     /// #1349 Bug 2 — set when a `ChildTaskUpdate` reports a terminal
     /// status while the TUI is idle AND no other bg agents are still
     /// in flight. Read at the top of [`Self::run_event_loop`] to
-    /// synthesize an empty user turn, which calls
-    /// [`koda_core::session::KodaSession::drain_mail_to_db`] at
-    /// `run_turn` start and surfaces the bg-agent's mailbox payload to
-    /// the model without the user having to type anything.
+    /// synthesize an empty user turn, whose inference loop calls
+    /// `ChildAgentRegistry::drain_completed` and surfaces the bg-agent's
+    /// result to the model without the user having to type anything.
     ///
     /// The flag is the simple, codex-equivalent of
     /// `maybe_start_turn_for_pending_work` — see #1349 for the full
@@ -696,10 +695,10 @@ impl TuiContext {
             //
             // If a `ChildTaskUpdate` terminal status arrived while idle
             // and the registry now reports zero non-terminal bg agents,
-            // synthesize an empty turn. `KodaSession::run_turn` calls
-            // `drain_mail_to_db` at its top, which folds any mailbox
-            // payloads into the conversation as user-role messages so
-            // the model sees them on its very next inference call.
+            // synthesize an empty turn. The inference loop's
+            // `drain_completed` folds the finished agent's result into
+            // the conversation so the model sees it on its very next
+            // inference call.
             //
             // Gated on `Idle` + no pending input so the user's own
             // typing always wins over auto-resume — if they typed

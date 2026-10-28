@@ -46,7 +46,7 @@ impl TuiContext {
     /// 2. **`ChildTaskUpdate { status: terminal }`** \u2014 if the
     ///    registry has no other non-terminal entries, set
     ///    `auto_resume_pending` so the loop kicks off a synthetic
-    ///    turn that drains the mailbox.
+    ///    turn that drains completed bg agents.
     /// 3. **everything else** \u2014 fall through the renderer so
     ///    `Info` / `Warn` / `Error` etc. land in the scroll buffer.
     ///    Approval / ask-user / loop-cap intentionally NOT handled

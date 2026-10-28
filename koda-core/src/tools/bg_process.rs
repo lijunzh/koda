@@ -45,7 +45,7 @@ use tokio::process::Child;
 ///
 /// Carries process-specific terminal info (exit code) for shell-style
 /// background processes. Distinct from agent-completion outcomes
-/// (those flow through the mailbox bridge — see #1325 Phase 5a)
+/// (those flow through `ChildAgentRegistry::drain_completed`)
 /// because exit-code semantics don't translate cleanly to agent
 /// `BgAgentResult` shape and vice-versa.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -257,11 +257,10 @@ mod tests {
         assert!(scope.check_tool_call("Grep").is_none());
         assert!(scope.check_tool_call("ActivateSkill").is_none()); // meta
         assert!(scope.check_tool_call("AskUser").is_none()); // meta
-        // #1325 Phase 5a/5b — SpawnAgent + the peer-messaging tools are
-        // meta so a skill-scoped agent can still spawn sub-agents and
-        // block on bg-agent completion mail. Pre-#1325 Phase 5b this
-        // block also pinned `ListBackgroundTasks` / `CancelTask` /
-        // `WaitTask` (#996 Phase G) — those tools were retired in 5b.
+        // SpawnAgent is meta so a skill-scoped agent can still delegate
+        // to sub-agents. Pre-#1325 Phase 5b this block also pinned
+        // `ListBackgroundTasks` / `CancelTask` / `WaitTask` (#996
+        // Phase G) — those tools were retired in 5b.
         assert!(scope.check_tool_call("SpawnAgent").is_none());
 
         let err = scope.check_tool_call("Write");

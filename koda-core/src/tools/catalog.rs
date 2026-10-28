@@ -236,9 +236,8 @@ impl ToolCatalog {
             // trait impls — dispatch went through a special branch in
             // `tool_dispatch.rs::execute_one_tool` because they needed
             // `Arc<ChildAgentRegistry>` not held by ToolRegistry. Phase
-            // 5b retired the trio (replaced by `WaitForMail` + the
-            // mailbox bridge from #1336); registries themselves are
-            // still used by the TUI overlay and `notify_parent_mailbox`.
+            // 5b retired the trio; registries themselves are still
+            // used by the TUI overlay.
             // #1325 Phase 5a: SpawnAgent — intercepted by tool_dispatch.rs.
             boxed(spawn_agent::SpawnAgentTool),
         ] {
