@@ -48,14 +48,6 @@ pub struct Env {
     /// live status snapshots, or call [`ChildAgentRegistry::subscribe`]
     /// to get a watch receiver for a specific task.
     pub bg_agents: Arc<ChildAgentRegistry>,
-    /// Root agent's mailbox receiver. Held to keep the underlying
-    /// `mpsc::Sender` half (inside `Mailbox`) alive — without this,
-    /// dropping the receiver would close the channel and the
-    /// bg-agent's `notify_parent_mailbox` send would silently no-op.
-    /// (`watch::Sender::send_replace` would still bump the seq, so
-    /// `WaitForMail` would unblock — but mail-bearing tests inspecting
-    /// the queue would lose data. Keep it alive defensively.)
-    pub _mailbox_rx: Arc<tokio::sync::Mutex<koda_core::agent::MailboxReceiver>>,
 }
 
 /// Builder for [`Env`] — customise provider, context window, agent name, etc.
@@ -126,27 +118,7 @@ impl EnvBuilder {
         }
         let tools = ToolRegistry::with_trust(root.clone(), config.max_context_tokens, self.trust);
 
-        // #1325 Phase 5b follow-up: tests that exercise WaitForMail /
-        // SpawnAgent need a mailbox registry attached to the tool
-        // registry, otherwise WaitForMail returns the "no registry"
-        // error path and tests racing the bg-agent's `cache.put` flake
-        // (the test thinks it's blocking until mail arrives, but it's
-        // actually returning instantly with an error). Mirrors
-        // `KodaSession::new` — fresh registry, root mailbox registered.
-        let (mailbox, mailbox_rx) = koda_core::agent::Mailbox::new();
-        let mailbox = Arc::new(mailbox);
-        let mailbox_registry = Arc::new(koda_core::agent::mailbox_registry::MailboxRegistry::new());
-        let _ = mailbox_registry.register(
-            koda_core::agent::path::AgentPath::root(),
-            Arc::clone(&mailbox),
-        );
-        tools.set_mailbox_registry(Arc::clone(&mailbox_registry));
-
-        // #1338 Issue #3: mirror `KodaSession::new` — hand the
-        // bg-agent registry to the tool layer so `WaitForMail`'s
-        // timeout payload sees in-flight bg-agents in tests too.
         let bg_agents = koda_core::child_agent::new_shared();
-        tools.set_bg_agents(Arc::clone(&bg_agents));
 
         Env {
             _tmp: tmp,
@@ -157,7 +129,6 @@ impl EnvBuilder {
             tools,
             trust: self.trust,
             bg_agents,
-            _mailbox_rx: Arc::new(tokio::sync::Mutex::new(mailbox_rx)),
         }
     }
 }
@@ -326,7 +297,6 @@ impl Env {
             // root agent. SpawnAgent-driven children get their own
             // path injected by the spawn machinery and don't reach
             // here.
-            agent_path: &koda_core::agent::AgentPath::root(),
         })
         .await;
 

@@ -371,23 +371,9 @@ async fn test_sub_agent_cache_hit_skips_llm() {
             "InvokeAgent",
             serde_json::json!({"agent_name": "echo-agent", "prompt": "do the thing"}),
         ),
-        // **#1163 (Lean A)**: post-PR every InvokeAgent dispatch is
-        // spawn-and-return, so iter 1's `sub_agent_cache.put` lands
-        // *inside* the spawned task asynchronously. Without a barrier
-        // here, iter 2 (the would-be cache hit) races iter 1's
-        // bg agent and almost always wins on Linux — result: cache
-        // miss, second spawn, no `cache hit` Info event, test fails.
-        //
-        // Pre-#1325 Phase 5b this test used `WaitTask(["agent:1"])`
-        // for the barrier. Phase 5b retired `WaitTask`; the equivalent
-        // serialization now goes through `WaitForMail` — the mailbox
-        // bridge from #1336 (`notify_parent_mailbox`) sends a
-        // completion mail to the parent the moment the bg agent
-        // exits, AFTER `cache.put` has run (same function body,
-        // return Ok comes after the put). `WaitForMail` blocks the
-        // current turn until that mail arrives, giving us the same
-        // happens-before edge.
-        MockResponse::tool_call("WaitForMail", serde_json::json!({})),
+        // Sub-agents are synchronous (#1366): the first call has already
+        // stored its result in the sub-agent cache when it returns, so the
+        // second identical call needs no barrier to hit the cache.
         MockResponse::tool_call(
             "InvokeAgent",
             serde_json::json!({"agent_name": "echo-agent", "prompt": "do the thing"}),

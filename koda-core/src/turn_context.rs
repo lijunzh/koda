@@ -108,14 +108,6 @@ pub struct TurnContext<'a> {
     /// Tool registry (built-in + MCP). Per-session; constant within
     /// a single turn.
     pub tools: &'a ToolRegistry,
-
-    /// This agent's identity in the spawn tree (#1325 Phase 4).
-    /// `/root` for the user-facing session, `/root/<name>` for any
-    /// spawned child sub-agent. Read by peer tools (`SendMessage`
-    /// stamps it as `author`; `WaitForMail` looks up its own
-    /// inbox by it; `SpawnAgent` joins child names onto it).
-    /// Threaded down into `ToolExecCtx::caller_agent_path`.
-    pub agent_path: &'a crate::agent::AgentPath,
 }
 
 impl<'a> TurnContext<'a> {
@@ -135,7 +127,6 @@ impl<'a> TurnContext<'a> {
         bg_agents: &'a Arc<ChildAgentRegistry>,
         mode: TrustMode,
         tools: &'a ToolRegistry,
-        agent_path: &'a crate::agent::AgentPath,
     ) -> Self {
         Self {
             project_root,
@@ -148,7 +139,6 @@ impl<'a> TurnContext<'a> {
             bg_agents,
             mode,
             tools,
-            agent_path,
         }
     }
 }
@@ -244,7 +234,6 @@ mod tests {
         let sink = NullSink;
 
         // Act: build the context.
-        let agent_path = crate::agent::AgentPath::root();
         let ctx = TurnContext::new(
             &root,
             &config,
@@ -256,7 +245,6 @@ mod tests {
             &bg_agents,
             TrustMode::Safe,
             &tools,
-            &agent_path,
         );
 
         // Assert: every field is reachable + carries the value we passed.
@@ -279,8 +267,6 @@ mod tests {
         let bg_agents = Arc::new(ChildAgentRegistry::new());
         let tools = ToolRegistry::new(root.clone(), 8_000);
         let sink = NullSink;
-
-        let agent_path = crate::agent::AgentPath::root();
         let turn = TurnContext::new(
             &root,
             &config,
@@ -292,7 +278,6 @@ mod tests {
             &bg_agents,
             TrustMode::Auto,
             &tools,
-            &agent_path,
         );
 
         // Top-level invocation: no parent spawner.

@@ -89,7 +89,6 @@ use crate::tools::ToolEffect;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 /// Result returned by every built-in tool's execution path.
 ///
@@ -228,50 +227,6 @@ pub struct ToolExecCtx<'a> {
     /// Skill registry for `ListSkills` / `ActivateSkill`. Other
     /// tools ignore this. Added in PR-8 of #1265 item 5.
     pub skill_registry: &'a crate::skills::SkillRegistry,
-
-    /// Per-session path → mailbox registry (#1325 Phase 3). `None`
-    /// when running outside a session (standalone-`ToolRegistry`
-    /// tests). Read by the `send_message` and `wait_for_mail` peer
-    /// tools — every other tool ignores it.
-    ///
-    /// Borrowed (`&'a Arc`) rather than cloned so the per-call
-    /// dispatch path doesn't pay an `Arc::clone` for every tool
-    /// that doesn't need the registry. Peer tools that hold the
-    /// registry across `.await` should clone the `Arc` themselves
-    /// at the use site — explicit beats hidden cost.
-    pub mailbox_registry: Option<&'a Arc<crate::agent::mailbox_registry::MailboxRegistry>>,
-
-    /// Per-session bg-agent registry (#1338 Issue #3). `None` when
-    /// running outside a session (standalone-`ToolRegistry` tests).
-    /// Today only [`crate::tools::wait_for_mail::WaitForMailTool`]
-    /// reads it \u2014 specifically on the timeout path, to enrich the
-    /// returned payload with `bg_agents_in_flight` and per-task
-    /// snapshots so the model can decide what to do next without
-    /// guessing whether sub-agents are still working.
-    ///
-    /// Borrowed (`&'a Arc`) for the same zero-clone-per-dispatch
-    /// reason as [`Self::mailbox_registry`]. Peer tools that hold
-    /// the registry across `.await` should `Arc::clone` themselves.
-    pub bg_agents: Option<&'a Arc<crate::child_agent::ChildAgentRegistry>>,
-
-    /// Caller's identity in the agent spawn tree (#1325 Phase 4).
-    /// Source of truth: `TurnContext::agent_path`. Defaults to
-    /// `&AgentPath::root()` for the user-facing session and for
-    /// any standalone-`ToolRegistry` test that doesn't construct
-    /// the field.
-    ///
-    /// Read by the peer tools to:
-    /// - stamp `author` on outgoing `SendMessage` mail (replaces
-    ///   the Phase-3 hardcoded `/root`),
-    /// - look up the caller's own inbox in `WaitForMail`,
-    /// - join child agent names onto the parent path in the
-    ///   forthcoming `SpawnAgent` tool.
-    ///
-    /// Borrowed (not owned) for the same zero-cost reason every
-    /// other ambient field is borrowed: per-tool dispatch happens
-    /// in a hot loop and we don't want a per-call `clone()` on a
-    /// validated path.
-    pub caller_agent_path: &'a crate::agent::AgentPath,
 }
 
 /// A self-contained built-in tool.
@@ -476,12 +431,6 @@ impl<'a> ToolExecCtx<'a> {
         trust: &'a crate::trust::TrustMode,
         sandbox_policy: &'a koda_sandbox::SandboxPolicy,
         skill_registry: &'a crate::skills::SkillRegistry,
-        // #1325 Phase 4: every test caller is conceptually `/root`
-        // unless it explicitly wants to simulate a child agent.
-        // Required (not defaulted via static) so test authors stay
-        // aware of the field — same "safe but visible" discipline
-        // the rest of `for_test` follows.
-        agent_path: &'a crate::agent::AgentPath,
     ) -> Self {
         Self {
             project_root,
@@ -497,12 +446,6 @@ impl<'a> ToolExecCtx<'a> {
             socks5_port: None,
             session: None,
             skill_registry,
-            // for_test default: no peer-tools registry. Tests that
-            // exercise send_message / wait_for_mail must construct
-            // their context manually with a real registry.
-            mailbox_registry: None,
-            bg_agents: None,
-            caller_agent_path: agent_path,
         }
     }
 }
@@ -622,7 +565,6 @@ mod tests {
         trust: &'a crate::trust::TrustMode,
         policy: &'a koda_sandbox::SandboxPolicy,
         skills: &'a SkillRegistry,
-        agent_path: &'a crate::agent::AgentPath,
     ) -> ToolExecCtx<'a> {
         ToolExecCtx {
             project_root: root,
@@ -638,9 +580,6 @@ mod tests {
             socks5_port: None,
             session: None,
             skill_registry: skills,
-            mailbox_registry: None,
-            bg_agents: None,
-            caller_agent_path: agent_path,
         }
     }
 
@@ -655,18 +594,7 @@ mod tests {
         let trust = crate::trust::TrustMode::Safe;
         let policy = koda_sandbox::SandboxPolicy::default();
         let skills = crate::skills::SkillRegistry::default();
-        let agent_path = crate::agent::AgentPath::root();
-        let ctx = make_ctx(
-            &root,
-            &cache,
-            &fs,
-            &caps,
-            &bg,
-            &trust,
-            &policy,
-            &skills,
-            &agent_path,
-        );
+        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills);
 
         let args = json!({"hello": "world"});
         let result = tool.execute(&ctx, &args).await;
@@ -756,18 +684,7 @@ mod tests {
         let trust = crate::trust::TrustMode::Safe;
         let policy = koda_sandbox::SandboxPolicy::default();
         let skills = crate::skills::SkillRegistry::default();
-        let agent_path = crate::agent::AgentPath::root();
-        let ctx = make_ctx(
-            &root,
-            &cache,
-            &fs,
-            &caps,
-            &bg,
-            &trust,
-            &policy,
-            &skills,
-            &agent_path,
-        );
+        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills);
 
         let r1 = tools[0].execute(&ctx, &json!({})).await;
         assert!(r1.success);
@@ -790,18 +707,7 @@ mod tests {
         let trust = crate::trust::TrustMode::Safe;
         let policy = koda_sandbox::SandboxPolicy::default();
         let skills = crate::skills::SkillRegistry::default();
-        let agent_path = crate::agent::AgentPath::root();
-        let ctx = make_ctx(
-            &root,
-            &cache,
-            &fs,
-            &caps,
-            &bg,
-            &trust,
-            &policy,
-            &skills,
-            &agent_path,
-        );
+        let ctx = make_ctx(&root, &cache, &fs, &caps, &bg, &trust, &policy, &skills);
 
         assert_eq!(ctx.project_root(), root.as_path());
         // Cache is a single shared handle — pointer-equality check.

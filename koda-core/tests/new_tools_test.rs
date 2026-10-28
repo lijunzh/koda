@@ -236,10 +236,8 @@ mod naming_convention {
         "MemoryWrite",
         "Read",
         "RecallContext",
-        "SendMessage",
         "SpawnAgent",
         "TodoWrite",
-        "WaitForMail",
         "WebFetch",
         "WebSearch",
         "Write",
@@ -275,7 +273,7 @@ mod naming_convention {
 
     #[test]
     fn test_expected_tool_count() {
-        // 22 built-in tools.
+        // 21 built-in tools.
         // - #996 Layer 2 added ListBackgroundTasks, CancelTask,
         //   WaitTask (19 → 22).
         // - #1325 Phase 3 added SendMessage, WaitForMail (22 → 24).
@@ -284,7 +282,9 @@ mod naming_convention {
         //   WaitTask (25 → 22) — superseded by WaitForMail + the
         //   mailbox bridge from #1336.
         // - The Cargo tool (22 → 23).
-        assert_eq!(BUILTIN_TOOLS.len(), 23);
+        // - SendMessage and WaitForMail removed with the mailbox (23 → 21):
+        //   sub-agents are synchronous and only `/root` could be addressed.
+        assert_eq!(BUILTIN_TOOLS.len(), 21);
     }
 
     /// Ensure BUILTIN_TOOLS stays in sync with the actual registry.

@@ -423,11 +423,6 @@ async fn collect_stream(
     tools: &ToolRegistry,
     mode: TrustMode,
     project_root: &Path,
-    // #1325 Phase 4: stamped onto eager-dispatch tool calls so peer
-    // tools (`SendMessage`) attribute mail to the right author.
-    // Eager dispatch only runs read-only tools today (none of which
-    // are peer tools), so this is purely for forward-compat.
-    caller_agent_path: &crate::agent::AgentPath,
 ) -> StreamResult {
     let mut full_text = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -536,13 +531,7 @@ async fn collect_stream(
                     // above). Bash is never read-only, so `caller_spawner=None`
                     // is correct here — there is no Bash path to mis-tag.
                     let r = tools
-                        .execute(
-                            &tc.function_name,
-                            &tc.arguments,
-                            None,
-                            None,
-                            caller_agent_path,
-                        )
+                        .execute(&tc.function_name, &tc.arguments, None, None)
                         .await;
                     eager_results.push((tc.id.clone(), r.output, r.success, r.full_output));
                 }
@@ -653,12 +642,6 @@ pub struct InferenceContext<'a> {
     /// Generation-based invalidation on mutating tool calls is
     /// honored uniformly via `crate::tool_dispatch::execute_one_tool`.
     pub sub_agent_cache: &'a crate::sub_agent_cache::SubAgentCache,
-
-    /// Caller's identity in the agent spawn tree (#1325 Phase 4).
-    /// `/root` for the user-facing session; `/root/<name>` for
-    /// spawned children. Threaded into `TurnContext.agent_path`
-    /// and on to every tool's `caller_agent_path`.
-    pub agent_path: &'a crate::agent::AgentPath,
 }
 
 /// Run the inference loop: send messages, stream responses, dispatch tool calls.
@@ -741,7 +724,6 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
         file_tracker,
         bg_agents,
         sub_agent_cache,
-        agent_path,
     } = ctx;
 
     // #1108 P1b: wrap the user-facing sink with `PersistingSink` so
@@ -772,7 +754,6 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
         bg_agents,
         mode,
         tools,
-        agent_path,
     );
     // Phase E of #996: top-level inference has no spawner identity —
     // bg-task tools see the global scope. Sub-agents construct their
@@ -1162,16 +1143,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>) -> Result<()> {
         };
 
         // Collect the streamed response
-        let stream_result = collect_stream(
-            &mut rx,
-            sink,
-            &cancel,
-            tools,
-            mode,
-            project_root,
-            agent_path,
-        )
-        .await;
+        let stream_result = collect_stream(&mut rx, sink, &cancel, tools, mode, project_root).await;
 
         if stream_result.interrupted {
             // Kill the background HTTP reader immediately so the TCP
@@ -1569,16 +1541,7 @@ mod tests {
             // tx drops here → stream ends
         });
 
-        collect_stream(
-            &mut rx,
-            &sink,
-            &cancel,
-            &tools,
-            TrustMode::Auto,
-            tmp.path(),
-            &crate::agent::AgentPath::root(),
-        )
-        .await
+        collect_stream(&mut rx, &sink, &cancel, &tools, TrustMode::Auto, tmp.path()).await
     }
 
     // ── Text streaming ───────────────────────────────────────────
@@ -1702,16 +1665,8 @@ mod tests {
             let _ = tx.send(StreamChunk::Done(TokenUsage::default())).await;
         });
 
-        let result = collect_stream(
-            &mut rx,
-            &sink,
-            &cancel,
-            &tools,
-            TrustMode::Auto,
-            tmp.path(),
-            &crate::agent::AgentPath::root(),
-        )
-        .await;
+        let result =
+            collect_stream(&mut rx, &sink, &cancel, &tools, TrustMode::Auto, tmp.path()).await;
 
         assert_eq!(result.tool_calls.len(), 1, "tool call should be recorded");
         assert_eq!(result.eager_results.len(), 1, "should have 1 eager result");
@@ -1801,7 +1756,6 @@ mod tests {
             &tools,
             TrustMode::Auto,
             tmp.path(),
-            &crate::agent::AgentPath::root(),
         )
         .await;
 

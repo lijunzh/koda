@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Removed
+
+- **`SendMessage`, `WaitForMail` and the mailbox behind them.** Sub-agents have been synchronous since #1366: no sub-agent sends completion mail (the only sender, `run_bg_agent`, is unreachable) and `SendMessage` could address only `/root`, i.e. the model itself, so the two tools could do nothing but deliver a note to oneself, and `WaitForMail` after a sub-agent call blocked until its timeout. The model's built-in tool list goes from 23 to 21 tools.
+  - **Engine (`koda-core`, a public API break):** removed the `agent::{mailbox, mailbox_registry, mail_message, inter_agent, path}` modules and their re-exports (`Mailbox`, `MailboxReceiver`, `MailboxRegistry`, `RegisterOutcome`, `InterAgentCommunication`, `AgentPath`, `mail_to_user_message`); the `KodaSession` fields `mailbox`, `mailbox_rx`, `idle_pending_input`, `mailbox_registry` and `agent_path` and its methods `mailbox()`, `enqueue_for_next_turn()` and `drain_mail_to_db()` (a turn no longer drains a mailbox before inference); `ToolRegistry::{set_mailbox_registry, mailbox_registry, set_bg_agents, bg_agents}`; the `ToolExecCtx` fields `mailbox_registry`, `bg_agents` and `caller_agent_path`; and the `caller_agent_path` / `agent_path` parameters and fields of `ToolRegistry::execute`, `ToolExecCtx::for_test`, `TurnContext` and `InferenceContext`. The per-sub-agent mailbox registration and per-iteration drain in `execute_sub_agent`, `notify_parent_mailbox`, and `run_bg_agent`'s mailbox parameters are gone with them.
+  - **CLI:** removed the `wait_task_format` module, whose renderers (for `WaitForMail` and the already-retired `WaitTask` / `ListBackgroundTasks`) nothing else used. A resumed session that contains such a tool result now shows it as ordinary tool output.
+  - **Not removed:** the background-agent registries and the TUI overlay, `/agents` and `/cancel`, and the unreachable `!inline_only` background branch of `execute_sub_agent`. They are the remaining async-era code and are left for a separate change.
+  - `NOTICE` no longer lists `agent/path.rs`, `agent/inter_agent.rs` and `agent/mailbox.rs`, which were copies of Codex files; the composer copies stay. About 6,400 lines are deleted (an estimated 2,900 of them tests of the removed code, which is why the suite goes from 2,885 to 2,770 tests).
+
 ## [0.4.0] - 2026-10-27
 
 **The October 2026 catch-up release.** The first since v0.3.2 (2026-05-06); development paused in May, and this covers everything merged since, including one breaking change that had been waiting on `main`.

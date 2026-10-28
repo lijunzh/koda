@@ -549,6 +549,18 @@ calls to potentially different providers.
 
 ### Sub-Agent Lifecycle (P2, P3)
 
+> **Status (2026-10-27).** The two sections below ("Sub-Agent Lifecycle" and
+> "Background-task management surface") record the asynchronous design of
+> #1163 and #1325. Sub-agents have been synchronous since #1366: `InvokeAgent`
+> and its alias `SpawnAgent` block and return the sub-agent's final answer as
+> the tool result, nothing is spawned in the background by the model, and no
+> `task_id` is returned. `WaitForMail`, `SendMessage` and the mailbox and
+> `AgentPath` machinery under them were deleted, because after #1366 no
+> sub-agent could send mail and the only valid recipient was the sender. The
+> text is kept as the decision record, not as a description of the current
+> behavior. What remains of the background machinery is the TUI overlay and the
+> `/agents` / `/cancel` commands, and a dispatch branch that nothing reaches.
+
 **#1163 (Lean A)**: every `InvokeAgent` call spawns a background
 task and returns its `task_id` immediately. There is no foreground /
 blocking variant exposed to the model — the prior `background:bool`
@@ -838,6 +850,11 @@ different set.
   cross-session resume. Net adopted footprint is closer to ~1,500 LOC
   than the original 3,000 estimate because the mailbox machinery is
   shared between peer messaging and bg-completion delivery.
+  **Removed again (2026-10-27):** after #1366 made sub-agents synchronous,
+  no sub-agent sent completion mail and `SendMessage` could only address
+  `/root`, so the mailbox, `AgentPath`, `SendMessage` and `WaitForMail`
+  were deleted. If a Codex-style asynchronous agent experiment is ever run,
+  rebuild the smallest piece it needs rather than restoring this surface.
 - **Codex's `agent_max_depth` + `agent_max_threads` atomic CAS reservations**.
   Koda hardcodes "sub-agents cannot spawn sub-agents" (depth = exactly 1
   for any worker) and adds a per-agent iteration cap. Removes the entire
