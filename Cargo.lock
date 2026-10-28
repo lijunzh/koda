@@ -1770,7 +1770,7 @@ dependencies = [
  "ansi-to-tui",
  "anyhow",
  "arboard",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "crossterm",
  "futures-util",
